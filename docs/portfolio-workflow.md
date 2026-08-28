@@ -251,6 +251,7 @@ It runs as **a single pass by default, or hierarchically** (tier-1 per topic-tre
 
 **Model.**
 The same resident 122B in non-thinking mode by default (no model-swap cost); the fast 35B tier is a benchmark-gated option ([local-models.md §The model roster and per-task routing](local-models.md#the-model-roster-and-per-task-routing)).
+A 6d call whose rendered prompt outgrows the fast tier's budget issues on the resident reasoner instead, and one over the widest budget is refused before issue ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
 
 **Prompt — input.**
 *Single pass:* the **full findings response from every worked topic**, the append-only evidence ledger (claims + sources), and — for Portfolio with a non-expired prior — the **seeded per-topic prior objects**, each merged into its own topic and the call's output **keyed by topic** so every group persists as the next run's seed ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).

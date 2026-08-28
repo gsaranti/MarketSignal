@@ -13,6 +13,17 @@
 //! whose own complete input would overflow one call and a cap past which the
 //! lowest-priority whole passes fail-soft to a recorded gap.
 //!
+//! That routing sizes *content*; the rendered single-pass and tier-1 prompts
+//! are sized once more against the widest budget the adapter can issue and
+//! take the next smaller shape only when they outgrow it — hierarchical, or
+//! that topic's pass-seam sub-distillation (the content sum omits the
+//! scaffolding; a prompt the reasoner can serve still issues). The adapter seam
+//! then sizes each **rendered prompt** this module issues before a request
+//! exists — routing up to the resident reasoner or refusing outright
+//! (`pipeline::distill_route`; `docs/local-models.md §The local-model adapter
+//! seam`) — closing the daemon's silent front-truncation off from here as far
+//! as a chars-per-token estimate can close it.
+//!
 //! Portfolio's cross-run reuse merges **per topic** where that topic is first
 //! reduced — fresh supersedes cached, newest wins — and the reduce applies the
 //! same rule *globally*, emitting **both** artifacts from one reconciliation:
@@ -319,6 +330,11 @@ pub struct DistillInputs<'a> {
     /// Whether pre-profit observation rows may be emitted.
     pub overlay_eligible: bool,
     pub input_budget_chars: usize,
+    /// The widest rendered prompt the adapter will issue — the reasoner's
+    /// budget on a distinct roster, `input_budget_chars` itself on the default
+    /// one. The rendered-size fallbacks compare against it, so a smaller shape
+    /// is taken only where the seam's guard would refuse.
+    pub issue_budget_chars: usize,
     /// This run's timestamp — the new layer's topic vintage.
     pub now: chrono::DateTime<chrono::Utc>,
 }
@@ -756,11 +772,21 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
             })
             .unwrap_or(0);
 
-    let single_pass = total <= inputs.input_budget_chars;
+    // The rendered single-pass prompt is sized once more: the content sum
+    // above omits the instruction scaffolding, the ledger conditions, and the
+    // per-claim render, so a prompt within the budget by content can outgrow
+    // it rendered. The comparator is the widest budget the adapter can issue
+    // (`issue_budget_chars`), not the routing budget: a prompt the reasoner
+    // can serve still issues and routes up at the seam's guard
+    // (`pipeline::distill_route`), and only one that would be refused there
+    // routes hierarchical here — the guard binds where no smaller shape
+    // remains (Codex round 2, ruled 2026-08-28).
+    let single_pass_prompt = (total <= inputs.input_budget_chars)
+        .then(|| reduce_prompt(inputs, None, &prior_by_key, &dormant_priors))
+        .filter(|prompt| prompt.chars().count() <= inputs.issue_budget_chars);
     let schema = combined_schema(inputs.role_risk, inputs.overlay_eligible);
 
-    let (wire, shape, tier1_ties) = if single_pass {
-        let prompt = reduce_prompt(inputs, None, &prior_by_key, &dormant_priors);
+    let (wire, shape, tier1_ties) = if let Some(prompt) = single_pass_prompt {
         let wire: CombinedWire = call_parsed_with_retry(
             model,
             &format!("distill {}", inputs.symbol),
@@ -794,7 +820,27 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
             }
             let prior = prior_by_key.get(topic.topic_key.as_str()).copied();
             let own = topic_input_chars(topic, prior);
-            let wire: Tier1Wire = if own > inputs.input_budget_chars {
+            // The rendered tier-1 prompt is sized once more, like the
+            // single-pass prompt above and against the same issue budget: a
+            // topic within the budget by content can outgrow it rendered, and
+            // the pass seam is the smaller shape that remains for it — taken
+            // only where the guard would refuse, never for a prompt the
+            // reasoner can serve, so the shared cap is not spent on one
+            // (Codex rounds 1 and 2, ruled 2026-08-28).
+            let unsplit_prompt = (own <= inputs.input_budget_chars)
+                .then(|| tier1_prompt(inputs.symbol, topic, prior, inputs.ledger_conditions))
+                .filter(|prompt| prompt.chars().count() <= inputs.issue_budget_chars);
+            let wire: Tier1Wire = if let Some(prompt) = unsplit_prompt {
+                tier1_calls += 1;
+                call_parsed_with_retry(
+                    model,
+                    &format!("distill {} {}", inputs.symbol, topic.topic_key),
+                    prompt,
+                    &t1_schema,
+                    "tier-1 distillation response failed its schema parse",
+                )
+                .context("tier-1 distillation failed")?
+            } else {
                 // The within-topic fallback: sub-distill along the pass seam
                 // (each pass carrying its findings AND its ledger claims),
                 // then a tree-level reduce with the bounded prior retained.
@@ -860,17 +906,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                     "tier-1 distillation response failed its schema parse",
                 )
                 .context("topic tree reduce failed")?
-            } else {
-                tier1_calls += 1;
-                let prompt = tier1_prompt(inputs.symbol, topic, prior, inputs.ledger_conditions);
-                call_parsed_with_retry(
-                    model,
-                    &format!("distill {} {}", inputs.symbol, topic.topic_key),
-                    prompt,
-                    &t1_schema,
-                    "tier-1 distillation response failed its schema parse",
-                )
-                .context("tier-1 distillation failed")?
             };
             harvest_ties(&wire, &known, &mut ties);
             tier1_outputs.push((topic.topic_key.clone(), wire));
@@ -1654,6 +1689,11 @@ fn tree_reduce_prompt(
     out
 }
 
+/// The final reduce over the tier-1 outputs (or, single-pass, every topic's
+/// findings), the dormant priors, and the disconfirming pass. Rendered unsized
+/// here — the adapter seam measures the result against its model's budget
+/// before issue (`pipeline::distill_route`), the reduce being the one 6d prompt
+/// that realistically outgrows a distinct fast tier's context.
 fn reduce_prompt(
     inputs: &DistillInputs<'_>,
     tier1: Option<&[(String, Tier1Wire)]>,
@@ -1929,6 +1969,7 @@ mod tests {
             role_risk: false,
             overlay_eligible: false,
             input_budget_chars: 100_000,
+            issue_budget_chars: 100_000,
             now: utc("2026-08-23T00:00:00+00:00"),
         }
     }
@@ -3120,6 +3161,178 @@ mod tests {
         assert_eq!(out.topic_layer.len(), 2);
         let stages = model.stages();
         assert!(stages.last().unwrap().contains("reduce"), "{stages:?}");
+    }
+
+    #[test]
+    fn a_single_pass_prompt_that_outgrows_the_budget_rendered_routes_hierarchical() {
+        // The content sum sits within the budget, but the rendered single-pass
+        // prompt (instruction scaffolding included) does not: the routing
+        // falls to hierarchical — one tier-1 call, no sub-distillation, then
+        // the reduce — instead of handing the adapter seam a prompt its guard
+        // would refuse on the default roster (ruled 2026-08-28, off the
+        // reduce-prompt slice's review round).
+        let research = research_one_topic();
+        let content = topic_input_chars(&research.topics[0], None);
+        let model = ScriptDistill::new(vec![
+            json!({"summary": "s", "claims": [{"claim": "Q3 revenue was $1.2B",
+                    "source_url": "https://reuters.com/widget"}]}),
+            combined_body(json!({})),
+        ]);
+        let mut ins = inputs(&research, &[], &[]);
+        // The budget sits exactly at the rendered tier-1 prompt: the content
+        // fits it, the single-pass render (its typed-field instructions
+        // included) does not, and the tier-1 render does — so the topic
+        // distills unsplit.
+        let tier1 = tier1_prompt("WID", &research.topics[0], None, &[]).chars().count();
+        ins.input_budget_chars = tier1;
+        ins.issue_budget_chars = tier1;
+        assert!(content < tier1);
+        assert!(
+            reduce_prompt(&ins, None, &HashMap::new(), &[]).chars().count()
+                > ins.input_budget_chars,
+            "the fixture must render over the budget by content alone"
+        );
+        let out = distill(&model, &ins).unwrap();
+        assert_eq!(
+            out.shape,
+            DistillShape::Hierarchical {
+                tier1_calls: 1,
+                subdistilled_topics: 0,
+                dropped_passes: 0,
+            }
+        );
+        assert_eq!(
+            model.stages(),
+            vec![
+                "distill WID competitive-position".to_string(),
+                "distill WID reduce".to_string()
+            ]
+        );
+        assert_eq!(out.topic_layer.len(), 1);
+    }
+
+    #[test]
+    fn a_tier1_prompt_that_outgrows_the_budget_rendered_sub_distills_the_topic() {
+        // The topic fits the budget by content, but its rendered tier-1 prompt
+        // does not: the topic takes the pass seam — a pass call and its tree
+        // reduce — instead of handing the guard a prompt it would refuse on
+        // the default roster (Codex round 1, ruled 2026-08-28).
+        let research = research_one_topic();
+        let content = topic_input_chars(&research.topics[0], None);
+        let tier1 = tier1_prompt("WID", &research.topics[0], None, &[]).chars().count();
+        let body = json!({"summary": "s", "claims": [{"claim": "Q3 revenue was $1.2B",
+                "source_url": "https://reuters.com/widget"}]});
+        let model = ScriptDistill::new(vec![body.clone(), body, combined_body(json!({}))]);
+        let mut ins = inputs(&research, &[], &[]);
+        ins.input_budget_chars = tier1 - 1;
+        ins.issue_budget_chars = tier1 - 1;
+        assert!(content <= ins.input_budget_chars, "within the budget by content");
+        let out = distill(&model, &ins).unwrap();
+        assert_eq!(
+            out.shape,
+            DistillShape::Hierarchical {
+                tier1_calls: 1,
+                subdistilled_topics: 1,
+                dropped_passes: 0,
+            }
+        );
+        assert_eq!(
+            model.stages(),
+            vec![
+                "distill WID competitive-position pass 0".to_string(),
+                "distill WID competitive-position reduce".to_string(),
+                "distill WID reduce".to_string()
+            ]
+        );
+        assert_eq!(out.topic_layer.len(), 1);
+    }
+
+    #[test]
+    fn on_a_distinct_roster_a_prompt_the_reasoner_can_serve_issues_unsplit() {
+        // The fallbacks compare against the widest issuable budget, not the
+        // routing budget: with a distinct fast tier, tier-1 prompts that
+        // outgrow the fast budget rendered but fit the reasoner's issue
+        // unsplit (routing up at the seam) rather than sub-distilling and
+        // spending the shared cap (Codex round 2, ruled 2026-08-28).
+        let mut research = research_one_topic();
+        research.topics.push(topic(
+            "results-revisions",
+            vec![pass(
+                "Revisions are turning up.",
+                vec![evidence(
+                    "FY guide raised",
+                    "https://apnews.com/widget",
+                    "2026-08-21T10:00:00+00:00",
+                )],
+            )],
+        ));
+        let own: Vec<usize> = research
+            .topics
+            .iter()
+            .map(|t| topic_input_chars(t, None))
+            .collect();
+        let tier1 = |summary: &str, url: &str| {
+            json!({"summary": summary, "claims": [{"claim": summary, "source_url": url}]})
+        };
+        let final_body = combined_body(json!({
+            "topics": [
+                {"topic_key": "competitive-position", "summary": "s1",
+                 "claims": [{"claim": "Q3 revenue was $1.2B", "source_url": "https://reuters.com/widget"}]},
+                {"topic_key": "results-revisions", "summary": "s2",
+                 "claims": [{"claim": "FY guide raised", "source_url": "https://apnews.com/widget"}]}
+            ]
+        }));
+        let model = ScriptDistill::new(vec![
+            tier1("t1", "https://reuters.com/widget"),
+            tier1("t2", "https://apnews.com/widget"),
+            final_body,
+        ]);
+        let mut ins = inputs(&research, &[], &[]);
+        // The fast budget: each topic fits by content, the pair does not.
+        ins.input_budget_chars = own.iter().copied().max().unwrap() + 5;
+        assert!(own.iter().sum::<usize>() > ins.input_budget_chars);
+        // Every rendered tier-1 prompt outgrows the fast budget …
+        for t in &research.topics {
+            assert!(tier1_prompt("WID", t, None, &[]).chars().count() > ins.input_budget_chars);
+        }
+        // … but fits the reasoner's, so no topic sub-distills.
+        ins.issue_budget_chars = 100_000;
+        let out = distill(&model, &ins).unwrap();
+        assert_eq!(
+            out.shape,
+            DistillShape::Hierarchical {
+                tier1_calls: 2,
+                subdistilled_topics: 0,
+                dropped_passes: 0,
+            }
+        );
+        assert_eq!(
+            model.stages(),
+            vec![
+                "distill WID competitive-position".to_string(),
+                "distill WID results-revisions".to_string(),
+                "distill WID reduce".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn on_a_distinct_roster_a_single_pass_prompt_the_reasoner_can_serve_issues() {
+        // The single-pass analog: content within the fast budget, rendered
+        // over it but within the reasoner's — one single-pass call, which the
+        // seam routes up, rather than the hierarchical shape.
+        let research = research_one_topic();
+        let model = ScriptDistill::new(vec![combined_body(json!({}))]);
+        let mut ins = inputs(&research, &[], &[]);
+        ins.input_budget_chars = topic_input_chars(&research.topics[0], None) + 5;
+        assert!(
+            reduce_prompt(&ins, None, &HashMap::new(), &[]).chars().count()
+                > ins.input_budget_chars
+        );
+        ins.issue_budget_chars = 100_000;
+        let out = distill(&model, &ins).unwrap();
+        assert_eq!(out.shape, DistillShape::SinglePass);
+        assert_eq!(model.stages(), vec!["distill WID".to_string()]);
     }
 
     #[test]

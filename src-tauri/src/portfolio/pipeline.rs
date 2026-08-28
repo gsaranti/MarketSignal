@@ -196,6 +196,14 @@ pub trait HoldingAnalyst {
     fn distill_input_budget(&self) -> usize {
         200_000
     }
+
+    /// The widest rendered prompt the adapter will issue — the reasoner's
+    /// budget on a distinct roster, the shared budget on the default one. The
+    /// rendered-size fallbacks in `distill` compare against it, so a smaller
+    /// shape is taken only where the issue guard would refuse.
+    fn distill_issue_budget(&self) -> usize {
+        self.distill_input_budget()
+    }
     /// Interpret the computed analysis + distilled findings into the schema-constrained
     /// verdict judgment (the 122B reasoner in thinking mode, live).
     fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation>;
@@ -308,6 +316,7 @@ fn run_research_and_distill(
         role_risk,
         overlay_eligible: triggers.overlay_eligible,
         input_budget_chars: analyst.distill_input_budget(),
+        issue_budget_chars: analyst.distill_issue_budget(),
         now,
     };
     let distilled = analyst
@@ -4963,6 +4972,9 @@ fn ensure_nonempty_completion(
 // over-allocates KV cache, while an unset small default silently front-truncates
 // the deterministic packet. Sized to hold packet + thinking budget + output.
 /// Distillation: a compact findings condense — small packet, no thinking chain.
+/// The fast rung of [`distill_route`]'s issue guard: a distillation prompt that
+/// outgrows this context's budget issues on the reasoner at
+/// [`NUM_CTX_INTERPRET`] instead of front-truncating here.
 const NUM_CTX_DISTILL: u32 = 32_768;
 /// Interpretation: the vendor advises ≥ 128 K context to preserve thinking
 /// capability (chains run tens of thousands of tokens); hybrid attention keeps
@@ -5005,18 +5017,54 @@ fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
     }
 }
 
+/// Where one distillation call issues — the app-side guard against the
+/// daemon's silent front-truncation (`docs/local-models.md §The local-model
+/// adapter seam`; the 2026-08-24 review's reduce-prompt minor, ruled
+/// 2026-08-28). The rendered prompt — instruction scaffolding, ledger
+/// conditions, and distillates together — is measured in chars against its
+/// model's input budget before any request exists. Within the fast tier's
+/// budget it issues there at [`distill_num_ctx`]; over it but within the
+/// reasoner's, it issues on the resident reasoner at the interpretation
+/// context — a model choice, never a `num_ctx` change (the reasoner already
+/// loads at that size, so nothing reloads, and the fast tier co-resides by
+/// the roster's own precondition); over the widest budget it is refused here,
+/// unclassified so the retry gate never re-issues a deterministic outcome,
+/// and the run fails legibly. On the default roster (fast = reasoner) the two
+/// rungs are one budget and only the refusal is live. Pure, so the routing is
+/// pinned offline.
+fn distill_route<'a>(
+    stage: &str,
+    prompt_chars: usize,
+    fast_model: &'a str,
+    reasoner_model: &'a str,
+) -> Result<(&'a str, u32)> {
+    let fast_ctx = distill_num_ctx(fast_model, reasoner_model);
+    if prompt_chars <= distill::input_budget_chars(fast_ctx) {
+        return Ok((fast_model, fast_ctx));
+    }
+    let widest = distill::input_budget_chars(NUM_CTX_INTERPRET);
+    if fast_model != reasoner_model && prompt_chars <= widest {
+        return Ok((reasoner_model, NUM_CTX_INTERPRET));
+    }
+    anyhow::bail!(
+        "{stage}: distillation prompt of {prompt_chars} chars exceeds the widest input budget \
+         ({widest} chars at num_ctx {NUM_CTX_INTERPRET}) — refused before issue; the sanctioned \
+         lever is compressing the digest, never raising num_ctx"
+    )
+}
+
 /// Build one distillation call's request: **explicitly non-thinking**
 /// (`Some(false)` — an omitted flag rides Qwen's thinking-on default and cost
 /// the first live run ~45 minutes, F3), non-thinking sampling, the
-/// grammar-constraining `format` schema, the caller-resolved context size
-/// ([`distill_num_ctx`]). Pure, so the per-stage wiring is asserted offline.
+/// grammar-constraining `format` schema, the caller-routed model and context
+/// size ([`distill_route`]). Pure, so the per-stage wiring is asserted offline.
 fn distill_request(
-    fast_model: &str,
+    model: &str,
     num_ctx: u32,
     prompt: String,
     schema: &serde_json::Value,
 ) -> ChatRequest {
-    let mut req = ChatRequest::new(fast_model, vec![ChatMessage::user(prompt)]);
+    let mut req = ChatRequest::new(model, vec![ChatMessage::user(prompt)]);
     req.think = Some(false);
     req.format_schema = Some(schema.clone());
     req.options = Some(options::non_thinking_general(num_ctx, NUM_PREDICT_DISTILL));
@@ -5177,12 +5225,15 @@ impl HoldingAnalyst for LocalAnalyst {
                 prompt: String,
                 schema: &serde_json::Value,
             ) -> Result<String> {
-                let req = distill_request(
+                // The issue guard: size the rendered prompt against its model's
+                // budget before any request exists (`distill_route`).
+                let (model, num_ctx) = distill_route(
+                    stage,
+                    prompt.chars().count(),
                     &self.analyst.fast_model,
-                    distill_num_ctx(&self.analyst.fast_model, &self.analyst.reasoner_model),
-                    prompt,
-                    schema,
-                );
+                    &self.analyst.reasoner_model,
+                )?;
+                let req = distill_request(model, num_ctx, prompt, schema);
                 let resp = self.analyst.client.chat(&req)?;
                 self.analyst.record_usage(stage.to_string(), &req, &resp);
                 ensure_not_output_limited(stage, &req, &resp)?;
@@ -5201,6 +5252,12 @@ impl HoldingAnalyst for LocalAnalyst {
 
     fn distill_input_budget(&self) -> usize {
         distill::input_budget_chars(distill_num_ctx(&self.fast_model, &self.reasoner_model))
+    }
+
+    fn distill_issue_budget(&self) -> usize {
+        // The guard's widest rung (`distill_route`): the reasoner's context on
+        // both rosters — equal to the routing budget on the default one.
+        distill::input_budget_chars(NUM_CTX_INTERPRET)
     }
 
     fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
@@ -8845,6 +8902,117 @@ mod tests {
         assert_eq!(
             distill_num_ctx(&analyst.fast_model, &analyst.reasoner_model),
             NUM_CTX_INTERPRET
+        );
+    }
+
+    #[test]
+    fn distill_calls_are_sized_at_issue_and_route_up_before_they_refuse() {
+        // The issue guard (the 2026-08-24 review's reduce-prompt minor, ruled
+        // 2026-08-28): the rendered prompt is measured against its model's
+        // input budget before any request exists, closing the daemon's silent
+        // front-truncation off from 6d as far as a chars-per-token estimate
+        // can close it.
+        let fast_budget = distill::input_budget_chars(NUM_CTX_DISTILL);
+        let wide_budget = distill::input_budget_chars(NUM_CTX_INTERPRET);
+        assert!(fast_budget < wide_budget);
+        let route = |chars: usize, fast: &'static str, reasoner: &'static str| {
+            distill_route("distill X reduce", chars, fast, reasoner)
+        };
+        // Within the fast tier's budget: the fast model at the distill context.
+        assert_eq!(
+            route(fast_budget, "qwen3.5:35b", "qwen3.5:122b").unwrap(),
+            ("qwen3.5:35b", NUM_CTX_DISTILL)
+        );
+        // One char over it: the resident reasoner at the interpretation context
+        // — a model choice, never a num_ctx change.
+        assert_eq!(
+            route(fast_budget + 1, "qwen3.5:35b", "qwen3.5:122b").unwrap(),
+            ("qwen3.5:122b", NUM_CTX_INTERPRET)
+        );
+        assert_eq!(
+            route(wide_budget, "qwen3.5:35b", "qwen3.5:122b").unwrap(),
+            ("qwen3.5:122b", NUM_CTX_INTERPRET)
+        );
+        // Over the widest budget: refused before issue, naming the stage and
+        // the sizes.
+        let err = route(wide_budget + 1, "qwen3.5:35b", "qwen3.5:122b").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("distill X reduce"), "{msg}");
+        assert!(msg.contains(&format!("{} chars", wide_budget + 1)), "{msg}");
+        assert!(msg.contains(&format!("{wide_budget} chars")), "{msg}");
+        assert!(msg.contains("refused before issue"), "{msg}");
+        // Unclassified: the whitelist gate never re-issues a deterministic
+        // outcome.
+        assert_eq!(crate::local_model::retry_class(&err), None);
+        // The default roster collapses the two rungs into one budget: within
+        // it the reasoner at the interpretation context, over it the same
+        // refusal.
+        assert_eq!(
+            route(wide_budget, "qwen3.5:122b", "qwen3.5:122b").unwrap(),
+            ("qwen3.5:122b", NUM_CTX_INTERPRET)
+        );
+        assert!(route(wide_budget + 1, "qwen3.5:122b", "qwen3.5:122b").is_err());
+    }
+
+    #[test]
+    fn an_over_budget_distillation_prompt_never_reaches_the_daemon() {
+        // The refusal happens before a request exists: a listener standing in
+        // for the daemon accepts nothing, and the failure names the refusal —
+        // the run fails legibly instead of the daemon front-truncating.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let analyst = LocalAnalyst::new(
+            LocalModelClient::new(endpoint).unwrap(),
+            "qwen3.5:122b".into(),
+            "qwen3.5:35b".into(),
+        );
+        // One topic whose single pass alone outgrows even the reasoner's
+        // budget: the routing sub-distills it along the pass seam, and that
+        // pass call is the first prompt the adapter would issue.
+        let over = distill::input_budget_chars(NUM_CTX_INTERPRET) + 1;
+        let research = research::HoldingResearch {
+            topics: vec![research::TopicResearch {
+                topic_key: "competitive-position".into(),
+                title: "Competitive position".into(),
+                conditional_reason: None,
+                seeded_vintage: None,
+                passes: vec![research::PassFindings {
+                    findings: "x".repeat(over),
+                    claims: Vec::new(),
+                    followup: None,
+                    material_forward_fact: false,
+                    seeded_by: Vec::new(),
+                    topic_answered: true,
+                }],
+                skipped: None,
+            }],
+            ..Default::default()
+        };
+        let inputs = DistillInputs {
+            symbol: "TEST",
+            company_name: None,
+            research: &research,
+            priors: &[],
+            ledger_conditions: &[],
+            ledger_key_drivers: &[],
+            role_risk: false,
+            overlay_eligible: false,
+            input_budget_chars: analyst.distill_input_budget(),
+            issue_budget_chars: analyst.distill_issue_budget(),
+            now: chrono::Utc::now(),
+        };
+        let err = analyst.distill_research(&inputs).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("refused before issue"), "{msg}");
+        assert!(
+            msg.contains("distill TEST competitive-position pass 0"),
+            "{msg}"
+        );
+        // Nothing connected: the refusal preceded any request.
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "the daemon stand-in must have accepted nothing"
         );
     }
 

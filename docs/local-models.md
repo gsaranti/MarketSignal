@@ -91,6 +91,21 @@ A second failure fails hard as before, annotated with the first attempt's class,
 Every fired retry emits its own tracker row and lands on the run's data-health read as a summary line plus structured events — the big confirmation run's transient-rate measurement.
 A resumed run's read covers only its own process: events fired before the failure share the recorded accumulator resume gap prompt usage already carries (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md` §Priority-2 minor findings), so a resumed run's rate reads as a floor.
 
+Every distillation call is also **sized at issue**: the adapter measures the rendered prompt in chars against its model's input budget before any request exists.
+The measure is the whole rendered prompt — instruction scaffolding, ledger conditions, and distillates together.
+The budget is the same threshold-and-chars-per-token budget the single-vs-hierarchical routing uses ([configuration.md §Research Context Management](configuration.md#research-context-management-hierarchical-distillation)).
+A prompt within the fast tier's budget issues there.
+One over it but within the reasoner's issues on the resident reasoner at its interpretation context — a model choice, never a `num_ctx` change, so no runner reloads and the one-`num_ctx`-per-model rule stands.
+The fast tier co-resides by the roster's own precondition ([§The model roster and per-task routing](#the-model-roster-and-per-task-routing)), so a route-up costs no swap.
+A prompt over the widest budget is refused before issue as an unclassified failure — never retried, since the outcome is deterministic — and fails the run under the job's hard model-call posture.
+The guard covers every 6d call — the final reduce, the tree-level reduce, the pass calls, and the tier-1 calls — closing the daemon's silent front-truncation off from distillation as far as a chars-per-token estimate can close it.
+The budget is that estimate — the chars-per-token constant is rough and the guard counts characters — so token-dense input can fit the threshold and still overflow the context.
+The data-health likely-front-truncation read therefore stays the runtime witness for every stage, distillation included.
+A single-pass or tier-1 prompt that outgrows the widest issuable budget once rendered — the reasoner's on a distinct roster — takes the next smaller shape before it reaches the guard: hierarchical, or that topic's pass-seam sub-distillation ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
+One over the fast tier's budget but within the reasoner's still issues and routes up, so the sub-distillation cap is never spent on a prompt the reasoner could serve.
+The guard therefore binds only where no smaller shape remains.
+On the default roster (a blank fast tier) the two rungs are one budget, and only the refusal is live.
+
 ## Schema-constrained output
 
 Every structured hand-off between stages is a **schema-validated JSON object**, produced with grammar-constrained decoding (Ollama's native `format` schema).

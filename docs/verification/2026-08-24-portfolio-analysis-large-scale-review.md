@@ -287,6 +287,33 @@ A second round tightened the compound-turn claim to its true shape: the retry bo
 
 - **The hierarchical reduce prompt is never size-checked** — `reduce_prompt` concatenates all tier-1 outputs, dormant priors, and the disconfirming pass with no check against `input_budget_chars` (`distill.rs:715-717`); on a genuinely distinct fast model (`NUM_CTX_DISTILL = 32_768`) an oversized input silently front-truncates (dropped topics, their seed rows deleted as unreconciled) or length-stops into a run failure.
   The default fast-falls-back-to-reasoner roster's 131,072 context is why it has not bitten.
+  Ruled 2026-08-28: the check lands at the adapter seam — `ModelAdapter::distill_call` sizes every distillation call's rendered prompt against its model's input budget before any request exists.
+  Ruled 2026-08-28: the guard covers every 6d call — the final reduce, the tree-level reduce, the pass calls, and the tier-1 calls.
+  Ruled 2026-08-28: a prompt over the fast tier's budget issues on the resident reasoner at its interpretation context — a model choice, never a `num_ctx` change.
+  Ruled 2026-08-28: a prompt over the widest budget is refused before issue as an unclassified failure, never retried, and fails the run under §Failure posture's existing hard-path sentence.
+  Ruled 2026-08-28: the measure is the whole rendered prompt in chars against `input_budget_chars` — the routing budget's own constants — so the instruction scaffolding counts.
+  Ruled 2026-08-28: no new evidence surface — the tracker row's model id and `PromptUsage`'s `num_ctx` already show a routed-up call.
+  Ruled 2026-08-28: no watch-set line — the default roster never routes up.
+  Ruled 2026-08-28: the fast tier's co-residence whenever configured stands as the roster doc's precondition, so a route-up costs no runner swap.
+  Ruled 2026-08-28, off the review round: the rendered single-pass prompt is sized once more against the budget, and one that outgrows it routes hierarchical rather than reaching the guard.
+  The content sum the routing measures omits the instruction scaffolding, so on the default roster — where no second rung exists — the refusal would otherwise have bound a single-pass prompt that issued and physically fit before this slice.
+  Ruled 2026-08-28, off Codex round 1 (P2): the rendered tier-1 prompt is sized once more the same way, and one that outgrows the budget takes that topic's pass-seam sub-distillation rather than reaching the guard.
+  Ruled 2026-08-28, off Codex round 2 (P2): both rendered-size fallbacks compare against the widest budget the adapter can issue — `issue_budget_chars`, the reasoner's on a distinct roster — so a smaller shape is taken only where the guard would refuse.
+  A prompt the reasoner can serve therefore routes up rather than spending the sub-distillation cap.
+  Resolved 2026-08-28: `distill_route` in `pipeline.rs` sizes every distillation call's rendered prompt at the adapter seam before a request exists.
+  Within the fast tier's budget the call issues there.
+  Over it but within the reasoner's, it issues on the resident reasoner at the interpretation context.
+  Over the widest budget it is refused as an unclassified failure — never retried — and the run fails.
+  Two pins: the router's rungs and refusal (the default roster collapsing to one budget, the error carrying no retry class), and an over-budget pass prompt against a daemon stand-in that accepts nothing.
+  The guard is canonical at `local-models.md` §The local-model adapter seam; `web-research.md`, `configuration.md`, `portfolio-workflow.md` §Step 6d, `portfolio-analysis.md` §Starting parameters, and the logic-flow's consolidation-call block carry pointers.
+  The logic-flow's sub-distillation-cap bullet now reads "not sized as a drop trigger".
+  The single-pass fallback is pinned: content within the budget whose rendered prompt outgrows it routes hierarchical with one tier-1 call and no sub-distillation.
+  The tier-1 fallback is pinned: a topic within the budget by content whose rendered tier-1 prompt outgrows it sub-distills along its pass seam — a pass call, its tree reduce, then the reduce.
+  Codex round 1 (P3): the budget is a chars-per-token estimate and the guard counts characters, so the docs no longer call front-truncation unreachable — closed off as far as the estimate can close it, the data-health likely-front-truncation read the runtime witness for every stage.
+  Codex round 2 (P2): the round-1 fold-in had compared against the fast budget, so on a distinct roster near-threshold topics spent the shared cap on prompts the reasoner could serve.
+  `issue_budget_chars` closes it, pinned on a two-topic distinct-roster fixture whose tier-1 prompts outgrow the fast budget and distill unsplit, and on its single-pass analog.
+  Three Codex rounds — the first two with changes requested, the third approving.
+  No stamp moves — the prompt content is unchanged.
 - **Resume loses pre-crash prompt usage** — `CheckpointAccumulators` carries no prompt-usage field (`store.rs:191-199`), so a resumed run's data-health context-pressure / peak-prompt / length-stop lines reflect only post-resume holdings — under-reporting the exact signal the big-run prompt-fit watch reads.
 - **No panic containment** — there is no `catch_unwind` around `run_analysis`, so any panic skips both `record_run(Failed)` and the terminal `run_finished` event; the run slot itself frees (poison-tolerant `RunGuard::lock`, `jobs.rs:132-173`), but the tracker never reaches a terminal state and the checkpoint trail is unofferable for that session.
   No realistic panic path was found in the spine files themselves — the exposure is the compute modules below.
@@ -464,6 +491,7 @@ The forward-assumption what-changed minor is ruled and resolved with them (2026-
 The grouping line's count above read eight against its enumerated seven; it is corrected off this slice's Codex round.
 The supersede-legs minor is resolved (2026-08-28; the resolution is recorded under its bullet), leaving panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
 The panic-posture slice — the containment minor and the three panic paths, Codex's round-1 P2 folded in by ruling — is resolved (2026-08-28; the resolutions are recorded under both bullets), leaving the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
+The reduce-prompt size check is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), leaving the resume prompt usage and the IPv6 fetch ahead of Codex I1–I16 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
