@@ -1596,11 +1596,28 @@ pub struct QuickCheckBasis {
     pub consensus_eps_mid: Option<f64>,
 }
 
-/// The latest value in a dated, oldest-first series on or before `date` (ISO dates
+/// The latest bar in a dated, oldest-first series on or before `date` (ISO dates
 /// compare lexicographically). `None` when the series is empty or starts after.
-pub fn latest_on_or_before(series: &[DatedValue], date: &str) -> Option<f64> {
+pub fn latest_bar_on_or_before<'a>(series: &'a [DatedValue], date: &str) -> Option<&'a DatedValue> {
     let idx = series.partition_point(|d| d.date.as_str() <= date);
-    idx.checked_sub(1).map(|i| series[i].value)
+    idx.checked_sub(1).map(|i| &series[i])
+}
+
+/// The latest value in a dated, oldest-first series on or before `date` — the
+/// value of [`latest_bar_on_or_before`].
+pub fn latest_on_or_before(series: &[DatedValue], date: &str) -> Option<f64> {
+    latest_bar_on_or_before(series, date).map(|d| d.value)
+}
+
+/// The value dated exactly `date` in a dated, oldest-first series. `None` when
+/// the series carries no bar on that session — never the nearest neighbour. A
+/// duplicated date takes its last row, the policy [`latest_on_or_before`]
+/// already applies (the FMP parser sorts but never dedupes), so the read is
+/// deterministic rather than whichever match a search lands on.
+pub fn close_on(series: &[DatedValue], date: &str) -> Option<f64> {
+    latest_bar_on_or_before(series, date)
+        .filter(|d| d.date == date)
+        .map(|d| d.value)
 }
 
 /// Split-bridge detection deadband (drafted — `docs/portfolio-analysis.md`
@@ -3332,8 +3349,11 @@ pub struct TechEventPreFlag {
 /// Evaluate the pre-flag from the holding's dated closes, its sector
 /// benchmark's, and the engine's realized-volatility read (one vol basis per
 /// holding — never a second definition). `prior_session` is the prior read's
-/// **ET session date** (ISO). `Err` carries the typed unevaluable reason — a
-/// gap, never a fired or clear flag.
+/// **ET session date** (ISO). Both window endpoints are the holding's own
+/// sessions — its latest close on or before the prior read and its newest
+/// close — and the benchmark must carry a close on each, so the two legs are
+/// never read over mismatched windows. `Err` carries the typed unevaluable
+/// reason — a gap, never a fired or clear flag.
 pub fn tech_event_pre_flag(
     holding_closes: &[DatedValue],
     benchmark_closes: &[DatedValue],
@@ -3355,16 +3375,27 @@ pub fn tech_event_pre_flag(
     if sessions == 0 {
         return Err("no elapsed sessions since the prior read".to_string());
     }
-    let h0 = latest_on_or_before(holding_closes, prior_session)
+    let h0 = latest_bar_on_or_before(holding_closes, prior_session)
         .ok_or("no holding close on or before the prior read")?;
-    let b0 = latest_on_or_before(benchmark_closes, prior_session)
-        .ok_or("no benchmark close on or before the prior read")?;
-    let b1 = latest_on_or_before(benchmark_closes, &latest.date)
-        .ok_or("no benchmark close for the current window")?;
-    if h0 <= 0.0 || b0 <= 0.0 || b1 <= 0.0 || latest.value <= 0.0 {
+    let b0 = close_on(benchmark_closes, &h0.date).ok_or_else(|| {
+        format!(
+            "no {benchmark_symbol} close on the holding's prior anchor session {}",
+            h0.date
+        )
+    })?;
+    let b1 = close_on(benchmark_closes, &latest.date).ok_or_else(|| {
+        let ends = benchmark_closes
+            .last()
+            .map_or_else(|| "empty series".to_string(), |d| format!("series ends {}", d.date));
+        format!(
+            "no {benchmark_symbol} close on the holding's newest session {} ({ends})",
+            latest.date
+        )
+    })?;
+    if h0.value <= 0.0 || b0 <= 0.0 || b1 <= 0.0 || latest.value <= 0.0 {
         return Err("non-positive close in the window".to_string());
     }
-    let relative_move = (latest.value / h0 - 1.0) - (b1 / b0 - 1.0);
+    let relative_move = (latest.value / h0.value - 1.0) - (b1 / b0 - 1.0);
     let threshold = TECH_EVENT_SIGMA * vol * (sessions as f64).sqrt();
     Ok(TechEventPreFlag {
         fired: relative_move.abs() > threshold,
@@ -5093,6 +5124,80 @@ mod tests {
     }
 
     #[test]
+    fn tech_event_pre_flag_reads_the_benchmark_on_the_holdings_own_sessions() {
+        let series = |rows: &[(&str, f64)]| -> Vec<DatedValue> {
+            rows.iter()
+                .map(|(d, v)| DatedValue { date: d.to_string(), value: *v })
+                .collect()
+        };
+        // Holding: 100 at the prior read, four sessions later at 90 (−10%).
+        let holding = series(&[
+            ("2026-08-01", 100.0),
+            ("2026-08-04", 97.0),
+            ("2026-08-05", 95.0),
+            ("2026-08-06", 93.0),
+            ("2026-08-07", 90.0),
+        ]);
+        // The benchmark's whole −10% lands on the newest session: covered, the
+        // sector-relative move is ~0 and nothing fires.
+        let covered = series(&[
+            ("2026-08-01", 500.0),
+            ("2026-08-06", 500.0),
+            ("2026-08-07", 450.0),
+        ]);
+        let f = tech_event_pre_flag(&holding, &covered, "XLK", "2026-08-01", Some(0.02)).unwrap();
+        assert!(!f.fired, "{f:?}");
+        assert!(f.relative_move.abs() < 1e-12, "{f:?}");
+        // A series stopping one session short is a typed gap naming the
+        // benchmark and the session — never a flag read over the shorter
+        // window, which would have fired on the holding's own −10%.
+        let short = series(&[("2026-08-01", 500.0), ("2026-08-06", 500.0)]);
+        let reason = tech_event_pre_flag(&holding, &short, "XLK", "2026-08-01", Some(0.02))
+            .unwrap_err();
+        assert!(reason.contains("XLK") && reason.contains("2026-08-07"), "{reason}");
+        // A hole on the newest session with bars either side is the same gap:
+        // the rule is "carries the session", not "ends late enough".
+        let holed = series(&[
+            ("2026-08-01", 500.0),
+            ("2026-08-06", 500.0),
+            ("2026-08-10", 450.0),
+        ]);
+        let reason = tech_event_pre_flag(&holding, &holed, "XLK", "2026-08-01", Some(0.02))
+            .unwrap_err();
+        assert!(reason.contains("2026-08-07"), "{reason}");
+        // A benchmark running past the holding reads on the holding's newest
+        // session, never its own last bar.
+        let longer = series(&[
+            ("2026-08-01", 500.0),
+            ("2026-08-06", 500.0),
+            ("2026-08-07", 450.0),
+            ("2026-08-10", 300.0),
+        ]);
+        let g = tech_event_pre_flag(&holding, &longer, "XLK", "2026-08-01", Some(0.02)).unwrap();
+        assert_eq!(g, f);
+        // A duplicated session takes the last row for the date — the policy
+        // `latest_on_or_before` already applies — never an arbitrary match.
+        let dup = series(&[
+            ("2026-08-01", 500.0),
+            ("2026-08-07", 400.0),
+            ("2026-08-07", 450.0),
+        ]);
+        let g = tech_event_pre_flag(&holding, &dup, "XLK", "2026-08-01", Some(0.02)).unwrap();
+        assert_eq!(g, f);
+        // The prior end reads the same way: no benchmark close on the holding's
+        // anchor session (08-01) is a typed gap, not a read off the 07-31 bar.
+        let prior_hole = series(&[("2026-07-31", 400.0), ("2026-08-07", 450.0)]);
+        let reason = tech_event_pre_flag(&holding, &prior_hole, "XLK", "2026-08-01", Some(0.02))
+            .unwrap_err();
+        assert!(reason.contains("XLK") && reason.contains("2026-08-01"), "{reason}");
+        // A prior read on a non-session keys off the holding's resolved anchor
+        // (08-01), which the benchmark carries; the session count is untouched.
+        let f = tech_event_pre_flag(&holding, &covered, "XLK", "2026-08-02", Some(0.02)).unwrap();
+        assert!(!f.fired, "{f:?}");
+        assert_eq!(f.sessions, 4);
+    }
+
+    #[test]
     fn dated_join_and_drawdown_helpers_behave() {
         let series = vec![
             DatedValue { date: "2026-01-01".into(), value: 1.0 },
@@ -5102,6 +5207,16 @@ mod tests {
         assert_eq!(latest_on_or_before(&series, "2026-02-15"), Some(2.0));
         assert_eq!(latest_on_or_before(&series, "2026-03-01"), Some(3.0));
         assert_eq!(latest_on_or_before(&series, "2025-12-31"), None);
+        // The exact-session read never falls to a neighbour.
+        assert_eq!(close_on(&series, "2026-02-01"), Some(2.0));
+        assert_eq!(close_on(&series, "2026-02-15"), None);
+        // On a duplicated date both reads take the last row.
+        let dup = vec![
+            DatedValue { date: "2026-02-01".into(), value: 2.0 },
+            DatedValue { date: "2026-02-01".into(), value: 2.5 },
+        ];
+        assert_eq!(close_on(&dup, "2026-02-01"), Some(2.5));
+        assert_eq!(latest_on_or_before(&dup, "2026-02-01"), Some(2.5));
         // Percentiles interpolate linearly.
         assert!((percentile(&[1.0, 2.0, 3.0, 4.0, 5.0], 0.5) - 3.0).abs() < 1e-12);
         assert!((percentile(&[1.0, 2.0], 0.25) - 1.25).abs() < 1e-12);

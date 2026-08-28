@@ -837,6 +837,7 @@ After the branch's engine values are set, the prior ledger's conditions are eval
   - Adjust the threshold for the stock’s volatility and elapsed time.
   - Large unexplained relative move adds a research topic.
   - It does not claim what caused the move.
+  - A benchmark without a close on the stock’s own two window sessions is a typed gap, not a flag.
 
 #### Other deterministic reads
 

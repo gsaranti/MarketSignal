@@ -550,6 +550,9 @@ They are recorded here so the spec matches the engine, not to pin them.
 - **Technology-event pre-flag.**
   The input delta flags a possible third-party repricing event — an **equity-holding read** — when the holding's **sector-relative move since the prior run** exceeds **2 × its interval-scaled realized volatility** (drafted; √-of-time scaling, the suite's cadence-honest convention), read against the same sector benchmark series the outcome labels use.
   The pre-flag only adds the conditional research topic — it asserts nothing about the cause ([§The per-holding pipeline](#the-per-holding-pipeline) Step 3).
+  Both window endpoints are the holding's own sessions: its latest close on or before the prior read, and its newest close.
+  The benchmark must carry a close on each.
+  A missing one types the read unevaluable rather than reading the two legs over mismatched windows.
 - **Carried-holding freshness — the badge safeguard, not a research-age force-include.**
   A carried holding can age past the ~4-week research window without a guaranteed re-analysis: the quick check's card badges are the targeted between-run freshness safeguard (ruled 2026-08-16, [verification/2026-08-16-selective-badges-ruling.md](verification/2026-08-16-selective-badges-ruling.md)), and deep research for a carried holding comes from selecting it or the next full run.
   The capped pre-loop **held-name research refresh lane** was retired by that ruling — it existed only to force-include a carried holding on a source-backed material update, and a selective run no longer force-includes.
