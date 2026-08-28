@@ -1053,7 +1053,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Web failure reduces evidence.
   - It may lower conviction.
   - It does not automatically fail the run.
-  - A model-call failure inside the required 6c–6f path (the action call included) is hard — it fails the run, and as-built no partial work persists (`docs/portfolio-analysis.md` §Failure posture).
+  - A model-call failure inside the required 6c–6f path (the action call included) is hard — it fails the run, which persists no partial run row; every holding whose checkpoint landed and reads back at resume is restored from the trail, and a holding whose write failed or whose row no longer reads is re-analyzed instead — the writes are fail-soft (the Step 6 preamble; Work-list logic, Resume behavior; `docs/portfolio-analysis.md` §Failure posture).
     A transient failure on those calls first re-attempts once under the bounded retry-once before the hard posture applies (`docs/local-models.md` §The local-model adapter seam).
 
 - **Output**
@@ -1090,7 +1090,8 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - **Trigger** — the fallback fires when the topic's **complete input** *summed* would exceed one distillation call: all its passes' findings, their evidence-ledger entries (claims + sources, which grow with the research, unlike the bounded thesis-ledger conditions seeded at 6c), and its retained prior. The sizing is measured on that whole aggregate, not pass by pass.
   - **Map (one distillation call per pass)** — the topic sub-distills along its ≤3-pass seam: the model condenses each pass on its own into a compact per-pass object (that pass's findings *and* ledger entries together).
   - **Reduce (one more distillation call)** — a tree-level reduce then combines those per-pass objects **with the retained prior** into the topic's single tier-1 object, which joins the outer **tier-2 reduce** across topics like any other (the sub-distillation is invisible above this point). So building that topic's tier-1 object takes one map call per pass plus one reduce — two to four distillation calls (four for a full three-pass topic) — versus the single distillation call a non-overflowing topic uses, separate from the multi-turn calls the topic's research passes already spent at 6c.
-  - **On further overflow** — if even the tree-level reduce would overflow, the sub-distillation cap fail-softs the lowest-priority whole passes to a recorded gap — each dropped pass taking its findings and ledger entries with it, never the prior — so an overflow costs research detail, never the topic's seeded status.
+  - **The sub-distillation cap (the only drop trigger)** — the tree-level reduce is not sized; what bounds the fallback is a per-holding budget of 4 pass-level map calls (`SUB_DISTILLATION_CAP`) shared across every overflowing topic in the holding's distillation, spent in the agenda's topic order. When a topic's passes exceed what remains, its lowest-priority whole passes (the latest — the root pass ranks highest) fail-soft to a recorded gap, each dropped pass taking its findings and ledger entries with it while the retained prior still rides the tree reduce. Because a topic runs at most 3 passes, a lone overflowing topic never drops a pass; drops happen only when a second overflowing topic finds the budget partly spent.
+  - **Budget exhausted** — a further overflowing topic drops every pass, yields no tier-1 object, and is named unreconciled at the reduce, which drops its stored seed so the next run seeds that topic cold. In that edge alone an overflow costs the topic's seeded status, not just research detail; the delete's fail-soft posture is stated once at `docs/portfolio-analysis.md` §Starting parameters.
 
 - **Model**
   - Consolidates evidence.
@@ -1196,8 +1197,10 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Risk tier and the capital-efficiency read**
   - Hurdle state and hurdle rate.
   - Framed as evidence to weigh, not an instruction.
-- **Fund context (funds only)**
+- **Fund context (priced funds only)**
   - Expense ratio, US share, and composite P/E coverage.
+  - The closed-end price-vs-NAV line — rendered as an explicit `(gap)` line on this branch when the NAV read is missing.
+  - The underlying CFTC COT positioning block, when the fund's underlying carries one.
 - **Computed metrics**
   - Net margin, gross margin, revenue growth, and debt/equity.
   - Daily return volatility and trailing return.
@@ -1217,6 +1220,10 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Put/call by volume and open interest, IV, and IV skew.
   - Labeled proxy-only, never a grade input.
 - **Data gaps** — the dossier's degraded-input notes naming financial legs the gather could not resolve (e.g. an SEC CIK-mapping miss, an SEC company-facts fetch failure, an unwired fund-metadata source); distinct from the per-metric `(gap)` markers in the computed-metrics block above, which flag one missing computed value.
+- **Market options sentiment** — the CBOE venue-level daily put/call backdrop, when Step 5 loaded one.
+- **Forensic filings state** — only when the forensic sweep produced a state (an unrun sweep renders nothing; its reason rides the data gaps); then one of three forms: clean, unknown with its reason, or hard trigger tripped with the event rows and the hard-rule text (engine conviction capped Low; the add family barred from the engine action set).
+- **Commodity context** — the run-level dated levels with their trailing delta, when the holding's dossier carries any.
+- **Technology-event pre-flag** — the input-delta pre-flag section, only when it fired at Step 6b.
 - **Distilled research** — the combined distilled findings object: this run's fresh findings merged with any seeded prior (fresh superseding cached), plus the typed leading indicator rendered as ledger-driver evidence where one validated; a run without a web stack carries a recorded research-unavailable gap instead.
 - **House view (loaded only when the latest report is ≤ 7 ET days old; older drops the whole view)**
   - The latest report's Thesis, Investment Strategy, and Forward Outlook sections.
@@ -1225,13 +1232,15 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Continuity block**
   - Whether a prior verdict exists.
   - A band-recalibration note when the grade bands changed since the prior letter.
+  - The semantic prior-analysis recall — the Step-6a hits, when any.
+  - The rendered input delta with its what-changed-entry rules (the vocabulary is Step 6b §Input delta; the attribution check is Step 6g). With a prior verdict, a firing technology-event pre-flag, narrative read, hard forensic state, or rendered latest-report sections reaches the model twice — as its own section and as a delta row; a debut carries no delta rows, and a house view reduced to the recent-stance list earns none.
 - **Retrospective (when a prior priced verdict exists)**
   - The prior run's engine arm in full: grade, sub-scores, targets, conviction, outlook, action.
   - The prior run's model arm in full, labeled as the model's own.
   - The price move since the prior read.
   - The holding's matured scoreboard lines.
 - **Prior thesis ledger** — one ledger per holding, model-authored on the prior run and shared by both arms (not an engine-arm or model-arm ledger of its own).
-  - The prior ledger as a **model-facing projection** (not the complete persisted record) — thesis (original + current), key drivers, the whole bear/base/bull monitor, and every falsifier and trigger (both roles), each with its statement plus, for quantitative ones, the machine core and current breach streak. Unscoped, unlike the house view and retrospective above. Held out of the prompt: the app-owned bookkeeping (condition ids, supersession lineage, downgrade/trip flags, the rest of the evaluation state, the authored band relation) and the model-authored falsifier `technology_class` tag.
+  - The prior ledger as a **model-facing projection** (not the complete persisted record) — thesis (original + current), key drivers, the whole bear/base/bull monitor, and every falsifier and trigger (both roles), each with its statement plus, for quantitative ones, the machine core and current breach streak, plus the research-supported mark where a fresh distilled claim cites the condition this run (Step 6g §Ledger validation). Unscoped, unlike the house view and retrospective above. Held out of the prompt: the app-owned bookkeeping (condition ids, supersession lineage, downgrade/trip flags, the rest of the evaluation state, the authored band relation) and the model-authored falsifier `technology_class` tag.
   - Beside it, **this run's engine condition evaluation**: the engine's deterministic re-evaluation of that ledger's *quantitative* conditions against this run's computed surface — each crossing tagged confirmed or first-breach, plus the typed unevaluable notes. The engine evaluates the conditions; it does not author the ledger.
 - **Deliberately excluded**
   - The investor profile.
@@ -1245,6 +1254,9 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Designed additions not yet in the prompt**
   - Absolute street opinions.
   - Insider and congressional activity — gathered at Step 6a once their data legs land; positioning evidence on the same precedent.
+- **Role-risk branch — what differs (role-risk-only holdings)**
+  - Renders: holding identity and position change; the classification, structural flag, exposure tilt, expense ratio, and observable risk from the fund readout; the closed-end price-vs-NAV line (silent on a gap — the gap rides the evidence gaps instead); the evidence gaps; the distilled research; the CFTC COT positioning block; the CBOE backdrop; the house-view sections without the recent-stance list; a continuity block limited to the semantic recall and the input delta (no retrospective, no band note); and the prior ledger with the fund-flavored rewrite addendum.
+  - Not rendered on this branch: engine grade, sub-scores, computed metrics, targets, provenance, options activity, forensic filings, commodity context, short interest, the option overlay, the narrative and implied-expectations reads, and the technology-event pre-flag.
 
 #### Interpretation call — what the model authors
 
@@ -1290,7 +1302,9 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Unrealized P/L, with the tax framing flagged as a user consideration, never the mover.
   - The prior run's action, as a continuity baseline (move only on materially moved evidence).
   - Priced digest: engine arm grade, sub-scores, risk tier, and dead-money state; model arm letter and sub-scores; the verdict's conviction and horizon outlook; implied twelve-month bear/base/bull moves as percentages against the current price; a one-line target provenance; the financial summary; the pre-profit overlay when present.
-  - Role-risk digest: class label, role, exposure tilt, expense drag, observable risk, structural flag, and evidence gaps.
+  - Role-risk digest: class label, role, exposure tilt, expense drag, observable risk, structural flag, the closed-end price-vs-NAV line when one exists, and evidence gaps.
+  - The forensic filings state and the commodity context, rendered for both digests when the dossier carries them — the role-risk interpretation call renders neither, so for a role-risk holding they reach the model only here.
+  - The same-stock option overlay (shared with the interpretation call).
   - The engine's per-holding action set, shown as evidence with the engine's own pick withheld.
   - The investor profile: objective, risk tolerance, horizon, and tax posture — without the cash row.
 - **Deliberately excluded**

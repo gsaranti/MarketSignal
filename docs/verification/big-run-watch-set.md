@@ -7,6 +7,7 @@ Findings go into a dated record once the run completes; this file is then the in
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
 Records this run persists stamp `portfolio-v13`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, and F3 tie-channel slices all landed since the 2026-08-18 revision with no live run between.
+Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime) and the sub-distillation-cap watch (§The research loop).
 
 Nothing here is a defect report.
 Each item is a behavior that has only ever been exercised against fixtures, a small live run, or a single symbol, and needs a read at real scale (a 47-position book) before it can be called confirmed.
@@ -72,6 +73,11 @@ What the run measures is how often each binds, and what the seed's fixed drop or
 Typed-channel validation yield against real fetched pages: how often the page-grounding checks — stated numbers, forward-fact language, the structural identity matcher, monetary unit typing — accept vs reject each of the three channels.
 
 Seed-and-merge cache behavior at scale: hit rates, and the distillation-reconciliation gap recordings where the model fails to re-emit a topic.
+
+The sub-distillation cap's first live reading: how often a holding's distillation goes hierarchical, and whether any topic drops passes at the cap (`dropped at the sub-distillation cap` in the run's gaps).
+Zero drops is the healthy read.
+Any drop is the first evidence the shared per-holding budget binds at real sizes.
+A topic whose every pass dropped also loses its seed — the exhausted-budget edge recorded under the 2026-08-24 review's §A4 — and one such hit promotes the queued fix that routes that topic's prior through the reduce.
 
 Extraction telemetry — the deferred rendered-retrieval tier's scheduling evidence.
 Per-domain thin-stub and `extraction_quality` rates decide whether and where a render tier earns its slice, so the run record's disposition reads them deliberately, not incidentally.

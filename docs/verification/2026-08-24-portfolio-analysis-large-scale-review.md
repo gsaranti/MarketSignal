@@ -190,21 +190,51 @@ Doc line 1056: a hard model-call failure "fails the run, and as-built no partial
 The code checkpoints every completed holding (`store.rs:237-260`) and the resume path consumes the trail; the canonical `docs/portfolio-analysis.md` §Failure posture says "no partial *run row*" while completed holdings live in the checkpoint trail, and the logic-flow doc's own Step-6 preamble (lines 413–414) states per-holding checkpointing correctly.
 As written, line 1056 tells the user a mid-run failure costs hours of work that the design specifically preserves.
 
+**Resolved 2026-08-27.**
+Line 1056 now states the canonical posture: the failed run persists no partial run row, while every holding whose checkpoint landed and reads back at resume is restored from the trail.
+It points at the Step-6 preamble, the Resume behavior bullet, and `docs/portfolio-analysis.md` §Failure posture.
+A Codex round caught the first cut restating the trail as a guarantee: the header and per-holding checkpoint writes are fail-soft (`job.rs`, the run continuing unprotected on a failed write), which no doc had stated, so `docs/portfolio-analysis.md` §Failure posture now carries that posture and both statements read against checkpointed holdings.
+A second round added the read-back leg: a row the resume loader cannot parse is skipped and re-analyzed (`store.rs:297`).
+A third round aligned the logic-flow line to this formulation.
+
 ### A2 — major: the interpretation call's "exact inputs" list omits whole rendered sections
 
 Doc lines 1185–1245 enumerate the interpretation prompt's inputs, but the code renders, into the same call: the forensic filings state with the hard-rule text (`pipeline.rs:3381`, `3153-3190`), the CBOE venue-level put/call backdrop (`3373`, `2915-2930`), the commodity context (`3382`, `3118-3145`), the technology-event pre-flag section (`3417-3430`), the semantic prior-analysis recall block (`3457`, `2135-2147`), and — in the fund context the doc reduces to "expense ratio, US share, and composite P/E coverage" — the CFTC COT positioning block and the closed-end price-vs-NAV line (`3266`, `2885-2909`, `3257-3265`).
 Every input the doc does list is present, and both of its claimed absences hold: the investor profile is not rendered (`pipeline.rs:3405-3408`) and no engine stand-in conviction/outlook/action appears.
+
+**Resolved 2026-08-27.**
+The interpretation list gained the sections the code renders: the forensic filings state in its three forms with the hard-rule text, the CBOE venue-level backdrop, the commodity context, the technology-event pre-flag, and — under the continuity block — the semantic prior-analysis recall and the rendered input delta with its what-changed-entry rules.
+The fund context now names the closed-end price-vs-NAV line (an explicit gap line on the priced-fund branch) and the CFTC COT positioning block, and the prior-ledger bullet names the research-supported mark the F3 channel renders.
+A new bullet enumerates the role-risk branch's own render set and what that branch omits, since the list had described only the priced branch.
+Re-verification at `ce24895` found the render set had grown past the finding's six omissions (`interpretation_user_prompt`, `pipeline.rs:3429-3713`; `role_risk_user_prompt`, `2850-2930`); everything the doc listed before was present, and both claimed absences still hold.
+A Codex round narrowed the twice-rendered note to the latest-report sections, since a house view reduced to the recent-stance list renders without a delta row (`pipeline.rs:2414`).
+A second round bounded it to a prior verdict, since a debut renders no delta rows at all (`pipeline.rs:2439`).
 
 ### A3 — major: the action call's "exact inputs" list has the same shape
 
 Doc lines 1286–1293 end at the engine action set and the profile, but the action prompt also renders the forensic filings section and the commodity context (`pipeline.rs:3689-3690`), plus the CEF NAV-premium line on the role-risk digest (`3675-3679`).
 Everything the doc does enumerate was verified present, including the withheld engine pick and the profile without the cash row.
 
+**Resolved 2026-08-27.**
+The action list gained the forensic filings state and the commodity context — rendered for both digests when the dossier carries them, while the role-risk interpretation call renders neither — plus the same-stock option overlay and the closed-end price-vs-NAV line on the role-risk digest (`action_user_prompt`, `pipeline.rs:3785-3954`).
+
 ### A4 — major: the sub-distillation drop trigger is misdescribed
 
 Doc line 1092 says passes drop "if even the tree-level reduce would overflow".
 No sizing check on the reduce exists; the actual trigger is the per-holding budget `SUB_DISTILLATION_CAP = 4` pass-level sub-distillation calls shared across overflowing topics (`distill.rs:55`, `651-669`), and since `MAX_PASSES_PER_TOPIC = 3` a single overflowing topic can never hit it alone — passes drop only when a second overflowing topic finds the budget partly spent.
 The surrounding claims (drops take findings and ledger entries, never the prior) match the code.
+
+**Resolved 2026-08-27.**
+The logic-flow bullet now describes the as-built trigger: the tree-level reduce is not sized, the cap is a per-holding budget of four pass-level calls shared across overflowing topics in agenda order, the lowest-priority whole passes drop when a topic's passes exceed what remains, and a lone overflowing topic never drops a pass under the three-pass ceiling.
+The canonical `docs/portfolio-analysis.md` §Starting parameters carried the same reduce-overflow wording and was corrected alongside it.
+Re-verification found one claim this finding had passed as matching that does not hold in the exhausted-budget edge: a topic whose every pass drops yields no tier-1 object, is named unreconciled at the reduce, and loses its stored seed (`distill.rs:806-846`, `1080-1094`; `job.rs:1889`), so in that edge alone an overflow does cost the topic's seeded status.
+Both docs now state that edge as built.
+Restoring the invariant — rendering a fully-dropped topic's retained prior into the reduce the way dormant priors ride it — is a named code change; the edge needs three overflowing topics in one holding to reach.
+It is queued behind the big confirmation run, whose watch set reads the run's gaps for the cap; a hit promotes it.
+`logic-flow-docs/trade-opportunities-logic-flow.md` described the shared primitive with the same reduce-overflow wording and was corrected alongside, in the budget terms its own Bounds-and-audit bullet already used; the seed edge is built Portfolio behavior and was not ported to the unbuilt job.
+A Codex round then disambiguated what the cap counts in the canonical siblings: `web-research.md` §The research loop and context management and `configuration.md` §Local Analysis Suite Configuration now say only the per-unit map calls count, never the reduce or an ordinary tier-1 call.
+A second round noted the unreconciled-row delete is itself fail-soft and logged only (`job.rs:1889`), so the canonical doc now states the cold re-seed as the rule rather than a guarantee.
+A third round moved the logic-flow mirror to pointer form — the rule plus a pointer to that posture — rather than restating the mechanics; the watch-set line keeps the rule, since a failed delete is a database anomaly outside what that watch reads.
 
 ### Priority-3 minor findings
 
@@ -238,6 +268,7 @@ F3 is resolved (2026-08-26; the resolution is recorded under §F3).
 F1 is resolved (2026-08-27; the resolution is recorded under §F1).
 The retry posture is resolved (2026-08-27; the resolution is recorded under §Named design risk) — the pre-run list is complete.
 F2 is resolved (2026-08-27; the resolution is recorded under §F2).
+A1–A4 are resolved (2026-08-27; each resolution is recorded under its §A heading, the §A4 one naming an exhausted-budget edge left open).
 
 ## Codex independent review additions
 

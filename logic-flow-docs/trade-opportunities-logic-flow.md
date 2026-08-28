@@ -394,7 +394,7 @@ Consolidation is one reusable primitive — *distill one complete research topic
   - Trigger — the topic's complete input *summed* (all its passes' findings plus their ledger entries) would exceed one call.
   - Map — one distillation call per pass, condensing that pass's findings and ledger entries into a compact per-pass object.
   - Reduce — one more call combines the per-pass objects into the topic's tier-1 object, which joins the outer reduce like any other. So an overflowing topic costs one map call per pass plus one reduce — two to four calls — against the single call a normal topic uses.
-  - On further overflow the sub-distillation cap fail-softs the lowest-priority whole passes to a recorded gap.
+  - The cap, not a further overflow check, is what drops passes — the per-item sub-distillation cap (Bounds and audit, below) is a budget of pass-level map calls shared across the item's overflowing topics; a topic whose passes exceed what remains fail-softs its lowest-priority whole passes to a recorded gap, each taking its findings and ledger entries with it, and the tree-level reduce is never sized.
 
 - **Bounds and audit**
   - A per-item sub-distillation cap (config), spent from the stage's existing budget (wall-clock binds first); the chosen shape and tier count are logged to the run audit, so the fan-out is never silent.
