@@ -42,6 +42,11 @@ const MATERIAL_MISS_RATIO: f64 = 0.20;
 
 /// Repeated miss looks at each metric identity's latest four comparable periods…
 const MISS_WINDOW_PERIODS: usize = 4;
+/// The backfill obligation's floor: a previously used guidance metric with fewer
+/// comparable stored periods than this binds a bounded backfill — the miss
+/// window's own depth, since the backfill exists to fill it
+/// (`docs/portfolio-analysis.md` §Starting parameters).
+const BACKFILL_MIN_COMPARABLE_PERIODS: usize = MISS_WINDOW_PERIODS;
 /// …and needs misses in at least this many distinct periods for that same metric.
 const REPEATED_MISS_PERIODS: usize = 2;
 
@@ -53,8 +58,12 @@ const MATERIAL_DILUTION_YOY: f64 = 0.15;
 const ECONOMICS_MARGIN_DROP_PP: f64 = 0.05;
 
 /// The overlay's parameter version, stamped on every persisted overlay record so a
-/// retune stays attributable (the suite's shared versioning discipline).
-pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v1";
+/// retune — or a rule correction that changes what a record means — stays
+/// attributable (the suite's shared versioning discipline), and the checkpoint
+/// resume gate refuses a trail stamped under another. `pre-profit-v2`: the
+/// backfill obligation counts comparable (bound + actual) periods, so a v1
+/// overlay's absent backfill attempt is not read as a v2 waiver.
+pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v2";
 
 /// Boundary slack on the computed-ratio threshold tests: a value exactly on a
 /// documented boundary (a 15% YoY share rise, a 20% miss) can evaluate a few ULPs
@@ -225,30 +234,48 @@ impl PreProfitObservation {
 /// Whether the research agenda's **backfill obligation** binds
 /// (`docs/portfolio-analysis.md` §Starting parameters): the holding's first
 /// overlay-eligible full pass, or a previously used guidance metric with fewer
-/// than four comparable stored periods for its normalized identity. Read at
-/// agenda-build time over the 6b overlay's carried observation history.
+/// than `BACKFILL_MIN_COMPARABLE_PERIODS` **comparable** stored periods for
+/// its normalized identity. A stored period is comparable when it holds both
+/// a guidance bound (a range low or point guidance) and an actual — the
+/// pairing the execution read attains against, before that rule's polarity
+/// and finite-bound guards, which bound which pairs can *miss*, not whether
+/// history exists. A guidance row of any role marks the metric as previously
+/// used. Read at agenda-build time over the 6b overlay's carried observation
+/// history.
 pub fn backfill_required(current: &PreProfitOverlay, prior: Option<&PreProfitOverlay>) -> bool {
     let first_eligible_pass = !prior.is_some_and(PreProfitOverlay::is_eligible);
     if first_eligible_pass {
         return true;
     }
     use std::collections::{HashMap, HashSet};
-    let mut periods: HashMap<(String, String, String), HashSet<&str>> = HashMap::new();
+    type Identity = (String, String, String);
+    let mut guided: HashSet<Identity> = HashSet::new();
+    let mut bounds: HashMap<Identity, HashSet<&str>> = HashMap::new();
+    let mut actuals: HashMap<Identity, HashSet<&str>> = HashMap::new();
     for o in &current.observations {
-        periods.entry(o.identity()).or_default().insert(o.period.trim());
+        let identity = o.identity();
+        let period = o.period.trim();
+        match o.observation_role {
+            ObservationRole::GuidanceLow | ObservationRole::PointGuidance => {
+                bounds.entry(identity.clone()).or_default().insert(period);
+                guided.insert(identity);
+            }
+            ObservationRole::GuidanceHigh => {
+                guided.insert(identity);
+            }
+            ObservationRole::Actual => {
+                actuals.entry(identity).or_default().insert(period);
+            }
+            ObservationRole::ContextualLevel => {}
+        }
     }
-    current
-        .observations
-        .iter()
-        .filter(|o| {
-            matches!(
-                o.observation_role,
-                ObservationRole::GuidanceLow
-                    | ObservationRole::GuidanceHigh
-                    | ObservationRole::PointGuidance
-            )
-        })
-        .any(|o| periods.get(&o.identity()).map_or(0, HashSet::len) < 4)
+    guided.iter().any(|identity| {
+        let comparable = match (bounds.get(identity), actuals.get(identity)) {
+            (Some(bound), Some(actual)) => bound.intersection(actual).count(),
+            _ => 0,
+        };
+        comparable < BACKFILL_MIN_COMPARABLE_PERIODS
+    })
 }
 
 /// A rejected candidate row with its validation reason — persisted so the audit
@@ -2051,6 +2078,64 @@ mod tests {
         let second = compute_overlay(&fin, Some(&first), vec![]);
         assert_eq!(second.eligibility, PreProfitEligibility::NotEligible);
         assert_eq!(second.observations.len(), 1);
+    }
+
+    #[test]
+    fn backfill_counts_comparable_periods_not_any_role() {
+        let base = compute_overlay(&burning_stock(), None, vec![]);
+        assert!(base.is_eligible());
+        let with = |observations: Vec<PreProfitObservation>| PreProfitOverlay {
+            observations,
+            ..base.clone()
+        };
+        let rows = |role: ObservationRole, periods: &[&str]| -> Vec<PreProfitObservation> {
+            periods
+                .iter()
+                .map(|p| observation(MetricKind::Deliveries, role, 100.0, p))
+                .collect()
+        };
+        let periods = ["2026-Q2", "2026-Q1", "2025-Q4", "2025-Q3"];
+        // The first overlay-eligible pass binds regardless of history.
+        assert!(backfill_required(&with(vec![]), None));
+        // Four guidance rows in four periods and no actuals: zero comparable
+        // periods, so the obligation binds (the any-role count of four had
+        // suppressed it).
+        let guidance_only = rows(ObservationRole::GuidanceLow, &periods);
+        assert!(backfill_required(&with(guidance_only), Some(&base)));
+        // Four bound + actual pairs discharge it.
+        let four_pairs = guided_history(&[
+            ("2026-Q2", 100.0, 100.0),
+            ("2026-Q1", 100.0, 100.0),
+            ("2025-Q4", 100.0, 100.0),
+            ("2025-Q3", 100.0, 100.0),
+        ]);
+        assert!(!backfill_required(&with(four_pairs.clone()), Some(&base)));
+        // Three pairs plus an unpaired guidance period and an unpaired actual
+        // period: five distinct periods, three comparable — binds.
+        let mut three = guided_history(&[
+            ("2026-Q2", 100.0, 100.0),
+            ("2026-Q1", 100.0, 100.0),
+            ("2025-Q4", 100.0, 100.0),
+        ]);
+        three.extend(rows(ObservationRole::GuidanceLow, &["2025-Q3"]));
+        three.extend(rows(ObservationRole::Actual, &["2025-Q2"]));
+        assert!(backfill_required(&with(three), Some(&base)));
+        // Point guidance is a bound; a range high alone is not.
+        let actuals = rows(ObservationRole::Actual, &periods);
+        let mut point = rows(ObservationRole::PointGuidance, &periods);
+        point.extend(actuals.clone());
+        assert!(!backfill_required(&with(point), Some(&base)));
+        let mut high = rows(ObservationRole::GuidanceHigh, &periods);
+        high.extend(actuals.clone());
+        assert!(backfill_required(&with(high), Some(&base)));
+        // A never-guided metric carries no obligation.
+        assert!(!backfill_required(&with(actuals), Some(&base)));
+        // A covered identity never discharges a thin one.
+        let bookings = |role| observation(MetricKind::Bookings, role, 50.0, "2026-Q2");
+        let mut mixed = four_pairs;
+        mixed.push(bookings(ObservationRole::GuidanceLow));
+        mixed.push(bookings(ObservationRole::Actual));
+        assert!(backfill_required(&with(mixed), Some(&base)));
     }
 
     // ---- Clamp + schema labels ----
