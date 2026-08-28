@@ -2198,11 +2198,10 @@ const keyFigures = computed(() => {
                         <template
                           v-if="v.disposition.options_signal.iv_skew !== null"
                         >
-                          <dt>IV skew</dt>
+                          <dt>Put − call IV skew</dt>
                           <dd>
                             <span class="ana-num">{{
-                              (v.disposition.options_signal.iv_skew > 0 ? "+" : "") +
-                              fmtPct(v.disposition.options_signal.iv_skew)
+                              fmtSignedPct(v.disposition.options_signal.iv_skew)
                             }}</span>
                           </dd>
                         </template>

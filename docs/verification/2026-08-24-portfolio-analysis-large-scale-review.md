@@ -209,6 +209,17 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   The section renders each basis and the none case on both branches, the flow family is pinned to its five members and the instants to their two, and the interpretation prompt carries the dossier's stamped basis.
   The sources line names TTM, annual, or nothing; an instant standing alone — FMP's, or an equity-only SEC fill — carries no basis and no label, while a single SEC flow line is annual.
 - **IV skew rendered without a sign convention** — the options-activity line prints the signed skew bare (`pipeline.rs:3365-3372`); put-minus-call lives only in a Rust doc comment (`mod.rs:607-608`), so a model assuming the opposite convention reads hedging demand as call speculation.
+  Ruled 2026-08-28: the convention text names the as-built method (chain-wide mean put IV minus mean call IV).
+  The unit phrase rides with it.
+  The text renders on a gap too.
+  The Portfolio card's row folds in as the same finding's second surface.
+  Resolved 2026-08-28: the interpretation prompt's options-activity line renders the skew signed through `fmt_iv_skew` (`pipeline.rs`, the `OPTIONS ACTIVITY` render) and states its convention on the line — chain-wide mean put IV minus mean call IV, in IV's decimal unit; positive = puts richer (hedging demand), negative = calls richer (call speculation) — beside a `(gap)` too.
+  The sign keys on the rendered three-place value, so a skew that rounds away prints `0.000`, never `+0.000`.
+  The card's row moved with it: its label reads `Put − call IV skew` and its value routes through `fmtSignedPct`, where a `+` keyed on the raw fraction had rendered a 0.0003 skew as `+0.0%`.
+  `PROMPT_VERSION` moves to `portfolio-v16`; no grade or target parameter moves.
+  Pinned: the formatter's sign, rounded-zero, and gap cases; the convention text on the value, negative, and gap renders; and the card's label, signed value, unsigned zero, and hidden-on-null row.
+  The recorded `pipeline.rs:3365-3372` anchor had drifted to the render's current lines; `mod.rs:607-608` holds.
+  Codex round 1 (2026-08-28, approve): no findings.
 - **FMP statement dates never canonicalized** — quarterly `period_end` / `filing_date` store raw source text (`fmp.rs:5954`, `5989`) while every downstream consumer is lexicographic (`engine.rs:448-461`, `887-893`); a non-padded date misorders the run, failing TTM adoption (a silent basis drop, and a spurious basis-flip gate) rather than producing a wrong sum.
 
 ## Priority 2 — mid-run abort risk

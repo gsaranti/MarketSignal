@@ -1218,7 +1218,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Final pre-profit overlay (when applicable)**
   - Engine states, matched rules, and the engine arm's conviction ceiling.
 - **Options activity**
-  - Put/call by volume and open interest, IV, and IV skew.
+  - Put/call by volume and open interest, IV, and the IV skew — signed, its put-minus-call convention and unit stated on the line.
   - Labeled proxy-only, never a grade input.
 - **Data gaps** — the dossier's degraded-input notes naming financial legs the gather could not resolve (e.g. an SEC CIK-mapping miss, an SEC company-facts fetch failure, an unwired fund-metadata source); distinct from the per-metric `(gap)` markers in the computed-metrics block above, which flag one missing computed value.
 - **Market options sentiment** — the CBOE venue-level daily put/call backdrop, when Step 5 loaded one.
@@ -1488,7 +1488,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
   - **Model-view arm** — the model's own letter, sub-scores, conviction, 1- and 12-month target bands (always present on this arm), outlook, and action.
   - **Divergence tags** — a quiet **≠ engine** tag rides the model arm wherever it departs from the baseline on **conviction, outlook, or action**: a display cue for where the arms differ, distinct from the scoreboard's scoring (which grades the target bands head-to-head and the outlooks per arm, and leaves conviction and action unscored). The letter, sub-scores, and target bands carry no tag, and an authored **inverted-band** note is a data-integrity flag rather than a divergence.
   - **Standing thesis** (clamped, with a reveal) and the **thesis monitor** — each scenario's probability, engine target (when non-null), and conditions, plus the improve / must-not-break goalposts.
-  - **Action + rationale** as a full-width row beneath the arms, with the position weight and — when present — the same-stock **options-activity** signal (put/call volume and open interest, ATM IV, IV skew).
+  - **Action + rationale** as a full-width row beneath the arms, with the position weight and — when present — the same-stock **options-activity** signal (put/call volume and open interest, ATM IV, and the put − call IV skew, signed).
   - **Financial summary** and the **model retrospective** (the model arm's self-assessment), the **what-changed** footer, the holding's **matured scoreboard lines**, and its categorical position-change tag.
   - Plus the per-card **selection control**, **attention flag**, and **analysis-vintage stamp** — the badge surface below.
   - [note: the engine's persisted `risk_tier` and dead-money reads, the ledger's key drivers, and the authored band relation are carried on the verdict but rendered nowhere today.]

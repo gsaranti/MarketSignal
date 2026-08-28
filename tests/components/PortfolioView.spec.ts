@@ -870,6 +870,46 @@ describe("PortfolioView verdict cards", () => {
     expect(wrapper.text()).not.toContain("Est. shares");
     expect(wrapper.text()).not.toContain("Est. adj.");
   });
+
+  test("the IV skew row names its put − call convention and keys its sign on the rendered value", () => {
+    // The row printed the signed skew under a bare "IV skew" label — the same
+    // ambiguity the prompt carried (large-scale review 2026-08-24, P1 minor) —
+    // and keyed its "+" on the raw fraction, so +0.0003 read "+0.0%".
+    const withSkew = (iv_skew: number | null): PortfolioRun => ({
+      ...run,
+      verdicts: [
+        verdict("AAPL", {
+          status: "priced",
+          ...graded({
+            options_signal: {
+              put_call_volume: 1.2,
+              put_call_open_interest: 1.1,
+              implied_volatility: 0.3,
+              iv_skew,
+            },
+          }),
+        }),
+      ],
+    });
+    const skewValue = (iv_skew: number | null): string | undefined => {
+      const dt = mountView({ run: withSkew(iv_skew) })
+        .findAll(".hc-actionrow .hc-kv dt")
+        .find((d) => d.text().includes("IV skew"));
+      if (!dt) return undefined;
+      expect(dt.text()).toBe("Put − call IV skew");
+      return dt.element.nextElementSibling?.textContent?.trim();
+    };
+    expect(skewValue(0.03)).toBe("+3.0%");
+    expect(skewValue(-0.02)).toBe("-2.0%");
+    // A skew that rounds away carries no sign.
+    expect(skewValue(0.0003)).toBe("0.0%");
+    // No skew, no row — the other three rows still render.
+    expect(skewValue(null)).toBeUndefined();
+    const siblings = mountView({ run: withSkew(null) }).text();
+    for (const label of ["Put/call vol", "Put/call OI", "ATM IV"]) {
+      expect(siblings).toContain(label);
+    }
+  });
 });
 
 describe("PortfolioView fresher pull (presence-only churn)", () => {

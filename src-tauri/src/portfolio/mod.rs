@@ -1863,7 +1863,19 @@ pub struct HoldingAudit {
 /// threshold is authored on the basis it is evaluated against; the
 /// evaluation's basis-change note reads the same labels. A vocabulary and
 /// section change, stamped so a pre-fix checkpoint cannot resume into it.
-pub const PROMPT_VERSION: &str = "portfolio-v15";
+///
+/// `portfolio-v16`: the IV-skew sign convention (the 2026-08-24 review's
+/// Priority-1 minor). The interpretation prompt's options-activity line
+/// renders the skew signed (`+0.030` / `-0.020`, an unsigned `0.000` where it
+/// rounds away) and states its convention on the line — chain-wide mean put
+/// IV minus mean call IV, in IV's decimal unit; positive = puts richer
+/// (hedging demand), negative = calls richer (call speculation) — where
+/// `opt()` had printed the bare value and put-minus-call lived only in a doc
+/// comment, so a model assuming the inverse read hedging demand as call
+/// speculation. A value-format and label change under an unchanged line
+/// header, stamped so a pre-fix checkpoint cannot resume into the corrected
+/// render.
+pub const PROMPT_VERSION: &str = "portfolio-v16";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

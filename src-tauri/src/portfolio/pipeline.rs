@@ -3641,11 +3641,11 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
 
     let s = &d.options_signal;
     p.push_str(&format!(
-        "\nOPTIONS ACTIVITY (proxy only — NOT a grade input): put/call vol {}, put/call OI {}, IV {}, IV skew {}\n",
+        "\nOPTIONS ACTIVITY (proxy only — NOT a grade input): put/call vol {}, put/call OI {}, IV {}, IV skew {} (chain-wide mean put IV minus mean call IV, in IV's decimal unit; positive = puts richer — hedging demand; negative = calls richer — call speculation)\n",
         opt(s.put_call_volume),
         opt(s.put_call_open_interest),
         opt(s.implied_volatility),
-        opt(s.iv_skew),
+        fmt_iv_skew(s.iv_skew),
     ));
     p.push_str(&put_call_backdrop_prompt_section(d));
     p.push_str(&short_interest_prompt_section(d));
@@ -3799,6 +3799,27 @@ fn fmt_expense_ratio(v: Option<f64>) -> String {
     };
     let pct = places - 2;
     format!("{x:.places$} ({:.pct$}%/yr)", x * 100.0)
+}
+
+/// The IV-skew prompt render — the put-minus-call difference with an explicit
+/// sign, so the convention the options-activity line states beside it reads
+/// off the number itself. `opt()` had printed the value bare while
+/// put-minus-call lived only in a doc comment, so a model assuming the
+/// inverse read hedging demand as call speculation (large-scale review
+/// 2026-08-24, Priority-1 minor). The sign keys on the rendered three-place
+/// value: a skew that rounds away prints `0.000`, never `+0.000`, since a sign
+/// would assert a put premium the number no longer shows. The convention text
+/// is the line's label, not this value's, and renders beside a `(gap)` too.
+fn fmt_iv_skew(v: Option<f64>) -> String {
+    let Some(x) = v else {
+        return "(gap)".to_string();
+    };
+    let shown = (x * 1000.0).round() / 1000.0;
+    if shown == 0.0 {
+        "0.000".to_string()
+    } else {
+        format!("{shown:+.3}")
+    }
 }
 
 /// The closed-end price-vs-NAV prompt line — one shared render so the
@@ -8379,6 +8400,75 @@ mod tests {
         engine_output.metrics.nav_premium = None;
         let gap = prompt(&d, &engine_output);
         assert!(gap.contains("PRICE VS NAV: (gap)"), "{gap}");
+    }
+
+    #[test]
+    fn iv_skew_renders_signed_and_keys_the_sign_on_the_rendered_value() {
+        // `opt()` printed the skew bare — no `+`, no convention — while
+        // put-minus-call lived only in a doc comment, so a model assuming the
+        // inverse read hedging demand as call speculation (large-scale review
+        // 2026-08-24, P1 minor).
+        assert_eq!(fmt_iv_skew(Some(0.03)), "+0.030");
+        assert_eq!(fmt_iv_skew(Some(-0.02)), "-0.020");
+        assert_eq!(fmt_iv_skew(Some(0.0)), "0.000");
+        // A skew that rounds away carries no sign — `+0.000` would assert a
+        // put premium the rendered number no longer shows.
+        assert_eq!(fmt_iv_skew(Some(0.0004)), "0.000");
+        assert_eq!(fmt_iv_skew(Some(-0.0004)), "0.000");
+        assert_eq!(fmt_iv_skew(Some(0.0005)), "+0.001");
+        assert_eq!(fmt_iv_skew(Some(-0.0005)), "-0.001");
+        assert_eq!(fmt_iv_skew(None), "(gap)");
+    }
+
+    #[test]
+    fn iv_skew_convention_rides_the_options_line_on_value_negative_and_gap() {
+        // The convention is the line's label, not the value's: it renders
+        // beside a positive, a negative, and a `(gap)` alike, so the line keeps
+        // one shape across holdings.
+        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let prompt = |d: &HoldingDossier| {
+            interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
+                dossier: d,
+                prior_ledger: d.prior_ledger(),
+                engine: &engine_output,
+                distilled: "",
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: None,
+                narrative: None,
+            })
+        };
+        const CONVENTION: &str = "(chain-wide mean put IV minus mean call IV, in IV's decimal \
+                                  unit; positive = puts richer — hedging demand; negative = \
+                                  calls richer — call speculation)\n";
+
+        // The fixture dossier carries `iv_skew: Some(0.03)`.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let positive = prompt(&d);
+        assert!(
+            positive.contains(&format!(
+                "put/call vol 1.200, put/call OI 1.100, IV 0.300, IV skew +0.030 {CONVENTION}"
+            )),
+            "{positive}"
+        );
+
+        d.options_signal.iv_skew = Some(-0.02);
+        let negative = prompt(&d);
+        assert!(
+            negative.contains(&format!("IV 0.300, IV skew -0.020 {CONVENTION}")),
+            "{negative}"
+        );
+
+        d.options_signal.iv_skew = None;
+        let gap = prompt(&d);
+        assert!(
+            gap.contains(&format!("IV 0.300, IV skew (gap) {CONVENTION}")),
+            "{gap}"
+        );
     }
 
     #[test]
