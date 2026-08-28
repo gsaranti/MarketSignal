@@ -566,7 +566,7 @@ The embedding-based recall of this holding’s prior analysis, rendered into the
   - The evidence floor is not a closing stage: its gates fire inline as the values below are computed, and the first failure short-circuits the holding to `insufficient-evidence`, skipping 6c–6f; the gates are gathered under Evidence floor at the end of the step.
 
 - **Order of computation (priced stock)** — computed in sequence, several reads feeding the next:
-  - **Pre-profit overlay** (pre-profit stocks only) — financing / execution health, whose rule consequences later **cap the engine arm's conviction and narrow its action set**.
+  - **Pre-profit overlay** (computed and persisted for every priced stock; only an eligible read binds — §Pre-profit overlay) — financing / execution health, whose rule consequences later **cap the engine arm's conviction and narrow its action set**.
   - **Sub-scores** (quality, valuation, risk) → roll up into the letter; **momentum / market setup** is computed alongside them, live, as context outside the letter.
   - **Scenario targets** (bear / base / bull; one-month and twelve-month) → feed the return hurdle.
   - **Letter grade** — the weighted roll-up of the sub-scores.
@@ -575,7 +575,7 @@ The embedding-based recall of this holding’s prior analysis, rendered into the
   - **Continuity and ledger checks** — the prior ledger's conditions evaluated against the new engine values.
   - **The hard forensic state and the technology-event pre-flag** — computed here as input-delta / conviction-layer evidence.
   - **Implied expectations** — the scenario multiples inverted at the live price (computed with the targets, sharing their one multiple derivation); absent on the current-multiple carry.
-  - **Narrative versus reality** — the pace pair against the prior run's stored comparator (or the operating-reality fallback), computed before interpretation; a hype read soft-caps the engine arm's conviction at Medium.
+  - **Narrative versus reality** — the pace pair against the prior run's stored comparator (or the operating-reality fallback), computed before interpretation; a hype read soft-caps the engine arm's conviction at Medium. A debut carries no read, and neither does a carried holding read fewer than 7 days after the prior read (`NARRATIVE_MIN_ELAPSED_DAYS`, drafted — `docs/portfolio-analysis.md` §Starting parameters).
   - **Designed reads (not computed yet)** — the soft forensic checks would ride as evidence once built; they are not part of the live order.
 
 - **The through-line**
@@ -854,7 +854,7 @@ Additional stock reads that ride into the interpretation call as evidence; none 
   - Compare multiple expansion with estimate improvement — both legs paced over the interval since the prior run's stored comparator.
   - Thin analyst coverage falls back to company operating results against the annualized price move.
   - A hype read (expansion outrunning reality >1.5×, above a 5% expansion floor) soft-caps the engine arm's conviction at Medium — annotation-recorded, the model's own value untouched.
-  - A debut has no comparator and carries no read.
+  - A debut has no comparator and carries no read; a carried holding read fewer than **7 days** after the prior read carries none either (`NARRATIVE_MIN_ELAPSED_DAYS`, drafted and calibratable — under it the two legs are same-week noise and the fallback's annualization explodes), the unreadable pace recording its typed reason on the audit (`docs/portfolio-analysis.md` §Starting parameters).
 
 - **Implied expectations (live)**
   - Work backward from the current price.
@@ -863,7 +863,7 @@ Additional stock reads that ride into the interpretation call as evidence; none 
 
 - **Hard forensic state (live)**
   - Restatement or auditor change from the item-classified SEC filings sweep — the hard-forensic filing kinds' producer.
-  - Fraud may arrive later from validated primary-source research (research lane).
+  - The research-fed `forensic_event` fraud claim is **advisory** by the 2026-08-24 ruling: it never joins this state — the hard rule trips from the item-classified filing kinds alone — and reaches the model only as cited attention evidence (the producer contract is canonical at `docs/trade-opportunities-workflow.md` §Step 5c).
 
 - **Soft forensic checks (designed, not built)**
   - Altman Z and Piotroski weakness.
@@ -976,7 +976,7 @@ The orchestrator assembles the topic list deterministically; the reasoner works 
 - **Conditional technology-event topic**
   - Runs after a technology pre-flag.
   - Or after a standing technology falsifier.
-  - Or after a qualifying news seed.
+  - Or after a qualifying news seed — a fresh symbol-scoped `news/stock` seed arriving **while a technology-class falsifier already stands**: the deterministic conjunction (`docs/portfolio-analysis.md` §Starting parameters), the same rule the quick check's news-seed leg reads. A seed alone never fires the topic; as-built the standing-falsifier line above already fires it, so the seed leg adds no trigger of its own and its reason label never appears.
   - Or after an approved research follow-up.
   - Determines:
     - Substitute, complement, or mix shift.
@@ -998,14 +998,14 @@ The orchestrator assembles the topic list deterministically; the reasoner works 
 The orchestrator works the agenda **one topic at a time**. Each topic is its own isolated conversation over a clean context, and the orchestrator — never the model — owns every search and fetch, stopping at the holding's budget.
 
 - **Two nested levels**
-  - **Topic** — one isolated conversation per agenda topic; topics never share a context.
-  - **Pass** — each topic's conversation is a bounded multi-turn tool loop: one root pass plus up to two follow-up passes, so three passes per topic at most. The cap counts passes (branches), not model calls — a single pass is itself many turns, each turn one model call: the tool-requesting turns ask for a search or fetch the orchestrator runs, and the pass's terminal turn emits its findings.
+  - **Topic** — the unit of isolation: one per-topic research loop (the "isolated conversation" as `docs/web-research.md` §Terminology defines it), and topics never share a context.
+  - **Pass** — each topic's loop is a bounded multi-turn tool loop: one root pass plus up to two follow-up passes, so three passes per topic at most. The cap counts passes (branches), not model calls — a single pass is itself many turns, each turn one model call: the tool-requesting turns ask for a search or fetch the orchestrator runs, and the pass's terminal turn emits its findings. As-built each pass opens a **fresh conversation** — a new message history of the system prompt plus a pass brief (the dossier facts, the topic's questions, its seed, the structured seeds, the approved follow-up question on a follow-up pass, and the topic's own claims gathered so far, capped at 40; only the holding's closing disconfirming-fetch pass reads claims drawn from every topic, under the same 40 cap) — so only the evidence ledger and the accumulated per-pass findings carry across a topic's passes (`research.rs`, `run_pass` / `pass_brief`); no message history does.
 
 - **What each topic conversation is given (its inputs)**
   - The shared dossier facts — identical for every topic.
   - That topic's own questions — different per topic.
   - That topic's own seed, only when a non-expired (< ~4 weeks) cache exists: its own prior distilled object (its tier-1 distillation, or its topic-keyed group from a single-pass run) plus its ledger conditions. The seed is per topic — there is no single shared seed — and a topic with no cached prior starts clean.
-  - The company-news seeds — the symbol-scoped FMP `news/stock` headlines pulled into the dossier at Step 6a — orient the topics as leads (and can trigger the technology-event topic), never as evidence: a seed's claim counts only once the model deep-reads its underlying source.
+  - The company-news seeds — the symbol-scoped FMP `news/stock` headlines pulled into the dossier at Step 6a — orient the topics as leads (and, beside a standing technology-class falsifier, form the qualifying-news-seed leg of the technology-event trigger — never alone), never as evidence: a seed's claim counts only once the model deep-reads its underlying source.
   - No other topic's findings — a later topic gets nothing from an earlier one. The topics meet only downstream, at the Step-6d distillation (a single consolidation call, or a reduce when the research is large).
 
 - **What is retrieved during a pass (the data)**
@@ -1014,8 +1014,8 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Search backend, not a separate data source: the orchestrator runs search SearXNG-first, falling back to Tavily only when SearXNG can't serve.
 
 - **Who owns the context, and what persists**
-  - The orchestrator owns the prompt: on every turn it appends the tool results and the model's non-thinking output (a tool request, or the pass's findings), threading the growing context forward — the model only requests tools, it never touches the network. Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
-  - Carried across the topic's passes (canonical): the append-only evidence ledger and the accumulated per-pass findings, which the orchestrator assembles for the Step-6d distillation. The framing inputs (dossier facts, questions, seed) anchor the conversation from its start.
+  - Within a pass the orchestrator owns the prompt: on every turn it appends the tool results and the model's non-thinking output (a tool request, or the pass's findings), threading the growing context forward — the model only requests tools, it never touches the network. Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
+  - Carried across the topic's passes (canonical): the append-only evidence ledger and the accumulated per-pass findings, which the orchestrator assembles for the Step-6d distillation. The framing inputs (dossier facts, questions, seed) anchor each pass's conversation from its start.
   - Raw fetched page text is the bulky working material, and the durable record of what a page yielded is its claims in the ledger, not the page text itself. As-built the capped tool results stay in the pass's message history (see the context-fitting note below); how much raw page text survives across a pass boundary is not pinned by the contract.
 
 - **Fitting the fixed context window**
@@ -1075,7 +1075,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 
 - **The consolidation call — single or hierarchical (built)**
   - The stage's full input is the findings from every worked topic, this run's evidence ledger (claims + sources), and — for a holding with a non-expired cache — each topic's seeded prior object merged into its own topic.
-  - The orchestrator, never the model, sizes that full input to choose single-pass vs hierarchical **deterministically** — so growth *across* topics trips the hierarchical path rather than overflowing one call; the thresholds are config knobs.
+  - The orchestrator, never the model, sizes that full input to choose single-pass vs hierarchical **deterministically** — so growth *across* topics trips the hierarchical path rather than overflowing one call; the thresholds are compile-time constants — `OVERFLOW_THRESHOLD` (0.6) and `CHARS_PER_TOKEN` (3.0) in `distill.rs`, `NUM_CTX_DISTILL` (32,768) in `pipeline.rs` — exposed in no settings surface, so the knobs `docs/configuration.md` §Local Analysis Suite Configuration designs are not built. `NUM_CTX_DISTILL` is the budget's `num_ctx` only under a genuinely distinct fast model; with the default fast-falls-back-to-reasoner roster `distill_num_ctx` resolves to `NUM_CTX_INTERPRET` (131,072).
   - That aggregate is what the orchestrator sizes to route, **not what any one call receives**: only the single-pass call sees every topic's findings whole, while hierarchical routing partitions them across the tier-1 → reduce shape below.
   - **Single-pass:** one call over every topic's findings, its output **keyed by topic** — globally reconciled, since the one call sees every topic — so each topic's group persists as that topic's next-run seed.
   - **Hierarchical (large input):** distill each topic tree separately (**tier-1**, feeding the reduce, not persisted raw), then one final combining call (**tier-2 reduce**) over the tier-1 objects — it emits the one combined object interpretation reads **and** the per-topic seed layer reconciled to the global winners, that reconciled layer (not the raw tier-1 output) persisting as the next-run seeds.
@@ -1328,7 +1328,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 ### Step 6g — Validate continuity and checkpoint
 
 - **As-built**
-  - The validators here run every run, all legs live with the research loop: the what-changed **attribution** check (external rows resolve against the rendered input delta, a sourced research finding, or an accepted forward assumption — or downgrade to self-correction with a logged reason), the two-arm stamping, the engine-series ledger validation, the qualitative-trip → sourced-research leg, the overlay caps, the attention clear-and-acknowledge, and the per-holding checkpoint write.
+  - The validators here run every run, all legs live with the research loop: the what-changed **attribution** check (external rows resolve against the rendered input delta, a sourced research finding, or the logged forward assumption — distillation-validated and sourced, its Step-6e shadow resolution recorded on the audit's research record beside it and never a condition of the row — or downgrade to self-correction with a logged reason), the two-arm stamping, the engine-series ledger validation, the qualitative-trip → sourced-research leg, the overlay caps, the attention clear-and-acknowledge, and the per-holding checkpoint write.
 
 - **Data retrieved**
   - No new data.
@@ -1342,7 +1342,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - The what-changed audit is typed rows beside the prose (kind, old → new, attribution, evidence), and every claimed external change must map to one of:
     - An input-delta entry (by bracketed id or label verbatim).
     - A sourced research finding.
-    - An accepted forward assumption.
+    - The logged forward assumption — distillation-validated and sourced; its Step-6e shadow resolution (the would-have line or the failed condition) records on the audit's research record beside it and never conditions the row.
   - An unsupported external change is downgraded to a labeled self-correction with a logged reason; hard schema failure is reserved for structurally malformed rows.
 
 - **Conviction and cap handling**

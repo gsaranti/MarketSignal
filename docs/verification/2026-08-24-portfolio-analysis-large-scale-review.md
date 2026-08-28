@@ -352,17 +352,38 @@ A third round moved the logic-flow mirror to pointer form — the rule plus a po
 ### Priority-3 minor findings
 
 - **Research-fed fraud listed under "Hard forensic state (live)"** — doc lines 863–865 place "fraud may arrive later from validated primary-source research" inside the hard-state bullet, but the 2026-08-24 ruling made the research-fed claim advisory-only — it never merges into the hard producer state (`pipeline.rs:351-365`), which gates the add family.
+  Resolved 2026-08-28: the hard-state bullet now states the research-fed `forensic_event` fraud claim is advisory by the 2026-08-24 ruling, pointing at the canonical `trade-opportunities-workflow.md` §Step 5c.
+  It never joins the state, the hard rule trips from the item-classified filing kinds alone, and the claim reaches the model only as cited attention evidence.
 - **"A qualifying news seed" reads as an independent tech-topic trigger** — doc line 978; the code requires the conjunction with a standing technology-class ledger falsifier (`pipeline.rs:1002-1003`; same conjunction in the quick check, `quick_check.rs:82-84`), so fresh news alone never fires the deep-dive.
+  Resolved 2026-08-28: the trigger line now states the conjunction — a fresh symbol-scoped `news/stock` seed while a technology-class falsifier already stands, the quick check's same rule — and that a seed alone never fires the topic.
+  It also records what the conjunction implies as-built.
+  `build_agenda` resolves the topic's reason in priority order — pre-flag, standing falsifier, news seed — and `tech_news_seed` entails `tech_ledger_falsifier`.
+  The seed branch and its `qualifying news-feed seed` reason label are therefore unreachable; the falsifier line fires the topic.
+  A Codex round caught the Step-6c inputs bullet still saying the seeds "can trigger" the topic; it now names the conjunction — the seed leg fires only beside a standing falsifier, never alone.
+  Ruled 2026-08-28: `portfolio-analysis.md` §The per-holding pipeline's trigger list names the seed by the defined term — a qualifying news-feed seed, the conjunction defined at §Starting parameters — while `portfolio-workflow.md` §Step 6c already uses the term and is untouched.
+  The unreachable reason branch — and, off the second Codex round, the reason label's missing consumer — is I15 below, its own slice ahead of the run on I10/I11's terms.
 - **The narrative read's 7-day minimum is undocumented** — the doc names only the debut as carrying no read (lines 578, 852–857), but `NARRATIVE_MIN_ELAPSED_DAYS = 7` (`engine.rs:3128`) gaps the read for anyone running more than once a week.
+  Resolved 2026-08-28: both logic-flow sites (the Step-6b order entry and the §Other deterministic reads narrative bullet) now state the 7-day minimum beside the debut case, naming `NARRATIVE_MIN_ELAPSED_DAYS` and pointing at `portfolio-analysis.md` §Starting parameters.
+  The canonical home already carried the constant (its three-constants sentence landed with the evidence-legs slice, 2026-08-21), so only the mirror moved.
 - **"(pre-profit stocks only)" vs computed-for-every-stock** — the Step-6b order list's parenthetical (line 569) contradicts the doc's own lines 596/651 and the code (`pipeline.rs:863-873`): the overlay record is computed and persisted for every priced stock.
+  Resolved 2026-08-28: the Step-6b order entry reads "computed and persisted for every priced stock; only an eligible read binds", matching the doc's own §Pre-profit overlay and the code.
 - **"One isolated conversation per agenda topic"** — doc lines 1000–1001; as-built each *pass* is its own fresh conversation (`research.rs:1067-1090`), with only the claims ledger and findings carrying across a topic's passes — which the doc's own "who owns the context" bullets state correctly.
+  Resolved 2026-08-28: the Topic bullet names the topic as the unit of isolation (the "isolated conversation" as `web-research.md` §Terminology defines it), and the context-ownership bullets are scoped to within a pass.
+  The Pass bullet states the as-built mechanics: each pass opens a fresh message history of the system prompt plus a pass brief, so only the evidence ledger and the topic's own accumulated per-pass findings carry across its passes.
+  Ruled 2026-08-28: the canonical term stays at `web-research.md` §Terminology and its `portfolio-workflow.md` mirrors — it defines per-topic isolation, not one continuous history — and the Trade Opportunities logic-flow's uses are untouched.
 - **"The thresholds are config knobs"** — doc line 1076; `OVERFLOW_THRESHOLD`, `CHARS_PER_TOKEN` (`distill.rs:48-51`) and `NUM_CTX_DISTILL` (`pipeline.rs:4535`) are compile-time constants exposed in no settings surface.
+  Resolved 2026-08-28: the consolidation bullet names the compile-time constants — `OVERFLOW_THRESHOLD`, `CHARS_PER_TOKEN`, `NUM_CTX_DISTILL` — as exposed in no settings surface, the knobs `configuration.md` §Local Analysis Suite Configuration designs being unbuilt.
+  Ruled 2026-08-28: `configuration.md` keeps describing the designed knobs — the corpus describes designed and built without distinction, and build status is `BUILD.md`'s.
 - **Supersede validation legs overstated** — doc line 1155 claims metric/units/period match legs and that "a supersede always rejects"; the code has no match legs, and with an absent feed value a supersede-declared claim does not reject — it falls through and fills exactly like a supplement (`engine.rs:2039-2057`; the F-minor loss-displacement finding rides the same guard).
   Ruled 2026-08-27: the supersede leg is dormant by design.
   The doc moves to the as-built rule — a supersede rejects against any present feed value, and a supersede declared against an absent value is downgraded to a supplement fill, which `matched_rule` will name — and the match legs leave the doc.
   The true leg is revivable only if the channel is promoted and the consensus feed gains an as-of date.
   One slice: the doc plus the label.
 - **"An accepted forward assumption" as what-changed evidence** — doc line 1327; the delta row is pushed whenever distillation validated an assumption, regardless of its Step-6e shadow resolution — a `rejected:` resolution still anchors an external what-changed row (`pipeline.rs:1222-1230`).
+  Ruled 2026-08-28: the row stands as validated-assumption evidence, so the fix is the doc line, joining the Priority-3 batch.
+  Nothing is ever accepted under the shadow ruling, an engine rejection grades recomputability rather than the fact's truth, and the canonical homes already say "the logged forward assumption".
+  The shadow resolution persists on the audit's research record beside the row; no frontend site renders the assumption or its resolution.
+  Resolved 2026-08-28: both Step-6g sites read "the logged forward assumption", stating that its Step-6e shadow resolution records on the audit's research record beside it and never conditions the row.
 
 ## What was verified correct
 
@@ -392,6 +413,7 @@ I10 and I11, added 2026-08-27 from the fix-slice Codex rounds, join that queue o
 I12, added 2026-08-27 off the expense-ratio slice's Codex rounds, joins on the same terms.
 I13, added 2026-08-28 off the ledger-basis slice's Codex rounds, joins on the same terms.
 I14, added 2026-08-28 off the statement-date slice's Codex round, joins on the same terms.
+I15, added 2026-08-28 off the Priority-3 doc batch — surfaced by its implementation, reframed by its second Codex round — joins on the same terms.
 Fix grouping ruled 2026-08-27: one finding per slice through the plan → implement → review → Codex → commit loop, each marked here; the resume prompt-usage minor is the one-seam exception, its retry events and prompt usage riding `CheckpointAccumulators` together as a single slice.
 Fix grouping revised 2026-08-28 for the Priority-2 and -3 minors, the one-finding rule otherwise standing.
 The six pure doc-line Priority-3 minors — research-fed fraud under the hard state, the qualifying news seed, the narrative 7-day minimum (its canonical-home sentence in `portfolio-analysis.md` §Starting parameters included), "(pre-profit stocks only)", one conversation per topic, and the config-knob thresholds — are one slice, each still marked resolved on its own line.
@@ -400,7 +422,10 @@ The forward-assumption what-changed minor is ruled at the doc batch's plan: if t
 The panic-containment minor and the three contrived-trigger panic paths are one slice — the containment and the exposure it contains — with the §Failure posture and run-tracking mirrors.
 The reduce-prompt size check, the resume prompt usage (its retry events riding with it, as ruled), and the IPv6-literal fetch each stay their own slice.
 A batch never mixes code and doc findings.
-The queue is therefore eight slices before Codex I1–I14 and the §A4 seed edge: the Priority-3 doc batch first, then the supersede legs, the forward-assumption minor, panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch.
+The queue is therefore seven slices before Codex I1–I14 and the §A4 seed edge: the Priority-3 doc batch first, then the supersede legs, the forward-assumption minor, panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch.
+The six Priority-3 doc-line minors are resolved (2026-08-28; each resolution is recorded on its own line under §Priority-3 minor findings).
+The forward-assumption what-changed minor is ruled and resolved with them (2026-08-28; the ruling and resolution are recorded under its bullet), leaving the supersede legs, panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
+The grouping line's count above read eight against its enumerated seven; it is corrected off this slice's Codex round.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -565,3 +590,21 @@ The snapshot blend ignores dates and the history sampler keys on them, so the tw
 No persisted record carries the prints' source form, so no watch-set read can catch a misselection after the fact; `docs/data-sources.md` §Financial Modeling Prep names the family as the as-built exception until this lands.
 The fix is the statement-date slice's: store the canonical fixed-width render at the shaper, rule what a dateless row means, and pin both consumers; no stamp is expected to move.
 Surfaced by Codex round 1 on the statement-date slice and recorded there as not actioned; ruled its own slice 2026-08-28.
+
+### I15 — minor: the conditional topic's activation reason reaches no consumer, and its news-seed branch is unreachable
+
+`AgendaTopic::conditional_reason` (`src-tauri/src/portfolio/research.rs`) records why a conditional topic activated, its doc comment claiming it is logged to the audit so dormancy stays legible.
+As-built it is copied into the transient `TopicResearch` and consumed by nothing: the pass brief renders the topic's title and questions, the distillation prompt (`distill.rs`) renders key and title, and `ResearchAuditRecord` carries no reason field — its only reader is a unit test on the mid-loop escalation label.
+The technology topic's reason resolution in `build_agenda` compounds it.
+The order is the engine pre-flag, then a standing technology-class ledger falsifier, then the qualifying news-feed seed, and `AgendaTriggers::tech_news_seed` is constructed at its one production site (`pipeline.rs`) as fresh symbol news *and* that same standing falsifier.
+The seed branch is therefore entailed by the branch tested before it, and `tech_news_seed` is a trigger field that cannot fire.
+Behavior is unchanged: the topic fires from the falsifier line, and the seeds ride the pass brief as structured leads.
+The exposure is a doc comment that promises an audit leg the audit does not have, and dead plumbing on the agenda — no model or audit read moves whichever branch wins.
+The fix is ruled at its plan, one of two shapes.
+Wire: persist the reason on `ResearchAuditRecord` beside its topic (rendering it in the pass brief only if the prompt is meant to carry it — a prompt-content change with its stamp), with the reason order made specific-first so every label is reachable.
+The wire shape is not Rust-only: it rewrites the logic-flow's Step-6c trigger line, which now records that the label never appears, and adds the persisted reason to the research-artifact inventory at `storage.md` §Local Analysis Suite Storage once the field is a stored contract.
+Retire: drop `conditional_reason` from both structs, drop `tech_news_seed` from `AgendaTriggers`, and correct the doc comment.
+The retire shape also sweeps the full-run trigger-leg claims that would then read a removed leg: `portfolio-analysis.md` §The per-holding pipeline's trigger list, `portfolio-workflow.md` §Step 6c's, the `news/stock` row of `data-sources.md` §Portfolio Analysis — endpoint surface, both logic-flow sites (the Step-6c trigger line and the inputs bullet), and the trigger comment in `pipeline.rs`.
+The quick check's news leg is distinct and stays as built — the pull under a standing falsifier, its evidence-event badge, and the §Starting parameters definition it reads.
+Either shape pins a test holding a fresh seed beside a standing falsifier; no stamp moves on the retire shape.
+Surfaced by the Priority-3 doc batch's implementation and confirmed by its review rounds; a second Codex round found the label has no consumer, reframing the finding from a reachability fix to this, a third named the retire shape's contract sweep, and a fourth the wire shape's doc legs; ruled its own slice 2026-08-28.
