@@ -2,51 +2,58 @@
 
 ## What happened
 
-**F2 resolved and shipped** (`587e55c`): outcome-label coverage now binds
-the **scored end bar**, not the series tail. One helper
-(`outcome::window_end_close`) bounds the last close at or before each
-window end to `w_end − COVERAGE_TOLERANCE_DAYS` and requires it strictly
-after the entry bar, on the holding and both benchmark legs — retiring
-`covers_through` and the silent per-window skip; a failing bound rides the
-existing pending → grace → typed-unscorable ladder. A Codex round closed
-three follow-ons: the cache-heal judgment weighs **every due window end**
-(multi-end `series` seam), the past-grace discriminator reads
-disappearance from the series itself (alive past the window end closes
-`price-coverage-unscorable`; terminal reserved for a series that actually
-stopped — reconciled with `storage.md`'s discriminator sentence and the TO
-terminal reservation), and the tolerance constant's comment states the
-invariant. Three pre-existing fixtures had silently depended on the bug.
-Record: review record §F2 (resolved 2026-08-27); canonical rule at
-`portfolio-analysis.md §Outcome learning`. Reviewer verdict
-approve-with-nits (nit applied). Deliberately out of scope, recorded open
-in §F2: the falsifier lead-time bar-count distortion and `drawdown_over`
-under-observation over **mid-window interior** gaps. No `PROMPT_VERSION`
-change (`portfolio-v13`).
+**A1–A4 resolved and shipped** (`41ae9ff`, docs only): the four
+Priority-3 alignment majors from the 2026-08-24 review. The 6c failure
+sentence now states the canonical posture (no partial run row;
+checkpointed holdings restore on resume); the interpretation and action
+"exact inputs" lists carry every section the code renders, plus the
+role-risk branch's own render set; the sub-distillation drop trigger is
+the **per-holding budget of pass-level map calls** (`SUB_DISTILLATION_CAP`),
+not a reduce-overflow check — the same wording corrected in
+`portfolio-analysis.md`, the TO logic-flow doc, and what-the-cap-counts in
+`web-research.md` / `configuration.md`. Re-verification found the
+**exhausted-budget edge breaks "never the topic's seeded status"**: a topic
+whose every pass drops is named unreconciled and its seed deleted
+(`distill.rs:806-846`, `job.rs:1889`). **Ruled:** code fix (route the
+fully-dropped topic's prior through the reduce as a dormant prior, own
+vintage; no `PROMPT_VERSION` event) **queued behind the big run**; docs
+state the edge as built; the watch set reads the run's gaps for
+`dropped at the sub-distillation cap`. Three Codex rounds added three
+previously undocumented fail-soft postures to the canonical docs —
+checkpoint writes, the unreconciled-seed delete, the resume loader's
+unreadable-row skip — and bounded the twice-rendered note to a prior
+verdict. Record: review record §A1–§A4 (resolved 2026-08-27).
 
 ## Current state
 
-Nothing in flight; `main` at `587e55c`, tree clean, pushed. The pre-run
-list stays complete and the watch set current — the **big confirmation
-run remains unblocked**. Remaining findings behind the run, severity
-order: **A1–A4** (logic-flow doc pass — A1's "no partial work persists"
-misstatement still open near line 1056), the priority-1 minors, Codex's
-I1–I9 (unverified by a Claude session). Carried untouched: `/api/tags`
-probes on the 600 s backstop; seed passes the whole prior ledger per
-topic (doc↔code drift vs `portfolio-workflow.md` §Step 6c); 6g
-qualitative trips un-trip unless re-researched.
+Nothing in flight; `main` at `41ae9ff`, tree clean, pushed. Pre-run list
+complete; the **big confirmation run remains unblocked**. Behind the run,
+severity order: the **flag-2 seed fix** (promoted by any cap hit), the
+priority-1 minors, Codex's I1–I9 (unverified by a Claude session).
+Carried untouched: `/api/tags` probes on the 600 s backstop; seed passes
+the whole prior ledger per topic (doc↔code drift vs
+`portfolio-workflow.md` §Step 6c); 6g qualitative trips un-trip unless
+re-researched.
 
 ## Open questions
 
-- **When to launch the big run** — nothing blocks it; attempt 3 is the
-  queue's next item and is user-launched.
-- **Fix grouping** — one-at-a-time vs batching the minors and A1–A4; if
-  the accumulator-resume minor is taken, retry events and prompt usage
-  should ride `CheckpointAccumulators` together.
+- **When to launch the big run** — nothing blocks it; user-launched.
+- **Docs register ruling** — Codex rounds 2–3 pulled on whether every
+  mirror must restate a fail-soft store-write posture; the corpus has many
+  unqualified "persists" / "is deleted" over fail-soft writes. Candidate
+  ruling: mirrors state the rule, postures live once in §Failure posture.
+- **Fix grouping** — one-at-a-time vs batching the minors; if the
+  accumulator-resume minor is taken, retry events and prompt usage ride
+  `CheckpointAccumulators` together.
 - **One-month band** — unscaled daily vol × 2 marked "v1 mechanics":
   deliberate retention or √t scaling?
-- **Core-beside-statement render** (6c seed / 6d citation list) — named
-  candidate from the F1 rounds; a `PROMPT_VERSION` event needing its own
-  decision.
+- **Core-beside-statement render** (6c seed / 6d citation list) — a
+  `PROMPT_VERSION` event needing its own decision.
+- **INDEX.md gap** — no §Verification records row for the 2026-08-24
+  large-scale review record (user-run edit).
+- **Untraced minor** — `configuration.md:214` says the distillation shape
+  and tier count reach the audit; `DistilledResearch.shape` flows to
+  `pipeline.rs:332`, not followed to a persisted field.
 - Carried: runtime auto-start/spin-down; the 6e supersede leg
   structurally dead; channel promotion criteria; research budgets
   calibrate on the run.
@@ -54,9 +61,8 @@ qualitative trips un-trip unless re-researched.
 ## Where to start
 
 `/metis-session-start`, then either launch the **big confirmation run**
-(user-run; read `data-health` early per the watch set — fired-retry
-events new there, zero the healthy read) or, if not running yet,
-`/metis-plan-task A1-A4` (the alignment doc pass; the record's §A
-findings name the passages) or pick a priority-1 minor. Keep the loop:
-plan → implement → review → Codex → commit, and mark the finding in the
-record.
+(user-run; read `data-health` early — fired-retry events and
+sub-distillation-cap gaps are both zero on the healthy read) or, if not
+running yet, `/metis-plan-task` a priority-1 minor. Take the flag-2 seed
+fix only on a cap hit or a user promotion. Keep the loop: plan →
+implement → review → Codex → commit, and mark the finding in the record.
