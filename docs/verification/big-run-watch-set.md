@@ -27,7 +27,8 @@ The gate types a statement-derived series unevaluable once per flip, so what the
 Target provenance rendering against the sell-all cascade.
 Every priced interpretation carries the `TargetMeta` derivation flags — rate-anchored vs current-multiple carry, flat or clamp-flattened driver, dispersion floor — and a floor-widened band inherits its base's signal quality.
 
-The band-recalibration continuity NOTE and its what-changed attribution.
+The parameter-boundary continuity NOTE and its what-changed attribution.
+Attempt 2's priors are stamped `grade-v2.1`, so a stock carries no NOTE and no boundary row, and a priced fund carries the momentum re-homing row — read each fund's momentum delta against it, and any stock row citing a recalibration is a defect.
 
 The one-month band's cap saturation under `targets-v5`.
 With the band √t-scaled to the month, the 15% cap binds from a daily σ of ~1.64% (~26% annualized), so the run measures the share of priced names pinned at the cap.

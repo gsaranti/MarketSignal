@@ -2310,6 +2310,22 @@ fn delta_val(v: Option<f64>) -> String {
 }
 
 /// Append one input-delta entry, assigning the next bracketed id.
+/// The grade branch a PRIOR record was scored on — its persisted asset class,
+/// the key the job routes the fund path on (`job.rs`, `is_fund`), so the class
+/// is the branch for every record ever written; the fund path's
+/// `fund_class_label` is a derived marker of the same fact and post-field. The
+/// stamp belongs to that record, so the branch must be its branch, not the
+/// current dossier's: priors join by symbol, and a symbol reclassified between
+/// runs would otherwise read the wrong boundary in both directions.
+fn grade_branch(prior: &HoldingVerdict) -> engine::GradeBranch {
+    match prior.asset_class {
+        crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund => {
+            engine::GradeBranch::Fund
+        }
+        _ => engine::GradeBranch::Stock,
+    }
+}
+
 fn push_delta(entries: &mut Vec<crate::portfolio::DeltaEntry>, label: String) {
     let id = format!("D{}", entries.len() + 1);
     entries.push(crate::portfolio::DeltaEntry {
@@ -2540,18 +2556,41 @@ fn priced_input_delta(
             );
         }
     }
-    if dossier.prior_grade_parameter_version.as_deref() != Some(engine::GRADE_PARAMETER_VERSION) {
-        push_delta(
+    // A stamp boundary is a delta row only where it changed what this holding's
+    // prior record means — read cumulatively from the stamp history on the
+    // prior record's branch (`engine::grade_parameter_change`), and only over a
+    // priced prior, since a record with no letter or sub-score had nothing to move. A
+    // holding the boundary left unchanged gets no row: a citable row for a cause
+    // that could not have operated would let a real move be attributed to it.
+    let boundary = match &prior.disposition {
+        VerdictDisposition::Priced(_) => engine::grade_parameter_change(
+            dossier.prior_grade_parameter_version.as_deref(),
+            grade_branch(prior),
+        ),
+        _ => None,
+    };
+    let prior_stamp = dossier
+        .prior_grade_parameter_version
+        .as_deref()
+        .unwrap_or("pre-stamp");
+    match boundary {
+        Some(engine::GradeParameterChange::Letters) => push_delta(
             &mut entries,
             format!(
-                "grade bands recalibrated ({} -> {}) — letters can move with no input change",
-                dossier
-                    .prior_grade_parameter_version
-                    .as_deref()
-                    .unwrap_or("pre-stamp"),
+                "grade bands recalibrated ({prior_stamp} -> {}) — letters can move with no \
+                 input change",
                 engine::GRADE_PARAMETER_VERSION
             ),
-        );
+        ),
+        Some(engine::GradeParameterChange::FundMomentum) => push_delta(
+            &mut entries,
+            format!(
+                "fund momentum re-homed to the short price window ({prior_stamp} -> {}) — the \
+                 momentum sub-score can move with no input change; the letter cannot",
+                engine::GRADE_PARAMETER_VERSION
+            ),
+        ),
+        None => {}
     }
     append_shared_delta(&mut entries, dossier, position_change, ledger_eval, price_bridge);
     if let Some(f) = tech_pre_flag.filter(|f| f.fired) {
@@ -3667,7 +3706,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     }
 
     match &d.prior_verdict {
-        Some(_) => {
+        Some(prior) => {
             p.push_str(
                 "\nCONTINUITY: a prior verdict for this holding exists. Keep the verdict firm; \
                  only move grade/target if the evidence has materially changed, and say what.\n",
@@ -3676,15 +3715,33 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
             // line the model's what-changed would attribute an engine-driven letter
             // move to company evidence or a self-correction (the grade-band slice's
             // versioning finding, `docs/verification/2026-08-03-grade-band-shadow-tune.md` §6).
-            if d.prior_grade_parameter_version.as_deref() != Some(engine::GRADE_PARAMETER_VERSION)
-            {
-                p.push_str(
+            // The NOTE names what the boundary changed for this holding, only over
+            // a priced prior, and a holding it left unchanged gets none — the same
+            // rule as the delta row.
+            let boundary = match &prior.disposition {
+                VerdictDisposition::Priced(_) => engine::grade_parameter_change(
+                    d.prior_grade_parameter_version.as_deref(),
+                    grade_branch(prior),
+                ),
+                _ => None,
+            };
+            match boundary {
+                Some(engine::GradeParameterChange::Letters) => p.push_str(
                     "NOTE: the grade bands were recalibrated since the prior verdict \
                      (grade parameter version changed), so the letter may have moved \
                      with no change in the company's inputs. Attribute such a move in \
                      what_changed to the recalibration — not to company change or a \
                      self-correction.\n",
-                );
+                ),
+                Some(engine::GradeParameterChange::FundMomentum) => p.push_str(
+                    "NOTE: the fund momentum read was re-homed to the short price window \
+                     since the prior verdict (grade parameter version changed), so the \
+                     momentum sub-score may have moved with no change in the fund's \
+                     inputs; the letter did not move for that reason. Attribute such a \
+                     momentum move in what_changed to the re-homing — not to market \
+                     change or a self-correction.\n",
+                ),
+                None => {}
             }
             // The v7 retrospective: the prior run's BOTH-arm values plus what has
             // happened since — a deliberate reversal of the v4 anchoring guard,
@@ -7751,18 +7808,12 @@ mod tests {
 
     #[test]
     fn continuity_notes_a_band_recalibration_only_on_version_mismatch() {
-        let prior = HoldingVerdict {
-            symbol: "AAPL".into(),
-            asset_class: AssetClass::Stock,
-            position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated {
-                reason: "fixture".into(),
-            },
-            thesis_ledger: None,
-            analyzed_at: None,
-            action_source: Default::default(),
-            side_reversed: false,
-        };
+        let base = dossier(AssetClass::Stock, strong_financials());
+        let (prior, _) = analyze_holding(&StubAnalyst, &base, &rates(), "2026-08-01").unwrap();
+        assert!(
+            matches!(prior.disposition, VerdictDisposition::Priced(_)),
+            "fixture sanity: the prior is priced"
+        );
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
@@ -7796,6 +7847,198 @@ mod tests {
         // Prior verdict stamped with the current bands: no note.
         d.prior_grade_parameter_version = Some(engine::GRADE_PARAMETER_VERSION.to_string());
         assert!(!prompt(&d).contains("recalibrated"), "same-version prior");
+
+        // A prior that was never priced had no letter to move: no note, whatever
+        // its stamp says.
+        d.prior_verdict = Some(HoldingVerdict {
+            symbol: "AAPL".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated {
+                reason: "fixture".into(),
+            },
+            thesis_ledger: None,
+            analyzed_at: None,
+            action_source: Default::default(),
+            side_reversed: false,
+        });
+        d.prior_grade_parameter_version = None;
+        assert!(!prompt(&d).contains("recalibrated"), "not-rated prior");
+    }
+
+    /// A stamp boundary reaches the model as what it changed for THIS holding,
+    /// read from the stamp history on the PRIOR record's branch and only over a
+    /// priced prior. A stock across v2.1 → v2.2 gets neither NOTE nor delta row
+    /// (a citable "letters can move" row would be false evidence for a real
+    /// move); a priced fund gets the re-homing NOTE and row across v2.1, v2, and
+    /// pre-stamp alike (no stamped or unstamped fund-letter change exists); a
+    /// pre-stamp stock gets the recalibration; an unrecognized stamp and a
+    /// never-priced prior get nothing; the branch is the prior's persisted asset
+    /// class, so a fund record without the derived label still reads as a fund;
+    /// and a symbol reclassified between runs reads its prior's branch, not the
+    /// current dossier's.
+    #[test]
+    fn the_stamp_boundary_names_what_changed_and_skips_an_unchanged_holding() {
+        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let prompt = |d: &HoldingDossier| {
+            interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
+                dossier: d,
+                prior_ledger: d.prior_ledger(),
+                engine: &engine_output,
+                distilled: "",
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: None,
+                narrative: None,
+            })
+        };
+        let delta = |d: &HoldingDossier| {
+            priced_input_delta(
+                d,
+                &engine_output,
+                PositionChange::Unchanged,
+                None,
+                None,
+                None,
+                false,
+                Some(1.0),
+            )
+        };
+        let boundary_rows = |entries: &[crate::portfolio::DeltaEntry]| -> Vec<String> {
+            entries
+                .iter()
+                .filter(|e| e.label.contains("recalibrated") || e.label.contains("re-homed"))
+                .map(|e| e.label.clone())
+                .collect()
+        };
+        let silent = |d: &HoldingDossier, case: &str| {
+            let p = prompt(d);
+            assert!(
+                !p.contains("recalibrated") && !p.contains("re-homed"),
+                "{case}: {p}"
+            );
+            let rows = delta(d);
+            assert!(boundary_rows(&rows).is_empty(), "{case}: {rows:?}");
+        };
+        let recalibrated = |d: &HoldingDossier, case: &str| {
+            let p = prompt(d);
+            assert!(p.contains("grade bands were recalibrated"), "{case}: {p}");
+            assert!(!p.contains("re-homed"), "{case}: {p}");
+            let rows = boundary_rows(&delta(d));
+            assert_eq!(rows.len(), 1, "{case}: {rows:?}");
+            assert!(
+                rows[0].starts_with("grade bands recalibrated ("),
+                "{case}: {rows:?}"
+            );
+        };
+        let rehomed = |d: &HoldingDossier, case: &str| {
+            let p = prompt(d);
+            assert!(p.contains("fund momentum read was re-homed"), "{case}: {p}");
+            assert!(!p.contains("recalibrated"), "{case}: {p}");
+            let rows = boundary_rows(&delta(d));
+            assert_eq!(rows.len(), 1, "{case}: {rows:?}");
+            assert!(
+                rows[0].starts_with("fund momentum re-homed to the short price window ("),
+                "{case}: {rows:?}"
+            );
+            assert!(rows[0].contains("the letter cannot"), "{case}: {rows:?}");
+        };
+
+        // A priced stock prior.
+        let base = dossier(AssetClass::Stock, strong_financials());
+        let (stock_prior, _) =
+            analyze_holding(&StubAnalyst, &base, &rates(), "2026-08-01").unwrap();
+        assert!(matches!(
+            stock_prior.disposition,
+            VerdictDisposition::Priced(_)
+        ));
+        let mut stock = dossier(AssetClass::Stock, strong_financials());
+        stock.prior_verdict = Some(stock_prior.clone());
+        stock.prior_grade_parameter_version = Some("grade-v2.1".into());
+        silent(&stock, "stock across v2.1");
+        stock.prior_grade_parameter_version = Some("grade-v2".into());
+        recalibrated(&stock, "stock across v2 (signed P/E)");
+        stock.prior_grade_parameter_version = None;
+        recalibrated(&stock, "stock from a pre-stamp prior");
+        let rows = boundary_rows(&delta(&stock));
+        assert!(rows[0].contains("(pre-stamp -> "), "{rows:?}");
+        stock.prior_grade_parameter_version = Some("grade-v9.9".into());
+        silent(&stock, "stock from an unrecognized stamp");
+
+        // A priced fund prior.
+        let (fund_prior, _) = analyze_holding(
+            &StubAnalyst,
+            &fund_dossier(us_equity_fund()),
+            &rates(),
+            "2026-08-01",
+        )
+        .unwrap();
+        assert!(matches!(
+            fund_prior.disposition,
+            VerdictDisposition::Priced(_)
+        ));
+        let mut fund = fund_dossier(us_equity_fund());
+        fund.prior_verdict = Some(fund_prior.clone());
+        fund.prior_grade_parameter_version = Some("grade-v2.1".into());
+        rehomed(&fund, "fund across v2.1");
+        let rows = boundary_rows(&delta(&fund));
+        assert!(rows[0].contains("(grade-v2.1 -> "), "{rows:?}");
+        fund.prior_grade_parameter_version = Some("grade-v2".into());
+        rehomed(&fund, "fund across v2 (v2.1 never touched funds)");
+        fund.prior_grade_parameter_version = None;
+        rehomed(
+            &fund,
+            "fund from a pre-stamp prior (no fund-letter change since)",
+        );
+        let rows = boundary_rows(&delta(&fund));
+        assert!(rows[0].contains("(pre-stamp -> "), "{rows:?}");
+        fund.prior_grade_parameter_version = Some("grade-v9.9".into());
+        silent(&fund, "fund from an unrecognized stamp");
+
+        // The branch is the prior's persisted asset class — the routing key — so a
+        // fund record without the derived `fund_class_label` (the pre-field shape)
+        // still reads the fund branch.
+        let mut unlabeled = fund_prior.clone();
+        if let VerdictDisposition::Priced(g) = &mut unlabeled.disposition {
+            g.fund_class_label = None;
+        }
+        fund.prior_verdict = Some(unlabeled);
+        fund.prior_grade_parameter_version = Some("grade-v2.1".into());
+        rehomed(&fund, "fund prior without the derived label");
+
+        // The branch is the PRIOR record's, not the current dossier's: a fund
+        // prior now scored as a stock still crossed the re-homing, and a stock
+        // prior now scored as a fund crossed nothing.
+        let mut now_stock = dossier(AssetClass::Stock, strong_financials());
+        now_stock.prior_verdict = Some(fund_prior);
+        now_stock.prior_grade_parameter_version = Some("grade-v2.1".into());
+        rehomed(&now_stock, "fund prior on a stock dossier");
+        let mut now_fund = fund_dossier(us_equity_fund());
+        now_fund.prior_verdict = Some(stock_prior);
+        now_fund.prior_grade_parameter_version = Some("grade-v2.1".into());
+        silent(&now_fund, "stock prior on a fund dossier");
+
+        // A fund prior that was never priced had no momentum sub-score to re-home.
+        fund.prior_verdict = Some(HoldingVerdict {
+            symbol: fund.position.symbol.clone(),
+            asset_class: AssetClass::Etf,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated {
+                reason: "fixture".into(),
+            },
+            thesis_ledger: None,
+            analyzed_at: None,
+            action_source: Default::default(),
+            side_reversed: false,
+        });
+        fund.prior_grade_parameter_version = Some("grade-v2.1".into());
+        silent(&fund, "never-priced fund prior");
+        fund.prior_grade_parameter_version = None;
+        silent(&fund, "never-priced pre-stamp fund prior");
     }
 
     #[test]

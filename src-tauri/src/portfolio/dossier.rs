@@ -376,11 +376,13 @@ pub struct HoldingDossier {
     /// metric-level input delta's prior side ([`crate::portfolio::engine::metric_delta`]).
     /// `None` on a debut or a prior run without an audit row.
     pub prior_metrics: Option<crate::portfolio::engine::ComputedMetrics>,
-    /// The grade-band parameter version the prior verdict's letter was computed under
-    /// (from the prior run's audit row; `None` = a pre-stamp run, i.e. the v1 bands).
-    /// Meaningful only beside `prior_verdict` — the interpretation prompt compares it
-    /// against the current [`crate::portfolio::engine::GRADE_PARAMETER_VERSION`] so a
-    /// band recalibration's letter move is attributed to the retune, not to evidence.
+    /// The grade-parameter version the prior verdict's letter and sub-scores were
+    /// computed under (from the prior run's audit row; `None` = a pre-stamp run,
+    /// i.e. the v1 bands). Meaningful only beside a priced `prior_verdict` — the
+    /// input delta and the interpretation prompt read the boundary it sits across
+    /// on the holding's branch ([`crate::portfolio::engine::grade_parameter_change`])
+    /// so an engine-driven letter or sub-score move is attributed to that boundary,
+    /// not to evidence.
     pub prior_grade_parameter_version: Option<String>,
     /// The prior audit's split-bridge anchor bar — the exact re-basis factor's
     /// stored leg ([`crate::portfolio::HoldingAudit::authoring_close`]). `None`
@@ -466,8 +468,8 @@ pub struct SemanticRecall {
 #[derive(Debug, Clone)]
 pub struct PriorHolding {
     pub verdict: HoldingVerdict,
-    /// The grade-band parameter version the prior letter was computed under
-    /// (`None` = a pre-stamp run, i.e. the v1 bands).
+    /// The grade-parameter version the prior letter and sub-scores were computed
+    /// under (`None` = a pre-stamp run, i.e. the v1 bands).
     pub grade_parameter_version: Option<String>,
     /// The prior pre-profit overlay record — the observation history's carry path.
     pub pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
@@ -1104,8 +1106,8 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
 }
 
 /// Look up the prior run's carry-over for one holding (the continuity input): the
-/// verdict plus the audit-row legs — the grade-band parameter version its letter
-/// was computed under (`None` = a pre-stamp run, i.e. the v1 bands) and the
+/// verdict plus the audit-row legs — the grade-parameter version its letter and
+/// sub-scores were computed under (`None` = a pre-stamp run, i.e. the v1 bands) and the
 /// pre-profit overlay record whose observation history accumulates. Reads the
 /// job's **already-loaded** prior run — the job loads `store::latest_run` once
 /// per run and threads it here, rather than this lookup re-reading (and

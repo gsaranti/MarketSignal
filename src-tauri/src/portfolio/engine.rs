@@ -83,10 +83,12 @@ const RISK_VOLATILITY_BAND: (f64, f64) = (0.045, 0.005);
 /// maximally safe (`risk_score`).
 const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 
-/// The grade-band parameter version, stamped on each run's audit
-/// (`HoldingAudit.grade_parameter_version`) so a band recalibration — letters
-/// moving with no input change — is recognizable to the what-changed audit and
-/// outcome-learning cohorts. v2 (the 2026-08-03 shadow-tune against run
+/// The grade-parameter version, stamped on each run's audit
+/// (`HoldingAudit.grade_parameter_version`) so a parameter boundary — a band
+/// recalibration moving letters with no input change, or a stamped sub-score's
+/// input re-homing — is recognizable to the what-changed audit and
+/// outcome-learning cohorts for what it changed ([`grade_parameter_change`]).
+/// v2 (the 2026-08-03 shadow-tune against run
 /// `3b21ae85`, certified v1-exact first): the recentered-growth bands above plus
 /// the negative-D/E → 0 guard; runs decoding `None` predate the stamp and carry
 /// the v1 bands.
@@ -94,7 +96,97 @@ const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 // the negative-P/E fixed-score guard reachable for loss-makers — an input-
 // semantics change that can move letters, so it is stamped as its own version
 // even though every band, weight, and cutoff is unchanged.
-pub const GRADE_PARAMETER_VERSION: &str = "grade-v2.1";
+// v2.2 (2026-08-27, the large-scale review's fund-momentum finding): the fund
+// path's momentum sub-score reads the 180-day `price_history` through
+// `momentum_score` — the stock read — instead of the ~1,600-day `daily_closes`
+// against the same band, which pinned funds at 0 / 100. Momentum is outside the
+// letter, so no letter moves; the stamp marks that a persisted fund
+// `sub_scores.momentum` means a different read, which the what-changed delta
+// and the frozen `CalibrationSnapshot` consume. Bands, weights, and cutoffs
+// are unchanged from `grade-v2.1`. Consumers read what a boundary changed
+// through [`grade_parameter_change`] — extend it with every bump.
+pub const GRADE_PARAMETER_VERSION: &str = "grade-v2.2";
+
+/// What a grade-parameter boundary changed for a persisted record — the meaning a
+/// stamp mismatch carries to its consumers (the what-changed delta row and the
+/// continuity NOTE), so each names the actual change rather than a generic band
+/// recalibration a holding may not have been touched by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GradeParameterChange {
+    /// Bands, weights, cutoffs, or a letter-bearing input's semantics moved —
+    /// letters can move with no input change.
+    Letters,
+    /// Only the fund branch's momentum window moved: a priced fund's momentum
+    /// sub-score can move with no input change; no letter can.
+    FundMomentum,
+}
+
+/// The branch a stamped record was graded on. The fund path carries its own
+/// bands and never reads the holding P/E, so a bump can touch one branch and
+/// leave the other's records meaning exactly what they did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GradeBranch {
+    Stock,
+    Fund,
+}
+
+/// The stamp history, oldest first: each version with what its bump changed on
+/// the stock and the fund branch. The boundary a prior sits across is the union
+/// of the rows after its version, read on the holding's branch — so every bump
+/// appends a row here (a test pins the last row to the current stamp).
+const GRADE_PARAMETER_HISTORY: &[(
+    &str,
+    Option<GradeParameterChange>,
+    Option<GradeParameterChange>,
+)] = &[
+    // v2: the stock sub-score bands recentered plus the negative-D/E guard. The
+    // fund path scores on its own bands and percentile, untouched.
+    ("grade-v2", Some(GradeParameterChange::Letters), None),
+    // v2.1: the dossier's P/E derive went signed — the stock valuation path only;
+    // the fund path never reads the holding P/E.
+    ("grade-v2.1", Some(GradeParameterChange::Letters), None),
+    // v2.2: fund momentum re-homed to the short price window — the fund branch
+    // only; a stock's record means exactly what it did.
+    ("grade-v2.2", None, Some(GradeParameterChange::FundMomentum)),
+];
+
+/// The change a prior record's stamp sits across on `branch` — the branch the
+/// PRIOR record was scored on — or `None` when the record carries the current
+/// stamp or the boundary changed nothing on that branch. A pre-stamp `None`
+/// prior sits before the first row and crosses the whole history: the band
+/// retune on the stock branch, the momentum re-homing alone on the fund branch,
+/// whose letter formula has not moved since the fund path landed (2026-07-16,
+/// before the first stamp). An unrecognized stamp reads as no describable
+/// boundary: asserting a cause whose semantics are unknowable would hand the
+/// model citable evidence for it (the resume gate and the certification leg
+/// still refuse the raw mismatch).
+pub(crate) fn grade_parameter_change(
+    prior: Option<&str>,
+    branch: GradeBranch,
+) -> Option<GradeParameterChange> {
+    let after = match prior {
+        Some(GRADE_PARAMETER_VERSION) => return None,
+        None => GRADE_PARAMETER_HISTORY,
+        Some(stamp) => GRADE_PARAMETER_HISTORY
+            .iter()
+            .position(|(v, _, _)| *v == stamp)
+            .map(|i| &GRADE_PARAMETER_HISTORY[i + 1..])?,
+    };
+    after
+        .iter()
+        .filter_map(|(_, stock, fund)| match branch {
+            GradeBranch::Stock => *stock,
+            GradeBranch::Fund => *fund,
+        })
+        // Letters dominates: a boundary that moved letters is the recalibration
+        // whatever else it moved.
+        .fold(None, |acc, change| match (acc, change) {
+            (Some(GradeParameterChange::Letters), _) | (_, GradeParameterChange::Letters) => {
+                Some(GradeParameterChange::Letters)
+            }
+            _ => Some(change),
+        })
+}
 
 /// Fallback one-month scenario half-band (fraction of the base target) when
 /// realized volatility can't be computed. The twelve-month band needs no fallback
@@ -1445,8 +1537,12 @@ fn valuation_score(m: &ComputedMetrics) -> Option<f64> {
     ])
 }
 
-/// Momentum (higher better): trailing price return over the available history.
-fn momentum_score(m: &ComputedMetrics) -> Option<f64> {
+/// Momentum (higher better): trailing price return over the short undated
+/// `price_history` window — the one momentum read. The fund path scores through
+/// this same function over its [`compute_metrics`] price legs, so no second
+/// window or band can drift from the stock read (`docs/portfolio-analysis.md`
+/// §Starting parameters).
+pub(crate) fn momentum_score(m: &ComputedMetrics) -> Option<f64> {
     let (lo, hi) = MOMENTUM_TRAILING_RETURN_BAND;
     m.trailing_return.map(|r| scale(r, lo, hi))
 }
@@ -4542,6 +4638,48 @@ mod tests {
         assert!((vol - 0.015 * ANNUALIZATION_FACTOR * 0.5).abs() < 1e-12);
         let extreme = dispersion_floor(Some(0.10));
         assert!((extreme - 0.20).abs() < 1e-12);
+    }
+
+    /// A stamp boundary is read cumulatively from the history on the prior
+    /// record's branch: the current stamp is no boundary; a stock crossing
+    /// v2.1 → v2.2 sees nothing while a fund sees the momentum re-homing; a
+    /// `grade-v2` fund crosses only that same change (v2.1 never touched funds)
+    /// while a `grade-v2` stock crosses the signed-P/E letter change; a
+    /// pre-stamp prior crosses the whole history — the retune for a stock, the
+    /// re-homing alone for a fund; an unrecognized stamp asserts no cause. The
+    /// history's last row must be the current stamp.
+    #[test]
+    fn grade_parameter_change_reads_the_history_per_branch() {
+        use GradeBranch::{Fund, Stock};
+        use GradeParameterChange::{FundMomentum, Letters};
+        assert_eq!(
+            GRADE_PARAMETER_HISTORY.last().map(|(v, _, _)| *v),
+            Some(GRADE_PARAMETER_VERSION),
+            "a bump appends its row to the stamp history"
+        );
+        for branch in [Stock, Fund] {
+            assert_eq!(
+                grade_parameter_change(Some(GRADE_PARAMETER_VERSION), branch),
+                None
+            );
+            assert_eq!(grade_parameter_change(Some("grade-v9.9"), branch), None);
+            assert_eq!(grade_parameter_change(Some(""), branch), None);
+        }
+        assert_eq!(grade_parameter_change(None, Stock), Some(Letters));
+        assert_eq!(grade_parameter_change(None, Fund), Some(FundMomentum));
+        assert_eq!(grade_parameter_change(Some("grade-v2.1"), Stock), None);
+        assert_eq!(
+            grade_parameter_change(Some("grade-v2.1"), Fund),
+            Some(FundMomentum)
+        );
+        assert_eq!(
+            grade_parameter_change(Some("grade-v2"), Stock),
+            Some(Letters)
+        );
+        assert_eq!(
+            grade_parameter_change(Some("grade-v2"), Fund),
+            Some(FundMomentum)
+        );
     }
 
     #[test]

@@ -819,8 +819,14 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         );
     };
 
-    // Momentum rides as context (outside the letter), like the stock path.
-    let momentum = trailing_return(fin).map(|r| engine::scale(r, -0.30, 0.30));
+    // Momentum rides as context (outside the letter) and IS the stock read —
+    // `engine::momentum_score` over `base_metrics`' 180-day `price_history` leg,
+    // one window and one band. Scoring the ~1,600-day `daily_closes` here pinned
+    // nearly every fund at 0 / 100: a multi-year cumulative return against a band
+    // tuned to 180 days (the 2026-08-24 review's fund-momentum finding; stamped
+    // `grade-v2.2`).
+    let mut metrics = base_metrics(fin);
+    let momentum = engine::momentum_score(&metrics);
 
     // The letter: real valuation / risk + the neutral-imputed absent quality axis —
     // the priced-fund grade contract, with the visible low-confidence marker.
@@ -862,7 +868,6 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         floor,
     );
 
-    let mut metrics = base_metrics(fin);
     metrics.expense_ratio = fund.expense_ratio;
     // Market price only — the NAV-fallback `spot` would fabricate an exact 0%
     // premium precisely when no quote exists ([`nav_premium_read`]).
@@ -1023,34 +1028,23 @@ fn per_period_volatility(fin: &CompanyFinancials) -> Option<f64> {
     engine::return_volatility(&closes)
 }
 
-/// Trailing return over whichever price history is present.
-fn trailing_return(fin: &CompanyFinancials) -> Option<f64> {
-    let closes: Vec<f64> = if !fin.daily_closes.is_empty() {
-        fin.daily_closes.iter().map(|d| d.value).collect()
-    } else {
-        fin.price_history.clone()
-    };
-    match (closes.first(), closes.last()) {
-        (Some(&first), Some(&last)) if closes.len() >= 2 && first > 0.0 => Some(last / first - 1.0),
-        _ => None,
-    }
-}
-
 /// The fund's base metrics (price-derived legs only; the statement legs stay `None`).
 ///
 /// The two price legs come from [`engine::compute_metrics`] — the 180-day
-/// `price_history` — **not** the ~1,600-day dated `daily_closes` the local helpers
-/// above prefer. `TrailingReturn` and `ReturnVolatility` are both fund-computable
-/// ledger series, and the quick check evaluates them off `price_history`
-/// (`quick_check.rs`, the sweep's own EOD pull). Authoring them here on the deep
-/// history would author a condition on one window and evaluate it on another, so a
-/// fund's falsifier could confirm a breach with no change in the thesis. This
-/// mirrors the role-risk branch, which was pointed at `compute_metrics` for exactly
-/// this reason (`pipeline.rs`).
+/// `price_history` — **not** the ~1,600-day dated `daily_closes` the volatility
+/// helper above prefers. `TrailingReturn` and `ReturnVolatility` are both
+/// fund-computable ledger series, and the quick check evaluates them off
+/// `price_history` (`quick_check.rs`, the sweep's own EOD pull). Authoring them
+/// here on the deep history would author a condition on one window and evaluate it
+/// on another, so a fund's falsifier could confirm a breach with no change in the
+/// thesis. This mirrors the role-risk branch, which was pointed at
+/// `compute_metrics` for exactly this reason (`pipeline.rs`).
 ///
-/// The deep history still backs the fund tier's volatility leg and the momentum
-/// sub-score above — both authored once per run and never re-evaluated by a sweep,
-/// so no second window can disagree with them.
+/// The momentum sub-score reads the same `trailing_return` leg through
+/// `engine::momentum_score` (`analyze_fund`). The deep history backs the volatility
+/// and drawdown reads — the risk sub-score's two legs, the dispersion floor, and the
+/// tier — never momentum; each is authored once per run and never re-evaluated by a
+/// sweep.
 fn base_metrics(fin: &CompanyFinancials) -> ComputedMetrics {
     let price_legs = engine::compute_metrics(fin);
     ComputedMetrics {
@@ -1251,12 +1245,105 @@ mod tests {
         let tr = m.trailing_return.expect("both closes present");
         assert!(tr < 0.05, "trailing return {tr} came from the deep history");
 
-        // The deep history still backs the tier's volatility leg and momentum —
-        // authored once per run, never re-evaluated, so no second window disagrees.
+        // The deep history still backs the volatility and drawdown reads (risk
+        // legs, dispersion floor, tier) — never momentum — authored once per run,
+        // never re-evaluated, so no second window disagrees.
         assert!(
             per_period_volatility(&fin) != m.return_volatility,
             "fixture sanity: the two windows genuinely differ"
         );
+    }
+
+    /// The fund's momentum sub-score is the stock read — `engine::momentum_score`
+    /// over the 180-day `price_history` leg. Scoring the ~1,600-day `daily_closes`
+    /// pinned nearly every fund at 0 / 100: a multi-year cumulative return against
+    /// a band tuned to 180 days (the 2026-08-24 review's fund-momentum finding).
+    #[test]
+    fn fund_momentum_is_the_stock_read_over_the_short_window() {
+        // The deep series has tripled; the 180-day window is up ~1%.
+        let fin = CompanyFinancials {
+            symbol: "VTI".to_string(),
+            current_price: Some(300.0),
+            price_history: vec![297.0, 298.0, 299.0, 300.0],
+            daily_closes: vec![
+                DatedValue {
+                    date: "2022-01-03".into(),
+                    value: 100.0,
+                },
+                DatedValue {
+                    date: "2024-01-02".into(),
+                    value: 200.0,
+                },
+                DatedValue {
+                    date: "2026-07-15".into(),
+                    value: 300.0,
+                },
+            ],
+            ttm_dividends_per_share: Some(3.6),
+            ..Default::default()
+        };
+        let inputs = FundEngineInputs {
+            fund: &fund(),
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        let FundEngineVerdict::Priced(out) = analyze_fund(&inputs) else {
+            panic!("the fixture prices");
+        };
+        let stock_read = engine::momentum_score(&engine::compute_metrics(&fin))
+            .expect("the short window has two closes");
+        assert_eq!(
+            out.sub_scores.momentum, stock_read,
+            "fund momentum must be the stock read over the same window and band"
+        );
+        // Concretely: ~1% maps just above neutral, nowhere near the band's ceiling.
+        assert!(
+            out.sub_scores.momentum < 60.0,
+            "momentum {} was scored off the deep history",
+            out.sub_scores.momentum
+        );
+    }
+
+    /// No short window → momentum imputes to the neutral 50, the stock path's own
+    /// posture — the deep history never substitutes as the momentum input.
+    #[test]
+    fn fund_momentum_imputes_neutral_without_the_short_window() {
+        let fin = CompanyFinancials {
+            symbol: "VTI".to_string(),
+            current_price: Some(300.0),
+            price_history: vec![],
+            daily_closes: vec![
+                DatedValue {
+                    date: "2022-01-03".into(),
+                    value: 100.0,
+                },
+                DatedValue {
+                    date: "2024-01-02".into(),
+                    value: 200.0,
+                },
+                DatedValue {
+                    date: "2026-07-15".into(),
+                    value: 300.0,
+                },
+            ],
+            ttm_dividends_per_share: Some(3.6),
+            ..Default::default()
+        };
+        let inputs = FundEngineInputs {
+            fund: &fund(),
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        let FundEngineVerdict::Priced(out) = analyze_fund(&inputs) else {
+            panic!("the deep closes still carry the risk leg, so the fixture prices");
+        };
+        assert_eq!(out.sub_scores.momentum, 50.0);
     }
 
     #[test]

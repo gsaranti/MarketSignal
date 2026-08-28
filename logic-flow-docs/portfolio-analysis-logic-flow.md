@@ -681,7 +681,7 @@ The letter’s three inputs (quality, valuation, risk), each on a 0–100 scale 
   - Drawdown enters the risk tier, not this score; no liquidity series is on this job’s surface.
 
 - **Momentum score** — trailing price return; context, **outside the letter**. Stored in the output sub-scores.
-  - Input: trailing return (first-to-last close over the available history).
+  - Input: trailing return (first-to-last close over the short undated EOD window, never the deep dated closes).
   - Equation: `scale(−0.30 → 0.30)` (−30% → 0, 0 → 50, +30% → 100).
 
 #### Scenario targets (priced stocks)
@@ -789,7 +789,7 @@ The alternative branch to the stock spine above; the fund engine makes the final
   - **Quality** — no fund quality axis exists, so it is a fixed neutral **50** (never presented as fund quality; its presence forces the low-confidence marker).
   - **Valuation** — the coverage-gated percentile above.
   - **Risk** — `average` of two inverted legs: volatility → `scale(0.04 → 0)`, drawdown → `scale(0.6 → 0)`. A **missing leg is imputed to 50** when the other is present (unlike the stock risk score, which drops it); **both legs absent → the fund abstains** (`insufficient-evidence`). [note: these bands differ from the stock risk bands.]
-  - **Momentum** — trailing return → `scale(−0.30 → 0.30)`, outside the letter.
+  - **Momentum** — the stock momentum score above, unchanged: trailing return over the short undated window → `scale(−0.30 → 0.30)`, outside the letter; the deep dated closes back the volatility and drawdown reads (risk legs, dispersion floor, tier), never momentum.
   - **Grade** — same weighting and cutoffs as a stock (`quality × 40% + valuation × 30% + risk × 30%`); because fund quality is always 50, this reduces to `20 + valuation × 30% + risk × 30%`, and every priced fund carries the low-confidence marker.
 
 - **Fund metrics**
@@ -1232,7 +1232,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Both are scope-limited to horizon reads and market setup — context for the outlook, never by itself a reason to exit the holding. (In the prompt the explicit caveat sits on the latest sections; the stances ride as a bare list.)
 - **Continuity block**
   - Whether a prior verdict exists.
-  - A band-recalibration note when the grade bands changed since the prior letter.
+  - A parameter-boundary note when a priced prior verdict's grade-parameter stamp sits across a boundary that changed this holding's record on the prior's own branch — a band recalibration, or (fund only) the momentum re-homing; a stock across the fund-momentum boundary, a never-priced prior, and an unrecognized stamp get none, and neither does the input delta.
   - The semantic prior-analysis recall — the Step-6a hits, when any.
   - The rendered input delta with its what-changed-entry rules (the vocabulary is Step 6b §Input delta; the attribution check is Step 6g). With a prior verdict, a firing technology-event pre-flag, narrative read, hard forensic state, or rendered latest-report sections reaches the model twice — as its own section and as a delta row; a debut carries no delta rows, and a house view reduced to the recent-stance list earns none.
 - **Retrospective (when a prior priced verdict exists)**

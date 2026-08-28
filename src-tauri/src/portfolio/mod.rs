@@ -1599,11 +1599,13 @@ pub struct HoldingAudit {
     /// runs persisted before the field existed (`#[serde(default)]`).
     #[serde(default)]
     pub target_meta: Option<engine::TargetMeta>,
-    /// The grade-band parameter version the letter was computed under
+    /// The grade-parameter version the letter and sub-scores were computed under
     /// ([`engine::GRADE_PARAMETER_VERSION`]) — the boundary marker that lets the
-    /// what-changed audit and outcome-learning cohorts recognize a band recalibration
-    /// (letters moving with no input change) for what it is. `None` on runs persisted
-    /// before the field existed (`#[serde(default)]`) — the pre-tune bands.
+    /// what-changed audit and outcome-learning cohorts recognize a parameter
+    /// boundary for what it changed: a band recalibration (letters moving with no
+    /// input change) or a stamped sub-score's input re-homing
+    /// ([`engine::grade_parameter_change`]). `None` on runs persisted before the
+    /// field existed (`#[serde(default)]`) — the pre-tune bands.
     #[serde(default)]
     pub grade_parameter_version: Option<String>,
     /// The ledger legs of the continuity audit — crossings consumed, downgrades,
