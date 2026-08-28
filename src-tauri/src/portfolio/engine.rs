@@ -2286,10 +2286,14 @@ fn stock_anchor_observations(
             window.iter().map(|r| r.eps_diluted).sum()
         } else {
             let revenue: Option<f64> = window.iter().map(|r| r.revenue).sum();
-            let shares = window[0]
-                .diluted_shares
-                .or_else(|| q.first().and_then(|r| r.diluted_shares))
-                .or(fin.shares_outstanding);
+            // The share basis stays inside the print's own window: the
+            // anchoring quarter's diluted count, else the nearest within the
+            // window — never the newest filing's or today's, which under
+            // buybacks or dilution would put a years-old print on a different
+            // basis than its own dated close and skew the multiple history. A
+            // window with no in-window count is inadmissible like any other
+            // (`docs/portfolio-analysis.md` §Starting parameters).
+            let shares = window.iter().find_map(|r| r.diluted_shares);
             match (revenue, shares) {
                 (Some(rev), Some(sh)) if sh > 0.0 => Some(rev / sh),
                 _ => None,
@@ -3968,6 +3972,71 @@ mod tests {
         c.eps_mid = Some(4.2);
         c.eps_high = Some(4.4);
         fin
+    }
+
+    #[test]
+    fn anchor_share_count_stays_inside_the_prints_own_window() {
+        // A historical revenue-per-share anchor must sit on a share count from
+        // inside its own TTM window — never the newest filing's or today's,
+        // which under buybacks or dilution would put a three-year-old print on
+        // a different share basis than its own dated close and skew the
+        // anchor-multiple history (`docs/portfolio-analysis.md` §Starting
+        // parameters — the anchor carve-out from the latest-count basis).
+        let buyback_profile = || {
+            let mut fin = strong();
+            for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
+                // Older quarters carry more shares: a steady buyback.
+                row.diluted_shares = Some(1.0e10 * (1.0 + 0.05 * i as f64));
+            }
+            fin
+        };
+        let rates = rates();
+        let baseline = stock_anchor_observations(&buyback_profile(), &rates, false, None);
+        assert_eq!(baseline.observations.len(), ANCHOR_WINDOW_QUARTERS);
+
+        // Variant A: the anchoring quarter of window 6 lacks its count — the
+        // nearest count inside the window (row 7's) denominates the print.
+        let mut fin = buyback_profile();
+        fin.quarterly_income[6].diluted_shares = None;
+        let scan = stock_anchor_observations(&fin, &rates, false, None);
+        assert_eq!(
+            scan.observations.len(),
+            ANCHOR_WINDOW_QUARTERS,
+            "still admissible"
+        );
+        let revenue_6: f64 = fin.quarterly_income[6..10]
+            .iter()
+            .map(|r| r.revenue.unwrap())
+            .sum();
+        let close_6 = latest_on_or_before(&fin.daily_closes, "2025-02-14").unwrap();
+        let on_row_7 = close_6 / (revenue_6 / fin.quarterly_income[7].diluted_shares.unwrap());
+        let on_newest = close_6 / (revenue_6 / fin.quarterly_income[0].diluted_shares.unwrap());
+        let got = scan.observations[6].raw_multiple;
+        assert!(
+            (got - on_row_7).abs() < 1e-9,
+            "got {got}, in-window {on_row_7}"
+        );
+        assert!(
+            (got - on_newest).abs() > 1e-6,
+            "must not ride the newest count"
+        );
+
+        // Variant B: no count anywhere inside window 6 — the window is
+        // inadmissible, never computed on today's shares outstanding.
+        let mut fin = buyback_profile();
+        for row in &mut fin.quarterly_income[6..10] {
+            row.diluted_shares = None;
+        }
+        assert!(
+            fin.shares_outstanding.is_some(),
+            "the old fallback was available"
+        );
+        let scan = stock_anchor_observations(&fin, &rates, false, None);
+        assert_eq!(
+            scan.observations.len(),
+            ANCHOR_WINDOW_QUARTERS - 1,
+            "window 6 drops"
+        );
     }
 
     #[test]

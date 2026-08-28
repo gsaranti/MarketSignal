@@ -134,6 +134,11 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   A seam gap surfaces as the fallback's typed prior-year-window absence, never a misaligned read.
   A pinned test drops the quarter at the seam and proves the fallback gaps, a gap inside the newest four types the current-window absence, and a gap past the eighth row never trips.
 - **Historical anchor share-count fallback** — a historical revenue-per-share anchor whose quarter lacks `diluted_shares` falls back to the newest quarter's or today's count (`engine.rs:2210-2213`), skewing the anchor-multiple history in the financially wrong direction under buybacks or dilution.
+  Resolved 2026-08-27: `stock_anchor_observations` denominates each historical print on a diluted count from inside its own TTM window — the anchoring quarter's, else the nearest within the window — with no fallback to the newest filing's or today's count.
+  A window with no in-window count is inadmissible, thinning the anchor set like a gapped window.
+  The anchor carve-out from the latest-count basis is stated once at `portfolio-analysis.md` §Starting parameters, beside the forward driver's basis.
+  The blanket at that home and its two mirrors (`trade-opportunities.md` §Starting parameters, the TO logic-flow) are scoped to forward conversions, off the Codex round.
+  A pinned test proves an in-window neighbour denominates a count-less anchoring quarter and that a window with no count drops rather than riding today's shares outstanding.
 - **One-month band is unscaled daily volatility** — `(daily σ × 2).clamp(0.02, 0.15)` (`engine.rs:2562-2565`) understates a month's 1σ move by ~√21 against the suite's own √t convention (`dispersion_floor`, `tech_event_pre_flag`), so the printed band covers ~0.44σ of the month.
   The doc comment marks it "v1 mechanics", so this is surfaced as a deliberate-retention judgment call rather than an accident.
   Ruled 2026-08-27: scale by √t — the band becomes daily σ × 2 × √21 under the same clamp, matching the suite's `dispersion_floor` / `tech_event_pre_flag` convention.
