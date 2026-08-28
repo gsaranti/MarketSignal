@@ -2069,12 +2069,15 @@ fn normalized_assumption_value(
 /// (`docs/portfolio-workflow.md` §Step 6e): a validated forward assumption may
 /// move a scenario target — the engine, never the model, recomputes it as an
 /// explicit, logged assumption. A `supplement` may only fill a driver value
-/// the structured feeds don't carry (it never displaces a present feed value);
-/// a `supersede` is honored only when every check verifies — and the consensus
-/// feed carries **no as-of date** to compare against, so as-built a supersede
-/// always rejects on that named condition (structured-wins is the default).
-/// `Err` carries the failed condition for the audit; the structured targets
-/// stand.
+/// the structured feeds don't carry (it never displaces a present feed value —
+/// and *present* means the feed carries a value on any of the driver's legs,
+/// whatever its sign: a loss forecast is a value, not an absence, and a
+/// low/high bracket without a midpoint is a present feed, so the ladder's rung
+/// admissibility is never feed absence); a `supersede` is honored only when every check
+/// verifies — and the consensus feed carries **no as-of date** to compare
+/// against, so as-built a supersede always rejects on that named condition
+/// (structured-wins is the default). `Err` carries the failed condition for
+/// the audit; the structured targets stand.
 pub fn refine_targets_with_assumption(
     fin: &CompanyFinancials,
     rates: &RateAnchors,
@@ -2097,12 +2100,27 @@ pub fn refine_targets_with_assumption(
         ));
     }
     let normalized_value = normalized_assumption_value(input.metric, input.value, &input.units)?;
-    let feed_value = fin.consensus.as_ref().and_then(|c| match input.metric {
-        AssumptionMetric::ForwardEps => c.eps_mid,
-        AssumptionMetric::ForwardRevenue => c.revenue_mid,
-    });
-    let feed_present = feed_value.is_some_and(|v| v > 0.0);
-    if feed_present {
+    // Present means the feed carries a value on *any* of the driver's three
+    // legs, whatever its sign: a published loss forecast is a value, not an
+    // absence, and a low/high bracket without a midpoint is still a present
+    // feed (the FMP builder shapes every leg independently). The ladder's
+    // rung admissibility (`> 0.0` on the mid) is never feed absence, so a
+    // positive fact can't ride in over a loss forecast as a wrong-sign fill,
+    // and the three-leg fill below can't overwrite a bracket.
+    let legs = fin
+        .consensus
+        .as_ref()
+        .map(|c| match input.metric {
+            AssumptionMetric::ForwardEps => [c.eps_low, c.eps_mid, c.eps_high],
+            AssumptionMetric::ForwardRevenue => [c.revenue_low, c.revenue_mid, c.revenue_high],
+        })
+        .unwrap_or([None; 3]);
+    let present: Vec<String> = ["low", "mid", "high"]
+        .iter()
+        .zip(legs)
+        .filter_map(|(leg, v)| v.map(|v| format!("{leg} {v}")))
+        .collect();
+    if !present.is_empty() {
         if input.supersede {
             return Err(
                 "rejected: supersede unverifiable — the structured consensus carries no \
@@ -2110,11 +2128,11 @@ pub fn refine_targets_with_assumption(
                     .to_string(),
             );
         }
-        return Err(
+        return Err(format!(
             "rejected: supplement may not displace a present structured value — the \
-             feed's value stands"
-                .to_string(),
-        );
+             feed's value ({}) stands",
+            present.join(", ")
+        ));
     }
 
     // The supplement applies: fill the absent driver and re-run the analysis,
@@ -3740,6 +3758,116 @@ mod tests {
         input.as_of = "next quarter".into();
         let err = refine_targets_with_assumption(&no_eps, &rates, &input).unwrap_err();
         assert!(err.contains("ISO date"), "{err}");
+    }
+
+    #[test]
+    fn a_loss_forecast_consensus_is_present_and_never_displaced() {
+        // A published loss forecast is a *present* feed value, not an absent
+        // driver: the ladder's EPS rung declines it (`> 0.0`), but rung
+        // admissibility is never feed absence. A positive guidance figure
+        // would be a wrong-sign fill on the shadow audit line the 2026-08-27
+        // promotion bar counts, so the supplement rejects against it and a
+        // supersede takes the present-feed branch.
+        let rates = rates();
+        let mut input = ForwardAssumptionInput {
+            metric: AssumptionMetric::ForwardEps,
+            value: 7.4,
+            units: "USD per share".into(),
+            supersede: false,
+            fact_type: "issued company guidance".into(),
+            as_of: "2026-08-20".into(),
+            source_url: "https://ir.example.com/guidance".into(),
+        };
+        for feed_mid in [-0.50, 0.0] {
+            let mut fin = strong();
+            {
+                let c = fin.consensus.as_mut().unwrap();
+                c.eps_low = None;
+                c.eps_mid = Some(feed_mid);
+                c.eps_high = None;
+            }
+            // The ladder is provably off the EPS rung on this fixture.
+            match analyze(&fin, &rates) {
+                EngineVerdict::Analyzed(out) => assert_eq!(
+                    out.target_meta.driver_rung,
+                    "consensus forward revenue per share"
+                ),
+                other => panic!("expected the revenue rung, got {other:?}"),
+            }
+            input.supersede = false;
+            let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
+            assert!(err.contains("may not displace"), "feed {feed_mid}: {err}");
+            assert!(
+                err.contains(&format!("(mid {feed_mid})")),
+                "the audit line names the feed leg and value — feed {feed_mid}: {err}"
+            );
+            input.supersede = true;
+            let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
+            assert!(err.contains("no as-of date"), "feed {feed_mid}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_bracket_without_a_midpoint_is_present_and_never_displaced() {
+        // The FMP builder shapes every consensus leg independently, so a row
+        // carrying `epsLow` / `epsHigh` with a null `epsAvg` lands as a
+        // low/high bracket with no midpoint. The ladder's EPS rung declines it
+        // (no mid), but the bracket is a present feed value — the three-leg
+        // fill must never overwrite it (Codex, loss-forecast slice).
+        let rates = rates();
+        let mut fin = strong();
+        {
+            let c = fin.consensus.as_mut().unwrap();
+            c.eps_low = Some(1.0);
+            c.eps_mid = None;
+            c.eps_high = Some(2.0);
+        }
+        match analyze(&fin, &rates) {
+            EngineVerdict::Analyzed(out) => assert_eq!(
+                out.target_meta.driver_rung,
+                "consensus forward revenue per share"
+            ),
+            other => panic!("expected the revenue rung, got {other:?}"),
+        }
+        let mut input = ForwardAssumptionInput {
+            metric: AssumptionMetric::ForwardEps,
+            value: 7.4,
+            units: "USD per share".into(),
+            supersede: false,
+            fact_type: "issued company guidance".into(),
+            as_of: "2026-08-20".into(),
+            source_url: "https://ir.example.com/guidance".into(),
+        };
+        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
+        assert!(err.contains("may not displace"), "{err}");
+        assert!(
+            err.contains("(low 1, high 2)"),
+            "the audit line names each present leg: {err}"
+        );
+        input.supersede = true;
+        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
+        assert!(err.contains("no as-of date"), "{err}");
+        // The revenue driver's legs are read for a revenue fact — a present
+        // EPS bracket never blocks a revenue fill, and vice versa.
+        {
+            let c = fin.consensus.as_mut().unwrap();
+            c.revenue_low = None;
+            c.revenue_mid = None;
+            c.revenue_high = Some(9.0e9);
+        }
+        input.supersede = false;
+        input.metric = AssumptionMetric::ForwardRevenue;
+        input.units = "USD billions".into();
+        input.value = 4.5;
+        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
+        assert!(err.contains("(high 9000000000)"), "{err}");
+        fin.consensus.as_mut().unwrap().revenue_high = None;
+        let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
+        assert!(
+            refined.matched_rule.contains("forward-revenue"),
+            "{}",
+            refined.matched_rule
+        );
     }
 
     #[test]

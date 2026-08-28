@@ -121,6 +121,14 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
 
 - **Loss-forecast displacement in the shadow fill** — `feed_present` requires `v > 0.0` (`engine.rs:2043`), so a published negative EPS consensus counts as absent and a whitelisted research fact overwrites all three consensus legs (`engine.rs:2082-2089`), against the supplement-never-displaces contract.
   Confined to the shadow-only 6e audit line — but that line is the promotion evidence the 2026-08-24 shadow ruling reads, so pollution there matters.
+  Resolved 2026-08-27: `feed_present` in `refine_targets_with_assumption` now reads feed presence as `is_some()` — a loss forecast is a present value, never an absence.
+  The supplement rejects against it and the audit's rejection line names the present leg and its value, so an inspector reads the sign.
+  A pinned test holds a `-0.50` and a `0.0` consensus on the revenue rung and proves neither is displaced.
+- **Bracket displacement in the shadow fill** — the presence guard read only the mid leg (`eps_mid` / `revenue_mid`) while the accepted supplement overwrites all three low/mid/high legs, so a feed carrying a low/high bracket without a midpoint still admitted a displacing supplement.
+  The shape is production-representable: the FMP consensus builder shapes every leg independently, so a row with `epsLow` / `epsHigh` and a null `epsAvg` lands as a bracket with no midpoint.
+  Surfaced by the loss-forecast slice's plan and confirmed by its Codex round; folded into that slice under the one-seam exception, since the fix is the same presence predicate.
+  Resolved 2026-08-27: presence now reads any of the driver's three legs, and the rejection line names each present leg with its value.
+  A pinned test holds an EPS low/high bracket with no midpoint on the revenue rung and proves it is not displaced, and that an EPS bracket never blocks a revenue fill.
 - **TTM seam gap in the narrative fallback** — `ttm_revenue_window` checks contiguity only inside each 4-quarter window (`engine.rs:3103-3109`), never across the seam between the current and prior-year windows (`engine.rs:3156-3162`), so a feed gap at the seam yields a mislabeled "YoY" over 15 months; the dossier's own `apply_ttm_statement_basis` demands the full 8-row run for exactly this pair (`dossier.rs:587-598`).
 - **Historical anchor share-count fallback** — a historical revenue-per-share anchor whose quarter lacks `diluted_shares` falls back to the newest quarter's or today's count (`engine.rs:2210-2213`), skewing the anchor-multiple history in the financially wrong direction under buybacks or dilution.
 - **One-month band is unscaled daily volatility** — `(daily σ × 2).clamp(0.02, 0.15)` (`engine.rs:2562-2565`) understates a month's 1σ move by ~√21 against the suite's own √t convention (`dispersion_floor`, `tech_event_pre_flag`), so the printed band covers ~0.44σ of the month.
