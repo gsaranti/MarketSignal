@@ -920,6 +920,25 @@ impl LedgerSeries {
         )
     }
 
+    /// The statement-derived series whose value is a **flow** on the holding's
+    /// statement basis — a TTM sum or an annual print — as opposed to the two that
+    /// read a balance-sheet **instant** (debt / equity and price / book take the
+    /// latest balance sheet on either basis, outside the flow-basis rule —
+    /// `docs/portfolio-analysis.md` §Starting parameters). The prompt's basis line
+    /// states the basis for these and names the instants as instants; the
+    /// continuity gate stays over the whole [`Self::statement_derived`] family
+    /// (Codex round 1 on the ledger-basis slice).
+    pub fn flow_basis(&self) -> bool {
+        matches!(
+            self,
+            LedgerSeries::NetMargin
+                | LedgerSeries::GrossMargin
+                | LedgerSeries::RevenueGrowth
+                | LedgerSeries::PeRatio
+                | LedgerSeries::PsRatio
+        )
+    }
+
     /// Whether this series' comparator is denominated in price per share — and so
     /// moves with a retroactive split re-basis while every ratio-valued series
     /// (multiples, margins, volatility, trailing return, the expense ratio) is
@@ -953,10 +972,15 @@ impl LedgerSeries {
     }
 
     /// A short human description for the interpretation prompt's vocabulary list.
+    /// The statement-derived family names no basis: the holding's statement basis
+    /// is per holding and per run (`docs/portfolio-analysis.md` §Starting
+    /// parameters), so the prompt states it once beside this list rather than a
+    /// label asserting a TTM the engine may have fallen back from (large-scale
+    /// review 2026-08-24, Priority-1 minor).
     pub fn describe(&self) -> &'static str {
         match self {
-            LedgerSeries::NetMargin => "TTM net margin (decimal)",
-            LedgerSeries::GrossMargin => "TTM gross margin (decimal)",
+            LedgerSeries::NetMargin => "net margin (decimal)",
+            LedgerSeries::GrossMargin => "gross margin (decimal)",
             LedgerSeries::RevenueGrowth => "year-over-year revenue growth (decimal)",
             LedgerSeries::DebtToEquity => "debt / equity ratio",
             LedgerSeries::ReturnVolatility => "daily realized return volatility (decimal)",
@@ -1214,8 +1238,11 @@ pub fn evaluate_ledger_conditions_gated(
                 match st.authored_statement_basis {
                     Some(prior) if prior != current_basis => {
                         out.unevaluable.push(format!(
-                            "condition '{}': statement basis changed ({prior:?} →                              {current_basis:?}) — the level moved with the measurement,                              so this pass cannot compare it",
-                            cond.statement
+                            "condition '{}': statement basis changed ({} → {}) — the level \
+                             moved with the measurement, so this pass cannot compare it",
+                            cond.statement,
+                            prior.label(),
+                            current_basis.label()
                         ));
                         out.unevaluable_series.push(quant.series);
                         st.authored_statement_basis = Some(current_basis);
@@ -5850,6 +5877,45 @@ mod tests {
     }
 
     #[test]
+    fn statement_derived_series_labels_assert_no_basis() {
+        // The holding's statement basis is per holding and per run — the prompt
+        // states it beside the vocabulary — so no statement-derived label may
+        // claim TTM (or annual) on its own (large-scale review 2026-08-24,
+        // Priority-1 minor: "TTM net margin" on an annual-basis holding).
+        for s in LedgerSeries::ALL.iter().filter(|s| s.statement_derived()) {
+            let d = s.describe();
+            assert!(
+                !d.contains("TTM") && !d.to_lowercase().contains("annual"),
+                "{d}"
+            );
+        }
+        assert_eq!(LedgerSeries::NetMargin.describe(), "net margin (decimal)");
+        assert_eq!(
+            LedgerSeries::GrossMargin.describe(),
+            "gross margin (decimal)"
+        );
+        // The flow family is the gate's family less its two balance-sheet instants.
+        let flow: Vec<_> = LedgerSeries::ALL
+            .iter()
+            .filter(|s| s.flow_basis())
+            .map(|s| s.as_kebab())
+            .collect();
+        assert_eq!(
+            flow,
+            ["net-margin", "gross-margin", "revenue-growth", "pe-ratio", "ps-ratio"]
+        );
+        let instants: Vec<_> = LedgerSeries::ALL
+            .iter()
+            .filter(|s| s.statement_derived() && !s.flow_basis())
+            .map(|s| s.as_kebab())
+            .collect();
+        assert_eq!(instants, ["debt-to-equity", "pb-ratio"]);
+        for s in LedgerSeries::ALL {
+            assert!(!s.flow_basis() || s.statement_derived(), "{s:?}");
+        }
+    }
+
+    #[test]
     fn series_resolution_maps_values_and_observation_identities() {
         let fin = strong();
         let metrics = compute_metrics(&fin);
@@ -5924,6 +5990,15 @@ mod tests {
             eval.crossings
         );
         assert_eq!(eval.unevaluable.len(), 1);
+        // The note reads the prompt's own basis labels, with no whitespace runs —
+        // the literal had carried thirty-space runs into the prompt unpinned.
+        assert!(
+            eval.unevaluable[0]
+                .contains("statement basis changed (TTM (four trailing quarters) → SEC annual")
+                && !eval.unevaluable[0].contains("  "),
+            "{}",
+            eval.unevaluable[0]
+        );
         assert_eq!(eval.unevaluable_series, vec![LedgerSeries::PsRatio]);
         let (_, st) = &eval.updated_states[0];
         assert_eq!(st.breach_streak, 0, "the old basis's streak cannot carry across");

@@ -881,8 +881,24 @@ pub enum StatementBasis {
     /// Four contiguous trailing quarters.
     Ttm,
     /// The SEC same-concept annual fallback — adopted when the quarterly window is
-    /// gapped, non-contiguous, or short.
+    /// gapped, non-contiguous, or short, and stamped only where SEC filled a flow
+    /// line (`dossier::merge_financials`); an equity-only fill is a balance-sheet
+    /// instant outside the flow-basis rule and stamps nothing.
     Annual,
+}
+
+impl StatementBasis {
+    /// The prompt's name for the basis — one vocabulary for the ledger section's
+    /// basis line and the evaluation's basis-change note, so the model reads the
+    /// same words wherever the basis is stated.
+    pub fn label(&self) -> &'static str {
+        match self {
+            StatementBasis::Ttm => "TTM (four trailing quarters)",
+            StatementBasis::Annual => {
+                "SEC annual (latest full year — the quarterly window fell back)"
+            }
+        }
+    }
 }
 
 /// A quantitative condition's **evaluation state** — engine state, distinct from the
@@ -1836,7 +1852,18 @@ pub struct HoldingAudit {
 /// under an unchanged legend, stamped so a pre-fix checkpoint cannot resume
 /// into the corrected render and every record names the render it was
 /// authored under.
-pub const PROMPT_VERSION: &str = "portfolio-v14";
+///
+/// `portfolio-v15`: the ledger's statement basis (the 2026-08-24 review's
+/// Priority-1 minor on the TTM vocabulary). The engine-series vocabulary no
+/// longer says "TTM net margin" / "TTM gross margin" — the statement-derived
+/// labels name no basis — and the ledger section of both the interpretation
+/// and the role-risk prompt states the holding's flow basis this run (TTM,
+/// SEC annual, or none) beside the vocabulary, naming debt / equity and
+/// price / book as balance-sheet instants outside it, so a flow-series
+/// threshold is authored on the basis it is evaluated against; the
+/// evaluation's basis-change note reads the same labels. A vocabulary and
+/// section change, stamped so a pre-fix checkpoint cannot resume into it.
+pub const PROMPT_VERSION: &str = "portfolio-v15";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

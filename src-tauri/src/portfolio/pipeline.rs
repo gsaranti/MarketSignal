@@ -2964,6 +2964,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         input.ledger_eval,
         true,
         input.input_delta,
+        input.dossier.financials.statement_basis,
     ));
     p
 }
@@ -3764,6 +3765,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         input.ledger_eval,
         false,
         input.input_delta,
+        input.dossier.financials.statement_basis,
     ));
 
     p
@@ -4186,11 +4188,14 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
 /// (`docs/portfolio-analysis.md` §The position thesis ledger). This is the first
 /// prior-run *content* the prompt carries — the standing view the model tests
 /// against fresh evidence rather than re-deriving from scratch.
+/// `statement_basis` is the holding's stamped basis this run — rendered once beside
+/// the vocabulary by [`statement_basis_line`].
 pub fn ledger_prompt_section(
     prior: Option<&ThesisLedger>,
     eval: Option<&LedgerEvaluation>,
     role_risk: bool,
     input_delta: &[crate::portfolio::DeltaEntry],
+    statement_basis: Option<crate::portfolio::StatementBasis>,
 ) -> String {
     let mut p = String::new();
     // The conditions a fresh research finding bears on this run — the delta's
@@ -4206,6 +4211,7 @@ pub fn ledger_prompt_section(
     for s in engine::LedgerSeries::ALL {
         p.push_str(&format!("- {}: {}\n", s.as_kebab(), s.describe()));
     }
+    p.push_str(&statement_basis_line(statement_basis));
 
     match prior {
         Some(l) => {
@@ -4357,6 +4363,47 @@ pub fn ledger_prompt_section(
         );
     }
     p
+}
+
+/// The ledger section's statement-basis line — the one place the prompt says
+/// which basis the flow series stand on this run, so a flow-series threshold is
+/// authored on the basis it will be evaluated against. The flow family is read off
+/// `LedgerSeries::flow_basis` and the balance-sheet instants off
+/// `statement_derived` less it — never a second list — and the instants are named
+/// as instants, since debt / equity and price / book read the latest balance sheet
+/// on either basis (Codex round 1). The basis is the holding's `statement_basis`,
+/// stamped at `dossier::apply_ttm_statement_basis` and settled by the SEC merge.
+/// `None` — no flow lines this run (a fund, a stock whose statement surface
+/// resolved to nothing, or a balance-sheet instant standing alone, FMP's or an
+/// equity-only SEC fill) — says so:
+/// the flow series are unevaluable here rather than silently on some basis, while
+/// an instant still reads where a balance sheet exists
+/// (`docs/portfolio-analysis.md` §Starting parameters; large-scale review
+/// 2026-08-24, Priority-1 minor).
+fn statement_basis_line(basis: Option<crate::portfolio::StatementBasis>) -> String {
+    let kebabs = |keep: fn(&engine::LedgerSeries) -> bool| {
+        engine::LedgerSeries::ALL
+            .iter()
+            .filter(|s| keep(s))
+            .map(|s| s.as_kebab())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let flow = kebabs(|s| s.flow_basis());
+    let instants = kebabs(|s| s.statement_derived() && !s.flow_basis());
+    match basis {
+        Some(b) => format!(
+            "The flow series ({flow}) are read on this holding's statement basis this \
+             run: {}. Author their thresholds on that basis. The balance-sheet series \
+             ({instants}) read the latest balance sheet — an instant on no flow basis.\n",
+            b.label()
+        ),
+        None => format!(
+            "The flow series ({flow}) have no statement basis this run — no flow lines \
+             reached the engine — so they are unevaluable here. The balance-sheet \
+             series ({instants}) read the latest balance sheet where one exists.\n"
+        ),
+    }
 }
 
 /// A one-line description of the position's change since the prior run, for the
@@ -9708,7 +9755,7 @@ mod tests {
     #[test]
     fn ledger_section_renders_debut_prior_and_crossings() {
         // Debut: the vocabulary and the authoring instruction.
-        let s = ledger_prompt_section(None, None, false, &[]);
+        let s = ledger_prompt_section(None, None, false, &[], None);
         assert!(s.contains("ENGINE SERIES"), "{s}");
         assert!(s.contains("net-margin"), "{s}");
         assert!(s.contains("debut"), "{s}");
@@ -9734,7 +9781,7 @@ mod tests {
             unevaluable_series: vec![engine::LedgerSeries::NetMargin],
             updated_states: vec![],
         };
-        let s = ledger_prompt_section(Some(&prior), Some(&eval), false, &[]);
+        let s = ledger_prompt_section(Some(&prior), Some(&eval), false, &[], None);
         assert!(s.contains("the debut thesis"), "original thesis renders: {s}");
         assert!(s.contains("the standing thesis"), "{s}");
         assert!(s.contains("CONFIRMED BREACH"), "{s}");
@@ -9749,7 +9796,7 @@ mod tests {
         assert!(!s.contains("Target weight range"), "{s}");
 
         // The role_risk variant names the branch reductions.
-        let rr = ledger_prompt_section(Some(&prior), None, true, &[]);
+        let rr = ledger_prompt_section(Some(&prior), None, true, &[], None);
         assert!(rr.contains("trim/sell only"), "{rr}");
 
         // The research-supported mark (2026-08-24 review F3): a fresh research
@@ -9765,13 +9812,13 @@ mod tests {
             label: "research finding (t): a claim [https://x.example/a]".into(),
             related_condition_id: Some("keep-1".into()),
         }];
-        let marked = ledger_prompt_section(Some(&prior), Some(&eval), false, &tied);
+        let marked = ledger_prompt_section(Some(&prior), Some(&eval), false, &tied, None);
         assert!(
             marked.contains("RESEARCH-SUPPORTED THIS RUN: a fresh source-backed finding"),
             "{marked}"
         );
         assert!(!marked.contains("keep-1"), "condition ids stay out of the prompt: {marked}");
-        let rr_marked = ledger_prompt_section(Some(&prior), None, true, &tied);
+        let rr_marked = ledger_prompt_section(Some(&prior), None, true, &tied, None);
         assert!(rr_marked.contains("RESEARCH-SUPPORTED THIS RUN"), "{rr_marked}");
 
         // Both interpretation prompts carry the section.
@@ -9794,6 +9841,99 @@ mod tests {
         assert!(user.contains("REWRITE THE THESIS LEDGER"), "{user}");
         assert!(interpretation_system_prompt().contains("THESIS LEDGER"));
         assert!(role_risk_system_prompt().contains("THESIS LEDGER"));
+    }
+
+    /// The 2026-08-24 large-scale review's Priority-1 minor: the vocabulary said
+    /// "TTM net margin" while an annual-fallback holding's thresholds were
+    /// evaluated against annual prints and no prompt said so. The labels now name
+    /// no basis and the section states the holding's basis once, beside them.
+    #[test]
+    fn ledger_section_states_the_statement_basis() {
+        use crate::portfolio::StatementBasis;
+        // The flow family and the instants pinned by name, so a production drift to
+        // a hand-written list or a predicate change shows here, not only in the gate
+        // (Codex round 1: the gate's whole family is not basis-homogeneous).
+        let flow = "net-margin, gross-margin, revenue-growth, pe-ratio, ps-ratio";
+        let instants = "debt-to-equity, pb-ratio";
+
+        let ttm = ledger_prompt_section(None, None, false, &[], Some(StatementBasis::Ttm));
+        assert!(
+            ttm.contains("- net-margin: net margin (decimal)\n"),
+            "{ttm}"
+        );
+        assert!(
+            ttm.contains("- gross-margin: gross margin (decimal)\n"),
+            "{ttm}"
+        );
+        assert!(
+            !ttm.contains("TTM net margin") && !ttm.contains("TTM gross margin"),
+            "{ttm}"
+        );
+        assert!(
+            ttm.contains(&format!("The flow series ({flow}) are read on")),
+            "{ttm}"
+        );
+        assert!(
+            ttm.contains(&format!(
+                "The balance-sheet series ({instants}) read the latest balance sheet — \
+                 an instant on no flow basis"
+            )),
+            "{ttm}"
+        );
+        assert!(
+            ttm.contains("statement basis this run: TTM (four trailing quarters)"),
+            "{ttm}"
+        );
+        assert!(
+            ttm.contains("Author their thresholds on that basis"),
+            "{ttm}"
+        );
+
+        let annual = ledger_prompt_section(None, None, false, &[], Some(StatementBasis::Annual));
+        assert!(
+            annual.contains("statement basis this run: SEC annual (latest full year"),
+            "{annual}"
+        );
+        assert!(!annual.contains("TTM (four trailing quarters)"), "{annual}");
+
+        // No statement lines: the line says so rather than naming a basis.
+        let none = ledger_prompt_section(None, None, false, &[], None);
+        assert!(none.contains("no statement basis this run"), "{none}");
+        assert!(none.contains("unevaluable here"), "{none}");
+        assert!(
+            none.contains(&format!(
+                "({instants}) read the latest balance sheet where one exists"
+            )),
+            "{none}"
+        );
+        assert!(!none.contains("statement basis this run:"), "{none}");
+
+        // The role/risk branch carries the same line (a fund reads `None`).
+        let rr = ledger_prompt_section(None, None, true, &[], None);
+        assert!(rr.contains("no statement basis this run"), "{rr}");
+
+        // The interpretation prompt reads the dossier's stamped basis.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.financials.statement_basis = Some(StatementBasis::Annual);
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
+            dossier: &d,
+            prior_ledger: d.prior_ledger(),
+            engine: &engine_output,
+            distilled: "",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+        });
+        assert!(
+            user.contains("statement basis this run: SEC annual"),
+            "{user}"
+        );
     }
 
     /// Finding 4 (`docs/verification/2026-08-10-big-run-attempt-1.md`): the header

@@ -631,38 +631,47 @@ pub fn merge_financials(
     sec: &CompanyFacts,
     ttm_statement_basis: bool,
 ) -> CompanyFinancials {
-    let fill = |dst: &mut Option<f64>, src: Option<i64>| {
+    // Each fill reports whether it wrote. The stamp below reads only the FLOW
+    // fills — the annual basis is a flow-window basis, so `Annual` asserts that
+    // SEC's full-year flow lines are what the flows stand on; the equity fill is
+    // a balance-sheet instant outside the flow-basis rule and stamps nothing
+    // (Codex round 2 on the ledger-basis slice: an equity-only SEC fill had still
+    // stamped `Annual`, so the prompt called flows that never reached the engine
+    // "SEC annual").
+    let fill = |dst: &mut Option<f64>, src: Option<i64>| -> bool {
         if dst.is_none() {
             if let Some(v) = src {
                 *dst = Some(v as f64);
+                return true;
             }
         }
+        false
     };
+    let mut sec_filled_a_flow = false;
     if !ttm_statement_basis {
-        fill(&mut fmp.revenue, sec.revenue);
-        fill(&mut fmp.revenue_prior, sec.revenue_prior);
-        fill(&mut fmp.gross_profit, sec.gross_profit);
-        fill(&mut fmp.net_income, sec.net_income);
+        sec_filled_a_flow |= fill(&mut fmp.revenue, sec.revenue);
+        sec_filled_a_flow |= fill(&mut fmp.revenue_prior, sec.revenue_prior);
+        sec_filled_a_flow |= fill(&mut fmp.gross_profit, sec.gross_profit);
+        sec_filled_a_flow |= fill(&mut fmp.net_income, sec.net_income);
     }
     fill(&mut fmp.total_equity, sec.stockholders_equity);
 
     // Refine the basis stamp now that the fills have run — see
     // [`apply_ttm_statement_basis`]. An adopted TTM window stands; otherwise the basis
-    // is `Annual` whenever any statement-derived level is actually present, however it
-    // arrived, and `None` only when there are none at all (a fund, or a holding whose
-    // statement surface resolved to nothing). Stamping `None` while carrying
-    // annual-derived levels would slip them past the basis-continuity gate.
+    // is `Annual` exactly when SEC filled a flow line — the annual-derived flows the
+    // basis-continuity gate must cover (stamping them `None` would slip them past
+    // it) — and `None` when no flow came from SEC: a fund, a holding whose statement
+    // surface resolved to nothing, or a balance-sheet instant standing alone (FMP's
+    // own beside thin quarters, or an equity-only SEC fill). Those instant-only
+    // shapes used to stamp `Annual` ("however it arrived"), which the audit's
+    // sources line and the prompt's basis label then read as an SEC annual flow
+    // basis for flows that never reached the engine (Codex rounds 1–2 on the
+    // ledger-basis slice). Equity-SOURCE continuity — a D/E or P/B step when the
+    // equity leg moves between FMP's quarterly instant and SEC's annual one — is
+    // not this stamp's and never fully was (an FMP balance-sheet gap flips the
+    // source under an unchanged TTM basis); recorded, not tracked.
     if !ttm_statement_basis {
-        let has_statement_level = [
-            fmp.revenue,
-            fmp.revenue_prior,
-            fmp.gross_profit,
-            fmp.net_income,
-            fmp.total_equity,
-        ]
-        .iter()
-        .any(Option::is_some);
-        fmp.statement_basis = has_statement_level.then_some(crate::portfolio::StatementBasis::Annual);
+        fmp.statement_basis = sec_filled_a_flow.then_some(crate::portfolio::StatementBasis::Annual);
     }
 
     // Derive multiples from market cap + fundamentals when FMP didn't supply them.
@@ -861,8 +870,18 @@ pub fn assemble(
     if listing.is_some() && !guard_terminal {
         sources.push("FMP company profile (listing identity, issuer name, sector)".to_string());
     }
-    if ttm_basis {
-        sources.push("FMP TTM statement basis (four-quarter sums)".to_string());
+    // The adopted statement basis, on either basis — read off the MERGED
+    // financials, since the SEC merge is what settles an annual fallback
+    // (`merge_financials`); `None` (no adopted flow basis) records nothing
+    // (`docs/portfolio-analysis.md` §Starting parameters).
+    match financials.statement_basis {
+        Some(crate::portfolio::StatementBasis::Ttm) => {
+            sources.push("FMP TTM statement basis (four-quarter sums)".to_string())
+        }
+        Some(crate::portfolio::StatementBasis::Annual) => {
+            sources.push("SEC annual statement basis (latest full-year lines)".to_string())
+        }
+        None => {}
     }
     // SEC is labeled whenever the leg was consulted — a fetch that returned nothing
     // (or failed, with its gap in the manifest) still leaves its trace, distinct from
@@ -1473,6 +1492,55 @@ mod tests {
     }
 
     #[test]
+    fn an_equity_instant_alone_carries_no_flow_basis_and_a_sec_flow_fill_is_annual() {
+        use crate::portfolio::StatementBasis;
+        // Codex round 1 on the ledger-basis slice: thin quarters beside FMP's own
+        // balance sheet, with the SEC leg never run (no CIK), used to stamp
+        // `Annual` off the equity instant alone — SEC provenance for a level SEC
+        // never supplied. An instant on no flow basis is `None`.
+        let mut fin = fmp_only();
+        fin.quarterly_income = quarters(2, true, false);
+        fin.total_equity = Some(60_000_000_000.0);
+        assert!(!apply_ttm_statement_basis(&mut fin));
+        let merged = merge_financials(fin, &CompanyFacts::default(), false);
+        assert_eq!(merged.statement_basis, None);
+        assert_eq!(
+            merged.total_equity,
+            Some(60_000_000_000.0),
+            "the instant stands"
+        );
+        // Codex round 2: SEC supplying only equity (an issuer with no matching
+        // revenue concept) fills an instant, not a flow — the annual FLOW basis is
+        // not stamped, or the prompt would call flows that never reached the
+        // engine "SEC annual".
+        let mut fin = fmp_only();
+        fin.quarterly_income = quarters(2, true, false);
+        assert!(!apply_ttm_statement_basis(&mut fin));
+        let sec = CompanyFacts {
+            stockholders_equity: Some(60_000_000_000),
+            ..CompanyFacts::default()
+        };
+        let merged = merge_financials(fin, &sec, false);
+        assert_eq!(merged.statement_basis, None);
+        assert_eq!(
+            merged.total_equity,
+            Some(60_000_000_000.0),
+            "the SEC instant still fills"
+        );
+        // A single SEC flow line is the annual basis — that flow is what the gate
+        // must cover.
+        let mut fin = fmp_only();
+        fin.quarterly_income = quarters(2, true, false);
+        assert!(!apply_ttm_statement_basis(&mut fin));
+        let sec = CompanyFacts {
+            net_income: Some(100_000_000_000),
+            ..CompanyFacts::default()
+        };
+        let merged = merge_financials(fin, &sec, false);
+        assert_eq!(merged.statement_basis, Some(StatementBasis::Annual));
+    }
+
+    #[test]
     fn ttm_basis_adopts_four_quarter_sums_and_the_prior_window() {
         let mut fin = fmp_only();
         fin.quarterly_income = quarters(8, true, false);
@@ -1881,8 +1949,19 @@ Sources and footnotes.
     }
 
     /// The source list for a stock assembled with the given SEC leg, chain leg, and
-    /// listing.
+    /// listing, over the FMP-only financials.
     fn stock_sources_full(
+        sec_facts: LegOutcome<'_, CompanyFacts>,
+        chain: LegOutcome<'_, OptionChain>,
+        listing: Option<crate::portfolio::listing::ListingResolution>,
+    ) -> Vec<String> {
+        stock_sources_assembled(fmp_only(), sec_facts, chain, listing)
+    }
+
+    /// The source list for a stock assembled over the given FMP financials, SEC
+    /// leg, chain leg, and listing.
+    fn stock_sources_assembled(
+        fin: CompanyFinancials,
         sec_facts: LegOutcome<'_, CompanyFacts>,
         chain: LegOutcome<'_, OptionChain>,
         listing: Option<crate::portfolio::listing::ListingResolution>,
@@ -1899,7 +1978,7 @@ Sources and footnotes.
         assemble(
             position,
             PositionDelta::new_position(),
-            fmp_only(),
+            fin,
             sec_facts,
             chain,
             InvestorProfile::default_fixture(),
@@ -1936,13 +2015,94 @@ Sources and footnotes.
         stock_sources_full(LegOutcome::NotRun, chain, None)
     }
 
+    /// The 2026-08-24 large-scale review's Priority-1 minor (the ledger TTM
+    /// vocabulary slice, folded): the sources line recorded the basis only when
+    /// TTM was adopted, so an annual-fallback holding's audit named no basis while
+    /// `portfolio-analysis.md` §Starting parameters says the adopted basis is
+    /// recorded there.
+    #[test]
+    fn sources_line_names_the_adopted_statement_basis() {
+        let basis_labels = |sources: Vec<String>| -> Vec<String> {
+            sources
+                .into_iter()
+                .filter(|s| s.contains("statement basis"))
+                .collect()
+        };
+        // Four contiguous quarters: the TTM basis, and only it.
+        let mut ttm = fmp_only();
+        ttm.quarterly_income = quarters(8, true, false);
+        assert_eq!(
+            basis_labels(stock_sources_assembled(
+                ttm,
+                LegOutcome::NotRun,
+                LegOutcome::NotRun,
+                None
+            )),
+            vec!["FMP TTM statement basis (four-quarter sums)".to_string()]
+        );
+        // No usable quarters, SEC annual facts filling the levels: the annual basis.
+        let facts = CompanyFacts {
+            revenue: Some(400_000_000_000),
+            revenue_prior: Some(360_000_000_000),
+            net_income: Some(100_000_000_000),
+            ..CompanyFacts::default()
+        };
+        assert_eq!(
+            basis_labels(stock_sources_assembled(
+                fmp_only(),
+                LegOutcome::Got(&facts),
+                LegOutcome::NotRun,
+                None
+            )),
+            vec!["SEC annual statement basis (latest full-year lines)".to_string()]
+        );
+        // FMP's own balance sheet beside thin quarters, SEC never run: no basis, so
+        // no label claims SEC provenance (Codex round 1).
+        let mut instant_only = fmp_only();
+        instant_only.quarterly_income = quarters(2, true, false);
+        instant_only.total_equity = Some(60_000_000_000.0);
+        assert!(basis_labels(stock_sources_assembled(
+            instant_only,
+            LegOutcome::NotRun,
+            LegOutcome::NotRun,
+            None
+        ))
+        .is_empty());
+        // An equity-only SEC fill is the same instant-only shape: no flow basis, no
+        // label (Codex round 2).
+        let equity_only = CompanyFacts {
+            stockholders_equity: Some(60_000_000_000),
+            ..CompanyFacts::default()
+        };
+        let mut thin = fmp_only();
+        thin.quarterly_income = quarters(2, true, false);
+        assert!(basis_labels(stock_sources_assembled(
+            thin,
+            LegOutcome::Got(&equity_only),
+            LegOutcome::NotRun,
+            None
+        ))
+        .is_empty());
+        // No statement lines from anywhere: no basis, and no label claiming one.
+        assert!(basis_labels(stock_sources_assembled(
+            fmp_only(),
+            LegOutcome::NotRun,
+            LegOutcome::NotRun,
+            None
+        ))
+        .is_empty());
+    }
+
     #[test]
     fn sec_leg_is_labeled_whenever_consulted_and_empty_is_distinct_from_not_run() {
         // M3 of the 2026-08-18 doc/code audit: the label used to depend on the facts
         // being nonempty, so a consulted-but-empty EDGAR fetch left no trace and read
         // exactly like a leg the job never ran.
         let sec_labels = |sources: Vec<String>| -> Vec<String> {
-            sources.into_iter().filter(|s| s.contains("SEC")).collect()
+            sources
+                .into_iter()
+                .filter(|s| s.contains("SEC EDGAR"))
+                .collect()
         };
         // Consulted, nonempty: the plain label.
         let facts = CompanyFacts {

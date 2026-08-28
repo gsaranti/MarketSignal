@@ -6,7 +6,7 @@ It is forward-looking, unlike the dated records beside it — those are written 
 Findings go into a dated record once the run completes; this file is then the index of what that record has to answer.
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
-Records this run persists stamp `portfolio-v14`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, and expense-ratio render slices all landed since the 2026-08-18 revision with no live run between.
+Records this run persists stamp `portfolio-v15`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, and ledger-basis vocabulary slices all landed since the 2026-08-18 revision with no live run between.
 Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime), the sub-distillation-cap watch (§The research loop), and the one-month cap-saturation watch (§Grade, valuation and targets).
 Revised again 2026-08-27 with the technology-event pre-flag watch (§Thesis ledger and the quick check).
 
@@ -24,6 +24,7 @@ The contiguity guard fails a gapped window to the annual fallback rather than ad
 
 The basis-flip rate when a one-quarter feed gap drops a holding to the SEC annual basis.
 The gate types a statement-derived series unevaluable once per flip, so what the run measures is how often the gate fires and how much of the valuation surface it types unevaluable.
+An annual-basis holding whose rewritten ledger still says "TTM" in a statement condition is the retired vocabulary leaking back — the prompt now states the basis beside the series list, so read a few annual-basis ledgers for it.
 
 Target provenance rendering against the sell-all cascade.
 Every priced interpretation carries the `TargetMeta` derivation flags — rate-anchored vs current-multiple carry, flat or clamp-flattened driver, dispersion floor — and a floor-widened band inherits its base's signal quality.
