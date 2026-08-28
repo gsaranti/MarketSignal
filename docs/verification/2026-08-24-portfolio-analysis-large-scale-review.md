@@ -379,6 +379,14 @@ A third round moved the logic-flow mirror to pointer form — the rule plus a po
   The doc moves to the as-built rule — a supersede rejects against any present feed value, and a supersede declared against an absent value is downgraded to a supplement fill, which `matched_rule` will name — and the match legs leave the doc.
   The true leg is revivable only if the channel is promoted and the consensus feed gains an as-of date.
   One slice: the doc plus the label.
+  Ruled 2026-08-28: the canonical `portfolio-workflow.md` §Step 6e gains one appended sentence stating the downgrade rule, its designed three-check supersede sentence standing as written — the corpus describes designed and built without distinction, and the true leg stays revivable.
+  Ruled 2026-08-28: the rewritten logic-flow line keeps the revival condition as a parenthetical — the leg is dormant, not absent.
+  Ruled 2026-08-28: the downgrade label leads with `supplement`, naming the declared supersede and the absent feed value in its parenthetical, so the accepted-rule family stays greppable by prefix.
+  Resolved 2026-08-28: when the declaration was `supersede`, the fill's `matched_rule` reads `supplement (downgraded from a declared supersede — the structured feed carries no <driver> value to contradict): filled the absent …`, the plain label unchanged, and a pinned test proves the downgraded fill is the supplement's fill exactly.
+  The function's doc comment and the logic-flow's Step-6e validation bullet state the as-built rule — the whitelist binding both declarations, the leg dormant with its revival condition, the present-feed rejection, the downgrade the rule names — and the match legs left the line.
+  `portfolio-workflow.md` §Step 6e carries the downgrade sentence beside its designed three-check sentence.
+  `storage.md` §Local Analysis Suite Storage's methodology leg now records the resolution for every evaluated assumption rather than only where it conflicted — a sibling imprecision the review surfaced, folded in by ruling.
+  One Codex round, no findings.
 - **"An accepted forward assumption" as what-changed evidence** — doc line 1327; the delta row is pushed whenever distillation validated an assumption, regardless of its Step-6e shadow resolution — a `rejected:` resolution still anchors an external what-changed row (`pipeline.rs:1222-1230`).
   Ruled 2026-08-28: the row stands as validated-assumption evidence, so the fix is the doc line, joining the Priority-3 batch.
   Nothing is ever accepted under the shadow ruling, an engine rejection grades recomputability rather than the fact's truth, and the canonical homes already say "the logged forward assumption".
@@ -426,6 +434,7 @@ The queue is therefore seven slices before Codex I1–I14 and the §A4 seed edge
 The six Priority-3 doc-line minors are resolved (2026-08-28; each resolution is recorded on its own line under §Priority-3 minor findings).
 The forward-assumption what-changed minor is ruled and resolved with them (2026-08-28; the ruling and resolution are recorded under its bullet), leaving the supersede legs, panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
 The grouping line's count above read eight against its enumerated seven; it is corrected off this slice's Codex round.
+The supersede-legs minor is resolved (2026-08-28; the resolution is recorded under its bullet), leaving panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions

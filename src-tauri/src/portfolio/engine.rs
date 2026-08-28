@@ -2220,16 +2220,21 @@ fn normalized_assumption_value(
 /// The **app-owned Step-6e conflict policy** and target recompute
 /// (`docs/portfolio-workflow.md` §Step 6e): a validated forward assumption may
 /// move a scenario target — the engine, never the model, recomputes it as an
-/// explicit, logged assumption. A `supplement` may only fill a driver value
-/// the structured feeds don't carry (it never displaces a present feed value —
-/// and *present* means the feed carries a value on any of the driver's legs,
-/// whatever its sign: a loss forecast is a value, not an absence, and a
-/// low/high bracket without a midpoint is a present feed, so the ladder's rung
-/// admissibility is never feed absence); a `supersede` is honored only when every check
-/// verifies — and the consensus feed carries **no as-of date** to compare
-/// against, so as-built a supersede always rejects on that named condition
-/// (structured-wins is the default). `Err` carries the failed condition for
-/// the audit; the structured targets stand.
+/// explicit, logged assumption. The primary-source whitelist, the ISO as-of,
+/// and the units normalization bind both declarations. A `supplement` may
+/// only fill a driver value the structured feeds don't carry (it never
+/// displaces a present feed value — and *present* means the feed carries a
+/// value on any of the driver's legs, whatever its sign: a loss forecast is a
+/// value, not an absence, and a low/high bracket without a midpoint is a
+/// present feed, so the ladder's rung admissibility is never feed absence).
+/// The `supersede` leg is dormant by design (ruled 2026-08-27): against any
+/// present feed value it rejects, because the consensus feed carries **no
+/// as-of date** to verify it as newer (structured-wins is the default), and
+/// declared against an absent value it has nothing to contradict, so it is
+/// downgraded to the supplement fill and the matched rule names the
+/// downgrade. The true leg revives only if the channel is promoted and the
+/// feed gains an as-of date. `Err` carries the failed condition for the
+/// audit; the structured targets stand.
 pub fn refine_targets_with_assumption(
     fin: &CompanyFinancials,
     rates: &RateAnchors,
@@ -2320,6 +2325,22 @@ pub fn refine_targets_with_assumption(
             consensus.revenue_high = Some(normalized_value);
         }
     }
+    let driver = match input.metric {
+        AssumptionMetric::ForwardEps => "forward-EPS",
+        AssumptionMetric::ForwardRevenue => "forward-revenue",
+    };
+    // The declaration is validated, never selected: a supersede has nothing
+    // to contradict where the feed carries no value, so it is downgraded to
+    // the supplement fill and the rule says so — the shadow audit line reads
+    // what was declared (ruled 2026-08-27).
+    let rule_head = if input.supersede {
+        format!(
+            "supplement (downgraded from a declared supersede — the structured feed \
+             carries no {driver} value to contradict)"
+        )
+    } else {
+        "supplement".to_string()
+    };
     match analyze(&refined_fin, rates) {
         EngineVerdict::Analyzed(out) => Ok(RefinedTargets {
             price_targets: out.price_targets,
@@ -2328,17 +2349,9 @@ pub fn refine_targets_with_assumption(
             implied_expectations: out.implied_expectations,
             quick_basis: out.quick_basis,
             matched_rule: format!(
-                "supplement: filled the absent {} driver with {normalized_value} \
+                "{rule_head}: filled the absent {driver} driver with {normalized_value} \
                  (stated {} {}) from {} ({}, as of {})",
-                match input.metric {
-                    AssumptionMetric::ForwardEps => "forward-EPS",
-                    AssumptionMetric::ForwardRevenue => "forward-revenue",
-                },
-                input.value,
-                input.units,
-                input.source_url,
-                input.fact_type,
-                input.as_of
+                input.value, input.units, input.source_url, input.fact_type, input.as_of
             ),
         }),
         EngineVerdict::InsufficientEvidence(reason) => Err(format!(
@@ -3892,6 +3905,11 @@ mod tests {
         let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
         assert!(refined.matched_rule.contains("supplement"));
         assert!(refined.matched_rule.contains("forward-EPS"));
+        assert!(
+            refined.matched_rule.starts_with("supplement: filled"),
+            "a plain supplement names no downgrade: {}",
+            refined.matched_rule
+        );
         // The refined targets price the EPS rung now — a different surface
         // than the revenue-rung baseline.
         assert_ne!(
@@ -4048,6 +4066,60 @@ mod tests {
             refined.matched_rule.contains("forward-revenue"),
             "{}",
             refined.matched_rule
+        );
+    }
+
+    #[test]
+    fn a_supersede_declared_against_an_absent_feed_downgrades_to_a_supplement_fill() {
+        // The supersede leg is dormant by design (ruled 2026-08-27): against a
+        // present feed value it rejects on the unverifiable as-of condition,
+        // and against an absent value there is nothing to contradict, so the
+        // declaration is downgraded to the supplement fill — the same
+        // three-leg fill, the same recompute — and the matched rule names the
+        // downgrade so the shadow audit line reads what was declared.
+        let mut fin = strong();
+        {
+            let c = fin.consensus.as_mut().unwrap();
+            c.eps_low = None;
+            c.eps_mid = None;
+            c.eps_high = None;
+        }
+        let rates = rates();
+        let mut input = ForwardAssumptionInput {
+            metric: AssumptionMetric::ForwardEps,
+            value: 7.4,
+            units: "USD per share".into(),
+            supersede: false,
+            fact_type: "issued company guidance".into(),
+            as_of: "2026-08-20".into(),
+            source_url: "https://ir.example.com/guidance".into(),
+        };
+        let as_supplement = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
+        input.supersede = true;
+        let downgraded = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
+        // The fill is the supplement's fill exactly.
+        assert_eq!(
+            downgraded.price_targets.twelve_month.as_ref().map(|t| t.base),
+            as_supplement.price_targets.twelve_month.as_ref().map(|t| t.base),
+        );
+        assert_eq!(downgraded.target_meta.driver_rung, as_supplement.target_meta.driver_rung);
+        // The rule names the downgrade, leading with the accepted-rule family.
+        assert!(
+            downgraded
+                .matched_rule
+                .starts_with("supplement (downgraded from a declared supersede"),
+            "{}",
+            downgraded.matched_rule
+        );
+        assert!(
+            downgraded.matched_rule.contains("no forward-EPS value to contradict"),
+            "{}",
+            downgraded.matched_rule
+        );
+        assert!(
+            downgraded.matched_rule.contains("filled the absent forward-EPS driver"),
+            "{}",
+            downgraded.matched_rule
         );
     }
 
