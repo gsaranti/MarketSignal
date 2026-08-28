@@ -426,12 +426,25 @@ pub fn composite_yield(
     let mut covered = 0.0;
     let mut sum = 0.0;
     for (sector, w) in weights {
+        // A non-finite weight is not a weight (a drifted string the adapter
+        // parsed as NaN / inf): skipped, so it neither poisons `covered` nor
+        // rides a NaN composite into the flat driver and the anchor sorts.
+        if !w.is_finite() {
+            continue;
+        }
         if let Some(pe) = blended_pe.get(&sector.to_ascii_lowercase()) {
             covered += w;
             sum += w / pe;
         }
     }
     if covered <= 0.0 {
+        return None;
+    }
+    let yield_value = sum / covered;
+    // The finiteness / zero guard: a composite that is not a finite non-zero
+    // yield prices no flat driver, and its reciprocal history sample would be
+    // inf — read as absent rather than handed to the sorts.
+    if !yield_value.is_finite() || yield_value == 0.0 {
         return None;
     }
     // The coverage-guard input is ABSOLUTE — the priced share of the whole
@@ -442,7 +455,7 @@ pub fn composite_yield(
     // off a sliver. The yield itself stays renormalized over covered weight —
     // uncovered weight neither reads as zero earnings nor extrapolates.
     Some(CompositeYield {
-        yield_value: sum / covered,
+        yield_value,
         covered_share: covered.min(1.0),
     })
 }
@@ -906,6 +919,16 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         0,
         false,
     );
+    // The engine's output gate (`engine::price_targets_finite`): a non-finite
+    // quote or composite prices every scenario non-finite — the fund exits as
+    // insufficient evidence, never a `null` target the store cannot read back.
+    if !engine::price_targets_finite(&targets) {
+        return FundEngineVerdict::InsufficientEvidence(
+            "non-finite scenario pricing: a feed extreme overflowed the composite driver \
+             or the quote — no finite target to persist"
+                .to_string(),
+        );
+    }
     let tier = engine::assign_fund_tier(
         // Leveraged / inverse never reaches the priced path (it routes to
         // `role_risk_only` above); the comparison keeps the High leg honest anyway.
@@ -1415,6 +1438,111 @@ mod tests {
         let fin_pe = 2.0 / (1.0 / 14.0 + 1.0 / 16.0);
         let expected = (0.5 / tech_pe + 0.3 / fin_pe) / 0.8;
         assert!((c.yield_value - expected).abs() < 1e-12);
+    }
+
+    // ---- Panic posture: a hostile weight never reaches the sorts ----
+
+    #[test]
+    fn composite_skips_non_finite_weight_rows() {
+        // A drifted string weight parses as NaN (or inf) at the adapter: the
+        // row is not a weight — skipped, so the composite and its coverage read
+        // exactly as over the finite rows.
+        let blended = blend_sector_pes(&snapshot());
+        let clean = composite_yield(&weights(), &blended).unwrap();
+        let mut w = weights();
+        w.push(("Technology".to_string(), f64::NAN));
+        w.push(("Energy".to_string(), f64::INFINITY));
+        let c = composite_yield(&w, &blended).unwrap();
+        assert!((c.yield_value - clean.yield_value).abs() < 1e-12, "{c:?}");
+        assert!((c.covered_share - clean.covered_share).abs() < 1e-12, "{c:?}");
+        assert!(c.yield_value.is_finite());
+    }
+
+    #[test]
+    fn a_non_finite_or_zero_composite_reads_as_no_composite() {
+        let blended = blend_sector_pes(&snapshot());
+        // Every weight non-finite: nothing covered — None, never NaN.
+        let all_nan = vec![("Technology".to_string(), f64::NAN)];
+        assert!(composite_yield(&all_nan, &blended).is_none());
+        // Finite weights whose sum overflows: the yield collapses to zero — a
+        // flat driver of zero prices nothing and its reciprocal sample is inf,
+        // so the composite reads as absent.
+        let overflow = vec![
+            ("Technology".to_string(), f64::MAX),
+            ("Financial Services".to_string(), f64::MAX),
+        ];
+        assert!(composite_yield(&overflow, &blended).is_none());
+        // A blended P/E of zero (a subnormal print blown up by the yield
+        // average): the composite is inf — absent, never a sample.
+        let zero_pe: HashMap<String, f64> = [("technology".to_string(), 0.0)].into();
+        assert!(composite_yield(&weights(), &zero_pe).is_none());
+    }
+
+    #[test]
+    fn composite_history_over_non_finite_weights_keeps_finite_samples_only() {
+        // Prints old enough that every quarter sample sees them; a NaN weight
+        // row rides along and changes nothing — every sample is finite and
+        // equals the clean composite.
+        let mut history: HashMap<String, Vec<SectorPe>> = HashMap::new();
+        for row in snapshot() {
+            history.entry(row.sector.clone()).or_default().push(SectorPe {
+                date: "2020-01-01".to_string(),
+                ..row
+            });
+        }
+        let as_of = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let clean = composite_yield(&weights(), &blend_sector_pes(&snapshot())).unwrap();
+        let mut w = weights();
+        w.push(("Energy".to_string(), f64::NAN));
+        let samples = composite_yield_history(&w, &history, as_of);
+        assert_eq!(samples.len(), HISTORY_SAMPLE_QUARTERS);
+        for s in &samples {
+            assert!(s.value.is_finite(), "{s:?}");
+            assert!((s.value - clean.yield_value).abs() < 1e-12, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn a_non_finite_quote_exits_the_fund_as_insufficient_evidence_not_a_non_finite_target() {
+        // A quote the adapter passed through non-finite: the flat driver and
+        // every scenario price go inf, and the engine's output gate exits the
+        // fund as insufficient evidence — never a `null` target the store could
+        // not read back.
+        let fin = CompanyFinancials {
+            symbol: "VTI".to_string(),
+            current_price: Some(f64::INFINITY),
+            price_history: vec![297.0, 298.0, 299.0, 300.0],
+            daily_closes: vec![
+                DatedValue {
+                    date: "2022-01-03".into(),
+                    value: 100.0,
+                },
+                DatedValue {
+                    date: "2024-01-02".into(),
+                    value: 200.0,
+                },
+                DatedValue {
+                    date: "2026-07-15".into(),
+                    value: 300.0,
+                },
+            ],
+            ttm_dividends_per_share: Some(3.6),
+            ..Default::default()
+        };
+        let inputs = FundEngineInputs {
+            fund: &fund(),
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        match analyze_fund(&inputs) {
+            FundEngineVerdict::InsufficientEvidence(reason) => {
+                assert!(reason.contains("non-finite"), "{reason}");
+            }
+            other => panic!("expected the finite-target gate, got {other:?}"),
+        }
     }
 
     #[test]

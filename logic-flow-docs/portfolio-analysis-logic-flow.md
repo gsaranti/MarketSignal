@@ -1056,6 +1056,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - It does not automatically fail the run.
   - A model-call failure inside the required 6c–6f path (the action call included) is hard — it fails the run, which persists no partial run row; every holding whose checkpoint landed and reads back at resume is restored from the trail, and a holding whose write failed or whose row no longer reads is re-analyzed instead — the writes are fail-soft (the Step 6 preamble; Work-list logic, Resume behavior; `docs/portfolio-analysis.md` §Failure posture).
     A transient failure on those calls first re-attempts once under the bounded retry-once before the hard posture applies (`docs/local-models.md` §The local-model adapter seam).
+  - An internal error — a panic anywhere below the job spine — is contained at the job seam and fails the run like a hard model failure: recorded `Failed` with the panic message, the tracker reaching its failed terminal state, any eligible standing checkpoint trail offerable for resume (`docs/portfolio-analysis.md` §Failure posture).
 
 - **Output**
   - Full findings for every worked topic; any lower-priority topic the budget couldn't reach is a recorded degraded-input gap (lower conviction).

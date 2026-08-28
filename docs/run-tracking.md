@@ -63,6 +63,7 @@ A cancelled run:
 - does **not** raise a failed-job warning, because it was intentional.
 
 A **Portfolio Analysis** run's failed or cancelled terminal state additionally offers **Resume** while the interrupted run's checkpoints are eligible — with a line stating what resume keeps, or why it is unavailable; the contract is canonical at [portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture).
+A contained internal error — a panic inside the analysis — reaches that same failed terminal state ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)).
 
 ## A Run Is Not a Report
 

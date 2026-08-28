@@ -1391,6 +1391,20 @@ pub fn evaluate_ledger_conditions_gated(
 
 // ---- The engine --------------------------------------------------------------
 
+/// The engine's output gate: whether every present target leg is a finite
+/// number. A feed extreme the ladder checks leg by leg but never as a quotient
+/// (consensus revenue over a subnormal share count) overflows a driver to
+/// inf, and the carry path turns that into NaN; a non-finite quote does the
+/// same through the one-month leg. Such a target must exit the holding as
+/// insufficient evidence — serde would persist it as `null`, and the store
+/// could not read the whole run row back.
+pub fn price_targets_finite(targets: &crate::portfolio::PriceTargets) -> bool {
+    [&targets.one_month, &targets.twelve_month]
+        .into_iter()
+        .flatten()
+        .all(|t| t.base.is_finite() && t.bear.is_finite() && t.bull.is_finite())
+}
+
 /// Analyze a holding's financials into sub-scores, a grade, and scenario targets — or
 /// abstain. The evidence floor fails when there is no current price (nothing to
 /// target or value against) or fewer than [`MIN_SUBSCORES_FOR_GRADE`] sub-scores are
@@ -1427,6 +1441,15 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
     // The v2 rate-anchored scenario targets. No admissible driver on any ladder rung
     // is the named evidence-floor reason (`docs/portfolio-analysis.md` §Evidence floor).
     let bundle = match scenario_targets_v2(price, fin, rates, &metrics) {
+        // The output gate ([`price_targets_finite`]): a non-finite target exits
+        // the holding here, per-holding and never run-level.
+        TargetOutcome::Computed(b) if !price_targets_finite(&b.targets) => {
+            return EngineVerdict::InsufficientEvidence(
+                "non-finite scenario pricing: a feed extreme overflowed a per-share driver \
+                 or the quote — no finite target to persist"
+                    .to_string(),
+            );
+        }
         TargetOutcome::Computed(b) => b,
         TargetOutcome::NoAdmissibleDriver => {
             return EngineVerdict::InsufficientEvidence(
@@ -1785,10 +1808,20 @@ pub fn split_bridge_factor(fresh_closes: &[DatedValue], anchor: &DatedValue) -> 
     }
 }
 
-/// Linear-interpolated percentile (`p` in 0..=1) over an unsorted sample.
+/// Linear-interpolated percentile (`p` in 0..=1) over the **finite** samples
+/// of an unsorted vector: a NaN or inf
+/// sample is not an observation and is dropped (an inf would ride the
+/// interpolation into a NaN result), and the sort is total, so no input can
+/// panic. Callers hand in at least one finite sample — the collection sites
+/// filter non-finite values before counting — so the no-sample NaN below is
+/// unreachable by contract (the debug assertion flags a caller that breaks it).
 fn percentile(values: &[f64], p: f64) -> f64 {
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).expect("finite percentile inputs"));
+    let mut sorted: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    debug_assert!(!sorted.is_empty(), "percentile over no finite sample");
+    if sorted.is_empty() {
+        return f64::NAN;
+    }
+    sorted.sort_by(f64::total_cmp);
     if sorted.len() == 1 {
         return sorted[0];
     }
@@ -1824,8 +1857,18 @@ pub fn spread_anchored_scenarios(
     // The ≥ 8 floor reads the dated-rate (spread-admissible) anchors; the raw
     // multiples of every driver-admissible quarter back the fallback percentiles, so
     // a failed DGS10 join degrades to real history — never straight to the carry.
-    let spreads: Vec<f64> = observations.iter().filter_map(|o| o.spread).collect();
-    let raws: Vec<f64> = observations.iter().map(|o| o.raw_multiple).collect();
+    // A non-finite sample is not an observation: dropped here so the floors
+    // count finite samples only and the percentiles read finite inputs.
+    let spreads: Vec<f64> = observations
+        .iter()
+        .filter_map(|o| o.spread)
+        .filter(|s| s.is_finite())
+        .collect();
+    let raws: Vec<f64> = observations
+        .iter()
+        .map(|o| o.raw_multiple)
+        .filter(|r| r.is_finite())
+        .collect();
     let n_spread = spreads.len();
     let n_raw = raws.len();
 
@@ -1890,7 +1933,9 @@ fn scenarios_from_surfaces(
     // fallback seams (one scenario rate-anchored, another raw).
     let monotonicity_repaired = !(prices[0] <= prices[1] && prices[1] <= prices[2]);
     if monotonicity_repaired {
-        prices.sort_by(|a, b| a.partial_cmp(b).expect("finite scenario prices"));
+        // A total order: a non-finite price (a hostile driver) must not panic
+        // the repair — the upstream admissibility guards own whether it prices.
+        prices.sort_by(f64::total_cmp);
     }
 
     // The dispersion floor: widen (never narrow) each side to at least the
@@ -2472,9 +2517,13 @@ fn stock_anchor_observations(
         let anchor_date = match &window[0].filing_date {
             Some(d) => d.clone(),
             None => match NaiveDate::parse_from_str(&window[0].period_end, "%Y-%m-%d") {
-                Ok(d) => (d + chrono::Duration::days(FILING_GRACE_DAYS))
-                    .format("%Y-%m-%d")
-                    .to_string(),
+                // Checked: a feed-authored period end at chrono's ceiling
+                // overflows the grace add, and an unalignable window is skipped
+                // like an unparseable one — never a panic.
+                Ok(d) => match d.checked_add_signed(chrono::Duration::days(FILING_GRACE_DAYS)) {
+                    Some(anchor) => anchor.format("%Y-%m-%d").to_string(),
+                    None => continue,
+                },
                 Err(_) => continue,
             },
         };
@@ -2694,7 +2743,11 @@ pub fn scenario_targets_v2(
     //    the window's own demonstrated earning power — a price rally satisfies
     //    the multiple signature with earnings intact, and only the print
     //    separates the two.
-    let raws: Vec<f64> = observations.iter().map(|o| o.raw_multiple).collect();
+    let raws: Vec<f64> = observations
+        .iter()
+        .map(|o| o.raw_multiple)
+        .filter(|r| r.is_finite())
+        .collect();
     let corroborated = fin.consensus.as_ref().is_some_and(|c| {
         let rows = if read.use_eps {
             c.eps_mid_rows
@@ -4121,6 +4174,116 @@ mod tests {
             "{}",
             downgraded.matched_rule
         );
+    }
+
+    // ---- Panic posture: hostile feed values never panic the compute modules ----
+
+    #[test]
+    fn percentile_ignores_non_finite_samples_and_never_panics() {
+        // A NaN or inf sample is not an observation: the percentile reads the
+        // finite samples alone (an inf sample would otherwise ride the
+        // interpolation into a NaN result and on into the scenario prices).
+        let v = [f64::NAN, 1.0, f64::INFINITY, 2.0, 3.0, f64::NEG_INFINITY];
+        assert!((percentile(&v, 0.5) - 2.0).abs() < 1e-12);
+        assert!((percentile(&v, 0.0) - 1.0).abs() < 1e-12);
+        assert!((percentile(&v, 1.0) - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn non_finite_anchor_observations_are_dropped_before_the_percentiles() {
+        // Nine finite dated-rate anchors plus a NaN spread and inf / NaN raw
+        // multiples: the surfaces count the finite samples only and every
+        // scenario price is finite.
+        let mut obs: Vec<AnchorObservation> = (0..9)
+            .map(|i| AnchorObservation {
+                spread: Some(0.01 + 0.001 * i as f64),
+                raw_multiple: 20.0 + i as f64,
+            })
+            .collect();
+        obs.push(AnchorObservation { spread: Some(f64::NAN), raw_multiple: f64::INFINITY });
+        obs.push(AnchorObservation { spread: None, raw_multiple: f64::NAN });
+        let set = spread_anchored_scenarios(100.0, [4.0, 5.0, 6.0], &obs, 0.04, 0.0, 0.0);
+        assert_eq!(set.anchor_observations, 9, "{set:?}");
+        assert_eq!(set.raw_observations, 9, "{set:?}");
+        for p in [set.bear, set.base, set.bull] {
+            assert!(p.is_finite(), "{set:?}");
+        }
+    }
+
+    #[test]
+    fn a_non_finite_scenario_price_never_panics_the_monotonicity_repair() {
+        // A NaN driver reaching the repair sort (the fund flat-driver chain over
+        // a hostile composite) must not panic — the sort is total; the upstream
+        // guards own whether such a driver ever prices.
+        let obs: Vec<AnchorObservation> = (0..9)
+            .map(|i| AnchorObservation {
+                spread: Some(0.01 + 0.001 * i as f64),
+                raw_multiple: 20.0 + i as f64,
+            })
+            .collect();
+        let set = spread_anchored_scenarios(100.0, [f64::NAN; 3], &obs, 0.04, 0.0, 0.0);
+        assert!(set.base.is_nan(), "{set:?}");
+    }
+
+    #[test]
+    fn an_anchor_window_past_the_date_ceiling_is_skipped_not_a_panic() {
+        // A feed-authored period_end at chrono's ceiling with a contiguous
+        // window behind it: the +45-day grace add overflows, so the window is
+        // unalignable and skipped like an unparseable period end — never a
+        // panic. The remaining windows still anchor.
+        let ends = ["+262142-12-31", "+262142-09-30", "+262142-06-30", "+262142-03-31"];
+        assert_eq!(
+            chrono::NaiveDate::parse_from_str(ends[0], "%Y-%m-%d").ok(),
+            Some(chrono::NaiveDate::MAX),
+            "the fixture sits exactly at chrono's ceiling"
+        );
+        assert!(quarters_contiguous(ends), "the window passes the contiguity gate");
+        let mut fin = strong();
+        for (row, end) in fin.quarterly_income.iter_mut().zip(ends) {
+            row.period_end = end.into();
+            row.filing_date = None;
+        }
+        let rates = rates();
+        let baseline = stock_anchor_observations(&strong(), &rates, true, None);
+        let scan = stock_anchor_observations(&fin, &rates, true, None);
+        assert_eq!(
+            scan.observations.len(),
+            baseline.observations.len() - 4,
+            "window 0 drops at the grace add and windows 1–3 at contiguity; the rest anchor"
+        );
+        assert!(!scan.observations.is_empty(), "the untouched windows still anchor");
+    }
+
+    #[test]
+    fn a_driver_overflowing_to_inf_exits_as_insufficient_evidence_not_a_non_finite_target() {
+        // Finite extremes the revenue rung checks leg by leg but never as a
+        // quotient: consensus revenue at f64::MAX over a subnormal share count
+        // overflows the per-share driver to inf; with no positive trailing
+        // print the clamp passes it through, and on the carry path
+        // spot / inf = 0 turns the scenario price into inf × 0 = NaN. The
+        // engine must exit the holding — never persist a target serde would
+        // write as `null` and the store could not read back (the whole run
+        // row would loud-skip).
+        let mut fin = strong();
+        {
+            let c = fin.consensus.as_mut().unwrap();
+            c.eps_low = None;
+            c.eps_mid = None;
+            c.eps_high = None;
+            c.revenue_low = None;
+            c.revenue_mid = Some(f64::MAX);
+            c.revenue_high = None;
+        }
+        for r in fin.quarterly_income.iter_mut() {
+            r.revenue = None;
+            r.diluted_shares = Some(1e-300);
+        }
+        match analyze(&fin, &rates()) {
+            EngineVerdict::InsufficientEvidence(reason) => {
+                assert!(reason.contains("non-finite"), "{reason}");
+            }
+            other => panic!("expected the finite-target gate, got {other:?}"),
+        }
     }
 
     #[test]

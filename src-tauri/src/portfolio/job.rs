@@ -700,6 +700,16 @@ pub fn resume_eligibility(
     Ok(())
 }
 
+/// The human-readable message of a caught panic payload — a `&str` or `String`
+/// from `panic!`, else the placeholder — for the failed run's detail line.
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
+}
+
 /// Run one Portfolio Analysis job end to end with the lifecycle contract. Returns
 /// `Err` only on an infrastructure failure (the database); a failed analysis is a
 /// normal `Ok(Failed)`. The model/persistence half is **fail-hard** (a model error
@@ -753,19 +763,38 @@ pub fn run_portfolio_job(
     ctx.run_started(RUN_LABEL);
     let started_at = now_rfc3339();
 
-    match run_analysis(
-        holdings_source,
-        company_data,
-        market,
-        analyst,
-        profile,
-        selective,
-        outcome_sources,
-        resume,
-        paths,
-        &conn,
-        ctx,
-    ) {
+    // Panic containment (`docs/portfolio-analysis.md` §Failure posture): a panic
+    // anywhere below the spine — the compute modules over hostile feed values —
+    // must reach the same terminal lifecycle as any hard failure: the
+    // job-history row, the `run_finished` event, and any eligible standing
+    // checkpoint trail offerable from the tracker (an early panic may have
+    // opened none). Unwinding panics only; an abort (stack overflow, OOM)
+    // is not catchable in-process. The payload message is the failed detail —
+    // the file:line stays on stderr via the default hook (ruled 2026-08-28).
+    let analysis = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_analysis(
+            holdings_source,
+            company_data,
+            market,
+            analyst,
+            profile,
+            selective,
+            outcome_sources,
+            resume,
+            paths,
+            &conn,
+            ctx,
+        )
+    }));
+    let panicked = analysis.is_err();
+    let analysis = analysis.unwrap_or_else(|payload| {
+        Err(anyhow::anyhow!(
+            "the analysis panicked: {}",
+            panic_payload_message(payload.as_ref())
+        ))
+    });
+
+    match analysis {
         Ok(run) => {
             let finished_at = now_rfc3339();
             let recorded = record_run(
@@ -784,8 +813,10 @@ pub fn run_portfolio_job(
             Ok(PortfolioJobOutcome::Successful(Box::new(run)))
         }
         // A cancel requested mid-run surfaces as an error; the shared flag tells a
-        // user-initiated stop apart from a genuine failure.
-        Err(_) if ctx.is_cancelled() => {
+        // user-initiated stop apart from a genuine failure. A panic is never a
+        // user stop: it records `Failed` even with a cancel pending, so the
+        // failed-job warning surfaces the crash (ruled 2026-08-28).
+        Err(_) if ctx.is_cancelled() && !panicked => {
             let finished_at = now_rfc3339();
             let detail = "run cancelled by user".to_string();
             let recorded = record_run(
@@ -4704,6 +4735,125 @@ mod tests {
         fn reasoner_id(&self) -> String {
             crate::portfolio::pipeline::StubAnalyst.reasoner_id()
         }
+    }
+
+    /// A stub analyst that panics on one symbol — the compute-module panic the
+    /// job seam must contain. It can flip the run's cancel flag first: a panic
+    /// is never a user stop, so the run still records `Failed` (ruled 2026-08-28).
+    struct PanicOn {
+        symbol: &'static str,
+        cancel_first: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    }
+
+    impl crate::portfolio::pipeline::HoldingAnalyst for PanicOn {
+        fn distill_research(
+            &self,
+            inputs: &crate::portfolio::distill::DistillInputs,
+        ) -> Result<crate::portfolio::distill::DistilledResearch> {
+            if inputs.symbol == self.symbol {
+                if let Some(flag) = &self.cancel_first {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                panic!("injected panic on {}", self.symbol);
+            }
+            Ok(crate::portfolio::distill::offline_consolidate(inputs))
+        }
+        fn interpret(
+            &self,
+            input: &crate::portfolio::pipeline::InterpretationInput,
+        ) -> Result<crate::portfolio::Interpretation> {
+            crate::portfolio::pipeline::StubAnalyst.interpret(input)
+        }
+        fn interpret_role_risk(
+            &self,
+            input: &crate::portfolio::pipeline::RoleRiskInput,
+        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
+            crate::portfolio::pipeline::StubAnalyst.interpret_role_risk(input)
+        }
+        fn decide_action(
+            &self,
+            input: &crate::portfolio::pipeline::ActionInput,
+        ) -> Result<crate::portfolio::ActionDecision> {
+            crate::portfolio::pipeline::StubAnalyst.decide_action(input)
+        }
+        fn fast_id(&self) -> String {
+            crate::portfolio::pipeline::StubAnalyst.fast_id()
+        }
+        fn reasoner_id(&self) -> String {
+            crate::portfolio::pipeline::StubAnalyst.reasoner_id()
+        }
+    }
+
+    #[test]
+    fn a_mid_run_panic_is_contained_as_a_failed_run_with_a_resumable_trail() {
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let (_dir, paths) = paths();
+        let recorder = Arc::new(RecordingReporter::default());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let ctx = RunContext::new("panic-run", recorder.clone(), cancel.clone());
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &PanicOn {
+                symbol: "MSFT",
+                cancel_first: Some(cancel.clone()),
+            },
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx,
+        )
+        .unwrap();
+        // Contained: a normal `Failed` outcome carrying the payload — never
+        // `Cancelled`, though the flag was set before the panic.
+        let msg = match outcome {
+            PortfolioJobOutcome::Failed(msg) => msg,
+            other => panic!("expected a contained failure, got {other:?}"),
+        };
+        assert!(msg.starts_with("the analysis panicked: "), "{msg}");
+        assert!(msg.contains("injected panic on MSFT"), "{msg}");
+        assert!(
+            cancel.load(std::sync::atomic::Ordering::SeqCst),
+            "the stub set the cancel flag before panicking, so the cancel arm was live"
+        );
+
+        // The lifecycle completed: the job-history row and the terminal event.
+        let conn = storage::open(&paths.db_path).unwrap();
+        let (state, detail): (String, Option<String>) = conn
+            .query_row(
+                "SELECT state, detail FROM job_runs ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "failed");
+        assert_eq!(detail.as_deref(), Some(msg.as_str()));
+        let last = recorder.messages().pop().expect("the run emitted events");
+        match last.event {
+            ProgressEvent::RunFinished { status, detail, .. } => {
+                assert_eq!(status, "failed");
+                assert_eq!(detail.as_deref(), Some(msg.as_str()));
+            }
+            other => panic!("the last event must be the terminal one, got {other:?}"),
+        }
+
+        // No partial run; the completed holding's checkpoint stands and resumes.
+        assert!(store::latest_run(&conn).unwrap().is_none(), "no partial run persists");
+        let cp = store::load_checkpoint(&conn)
+            .unwrap()
+            .expect("checkpoints survive the panic");
+        assert_eq!(cp.holdings.len(), 1, "AAPL completed before the MSFT panic");
+        assert_eq!(cp.holdings[0].verdict.symbol, "AAPL");
+        let ids = vec!["stub-analyst".to_string(), "stub-analyst".to_string()];
+        resume_eligibility(&conn, &cp, &ids, chrono::Utc::now())
+            .expect("a fresh checkpoint under the same versions is resumable");
     }
 
     /// A holdings source that refuses to pull — the resume no-new-pull proof.

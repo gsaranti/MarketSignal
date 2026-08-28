@@ -290,8 +290,35 @@ A second round tightened the compound-turn claim to its true shape: the retry bo
 - **Resume loses pre-crash prompt usage** — `CheckpointAccumulators` carries no prompt-usage field (`store.rs:191-199`), so a resumed run's data-health context-pressure / peak-prompt / length-stop lines reflect only post-resume holdings — under-reporting the exact signal the big-run prompt-fit watch reads.
 - **No panic containment** — there is no `catch_unwind` around `run_analysis`, so any panic skips both `record_run(Failed)` and the terminal `run_finished` event; the run slot itself frees (poison-tolerant `RunGuard::lock`, `jobs.rs:132-173`), but the tracker never reaches a terminal state and the checkpoint trail is unofferable for that session.
   No realistic panic path was found in the spine files themselves — the exposure is the compute modules below.
+  Ruled 2026-08-28: containment lands at the portfolio seam only — `run_analysis` under `catch_unwind` in `run_portfolio_job` — and the cloud report job's identical unguarded `run_job` shape is recorded here as a named candidate, not widened into the slice.
+  Ruled 2026-08-28: a panic is never a user stop — with a cancel pending it still records `Failed`, bypassing the cancel arm, so the failed-job warning surfaces the crash.
+  Ruled 2026-08-28: the failed detail carries the payload message only (`the analysis panicked: …`); the file:line stays on stderr via the default hook, no process-global hook installed.
+  Ruled 2026-08-28: the mirrors reach `portfolio-analysis.md` §Failure posture (canonical) plus one pointer sentence each in `run-tracking.md` and the logic-flow §Failure logic; `scheduling.md` stands, the owning workflow classifying which failures end a job.
+  Resolved 2026-08-28: `run_analysis` runs under `catch_unwind` in `run_portfolio_job`.
+  A panic records `Failed` with `the analysis panicked: <payload>` as its detail, emits the terminal `run_finished`, and bypasses the cancel arm even with a cancel pending.
+  A pinned test panics mid-book with the cancel flag set first and proves the failed row, the terminal event, no partial run, the completed holding's checkpoint intact, and resume eligibility.
+  The mirrors landed as ruled — two sentences at `portfolio-analysis.md` §Failure posture, a pointer in `run-tracking.md` §Cancellation, a bullet in the logic-flow §Failure logic.
+  Their trail wording reads "any eligible standing checkpoint trail", since a panic before the run opens its own trail leaves none (Codex round 1, P3).
+  Observed, not fixed: the terminal legs run on `progress.rs`'s poisonable locks, which the compute modules never hold, and `scheduling.md` §Job States' Failed bullet names no internal error (A6).
+  The cloud report job's `run_job` shape stands recorded above as the named containment candidate.
+  Three Codex rounds — the second confirming the resume wording resolved, the third approving.
 - **Three contrived-trigger panic paths, all whole-job kill radius given the missing containment** — the monotonicity-repair sort panics on a NaN scenario price (`engine.rs:1680`), reachable only through the fund flat-driver chain (`fund.rs:838`, `848` — composite yield lacks a finiteness/zero guard; `composite_yield` guards only `covered <= 0.0`); `percentile`'s sort panics on NaN and an inf sample yields a NaN result that feeds the first site (`engine.rs:1578`, `1586`; all live callers guard emptiness); an absurd feed-authored `period_end` near chrono's date ceiling panics on the +45-day grace add (`engine.rs:2227`).
   All require pathological feed values; recorded because containment, not probability, is the gap.
+  Ruled 2026-08-28: the `composite_yield` finiteness/zero guard and the observation-vector filtering land in this slice, discharging I7's engine-side clause — I7 keeps the adapter leg alone (`fmp.rs` weight finiteness/range rejection), noted under I7 at resolution.
+  Ruled 2026-08-28: a negative composite yield (short-exposure sector weights) is untouched — only non-finite and zero are guarded — and stands recorded as an observed edge.
+  Ruled 2026-08-28: Codex's round-1 P2 — a non-finite scenario or target persisting as a `null` the store cannot read back, the whole run row loud-skipping — folds into this slice as the engine's output gate rather than queuing as I16.
+  Its persistence round-trip test is declined, the gate making a non-finite target unemittable.
+  Resolved 2026-08-28: `percentile` drops non-finite samples and sorts with `total_cmp`, the three collection sites filter non-finite observations before the floors count them, and the monotonicity repair sorts with `total_cmp`.
+  The filing grace add is `checked_add_signed`, an unalignable window skipped like an unparseable one.
+  The ceiling is reachable only at exactly `+262142-12-31` — chrono 0.4.44's `NaiveDate::MAX`, a later year failing to parse at the contiguity gate — and is pinned red against the unchecked add and green after.
+  `composite_yield` skips a non-finite weight row and reads as absent when the yield is non-finite or zero, so the fund flat-driver chain routes to its existing insufficient-evidence arm.
+  That discharges I7's engine-side clause, its adapter leg staying with I7.
+  The output gate — `engine::price_targets_finite` — exits a holding as insufficient evidence in `analyze` and `analyze_fund` when any target leg is non-finite.
+  It is pinned on Codex's recipe (consensus revenue at `f64::MAX` over a subnormal share count, the carry path's `inf × 0`) and on a fund with a non-finite quote, and `portfolio-analysis.md` §Evidence floor names the exit.
+  Observed, not fixed: a negative composite yield still prices a negative flat driver (ruled untouched above).
+  Codex round 2 reframed the class — every required persisted float, not the targets alone (the dividend shaper's unchecked sum can store an inf `forward_dividends`) — and it is queued as I16 rather than widened here.
+  Its doc-comment placement note (the `analyze` block had been stranded above the new helper) is applied.
+  Three Codex rounds, the third approving.
 - **IPv6-literal fetch URLs can never fetch** — `resolve_public` passes `host_str()`'s bracketed IPv6 form to `to_socket_addrs()` unparsed (`fetch.rs:153-164`; `check_url_policy` at `:205` knows to trim the brackets), so every IPv6-literal fetch errors and spends a budget unit; fails closed, so the SSRF direction is safe.
 
 ## Priority 3 — logic-flow doc alignment
@@ -422,6 +449,7 @@ I12, added 2026-08-27 off the expense-ratio slice's Codex rounds, joins on the s
 I13, added 2026-08-28 off the ledger-basis slice's Codex rounds, joins on the same terms.
 I14, added 2026-08-28 off the statement-date slice's Codex round, joins on the same terms.
 I15, added 2026-08-28 off the Priority-3 doc batch — surfaced by its implementation, reframed by its second Codex round — joins on the same terms.
+I16, added 2026-08-28 off the panic-posture slice's second Codex round — the unreadable-run class beyond the targets — joins on the same terms.
 Fix grouping ruled 2026-08-27: one finding per slice through the plan → implement → review → Codex → commit loop, each marked here; the resume prompt-usage minor is the one-seam exception, its retry events and prompt usage riding `CheckpointAccumulators` together as a single slice.
 Fix grouping revised 2026-08-28 for the Priority-2 and -3 minors, the one-finding rule otherwise standing.
 The six pure doc-line Priority-3 minors — research-fed fraud under the hard state, the qualifying news seed, the narrative 7-day minimum (its canonical-home sentence in `portfolio-analysis.md` §Starting parameters included), "(pre-profit stocks only)", one conversation per topic, and the config-knob thresholds — are one slice, each still marked resolved on its own line.
@@ -435,6 +463,7 @@ The six Priority-3 doc-line minors are resolved (2026-08-28; each resolution is 
 The forward-assumption what-changed minor is ruled and resolved with them (2026-08-28; the ruling and resolution are recorded under its bullet), leaving the supersede legs, panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
 The grouping line's count above read eight against its enumerated seven; it is corrected off this slice's Codex round.
 The supersede-legs minor is resolved (2026-08-28; the resolution is recorded under its bullet), leaving panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
+The panic-posture slice — the containment minor and the three panic paths, Codex's round-1 P2 folded in by ruling — is resolved (2026-08-28; the resolutions are recorded under both bullets), leaving the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -536,6 +565,7 @@ The history then supplies NaN raw multiples to `percentile`, whose `partial_cmp(
 Because the job has no panic containment, one drifted string weight can terminate the entire hours-long run without its normal failed terminal state or resumable in-session offer.
 
 Reject every non-finite or out-of-range weight in the adapter and defensively validate the composite / observation vectors before sorting.
+The engine-side clause — the composite guard and the observation-vector filtering — landed with the panic-posture slice (2026-08-28; recorded under §Priority-3 minor findings); the adapter leg, `weights_from_value`'s finiteness / range rejection, remains I7's.
 
 ### I8 — minor: the priced-fund prompt computes US share differently from the engine guard
 
@@ -617,3 +647,12 @@ The retire shape also sweeps the full-run trigger-leg claims that would then rea
 The quick check's news leg is distinct and stays as built — the pull under a standing falsifier, its evidence-event badge, and the §Starting parameters definition it reads.
 Either shape pins a test holding a fresh seed beside a standing falsifier; no stamp moves on the retire shape.
 Surfaced by the Priority-3 doc batch's implementation and confirmed by its review rounds; a second Codex round found the label has no consumer, reframing the finding from a reachability fix to this, a third named the retire shape's contract sweep, and a fourth the wire shape's doc legs; ruled its own slice 2026-08-28.
+
+### I16 — minor but whole-run kill radius: required persisted floats are finiteness-gated only at the targets
+
+The panic-posture slice's output gate (`engine::price_targets_finite`) exits a holding whose scenario targets are non-finite, closing the exact path its `total_cmp` sorts had opened.
+The unreadable-run class is broader than the targets: the dividend shaper accepts finite amounts and sums them unchecked (`src-tauri/src/fmp.rs`, the in-window `sum += a`), so two in-window `f64::MAX` amounts produce an inf forward-dividend figure.
+Forward dividends move total returns, never scenario prices, so all six target legs stay finite and pass the gate while the same inf lands in the required `QuickCheckBasis.forward_dividends: f64`, persisted on the normal path (`pipeline.rs`), serialized as `null`, and fails the whole run row's decode at read (`store.rs` loud-skip).
+`ImpliedExpectations` is a sibling required-float surface to include in the same audit.
+The fix is an audit of every required `f64` the persisted `PortfolioRun` tree carries — validate each before persist, or reject the overflowing aggregate at its shaper — with a store round-trip regression over finite extreme inputs, the test the panic-posture slice declined for the targets alone.
+Surfaced by the panic-posture slice's second Codex round (2026-08-28); queued on I10/I11's terms.
