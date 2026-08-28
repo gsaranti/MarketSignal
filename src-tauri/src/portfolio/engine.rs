@@ -101,6 +101,12 @@ pub const GRADE_PARAMETER_VERSION: &str = "grade-v2.1";
 /// under v2 — its bear/bull ARE the scenario prices.
 const ONE_MONTH_FALLBACK_BAND: f64 = 0.05;
 
+/// Trading sessions the one-month band covers — the √t horizon the daily
+/// realized volatility is scaled to (targets-v5; the same 21-session window the
+/// one-month outlook reads). The suite's convention: the dispersion floor
+/// annualizes by √252, the technology-event pre-flag scales by √sessions.
+const ONE_MONTH_SESSIONS: f64 = 21.0;
+
 // -- v2 rate-anchored scenario-target function (`docs/portfolio-analysis.md`
 //    §Starting parameters — the settled shape; every rate/return is a decimal ratio).
 
@@ -181,8 +187,10 @@ const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
 /// clamp-collapse — run `3b21ae85` is the v2 baseline. v4: the anchor-multiple
 /// sanity bound and the trough clamp release, drafted against attempt 2's
 /// persisted dataset (run `6a52f1dd` is the v3 baseline;
-/// `docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 3).
-pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v4";
+/// `docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 3). v5: the
+/// one-month band √t-scaled to its 21 sessions under the unchanged clamp (ruled
+/// 2026-08-27 — a units inconsistency, not a calibration).
+pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v5";
 
 // -- Risk tiers and the capital-efficiency hurdle (`docs/portfolio-analysis.md`
 //    §Starting parameters).
@@ -2642,9 +2650,12 @@ pub fn build_price_targets(
 ) -> PriceTargets {
     let pr_base = scenario.base / spot - 1.0;
     let om_base = spot * (1.0 + pr_base / 12.0);
+    // 2σ of daily realized volatility, √t-scaled to the month (targets-v5 —
+    // unscaled, the band covered ~0.44σ of the month), under the unchanged
+    // [2%, 15%] clamp (`docs/portfolio-analysis.md` §Starting parameters).
     let om_band = m
         .return_volatility
-        .map(|v| (v * 2.0).clamp(0.02, 0.15))
+        .map(|v| (v * 2.0 * ONE_MONTH_SESSIONS.sqrt()).clamp(0.02, 0.15))
         .unwrap_or(ONE_MONTH_FALLBACK_BAND);
 
     let anchor_note = if scenario.current_multiple_carry {
@@ -2701,7 +2712,8 @@ pub fn build_price_targets(
             methodology: format!(
                 "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month \
                  price-return leg prorated (v1 mechanics, dividends excluded); bull/bear \
-                 ± {:.1}% from realized volatility [{}]",
+                 ± {:.1}% = 2σ of daily realized volatility √t-scaled to 21 sessions, \
+                 clamped [2%, 15%] [{}]",
                 om_band * 100.0,
                 SCENARIO_TARGET_PARAMETER_VERSION
             ),
@@ -4409,6 +4421,35 @@ mod tests {
         // Direct-mapped raw percentiles over 14..=25 (flat driver 5.0): P25/P50/P75.
         assert!((s.bear - 5.0 * percentile(&(0..12).map(|i| 14.0 + i as f64).collect::<Vec<_>>(), 0.25)).abs() < 1e-9);
         assert!(s.bear < s.base && s.base < s.bull);
+    }
+
+    #[test]
+    fn one_month_band_scales_daily_volatility_to_the_month() {
+        // targets-v5: the one-month half-band is daily σ × 2 × √21 — the suite's
+        // √t convention (`dispersion_floor`, `tech_event_pre_flag`) — under the
+        // unchanged [2%, 15%] clamp. Unscaled, a 1%-daily name printed a 2% band
+        // covering ~0.44σ of the month (ruled 2026-08-27).
+        let scenario = spread_anchored_scenarios(100.0, [6.0, 6.5, 7.0], &[], 0.045, 2.0, 0.0);
+        let band = |vol: Option<f64>| {
+            let m = ComputedMetrics {
+                return_volatility: vol,
+                ..Default::default()
+            };
+            let t = build_price_targets(100.0, &scenario, &m, "r", false, 0, false);
+            let om = t.one_month.unwrap();
+            (om.bull / om.base - 1.0, om.methodology)
+        };
+        // 1% daily σ → 2 × 0.01 × √21 ≈ 9.17%, not 2%.
+        let (b, method) = band(Some(0.01));
+        assert!((b - 0.02 * 21f64.sqrt()).abs() < 1e-9, "{b}");
+        assert!(method.contains("21 sessions"), "{method}");
+        assert!(method.contains("targets-v5"), "{method}");
+        // The clamp still binds at both ends: 0.2% daily → the 2% floor,
+        // 2% daily → the 15% cap.
+        assert!((band(Some(0.002)).0 - 0.02).abs() < 1e-9);
+        assert!((band(Some(0.02)).0 - 0.15).abs() < 1e-9);
+        // No volatility read → the fixed fallback.
+        assert!((band(None).0 - ONE_MONTH_FALLBACK_BAND).abs() < 1e-9);
     }
 
     #[test]

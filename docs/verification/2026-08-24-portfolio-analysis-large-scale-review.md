@@ -144,6 +144,10 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   Ruled 2026-08-27: scale by √t — the band becomes daily σ × 2 × √21 under the same clamp, matching the suite's `dispersion_floor` / `tech_event_pre_flag` convention.
   It is a units inconsistency rather than a calibration, so it does not wait on outcome evidence.
   It is its own slice and a `SCENARIO_TARGET_PARAMETER_VERSION` bump, since stored one-month targets change basis.
+  Resolved 2026-08-27: the one-month half-band is daily σ × 2 × √21 under the unchanged clamp, the methodology line states the basis, and `SCENARIO_TARGET_PARAMETER_VERSION` is `targets-v5`.
+  A pinned test proves a 1% daily σ prints a ~9.2% band rather than 2%, the clamp still binds at both ends, and the no-volatility fallback stands.
+  The 15% cap now binds from ~1.64% daily σ, so the saturation share is a `big-run-watch-set.md` line (§Grade, valuation and targets).
+  The Portfolio logic-flow's band formula is aligned to `targets-v5`.
 - **Tech pre-flag benchmark coverage unchecked** — `latest_on_or_before(benchmark_closes, latest.date)` (`engine.rs:3260`) never verifies the benchmark covers the holding's newest session, so a shorter benchmark series silently mismatches the windows instead of taking a typed gap; rare, since both legs ride one FMP fetch.
 - **Pre-profit backfill counts any-role periods** — `backfill_required` counts distinct stored periods of any observation role (`pre_profit.rs:236-251`) where the documented rule counts *comparable* periods (bound + actual pairs), so a metric with four guidance rows and zero actuals suppresses the mandated backfill on later passes — blinding miss-detection exactly where guidance is open.
 - **Fund momentum band saturates** — the fund path scores `trailing_return` over the ~1,600-day deep history when present (`fund.rs:1027-1036`) against the stock path's ±30% band tuned to a 180-day window (`fund.rs:823`), so nearly every fund pins at 0 or 100; momentum sits outside the letter, so the damage is context quality in the prompt and the frozen `CalibrationSnapshot`.
@@ -298,6 +302,7 @@ The retry posture is resolved (2026-08-27; the resolution is recorded under §Na
 F2 is resolved (2026-08-27; the resolution is recorded under §F2).
 A1–A4 are resolved (2026-08-27; each resolution is recorded under its §A heading, the §A4 one naming an exhausted-budget edge left open).
 Ruled 2026-08-27: the big confirmation run waits on this whole record — every remaining finding (the Priority-1, -2, and -3 minors, Codex's I1–I9, and the §A4 exhausted-budget seed edge) is handled first, and the user names the session that launches it.
+I10 and I11, added 2026-08-27 from the fix-slice Codex rounds, join that queue on the same terms.
 Fix grouping ruled 2026-08-27: one finding per slice through the plan → implement → review → Codex → commit loop, each marked here; the resume prompt-usage minor is the one-seam exception, its retry events and prompt usage riding `CheckpointAccumulators` together as a single slice.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
@@ -312,6 +317,7 @@ The fund-weight NaN finding below is intentionally retained despite touching Cla
 
 The full repository gates were green on `4dc675b`: `cargo test` (1,185 passed, 31 ignored, plus all integration suites), `cargo clippy --all-targets --all-features`, `npm run build`, `npm test` (46 Node tests and 247 Vitest tests), and `git diff --check`.
 The green gates do not cover the adversarial boundaries below.
+I10 and I11 (2026-08-27) come from Codex's review rounds on the fix slices rather than the independent review, and join the queue ahead of the run on the same terms as I1–I9.
 
 ### I1 — major: a non-positive quote passes the evidence floor and can make a successful run persist as unreadable
 
@@ -414,3 +420,19 @@ The fund-specific snapshot / history adapter accepts a supplied exchange that di
 Only non-positive and non-finite P/Es are later excluded by the blend (`src-tauri/src/portfolio/fund.rs:387-407`), so implausibly high values and duplicate off-board rows can influence the fund valuation and target anchors.
 
 The fund path should share the same exchange-identity, date-readability, and plausible-P/E contract as the suite's sibling adapter; otherwise “usable P/E” means materially different things across the same job without the logic-flow document saying so.
+
+### I10 — minor: the one-month target's methodology never reaches the model or the UI
+
+The engine authors a methodology line for both horizons (`engine.rs::build_price_targets`), and `portfolio-analysis.md` §The holding verdict specifies the engine's scenario outputs "with their methodology and assumptions exposed" for both.
+The interpretation prompt renders the twelve-month targets with their methodology but the one-month targets as bare numbers (`src-tauri/src/portfolio/pipeline.rs:3522-3533`).
+The Portfolio page's "Target methodology" reveal renders only `twelve_month.methodology` (`src/components/PortfolioView.vue:2001-2006`), and the component spec's default fixture carries `one_month: null`, so it cannot catch the omission (`tests/components/PortfolioView.spec.ts:44`).
+Surfaced by the Codex round on the `targets-v5` slice, which changed the one-month band's basis — neither the model nor the reader can see which basis a one-month band stands on.
+Pre-existing rather than introduced by that slice; it is its own slice (prompt, view, and spec).
+
+### I11 — minor: a scenario-target parameter-version change has no cross-run continuity attribution
+
+The grade-band version has one: the dossier loads the prior audit's `grade_parameter_version` (`src-tauri/src/portfolio/dossier.rs:383`, `:1133`), the input delta carries a "grade bands recalibrated" row (`src-tauri/src/portfolio/pipeline.rs:2547`), and the continuity prompt adds the recalibration NOTE on a mismatch (`pipeline.rs:3679-3688`).
+The target version has none: the loader discards `audit.target_meta.parameter_version`, the input delta compares only the twelve-month base target, and no NOTE fires.
+A run whose targets moved on a version bump alone — `targets-v4` → `targets-v5` widens every one-month band with no input change — can therefore have that move attributed to company evidence or a self-correction, and a self-correction marks `thesis_changed` and can open a successor outcome episode.
+Pre-existing since `targets-v3` → `targets-v4` (2026-08-13); surfaced by the Codex round on the `targets-v5` slice.
+The fix mirrors the grade mechanism — a `prior_target_parameter_version` on the dossier, an input-delta row, and the NOTE — as its own slice.

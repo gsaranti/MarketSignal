@@ -709,7 +709,7 @@ Bear / base / bull price targets — one-month and twelve-month — priced from 
   - Equation:
     - Twelve-month price = `driver × multiple`, per scenario. [note: crossed bear/base/bull prices are repaired to ascending and logged; a dispersion floor = `clamp(daily vol × 15.87 × 0.5, 0.05, 0.20)` widens — never narrows — the bear/bull spread.]
     - Twelve-month total return = `(price + forward dividends) ÷ spot − 1`.
-    - One-month price = `spot × (1 + twelve-month base price-return ÷ 12)`; the bear/bull legs take a band = `clamp(daily vol × 2, 0.02, 0.15)` (else 5%), dividends excluded.
+    - One-month price = `spot × (1 + twelve-month base price-return ÷ 12)`; the bear/bull legs take a band = `clamp(daily vol × 2 × √21, 0.02, 0.15)` (else 5%) — 2σ √t-scaled to the 21-session month, `targets-v5` — dividends excluded.
 
 - **Where these land**
   - Targets → the output price targets (each with its methodology + provenance flags); total returns → the hurdle read; the drivers, spread / raw percentiles, spot, forward-dividend leg, dispersion floor, and consensus EPS mid persist as the quick-check basis the between-run engine re-anchors against. The multiples themselves are not stored — they are recomputed closed-form from the basis.

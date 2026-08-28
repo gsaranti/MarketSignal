@@ -7,7 +7,7 @@ Findings go into a dated record once the run completes; this file is then the in
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
 Records this run persists stamp `portfolio-v13`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, and F3 tie-channel slices all landed since the 2026-08-18 revision with no live run between.
-Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime) and the sub-distillation-cap watch (§The research loop).
+Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime), the sub-distillation-cap watch (§The research loop), and the one-month cap-saturation watch (§Grade, valuation and targets).
 
 Nothing here is a defect report.
 Each item is a behavior that has only ever been exercised against fixtures, a small live run, or a single symbol, and needs a read at real scale (a 47-position book) before it can be called confirmed.
@@ -28,6 +28,10 @@ Target provenance rendering against the sell-all cascade.
 Every priced interpretation carries the `TargetMeta` derivation flags — rate-anchored vs current-multiple carry, flat or clamp-flattened driver, dispersion floor — and a floor-widened band inherits its base's signal quality.
 
 The band-recalibration continuity NOTE and its what-changed attribution.
+
+The one-month band's cap saturation under `targets-v5`.
+With the band √t-scaled to the month, the 15% cap binds from a daily σ of ~1.64% (~26% annualized), so the run measures the share of priced names pinned at the cap.
+The ruling kept the clamp; a wider cap waits on this reading.
 
 Conviction and action pairing, and the *fails* → indeterminate action distribution.
 Only a *fails* hurdle read is dead money, and it reaches the model as a weighed exit input rather than an exit instruction.
