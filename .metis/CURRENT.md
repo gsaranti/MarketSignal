@@ -2,60 +2,65 @@
 
 ## What happened
 
-**One P1 minor from the 2026-08-24 large-scale review resolved** — fund
-momentum band saturation — as `e530bd9` on `main`, stamped **`grade-v2.2`**.
-The fix itself was small (`analyze_fund` scores momentum through
-`engine::momentum_score` over its 180-day `price_history` leg; the deep-history
-helper is gone; no short window imputes 50). Four Codex rounds turned the
-**stamp's consumers** into the real work, and the lesson carries: the generic
-"grade bands recalibrated — letters can move" delta row is a *citable* entry the
-what-changed validator accepts, so a bump that doesn't describe itself hands the
-model false evidence for a real move. Now `engine::GRADE_PARAMETER_HISTORY`
-types each bump per branch, `grade_parameter_change(prior, branch)` folds the
-rows after the prior's stamp on the **prior record's own branch** (its persisted
-asset class — the fund-path routing key), both consumers render only over a
-**priced prior**, and stay silent where the boundary changed nothing on that
-branch or the stamp is unrecognized. A pre-stamp fund reads as re-homed, not
-recalibrated — git shows every fund letter-bearing line untouched since the
-fund path landed (2026-07-16, before the first stamp). The Codex rounds were
-folded in under the one-seam exception; the user committed. Carried nits hold:
-rustfmt-shape only edited hunks, sweep `logic-flow-docs/` mirrors, read gate
-output in full, verify Codex findings against code *and git* before agreeing.
+**One P1 minor from the 2026-08-24 large-scale review resolved** —
+expense-ratio `{:.3}` rendering — as `fbac315` on `main`, stamped
+**`portfolio-v14`**. One shared `fmt_expense_ratio` renders a fund's expense
+ratio / drag on all three fund prompts (role-risk, interpretation FUND CONTEXT,
+action role-risk arm) as the decimal fraction at four places — the ledger's
+unit — beside its percent reading (`0.0003 (0.03%/yr)`); a nonzero ratio that
+would round to zero extends its precision. Fixed precision, never
+shortest-round-trip: the FMP seam divides percent by 100. Three Codex rounds;
+two lessons carry. **A prompt-render change is a `PROMPT_VERSION` event** — the
+plan assumed no bump, but the resume gate (`job.rs`) keys on the stamp and
+`portfolio-analysis.md` already calls a render addition "a `PROMPT_VERSION`
+event"; ask it of every prompt-touching fix, not only grade-stamp ones. **No
+universals in the record** — "no issued fund quotes such a fee" was
+unevidenced (Codex named a half-basis-point fund) and got cut; state the
+mechanism and its bound instead. Session-start re-read the record's drifted
+line anchors (three render sites, not its two) and caught BUILD/INDEX trailing
+the record (I1–I11). Carried nits hold: rustfmt-shape only edited hunks, sweep
+mirrors, read gate output in full, verify Codex findings against code and git.
 
 ## Current state
 
-Nothing in flight; `main` at `e530bd9`, tree clean, pushed. The fix queue still
-sits ahead of the run, one finding per slice, severity order: **4 P1 minors**
-remain (next: **expense-ratio `{:.3}` rendering** — the role/risk,
-interpretation, and action prompts render expense ratio and drag through
-`opt()`'s three-decimal format (`pipeline.rs:2911`, `3513`, `3964`, via
-`opt()` at `3772`; the record's older anchors have drifted), so a 0.03% fund
-prints `0.000` and the legend's own example `0.0075` is unrepresentable; then
-ledger TTM vocabulary, IV skew sign convention, FMP statement dates), then the
-5 P2, 8 P3, Codex I1–I11, and the §A4 seed fix. Carried untouched outside the
+Nothing in flight; `main` at `fbac315`, tree clean, pushed. Queue ahead of the
+run, one finding per slice: **3 P1 minors** remain (next: **ledger TTM
+vocabulary** — the `LedgerSeries` description strings in `engine.rs` hard-code
+"TTM net margin" / "TTM gross margin", but on the annual fallback basis the
+model's thresholds are evaluated against annual prints and no prompt discloses
+which basis the holding is on; the basis-change streak reset bounds the damage
+to threshold semantics; then IV skew sign convention, FMP statement dates), then
+5 P2, 8 P3, Codex I1–I11, and the §A4 seed edge. Carried untouched outside the
 record: `/api/tags` probes on the 600 s backstop; seed passes the whole prior
 ledger per topic; 6g qualitative trips un-trip unless re-researched.
 
 ## Open questions
 
-- **I12?** The pre-flag's `sessions` count counts holding rows, not distinct
-  dates — pre-existing and conservative; recorded, not actioned.
-- **Stamp criterion, recorded once?** The anchor-share fix (`28332e1`) should
-  also have bumped `targets`; `35bf8af`'s v4→v5 boundary conflates two changes.
-  No retro-bump proposed.
+- **I12 — the deferred crossing-render edge?** The generic ledger crossing
+  renders (`pipeline.rs` input-delta entry + 6f evaluation section) print every
+  series at four places, so a sub-basis-point expense ratio — reachable via the
+  unquantized adapter divide and an unbounded ledger threshold — prints
+  `0.0000` there while the direct render shows it. Recorded as deferred in the
+  record; whether it gets an I12 heading on I10/I11's terms is the user's call.
+- **Pre-flag `sessions` count** counts holding rows, not distinct dates —
+  pre-existing, conservative; recorded, not actioned.
+- **Stamp criterion, recorded once?** `28332e1` should also have bumped
+  `targets`; `35bf8af`'s v4→v5 conflates two changes. No retro-bump proposed.
 - **Watch-set line for the pre-flag typed gap?** `no XLK close on the holding's
   newest session …` on `degraded_inputs` if the memoized-benchmark race fires;
-  no watch line added (the grade-boundary watch line *was* added this session).
-- **`Letters` NOTE wording.** `pipeline.rs`'s recalibration NOTE speaks only of
-  "the letter"; a future stock-branch sub-score-only bump would need its own
-  text. No such bump exists; recorded, not actioned.
+  none added.
+- **`Letters` NOTE wording** speaks only of "the letter"; a stock-branch
+  sub-score-only bump would need its own text. No such bump exists.
+- **`opt()` dollar amounts** — `liquid_resources` / `ttm_cash_burn` print at
+  three decimals in the pre-profit financing line; readability nit, unqueued.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` the next P1 minor — expense-ratio
-`{:.3}` rendering. Keep the loop per finding (plan → implement → review → Codex →
-commit), mark it resolved in the record, sweep `logic-flow-docs/` mirrors, and
-ask of every fix whether it changes what a stamped record means — if it bumps a
-grade stamp, append the `GRADE_PARAMETER_HISTORY` row (a test pins the last row
-to the current stamp) and check both consumers' wording. Do not launch or
-propose the big run — the user names that session.
+`/metis-session-start`, then `/metis-plan-task` the next P1 minor — ledger TTM
+vocabulary. Re-read the record's line anchors first; they drift. Keep the loop
+per finding (plan → implement → review → Codex → commit), mark it resolved in
+the record, sweep `logic-flow-docs/` mirrors, and ask of every fix what stamp
+it moves: a grade-band change appends a `GRADE_PARAMETER_HISTORY` row; a
+prompt-content change bumps `PROMPT_VERSION` with its history paragraph and the
+watch-set stamp line. Do not launch or propose the big run — the user names
+that session.
