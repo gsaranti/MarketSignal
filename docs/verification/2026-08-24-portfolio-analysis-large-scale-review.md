@@ -369,6 +369,14 @@ A second round tightened the compound-turn claim to its true shape: the retry bo
   Its doc-comment placement note (the `analyze` block had been stranded above the new helper) is applied.
   Three Codex rounds, the third approving.
 - **IPv6-literal fetch URLs can never fetch** — `resolve_public` passes `host_str()`'s bracketed IPv6 form to `to_socket_addrs()` unparsed (`fetch.rs:153-164`; `check_url_policy` at `:205` knows to trim the brackets), so every IPv6-literal fetch errors and spends a budget unit; fails closed, so the SSRF direction is safe.
+  Ruled 2026-08-28: both guards read the typed `Url::host()` — a literal address, IPv4 or bracketed IPv6, resolves as itself with no lookup in `resolve_public`, and `check_url_policy` drops its hand-rolled bracket trim for the same match.
+  Ruled 2026-08-28: the SSRF bullet at `web-research.md` §Safety and provenance gains one sentence stating the literal-address rule; no mirror exists to update.
+  Resolved 2026-08-28: a shared `literal_host` reads the parser's typed host; `resolve_public` pins a literal to itself with no lookup and runs it through the public-host rules, and `check_url_policy` reads the same helper.
+  A public IPv6 literal now fetches, and a non-public literal of either family fails closed with its policy reason instead of a resolver error.
+  Two pins: `validate_url` over public v4 / v6 literals (pinned to themselves) and non-public v4 / v6 / mapped-v4 literals (blocked by reason, never "resolving"), and the production loopback guard extended to `[::1]`.
+  `url` is named as a direct dependency for `url::Host` — the crate already rode in through reqwest, which re-exports only `Url`.
+  No stamp moves.
+  One Codex round, approving with no findings.
 
 ## Priority 3 — logic-flow doc alignment
 
@@ -515,6 +523,7 @@ The supersede-legs minor is resolved (2026-08-28; the resolution is recorded und
 The panic-posture slice — the containment minor and the three panic paths, Codex's round-1 P2 folded in by ruling — is resolved (2026-08-28; the resolutions are recorded under both bullets), leaving the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
 The reduce-prompt size check is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), leaving the resume prompt usage and the IPv6 fetch ahead of Codex I1–I16 and the §A4 seed edge.
 The resume prompt usage is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), and its first Codex round queued I17, leaving the IPv6 fetch ahead of Codex I1–I17 and the §A4 seed edge.
+The IPv6-literal fetch is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), leaving Codex I1–I17 and the §A4 seed edge — the named slices before the Codex items are all handled.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions

@@ -147,9 +147,24 @@ fn non_public_reason(ip: IpAddr) -> Option<&'static str> {
     }
 }
 
+/// The URL's host as a literal address — IPv4 or bracketed IPv6 — read from
+/// the parser's typed host rather than `host_str()`'s text (whose bracketed
+/// IPv6 form is not a resolvable name). `None` for a domain name. The one
+/// literal-host read both guards share (ruled 2026-08-28).
+fn literal_host(url: &Url) -> Option<IpAddr> {
+    match url.host()? {
+        url::Host::Ipv4(ip) => Some(IpAddr::V4(ip)),
+        url::Host::Ipv6(ip) => Some(IpAddr::V6(ip)),
+        url::Host::Domain(_) => None,
+    }
+}
+
 /// Resolve a URL's host and validate every address against the public-host
 /// rules, returning the validated socket addresses so the connection can be
-/// pinned to exactly what was checked (no second DNS answer).
+/// pinned to exactly what was checked (no second DNS answer). A literal
+/// address resolves as itself with no lookup, so a public literal fetches and
+/// a non-public one fails closed with its policy reason rather than a resolver
+/// error (`docs/web-research.md §Safety and provenance`).
 fn resolve_public(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
     let host = url
         .host_str()
@@ -158,10 +173,13 @@ fn resolve_public(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
     let port = url
         .port_or_known_default()
         .context("fetch URL has no usable port")?;
-    let addrs: Vec<SocketAddr> = (host.as_str(), port)
-        .to_socket_addrs()
-        .with_context(|| format!("resolving {host}"))?
-        .collect();
+    let addrs: Vec<SocketAddr> = match literal_host(url) {
+        Some(ip) => vec![SocketAddr::new(ip, port)],
+        None => (host.as_str(), port)
+            .to_socket_addrs()
+            .with_context(|| format!("resolving {host}"))?
+            .collect(),
+    };
     if addrs.is_empty() {
         bail!("{host} resolved to no addresses");
     }
@@ -202,10 +220,8 @@ pub fn check_url_policy(url_str: &str) -> Result<()> {
     if let SourcePolicy::Deny(reason) = registry::assess(host) {
         bail!("blocked: {host} is on the deny list ({reason})");
     }
-    if let Ok(ip) = host.trim_matches(|c| c == '[' || c == ']').parse::<IpAddr>() {
-        if let Some(reason) = non_public_reason(ip) {
-            bail!("blocked: {host} is a {reason}");
-        }
+    if let Some(reason) = literal_host(&url).and_then(non_public_reason) {
+        bail!("blocked: {host} is a {reason}");
     }
     Ok(())
 }
@@ -433,15 +449,43 @@ mod tests {
     }
 
     #[test]
+    fn literal_hosts_validate_as_themselves_without_a_lookup() {
+        // A literal address resolves as itself — `host_str()`'s bracketed
+        // IPv6 form is not a resolvable name, and the first cut handed it to
+        // the resolver, so no IPv6-literal URL could ever fetch. A public
+        // literal pins to exactly itself; a non-public one fails closed with
+        // its policy reason, not a resolver error. No DNS is touched.
+        let pinned = |u: &str| validate_url(&Url::parse(u).unwrap(), false);
+        assert_eq!(
+            pinned("http://[2606:2800:220:1::1]/x").unwrap(),
+            vec!["[2606:2800:220:1::1]:80".parse::<SocketAddr>().unwrap()]
+        );
+        assert_eq!(
+            pinned("https://93.184.216.34/x").unwrap(),
+            vec!["93.184.216.34:443".parse::<SocketAddr>().unwrap()]
+        );
+        for (url, needle) in [
+            ("http://[::1]/x", "loopback"),
+            ("http://[fec0::1]/x", "site-local"),
+            ("http://[::ffff:192.168.1.1]/x", "private"),
+            ("http://10.0.0.7/x", "private"),
+        ] {
+            let err = pinned(url).unwrap_err().to_string();
+            assert!(err.contains(needle), "{url}: {err}");
+            assert!(!err.contains("resolving"), "{url}: {err}");
+        }
+    }
+
+    #[test]
     fn production_guard_blocks_loopback_targets() {
         // The production fetcher (no test allowance) refuses a loopback URL —
-        // the rule that protects the app's own Ollama / SearXNG.
+        // the rule that protects the app's own Ollama / SearXNG — in both
+        // literal forms.
         let fetcher = HttpPageFetcher::new();
-        let err = fetcher
-            .fetch("http://127.0.0.1:9/never")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("loopback"), "{err}");
+        for url in ["http://127.0.0.1:9/never", "http://[::1]:9/never"] {
+            let err = fetcher.fetch(url).unwrap_err().to_string();
+            assert!(err.contains("loopback"), "{url}: {err}");
+        }
     }
 
     const ARTICLE_HTML: &str = r#"<!doctype html><html><head><title>Widget Co beats</title></head>

@@ -39,6 +39,9 @@ chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10"
 anyhow = "1.0.102"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Named directly for `url::Host` — the typed host the SSRF guards read
+# (the crate already rides in through reqwest, which re-exports only `Url`).
+url = "2"
 tokio = { version = "1", features = ["time"] }
 pdf-extract = "0.10"
 html2text = "0.17"

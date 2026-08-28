@@ -2505,6 +2505,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
  "zip",
 ]

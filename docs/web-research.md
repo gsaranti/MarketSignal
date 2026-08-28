@@ -103,6 +103,8 @@ Because the model chooses what to fetch, fetching is treated as an untrusted ope
 
 - **SSRF protection.**
   Fetches are restricted to `http`/`https` and to public hosts — private, loopback, link-local, and the other special-use ranges (carrier-grade NAT, protocol-assignment, benchmarking, TEST-NET / documentation, reserved space, and the deprecated IPv6 site-local block) are blocked (this matters specifically because the app's own Ollama and SearXNG run on loopback), redirects are capped and re-validated against the same rules, and responses are bounded by size and content type (HTML/text only).
+  A literal address — IPv4 or bracketed IPv6 — is validated as itself with no lookup and pinned exactly as a resolved name is.
+  A public literal therefore fetches, and a non-public one is blocked with its reason.
   A **cached document re-passes the URL policy** (scheme, deny list, literal-address rules) before it may serve, so an imported or legacy cache row cannot bypass the current source policy.
 - **Untrusted content.**
   Fetched page text is data, not instructions: it is inserted into the prompt as quoted evidence and never interpreted as a directive, so a page carrying injected instructions cannot redirect the analysis.
