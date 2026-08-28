@@ -28,8 +28,12 @@ supplies the P/E) ruled with it; BUILD/INDEX name Codex I1–I14.
 ## Current state
 
 Nothing in flight; `main` at the session-end commit on `202bbbb`, tree clean,
-pushed. Queue ahead of the run, one finding per slice: **5 P2** (next), then
-8 P3, Codex I1–I14, and the §A4 seed edge. Recorded, not queued: a
+pushed. Queue ahead of the run, grouped by the 2026-08-28 ruling (record
+§Disposition): **eight slices** — the P3 doc batch (six doc-line minors) first,
+then the supersede legs, the forward-assumption minor (ruled at the batch's
+plan), panic posture (containment + the three panic paths), the reduce-prompt
+check, the resume prompt usage, the IPv6 fetch — then Codex I1–I14 and the §A4
+seed edge; a batch never mixes code and doc findings. Recorded, not queued: a
 dropped-count detail on the `ok` tracker row for a partially unreadable
 statement response. Carried untouched outside the record: `/api/tags` probes
 on the 600 s backstop; seed passes the whole prior ledger per topic; 6g
@@ -41,9 +45,10 @@ qualitative trips un-trip unless re-researched.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` the first unresolved P2 minor
-— read the record's §Priority 2 list to pick it, and re-read its line anchors
-first; they drift. Present the plan's assumptions and flags before
+`/metis-session-start`, then `/metis-plan-task` the **P3 doc batch** — the six
+pure doc-line minors under the record's §Priority-3 minor findings, one plan
+step each; take the forward-assumption ruling in that plan; re-read every line
+anchor first, they drift. Present the plan's assumptions and flags before
 implementing — the user rules on them first (both slices this session). Keep
 the loop per finding (plan → implement → review → Codex → commit), mark it
 resolved in the record with every Codex round named, sweep `logic-flow-docs/`

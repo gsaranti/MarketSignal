@@ -393,6 +393,14 @@ I12, added 2026-08-27 off the expense-ratio slice's Codex rounds, joins on the s
 I13, added 2026-08-28 off the ledger-basis slice's Codex rounds, joins on the same terms.
 I14, added 2026-08-28 off the statement-date slice's Codex round, joins on the same terms.
 Fix grouping ruled 2026-08-27: one finding per slice through the plan → implement → review → Codex → commit loop, each marked here; the resume prompt-usage minor is the one-seam exception, its retry events and prompt usage riding `CheckpointAccumulators` together as a single slice.
+Fix grouping revised 2026-08-28 for the Priority-2 and -3 minors, the one-finding rule otherwise standing.
+The six pure doc-line Priority-3 minors — research-fed fraud under the hard state, the qualifying news seed, the narrative 7-day minimum (its canonical-home sentence in `portfolio-analysis.md` §Starting parameters included), "(pre-profit stocks only)", one conversation per topic, and the config-knob thresholds — are one slice, each still marked resolved on its own line.
+The supersede-legs minor stays its own slice as ruled (the doc plus the label).
+The forward-assumption what-changed minor is ruled at the doc batch's plan: if the row stands as validated-assumption evidence with its shadow resolution beside it, it joins the batch; if the row should push only on an accepted resolution, it is its own code slice.
+The panic-containment minor and the three contrived-trigger panic paths are one slice — the containment and the exposure it contains — with the §Failure posture and run-tracking mirrors.
+The reduce-prompt size check, the resume prompt usage (its retry events riding with it, as ruled), and the IPv6-literal fetch each stay their own slice.
+A batch never mixes code and doc findings.
+The queue is therefore eight slices before Codex I1–I14 and the §A4 seed edge: the Priority-3 doc batch first, then the supersede legs, the forward-assumption minor, panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
