@@ -130,6 +130,9 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   Resolved 2026-08-27: presence now reads any of the driver's three legs, and the rejection line names each present leg with its value.
   A pinned test holds an EPS low/high bracket with no midpoint on the revenue rung and proves it is not displaced, and that an EPS bracket never blocks a revenue fill.
 - **TTM seam gap in the narrative fallback** — `ttm_revenue_window` checks contiguity only inside each 4-quarter window (`engine.rs:3103-3109`), never across the seam between the current and prior-year windows (`engine.rs:3156-3162`), so a feed gap at the seam yields a mislabeled "YoY" over 15 months; the dossier's own `apply_ttm_statement_basis` demands the full 8-row run for exactly this pair (`dossier.rs:587-598`).
+  Resolved 2026-08-27: `ttm_revenue_window` now checks contiguity over the run from the newest quarter through the window, so the prior-year window's check covers the seam.
+  A seam gap surfaces as the fallback's typed prior-year-window absence, never a misaligned read.
+  A pinned test drops the quarter at the seam and proves the fallback gaps, a gap inside the newest four types the current-window absence, and a gap past the eighth row never trips.
 - **Historical anchor share-count fallback** — a historical revenue-per-share anchor whose quarter lacks `diluted_shares` falls back to the newest quarter's or today's count (`engine.rs:2210-2213`), skewing the anchor-multiple history in the financially wrong direction under buybacks or dilution.
 - **One-month band is unscaled daily volatility** — `(daily σ × 2).clamp(0.02, 0.15)` (`engine.rs:2562-2565`) understates a month's 1σ move by ~√21 against the suite's own √t convention (`dispersion_floor`, `tech_event_pre_flag`), so the printed band covers ~0.44σ of the month.
   The doc comment marks it "v1 mechanics", so this is surfaced as a deliberate-retention judgment call rather than an accident.

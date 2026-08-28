@@ -3178,10 +3178,17 @@ impl NarrativeRead {
 }
 
 /// TTM revenue summed over quarters `[start, start+4)` — `None` unless the
-/// window is contiguous with every revenue line present.
+/// run from the newest quarter **through** the window is contiguous with every
+/// revenue line present. Contiguity is checked from the newest row, not just
+/// inside the window: a skipped quarter at the seam between the current and
+/// prior-year windows would leave each window internally consecutive while the
+/// "prior year" ends fifteen months back — a mislabeled YoY. The dossier's
+/// `apply_ttm_statement_basis` holds the same full-eight-row rule for
+/// `revenue_prior`.
 fn ttm_revenue_window(fin: &CompanyFinancials, start: usize) -> Option<f64> {
     let rows = fin.quarterly_income.get(start..start + 4)?;
-    if !quarters_contiguous(rows.iter().map(|r| r.period_end.as_str())) {
+    let run = &fin.quarterly_income[..start + 4];
+    if !quarters_contiguous(run.iter().map(|r| r.period_end.as_str())) {
         return None;
     }
     rows.iter().map(|r| r.revenue).sum()
@@ -6274,6 +6281,43 @@ mod tests {
         assert!(narrative_vs_reality(&fin, 140.0, Some(100.0), None, Some(3)).is_err());
         let bare = narrative_fin(None, None);
         assert!(narrative_vs_reality(&bare, 140.0, Some(100.0), None, Some(365)).is_err());
+    }
+
+    #[test]
+    fn narrative_fallback_gaps_on_a_seam_gap_between_the_ttm_windows() {
+        // A skipped quarter at the seam between the current and prior-year
+        // windows leaves each window internally contiguous while the "prior
+        // year" ends fifteen months back — a mislabeled YoY. The fallback must
+        // gap (the dossier's own `apply_ttm_statement_basis` demands the full
+        // eight-row run for this pair), never read a misaligned window.
+        let revs = [110.0, 110.0, 110.0, 110.0, 100.0, 100.0, 100.0, 100.0];
+        let seam_gapped = |drop: usize| {
+            let mut fin = narrative_fin(None, Some(revs));
+            let mut ends = quarter_ends(9);
+            ends.remove(drop);
+            for (row, end) in fin.quarterly_income.iter_mut().zip(ends) {
+                row.period_end = end;
+            }
+            fin
+        };
+        // Drop 2025-06-30: the newest four stand, the seam spans two quarters.
+        let err =
+            narrative_vs_reality(&seam_gapped(4), 140.0, Some(100.0), None, Some(365)).unwrap_err();
+        assert!(err.contains("prior-year TTM revenue window"), "{err}");
+        // A gap inside the newest four is the current-window absence.
+        let err =
+            narrative_vs_reality(&seam_gapped(1), 140.0, Some(100.0), None, Some(365)).unwrap_err();
+        assert!(err.contains("current TTM revenue window"), "{err}");
+        // A gap past the eighth row is outside both windows and never trips:
+        // a ninth row dated two quarters behind the eighth (2024-09-30 →
+        // 2024-03-31, skipping 2024-06-30) leaves the eight-row run intact.
+        let mut fin = narrative_fin(None, Some(revs));
+        assert_eq!(fin.quarterly_income[7].period_end, "2024-09-30");
+        let mut ninth = fin.quarterly_income[7].clone();
+        ninth.period_end = "2024-03-31".into();
+        fin.quarterly_income.push(ninth);
+        let n = narrative_vs_reality(&fin, 140.0, Some(100.0), None, Some(365)).unwrap();
+        assert!((n.reality - 0.1).abs() < 1e-9, "{n:?}");
     }
 
     #[test]
