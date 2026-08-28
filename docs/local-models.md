@@ -89,7 +89,7 @@ The classification is a whitelist: a deadline trip, a length stop, a cancelled r
 The action call's blank-rationale guard keeps its fail-hard ruling outside the retry (ruled 2026-08-18).
 A second failure fails hard as before, annotated with the first attempt's class, so the run's failure detail stays attributable.
 Every fired retry emits its own tracker row and lands on the run's data-health read as a summary line plus structured events — the big confirmation run's transient-rate measurement.
-A resumed run's read covers only its own process: events fired before the failure share the recorded accumulator resume gap prompt usage already carries (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md` §Priority-2 minor findings), so a resumed run's rate reads as a floor.
+A resumed run's read covers the calls behind the finished run's verdicts — every restored row's and every call of the resumed process — and omits only the superseded calls of holdings the resumed process re-analyzed ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)).
 
 Every distillation call is also **sized at issue**: the adapter measures the rendered prompt in chars against its model's input budget before any request exists.
 The measure is the whole rendered prompt — instruction scaffolding, ledger conditions, and distillates together.

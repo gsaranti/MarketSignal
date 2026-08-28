@@ -185,9 +185,13 @@ pub struct CheckpointHeader {
     pub model_ids: Vec<String>,
 }
 
-/// The run-level accumulators the post-loop consumers read (data health, episode
-/// sector identities, prompt-header names) — re-written beside each holding
-/// checkpoint so completed holdings' contributions survive a failure.
+/// The run-level accumulators the post-loop consumers read (data health's
+/// deep-history and benchmark gaps, episode sector identities, prompt-header
+/// names) — re-written beside each holding checkpoint so completed holdings'
+/// contributions survive a failure. The data-health context-fit and
+/// fired-retry rows deliberately do **not** live here: they ride each
+/// [`CheckpointHolding`], so the trail's telemetry membership is its row
+/// membership by construction (ruled 2026-08-28, off Codex round 1).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointAccumulators {
     pub deep_history_failures: usize,
@@ -198,11 +202,28 @@ pub struct CheckpointAccumulators {
     pub profile_name_by_symbol: std::collections::HashMap<String, Option<String>>,
 }
 
-/// One completed holding's checkpoint — exactly what the loop pushed for it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One completed holding's checkpoint — exactly what the loop pushed for it,
+/// plus the holding's own local-model telemetry: the prompt-size observations
+/// and fired bounded retries of its calls, in call order, drained from the
+/// analyst at its checkpoint boundary. Riding the row rather than the
+/// accumulators makes the trail's telemetry membership its row membership by
+/// construction — a row that never landed (the fail-soft write failed) or no
+/// longer reads takes its calls with it, and that holding re-analyzes whole —
+/// so a resumed run's data-health read counts no call twice and omits only the
+/// superseded calls of holdings the resumed process re-analyzes — the
+/// interrupted holding's abandoned calls and a dropped row's originals
+/// (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-28). No
+/// `serde(default)` on the telemetry fields — a row predating them takes the
+/// documented loud-skip at load and re-analyzes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointHolding {
     pub verdict: crate::portfolio::HoldingVerdict,
     pub audit: crate::portfolio::HoldingAudit,
+    /// This holding's rows of the data-health context-fit read
+    /// (`build_data_health`).
+    pub prompt_usage: Vec<crate::local_model::PromptUsage>,
+    /// This holding's rows of the data-health model-retry read.
+    pub model_retries: Vec<crate::local_model::RetryEvent>,
 }
 
 /// A loaded checkpoint: header, accumulators, and the completed-holding rows.
@@ -894,6 +915,66 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::storage::init_schema(&conn).unwrap();
         conn
+    }
+
+    /// A holding's checkpoint row round-trips its context-fit and fired-retry
+    /// rows exactly — the seed a resumed run's data-health read starts from
+    /// (`docs/portfolio-analysis.md §Failure posture`).
+    #[test]
+    fn checkpoint_rows_round_trip_prompt_usage_and_retry_events() {
+        let conn = mem();
+        let run = sample_run("run-1", "2026-08-28T12:00:00+00:00");
+        let header = CheckpointHeader {
+            run_id: run.run_id.clone(),
+            created_at: run.created_at.clone(),
+            prior_run_id: None,
+            holdings: run.holdings.clone(),
+            rates: Default::default(),
+            house_view: Default::default(),
+            house_view_omitted: false,
+            commodities: Default::default(),
+            cot_rows: vec![],
+            cot_gaps: vec![],
+            put_call_backdrop: None,
+            cboe_gap: None,
+            short_interest_file: None,
+            finra_gap: None,
+            work_list: None,
+            swept_tail: vec![],
+            prompt_version: crate::portfolio::PROMPT_VERSION.into(),
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.into(),
+            target_parameter_version:
+                crate::portfolio::engine::SCENARIO_TARGET_PARAMETER_VERSION.into(),
+            pre_profit_parameter_version:
+                crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION.into(),
+            model_ids: vec!["stub-analyst".into()],
+        };
+        save_checkpoint_header(&conn, &header).unwrap();
+        let acc = CheckpointAccumulators {
+            deep_history_failures: 1,
+            ..Default::default()
+        };
+        let row = CheckpointHolding {
+            verdict: run.verdicts[0].clone(),
+            audit: run.audit[0].clone(),
+            prompt_usage: vec![crate::local_model::PromptUsage {
+                stage: "interpret AAPL".into(),
+                prompt_tokens: Some(120_000),
+                num_ctx: 131_072,
+                prompt_chars: 480_000,
+                completion_tokens: Some(2_000),
+                num_predict: Some(8_192),
+                output_limited: false,
+            }],
+            model_retries: vec![crate::local_model::RetryEvent {
+                stage: "interpret AAPL".into(),
+                cause: "transport-level connection failure".into(),
+            }],
+        };
+        save_checkpoint_progress(&conn, &run.run_id, "AAPL", &row, &acc).unwrap();
+        let cp = load_checkpoint(&conn).unwrap().expect("trail exists");
+        assert_eq!(cp.accumulators, acc);
+        assert_eq!(cp.holdings, vec![row]);
     }
 
     #[test]

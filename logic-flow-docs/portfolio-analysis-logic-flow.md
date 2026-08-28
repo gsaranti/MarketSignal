@@ -446,6 +446,7 @@ Each completed holding checkpoints separately as it lands — verdict, audit, an
   - No fresh holdings pull occurs; per-holding retrieval (option chains included) still runs live at each resumed holding’s own Step 6a.
   - Starting resume window: 48 hours.
   - A version, roster, or baseline change since the interrupted run refuses the resume with its reason.
+  - Each restored holding row carries its own prompt-usage observations and fired-retry events, so the finished run's data-health read spans both processes and counts no call twice, omitting only the superseded calls of holdings the resumed process re-analyzed — the interrupted holding's abandoned calls reach no row, and a row that never landed or no longer reads takes its calls with it (`docs/portfolio-analysis.md` §Failure posture).
 
 ---
 

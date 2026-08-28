@@ -166,7 +166,8 @@ The data-health render and the reasoning panes.
 
 Fired bounded retries — the transient-failure rate over hundreds of hard-path calls (settled 2026-08-27; the contract is [local-models.md §The local-model adapter seam](../local-models.md#the-local-model-adapter-seam)).
 Each fired retry lands as a data-health summary line plus structured `model_retries` events with stage and class; zero fired retries is the healthy read, and any nonzero count is the first live measurement of the rate the 2026-08-24 review could only bound by construction.
-A resumed run's count covers only the post-resume process (the recorded accumulator resume gap prompt usage shares), so read a resumed run's rate as a floor.
+A resumed run's count spans both processes — every restored row's calls and the resumed process's own — and omits only the superseded calls of holdings the resumed process re-analyzed ([portfolio-analysis.md §Failure posture](../portfolio-analysis.md#failure-posture)).
+Read its rate as the rate over the calls the finished verdicts rest on, and its count as a floor on every call the run ever issued.
 A run that still fails hard *after* a retry names the first attempt's class in its failure detail — read that class before treating the failure as novel.
 
 ## How to read the run

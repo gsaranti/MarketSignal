@@ -315,6 +315,28 @@ A second round tightened the compound-turn claim to its true shape: the retry bo
   Three Codex rounds — the first two with changes requested, the third approving.
   No stamp moves — the prompt content is unchanged.
 - **Resume loses pre-crash prompt usage** — `CheckpointAccumulators` carries no prompt-usage field (`store.rs:191-199`), so a resumed run's data-health context-pressure / peak-prompt / length-stop lines reflect only post-resume holdings — under-reporting the exact signal the big-run prompt-fit watch reads.
+  Ruled 2026-08-28: the trail carries completed holdings' calls only.
+  The prompt-usage observations and fired-retry events drain into the run-level accumulators at each holding's checkpoint boundary, written beside the holding row in the same transaction.
+  The interrupted holding's own abandoned calls are not written, since it re-analyzes whole and re-issues them.
+  The `model_retries` invariant therefore holds exactly: in a persisted run every listed re-attempt succeeded.
+  Ruled 2026-08-28: the two new accumulator fields carry no `#[serde(default)]`.
+  No trail exists pre-slice, and a pre-field trail takes the documented loud-skip — unreadable accumulators, resume unavailable — rather than a compat default for data that never existed.
+  Ruled 2026-08-28: the fields are flat vectors like `benchmark_gaps`, chronological order kept for the summary line's first-retry read.
+  The residue is the sibling accumulators' own: a holding whose trail row was unreadable at load re-analyzes while its earlier rows stay seeded, so the read double-counts that one holding.
+  Ruled 2026-08-28: the scope is the persisted data-health read alone — the pre-crash tracker rows stay out, the tracker being latest-run-only and process-local.
+  Ruled 2026-08-28, off Codex round 1 (P2): the telemetry rides the holding's checkpoint row, not the accumulators.
+  A row that never landed — the fail-soft write failed — or no longer reads takes its calls out of the trail with it, so the telemetry restored is exactly the rows restored and neither route double-counts a re-analyzed holding; the sibling counters keep their ruled residue.
+  Resolved 2026-08-28: `CheckpointHolding` carries the holding's own `prompt_usage` and `model_retries`; the job drains the analyst at each holding's checkpoint boundary into the row and, before the fail-soft write, the run-level vectors, seeds those vectors from the restored rows in completion order on resume, and hands them to the roll-up whole.
+  Two pins: a store round-trip of a row's telemetry, and the mid-run-failure resume test under instrumented analysts on both sides — the trail's one row carries the completed holding's calls, the interrupted holding's abandoned distill call reaches no row, and the finished run's retries read in cross-process order with the pre-crash peak and context-pressure row intact over a smaller post-resume fill.
+  The mirrors: `portfolio-analysis.md` §Failure posture (canonical), the floor sentences in `local-models.md` §The local-model adapter seam and the watch set's fired-retry watch re-qualified to span the finished run, and a logic-flow §Resume behavior bullet.
+  No stamp moves — no prompt content, grade band, or target basis changed, and the trail carries no format stamp.
+  Codex round 1 (P2): the accumulator placement let a holding whose fail-soft write failed re-analyze on resume while a later successful write had carried its telemetry — a second route to the ruled residue; resolved by the row placement above.
+  Codex round 1 (P3): the resume ran under a stub recording nothing, so the two-process merge and its order were unpinned; the resume now runs under an instrumented analyst.
+  Codex round 2 (P3): the mirrors still named the interrupted holding's abandoned calls as the only absence, though a row that never landed or no longer reads drops its original calls too.
+  Every mirror — the canonical §Failure posture sentence, `local-models.md`, the watch set, the store doc comment, and the logic-flow — now names the absence as the superseded calls of holdings the resumed process re-analyzed.
+  The watch set reads a resumed run's rate over the calls the finished verdicts rest on and its count as a floor on every call the run issued.
+  Three Codex rounds — the first with changes requested, the second approving the code and tests with one documentation correction, folded, the third approving with no findings.
+  I17 is queued off the first round's P2: the run-level counters keep the double count the row placement closed for the telemetry.
 - **No panic containment** — there is no `catch_unwind` around `run_analysis`, so any panic skips both `record_run(Failed)` and the terminal `run_finished` event; the run slot itself frees (poison-tolerant `RunGuard::lock`, `jobs.rs:132-173`), but the tracker never reaches a terminal state and the checkpoint trail is unofferable for that session.
   No realistic panic path was found in the spine files themselves — the exposure is the compute modules below.
   Ruled 2026-08-28: containment lands at the portfolio seam only — `run_analysis` under `catch_unwind` in `run_portfolio_job` — and the cloud report job's identical unguarded `run_job` shape is recorded here as a named candidate, not widened into the slice.
@@ -492,6 +514,7 @@ The grouping line's count above read eight against its enumerated seven; it is c
 The supersede-legs minor is resolved (2026-08-28; the resolution is recorded under its bullet), leaving panic posture, the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
 The panic-posture slice — the containment minor and the three panic paths, Codex's round-1 P2 folded in by ruling — is resolved (2026-08-28; the resolutions are recorded under both bullets), leaving the reduce-prompt check, the resume prompt usage, and the IPv6 fetch ahead of Codex I1–I15 and the §A4 seed edge.
 The reduce-prompt size check is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), leaving the resume prompt usage and the IPv6 fetch ahead of Codex I1–I16 and the §A4 seed edge.
+The resume prompt usage is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), and its first Codex round queued I17, leaving the IPv6 fetch ahead of Codex I1–I17 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -684,3 +707,13 @@ Forward dividends move total returns, never scenario prices, so all six target l
 `ImpliedExpectations` is a sibling required-float surface to include in the same audit.
 The fix is an audit of every required `f64` the persisted `PortfolioRun` tree carries — validate each before persist, or reject the overflowing aggregate at its shaper — with a store round-trip regression over finite extreme inputs, the test the panic-posture slice declined for the targets alone.
 Surfaced by the panic-posture slice's second Codex round (2026-08-28); queued on I10/I11's terms.
+
+### I17 — minor: the run-level checkpoint counters over-count on resume
+
+The resume-prompt-usage slice moved the data-health telemetry onto the holding's checkpoint row, so its trail membership is row membership and a holding whose fail-soft write failed or whose row no longer reads takes its calls with it when it re-analyzes.
+The run-level accumulators keep the older cumulative shape (`store.rs`, `CheckpointAccumulators`; `job.rs`, the checkpoint block), re-written whole beside every successful holding write, and two of them over-count on resume.
+`deep_history_failures` counts a holding whose own write failed once through the next holding's write and again when the resumed run re-analyzes it; the unreadable-row route reaches the same state.
+`benchmark_gaps` is pushed inside the per-process `benchmark_closes` memo, so on any resume a sector benchmark that fails in both processes lands on the seeded list a second time — no write failure needed.
+The keyed maps (`sector_by_symbol`, `industry_by_symbol`, `profile_name_by_symbol`) are immune, a re-analysis overwriting its entry.
+The fix follows the telemetry's pattern: carry each holding's contribution on its row and rebuild the counts from the restored rows at resume, the gap list deduplicated by benchmark.
+Surfaced by the resume-prompt-usage slice's first Codex round (2026-08-28); queued ahead of the run, one finding per slice, like I1–I16.

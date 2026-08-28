@@ -1315,6 +1315,17 @@ fn run_analysis(
     let mut audits: Vec<HoldingAudit> = Vec::with_capacity(holdings.positions.len());
     // The completed holdings a resume restores — their symbols skip the loop.
     let mut checkpointed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The context-fit observations and fired-retry events of every completed
+    // holding — restored from the trail's rows in completion order on resume,
+    // extended at each holding's checkpoint boundary by draining the analyst,
+    // and handed to the roll-up whole, so a resumed run's data-health read
+    // spans both processes. Each row carries its own holding's calls, so the
+    // telemetry restored is exactly the rows restored: a holding whose row
+    // never landed or no longer reads re-analyzes whole with its calls
+    // re-issued, and the interrupted holding's abandoned calls reach no row
+    // (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-28).
+    let mut prompt_usage: Vec<crate::local_model::PromptUsage> = Vec::new();
+    let mut model_retries: Vec<crate::local_model::RetryEvent> = Vec::new();
     if let Some(cp) = &resume {
         ctx.step_started(
             "resume",
@@ -1324,6 +1335,8 @@ fn run_analysis(
             checkpointed.insert(row.verdict.symbol.to_ascii_uppercase());
             verdicts.push(row.verdict.clone());
             audits.push(row.audit.clone());
+            prompt_usage.extend(row.prompt_usage.iter().cloned());
+            model_retries.extend(row.model_retries.iter().cloned());
         }
         ctx.step_finished("resume", "ok", None);
     }
@@ -1938,9 +1951,19 @@ fn run_analysis(
         // persists so a cancellation or a single model failure resumes the
         // unfinished holdings rather than restarting the run. Fail-soft: losing
         // a checkpoint must never fail a run that can succeed.
+        // Drain the holding just completed: its calls ride its own row, and
+        // the run-level vectors take a copy *before* the fail-soft write, so a
+        // lost checkpoint never loses an in-process observation while the row
+        // that did not land takes its calls out of the trail with it.
+        let holding_usage = analyst.take_prompt_usage();
+        let holding_retries = analyst.take_retry_events();
+        prompt_usage.extend(holding_usage.iter().cloned());
+        model_retries.extend(holding_retries.iter().cloned());
         let cp_row = store::CheckpointHolding {
             verdict: verdicts.last().expect("just pushed").clone(),
             audit: audits.last().expect("just pushed").clone(),
+            prompt_usage: holding_usage,
+            model_retries: holding_retries,
         };
         if let Err(e) = store::save_checkpoint_progress(
             conn,
@@ -2099,6 +2122,11 @@ fn run_analysis(
     if ctx.is_cancelled() {
         anyhow::bail!("run cancelled");
     }
+    // Anything recorded past the last checkpoint boundary (nothing today — every
+    // loop call precedes its holding's checkpoint); kept so every recorded
+    // observation reaches the read.
+    prompt_usage.extend(analyst.take_prompt_usage());
+    model_retries.extend(analyst.take_retry_events());
     let roll_up = build_roll_up(
         &holdings,
         &verdicts,
@@ -2114,8 +2142,8 @@ fn run_analysis(
             finra: finra_gap.is_some(),
             benchmark: benchmark_gaps.len(),
         },
-        analyst.take_prompt_usage(),
-        analyst.take_retry_events(),
+        prompt_usage,
+        model_retries,
     );
     // The deterministic outcome half: tag active episodes' net alignment from this
     // run's diff, refresh label-time price series through the shared bar cache and
@@ -4696,9 +4724,55 @@ mod tests {
 
     // ---- Checkpoint / resume (`docs/portfolio-analysis.md` §Failure posture) ----
 
-    /// A stub analyst that fails hard on one symbol — the mid-book model failure.
+    /// A stub analyst that fails hard on one symbol — the mid-book model failure
+    /// — or on none ([`FailOn::recording`], the resumed process's analyst).
+    /// Instrumented like `LocalAnalyst`: every `distill_research` records one
+    /// prompt-usage row (the failing symbol's *before* it bails — the abandoned
+    /// call a resume must not carry), and every `interpret` records one usage
+    /// row at `interpret_tokens` plus one fired-retry event; both drain through
+    /// the trait's `take_*`.
     struct FailOn {
-        symbol: &'static str,
+        symbol: Option<&'static str>,
+        interpret_tokens: u64,
+        prompt_usage: std::sync::Mutex<Vec<crate::local_model::PromptUsage>>,
+        retries: std::sync::Mutex<Vec<crate::local_model::RetryEvent>>,
+    }
+
+    impl FailOn {
+        /// Fails on `symbol`; its interpret rows fill past the context-pressure
+        /// threshold (120 k of 128 k), so the pre-crash process leaves a
+        /// pressure row and the run's peak behind.
+        fn on(symbol: &'static str) -> Self {
+            Self {
+                symbol: Some(symbol),
+                interpret_tokens: 120_000,
+                prompt_usage: std::sync::Mutex::new(Vec::new()),
+                retries: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        /// Never fails; records at the given interpret fill.
+        fn recording(interpret_tokens: u64) -> Self {
+            Self {
+                symbol: None,
+                interpret_tokens,
+                prompt_usage: std::sync::Mutex::new(Vec::new()),
+                retries: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn record_usage(&self, stage: String, prompt_tokens: u64) {
+            self.prompt_usage
+                .lock()
+                .unwrap()
+                .push(crate::local_model::PromptUsage {
+                    stage,
+                    prompt_tokens: Some(prompt_tokens),
+                    num_ctx: 131_072,
+                    prompt_chars: prompt_tokens * 4,
+                    completion_tokens: Some(1_000),
+                    num_predict: None,
+                    output_limited: false,
+                });
+        }
     }
 
     impl crate::portfolio::pipeline::HoldingAnalyst for FailOn {
@@ -4706,8 +4780,9 @@ mod tests {
             &self,
             inputs: &crate::portfolio::distill::DistillInputs,
         ) -> Result<crate::portfolio::distill::DistilledResearch> {
-            if inputs.symbol == self.symbol {
-                anyhow::bail!("injected model failure on {}", self.symbol);
+            self.record_usage(format!("distill {}", inputs.symbol), 20_000);
+            if self.symbol.is_some_and(|s| s == inputs.symbol) {
+                anyhow::bail!("injected model failure on {}", inputs.symbol);
             }
             Ok(crate::portfolio::distill::offline_consolidate(inputs))
         }
@@ -4715,7 +4790,22 @@ mod tests {
             &self,
             input: &crate::portfolio::pipeline::InterpretationInput,
         ) -> Result<crate::portfolio::Interpretation> {
+            let stage = format!("interpret {}", input.dossier.position.symbol);
+            self.record_usage(stage.clone(), self.interpret_tokens);
+            self.retries
+                .lock()
+                .unwrap()
+                .push(crate::local_model::RetryEvent {
+                    stage,
+                    cause: "transport-level connection failure".into(),
+                });
             crate::portfolio::pipeline::StubAnalyst.interpret(input)
+        }
+        fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
+            std::mem::take(&mut *self.prompt_usage.lock().unwrap())
+        }
+        fn take_retry_events(&self) -> Vec<crate::local_model::RetryEvent> {
+            std::mem::take(&mut *self.retries.lock().unwrap())
         }
         fn interpret_role_risk(
             &self,
@@ -4877,7 +4967,7 @@ mod tests {
             &FixtureHoldingsSource::with_holdings(two_stocks()),
             &StubCompanyData,
             &StubMarket,
-            &FailOn { symbol: "MSFT" },
+            &FailOn::on("MSFT"),
             &InvestorProfile::default_fixture(),
             None,
             None,
@@ -4902,6 +4992,17 @@ mod tests {
             cp.accumulators.sector_by_symbol.contains_key("AAPL"),
             "the accumulators carry the completed holding's sector identity"
         );
+        // The completed holding's context-fit rows and fired retry ride its
+        // own row; the interrupted holding's abandoned distill call reaches no
+        // row (ruled 2026-08-28: telemetry membership is row membership).
+        let stages: Vec<&str> = cp.holdings[0]
+            .prompt_usage
+            .iter()
+            .map(|u| u.stage.as_str())
+            .collect();
+        assert_eq!(stages, ["distill AAPL", "interpret AAPL"], "{stages:?}");
+        assert_eq!(cp.holdings[0].model_retries.len(), 1, "{:?}", cp.holdings[0].model_retries);
+        assert_eq!(cp.holdings[0].model_retries[0].stage, "interpret AAPL");
 
         // Offerable right now, under the same roster.
         let ids = vec!["stub-analyst".to_string(), "stub-analyst".to_string()];
@@ -4913,11 +5014,13 @@ mod tests {
         // identity and as-of stamps.
         let pinned_run_id = cp.header.run_id.clone();
         let pinned_created = cp.header.created_at.clone();
+        // The resumed process records too, at a smaller fill, so the merge and
+        // its order across both processes are pinned — not just survival.
         let outcome = run_portfolio_job(
             &NoPullSource,
             &StubCompanyData,
             &StubMarket,
-            &crate::portfolio::pipeline::StubAnalyst,
+            &FailOn::recording(60_000),
             &InvestorProfile::default_fixture(),
             None,
             None,
@@ -4945,6 +5048,22 @@ mod tests {
                 v.symbol
             );
         }
+        // The finished run's data-health read spans both processes in order —
+        // the read the big-run prompt-fit and fired-retry watches consume: the
+        // retries list pre-crash AAPL then post-resume MSFT, the peak is AAPL's
+        // pre-crash 120 k fill over MSFT's 60 k, and AAPL's pressure row survives.
+        let dh = run
+            .roll_up
+            .data_health
+            .as_ref()
+            .expect("the data-health aggregate persists");
+        let retry_stages: Vec<&str> = dh.model_retries.iter().map(|r| r.stage.as_str()).collect();
+        assert_eq!(retry_stages, ["interpret AAPL", "interpret MSFT"], "{retry_stages:?}");
+        let peak = dh.peak_prompt.as_ref().expect("a peak is recorded");
+        assert_eq!((peak.stage.as_str(), peak.prompt_tokens), ("interpret AAPL", Some(120_000)));
+        let pressure: Vec<&str> = dh.context_pressure.iter().map(|u| u.stage.as_str()).collect();
+        assert_eq!(pressure, ["interpret AAPL"], "{pressure:?}");
+        assert!(dh.attention, "pressure and a fired retry are attention triggers: {}", dh.summary);
         // The trail cleared with the successful persist.
         assert!(store::load_checkpoint(&conn).unwrap().is_none());
     }
@@ -4956,7 +5075,7 @@ mod tests {
             &FixtureHoldingsSource::with_holdings(two_stocks()),
             &StubCompanyData,
             &StubMarket,
-            &FailOn { symbol: "MSFT" },
+            &FailOn::on("MSFT"),
             &InvestorProfile::default_fixture(),
             None,
             None,
@@ -4989,7 +5108,7 @@ mod tests {
             &FixtureHoldingsSource::with_holdings(two_stocks()),
             &StubCompanyData,
             &StubMarket,
-            &FailOn { symbol: "MSFT" },
+            &FailOn::on("MSFT"),
             &InvestorProfile::default_fixture(),
             None,
             None,

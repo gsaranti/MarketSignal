@@ -224,17 +224,19 @@ pub trait HoldingAnalyst {
     /// [`Self::decide_action`] run on. Recorded on the audit only after one of
     /// those calls actually ran.
     fn reasoner_id(&self) -> String;
-    /// Drain the prompt-size observations the calls above accumulated
-    /// ([`crate::local_model::PromptUsage`]) — the data-health context-fit read
-    /// (`docs/portfolio-analysis.md` §Portfolio roll-up). Defaulted empty so
-    /// deterministic stubs carry no instrumentation.
+    /// Drain the prompt-size observations the calls above accumulated since
+    /// the last drain ([`crate::local_model::PromptUsage`]) — the data-health
+    /// context-fit read (`docs/portfolio-analysis.md` §Portfolio roll-up). The
+    /// job drains at each holding's checkpoint boundary so a completed
+    /// holding's rows ride its checkpoint row. Defaulted empty so deterministic
+    /// stubs carry no instrumentation.
     fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
         Vec::new()
     }
-    /// Drain the fired bounded-retry records
+    /// Drain the fired bounded-retry records since the last drain
     /// ([`crate::local_model::RetryEvent`]) — the data-health model-retry read
-    /// (`docs/local-models.md §The local-model adapter seam`). Defaulted empty
-    /// like the usage drain.
+    /// (`docs/local-models.md §The local-model adapter seam`), drained at the
+    /// same boundary as the usage. Defaulted empty like the usage drain.
     fn take_retry_events(&self) -> Vec<crate::local_model::RetryEvent> {
         Vec::new()
     }
@@ -4783,10 +4785,10 @@ pub struct LocalAnalyst {
     client: LocalModelClient,
     reasoner_model: String,
     fast_model: String,
-    /// Prompt-size observations accumulated across this run's chat calls
-    /// (drained by [`HoldingAnalyst::take_prompt_usage`]). A `Mutex` only for the
-    /// `&self` receivers — the per-holding loop is sequential, so it is never
-    /// contended.
+    /// Prompt-size observations accumulated since the job's last drain
+    /// ([`HoldingAnalyst::take_prompt_usage`] — once per holding checkpoint).
+    /// A `Mutex` only for the `&self` receivers — the per-holding loop is
+    /// sequential, so it is never contended.
     prompt_usage: std::sync::Mutex<Vec<crate::local_model::PromptUsage>>,
     /// The bounded retry-once gate shared by every model-call site this run
     /// (`docs/local-models.md §The local-model adapter seam`); its fired
