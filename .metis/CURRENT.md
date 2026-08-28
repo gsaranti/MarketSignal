@@ -26,14 +26,15 @@ output in full, verify Codex findings against code *and git* before agreeing.
 
 Nothing in flight; `main` at `e530bd9`, tree clean, pushed. The fix queue still
 sits ahead of the run, one finding per slice, severity order: **4 P1 minors**
-remain (next: **expense-ratio `{:.3}` rendering** — the interpretation and action
-prompts render expense ratio and drag through `opt()`'s three-decimal format
-(`pipeline.rs` ~`2634`, `3236`, via ~`3477-3479`), so a 0.03% fund prints
-`0.000` and the legend's own example `0.0075` is unrepresentable; then ledger
-TTM vocabulary, IV skew sign convention, FMP statement dates), then the 5 P2,
-8 P3, Codex I1–I11, and the §A4 seed fix. Carried untouched outside the record:
-`/api/tags` probes on the 600 s backstop; seed passes the whole prior ledger per
-topic; 6g qualitative trips un-trip unless re-researched.
+remain (next: **expense-ratio `{:.3}` rendering** — the role/risk,
+interpretation, and action prompts render expense ratio and drag through
+`opt()`'s three-decimal format (`pipeline.rs:2911`, `3513`, `3964`, via
+`opt()` at `3772`; the record's older anchors have drifted), so a 0.03% fund
+prints `0.000` and the legend's own example `0.0075` is unrepresentable; then
+ledger TTM vocabulary, IV skew sign convention, FMP statement dates), then the
+5 P2, 8 P3, Codex I1–I11, and the §A4 seed fix. Carried untouched outside the
+record: `/api/tags` probes on the 600 s backstop; seed passes the whole prior
+ledger per topic; 6g qualitative trips un-trip unless re-researched.
 
 ## Open questions
 
