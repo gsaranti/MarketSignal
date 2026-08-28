@@ -159,6 +159,7 @@ build status lives in `BUILD.md`.*
 - Local-model per-stage options wiring — local-model-operations.md §Sampling settings, §The `num_ctx` trap, §M5 pre-flight checklist
 - Model residency default — local-models.md §The model roster and per-task routing
 - Local-model adapter seam — local-models.md §The local-model adapter seam
+- Distillation issue guard (prompt sizing at issue — the §The local-model adapter seam statement is canonical) — local-models.md §The local-model adapter seam; web-research.md §The research loop and context management; configuration.md §Research Context Management; portfolio-workflow.md §Step 6d
 - Schema-constrained output — local-models.md §Schema-constrained output
 - Context-memory discipline — local-models.md §Context-memory discipline
 - Per-job isolated vector memory — local-models.md §Run history and continuity; storage.md §Local Vector Memory
@@ -331,4 +332,4 @@ the run's own dated record follows it.*
 - Trade Opportunities documentation audit — the 28 findings, their verification verdicts, seven rulings, dispositions, and two review rounds — verification/2026-08-19-trade-opportunities-documentation-audit.md; BUILD.md §What remains
 - Fund depth — the four rulings, the CEF probe findings, the built leg, and six review rounds — verification/2026-08-21-fund-depth-rulings.md; BUILD.md §What remains (Built)
 - Research-loop slice — the eight review rounds, the fix inventory, and the three 2026-08-24 channel rulings — verification/2026-08-24-research-loop-rulings.md; BUILD.md §What remains (Built)
-- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I15 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains
+- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I16 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains

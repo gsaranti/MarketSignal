@@ -478,6 +478,17 @@ Each is easy to break by accident, so a plan should say how it honors them:
   evidence — a tracker row plus data-health `model_retries` events — never
   silent. The contract is canonical at `docs/local-models.md §The
   local-model adapter seam`.
+- **No distillation prompt issues over its model's budget.** The adapter seam
+  sizes every 6d call's rendered prompt before a request exists — within the
+  fast tier's budget it issues there, over it on the resident reasoner (a
+  model choice, never a `num_ctx` change), over the widest budget it is
+  refused as an unclassified failure — and the rendered single-pass and
+  tier-1 prompts fall to the next smaller shape only where that guard would
+  refuse, so a prompt the reasoner can serve never spends the
+  sub-distillation cap. The budget is a chars-per-token estimate, so
+  data-health's likely-front-truncation read stays the runtime witness.
+  Canonical at `docs/local-models.md §The local-model adapter seam` (ruled
+  2026-08-28 off the 2026-08-24 review's reduce-prompt minor).
 - **Stored price-denominated values never compare against fresh prices
   without the split-adjustment bridge.** FMP dated EOD re-bases
   retroactively, so a slice that stores a price (a threshold, target, entry,
@@ -646,7 +657,7 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) are resolved; the Priority-1/-2/-3 minors, Codex's I1–I15, and
+   posture) are resolved; the Priority-1/-2/-3 minors, Codex's I1–I16, and
    the §A4 seed edge sit ahead of the run, one finding per slice; and the
    user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
