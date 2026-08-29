@@ -83,7 +83,7 @@
 
 - **Model arm (model view)**
   - The model's own read of the same fields, authored freely.
-  - Structurally validated only; never checked against the engine's numbers.
+  - Validated structurally and on its declared numeric domain (`docs/portfolio-analysis.md` §The holding verdict); never checked against the engine's numbers.
   - Scored against the engine baseline by the outcome scoreboard.
 
 - **Risk tier**
@@ -1291,7 +1291,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 
 - **Model boundaries**
   - The engine arm is app-stamped; nothing the model returns can alter an engine value, overlay state, or monitor stamp.
-  - The model arm is its own: structurally validated only, never checked against the engine's numbers.
+  - The model arm is its own: validated structurally and on its declared numeric domain — sub-scores 0–100, target legs finite and positive; an off-domain response is rejected and re-issued once (`docs/portfolio-analysis.md` §The holding verdict) — never checked against the engine's numbers.
   - Engine caps and ceilings bind the engine arm and annotate the model's departures; they never clamp the model's values.
   - The rewritten **ledger is the exception to "the model's output stands"**: model-authored here but app-validated at Step 6g, not preserved like the model arm. There the app clears any tripped/fired claim no confirmed engine crossing (or, for a qualitative condition, no source-backed finding) supports, downgrades a non-executable quantitative core to qualitative, and owns every condition id and its lineage across the rewrite (Step 6g §Ledger validation). What is preserved exactly is the model *arm* — its sub-scores, targets, and conviction; what the app corrects is unsupported ledger claims and structure.
   - Cannot see the investor profile.
@@ -1313,7 +1313,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - The engine's per-holding action set, shown as evidence with the engine's own pick withheld.
   - The investor profile: objective, risk tolerance, horizon, and tax posture — without the cash row.
 - **Deliberately excluded**
-  - House view, research, computed metrics, and absolute target prices (an off-scale model leg printing its authored value beside its tag is the one exception).
+  - House view, research, computed metrics, and absolute target prices (an off-scale model leg printing its authored value beside its tag is the one exception — behind the decode gate reachable only for a finite positive leg whose move from spot overflows the percentage arithmetic, never for a non-finite or non-positive leg).
   - Every book-level value: cash, weights, concentration, other holdings.
 - **Returns**
   - One rung from the fixed ladder plus a short rationale (prompted as one sentence; an empty rationale fails the run).
@@ -1339,7 +1339,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Two-arm stamping rule**
   - Engine values are app-stamped directly, never echoed through the model.
   - Nothing the model returns can alter an engine grade, target, overlay value, or monitor stamp.
-  - The model arm's own numbers are structurally validated only, never compared against the engine's.
+  - The model arm's own numbers are validated structurally and on their declared domain, never compared against the engine's.
 
 - **What-changed validation (built)**
   - The what-changed audit is typed rows beside the prose (kind, old → new, attribution, evidence), and every claimed external change must map to one of:
@@ -1659,7 +1659,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 
 # The most important safety rules
 
-- The engine calculates every financial number in the baseline arm; the model's own arm never binds or alters an engine value — it is structurally validated only, then scored on realized outcomes (its target bands the one read graded head-to-head against the engine).
+- The engine calculates every financial number in the baseline arm; the model's own arm never binds or alters an engine value — it is validated structurally and on its declared domain, never against the engine, then scored on realized outcomes (its target bands the one read graded head-to-head against the engine; a band with a non-finite or non-positive leg reads as no band).
 - Engine evidence annotates the model's choices, never bars them.
 - Missing floor-bearing data causes abstention, not a guessed grade.
 - A role-risk-only verdict carries no fabricated priced number — no letter grade, price target, or conviction on a structurally unpriceable vehicle.

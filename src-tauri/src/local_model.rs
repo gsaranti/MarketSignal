@@ -189,6 +189,13 @@ pub(crate) enum RetryClass {
     SchemaParse,
     /// The stream carried an error chunk or ended before its done chunk.
     Stream,
+    /// The interpretation parsed but a model-arm value fell outside its
+    /// declared numeric domain (`portfolio::validate_model_arm`) — a sampled
+    /// response whose re-issue may well land in-domain, so it classifies
+    /// transient, as its own class so the data-health read tells an
+    /// off-domain value from malformed content (the 2026-08-24 review's
+    /// Codex I6, ruled 2026-08-29).
+    ModelArmDomain,
 }
 
 impl std::fmt::Display for RetryClass {
@@ -199,6 +206,7 @@ impl std::fmt::Display for RetryClass {
             Self::EmptyCompletion => "empty completion body",
             Self::SchemaParse => "content failed its parse",
             Self::Stream => "stream broke before completion",
+            Self::ModelArmDomain => "model arm value off its declared domain",
         })
     }
 }

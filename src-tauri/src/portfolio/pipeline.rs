@@ -3644,9 +3644,12 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
          outcomes beside the engine baseline): model_sub_scores — your own \
          quality/valuation/momentum/risk on the 0-100 higher-is-better scale (higher \
          risk score = lower risk; your letter derives from your \
-         quality/valuation/risk through the same cutoffs); \
+         quality/valuation/risk through the same cutoffs; the scale is enforced — \
+         a score outside 0-100 is rejected, never clamped); \
          model_price_targets — your own one-month and twelve-month base/bear/bull \
-         prices (positive numbers, bear ≤ base ≤ bull as you mean them); \
+         prices (finite positive numbers — enforced, a zero or negative leg is \
+         rejected; bear ≤ base ≤ bull as you mean them — an inverted band is kept \
+         as authored and annotated); \
          self_assessment — your honest retrospective (on a debut: say it is a first \
          read). Depart the engine wherever your read of the evidence differs; \
          agreement is a finding, not a requirement.\n",
@@ -3890,7 +3893,8 @@ fn implied_moves_section(spot: f64, graded: &GradedVerdict) -> String {
     let model_line = |label: &str, t: &ModelPriceTarget| {
         format!(
             "IMPLIED {label} MOVES vs spot {spot:.2} (model targets — your own band authored \
-             at interpretation, unvalidated, no provenance to discount): bear {} / base {} / \
+             at interpretation on its declared domain, never validated against the engine, no \
+             provenance to discount): bear {} / base {} / \
              bull {}{}.\n",
             model_leg(t.bear),
             model_leg(t.base),
@@ -3933,8 +3937,9 @@ pub fn action_system_prompt() -> String {
      evidence: both arms' grades and scores, the conviction, the horizon \
      outlook, the implied upside/downside of BOTH arms' targets against the \
      current price (the engine's discounted by their stated provenance; the \
-     model's are the verdict's own forward call, authored unvalidated, with no \
-     provenance to discount), and the capital-efficiency read — \
+     model's are the verdict's own forward call, gated to its declared domain but \
+     never validated against the engine, with no provenance to discount), and the \
+     capital-efficiency read — \
      only a `fails` hurdle is dead money, and a fails read leans toward \
      realizing some or all of the position once the forward prospects are \
      independently judged poor; the possible tax benefit of booking a loss (or \
@@ -5030,6 +5035,28 @@ fn ensure_nonempty_completion(
     Ok(())
 }
 
+/// Decode the interpretation call's completion: the schema-valid parse, then
+/// the model arm's declared numeric domain
+/// ([`crate::portfolio::validate_model_arm`]). Each failure carries the class the
+/// bounded retry-once classifies on — a parse failure `SchemaParse`, an
+/// off-domain value `ModelArmDomain` — so the re-issue fires for both and a
+/// hard failure's annotation names which one (the 2026-08-24 review's Codex
+/// I6, ruled 2026-08-29). Runs inside the retry closure, after
+/// [`ensure_nonempty_completion`], so an off-domain response gets exactly the
+/// one re-issue every content failure gets and never a second retry layer.
+fn decode_interpretation(stage: &str, content: &str) -> Result<Interpretation> {
+    let interpretation: Interpretation = serde_json::from_str(content)
+        .map_err(|e| anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse))
+        .with_context(|| format!("parsing interpretation JSON: {}", body_snippet(content)))?;
+    crate::portfolio::validate_model_arm(
+        &interpretation.model_sub_scores,
+        &interpretation.model_price_targets,
+    )
+    .map_err(|e| anyhow::Error::new(e).context(crate::local_model::RetryClass::ModelArmDomain))
+    .with_context(|| stage.to_string())?;
+    Ok(interpretation)
+}
+
 // Per-stage context sizes (`docs/local-model-operations.md §The num_ctx trap`):
 // always explicit — the daemon's memory-dependent auto-size (~256 K on 128 GB)
 // over-allocates KV cache, while an unset small default silently front-truncates
@@ -5336,13 +5363,7 @@ impl HoldingAnalyst for LocalAnalyst {
             self.record_usage(stage.clone(), &req, &resp);
             ensure_not_output_limited(&stage, &req, &resp)?;
             ensure_nonempty_completion(&stage, &resp)?;
-            serde_json::from_str(&resp.content)
-                .map_err(|e| {
-                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
-                })
-                .with_context(|| {
-                    format!("parsing interpretation JSON: {}", body_snippet(&resp.content))
-                })
+            decode_interpretation(&stage, &resp.content)
         })
     }
 
@@ -7561,8 +7582,8 @@ mod tests {
         assert!(
             user.contains(&format!(
                 "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (model targets — your own band \
-                 authored at interpretation, unvalidated, no provenance to discount): bear {} \
-                 / base {} / bull {}.",
+                 authored at interpretation on its declared domain, never validated against \
+                 the engine, no provenance to discount): bear {} / base {} / bull {}.",
                 pct(model_12.bear),
                 pct(model_12.base),
                 pct(model_12.bull)
@@ -7852,11 +7873,109 @@ mod tests {
     }
 
     #[test]
-    fn prompt_version_is_stamped_for_the_action_call_evidence_set() {
+    fn prompt_version_is_stamped_for_the_model_arm_domain_gate() {
         // Codex I5 changed the action call's evidence set (both arms' targets,
-        // both horizons), so a pre-fix checkpoint cannot resume into rungs
-        // decided on a different input set: the stamp moved and stays pinned.
-        assert_eq!(PROMPT_VERSION, "portfolio-v19");
+        // both horizons) and Codex I6 made the model arm's declared domain a
+        // decode gate with its clauses in the prompt, so a pre-fix checkpoint
+        // cannot resume into rows the gate would reject: the stamp moved and
+        // stays pinned.
+        assert_eq!(PROMPT_VERSION, "portfolio-v20");
+    }
+
+    #[test]
+    fn interpretation_prompt_names_the_model_arm_domain_as_enforced() {
+        // The prompt states the scale as a gate, not a preference (ruled
+        // 2026-08-29), and keeps ordering the model's own.
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
+            dossier: &d,
+            prior_ledger: d.prior_ledger(),
+            engine: &engine_output,
+            distilled: "distilled findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+        });
+        assert!(user.contains("a score outside 0-100 is rejected, never clamped"), "{user}");
+        assert!(user.contains("a zero or negative leg is rejected"), "{user}");
+        assert!(user.contains("an inverted band is kept as authored and annotated"), "{user}");
+    }
+
+    #[test]
+    fn decode_interpretation_rejects_an_off_domain_model_arm_under_its_own_class() {
+        // Codex I6 (ruled 2026-08-29): the schema grammar cannot express range
+        // keywords, so the decode enforces the declared domain — every
+        // offending field named — under `ModelArmDomain`, the class the bounded
+        // retry-once re-issues on, distinct from a parse failure's `SchemaParse`.
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let input = InterpretationInput {
+            input_delta: &[],
+            dossier: &d,
+            prior_ledger: d.prior_ledger(),
+            engine: &engine_output,
+            distilled: "distilled findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+        };
+        let stub = StubAnalyst.interpret(&input).unwrap();
+        // The stub's own arm is in-domain, so the offline fixture cannot drift
+        // off the gate silently.
+        let clean = serde_json::to_string(&stub).unwrap();
+        assert!(decode_interpretation("interpret TEST", &clean).is_ok());
+
+        let mut off = serde_json::to_value(&stub).unwrap();
+        off["model_sub_scores"]["quality"] = serde_json::json!(10000.0);
+        off["model_sub_scores"]["risk"] = serde_json::json!(-1.0);
+        off["model_price_targets"]["twelve_month"]["bear"] = serde_json::json!(0.0);
+        off["model_price_targets"]["one_month"]["bull"] = serde_json::json!(-5.0);
+        let err = decode_interpretation("interpret TEST", &off.to_string()).unwrap_err();
+        assert_eq!(
+            crate::local_model::retry_class(&err),
+            Some(crate::local_model::RetryClass::ModelArmDomain)
+        );
+        let detail = format!("{err:#}");
+        for field in [
+            "model_sub_scores.quality = 10000.0",
+            "model_sub_scores.risk = -1.0",
+            "model_price_targets.twelve_month.bear = 0.0",
+            "model_price_targets.one_month.bull = -5.0",
+        ] {
+            assert!(detail.contains(field), "{field} missing from: {detail}");
+        }
+        // The chain reads stage → class → the named violations, each layer once.
+        assert!(
+            detail.starts_with(
+                "interpret TEST: model arm value off its declared domain: model arm off its \
+                 declared domain: "
+            ),
+            "{detail}"
+        );
+
+        // An inverted band is in-domain — I5's authored-and-annotated posture
+        // holds; ordering is the model's own.
+        let mut inverted = serde_json::to_value(&stub).unwrap();
+        inverted["model_price_targets"]["twelve_month"]["bear"] = serde_json::json!(500.0);
+        inverted["model_price_targets"]["twelve_month"]["bull"] = serde_json::json!(50.0);
+        assert!(decode_interpretation("interpret TEST", &inverted.to_string()).is_ok());
+
+        // Malformed content keeps its own class.
+        let err = decode_interpretation("interpret TEST", "not json").unwrap_err();
+        assert_eq!(
+            crate::local_model::retry_class(&err),
+            Some(crate::local_model::RetryClass::SchemaParse)
+        );
     }
 
     #[test]

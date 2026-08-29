@@ -1990,6 +1990,52 @@ fn scored_for(ep: &DecisionEpisode, months: u32) -> Option<&ScoredLabel> {
         })
 }
 
+/// The one mean every scoreboard read persists through — the cohort returns,
+/// the band interval scores, the base errors, the paired head-to-head — reading
+/// as absent rather than infinite when its sum overflows (finite values near
+/// `f64::MAX` can still sum past it), so no scoreboard read ever persists a
+/// non-finite number: serde would write `null` and the reload would silently
+/// read `None` (Codex I6, rounds 1 and 2).
+fn finite_mean(xs: &[f64]) -> Option<f64> {
+    (!xs.is_empty())
+        .then(|| xs.iter().sum::<f64>() / xs.len() as f64)
+        .filter(|m| m.is_finite())
+}
+
+/// One cohort field's cross-symbol accumulation: the per-symbol means
+/// collected, and poisoned the moment any symbol's mean was non-finite over
+/// inputs it did have — so a per-symbol overflow reaches the persisted field
+/// as absent rather than as a mean over fewer holdings than `unique_holdings`
+/// reports (the population never silently shrinks below the reported count;
+/// Codex I6, round 3). A symbol with no inputs for the field contributes
+/// nothing and poisons nothing: a missing relative-return leg is an absence,
+/// not a numerical failure.
+#[derive(Default)]
+struct FieldMeans {
+    values: Vec<f64>,
+    poisoned: bool,
+}
+
+impl FieldMeans {
+    fn push_symbol(&mut self, inputs: &[f64]) {
+        if inputs.is_empty() {
+            return;
+        }
+        match finite_mean(inputs) {
+            Some(v) => self.values.push(v),
+            None => self.poisoned = true,
+        }
+    }
+
+    fn finish(&self) -> Option<f64> {
+        if self.poisoned {
+            None
+        } else {
+            finite_mean(&self.values)
+        }
+    }
+}
+
 /// Group episodes into one cohort stat: per-symbol means first, then across
 /// symbols — unique-holding counted, never raw episode counts.
 fn cohort_stat(key: &str, members: &[(&DecisionEpisode, &ScoredLabel)]) -> Option<CohortStat> {
@@ -2003,55 +2049,33 @@ fn cohort_stat(key: &str, members: &[(&DecisionEpisode, &ScoredLabel)]) -> Optio
             .or_default()
             .push(label);
     }
-    let mut tr = Vec::new();
-    let mut pr = Vec::new();
-    let mut vm = Vec::new();
-    let mut vs = Vec::new();
+    let mut tr = FieldMeans::default();
+    let mut pr = FieldMeans::default();
+    let mut vm = FieldMeans::default();
+    let mut vs = FieldMeans::default();
     for labels in per_symbol.values() {
-        let mean = |xs: Vec<f64>| {
-            if xs.is_empty() {
-                None
-            } else {
-                Some(xs.iter().sum::<f64>() / xs.len() as f64)
-            }
-        };
         // The primary mean quotes price-only where a label's total-return leg was
         // unavailable (`docs/portfolio-analysis.md §Outcome learning` — "any
         // comparison with a missing total-return leg quotes price-only") — a
         // labeled mix, never a silently shrunk population; the pure price-only
         // mean rides beside it.
-        if let Some(v) = mean(
-            labels
+        tr.push_symbol(
+            &labels
                 .iter()
                 .map(|l| l.total_return.unwrap_or(l.price_return))
-                .collect(),
-        ) {
-            tr.push(v);
-        }
-        if let Some(v) = mean(labels.iter().map(|l| l.price_return).collect()) {
-            pr.push(v);
-        }
-        if let Some(v) = mean(labels.iter().filter_map(|l| l.vs_market).collect()) {
-            vm.push(v);
-        }
-        if let Some(v) = mean(labels.iter().filter_map(|l| l.vs_sector).collect()) {
-            vs.push(v);
-        }
+                .collect::<Vec<_>>(),
+        );
+        pr.push_symbol(&labels.iter().map(|l| l.price_return).collect::<Vec<_>>());
+        vm.push_symbol(&labels.iter().filter_map(|l| l.vs_market).collect::<Vec<_>>());
+        vs.push_symbol(&labels.iter().filter_map(|l| l.vs_sector).collect::<Vec<_>>());
     }
-    let agg = |xs: &[f64]| {
-        if xs.is_empty() {
-            None
-        } else {
-            Some(xs.iter().sum::<f64>() / xs.len() as f64)
-        }
-    };
     Some(CohortStat {
         key: key.to_string(),
         unique_holdings: per_symbol.len(),
-        mean_total_return: agg(&tr),
-        mean_price_return: agg(&pr),
-        mean_vs_market: agg(&vm),
-        mean_vs_sector: agg(&vs),
+        mean_total_return: tr.finish(),
+        mean_price_return: pr.finish(),
+        mean_vs_market: vm.finish(),
+        mean_vs_sector: vs.finish(),
     })
 }
 
@@ -2136,6 +2160,23 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
     /// A band source for the shared accumulation: (episode, window months) → the
     /// arm's (bear, base, bull), `None` when the arm carries no band there.
     type BandSource = dyn Fn(&PricedEpisode, u32) -> Option<(f64, f64, f64)>;
+    /// One band's scored read against the realized return — (interval score,
+    /// hit) — or `None` when a derived value is not finite: a return-space edge
+    /// or the score itself. The fail-closed read beneath the decode gate must
+    /// read the derived values, not the inputs alone (Codex I6, round 1): an
+    /// in-domain but astronomically wide band (`1e308` over a $1 spot) overflows
+    /// the return conversion or the Winkler penalty, and an infinity here would
+    /// persist as `null` and read back as absent — so the band is excluded from
+    /// the arm's read and from the pairing instead, the same exclusion a
+    /// non-finite leg takes.
+    fn band_read(band: (f64, f64, f64), spot: f64, realized_r: f64) -> Option<(f64, bool)> {
+        let (bear, _base, bull) = band;
+        let (lo, hi) = (bear.min(bull), bear.max(bull));
+        let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
+        let score = interval_score(lo_r, hi_r, realized_r, 1.0 - NOMINAL_BAND_COVERAGE);
+        (lo_r.is_finite() && hi_r.is_finite() && score.is_finite())
+            .then_some((score, realized_r >= lo_r && realized_r <= hi_r))
+    }
     let band_calibration =
         |band_of: &BandSource| {
             let mut reads = Vec::new();
@@ -2168,24 +2209,29 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
                         // band is excluded.
                         continue;
                     };
-                    let (lo, hi) = (bear.min(bull), bear.max(bull));
-                    let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
                     // Realized return from the same decision instant: end over the
                     // anchor-session close — both sides of the comparison now share
                     // one anchor, so neither a split nor the overnight gap into the
                     // entry can shear it.
                     let realized_r = label.end_price / bridge - 1.0;
+                    let Some((score, hit)) = band_read((bear, base, bull), spot, realized_r) else {
+                        continue;
+                    };
                     let acc = by_version
                         .entry(p.snapshot.target_parameter_version.clone())
                         .or_default();
-                    if realized_r >= lo_r && realized_r <= hi_r {
+                    if hit {
                         acc.hits += 1;
                     }
-                    acc.scores
-                        .push(interval_score(lo_r, hi_r, realized_r, 1.0 - NOMINAL_BAND_COVERAGE));
+                    acc.scores.push(score);
                     if base != 0.0 {
                         let realized_authoring_basis = spot * (1.0 + realized_r);
-                        acc.base_errors.push((realized_authoring_basis - base) / base);
+                        let err = (realized_authoring_basis - base) / base;
+                        // The same derived-value discipline: a base tiny enough to
+                        // overflow the division is excluded, not averaged.
+                        if err.is_finite() {
+                            acc.base_errors.push(err);
+                        }
                     }
                 }
                 if by_version.is_empty() {
@@ -2201,11 +2247,8 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
                         scored: n,
                         coverage_rate: (n > 0).then(|| acc.hits as f64 / n as f64),
                         nominal_coverage: NOMINAL_BAND_COVERAGE,
-                        mean_interval_score: (n > 0)
-                            .then(|| acc.scores.iter().sum::<f64>() / n as f64),
-                        mean_base_signed_error: (!acc.base_errors.is_empty()).then(|| {
-                            acc.base_errors.iter().sum::<f64>() / acc.base_errors.len() as f64
-                        }),
+                        mean_interval_score: finite_mean(&acc.scores),
+                        mean_base_signed_error: finite_mean(&acc.base_errors),
                     });
                 }
             }
@@ -2224,7 +2267,16 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
             1 => &t.one_month,
             _ => &t.twelve_month,
         };
-        Some((band.bear, band.base, band.bull))
+        // The scorer's fail-closed read beneath the decode gate (Codex I6,
+        // ruled 2026-08-29): a band any leg of which is non-finite or
+        // non-positive is no band — excluded from the model read and the
+        // paired head-to-head below, never scored as a NaN or a negative
+        // price — the same exclusion an engine leg the scenario function
+        // could not derive takes.
+        [band.bear, band.base, band.bull]
+            .iter()
+            .all(|v| v.is_finite() && *v > 0.0)
+            .then_some((band.bear, band.base, band.bull))
     };
     let target_calibration = band_calibration(&engine_band);
     let model_target_calibration = band_calibration(&model_band);
@@ -2257,23 +2309,25 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
                 continue;
             };
             let realized_r = label.end_price / bridge - 1.0;
-            let score = |band: (f64, f64, f64), scores: &mut Vec<f64>, hits: &mut usize| {
-                let (lo, hi) = (band.0.min(band.2), band.0.max(band.2));
-                let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
-                if realized_r >= lo_r && realized_r <= hi_r {
-                    *hits += 1;
-                }
-                scores.push(interval_score(lo_r, hi_r, realized_r, 1.0 - NOMINAL_BAND_COVERAGE));
+            // Both arms' derived reads must be finite for the pair to enter — one
+            // arm's overflow excludes the event from both, so the populations
+            // stay identical by construction.
+            let (Some((e_score, e_hit)), Some((m_score, m_hit))) =
+                (band_read(eb, spot, realized_r), band_read(mb, spot, realized_r))
+            else {
+                continue;
             };
-            score(eb, &mut e_scores, &mut e_hits);
-            score(mb, &mut m_scores, &mut m_hits);
+            e_scores.push(e_score);
+            m_scores.push(m_score);
+            e_hits += usize::from(e_hit);
+            m_hits += usize::from(m_hit);
         }
         let n = e_scores.len();
         head_to_head.push(HeadToHeadRead {
             window_months: months,
             scored: n,
-            engine_mean_interval_score: (n > 0).then(|| e_scores.iter().sum::<f64>() / n as f64),
-            model_mean_interval_score: (n > 0).then(|| m_scores.iter().sum::<f64>() / n as f64),
+            engine_mean_interval_score: finite_mean(&e_scores),
+            model_mean_interval_score: finite_mean(&m_scores),
             engine_coverage_rate: (n > 0).then(|| e_hits as f64 / n as f64),
             model_coverage_rate: (n > 0).then(|| m_hits as f64 / n as f64),
         });
@@ -4798,6 +4852,179 @@ mod tests {
         // Base error through the bridge: realized in the authoring basis is
         // 100 × 29 ⁄ 50 = 58 vs base 120.
         assert!((cal.mean_base_signed_error.unwrap() - (58.0 - 120.0) / 120.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn an_off_domain_model_band_is_read_as_no_band() {
+        // The scorer's fail-closed read beneath the decode gate (Codex I6): a
+        // model band any leg of which is non-finite or non-positive is no band
+        // — excluded from the model read and the paired head-to-head — while
+        // the engine band on the same episode still scores.
+        let anchor = "2026-08-04T12:00:00+00:00";
+        let mut nan = old_episode("NANB", anchor);
+        if let EpisodeBody::Priced(p) = &mut nan.body {
+            p.snapshot.model_price_targets.twelve_month.bear = f64::NAN;
+        }
+        set_scored(&mut nan, 12, scored_label(0.10, None));
+        let mut zero = old_episode("ZERO", anchor);
+        if let EpisodeBody::Priced(p) = &mut zero.body {
+            p.snapshot.model_price_targets.twelve_month.bull = 0.0;
+        }
+        set_scored(&mut zero, 12, scored_label(0.10, None));
+        let mut clean = old_episode("OK", anchor);
+        set_scored(&mut clean, 12, scored_label(0.10, None));
+        let reads = derive_reads(&[nan, zero, clean]);
+        let engine = reads
+            .target_calibration
+            .iter()
+            .find(|t| t.window_months == 12)
+            .unwrap();
+        assert_eq!(engine.scored, 3, "the engine band scores every episode");
+        let model = reads
+            .model_target_calibration
+            .iter()
+            .find(|t| t.window_months == 12)
+            .unwrap();
+        assert_eq!(model.scored, 1, "only the in-domain model band scores");
+        assert!(model.mean_interval_score.unwrap().is_finite());
+        let paired = reads
+            .head_to_head
+            .iter()
+            .find(|h| h.window_months == 12)
+            .unwrap();
+        assert_eq!(paired.scored, 1, "an off-domain model band never pairs");
+        assert!(paired.model_mean_interval_score.unwrap().is_finite());
+    }
+
+    #[test]
+    fn an_in_domain_band_whose_derived_read_overflows_is_read_as_no_band() {
+        // The derived read, not the inputs alone (Codex I6, round 1): an
+        // in-domain `1e308` band over a $1 spot passes the decode gate and the
+        // leg guard, but its Winkler penalty overflows — so it reads as no band,
+        // excluded from the model read and the pairing, while the engine band on
+        // the same episode still scores.
+        let anchor = "2026-08-04T12:00:00+00:00";
+        let mut wide = old_episode("WIDE", anchor);
+        if let EpisodeBody::Priced(p) = &mut wide.body {
+            p.snapshot.authoring_spot = Some(1.0);
+            p.snapshot.model_price_targets.twelve_month =
+                crate::portfolio::ModelPriceTarget { base: 1e308, bear: 1e308, bull: 1e308 };
+        }
+        set_scored(&mut wide, 12, scored_label(0.10, None));
+        let mut clean = old_episode("OK", anchor);
+        set_scored(&mut clean, 12, scored_label(0.10, None));
+        let reads = derive_reads(&[wide, clean]);
+        let engine = reads
+            .target_calibration
+            .iter()
+            .find(|t| t.window_months == 12)
+            .unwrap();
+        assert_eq!(engine.scored, 2, "the engine band scores both episodes");
+        let model = reads
+            .model_target_calibration
+            .iter()
+            .find(|t| t.window_months == 12)
+            .unwrap();
+        assert_eq!(model.scored, 1, "the overflowing band is no band");
+        assert!(model.mean_interval_score.is_some_and(f64::is_finite));
+        let paired = reads
+            .head_to_head
+            .iter()
+            .find(|h| h.window_months == 12)
+            .unwrap();
+        assert_eq!(paired.scored, 1, "the overflowing band never pairs");
+
+        // Finite scores can still sum past f64::MAX: two near-max bands each
+        // read on their own, and their mean reads as absent rather than
+        // infinite — never a `Some(inf)` that serde would persist as `null`.
+        let mut near_max = Vec::new();
+        for sym in ["MAX1", "MAX2"] {
+            let mut ep = old_episode(sym, anchor);
+            if let EpisodeBody::Priced(p) = &mut ep.body {
+                p.snapshot.authoring_spot = Some(1.0);
+                p.snapshot.model_price_targets.twelve_month =
+                    crate::portfolio::ModelPriceTarget { base: 1.0, bear: 1.0, bull: 1.7e308 };
+            }
+            set_scored(&mut ep, 12, scored_label(0.10, None));
+            near_max.push(ep);
+        }
+        let reads = derive_reads(&near_max);
+        let model = reads
+            .model_target_calibration
+            .iter()
+            .find(|t| t.window_months == 12)
+            .unwrap();
+        assert_eq!(model.scored, 2, "each near-max band reads on its own");
+        assert_eq!(model.coverage_rate, Some(1.0));
+        assert_eq!(model.mean_interval_score, None, "an overflowing mean reads as absent");
+        let paired = reads
+            .head_to_head
+            .iter()
+            .find(|h| h.window_months == 12)
+            .unwrap();
+        assert_eq!(paired.scored, 2);
+        assert_eq!(paired.model_mean_interval_score, None);
+        assert!(paired.engine_mean_interval_score.is_some_and(f64::is_finite));
+    }
+
+    #[test]
+    fn a_cohort_mean_whose_sum_overflows_reads_as_absent() {
+        // The finite-mean discipline reaches the cohort returns too (Codex I6,
+        // round 2): two holdings each with a finite near-max return still count
+        // as unique holdings, and their cross-symbol mean reads as absent rather
+        // than infinite.
+        let anchor = "2026-08-04T12:00:00+00:00";
+        let mut episodes = Vec::new();
+        for sym in ["AAPL", "MSFT"] {
+            let mut ep = old_episode(sym, anchor);
+            set_scored(&mut ep, 12, scored_label(1.7e308, None));
+            episodes.push(ep);
+        }
+        let reads = derive_reads(&episodes);
+        let twelve = reads
+            .cohorts
+            .iter()
+            .find(|c| c.window_months == 12)
+            .unwrap();
+        let hold = twelve
+            .lean_cohorts
+            .iter()
+            .find(|c| c.key == "hold")
+            .expect("hold cohort");
+        assert_eq!(hold.unique_holdings, 2, "membership is unchanged by the mean");
+        assert_eq!(hold.mean_price_return, None, "an overflowing mean reads as absent");
+        assert_eq!(hold.mean_total_return, None);
+
+        // A per-symbol overflow poisons the field it feeds (Codex I6, round 3):
+        // two AAPL episodes at near-max overflow AAPL's own mean, and the cohort
+        // field reads as absent rather than as MSFT alone under a count of two
+        // — while MSFT's relative-return leg, which AAPL simply lacks, still
+        // averages: a missing leg is an absence, not a numerical failure.
+        let mut aapl_1 = old_episode("AAPL", anchor);
+        set_scored(&mut aapl_1, 12, scored_label(1.7e308, None));
+        let mut aapl_2 = old_episode("AAPL", anchor);
+        aapl_2.episode_id = "ep-AAPL-2".into();
+        set_scored(&mut aapl_2, 12, scored_label(1.7e308, None));
+        let mut msft = old_episode("MSFT", anchor);
+        let mut label = scored_label(0.10, None);
+        label.vs_market = Some(0.05);
+        set_scored(&mut msft, 12, label);
+        let reads = derive_reads(&[aapl_1, aapl_2, msft]);
+        let twelve = reads
+            .cohorts
+            .iter()
+            .find(|c| c.window_months == 12)
+            .unwrap();
+        let hold = twelve
+            .lean_cohorts
+            .iter()
+            .find(|c| c.key == "hold")
+            .expect("hold cohort");
+        assert_eq!(hold.unique_holdings, 2);
+        assert_eq!(hold.mean_price_return, None, "never a mean over fewer holdings than reported");
+        assert_eq!(hold.mean_total_return, None);
+        assert_eq!(hold.mean_vs_market, Some(0.05), "a missing leg contributes nothing and poisons nothing");
+        assert_eq!(hold.mean_vs_sector, None);
     }
 
     #[test]

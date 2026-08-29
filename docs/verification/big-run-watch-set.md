@@ -6,7 +6,7 @@ It is forward-looking, unlike the dated records beside it — those are written 
 Findings go into a dated record once the run completes; this file is then the index of what that record has to answer.
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
-Records this run persists stamp `portfolio-v19`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, ledger-basis vocabulary, IV-skew convention, observation-excerpt, guidance-vintage, and action-target slices all landed since the 2026-08-18 revision with no live run between.
+Records this run persists stamp `portfolio-v20`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, ledger-basis vocabulary, IV-skew convention, observation-excerpt, guidance-vintage, action-target, and model-arm-domain slices all landed since the 2026-08-18 revision with no live run between.
 Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime), the sub-distillation-cap watch (§The research loop), and the one-month cap-saturation watch (§Grade, valuation and targets).
 Revised again 2026-08-27 with the technology-event pre-flag watch (§Thesis ledger and the quick check).
 
@@ -171,6 +171,7 @@ Each fired retry lands as a data-health summary line plus structured `model_retr
 A resumed run's count spans both processes — every restored row's calls and the resumed process's own — and omits only the superseded calls of holdings the resumed process re-analyzed ([portfolio-analysis.md §Failure posture](../portfolio-analysis.md#failure-posture)).
 Read its rate as the rate over the calls the finished verdicts rest on, and its count as a floor on every call the run ever issued.
 A run that still fails hard *after* a retry names the first attempt's class in its failure detail — read that class before treating the failure as novel.
+A `model arm value off its declared domain` class is the first live measurement of the off-domain rate the decode gate bounds by construction (Codex I6): a zero count says the prompt's stated scale held, and any nonzero count is a prompt-fit signal to read before it is a model fault.
 
 ## How to read the run
 

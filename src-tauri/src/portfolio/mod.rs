@@ -545,9 +545,12 @@ pub struct PriceTargets {
 /// One model-authored scenario target band — the model arm's counterpart of the
 /// engine's [`PriceTarget`] (`docs/portfolio-analysis.md` §The holding verdict, the
 /// two-arm contract). Authored freely at interpretation: no engine bound, band, or
-/// clamp applies, and the app persists it exactly as returned. Scoring reads the
-/// band as (min, max), so an inverted bear/bull pair still scores; the render
-/// annotates disorder rather than reordering the authored numbers.
+/// clamp applies, and the app persists it exactly as returned — within the
+/// declared domain: each leg finite and strictly positive, gated at decode by
+/// [`validate_model_arm`] (Codex I6), never clamped. Ordering is not gated:
+/// scoring reads the band as (min, max), so an inverted bear/bull pair still
+/// scores; the render annotates disorder rather than reordering the authored
+/// numbers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelPriceTarget {
     pub base: f64,
@@ -577,7 +580,9 @@ pub struct ModelPriceTargets {
 /// [`GradedVerdict`] complete the arm.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelView {
-    /// The model's own four sub-scores on the engine's 0–100 scale (higher = better).
+    /// The model's own four sub-scores on the engine's 0–100 scale (higher = better),
+    /// gated to that scale at decode ([`validate_model_arm`]) so the letter below
+    /// always derives from an on-scale composite.
     pub sub_scores: SubScores,
     /// Derived app-side from the model's quality / valuation / risk through the
     /// shared composite weights and cutoffs ([`engine::grade_from_subscores`]) — the
@@ -1913,7 +1918,18 @@ pub struct HoldingAudit {
 /// as authored — and the system prompt names both arms and how each is
 /// weighed. An evidence-set change to the action call, stamped so a pre-fix
 /// checkpoint cannot resume into rungs decided on a different input set.
-pub const PROMPT_VERSION: &str = "portfolio-v19";
+///
+/// `portfolio-v20`: the model arm's declared numeric domain enforced (the
+/// 2026-08-24 review's Codex I6). The prompt had stated the 0–100 sub-score
+/// scale and target positivity, but the grammar cannot express range
+/// keywords and the app never checked, so a finite `10000` derived an
+/// ordinary A and a zero or negative target persisted into the scoreboard.
+/// The decode now rejects an off-domain response ([`validate_model_arm`])
+/// under the bounded retry-once's own class, and the model-arm paragraph
+/// names each domain as enforced — a prompt-line change and an admission
+/// gate together, stamped so a pre-fix checkpoint cannot resume into rows
+/// the gate would reject.
+pub const PROMPT_VERSION: &str = "portfolio-v20";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2221,10 +2237,11 @@ pub struct Interpretation {
     /// The rewritten thesis ledger — required; validated at the 6g seam.
     pub ledger: LedgerDraft,
     /// The model arm's four sub-scores (0–100, higher better) — its own read
-    /// beside the engine's, never validated against them (the two-arm contract).
+    /// beside the engine's, never validated against them (the two-arm contract),
+    /// gated to the declared scale at decode ([`validate_model_arm`]).
     pub model_sub_scores: SubScores,
     /// The model arm's freely-authored one- / twelve-month targets — no engine
-    /// bound or clamp applies.
+    /// bound or clamp applies; each leg finite and positive by the same gate.
     pub model_price_targets: ModelPriceTargets,
     /// The retrospective self-assessment (see [`ModelView::self_assessment`]).
     pub self_assessment: String,
@@ -2390,7 +2407,9 @@ pub fn interpretation_schema() -> Value {
     // The model target band stays within the schema subset the local grammar
     // converter proves out (type / properties / required / enum) — the 0–100
     // sub-score scale and target positivity are stated in the prompt, never as
-    // numeric range keywords the grammar cannot express.
+    // numeric range keywords the grammar cannot express. What the grammar
+    // cannot express the app enforces at decode: [`validate_model_arm`] gates
+    // the declared domain (Codex I6).
     let target = json!({
         "type": "object",
         "properties": {
@@ -2434,6 +2453,69 @@ pub fn interpretation_schema() -> Value {
         "required": INTERPRETATION_KEYS
     })
 }
+
+/// The model arm's numeric domain, enforced app-side at the interpretation
+/// call's decode (`docs/portfolio-analysis.md` §The holding verdict; the
+/// 2026-08-24 review's Codex I6, ruled 2026-08-29): each of the four sub-scores
+/// finite within 0–100 inclusive, each of the six target legs finite and
+/// strictly positive. The grammar cannot express range keywords
+/// ([`interpretation_schema`]) and the engine's own sub-scores are clamped at
+/// source, so without this gate a finite `10000` derived an ordinary A and a
+/// zero or negative target persisted into the scoreboard. The gate is the
+/// declared scale, never the engine's values — the two-arm contract's "never
+/// validated against the engine" holds — and it rejects, never clamps.
+/// Ordering is deliberately outside the domain: a band authored bear above
+/// bull persists as authored and renders tagged (Codex I5), scoring reading it
+/// as (min, max). The error names every offending field with its authored
+/// value, never the first alone, so the failure detail reads the whole
+/// response.
+pub fn validate_model_arm(
+    sub_scores: &SubScores,
+    targets: &ModelPriceTargets,
+) -> Result<(), ModelArmDomainError> {
+    let mut violations = Vec::new();
+    let axes = [
+        ("quality", sub_scores.quality),
+        ("valuation", sub_scores.valuation),
+        ("momentum", sub_scores.momentum),
+        ("risk", sub_scores.risk),
+    ];
+    for (axis, v) in axes {
+        if !(v.is_finite() && (0.0..=100.0).contains(&v)) {
+            violations.push(format!("model_sub_scores.{axis} = {v:?} (declared 0–100)"));
+        }
+    }
+    let windows = [("one_month", &targets.one_month), ("twelve_month", &targets.twelve_month)];
+    for (window, band) in windows {
+        for (leg, v) in [("base", band.base), ("bear", band.bear), ("bull", band.bull)] {
+            if !(v.is_finite() && v > 0.0) {
+                violations.push(format!(
+                    "model_price_targets.{window}.{leg} = {v:?} (declared a finite positive price)"
+                ));
+            }
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(ModelArmDomainError { violations })
+    }
+}
+
+/// Every model-arm value outside its declared domain in one response
+/// ([`validate_model_arm`]), each entry naming the field and the authored value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelArmDomainError {
+    pub violations: Vec<String>,
+}
+
+impl std::fmt::Display for ModelArmDomainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "model arm off its declared domain: {}", self.violations.join("; "))
+    }
+}
+
+impl std::error::Error for ModelArmDomainError {}
 
 /// The model's schema-constrained output for a **`role_risk_only`** holding — the
 /// union's other branch (`docs/portfolio-analysis.md` §Intrinsic verdict): the role
@@ -2543,6 +2625,57 @@ pub fn action_decision_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_arm_domain_admits_the_scale_edges_and_an_inverted_band() {
+        // 0 and 100 are on the scale; a tiny or huge finite positive price is a
+        // price; bear above bull is I5's authored-and-annotated case, in-domain.
+        let scores = SubScores { quality: 0.0, valuation: 100.0, momentum: 50.0, risk: 99.999 };
+        let bands = ModelPriceTargets {
+            one_month: ModelPriceTarget { base: 1e-9, bear: 500.0, bull: 50.0 },
+            twelve_month: ModelPriceTarget { base: 1e300, bear: 1.0, bull: 2.0 },
+        };
+        assert!(validate_model_arm(&scores, &bands).is_ok());
+    }
+
+    #[test]
+    fn model_arm_domain_rejects_every_off_scale_value_and_names_each() {
+        // Every violation in one response is named with its authored value —
+        // the failure detail reads the whole arm, never the first miss alone —
+        // and the in-domain leg beside them is not.
+        let scores = SubScores {
+            quality: 100.0001,
+            valuation: -0.0001,
+            momentum: f64::NAN,
+            risk: f64::INFINITY,
+        };
+        let bands = ModelPriceTargets {
+            one_month: ModelPriceTarget { base: 0.0, bear: -1.0, bull: f64::NAN },
+            twelve_month: ModelPriceTarget {
+                base: f64::NEG_INFINITY,
+                bear: 10.0,
+                bull: f64::INFINITY,
+            },
+        };
+        let err = validate_model_arm(&scores, &bands).unwrap_err();
+        assert_eq!(err.violations.len(), 9, "{err}");
+        let text = err.to_string();
+        assert!(text.starts_with("model arm off its declared domain: "), "{text}");
+        for needle in [
+            "model_sub_scores.quality = 100.0001 (declared 0–100)",
+            "model_sub_scores.valuation = -0.0001",
+            "model_sub_scores.momentum = NaN",
+            "model_sub_scores.risk = inf",
+            "model_price_targets.one_month.base = 0.0 (declared a finite positive price)",
+            "model_price_targets.one_month.bear = -1.0",
+            "model_price_targets.one_month.bull = NaN",
+            "model_price_targets.twelve_month.base = -inf",
+            "model_price_targets.twelve_month.bull = inf",
+        ] {
+            assert!(text.contains(needle), "{needle} missing from: {text}");
+        }
+        assert!(!text.contains("twelve_month.bear"), "{text}");
+    }
 
     /// Pins the read-only Settings payload for the fixed preset — the exact
     /// snake_case keys the frontend types against and the shared label strings
