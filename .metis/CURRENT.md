@@ -2,29 +2,32 @@
 
 ## What happened
 
-**Group 1 (Codex I7 + I9 + I16) landed** — `bd5ca52`, pushed; the record's
-§I7 / §I9 / §I16 carry the rulings, resolutions, one reviewer round
-(approve-with-nits, all five nits folded in by ruling) and two Codex rounds.
-The FMP shapers hold their integrity contracts (weight rows finite within
-0–100; the fund sector-P/E shaper takes the report adapter's exchange-identity
-and `(0, SECTOR_PE_MAX]` band; an overflowed dividend sum is a drifted body);
-every engine derivation the record carries reads as a gap where its arithmetic
-does not finish finite; `store::insert_run` decodes its own record before the
-write. **"No stamp expected" did not hold:** the reviewer's fold-in (the
-unfiltered EOD close parse) admitted a *readable* pre-fix state — a served
-zero close read as −100 % into σ / momentum / drawdown — so the floor stamp
-moved to `evidence-floor-v4`, and Codex round 2's narrative-render fix moved
-the prompt stamp to `portfolio-v21`. Lesson for every later group: re-ask the
-stamp question whenever a review round widens scope.
+**Group 2 (Codex I18 ruled → I17) landed** — `5c2195a`, pushed; the record's
+§I17 / §I18 carry the rulings, resolutions, one reviewer round
+(approve-with-nits, three nits folded in) and two Codex rounds. **I18 ruled
+(b):** the stamp axes are the resume contract — a slice that changes what a
+completed holding's verdict or audit means moves the axis it changed; a
+rebuild moving none resumes, restored holdings carrying pre-change behaviour;
+**no build identity** (declined: `CARGO_PKG_VERSION` is frozen by the
+no-release rule, a `build.rs` hash is blind to uncommitted edits, and an
+exe-mtime probe would refuse the fix → rebuild → resume recovery the big run
+may need). A **sixth stamp axis** joined: `store::CHECKPOINT_FORMAT_VERSION`
+(`checkpoint-v2`; a pre-stamp header decodes as `checkpoint-v1`) for the
+trail's own shape — the loader returns such a header alone, rows unread, and
+the gate refuses with its reason (Codex round 1's fold-in). **I17:**
+deep-history and benchmark health ride each checkpoint row
+(`store::HoldingHealth`), the counts rebuilt from rows through
+`health_counts`; the accumulators keep only the three keyed maps. None of the
+five semantic axes moved. BUILD §Seams gained the constant and the
+resume-contract sentence; §What remains item 1 reads three groups remaining.
 
 ## Current state
 
-Nothing in flight; `main` at `bd5ca52`, tree clean, pushed. Queue ahead of the
-run, in order (record §Disposition): **(2) I18 ruled → I17** — the checkpoint
-trail (I17's row-shape change is the case I18 asks about); **(3) I8 + I10 +
-I12, I19 ruled at the top** — prompt renders under one bump, now
-`portfolio-v22`; **(4) I11 + I13** — continuity-attribution mirrors; **(5) I15
-ruled at its plan (wire vs retire) + §A4 seed edge**. Carried untouched
+Nothing in flight; `main` at the session-end commit atop `5c2195a`, tree
+clean, pushed. Queue ahead of the run, in order (record §Disposition): **(3)
+I8 + I10 + I12, I19 ruled at the top** — the prompt renders under one bump,
+`portfolio-v22`; **(4) I11 + I13** — continuity-attribution mirrors; **(5)
+I15 ruled at its plan (wire vs retire) + §A4 seed edge**. Carried untouched
 (unchanged): the cloud report job's unguarded `run_job` seam; the negative
 composite yield; `progress.rs`'s poisonable terminal-leg locks; the `ok`
 tracker row's dropped-count detail; `trade-opportunities-logic-flow.md:397`
@@ -41,22 +44,24 @@ by the 48 h window); `ScenarioSet.raw_observations` keeps its count beside a
 
 ## Open questions
 
-- None. (The session-end question — a §Standing constraints bullet for the
-  finite-or-absent rule and the validating write — closed as the I6 pattern:
-  the §Evidence floor / §Failure posture sentences are the general rule, no
-  BUILD bullet; BUILD's price-usability bullet now names the dated-EOD parse,
-  and §What remains item 1 reads the remaining four groups.)
+- INDEX row for the checkpoint-format stamp (the record's §I18 deferral names
+  one): a new "Checkpoint trail format stamp — portfolio-analysis.md
+  §Failure posture" row, or fold it into the existing "Quote / NAV usability
+  floor and the evidence-floor version stamp" row? INDEX is user-run.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` **group 2: I18 ruled → I17**
-— read §I17 and §I18 in the record first; present I18's two answers (a
-build-identity stamp on the trail refusing any resume across a rebuild, vs.
-the stamp axes as the contract with a slice that changes completed-holding
-semantics obliged to move one) with a recommendation, and let the ruling
-govern I17's row-shape plan. Keep the loop per group, record every reviewer
-and Codex round, sweep `logic-flow-docs/` mirrors, and ask of every fix — and
-again after any review-round fold-in — what stamp it moves across the axes
-(prompt content `portfolio-v21`, grade band, stored-target basis, floor rule
-`evidence-floor-v4`; the overlay stamp `pre-profit-v3`). Do not launch or
-propose the big run — the user names that session.
+`/metis-session-start`, then `/metis-plan-task` **group 3: I19 ruled at the
+top → I8 + I10 + I12** — read §I8, §I10, §I12 and §I19 in the record first;
+present I19's three answers (a negative lexicon of competing financial nouns;
+a period-word guard on a 1900–2099 value after "for / in / of / by / through /
+fiscal"; leave both shapes to the persisted-excerpt audit and calibrate the
+stem table off the run) with a recommendation, then plan the three renders
+under one `PROMPT_VERSION` bump to `portfolio-v22`, any I19 guard riding it.
+Keep the loop per group, record every reviewer and Codex round, sweep
+`logic-flow-docs/` mirrors, and ask of every fix — and again after any
+review-round fold-in — what stamp it moves across the axes (prompt content
+`portfolio-v21`, grade band, stored-target basis, floor rule
+`evidence-floor-v4`, the trail's format `checkpoint-v2`; the overlay stamp
+`pre-profit-v3`). Do not launch or propose the big run — the user names that
+session.

@@ -425,10 +425,17 @@ BUILD cites version constants rather than duplicating their current values,
 so this brief cannot go stale as they move:
 `portfolio::PROMPT_VERSION`, `engine::GRADE_PARAMETER_VERSION`,
 `engine::SCENARIO_TARGET_PARAMETER_VERSION`,
-`pre_profit::PRE_PROFIT_PARAMETER_VERSION`, `engine::EVIDENCE_FLOOR_VERSION`
-and `portability::FORMAT_VERSION`.
+`pre_profit::PRE_PROFIT_PARAMETER_VERSION`, `engine::EVIDENCE_FLOOR_VERSION`,
+`store::CHECKPOINT_FORMAT_VERSION` and `portability::FORMAT_VERSION`.
 Persisted records carry the stamp they were written under, so a recalibration
 stays attributable and old rows never silently re-grade.
+The checkpoint trail resumes on the five `portfolio` / `engine` /
+`pre_profit` stamps plus its own `store::CHECKPOINT_FORMAT_VERSION`, the
+roster and the prior-run id — never a build identity — so a slice that
+changes what a completed holding's verdict or audit means moves the axis it
+changed, and one that changes the trail's shape moves the format stamp
+(ruled 2026-08-29; canonical at `docs/portfolio-analysis.md §Failure
+posture`).
 
 ### Standing constraints
 
@@ -688,9 +695,9 @@ every stacked runtime confirmation at once.
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
    posture) and the Priority-1/-2/-3 minors are resolved; Codex's I8,
-   I10–I13, I15 and I17–I19 (I1–I5 and I14 resolved 2026-08-28, I6, I7, I9
-   and I16 2026-08-29; I18 and I19 ruling items) and the §A4 seed edge sit
-   ahead of the run in the remaining four of five groups cut on one code
+   I10–I13, I15 and I19 (I1–I5 and I14 resolved 2026-08-28, I6, I7, I9,
+   I16, I17 and I18 2026-08-29; I19 a ruling item) and the §A4 seed edge sit
+   ahead of the run in the remaining three of five groups cut on one code
    locus and one stamp axis (ruled 2026-08-29; the record's §Disposition
    owns the grouping);
    and the user names the launch session at its start. Its checklist is
