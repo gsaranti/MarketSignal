@@ -1133,8 +1133,10 @@ pub fn resolve_series(
             value: metric(metrics.pb_ratio, "P/B")?,
             observation_id: market_obs()?,
         }),
+        // Usability, not presence ([`usable_price`]): a zero or negative print
+        // resolves unevaluable rather than confirming a bear-line crossing.
         LedgerSeries::Price => Ok(ResolvedObservation {
-            value: metric(fin.current_price, "current price")?,
+            value: metric(usable_price(fin.current_price), "current price")?,
             observation_id: market_obs()?,
         }),
     }
@@ -1394,10 +1396,11 @@ pub fn evaluate_ledger_conditions_gated(
 /// The engine's output gate: whether every present target leg is a finite
 /// number. A feed extreme the ladder checks leg by leg but never as a quotient
 /// (consensus revenue over a subnormal share count) overflows a driver to
-/// inf, and the carry path turns that into NaN; a non-finite quote does the
-/// same through the one-month leg. Such a target must exit the holding as
-/// insufficient evidence — serde would persist it as `null`, and the store
-/// could not read the whole run row back.
+/// inf, and the carry path turns that into NaN. Such a target must exit the
+/// holding as insufficient evidence — serde would persist it as `null`, and the
+/// store could not read the whole run row back. (A non-finite or non-positive
+/// quote never reaches this gate: the floor's [`usable_price`] test stops it
+/// first, under its own reason.)
 pub fn price_targets_finite(targets: &crate::portfolio::PriceTargets) -> bool {
     [&targets.one_month, &targets.twelve_month]
         .into_iter()
@@ -1405,11 +1408,44 @@ pub fn price_targets_finite(targets: &crate::portfolio::PriceTargets) -> bool {
         .all(|t| t.base.is_finite() && t.bear.is_finite() && t.bull.is_finite())
 }
 
+/// The evidence floor's usability test for a price or NAV: finite and strictly
+/// positive, else `None`. Presence is never the floor's test — a zero print
+/// divides the scenario returns and the one-month builder into infinities, and
+/// a negative one prices finite but financially meaningless targets — so the
+/// stock and fund floors read through this, as does the FMP quote parser at the
+/// one seam every quote consumer rides (`docs/portfolio-analysis.md` §Evidence
+/// floor; Codex I1, ruled 2026-08-28).
+pub fn usable_price(value: Option<f64>) -> Option<f64> {
+    value.filter(|v| v.is_finite() && *v > 0.0)
+}
+
+/// The evidence floor's rule version — stamped on the checkpoint header, where
+/// the resume gate refuses a trail stamped under another (its completed
+/// holdings were floored under a different rule, and a resume must never mix
+/// them with the current one), and on every holding's audit record, so a floor
+/// correction stays attributable (the suite's shared versioning discipline).
+/// `evidence-floor-v1` was the presence floor as shipped — a served price or
+/// NAV of any value passed. `evidence-floor-v2`: the usability floor
+/// ([`usable_price`] — finite and strictly positive on the stock price and both
+/// fund legs, an unusable fund quote falling to a usable NAV), off the
+/// 2026-08-24 review's Codex I1 (ruled 2026-08-28; the stamp off its Codex
+/// round 1).
+pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v2";
+
+/// The stamp a record or trail persisted before the field existed decodes as
+/// (the serde default on both fields): it was floored under the presence rule,
+/// so it reads `evidence-floor-v1` — a run stays readable, and a trail is
+/// refused by the resume gate's own reason rather than dropped as an
+/// unreadable header (Codex I1, round 2).
+pub fn evidence_floor_v1() -> String {
+    "evidence-floor-v1".to_string()
+}
+
 /// Analyze a holding's financials into sub-scores, a grade, and scenario targets — or
-/// abstain. The evidence floor fails when there is no current price (nothing to
-/// target or value against) or fewer than [`MIN_SUBSCORES_FOR_GRADE`] sub-scores are
-/// computable; either is an explicit `insufficient-evidence`, never a low-conviction
-/// guess.
+/// abstain. The evidence floor fails when there is no usable current price
+/// ([`usable_price`] — nothing to target or value against) or fewer than
+/// [`MIN_SUBSCORES_FOR_GRADE`] sub-scores are computable; either is an explicit
+/// `insufficient-evidence`, never a low-conviction guess.
 pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
     let metrics = compute_metrics(fin);
 
@@ -1426,10 +1462,17 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
         .filter(|s| s.is_some())
         .count();
 
-    let Some(price) = fin.current_price else {
-        return EngineVerdict::InsufficientEvidence(
-            "no current price for the holding — cannot value or set targets".to_string(),
-        );
+    let Some(price) = usable_price(fin.current_price) else {
+        return EngineVerdict::InsufficientEvidence(match fin.current_price {
+            // A served print the usability rule rejected names itself — its
+            // own reason, distinct from the finite-target gate's below, which
+            // it never reaches.
+            Some(served) => format!(
+                "no usable current price for the holding (served {served}) — cannot value \
+                 or set targets"
+            ),
+            None => "no current price for the holding — cannot value or set targets".to_string(),
+        });
     };
     if computed < MIN_SUBSCORES_FOR_GRADE {
         return EngineVerdict::InsufficientEvidence(format!(
@@ -1446,7 +1489,7 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
         TargetOutcome::Computed(b) if !price_targets_finite(&b.targets) => {
             return EngineVerdict::InsufficientEvidence(
                 "non-finite scenario pricing: a feed extreme overflowed a per-share driver \
-                 or the quote — no finite target to persist"
+                 — no finite target to persist"
                     .to_string(),
             );
         }
@@ -3844,6 +3887,40 @@ mod tests {
             }
             other => panic!("expected abstention, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_non_positive_or_non_finite_price_abstains_at_the_floor_never_the_target_gate() {
+        // Codex I1 (ruled 2026-08-28): usability, not presence. A zero print
+        // used to fall through to the finite-target gate (0 × inf = NaN on the
+        // one-month leg) under that gate's misdescribed reason; a negative one
+        // priced finite, financially meaningless targets. Both — and a
+        // non-finite one — now exit at the floor under their own reason,
+        // naming the served print.
+        for served in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+            let mut fin = strong();
+            fin.current_price = Some(served);
+            match analyze(&fin, &rates()) {
+                EngineVerdict::InsufficientEvidence(reason) => {
+                    assert!(reason.contains("no usable current price"), "{served}: {reason}");
+                    assert!(reason.contains(&format!("served {served}")), "{served}: {reason}");
+                    assert!(!reason.contains("non-finite scenario"), "{served}: {reason}");
+                }
+                other => panic!("{served}: expected the usability floor, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_positive_price_resolves_the_price_series_unevaluable_never_a_crossing() {
+        // The ledger's price leg reads through the same usability test: a zero
+        // print is a gap this run, never a bear-line crossing.
+        let mut fin = strong();
+        fin.current_price = Some(0.0);
+        let metrics = compute_metrics(&fin);
+        let err = resolve_series(LedgerSeries::Price, &metrics, &fin)
+            .expect_err("a zero print is unevaluable");
+        assert!(err.contains("current price is a gap this run"), "{err}");
     }
 
     #[test]

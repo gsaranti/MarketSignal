@@ -186,10 +186,15 @@ pub fn is_closed_end(fund: &FundData) -> bool {
 /// the engine's NAV-fallback spot, which would fabricate an exact 0% premium
 /// precisely when no market quote exists. Positive is a premium
 /// (`docs/portfolio-analysis.md` §Asset eligibility — signal on the closed-end
-/// form only; the caller gates rendering on [`is_closed_end`]).
+/// form only; the caller gates rendering on [`is_closed_end`]). Both legs read
+/// through the floor's usability test (`engine::usable_price`) and the read
+/// itself must be finite — the raw quote reaches here beside the NAV-fallback
+/// spot, so a non-finite print a producer other than the FMP parser handed the
+/// fund must not re-enter as a premium the audit could not persist faithfully
+/// (Codex I1, round 1).
 pub fn nav_premium_read(current_price: Option<f64>, nav: Option<f64>) -> Option<f64> {
-    match (current_price, nav) {
-        (Some(price), Some(nav)) if nav > 0.0 && price > 0.0 => Some(price / nav - 1.0),
+    match (engine::usable_price(current_price), engine::usable_price(nav)) {
+        (Some(price), Some(nav)) => Some(price / nav - 1.0).filter(|p| p.is_finite()),
         _ => None,
     }
 }
@@ -677,11 +682,17 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     let fund = inp.fund;
     let fin = inp.financials;
 
-    // The evidence floor's fund analog, floor-bearing legs first: a current quote /
-    // NAV and the `etf/info` surface.
-    let Some(spot) = fin.current_price.or(fund.nav) else {
+    // The evidence floor's fund analog, floor-bearing legs first: a usable current
+    // quote / NAV — finite and strictly positive (`engine::usable_price`), never
+    // mere presence, so a served zero or negative quote is no price and falls to
+    // a usable NAV rather than masking it (Codex I1, ruled 2026-08-28) — and the
+    // `etf/info` surface.
+    let Some(spot) =
+        engine::usable_price(fin.current_price).or(engine::usable_price(fund.nav))
+    else {
         return FundEngineVerdict::InsufficientEvidence(
-            "no current quote or NAV for the fund — nothing to value against".to_string(),
+            "no usable current quote or NAV for the fund — nothing to value against"
+                .to_string(),
         );
     };
     // Classification runs before the metadata floor: a detected closed-end fund
@@ -732,16 +743,23 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
                 );
             }
             if nav_premium.is_none() {
-                // The gap names what is actually absent, keyed on USABILITY,
-                // not presence: the spot floor accepts NAV as the price
-                // fallback, and the quote parser passes a zero or negative
-                // price through, so a presence test would misstate both the
-                // quote-missing and the quote-unusable cases (Codex 2026-08-21
-                // rounds 3–4, finding 2).
-                let cause = if fund.nav.is_some_and(|n| n > 0.0) {
-                    "no usable market quote to read against the reported NAV"
-                } else {
-                    "no usable NAV for closed-end funds on the current data surface"
+                // The gap names what is actually absent, keyed on USABILITY
+                // on both legs, not presence: the spot floor accepts NAV as
+                // the price fallback, and a producer other than the FMP parser
+                // (which drops a zero or negative print at the parse — Codex
+                // I1) can still hand this branch one, so a presence test would
+                // misstate both the quote-missing and the quote-unusable cases
+                // (Codex 2026-08-21 rounds 3–4, finding 2; the NAV leg and the
+                // non-finite read off I1's round 2).
+                let cause = match (
+                    engine::usable_price(fund.nav),
+                    engine::usable_price(fin.current_price),
+                ) {
+                    (None, _) => "no usable NAV for closed-end funds on the current data surface",
+                    (Some(_), None) => "no usable market quote to read against the reported NAV",
+                    // Both legs usable, yet no read: the quotient did not come
+                    // out finite — neither leg is the thing missing.
+                    (Some(_), Some(_)) => "the price-vs-NAV read did not come out finite",
                 };
                 gaps.push(format!("price-vs-NAV unavailable — {cause}"));
             }
@@ -920,12 +938,14 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         false,
     );
     // The engine's output gate (`engine::price_targets_finite`): a non-finite
-    // quote or composite prices every scenario non-finite — the fund exits as
+    // composite prices every scenario non-finite — the fund exits as
     // insufficient evidence, never a `null` target the store cannot read back.
+    // (A non-finite quote never reaches here: the usability floor above stops
+    // it.)
     if !engine::price_targets_finite(&targets) {
         return FundEngineVerdict::InsufficientEvidence(
             "non-finite scenario pricing: a feed extreme overflowed the composite driver \
-             or the quote — no finite target to persist"
+             — no finite target to persist"
                 .to_string(),
         );
     }
@@ -1503,32 +1523,82 @@ mod tests {
     }
 
     #[test]
-    fn a_non_finite_quote_exits_the_fund_as_insufficient_evidence_not_a_non_finite_target() {
-        // A quote the adapter passed through non-finite: the flat driver and
-        // every scenario price go inf, and the engine's output gate exits the
-        // fund as insufficient evidence — never a `null` target the store could
-        // not read back.
-        let fin = CompanyFinancials {
-            symbol: "VTI".to_string(),
-            current_price: Some(f64::INFINITY),
-            price_history: vec![297.0, 298.0, 299.0, 300.0],
-            daily_closes: vec![
-                DatedValue {
-                    date: "2022-01-03".into(),
-                    value: 100.0,
-                },
-                DatedValue {
-                    date: "2024-01-02".into(),
-                    value: 200.0,
-                },
-                DatedValue {
-                    date: "2026-07-15".into(),
-                    value: 300.0,
-                },
-            ],
-            ttm_dividends_per_share: Some(3.6),
-            ..Default::default()
-        };
+    fn an_unusable_quote_falls_to_a_usable_nav_never_masks_it() {
+        // Codex I1 (ruled 2026-08-28): a served zero, negative, or non-finite
+        // quote is no price. Beside a usable NAV the fund prices off the NAV —
+        // the floor's `or(nav)` design keyed on usability — where a zero spot
+        // used to abstain under the finite-target gate's misdescribed reason
+        // and a negative one priced meaningless targets.
+        for served in [0.0, -3.0, f64::INFINITY] {
+            let mut fin = financials(282.0);
+            fin.current_price = Some(served);
+            let inputs = FundEngineInputs {
+                fund: &fund(),
+                financials: &fin,
+                sector_pe: &snapshot(),
+                sector_pe_history: &history(),
+                rates: &rates(),
+                as_of: as_of(),
+            };
+            match analyze_fund(&inputs) {
+                FundEngineVerdict::Priced(out) => {
+                    let basis = out
+                        .quick_basis
+                        .as_ref()
+                        .expect("the priced fund records its basis");
+                    assert_eq!(basis.spot, 280.0, "{served}: the NAV is the spot");
+                    assert!(engine::price_targets_finite(&out.price_targets), "{served}");
+                    // The rejected quote never re-enters as a premium — the
+                    // read is absent (never the NAV-fallback's fabricated 0%,
+                    // never a non-finite value the audit would persist as
+                    // `null`) — Codex I1, round 1.
+                    assert_eq!(out.metrics.nav_premium, None, "{served}");
+                }
+                other => panic!("{served}: expected pricing off the NAV, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn no_usable_quote_or_nav_abstains_under_the_fund_floor() {
+        // Neither leg usable — a negative or zero quote beside a zero NAV, or
+        // no quote at all beside it — abstains under the fund analog's own
+        // reason, never the finite-target gate's.
+        let mut zero_nav = fund();
+        zero_nav.nav = Some(0.0);
+        for served in [Some(-3.0), Some(0.0), None] {
+            let mut fin = financials(282.0);
+            fin.current_price = served;
+            let inputs = FundEngineInputs {
+                fund: &zero_nav,
+                financials: &fin,
+                sector_pe: &snapshot(),
+                sector_pe_history: &history(),
+                rates: &rates(),
+                as_of: as_of(),
+            };
+            match analyze_fund(&inputs) {
+                FundEngineVerdict::InsufficientEvidence(reason) => {
+                    assert!(
+                        reason.contains("no usable current quote or NAV"),
+                        "{served:?}: {reason}"
+                    );
+                }
+                other => panic!("{served:?}: expected the fund floor, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_feed_extreme_quote_passes_the_floor_and_exits_at_the_finite_target_gate() {
+        // The gate's fund-path pin, now that a non-finite quote lands at the
+        // usability floor instead: `f64::MAX` is finite and positive, so it
+        // passes the floor, and the flat driver (spot × composite yield) times
+        // the anchored multiples overflows the scenario prices — the fund exits
+        // as insufficient evidence under the gate's reason, never a `null`
+        // target the store could not read back.
+        let mut fin = financials(282.0);
+        fin.current_price = Some(f64::MAX);
         let inputs = FundEngineInputs {
             fund: &fund(),
             financials: &fin,
@@ -1539,7 +1609,7 @@ mod tests {
         };
         match analyze_fund(&inputs) {
             FundEngineVerdict::InsufficientEvidence(reason) => {
-                assert!(reason.contains("non-finite"), "{reason}");
+                assert!(reason.contains("non-finite scenario pricing"), "{reason}");
             }
             other => panic!("expected the finite-target gate, got {other:?}"),
         }
@@ -1928,6 +1998,17 @@ mod tests {
         assert_eq!(nav_premium_read(None, Some(280.0)), None);
         assert_eq!(nav_premium_read(Some(282.0), None), None);
         assert_eq!(nav_premium_read(Some(282.0), Some(0.0)), None);
+        // Both legs read through the usability test, and the read itself must
+        // be finite: an unusable quote (zero, negative, non-finite) or NAV is
+        // no premium, and a finite pair whose quotient overflows is none either
+        // — never an `inf` the audit would persist as `null` (Codex I1, round 1).
+        assert_eq!(nav_premium_read(Some(0.0), Some(280.0)), None);
+        assert_eq!(nav_premium_read(Some(-3.0), Some(280.0)), None);
+        assert_eq!(nav_premium_read(Some(f64::INFINITY), Some(280.0)), None);
+        assert_eq!(nav_premium_read(Some(f64::NAN), Some(280.0)), None);
+        assert_eq!(nav_premium_read(Some(282.0), Some(-1.0)), None);
+        assert_eq!(nav_premium_read(Some(282.0), Some(f64::INFINITY)), None);
+        assert_eq!(nav_premium_read(Some(f64::MAX), Some(1e-300)), None);
     }
 
     #[test]
@@ -1984,9 +2065,9 @@ mod tests {
 
     #[test]
     fn a_cef_missing_or_unusable_quote_names_the_quote_not_the_nav() {
-        // The spot floor accepts the NAV as the price fallback and the quote
-        // parser passes a zero price through, so the run proceeds — but the
-        // premium is honestly absent, and the gap must name the unusable
+        // The spot floor accepts the NAV as the price fallback — a zero quote
+        // is unusable and falls to it (Codex I1) — so the run proceeds; but
+        // the premium is honestly absent, and the gap must name the unusable
         // market quote rather than claim the present NAV is absent
         // (Codex 2026-08-21 rounds 3–4, finding 2).
         let run = |current_price: Option<f64>| {
@@ -2019,6 +2100,49 @@ mod tests {
                 r.evidence_gaps
             );
         }
+    }
+
+    #[test]
+    fn a_cef_gap_cause_reads_usability_on_both_legs_and_names_a_non_finite_read() {
+        // Codex I1, round 2: an unusable NAV beside a usable quote names the
+        // NAV (a raw `nav > 0` test called an infinite NAV present and blamed
+        // the quote), and a usable pair whose quotient overflows names the
+        // read rather than a leg that is not missing.
+        let run = |price: Option<f64>, nav: Option<f64>| {
+            let mut cef = cef_fund();
+            cef.name = Some("PIMCO Dynamic Income Fund".to_string());
+            cef.nav = nav;
+            let mut fin = financials(15.12);
+            fin.current_price = price;
+            let inputs = FundEngineInputs {
+                fund: &cef,
+                financials: &fin,
+                sector_pe: &snapshot(),
+                sector_pe_history: &history(),
+                rates: &rates(),
+                as_of: as_of(),
+            };
+            match analyze_fund(&inputs) {
+                FundEngineVerdict::RoleRiskOnly(r) => *r,
+                other => panic!("expected the role/risk readout, got {other:?}"),
+            }
+        };
+        let r = run(Some(15.12), Some(f64::INFINITY));
+        assert_eq!(r.nav_premium, None);
+        assert!(
+            r.evidence_gaps.iter().any(|g| g.contains("no usable NAV")),
+            "{:?}",
+            r.evidence_gaps
+        );
+        let r = run(Some(f64::MAX), Some(1e-300));
+        assert_eq!(r.nav_premium, None);
+        assert!(
+            r.evidence_gaps
+                .iter()
+                .any(|g| g.contains("did not come out finite")),
+            "{:?}",
+            r.evidence_gaps
+        );
     }
 
     #[test]

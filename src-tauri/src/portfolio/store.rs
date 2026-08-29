@@ -182,6 +182,11 @@ pub struct CheckpointHeader {
     pub grade_parameter_version: String,
     pub target_parameter_version: String,
     pub pre_profit_parameter_version: String,
+    /// A trail persisted before the field decodes as the presence floor,
+    /// `evidence-floor-v1`, so the resume gate refuses it with its own reason
+    /// instead of the header loud-skipping as unreadable.
+    #[serde(default = "crate::portfolio::engine::evidence_floor_v1")]
+    pub evidence_floor_version: String,
     pub model_ids: Vec<String>,
 }
 
@@ -947,6 +952,7 @@ mod tests {
                 crate::portfolio::engine::SCENARIO_TARGET_PARAMETER_VERSION.into(),
             pre_profit_parameter_version:
                 crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION.into(),
+            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.into(),
             model_ids: vec!["stub-analyst".into()],
         };
         save_checkpoint_header(&conn, &header).unwrap();
@@ -1084,6 +1090,7 @@ mod tests {
                 sources: vec!["FMP".into()],
                 model_ids: vec!["qwen3.5:122b".into()],
                 prompt_version: "portfolio-v1".into(),
+                evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
                 degraded_inputs: vec![],
                 action_annotations: vec![],
                 grade_parameter_version: None,
@@ -1277,6 +1284,37 @@ mod tests {
         .unwrap();
         let latest = latest_run(&conn).unwrap().expect("the older readable run is served");
         assert_eq!(latest.run_id, "run-good");
+    }
+
+    #[test]
+    fn a_run_persisted_before_the_evidence_floor_stamp_decodes_as_the_presence_floor() {
+        // Codex I1, round 2: the audit's `evidence_floor_version` is new, and
+        // the store holds a run persisted before it (attempt 2, the big run's
+        // diff / carry baseline). A missing field decodes as `evidence-floor-v1`
+        // — the presence rule it was floored under — never an unreadable run.
+        let conn = mem();
+        let run = sample_run("run-v1", "2026-08-10T00:00:00Z");
+        let mut json = serde_json::to_value(&run).unwrap();
+        let audits = json["audit"].as_array_mut().expect("the fixture carries audits");
+        assert!(!audits.is_empty());
+        for audit in audits.iter_mut() {
+            audit
+                .as_object_mut()
+                .unwrap()
+                .remove("evidence_floor_version")
+                .expect("the current producer writes the field");
+        }
+        conn.execute(
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json) VALUES (?1, ?2, ?3)",
+            params![run.run_id, run.created_at, json.to_string()],
+        )
+        .unwrap();
+        let back = latest_run(&conn).unwrap().expect("a pre-field run still reads");
+        assert_eq!(back.run_id, "run-v1");
+        assert!(back
+            .audit
+            .iter()
+            .all(|a| a.evidence_floor_version == "evidence-floor-v1"));
     }
 
     #[test]

@@ -686,6 +686,9 @@ pub fn resume_eligibility(
     {
         return Err("the pre-profit parameters changed since the interrupted run".into());
     }
+    if cp.header.evidence_floor_version != crate::portfolio::engine::EVIDENCE_FLOOR_VERSION {
+        return Err("the evidence-floor rule changed since the interrupted run".into());
+    }
     if cp.header.model_ids != current_model_ids {
         return Err("the configured model roster changed since the interrupted run".into());
     }
@@ -1302,6 +1305,7 @@ fn run_analysis(
                 crate::portfolio::engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
             pre_profit_parameter_version:
                 crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION.to_string(),
+            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
             model_ids: vec![analyst.reasoner_id(), analyst.fast_id()],
         };
         if let Err(e) =
@@ -5139,6 +5143,30 @@ mod tests {
         drifted.header.prompt_version = "portfolio-v0".into();
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("prompt/schema"), "{err}");
+
+        // An evidence-floor rule drift refuses too: the trail's completed
+        // holdings were floored under another rule (Codex I1, round 1).
+        let mut drifted = cp.clone();
+        drifted.header.evidence_floor_version = "evidence-floor-v1".into();
+        let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("evidence-floor"), "{err}");
+
+        // A trail persisted before the stamp existed deserializes as the
+        // presence floor and is refused with the same reason — never dropped
+        // as an unreadable header (Codex I1, round 2).
+        let mut json = serde_json::to_value(&cp.header).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("evidence_floor_version")
+            .expect("the current producer writes the field");
+        let v1: store::CheckpointHeader = serde_json::from_value(json).unwrap();
+        assert_eq!(v1.evidence_floor_version, "evidence-floor-v1");
+        let legacy = store::Checkpoint {
+            header: v1,
+            ..cp.clone()
+        };
+        let err = resume_eligibility(&conn, &legacy, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("evidence-floor"), "{err}");
     }
 
     fn full_run(paths: &ReportPaths, holdings: Holdings) -> PortfolioRun {

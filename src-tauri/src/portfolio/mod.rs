@@ -1600,6 +1600,13 @@ pub struct HoldingAudit {
     pub model_ids: Vec<String>,
     /// The prompt/schema version the interpretation ran under.
     pub prompt_version: String,
+    /// The evidence-floor rule version the holding was floored under
+    /// (`engine::EVIDENCE_FLOOR_VERSION`) — attribution, so a floor correction
+    /// never silently re-reads a prior abstention or priced verdict. A run
+    /// persisted before the field decodes as the presence floor,
+    /// `evidence-floor-v1` (`engine::evidence_floor_v1`), never unreadable.
+    #[serde(default = "engine::evidence_floor_v1")]
+    pub evidence_floor_version: String,
     /// Inputs a source could not resolve, carried from the financials' gap manifest.
     pub degraded_inputs: Vec<String>,
     /// App-stamped annotations from the per-holding action call — today the one

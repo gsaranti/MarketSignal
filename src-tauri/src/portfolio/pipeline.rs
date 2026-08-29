@@ -612,6 +612,7 @@ pub fn analyze_holding(
         sources: audit_sources(),
         model_ids: models_used.borrow().clone(),
         prompt_version: PROMPT_VERSION.to_string(),
+        evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
         degraded_inputs: degraded.clone(),
         action_annotations: Vec::new(),
         target_meta,
@@ -1482,6 +1483,7 @@ pub fn analyze_holding(
         sources: audit_sources(),
         model_ids: models_used.borrow().clone(),
         prompt_version: PROMPT_VERSION.to_string(),
+        evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
         degraded_inputs,
         action_annotations: outside_set_annotation(decision.action, &engine_set)
             .into_iter()

@@ -2346,6 +2346,7 @@ Sources and footnotes.
                 sources: vec![],
                 model_ids: vec![],
                 prompt_version: crate::portfolio::PROMPT_VERSION.to_string(),
+                evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
                 degraded_inputs: vec![],
                 action_annotations: vec![],
                 target_meta: None,

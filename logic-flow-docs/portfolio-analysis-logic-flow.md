@@ -876,14 +876,14 @@ Additional stock reads that ride into the interpretation call as evidence; none 
 The inline gates referenced above, gathered — with each branch's requirements and the short-circuit behavior.
 
 - **Stock requires**
-  - Current price.
+  - A usable current price — finite and strictly positive; a served zero or negative print is a named gap at the FMP parse, never a price (`docs/portfolio-analysis.md` §Evidence floor).
   - Financial statements.
   - No resolved identity conflict (an unverified cross-check proceeds with a degraded-input flag).
   - At least two real sub-scores.
   - An admissible target driver on the v2 ladder (`no-admissible-driver` is a live floor exit).
 
 - **Exposure-priced fund requires**
-  - Current quote or NAV.
+  - A usable current quote or NAV — an unusable market quote falls to a usable NAV rather than masking it.
   - `etf/info` and expense ratio.
   - Usable sector and country weights.
   - At least 70% valuation coverage.
@@ -1438,7 +1438,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - Every priced stock's pre-profit overlay record — the runway, economics, dilution, and severe-deterioration states computed live from statements, with the conviction, action, and cap rules they fire.
   - What-changed audits.
   - The outcome-learning records for this run — the opened-episode notes, the symbols whose episode this run extended, the net-alignment tags, the matured window labels, the symbols with a window still pending on a price-coverage gap, and the derived scorecard reads (detailed in Step 7's outcome learning).
-  - Model, prompt, schema, and parameter versions.
+  - Model, prompt, schema, parameter, and evidence-floor versions.
   - Degraded-input flags.
   - The accepted pre-profit observation history (period-keyed, now research-fed) and the backfill legs, carried and extended run to run; the rejected-observation list, by contrast, is rebuilt from the current candidate batch, not carried.
   - Per-topic research-reuse decisions (seeded-from-cache vs cold, each with its seeding vintage) and accepted / rejected research assumptions with their resolutions; the distilled findings themselves persist — the combined cross-topic object on the run audit record, and the reconciled per-topic seed layer as the next run's seeds (`docs/storage.md` §Local Analysis Suite Storage).

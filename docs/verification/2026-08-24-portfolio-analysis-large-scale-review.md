@@ -524,6 +524,8 @@ The panic-posture slice — the containment minor and the three panic paths, Cod
 The reduce-prompt size check is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), leaving the resume prompt usage and the IPv6 fetch ahead of Codex I1–I16 and the §A4 seed edge.
 The resume prompt usage is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), and its first Codex round queued I17, leaving the IPv6 fetch ahead of Codex I1–I17 and the §A4 seed edge.
 The IPv6-literal fetch is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), leaving Codex I1–I17 and the §A4 seed edge — the named slices before the Codex items are all handled.
+I1 is resolved (2026-08-28; the rulings and resolution are recorded under §I1), leaving Codex I2–I17 and the §A4 seed edge.
+I18, added 2026-08-28 off I1's Codex round 1 — the resume-across-a-rebuild question — joins the queue as a ruling item on the same terms.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -553,6 +555,37 @@ The final run serializer writes non-finite `f64` values as JSON `null`, so `inse
 The same poison can enter the checkpoint blob before final persistence.
 
 The price / NAV evidence floor must require a finite, strictly positive value before any target, hurdle, checkpoint, or run record is built, and the logic-flow description should call this a usable finite-positive quote rather than mere presence.
+
+Ruled 2026-08-28: the fix seam is the FMP parse plus both engine floors — `company_quote_from_value` shapes a non-positive print to no price, keeping the served value for a named gap, and `analyze` / `analyze_fund` test finite-and-positive as belt-and-braces for the producers that are not FMP.
+Ruled 2026-08-28: on the fund analog an unusable market quote beside a usable NAV prices the fund off the NAV — the floor's `or(nav)` design keyed on usability rather than presence.
+Ruled 2026-08-28: the quick-check "failed price refresh" sentences and the `data-sources.md` quote row stay unedited; the usability rule is single-homed at `portfolio-analysis.md` §Evidence floor with the logic-flow §Evidence floor bullets as its one mirror.
+Ruled 2026-08-28: the watch set gains no line — a usable-quote abstention surfaces under the existing abstention-reasons watch.
+Ruled 2026-08-28 (Codex round 2): the round's stamp-persistence and gap-cause findings are fixed in the slice.
+Ruled 2026-08-28 (Codex round 2): the general question round 1 raised — a trail resuming across any rebuild that moves no stamp — is queued as I18, a ruling item ahead of the run.
+Ruled 2026-08-28 (Codex round 1): the floor rule gets its own version — `engine::EVIDENCE_FLOOR_VERSION`, `evidence-floor-v2` after the `evidence-floor-v1` presence baseline — stamped on the checkpoint header, where `resume_eligibility` refuses a trail under another, and on every holding's audit record.
+The standing three stamp axes (prompt content, grade band, stored-target basis) do not cover a floor-rule change, and a pre-fix trail must not resume its completed holdings into the usability floor.
+**Resolved 2026-08-28.**
+As-built before the fix, the finite-target gate (landed off the panic-posture slice) already exited a zero stock quote — `0 × inf` is NaN on the one-month leg — under that gate's misdescribed reason, so the unreadable-run chain above was closed for a zero print.
+A negative quote still graded finite, financially meaningless targets and a hurdle read.
+A zero quote masked a usable NAV on the fund path.
+A zero live print in the quick check's price refresh read as a bear–bull band crossing.
+The fix applies `engine::usable_price` (finite and strictly positive) at the FMP parse, so the per-holding pull records no price with a gap and an `empty` tracker row naming the served print, and the quick check's `fetch_live_price` and the run-level `fetch_commodity_quote` both `Err` naming it.
+`analyze` and `analyze_fund` read through the same predicate under their own reasons (the served print named), the fund floor falling to a usable NAV.
+The ledger's `Price` series resolves unevaluable on an unusable print.
+The gate's reason strings no longer name the quote, which never reaches it.
+Codex round 1 added two legs.
+`nav_premium_read` reads both legs through the usability test and keeps only a finite quotient, so a non-finite quote from a producer other than the FMP parser never re-enters as a premium the audit would persist as `null`.
+The evidence-floor version above is the second leg, with the resume gate's refusal pinned beside the prompt-drift refusal.
+Codex round 2 corrected the stamp's persistence.
+Both new fields carry a serde default of `evidence-floor-v1`, so a run or trail persisted before the field decodes as the presence floor it was floored under.
+The run stays readable — attempt 2 is the store's one persisted run, the big run's diff / carry baseline — and the trail is refused by the gate's own reason instead of loud-skipping as an unreadable header.
+A pre-field run and a pre-field header are pinned.
+Codex round 3 approved the slice with no findings.
+The same round moved the closed-end gap cause onto the usability test on both legs, a usable pair whose quotient is not finite naming the read rather than a missing leg.
+Canonical at `portfolio-analysis.md` §Evidence floor (the usability, adapter, fund-analog, and stamp sentences, the gate sentence re-qualified, the fund analog's quote / NAV called usable), mirrored in the logic-flow §Evidence floor bullets and run-record line, the storage inventory naming the audit stamp.
+No prompt, grade, or target stamp moves.
+The evidence-floor stamp is new with this slice, off its Codex round 1.
+Twelve tests pinned (the Codex-round legs included — the NAV-premium read over unusable and overflowing legs, the resume refusal on a floor-version drift, the pre-field run and header decodes, the closed-end gap causes): the parser over zero / negative / usable / absent, the three consumers' gaps, errors, and `empty` rows off one mock server, the stock floor over zero / negative / NaN / inf under the usability reason (never the gate's), the `Price` series unevaluable on a zero print, the fund pricing off the NAV at `spot == nav` under a zero / negative / infinite quote, the fund floor abstaining with no usable leg on either side, and — replacing the retired infinite-quote gate pin, which now lands at the floor — a finite `f64::MAX` quote passing the floor and overflowing the composite scenario into the gate.
 
 ### I2 — major: one stale fund P/E print can fabricate all twelve quarterly history samples
 
@@ -726,3 +759,13 @@ The run-level accumulators keep the older cumulative shape (`store.rs`, `Checkpo
 The keyed maps (`sector_by_symbol`, `industry_by_symbol`, `profile_name_by_symbol`) are immune, a re-analysis overwriting its entry.
 The fix follows the telemetry's pattern: carry each holding's contribution on its row and rebuild the counts from the restored rows at resume, the gap list deduplicated by benchmark.
 Surfaced by the resume-prompt-usage slice's first Codex round (2026-08-28); queued ahead of the run, one finding per slice, like I1–I16.
+
+### I18 — minor (ruling): the checkpoint trail resumes across any code change that moves no stamp
+
+`resume_eligibility` keys on the persisted version stamps, the model roster, and the prior-run identity (`job.rs`), so a rebuild that changes completed-holding semantics without moving a stamp resumes a pre-change trail into the new binary, mixing verdicts across the change.
+I1 stamped its own change (`engine::EVIDENCE_FLOOR_VERSION`).
+The general case stands, and every non-stamp slice since the trail landed has shipped under it.
+The exposure is bounded: the trail is transient, discarded by any new run, and offerable only inside the 48-hour resume window.
+The mix is the pre-change behaviour for the restored holdings, never a corrupt record.
+Two answers exist: a build-identity stamp on the trail, refusing a resume across any rebuild (the intent the `resume_eligibility` doc comment already states — the pinned contract cannot be re-created from an updated app), or an explicit ruling that the stamp axes are the contract and a slice that changes completed-holding semantics moves one.
+Surfaced by I1's first Codex round (2026-08-28); queued ahead of the run as a ruling item, one finding per slice, like I1–I17.

@@ -1693,11 +1693,20 @@ impl FmpDataSource {
                     fin.current_price = q.price;
                     fin.market_cap = q.market_cap;
                     fin.shares_outstanding = q.shares_outstanding;
-                    if q.price.is_none() {
-                        fin.gaps.push("FMP quote carried no price".to_string());
-                        Shaped::empty(())
-                    } else {
-                        Shaped::ok(())
+                    match (q.price, q.unusable_price) {
+                        (Some(_), _) => Shaped::ok(()),
+                        // A served zero or negative print is no price: the gap
+                        // and the row both name what was served (Codex I1).
+                        (None, Some(served)) => {
+                            let detail =
+                                format!("FMP quote carried no usable price (served {served})");
+                            fin.gaps.push(detail.clone());
+                            Shaped::empty(()).with_detail(detail)
+                        }
+                        (None, None) => {
+                            fin.gaps.push("FMP quote carried no price".to_string());
+                            Shaped::empty(())
+                        }
                     }
                 }
                 // A served-empty array (an unknown symbol) is an honest empty
@@ -1817,7 +1826,13 @@ const COMPANY_EOD_LOOKBACK_DAYS: i64 = 180;
 
 /// The fields the per-company quote contributes, pulled from FMP's `/quote` body.
 struct CompanyQuote {
+    /// The **usable** price — finite and strictly positive
+    /// (`crate::portfolio::engine::usable_price`) — or `None`.
     price: Option<f64>,
+    /// A served `price` the usability test rejected (zero or negative — JSON
+    /// carries no non-finite number), kept so the consumer's gap and tracker
+    /// row can name what was served. `None` when the field was absent or usable.
+    unusable_price: Option<f64>,
     market_cap: Option<f64>,
     shares_outstanding: Option<f64>,
 }
@@ -1825,10 +1840,20 @@ struct CompanyQuote {
 /// Shape an FMP `/quote` array body into a [`CompanyQuote`]. `None` only when the body
 /// is not the expected non-empty array; individual missing fields stay `None`. Pure,
 /// so the contract is unit-testable offline.
+///
+/// The price is shaped by the evidence floor's usability rule at this one parse —
+/// the seam every quote consumer rides (the per-holding pull, the quick check's
+/// price refresh, the run-level commodity quote), two of which have no engine
+/// floor behind them — so a zero or negative print never leaves the adapter as a
+/// price (`docs/portfolio-analysis.md` §Evidence floor; Codex I1, ruled
+/// 2026-08-28).
 fn company_quote_from_value(value: &Value) -> Option<CompanyQuote> {
     let first = value.as_array()?.first()?;
+    let served = first.get("price").and_then(Value::as_f64);
+    let price = crate::portfolio::engine::usable_price(served);
     Some(CompanyQuote {
-        price: first.get("price").and_then(Value::as_f64),
+        price,
+        unusable_price: served.filter(|_| price.is_none()),
         market_cap: first.get("marketCap").and_then(Value::as_f64),
         shares_outstanding: first.get("sharesOutstanding").and_then(Value::as_f64),
     })
@@ -2270,6 +2295,116 @@ mod tests {
         );
         let eod = rows.iter().find(|r| r.0 == "company-eod").expect("eod row");
         assert_eq!(eod.1, "empty", "a parsed-but-empty history is not ok: {eod:?}");
+    }
+
+    #[test]
+    fn a_non_positive_quote_print_is_no_usable_price_at_the_parse() {
+        // Codex I1 (ruled 2026-08-28): the usability rule runs at the one
+        // parse every quote consumer rides. A zero or negative print shapes
+        // to no price with the served value kept for the gap; a usable print
+        // and an absent field keep their old shapes.
+        let shaped = |body: &str| {
+            company_quote_from_value(&serde_json::from_str(body).unwrap())
+                .expect("a non-empty array parses")
+        };
+        let zero = shaped(r#"[{"symbol":"AAPL","price":0,"marketCap":1.0}]"#);
+        assert_eq!(zero.price, None);
+        assert_eq!(zero.unusable_price, Some(0.0));
+        assert_eq!(zero.market_cap, Some(1.0), "the other fields still land");
+        let negative = shaped(r#"[{"symbol":"AAPL","price":-5.25}]"#);
+        assert_eq!(negative.price, None);
+        assert_eq!(negative.unusable_price, Some(-5.25));
+        let usable = shaped(r#"[{"symbol":"AAPL","price":195.0}]"#);
+        assert_eq!(usable.price, Some(195.0));
+        assert_eq!(usable.unusable_price, None);
+        let absent = shaped(r#"[{"symbol":"AAPL","marketCap":1.0}]"#);
+        assert_eq!(absent.price, None);
+        assert_eq!(absent.unusable_price, None, "absent is not unusable");
+    }
+
+    #[test]
+    fn an_unusable_quote_print_lands_as_a_named_gap_on_every_consumer() {
+        // The three quote consumers behind the one parse: the per-holding pull
+        // records no price, its gap and tracker row naming the served print;
+        // the quick check's refresh and the commodity quote both `Err` naming
+        // it; every row is empty — never ok, never malformed (Codex I1).
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            // fetch_quote_and_eod: a zero print, then the EOD leg.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","price":0,"marketCap":3.0e12}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "[]",
+            },
+            // fetch_live_price: a negative print.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","price":-1.5}]"#,
+            },
+            // fetch_commodity_quote: a zero print.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"GCUSD","price":0}]"#,
+            },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+        let fin = source.fetch_quote_and_eod("AAPL");
+        assert_eq!(fin.current_price, None, "a zero print is no price");
+        assert_eq!(fin.market_cap, Some(3.0e12), "the other quote fields still land");
+        assert!(
+            fin.gaps
+                .iter()
+                .any(|g| g == "FMP quote carried no usable price (served 0)"),
+            "{:?}",
+            fin.gaps
+        );
+        let err = source
+            .fetch_live_price("AAPL")
+            .expect_err("a negative print is Err — the family types unknown");
+        assert!(
+            err.to_string().contains("no usable price for AAPL (served -1.5)"),
+            "{err}"
+        );
+        let err = source
+            .fetch_commodity_quote("GCUSD", chrono::NaiveDate::from_ymd_opt(2026, 8, 28).unwrap())
+            .expect_err("a zero print is Err — the caller's typed gap");
+        assert!(err.to_string().contains("no usable price (served 0)"), "{err}");
+
+        let rows: Vec<(String, String, Option<String>)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished {
+                    group,
+                    status,
+                    detail,
+                    ..
+                } => Some((group, status, detail)),
+                _ => None,
+            })
+            .collect();
+        for group in ["company-quote", "quick-quote", "commodity-quote"] {
+            let row = rows.iter().find(|r| r.0 == group).expect(group);
+            assert_eq!(row.1, "empty", "{row:?}");
+            assert!(
+                row.2
+                    .as_deref()
+                    .is_some_and(|d| d.contains("no usable price") && d.contains("(served ")),
+                "{row:?}"
+            );
+        }
     }
 
     #[test]
@@ -5354,20 +5489,36 @@ impl FmpDataSource {
             "Commodity quote",
             FMP_QUOTE_PATH,
             &[("symbol", symbol)],
-            |value| match company_quote_from_value(value).and_then(|q| q.price) {
-                Some(price) => Shaped::ok(Some(price)),
-                None if value.as_array().is_some_and(|a| a.is_empty()) => {
-                    Shaped::empty(None).with_detail("quote array was empty")
+            |value| match company_quote_from_value(value) {
+                Some(CompanyQuote {
+                    price: Some(price), ..
+                }) => Shaped::ok(Ok(price)),
+                // A served zero or negative print is no price (Codex I1): the
+                // row and the caller's typed gap both name what was served.
+                Some(CompanyQuote {
+                    unusable_price: Some(served),
+                    ..
+                }) => {
+                    let msg = format!(
+                        "FMP commodity quote for {symbol} carried no usable price (served {served})"
+                    );
+                    Shaped::empty(Err(msg.clone())).with_detail(msg)
                 }
-                None => Shaped::malformed(None)
-                    .with_detail("no readable price — malformed or drifted response"),
+                None if value.as_array().is_some_and(|a| a.is_empty()) => Shaped::empty(Err(
+                    format!("FMP commodity quote for {symbol} carried no price"),
+                ))
+                .with_detail("quote array was empty"),
+                _ => Shaped::malformed(Err(format!(
+                    "FMP commodity quote for {symbol} carried no price"
+                )))
+                .with_detail("no readable price — malformed or drifted response"),
             },
         ) {
-            Ok(Some(price)) => Ok(crate::portfolio::engine::DatedValue {
+            Ok(Ok(price)) => Ok(crate::portfolio::engine::DatedValue {
                 date: session.format("%Y-%m-%d").to_string(),
                 value: price,
             }),
-            Ok(None) => anyhow::bail!("FMP commodity quote for {symbol} carried no price"),
+            Ok(Err(msg)) => Err(anyhow::anyhow!(msg)),
             Err(reason) => anyhow::bail!(
                 "FMP commodity quote for {symbol} unavailable ({})",
                 reason.as_str()
@@ -5387,11 +5538,20 @@ impl FmpDataSource {
             FMP_QUOTE_PATH,
             &[("symbol", symbol)],
             |value| match company_quote_from_value(value) {
-                Some(q) => match q.price {
-                    Some(p) => Shaped::ok(Ok(p)),
+                Some(q) => match (q.price, q.unusable_price) {
+                    (Some(p), _) => Shaped::ok(Ok(p)),
+                    // A served zero or negative print is a failed refresh (the
+                    // family types `unknown`), never a price the ledger's band
+                    // test could read as a crossing (Codex I1).
+                    (None, Some(served)) => {
+                        let msg = format!(
+                            "FMP quote carried no usable price for {symbol} (served {served})"
+                        );
+                        Shaped::empty(Err(anyhow::anyhow!(msg.clone()))).with_detail(msg)
+                    }
                     // Parsed but priceless — the row no longer reads "ok"
                     // while the caller errors.
-                    None => Shaped::empty(Err(anyhow::anyhow!(
+                    (None, None) => Shaped::empty(Err(anyhow::anyhow!(
                         "FMP quote carried no price for {symbol}"
                     ))),
                 },
