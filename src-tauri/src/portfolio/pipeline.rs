@@ -3322,13 +3322,26 @@ fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
 /// evidence — a tripped hype cap names its engine-matched rule (an engine-arm
 /// bound, never a clamp on the model's own values), and the letter grade is
 /// untouched either way. Empty where the read was uncomputable (the audit's
-/// gap manifest carries the reason).
+/// gap manifest carries the reason). A hype read with no persisted ratio is
+/// one of two states the render must not conflate: a non-positive reality leg
+/// (the ratio is undefined there), or a positive one the expansion outran
+/// beyond any finite multiple — the quotient overflowed, so the engine
+/// classified hype and persisted the ratio absent (Codex I16, round 2;
+/// `portfolio-v21`). The percentage render is guarded the same way: a finite
+/// decimal leg whose ×100 overflows prints as the decimal ratio, never `inf%`.
 fn narrative_prompt_section(n: Option<&engine::NarrativeRead>) -> String {
     use crate::portfolio::engine::{NarrativeClass, NarrativeForm};
     let Some(n) = n else {
         return String::new();
     };
-    let pct = |v: f64| format!("{:+.1}%", v * 100.0);
+    let pct = |v: f64| {
+        let scaled = v * 100.0;
+        if scaled.is_finite() {
+            format!("{scaled:+.1}%")
+        } else {
+            format!("{v:+.2e} as a decimal ratio (beyond the percentage render's range)")
+        }
+    };
     let (expansion_label, reality_label) = match n.form {
         NarrativeForm::RevisionBased => (
             "forward-multiple change since the prior read",
@@ -3349,9 +3362,12 @@ fn narrative_prompt_section(n: Option<&engine::NarrativeRead>) -> String {
         }
         NarrativeClass::Hype => format!(
             "HYPE — the expansion outran the reality leg{}",
-            n.ratio
-                .map(|r| format!(" ({r:.1}×)"))
-                .unwrap_or_else(|| " (reality flat or declining)".to_string()),
+            match n.ratio {
+                Some(r) => format!(" ({r:.1}×)"),
+                None if n.reality > 0.0 =>
+                    " (by more than any finite multiple — the ratio overflowed)".to_string(),
+                None => " (reality flat or declining)".to_string(),
+            },
         ),
     };
     let mut s = format!(
@@ -7879,7 +7895,36 @@ mod tests {
         // decode gate with its clauses in the prompt, so a pre-fix checkpoint
         // cannot resume into rows the gate would reject: the stamp moved and
         // stays pinned.
-        assert_eq!(PROMPT_VERSION, "portfolio-v20");
+        assert_eq!(PROMPT_VERSION, "portfolio-v21");
+    }
+
+    #[test]
+    fn the_narrative_render_names_an_overflowed_ratio_and_never_prints_inf() {
+        // Codex I16, round 2 (`portfolio-v21`): a hype read with no persisted
+        // ratio is either a non-positive reality leg or a positive one the
+        // expansion outran beyond any finite multiple — the prompt must say
+        // which — and a finite leg whose ×100 overflows renders as the decimal
+        // ratio, never `inf%`.
+        let read = |expansion: f64, reality: f64, ratio: Option<f64>| engine::NarrativeRead {
+            form: engine::NarrativeForm::RevisionBased,
+            expansion,
+            reality,
+            ratio,
+            classification: engine::NarrativeClass::Hype,
+            elapsed_days: 30,
+            matched_rule: Some("narrative-vs-reality hype: test rule".into()),
+        };
+        let overflowed = narrative_prompt_section(Some(&read(1e300, f64::EPSILON, None)));
+        assert!(overflowed.contains("the ratio overflowed"), "{overflowed}");
+        assert!(!overflowed.contains("flat or declining"), "{overflowed}");
+        let flat = narrative_prompt_section(Some(&read(0.36, -0.02, None)));
+        assert!(flat.contains("reality flat or declining"), "{flat}");
+        assert!(!flat.contains("overflowed"), "{flat}");
+        let finite = narrative_prompt_section(Some(&read(0.36, 0.10, Some(3.6))));
+        assert!(finite.contains("(3.6×)") && finite.contains("+36.0%"), "{finite}");
+        let extreme = narrative_prompt_section(Some(&read(1e307, 0.10, None)));
+        assert!(!extreme.contains("inf"), "{extreme}");
+        assert!(extreme.contains("as a decimal ratio"), "{extreme}");
     }
 
     #[test]

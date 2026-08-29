@@ -1640,6 +1640,12 @@ pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
         let mut missed_periods = 0usize;
         for (i, (period, bound, actual)) in comparable.iter().enumerate() {
             let miss_ratio = (bound.value - actual.value) / bound.value;
+            // Finite legs, unbounded difference and quotient: an overflowed
+            // ratio is no miss — it would persist as `null` on a required
+            // float (Codex I16). The period stays counted as comparable.
+            if !miss_ratio.is_finite() {
+                continue;
+            }
             if at_least(miss_ratio, EXECUTION_MISS_RATIO) {
                 missed_periods += 1;
                 read.misses.push(ExecutionMiss {
@@ -2864,6 +2870,19 @@ mod tests {
                 ]
             })
             .collect()
+    }
+
+    #[test]
+    fn an_overflowing_miss_ratio_is_no_miss_and_the_period_stays_comparable() {
+        // Codex I16 (ruled 2026-08-29): finite legs, unbounded quotient — a
+        // vanishing bound beside a large negative actual overflows the ratio,
+        // which would have persisted as `null` on the miss's required float.
+        let history = guided_history(&[("2026-Q2", 1e-300, -1e10)]);
+        let read = execution_read(&history);
+        assert_eq!(read.comparable_periods, 1);
+        assert!(read.misses.is_empty(), "{:?}", read.misses);
+        assert!(!read.material_single_miss);
+        assert!(!read.repeated_miss);
     }
 
     #[test]

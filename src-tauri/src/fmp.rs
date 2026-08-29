@@ -1891,7 +1891,12 @@ fn canonical_news_date(row: &Value) -> Option<String> {
 
 /// Shape an FMP `/historical-price-eod/light` array body into chronological (oldest
 /// first) closing prices. A non-array body is a contract error; rows are sorted by
-/// date ascending so the engine's first/last read is a real start/end. Pure.
+/// date ascending so the engine's first/last read is a real start/end. A close is
+/// usable only when finite and strictly positive — the quote's usability rule
+/// ([`crate::portfolio::engine::usable_price`]) applied at the EOD parse too, so a
+/// served zero or negative print drops as an unreadable row rather than riding
+/// into a return, a drawdown, or an outcome label's required float (the
+/// 2026-08-24 review's Codex I16, its reviewer round; ruled 2026-08-29). Pure.
 fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
     let rows = value
         .as_array()
@@ -1903,7 +1908,7 @@ fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
             // the CANONICAL render ([`canonical_date`]): the sort below
             // relies on fixed-width ISO ordering.
             row.get("date").and_then(Value::as_str).and_then(canonical_date),
-            row.get("price").and_then(Value::as_f64),
+            crate::portfolio::engine::usable_price(row.get("price").and_then(Value::as_f64)),
         ) {
             dated.push((date, price));
         }
@@ -1914,7 +1919,10 @@ fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
 
 /// Shape an FMP `/historical-price-eod/light` array body into **dated** chronological
 /// closes — the deep-history form the v2 anchor join reads
-/// ([`FmpDataSource::fetch_dated_eod`]). Pure.
+/// ([`FmpDataSource::fetch_dated_eod`]). A close is usable only when finite and
+/// strictly positive, the same rule as [`eod_prices_from_value`]: this is the
+/// series the outcome labels' price-bar cache is fed from, and a zero entry
+/// close made an episode row's required `price_return` unreadable. Pure.
 fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
     let rows = value
         .as_array()
@@ -1927,7 +1935,7 @@ fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::D
                 // is the CANONICAL render ([`canonical_date`]): `DatedValue`
                 // carries the fixed-width ISO contract downstream.
                 row.get("date").and_then(Value::as_str).and_then(canonical_date),
-                row.get("price").and_then(Value::as_f64),
+                crate::portfolio::engine::usable_price(row.get("price").and_then(Value::as_f64)),
             ) {
                 (Some(date), Some(price)) => Some(crate::portfolio::engine::DatedValue {
                     date,
@@ -5901,7 +5909,8 @@ impl FmpDataSource {
             &[("exchange", exchange), ("date", date)],
             // The empty answer is a 200 (see above) — the row now says so,
             // which is exactly the walk-back's diagnostic. A non-array body,
-            // or a served array with no readable row, is drift, not emptiness
+            // a served array with no readable row, or an off-board row (the
+            // shaper's `Err`, naming the served board) is drift, not emptiness
             // — `malformed` on the row, though the return contract
             // deliberately stays `Ok(vec![])` so the (bounded, harmless) date
             // walk-back is unchanged.
@@ -5910,14 +5919,12 @@ impl FmpDataSource {
                     return Shaped::malformed(vec![])
                         .with_detail("non-array body — malformed or drifted response");
                 };
-                let rows = sector_pe_rows_from_value(value, exchange);
-                if !rows.is_empty() {
-                    Shaped::ok(rows)
-                } else if body.is_empty() {
-                    Shaped::empty(rows)
-                } else {
-                    Shaped::malformed(rows)
-                        .with_detail("no served row was readable — malformed or drifted response")
+                match sector_pe_rows_from_value(value, exchange) {
+                    Err(e) => Shaped::malformed(vec![]).with_detail(format!("{e:#}")),
+                    Ok(rows) if !rows.is_empty() => Shaped::ok(rows),
+                    Ok(rows) if body.is_empty() => Shaped::empty(rows),
+                    Ok(rows) => Shaped::malformed(rows)
+                        .with_detail("no served row was readable — malformed or drifted response"),
                 }
             },
         ) {
@@ -5956,14 +5963,12 @@ impl FmpDataSource {
                     return Shaped::malformed(vec![])
                         .with_detail("non-array body — malformed or drifted response");
                 };
-                let rows = sector_pe_rows_from_value(value, exchange);
-                if !rows.is_empty() {
-                    Shaped::ok(rows)
-                } else if body.is_empty() {
-                    Shaped::empty(rows)
-                } else {
-                    Shaped::malformed(rows)
-                        .with_detail("no served row was readable — malformed or drifted response")
+                match sector_pe_rows_from_value(value, exchange) {
+                    Err(e) => Shaped::malformed(vec![]).with_detail(format!("{e:#}")),
+                    Ok(rows) if !rows.is_empty() => Shaped::ok(rows),
+                    Ok(rows) if body.is_empty() => Shaped::empty(rows),
+                    Ok(rows) => Shaped::malformed(rows)
+                        .with_detail("no served row was readable — malformed or drifted response"),
                 }
             },
         ) {
@@ -6375,6 +6380,17 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
         sum += a;
         any = true;
     }
+    // Every amount is finite by the parser, but their sum need not be: two
+    // feed-extreme in-window prints overflow it to inf, which rode the required
+    // `forward_dividends` into a persisted `null` the store could not read back
+    // (the 2026-08-24 review's Codex I16, ruled 2026-08-29). An overflowed sum
+    // is a drifted body — `Err`, so the leg reads zero WITH its recorded gap,
+    // never a figure and never a silent non-payer.
+    if any && !sum.is_finite() {
+        anyhow::bail!(
+            "the in-window dividend amounts overflowed — malformed or drifted response"
+        );
+    }
     Ok(any.then_some(sum))
 }
 
@@ -6513,6 +6529,16 @@ fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) ->
 /// set ever to appear, the ÷100 makes it tiny and the absolute coverage /
 /// us_share guards abstain — the fail-safe direction, visible as a coverage
 /// gap, never a fabricated grade.
+///
+/// A row's served percent is usable only when it is finite and within
+/// `0..=100` — the fraction contract [`crate::portfolio::fund::FundData`]
+/// states — and any other row is unreadable and dropped, an all-unreadable
+/// body reading `malformed` at the callers (`docs/data-sources.md` §Financial
+/// Modeling Prep). `f64::from_str` accepts `"NaN"` / `"inf"` and overflows
+/// `"1e999"` to inf, and before the guard a NaN United States row read as a
+/// 100% US share through `us_share`'s `min(1.0)` (Rust's `min` returns the
+/// non-NaN operand) beside the NaN `covered` the composite now skips — the
+/// 2026-08-24 review's Codex I7 (ruled 2026-08-29).
 fn weights_from_value(value: &Value, label_key: &str) -> Vec<(String, f64)> {
     let Some(rows) = value.as_array() else {
         return vec![];
@@ -6526,7 +6552,8 @@ fn weights_from_value(value: &Value, label_key: &str) -> Vec<(String, f64)> {
                 Value::String(s) => s.trim().trim_end_matches('%').parse::<f64>().ok()?,
                 _ => return None,
             };
-            Some((label, percent / 100.0))
+            (percent.is_finite() && (0.0..=100.0).contains(&percent))
+                .then(|| (label, percent / 100.0))
         })
         .collect()
 }
@@ -6539,37 +6566,62 @@ fn weights_from_value(value: &Value, label_key: &str) -> Vec<(String, f64)> {
 /// review's Codex I14, ruled 2026-08-28). Stored as served, a dateless row
 /// read as `""`, before every sample date, and held an exchange's history slot
 /// wherever no dated print qualified, and a non-zero-padded print sorted out of
-/// calendar order under the sampler's then-lexicographic compare. A row without
-/// a usable P/E is skipped, and a missing exchange echoes the requested one.
+/// calendar order under the sampler's then-lexicographic compare.
+///
+/// The shaper holds the report adapter's integrity contract too
+/// ([`sector_pe_from_value`] — the 2026-08-24 review's Codex I9, ruled
+/// 2026-08-29). Every row's `exchange` must be present and equal to the board
+/// the call was pinned to: a row served under another board, or without one,
+/// is evidence the exchange filter was ignored, so the whole body is `Err`
+/// naming the served board (the callers' `malformed` row) rather than one
+/// board's prints silently standing in for the other's. A `pe` is a usable
+/// print only when finite and inside `(0.0, SECTOR_PE_MAX]` — FMP's `0.0` for
+/// a sector with no positive summed earnings, a denominator-near-zero artifact
+/// past the ceiling, a drifted `"NaN"` — and an out-of-band print is dropped
+/// like an unreadable row. The fund type's `pe` is required, so a dropped
+/// print holds no slot: the history sampler falls to the next in-quarter print
+/// where one exists. Before this the shaper echoed the requested board on a
+/// missing field, accepted a disagreeing one, and took any parseable P/E, so
+/// "usable P/E" meant different things across the one job.
 fn sector_pe_rows_from_value(
     value: &Value,
     requested_exchange: &str,
-) -> Vec<crate::portfolio::fund::SectorPe> {
+) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
     let Some(rows) = value.as_array() else {
-        return vec![];
+        return Ok(vec![]);
     };
-    rows.iter()
-        .filter_map(|row| {
-            let sector = row.get("sector").and_then(Value::as_str)?.to_string();
-            let date = canonical_date(row.get("date").and_then(Value::as_str)?)?;
-            let pe = match row.get("pe") {
-                Some(Value::Number(n)) => n.as_f64()?,
-                Some(Value::String(s)) => s.trim().parse::<f64>().ok()?,
-                _ => return None,
-            };
-            let exchange = row
-                .get("exchange")
-                .and_then(Value::as_str)
-                .unwrap_or(requested_exchange)
-                .to_string();
-            Some(crate::portfolio::fund::SectorPe {
-                sector,
-                exchange,
-                date,
-                pe,
-            })
-        })
-        .collect()
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let served = row.get("exchange").and_then(Value::as_str);
+        if served != Some(requested_exchange) {
+            anyhow::bail!(
+                "FMP sector-P/E returned exchange {} for an {requested_exchange:?} request — \
+                 the exchange filter was ignored",
+                served.map_or_else(|| "<absent>".to_string(), |s| format!("{s:?}"))
+            );
+        }
+        let Some(sector) = row.get("sector").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(date) = row.get("date").and_then(Value::as_str).and_then(canonical_date) else {
+            continue;
+        };
+        let pe = match row.get("pe") {
+            Some(Value::Number(n)) => n.as_f64(),
+            Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
+            _ => None,
+        };
+        let Some(pe) = pe.filter(|p| p.is_finite() && *p > 0.0 && *p <= SECTOR_PE_MAX) else {
+            continue;
+        };
+        out.push(crate::portfolio::fund::SectorPe {
+            sector: sector.to_string(),
+            exchange: requested_exchange.to_string(),
+            date,
+            pe,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -7039,6 +7091,94 @@ mod suite_tests {
     }
 
     #[test]
+    fn ttm_dividends_reject_an_overflowed_in_window_sum_as_a_drifted_body() {
+        // Codex I16 (ruled 2026-08-29): every amount is finite by the parser,
+        // but two feed-extreme in-window prints overflow their sum to inf,
+        // which rode the required `forward_dividends` into a persisted `null`
+        // the store could not read back. An overflowed sum is a drifted body —
+        // `Err` at the shaper, so the pull records the dividends gap with the
+        // reason, its tracker row reads `malformed`, and the leg reads zero WITH
+        // the gap, never a figure and never a silent non-payer.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let body = r#"[{"date":"2026-05-10","adjDividend":1.7976931348623157e308},
+                       {"date":"2026-02-10","adjDividend":1.7976931348623157e308}]"#;
+        let v: Value = serde_json::from_str(body).unwrap();
+        let err = ttm_dividends_from_value(&v, today).unwrap_err().to_string();
+        assert!(err.contains("overflowed"), "{err}");
+        // One extreme print alone is a finite (if absurd) sum — not this guard's case.
+        let v: Value =
+            serde_json::from_str(r#"[{"date":"2026-05-10","adjDividend":1.7976931348623157e308}]"#)
+                .unwrap();
+        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), Some(f64::MAX));
+
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let mut gaps = Vec::new();
+        let ttm = source(&server.base_url)
+            .with_context(ctx)
+            .fetch_ttm_dividends("XOM", &mut gaps);
+        assert_eq!(ttm, None);
+        assert!(
+            gaps.iter().any(|g| g.starts_with(DIVIDENDS_GAP_PREFIX) && g.contains("overflowed")),
+            "{gaps:?}"
+        );
+        let finished = finished_rows(&rec);
+        assert_eq!(finished.len(), 1, "{finished:?}");
+        assert_eq!(finished[0].0, "company-dividends", "{:?}", finished[0]);
+        assert_eq!(finished[0].1, "malformed", "{:?}", finished[0]);
+        assert!(
+            finished[0].2.as_deref().is_some_and(|d| d.contains("overflowed")),
+            "{:?}",
+            finished[0]
+        );
+    }
+
+    #[test]
+    fn eod_closes_that_are_not_usable_prices_are_dropped_at_both_parses() {
+        // Codex I16, reviewer round (ruled 2026-08-29): the quote's usability
+        // rule at the EOD parse too. A zero or negative close is not a price —
+        // it rode into returns and drawdowns, and a zero entry close made an
+        // episode row's required `price_return` a persisted `null`.
+        let body: Value = serde_json::from_str(
+            r#"[{"date":"2026-08-03","price":195.0},
+                {"date":"2026-08-02","price":0},
+                {"date":"2026-08-01","price":-3.5}]"#,
+        )
+        .unwrap();
+        let dated = dated_eod_from_value(&body).unwrap();
+        assert_eq!(dated.len(), 1, "{dated:?}");
+        assert_eq!(dated[0].date, "2026-08-03");
+        assert_eq!(eod_prices_from_value(&body).unwrap(), vec![195.0]);
+        // An all-unusable body takes the deep pull's existing drift branch —
+        // `Err` with a `malformed` row, never an honest no-history.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"[{"date":"2026-08-02","price":0}]"#,
+        }]);
+        let err = source(&server.base_url)
+            .with_context(ctx)
+            .fetch_dated_eod("AAPL", 30)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no served row was readable"), "{err}");
+        let finished = finished_rows(&rec);
+        assert_eq!(finished.len(), 1, "{finished:?}");
+        assert_eq!(finished[0].1, "malformed", "{:?}", finished[0]);
+    }
+
+    #[test]
     fn ttm_dividends_null_adj_amount_falls_through_to_the_plain_amount() {
         // A present-but-null `adjDividend` beside a numeric `dividend` is a
         // readable row — it must sum, not take the unreadable-row bail path.
@@ -7215,6 +7355,100 @@ mod suite_tests {
     }
 
     #[test]
+    fn weight_rows_outside_the_finite_0_to_100_range_are_dropped() {
+        // Codex I7 (ruled 2026-08-29): `f64::from_str` accepts "NaN" / "inf" and
+        // overflows "1e999", and nothing bounded the served percent — a NaN
+        // sector weight rode `covered` into the percentile sorts, and a NaN
+        // United States row read as a 100% US share (`min(1.0)` returns the
+        // non-NaN operand). A row is usable only finite and within 0..=100,
+        // the endpoints included; anything else is dropped like an unreadable
+        // row.
+        let body: Value = serde_json::from_str(
+            r#"[{"sector":"Technology","weightPercentage":"NaN%"},
+                {"sector":"Energy","weightPercentage":"inf"},
+                {"sector":"Utilities","weightPercentage":"1e999"},
+                {"sector":"Financials","weightPercentage":"-5"},
+                {"sector":"Health Care","weightPercentage":250},
+                {"sector":"Real Estate","weightPercentage":0},
+                {"sector":"Industrials","weightPercentage":"100%"}]"#,
+        )
+        .unwrap();
+        let out = weights_from_value(&body, "sector");
+        assert_eq!(
+            out,
+            vec![("Real Estate".to_string(), 0.0), ("Industrials".to_string(), 1.0)],
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn a_nan_us_weight_row_no_longer_reads_as_full_us_exposure() {
+        // Codex I7 (ruled 2026-08-29), the production ingress end to end: the
+        // shaper drops the NaN United States row, so the classification's US
+        // share reads over the rows that are weights — 0% here, where the NaN
+        // row read 100% and passed the ≥70% guard — and an all-unreadable
+        // weighting body reads `malformed` on its tracker row with the gap,
+        // never a benign empty.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"VXUS","name":"Total International Stock","assetClass":"Equity","expenseRatio":0.05}]"#,
+            },
+            Canned::Reply { status: 200, headers: vec![], body: r#"[{"isFund":false}]"# },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"sector":"Technology","weightPercentage":"NaN%"}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"country":"United States","weightPercentage":"NaN%"},
+                          {"country":"Japan","weightPercentage":"40%"}]"#,
+            },
+        ]);
+        let fund = source(&server.base_url).with_context(ctx).fetch_fund_data("VXUS");
+        assert!(fund.sector_weights.is_empty(), "{:?}", fund.sector_weights);
+        assert_eq!(fund.country_weights, vec![("Japan".to_string(), 0.40)]);
+        let us = crate::portfolio::fund::classify(&fund).us_share;
+        assert_eq!(us, Some(0.0), "the NaN row is not a weight: {us:?}");
+        assert!(
+            fund.gaps
+                .iter()
+                .any(|g| g.starts_with(FUND_SECTOR_WEIGHTS_GAP_PREFIX) && g.contains("were malformed")),
+            "{:?}",
+            fund.gaps
+        );
+        assert!(
+            !fund.gaps.iter().any(|g| g.starts_with(FUND_COUNTRY_WEIGHTS_GAP_PREFIX)),
+            "one readable row is a served set: {:?}",
+            fund.gaps
+        );
+        let finished = finished_rows(&rec);
+        let sectors = finished
+            .iter()
+            .find(|r| r.0 == "fund-sectors")
+            .expect("the sector-weightings row finished");
+        assert_eq!(sectors.1, "malformed", "{sectors:?}");
+        assert!(
+            sectors.2.as_deref().is_some_and(|d| d.contains("no served row was readable")),
+            "{sectors:?}"
+        );
+        let countries = finished
+            .iter()
+            .find(|r| r.0 == "fund-countries")
+            .expect("the country-weightings row finished");
+        assert_eq!(countries.1, "ok", "a partially dropped body keeps its ok row: {countries:?}");
+    }
+
+    #[test]
     fn fund_info_blank_strings_normalize_to_none() {
         // "" / whitespace-only name or assetClass reads as absent, never
         // present: the sweep's comparability gates key on `is_some()`, and a
@@ -7328,19 +7562,99 @@ mod suite_tests {
     }
 
     #[test]
-    fn sector_pe_rows_parse_and_echo_the_exchange() {
-        let body = r#"[
+    fn fund_sector_pe_rows_hold_the_sibling_adapters_integrity_contract() {
+        // Codex I9 (ruled 2026-08-29): the fund shaper shares the report
+        // adapter's contract. A `pe` is usable only finite and inside
+        // (0, SECTOR_PE_MAX] — the ceiling itself kept, FMP's 0.0, a negative,
+        // a denominator-near-zero artifact (a live run surfaced ≈461) and a
+        // drifted "NaN" dropped like unreadable rows; a string P/E still
+        // parses. Before this any parseable P/E rode into the blend and the
+        // history sampler.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let in_band = r#"[
           {"date":"2026-07-15","sector":"Technology","exchange":"NYSE","pe":30.1},
-          {"date":"2026-07-15","sector":"Energy","pe":"11.4"},
-          {"date":"2026-07-15","sector":"Broken"}
+          {"date":"2026-07-15","sector":"Energy","exchange":"NYSE","pe":"11.4"},
+          {"date":"2026-07-15","sector":"Utilities","exchange":"NYSE","pe":100.0},
+          {"date":"2026-07-15","sector":"Software","exchange":"NYSE","pe":461.0},
+          {"date":"2026-07-15","sector":"Financials","exchange":"NYSE","pe":0.0},
+          {"date":"2026-07-15","sector":"Materials","exchange":"NYSE","pe":-3.2},
+          {"date":"2026-07-15","sector":"Health Care","exchange":"NYSE","pe":"NaN"},
+          {"date":"2026-07-15","sector":"Broken","exchange":"NYSE"}
         ]"#;
-        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
-        let rows = source(&server.base_url)
-            .fetch_sector_pe_snapshot("NYSE", "2026-07-15")
+        // Every row's exchange must be present AND equal to the requested
+        // board: an off-board row (FMP ignoring the `exchange` filter) or an
+        // absent field reads the whole body malformed, the served board
+        // named, the Ok(vec![]) return keeping the walk-back unchanged —
+        // where the shaper echoed the request on a missing field and accepted
+        // a disagreeing one.
+        let off_board = r#"[
+          {"date":"2026-07-15","sector":"Technology","exchange":"NYSE","pe":30.1},
+          {"date":"2026-07-15","sector":"Energy","exchange":"NASDAQ","pe":11.4}
+        ]"#;
+        let absent_board = r#"[
+          {"date":"2026-06-15","sector":"Technology","exchange":"NYSE","pe":30.1},
+          {"date":"2026-03-16","sector":"Technology","pe":29.5}
+        ]"#;
+        let all_out_of_band = r#"[
+          {"date":"2026-06-15","sector":"Technology","exchange":"NYSE","pe":461.0},
+          {"date":"2026-03-16","sector":"Technology","exchange":"NYSE","pe":0.0}
+        ]"#;
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: in_band },
+            Canned::Reply { status: 200, headers: vec![], body: off_board },
+            Canned::Reply { status: 200, headers: vec![], body: absent_board },
+            Canned::Reply { status: 200, headers: vec![], body: all_out_of_band },
+        ]);
+        let source = source(&server.base_url).with_context(ctx);
+
+        let rows = source.fetch_sector_pe_snapshot("NYSE", "2026-07-15").unwrap();
+        let kept: Vec<(&str, f64)> = rows.iter().map(|r| (r.sector.as_str(), r.pe)).collect();
+        assert_eq!(
+            kept,
+            vec![("Technology", 30.1), ("Energy", 11.4), ("Utilities", 100.0)],
+            "{rows:?}"
+        );
+        assert!(rows.iter().all(|r| r.exchange == "NYSE"), "{rows:?}");
+
+        let rows = source.fetch_sector_pe_snapshot("NYSE", "2026-07-15").unwrap();
+        assert!(rows.is_empty(), "an off-board body serves no print: {rows:?}");
+        let rows = source
+            .fetch_historical_sector_pe("Technology", "NYSE", "2022-01-01", "2026-07-15")
             .unwrap();
-        assert_eq!(rows.len(), 2, "the row without a usable P/E is skipped");
-        assert_eq!(rows[1].exchange, "NYSE", "missing exchange echoes the request");
-        assert!((rows[1].pe - 11.4).abs() < 1e-9, "string P/E parses");
+        assert!(rows.is_empty(), "an exchange-less row reads the body malformed: {rows:?}");
+        let rows = source
+            .fetch_historical_sector_pe("Technology", "NYSE", "2022-01-01", "2026-07-15")
+            .unwrap();
+        assert!(rows.is_empty(), "{rows:?}");
+
+        let finished = finished_rows(&rec);
+        assert_eq!(finished.len(), 4, "{finished:?}");
+        assert_eq!(finished[0].1, "ok", "a partially dropped body keeps its ok row: {:?}", finished[0]);
+        assert_eq!(finished[1].1, "malformed", "{:?}", finished[1]);
+        assert!(
+            finished[1].2.as_deref().is_some_and(|d| d.contains("\"NASDAQ\"")
+                && d.contains("\"NYSE\" request")
+                && d.contains("exchange filter was ignored")),
+            "{:?}",
+            finished[1]
+        );
+        assert_eq!(finished[2].1, "malformed", "{:?}", finished[2]);
+        assert!(
+            finished[2].2.as_deref().is_some_and(|d| d.contains("<absent>")),
+            "{:?}",
+            finished[2]
+        );
+        assert_eq!(finished[3].1, "malformed", "{:?}", finished[3]);
+        assert!(
+            finished[3].2.as_deref().is_some_and(|d| d.contains("no served row was readable")),
+            "{:?}",
+            finished[3]
+        );
     }
 
     /// The tracker rows a source under `ctx` finished, as (group, status, detail).

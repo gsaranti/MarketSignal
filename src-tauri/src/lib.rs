@@ -1173,7 +1173,7 @@ async fn pull_holdings(
         // read one position identity per symbol.
         source
             .holdings()
-            .map(|h| h.normalized())
+            .and_then(|h| h.normalized())
             .map_err(|e| e.to_string())
     })
     .await

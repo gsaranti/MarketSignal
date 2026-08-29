@@ -540,6 +540,7 @@ I8, I10 and I12, with I19 ruled at the top, are one group — the prompt renders
 I11 and I13 are one group — the continuity-attribution mirrors of the grade-version and flow-basis gates.
 I15, ruled at its plan, and the §A4 seed edge are one group — the research loop's residue.
 A group never crosses a stamp axis, and a batch still never mixes code and doc findings.
+I7, I9 and I16 are resolved (2026-08-29; the rulings and resolutions are recorded under §I7, §I9 and §I16), leaving Codex I8, I10–I13, I15, I17–I19 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -800,6 +801,17 @@ Because the job has no panic containment, one drifted string weight can terminat
 Reject every non-finite or out-of-range weight in the adapter and defensively validate the composite / observation vectors before sorting.
 The engine-side clause — the composite guard and the observation-vector filtering — landed with the panic-posture slice (2026-08-28; recorded under §Priority-3 minor findings); the adapter leg, `weights_from_value`'s finiteness / range rejection, remains I7's.
 
+Ruled 2026-08-29: a weighting row's served percent is usable only when finite and within 0–100 inclusive — the `FundData` fraction contract as written; a failing row drops like an unreadable one, and an all-dropped non-empty body reads malformed.
+Ruled 2026-08-29: a body with some rows dropped keeps its `ok` tracker row with no detail, every existing shaper's posture (the `ok`-row dropped-count detail stays a carried item).
+Ruled 2026-08-29: no stamp moves — an adapter integrity rule on I14's precedent.
+**Resolved 2026-08-29 (group 1, with I9 and I16).**
+`fmp::weights_from_value` drops a row whose served percent is not finite or lies outside 0–100 inclusive, so an all-unreadable body reads malformed at the callers as before and a partially dropped one keeps its `ok` row.
+Before the guard a NaN United States row read as a 100% US share — `us_share` sums then takes `min(1.0)`, and Rust's `min` returns the non-NaN operand — so the adapter leg is what closes the ≥ 70% guard, not the engine clause.
+The engine holds the line for any other producer: `fund::top_weights` and `fund::exposure_basis` skip a non-finite weight (with I16), beside the composite's existing skip.
+Two tests pinned: the shaper over `"NaN%"`, `"inf"`, `"1e999"`, `"-5"`, `250`, and the kept endpoints `0` / `"100%"`, and one mock-server pull where the only United States row is `"NaN%"` — the classification's US share reads 0% where it read 100%, the all-unreadable sector body `malformed` with its gap, the partially readable country body `ok`.
+Canonical at `data-sources.md` §Financial Modeling Prep (the weighting-row and partial-drop sentences), `portfolio-analysis.md` §Asset eligibility pointing there, mirrored in the logic-flow's fund-requires bullet.
+No stamp moves.
+
 ### I8 — minor: the priced-fund prompt computes US share differently from the engine guard
 
 The engine sums all recognized aliases — `united states`, `united states of america`, `usa`, `u.s.`, and `us` — and caps the aggregate (`src-tauri/src/portfolio/fund.rs:367-382`).
@@ -817,6 +829,16 @@ The fund-specific snapshot / history adapter accepts a supplied exchange that di
 Only non-positive and non-finite P/Es are later excluded by the blend (`src-tauri/src/portfolio/fund.rs:387-407`), so implausibly high values and duplicate off-board rows can influence the fund valuation and target anchors.
 
 The fund path should share the same exchange-identity, date-readability, and plausible-P/E contract as the suite's sibling adapter; otherwise “usable P/E” means materially different things across the same job without the logic-flow document saying so.
+
+The date-readability leg landed with I14 (2026-08-28; the canonical render and the undatable-row drop), leaving the exchange-identity and plausible-P/E legs.
+Ruled 2026-08-29: the sibling's rule as written — every row's `exchange` present and equal to the requested board, any failing row reading the whole body malformed with the served board named, the `Ok(vec![])` return keeping the snapshot's bounded date walk-back unchanged.
+Ruled 2026-08-29: an out-of-band print — non-finite, non-positive, or above `SECTOR_PE_MAX` — drops at the shaper (the fund `SectorPe.pe` is required, so there is no kept-with-`None` shape), accepting that an earlier in-quarter in-band print backs a sample an artifact print held; `blend_sector_pes`'s own filter stays as belt-and-braces.
+Ruled 2026-08-29: no stamp moves.
+**Resolved 2026-08-29 (group 1, with I7 and I16).**
+`fmp::sector_pe_rows_from_value` returns `Err` naming the served board when any row's `exchange` is absent or disagrees with the requested one, and keeps a print only when finite and inside `(0, SECTOR_PE_MAX]`; both callers route the `Err` to a `malformed` tracker row carrying the reason, the `Ok(vec![])` return contract unchanged.
+The former echo-the-request test is replaced by one mock-server pin: the ceiling kept and `461`, `0`, a negative, and `"NaN"` dropped on an `ok` row; an off-board row and an exchange-less row each reading the body malformed with the served board (or `<absent>`) named, on the snapshot and the history; an all-out-of-band body reading malformed.
+Canonical at `data-sources.md` §Financial Modeling Prep (the exchange-identity and plausible-band sentences), `portfolio-analysis.md` §Asset eligibility pointing there, mirrored in the logic-flow's fund-valuation equation line.
+No stamp moves.
 
 ### I10 — minor: the one-month target's methodology never reaches the model or the UI
 
@@ -898,6 +920,40 @@ Forward dividends move total returns, never scenario prices, so all six target l
 `ImpliedExpectations` is a sibling required-float surface to include in the same audit.
 The fix is an audit of every required `f64` the persisted `PortfolioRun` tree carries — validate each before persist, or reject the overflowing aggregate at its shaper — with a store round-trip regression over finite extreme inputs, the test the panic-posture slice declined for the targets alone.
 Surfaced by the panic-posture slice's second Codex round (2026-08-28); queued on I10/I11's terms.
+
+Ruled 2026-08-29: the fix is three layers — the dividend shaper rejects an overflowed in-window sum as a drifted body (the recorded gap and a zero leg), every engine derivation the record carries reads as a gap where its arithmetic does not finish as a finite number, and `store::insert_run` decodes its own record before the write, refusing one that would not read back with the holding named under the hard run-persistence posture; no new dependency, the holding named and not the field.
+Ruled 2026-08-29: JSON-number pass-throughs — Schwab quantities, FRED prints, EOD closes, the model arm's numbers — are finite by the parser, pinned rather than guarded.
+Ruled 2026-08-29: not an `EVIDENCE_FLOOR_VERSION` event on I1's precedent — the stamp keeps a resumed trail's completed holdings under one admission rule, and no readable pre-fix holding changes (a non-finite one is already an unreadable row, a finite one grades identically); the general resume-across-a-rebuild residual is I18's.
+Ruled 2026-08-29: no `GRADE_PARAMETER_VERSION` bump for the one readable pre-fix case that changes — an ±inf metric `scale` clamped to a 0 / 100 sub-score now reads absent — since it is unreachable from live prints and the history row would describe a non-event.
+Ruled 2026-08-29: the seam's residual is accepted — a resume restores the same record from the trail and fails the same way, bounded by the resume window and the new run's discard.
+**Resolved 2026-08-29 (group 1, with I7 and I9).**
+The audit enumerated twenty-seven required float positions reachable from `PortfolioRun`: the targets, the model arm, the ledger thresholds and probabilities, `spot`, and every JSON-number pass-through were guarded or parser-finite already; `drivers` was guarded transitively by the target gate; and eleven derivations persisted beside the gate unguarded — the forward-dividend sum, the engine metrics (`scale` clamps ±inf and passes NaN), a crossing's `observed_value`, the pre-flag's threshold, `ImpliedExpectations`, `NarrativeRead`, an execution miss's ratio, the percentile surfaces' interpolation, the roll-up weights, and the fund tilt / exposure basis over a non-finite weight (I7's ingress).
+`fmp::ttm_dividends_from_value` rejects an overflowed in-window sum as a drifted body, and the outcome label's total-return sum takes the labeled price-only fallback with an overflow gap.
+`engine::finite` normalizes `compute_metrics`, `return_volatility` (the fund's deep-history caller included), the fund drawdown, and the dispersion floor; `resolve_series` reads a non-finite observation unevaluable; `implied_expectations` reads `None` on a non-finite driver or growth; `narrative_vs_reality` returns its overflow reason; `tech_event_pre_flag` requires a finite positive volatility and a finite move; the percentile triples read no surface on a non-finite edge; an overflowed miss ratio is no miss; the roll-up weights read zero over an unusable total; `top_weights` and `exposure_basis` skip a non-finite weight; both `forward_dividends` sites read through `finite`.
+`store::insert_run` decodes its own record before the write and refuses one that would not read back, naming the holding, under the hard run-persistence posture; the checkpoint row stays loud-skip at load.
+Twelve tests pinned in the slice (fifteen with the reviewer round below): the shaper overflow (the pure sum and the pull's gap + `malformed` row); the outcome fallback; in the engine the metrics / crossing / floor pin, the percentile surface, the implied read, and the narrative + pre-flag pin; the fund tilt; the miss ratio; the roll-up weights; and in the store the serde premise (`null` out, `null` refused into a bare `f64`, `1e999` rejected at parse), the refused write naming the holding with no row landed, and the feed-extreme run round-trip the panic-posture slice declined.
+Canonical at `portfolio-analysis.md` §Evidence floor (the every-other-derivation sentence) and §Failure posture (the validating write and its residual), mirrored at `storage.md` §Local Analysis Suite Storage, `data-sources.md` §Financial Modeling Prep (the dividend windower), `portfolio-analysis.md` §Starting parameters and `portfolio-workflow.md` §Step 6b (the miss ratio), and the logic-flow's targets, execution-read, roll-up, and run-listing lines.
+No stamp moved on the slice's original scope; the reviewer round's dated-EOD leg moved the evidence-floor stamp to `evidence-floor-v4` (Codex round 1, below), the prompt, grade, target, and overlay stamps untouched.
+Reviewer round 1 (2026-08-29): approve-with-nits, five notes — the episode store's required floats and the unfiltered EOD close parse, the Schwab lot-netting sums, the §Failure posture refusal sentence over-claiming the holding named, three colon- or semicolon-joined doc sentences, and `ScenarioSet.raw_observations` beside a `None` surface.
+Ruled 2026-08-29 (reviewer round 1): the episode store's required floats join the slice as an I16 leg — the 180-day and the deep dated EOD parses apply the quote's usability rule, the label pass admits usable closes only at load and at merge, and a window whose price return or drawdown does not finish finite writes no label that pass.
+Ruled 2026-08-29 (reviewer round 1): the Schwab lot netting fails the Step-2 pull naming the symbol when a netted quantity, cost basis, or market value is not finite — before any per-holding work, rather than the run refusing at persist.
+Ruled 2026-08-29 (reviewer round 1): `ScenarioSet.raw_observations` keeps its admitted-sample count beside a `None` surface — the carry is recorded, and no render reads the count on the carry path — accepted as cosmetic.
+The round's two doc notes are applied: the joined sentences split one claim per line, and the §Failure posture refusal sentence re-cut to name the holding only where the value sits in a per-holding record.
+Off the round: `fmp::dated_eod_from_value` and `eod_prices_from_value` drop a close that is not finite and positive; `outcome::SeriesCtx` admits usable bars only at load and merge (`usable_bars`), so the price-bar cache never holds one; the label pass computes the drawdown beside the return and writes no label when either is not finite; `schwab::Holdings::normalized` returns `Err` naming the symbol on a non-finite netted sum, propagated by the run's Step-2 pull and the standalone snapshot.
+Three more tests pinned: both EOD parses over zero / negative / positive closes with the all-unusable body on the deep pull's `malformed` branch; a label pass over a source serving zero closes mid-window (drawdown 0, never −100%, the cache holding no unusable bar); the netting refusal naming the symbol.
+The episode leg is canonical at `portfolio-analysis.md` §Evidence floor (the dated-EOD sentence) and §Outcome learning (the no-label sentence), the netting refusal at `schwab-integration.md` §What is pulled, mirrored in `data-sources.md` §Financial Modeling Prep and the logic-flow's label and normalization lines.
+Codex round 1 (2026-08-29) found five items.
+Ruled 2026-08-29 (Codex round 1): the dated-EOD usability rule IS a floor-rule change on I1's precedent — a served zero close was admitted under v3 and read as a −100% return into volatility, momentum, and drawdown, so a readable completed holding's verdict can differ — and the stamp moves to `evidence-floor-v4`; the earlier no-stamp ruling stands for the slice's original scope, superseded for this leg alone.
+Ruled 2026-08-29 (Codex round 1): a covered window whose price arithmetic does not finish finite takes the existing coverage lifecycle — pending inside the grace, the typed price-coverage closure past it — rather than a new closure variant.
+Closed off the round: `engine::EVIDENCE_FLOOR_VERSION` at `evidence-floor-v4` with its history line, a v3-stamped trail refused at the resume gate (pinned beside the v1 refusal), and the §Evidence floor stamp sentence re-cut.
+Closed: `Holdings::normalized` also refuses a non-finite summed cash or derived account total — the live adapter's own sums, which reached the standalone snapshot and the checkpoint header unchecked — pinned.
+Closed: the narrative classification reads the raw quotient, an infinite ratio being hype (the cap fires) with the persisted ratio absent, where the filtered `None` fell to the justified branch and suppressed the Medium ceiling — pinned over two finite legs whose quotient overflows.
+Closed: the label pass's non-finite `continue` — which pended forever, off `pending_coverage` — now takes the coverage lifecycle, and `bench_return` reads a non-finite benchmark return unavailable with its gap naming why; both pinned (the 1-month window closing typed past the grace beside the 12-month window pending inside it; the market leg absent with its gap).
+Closed: `storage.md`, the logic-flow run-listing line, and the `insert_run` comment now say the holding is named where the value sits in a per-holding record, matching §Failure posture.
+Codex round 2 (2026-08-29) found one item: the interpretation prompt rendered every hype read with no persisted ratio as "reality flat or declining", which since round 1 also covers a positive reality leg the expansion outran beyond any finite multiple, and its percentage render multiplied a finite leg by 100 unguarded.
+Ruled 2026-08-29 (Codex round 2): the render change is a `PROMPT_VERSION` event on I12's precedent — edge-only, stamped all the same — moving the stamp to `portfolio-v21`; group 3's prompt renders will bump again.
+Closed: `narrative_prompt_section` names the overflowed ratio as its own state, renders a decimal leg whose ×100 overflows as the ratio itself, and is pinned at the prompt level over the overflowed, the flat, the finite, and the extreme-leg reads; `PROMPT_VERSION` at `portfolio-v21` with its history paragraph, the watch set's stamp line moved with it.
+Twenty-one tests pinned in all across the slice, the reviewer round, and the two Codex rounds.
 
 ### I17 — minor: the run-level checkpoint counters over-count on resume
 

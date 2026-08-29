@@ -347,7 +347,9 @@ pub struct WindowLabel {
 pub enum LabelOutcome {
     Pending,
     Scored(Box<ScoredLabel>),
-    /// The price leg never covered the window within the shared grace.
+    /// The price leg never covered the window within the shared grace — or,
+    /// over a covered window, its price arithmetic did not finish finite
+    /// (Codex I16, round 1).
     PriceCoverageUnscorable,
     /// A previously covered series stopped resolving — conservatively terminal
     /// (no corporate-action feed exists to type an acquisition or bankruptcy).
@@ -813,7 +815,12 @@ impl<'a> SeriesCtx<'a> {
     fn series(&mut self, symbol: &str, from: NaiveDate, ends: &[NaiveDate]) -> &[DatedValue] {
         let key = symbol.to_ascii_uppercase();
         if !self.mem.contains_key(&key) {
-            let cached = store::load_price_bars(self.conn, &key).unwrap_or_default();
+            // Usable bars only, at load as at merge: the FMP parse drops an
+            // unusable close, but a bar cached before that rule or served by
+            // another source must not reach the label arithmetic — a zero
+            // entry close made `price_return` a persisted `null` (Codex I16,
+            // reviewer round; ruled 2026-08-29).
+            let cached = usable_bars(store::load_price_bars(self.conn, &key).unwrap_or_default());
             self.mem.insert(key.clone(), cached);
         }
         let needs_fetch = {
@@ -838,6 +845,7 @@ impl<'a> SeriesCtx<'a> {
                 // `fetch_floor` above for the bound that is one).
                 let fetch_to = chrono::Utc::now().date_naive();
                 if let Ok(bars) = source.daily_closes(symbol, fetch_from, fetch_to) {
+                    let bars = usable_bars(bars);
                     if !bars.is_empty() {
                         let _ = store::merge_price_bars(self.conn, &key, &bars);
                         let merged = merge_series(self.mem.remove(&key).unwrap_or_default(), bars);
@@ -848,6 +856,16 @@ impl<'a> SeriesCtx<'a> {
         }
         &self.mem[&key]
     }
+}
+
+/// The bars whose close is usable — finite and strictly positive
+/// (`engine::usable_price`) — the one admission every series the label pass
+/// reads goes through, so the cache never holds and the arithmetic never sees
+/// a print that is not a price.
+fn usable_bars(bars: Vec<DatedValue>) -> Vec<DatedValue> {
+    bars.into_iter()
+        .filter(|b| crate::portfolio::engine::usable_price(Some(b.value)).is_some())
+        .collect()
 }
 
 /// Merge two dated series by date (newer fetch wins on a shared date), sorted
@@ -1083,8 +1101,34 @@ pub fn mature_labels(
                 .as_ref()
                 .zip(end_bar)
                 .is_some_and(|(e, b)| b.date > e.date);
+            // Usable bars bound neither quotient: a feed-extreme pair overflows
+            // the return, and both it and the drawdown persist as required
+            // floats on the label. A covered window whose price arithmetic did
+            // not finish finite takes the coverage lifecycle below — pending
+            // inside the grace, the typed price-coverage closure past it —
+            // never a `continue` that pends forever off the summary (Codex
+            // I16, reviewer round and its Codex round 1; ruled 2026-08-29).
+            let arithmetic = entry
+                .as_ref()
+                .zip(end_bar)
+                .filter(|_| holding_covered)
+                .map(|(e, b)| (b.value / e.value - 1.0, drawdown_over(&closes, &e.date, w_end)))
+                .filter(|(r, d)| r.is_finite() && d.is_finite());
             let past_grace = today > w_end + chrono::Duration::days(PRICE_COVERAGE_GRACE_DAYS);
-            if !holding_covered {
+            if arithmetic.is_none() {
+                if holding_covered {
+                    eprintln!(
+                        "outcome learning: {} {}-month window — the price arithmetic over its \
+                         entry and end bars did not finish finite; {}",
+                        ep.symbol,
+                        ep.labels[i].window_months,
+                        if past_grace {
+                            "closing price-coverage unscorable"
+                        } else {
+                            "pending inside the coverage grace"
+                        }
+                    );
+                }
                 if past_grace {
                     // The grace doubles as the transient-vs-disappearance
                     // discriminator: a series alive at the entry that stopped
@@ -1093,12 +1137,16 @@ pub fn mature_labels(
                     // the entry bound) — or that is still alive PAST the
                     // window end, an interior gap the heal fetch could not
                     // fill — takes the price-coverage state, terminal staying
-                    // reserved for a series that actually stopped.
-                    let outcome = if entry.is_none() || first_close_after(&closes, w_end).is_some()
+                    // reserved for a series that actually stopped. Unfinished
+                    // arithmetic over a covered window is the price-coverage
+                    // state too.
+                    let outcome = if !holding_covered
+                        && entry.is_some()
+                        && first_close_after(&closes, w_end).is_none()
                     {
-                        LabelOutcome::PriceCoverageUnscorable
-                    } else {
                         LabelOutcome::TerminalUnscorable
+                    } else {
+                        LabelOutcome::PriceCoverageUnscorable
                     };
                     summary.matured.push(MaturedNote {
                         symbol: ep.symbol.clone(),
@@ -1120,8 +1168,9 @@ pub fn mature_labels(
                 }
                 continue;
             }
-            let entry = entry.as_ref().expect("holding_covered implies entry");
-            let end_bar = end_bar.expect("holding_covered implies a bounded end bar");
+            let entry = entry.as_ref().expect("finished arithmetic implies entry");
+            let end_bar = end_bar.expect("finished arithmetic implies a bounded end bar");
+            let (price_return, max_drawdown) = arithmetic.expect("checked above");
             // Benchmark legs follow the same coverage rule: an uncovered
             // resolvable leg holds the whole window pending within grace, then
             // scores with the leg typed unavailable past it.
@@ -1148,7 +1197,6 @@ pub fn mature_labels(
                 continue;
             }
 
-            let price_return = end_bar.value / entry.value - 1.0;
             let entry_date = parse_iso_date_prefix(&entry.date).unwrap_or(anchor);
             let symbol = ep.symbol.clone();
             let divs_result = episode_divs.get_or_insert_with(|| match ctx.source {
@@ -1181,14 +1229,29 @@ pub fn mature_labels(
                         })
                         .map(|d| d.value)
                         .sum();
-                    (Some((end_bar.value + paid) / entry.value - 1.0), None)
+                    // The sum is unbounded: an overflow would persist as `null`
+                    // and read back as the failed-re-pull `None` with no gap
+                    // saying so — so it takes the labeled fallback explicitly
+                    // (the 2026-08-24 review's Codex I16, ruled 2026-08-29).
+                    let total = (end_bar.value + paid) / entry.value - 1.0;
+                    if total.is_finite() {
+                        (Some(total), None)
+                    } else {
+                        (
+                            None,
+                            Some(
+                                "total-return leg unavailable (the window's dividend sum \
+                                 overflowed) — price-only label"
+                                    .to_string(),
+                            ),
+                        )
+                    }
                 }
                 Err(e) => (
                     None,
                     Some(format!("total-return leg unavailable ({e}) — price-only label")),
                 ),
             };
-            let max_drawdown = drawdown_over(&closes, &entry.date, w_end);
             let scored = ScoredLabel {
                 entry_date: entry.date.clone(),
                 entry_price: entry.value,
@@ -1202,11 +1265,11 @@ pub fn mature_labels(
                 vs_market: market_ret.map(|m| price_return - m),
                 market_leg_gap: market_ret
                     .is_none()
-                    .then(|| "market benchmark leg never covered the window".to_string()),
+                    .then(|| "market benchmark leg never covered the window or its return did not finish finite".to_string()),
                 vs_sector: sector_ret.map(|s| price_return - s),
                 sector_leg_gap: sector_gap.clone().or_else(|| {
                     (sector_bench.is_some() && sector_ret.is_none())
-                        .then(|| "sector benchmark leg never covered the window".to_string())
+                        .then(|| "sector benchmark leg never covered the window or its return did not finish finite".to_string())
                 }),
                 labeled_at: run_date.to_string(),
             };
@@ -1250,11 +1313,16 @@ pub fn mature_labels(
 /// A benchmark's own price-only window return, on its own next-session entry
 /// anchor (the same [`ENTRY_TOLERANCE_DAYS`] bound as the holding leg) and its
 /// own bounded end bar ([`window_end_close`], strictly after the entry).
-/// `None` when the series doesn't cover the window at either end.
+/// `None` when the series doesn't cover the window at either end, or when the
+/// return over two usable bars does not finish finite — the spread it feeds
+/// is an `Option` serde would write as `null` with no gap saying why (Codex
+/// I16, round 1).
 fn bench_return(closes: &[DatedValue], anchor: NaiveDate, w_end: NaiveDate) -> Option<f64> {
     let entry = entry_close(closes, anchor)?;
     let end = window_end_close(closes, w_end)?;
-    (end.date > entry.date).then(|| end.value / entry.value - 1.0)
+    (end.date > entry.date)
+        .then(|| end.value / entry.value - 1.0)
+        .filter(|r| r.is_finite())
 }
 
 /// Maximum drawdown (≤ 0) over the closes from the entry bar through the window
@@ -4004,6 +4072,198 @@ mod tests {
             scored.anchor_close
         );
         assert!(scored.price_return.is_finite(), "the window itself still scores");
+    }
+
+    #[test]
+    fn an_overflowing_dividend_sum_takes_the_labeled_price_only_fallback() {
+        // Codex I16 (ruled 2026-08-29): the window's dividend sum is unbounded
+        // — two feed-extreme amounts overflow the total return to inf, which
+        // persisted as `null` and read back as the failed-re-pull `None` with
+        // no gap saying so. It takes the labeled fallback explicitly.
+        struct Extreme;
+        impl OutcomePriceSource for Extreme {
+            fn daily_closes(
+                &self,
+                symbol: &str,
+                from: NaiveDate,
+                to: NaiveDate,
+            ) -> Result<Vec<DatedValue>> {
+                SyntheticPrices {
+                    fail_dividends: false,
+                }
+                .daily_closes(symbol, from, to)
+            }
+            fn dividend_history(
+                &self,
+                _: &str,
+                from: NaiveDate,
+                _: NaiveDate,
+            ) -> Result<Vec<DatedValue>> {
+                let d1 = (from + chrono::Duration::days(100)).format("%Y-%m-%d").to_string();
+                let d2 = (from + chrono::Duration::days(200)).format("%Y-%m-%d").to_string();
+                Ok(bars(&[(d1.as_str(), f64::MAX), (d2.as_str(), f64::MAX)]))
+            }
+        }
+        let conn = mem_conn();
+        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
+        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
+        let mut ctx = SeriesCtx::new(&conn, Some(&Extreme));
+        let today = chrono::Utc::now().date_naive();
+        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
+        let scored = scored_for(&episodes[0], 12).expect("scored");
+        assert!(scored.price_return.is_finite(), "the price-only label still scores");
+        assert_eq!(scored.total_return, None);
+        assert!(
+            scored.total_return_gap.as_deref().is_some_and(|g| g.contains("overflowed")),
+            "{:?}",
+            scored.total_return_gap
+        );
+    }
+
+    #[test]
+    fn a_zero_close_never_enters_the_series_or_the_label() {
+        // Codex I16, reviewer round (ruled 2026-08-29): a served zero close is
+        // not a price. Admitted, it read as a 100% drawdown inside the window
+        // (and at the entry it made `price_return` a persisted `null`); now the
+        // series admits usable bars only, so it reaches neither the cache nor
+        // the label arithmetic.
+        struct ZeroBars;
+        impl OutcomePriceSource for ZeroBars {
+            fn daily_closes(
+                &self,
+                symbol: &str,
+                from: NaiveDate,
+                to: NaiveDate,
+            ) -> Result<Vec<DatedValue>> {
+                let mut bars = SyntheticPrices {
+                    fail_dividends: false,
+                }
+                .daily_closes(symbol, from, to)?;
+                for b in bars.iter_mut().skip(150).take(3) {
+                    b.value = 0.0;
+                }
+                Ok(bars)
+            }
+            fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
+                Ok(Vec::new())
+            }
+        }
+        let conn = mem_conn();
+        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
+        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
+        let mut ctx = SeriesCtx::new(&conn, Some(&ZeroBars));
+        let today = chrono::Utc::now().date_naive();
+        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
+        let scored = scored_for(&episodes[0], 12).expect("scored");
+        assert_eq!(
+            scored.max_drawdown, 0.0,
+            "a zero close read as a 100% drawdown before: {scored:?}"
+        );
+        assert!(scored.price_return.is_finite() && scored.entry_price > 0.0, "{scored:?}");
+        let cached = store::load_price_bars(&conn, "AAPL").unwrap();
+        assert!(
+            !cached.is_empty() && cached.iter().all(|b| b.value > 0.0),
+            "the cache never holds an unusable bar"
+        );
+    }
+
+    /// Serves the synthetic series, with every bar of `symbol` dated inside
+    /// `(anchor, anchor + 4d]` — the entry reference's bars — set to a subnormal
+    /// close: usable (finite, positive), yet any return off it overflows.
+    struct TinyEntry {
+        symbol: &'static str,
+        anchor: NaiveDate,
+    }
+
+    impl OutcomePriceSource for TinyEntry {
+        fn daily_closes(&self, symbol: &str, from: NaiveDate, to: NaiveDate) -> Result<Vec<DatedValue>> {
+            let mut bars = SyntheticPrices {
+                fail_dividends: false,
+            }
+            .daily_closes(symbol, from, to)?;
+            if symbol == self.symbol {
+                for b in bars.iter_mut() {
+                    let d = parse_iso_date_prefix(&b.date).unwrap();
+                    if d > self.anchor && d <= self.anchor + chrono::Duration::days(4) {
+                        b.value = 1e-310;
+                    }
+                }
+            }
+            Ok(bars)
+        }
+        fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn unfinished_price_arithmetic_takes_the_coverage_lifecycle_never_pending_forever() {
+        // Codex I16, round 1 (ruled 2026-08-29): a covered window whose price
+        // return overflows is pending inside the shared grace — on the
+        // summary's pending list — and closes as the typed price-coverage
+        // state past it, never a silent `continue` that re-pends every pass.
+        // The anchor sits 430 days back: the 1-month window is past the
+        // 91-day grace, the 12-month window (65 days matured) inside it.
+        let conn = mem_conn();
+        let anchor = (chrono::Utc::now() - chrono::Duration::days(430)).date_naive();
+        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
+        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
+        let source = TinyEntry {
+            symbol: "AAPL",
+            anchor,
+        };
+        let mut ctx = SeriesCtx::new(&conn, Some(&source));
+        let today = chrono::Utc::now().date_naive();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
+        let ep = &episodes[0];
+        let label = |months: u32| ep.labels.iter().find(|l| l.window_months == months).unwrap();
+        assert_eq!(
+            label(1).outcome,
+            LabelOutcome::PriceCoverageUnscorable,
+            "past the grace the window closes typed: {:?}",
+            label(1).outcome
+        );
+        assert_eq!(label(12).outcome, LabelOutcome::Pending, "{:?}", label(12).outcome);
+        assert!(
+            summary.pending_coverage.contains(&"AAPL".to_string()),
+            "inside the grace the window is on the pending list: {:?}",
+            summary.pending_coverage
+        );
+        assert!(
+            summary.matured.iter().any(|m| m.window_months == 1
+                && m.outcome == "price-coverage-unscorable"),
+            "{:?}",
+            summary.matured
+        );
+        assert!(scored_for(ep, 12).is_none());
+    }
+
+    #[test]
+    fn an_overflowing_benchmark_return_reads_the_leg_unavailable_with_its_gap() {
+        // Codex I16, round 1: the benchmark's own return over two usable bars
+        // can overflow; the spread reads absent WITH its gap naming why —
+        // never an inf serde writes as `null` beside no gap.
+        let conn = mem_conn();
+        let anchor = (chrono::Utc::now() - chrono::Duration::days(430)).date_naive();
+        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
+        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
+        let source = TinyEntry {
+            symbol: MARKET_BENCHMARK,
+            anchor,
+        };
+        let mut ctx = SeriesCtx::new(&conn, Some(&source));
+        let today = chrono::Utc::now().date_naive();
+        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
+        // The 1-month window is past the grace, so it scores with the market
+        // leg typed unavailable rather than holding the window pending.
+        let scored = scored_for(&episodes[0], 1).expect("the holding leg scores");
+        assert!(scored.price_return.is_finite(), "{scored:?}");
+        assert_eq!(scored.vs_market, None, "{scored:?}");
+        assert!(
+            scored.market_leg_gap.as_deref().is_some_and(|g| g.contains("did not finish finite")),
+            "{:?}",
+            scored.market_leg_gap
+        );
     }
 
     #[test]

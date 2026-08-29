@@ -1040,7 +1040,7 @@ fn run_analysis(
             // symbol, and every later step consumes only the normalized rows
             // (`docs/schwab-integration.md` §What is pulled;
             // `docs/portfolio-workflow.md` §Step 2).
-            let h = holdings_source.holdings()?.normalized();
+            let h = holdings_source.holdings()?.normalized()?;
             ctx.step_finished("holdings", "ok", None);
             h
         }
@@ -2435,17 +2435,25 @@ fn build_roll_up(
             VerdictDisposition::InsufficientEvidence { .. } => insufficient += 1,
         }
     }
+    // Usable total, finite quotients: both weights persist as required floats,
+    // and a subnormal total overflows the division (Codex I16). A weight the
+    // arithmetic cannot finish reads 0, the same as no total.
     let total = holdings.account_total;
-    let top_position_weight = if total > 0.0 {
+    let usable_total = total.is_finite() && total > 0.0;
+    let top_position_weight = if usable_total {
         holdings
             .positions
             .iter()
             .map(|p| p.market_value / total)
+            .filter(|w| w.is_finite())
             .fold(0.0_f64, f64::max)
     } else {
         0.0
     };
-    let cash_weight = if total > 0.0 { holdings.cash / total } else { 0.0 };
+    let cash_weight = usable_total
+        .then(|| holdings.cash / total)
+        .filter(|w| w.is_finite())
+        .unwrap_or(0.0);
 
     // Acknowledge positions closed since the last run rather than letting them vanish.
     let exited_note = if exited.is_empty() {
@@ -2765,6 +2773,41 @@ mod tests {
     /// and it must walk back over holidays rather than accept the empty answer.
     /// The UTC read returned `Ok(vec![])`, which every priced US-equity fund then
     /// misattributed to "no P/E-usable sector overlap".
+    #[test]
+    fn roll_up_weights_over_an_unusable_total_read_zero_never_non_finite() {
+        // Codex I16 (ruled 2026-08-29): both weights persist as required
+        // floats, and a subnormal account total overflows the quotient. A
+        // weight the arithmetic cannot finish reads 0, the same as no total.
+        let holdings = crate::schwab::Holdings {
+            positions: vec![Position {
+                symbol: "AAPL".into(),
+                description: "Apple".into(),
+                asset_class: AssetClass::Stock,
+                quantity: 1.0,
+                cost_basis: 1.0,
+                market_value: 1e10,
+                current_price: Some(1.0),
+            }],
+            cash: 1e10,
+            account_total: 1e-310,
+            source_rows: vec![],
+        };
+        let roll_up = build_roll_up(
+            &holdings,
+            &[],
+            &[],
+            &[],
+            0,
+            false,
+            false,
+            FeedGaps::default(),
+            vec![],
+            vec![],
+        );
+        assert_eq!(roll_up.top_position_weight, 0.0);
+        assert_eq!(roll_up.cash_weight, 0.0);
+    }
+
     #[test]
     fn sector_pe_candidates_start_at_the_et_session_and_walk_back_weekdays() {
         // 2026-08-12 01:30 UTC = 2026-08-11 21:30 EDT. The session that traded is
@@ -5148,6 +5191,13 @@ mod tests {
         // holdings were floored under another rule (Codex I1, round 1).
         let mut drifted = cp.clone();
         drifted.header.evidence_floor_version = "evidence-floor-v1".into();
+        let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("evidence-floor"), "{err}");
+        // The v3 → v4 move (the dated-EOD usability rule, Codex I16 round 1):
+        // a trail stamped v3 is refused too — its completed holdings admitted
+        // closes the v4 parse drops, so a resume must never mix them.
+        let mut drifted = cp.clone();
+        drifted.header.evidence_floor_version = "evidence-floor-v3".into();
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("evidence-floor"), "{err}");
 

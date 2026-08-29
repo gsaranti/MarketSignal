@@ -1042,8 +1042,18 @@ pub fn resolve_series(
             .max()
             .ok_or_else(|| "no quarterly statement print to key the observation".to_string())
     };
+    // Finite or unevaluable: the metrics arrive finite-or-absent from
+    // `compute_metrics`, and this holds the line for any other producer — a
+    // crossing's `observed_value` is a bare persisted `f64` (Codex I16).
     let metric = |v: Option<f64>, label: &str| -> Result<f64, String> {
-        v.ok_or_else(|| format!("{label} is a gap this run"))
+        match v {
+            None => Err(format!("{label} is a gap this run")),
+            Some(value) if !value.is_finite() => Err(format!(
+                "{label} is {value} — not a finite observation, so this condition is \
+                 unevaluable rather than compared"
+            )),
+            Some(value) => Ok(value),
+        }
     };
     // A signed multiple is OFF-SCALE for a threshold comparison, so it resolves
     // **unevaluable** rather than comparing. Both hazards are real and only one
@@ -1434,8 +1444,13 @@ pub fn usable_price(value: Option<f64>) -> Option<f64> {
 /// only prints dated within its own quarter
 /// ([`crate::portfolio::fund::composite_yield_history`]), where under v2 one
 /// stale print could back all twelve samples — off the review's Codex I2
-/// (ruled 2026-08-28).
-pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v3";
+/// (ruled 2026-08-28). `evidence-floor-v4`: the usability rule at the
+/// dated-EOD parse — a served zero or negative close drops as an unreadable
+/// row on the 180-day and the deep pulls alike, where under v3 it was admitted
+/// and read as a −100% return into σ, momentum, and drawdown — off the
+/// review's Codex I16, its reviewer round (the stamp off its Codex round 1;
+/// ruled 2026-08-29).
+pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v4";
 
 /// The stamp a record or trail persisted before the field existed decodes as
 /// (the serde default on both fields): it was floored under the presence rule,
@@ -1566,24 +1581,36 @@ pub fn grade_from_subscores(s: &SubScores) -> Grade {
     }
 }
 
+/// An engine metric is a finite number or absent — never ±inf or NaN. The
+/// inputs are finite by the parsers, but a ratio over a subnormal denominator
+/// or a difference of overflowed sums is not: `scale` clamps ±inf to a 0 / 100
+/// sub-score and passes NaN through, a crossing's `observed_value` is a bare
+/// `f64`, and the pre-flag's threshold rides the volatility — each a required
+/// persisted float serde writes as `null` and the store cannot read back (the
+/// 2026-08-24 review's Codex I16, ruled 2026-08-29). Filtered once here, so
+/// every consumer reads a gap where the arithmetic did not finish.
+pub(crate) fn finite(value: Option<f64>) -> Option<f64> {
+    value.filter(|v| v.is_finite())
+}
+
 pub(crate) fn compute_metrics(fin: &CompanyFinancials) -> ComputedMetrics {
     let ratio = |num: Option<f64>, den: Option<f64>| match (num, den) {
-        (Some(n), Some(d)) if d != 0.0 => Some(n / d),
+        (Some(n), Some(d)) if d != 0.0 => finite(Some(n / d)),
         _ => None,
     };
     ComputedMetrics {
         net_margin: ratio(fin.net_income, fin.revenue),
         gross_margin: ratio(fin.gross_profit, fin.revenue),
         revenue_growth: match (fin.revenue, fin.revenue_prior) {
-            (Some(now), Some(prior)) if prior > 0.0 => Some(now / prior - 1.0),
+            (Some(now), Some(prior)) if prior > 0.0 => finite(Some(now / prior - 1.0)),
             _ => None,
         },
         debt_to_equity: ratio(fin.total_debt, fin.total_equity),
         return_volatility: return_volatility(&fin.price_history),
-        trailing_return: trailing_return(&fin.price_history),
-        pe_ratio: fin.pe_ratio,
-        ps_ratio: fin.ps_ratio,
-        pb_ratio: fin.pb_ratio,
+        trailing_return: finite(trailing_return(&fin.price_history)),
+        pe_ratio: finite(fin.pe_ratio),
+        ps_ratio: finite(fin.ps_ratio),
+        pb_ratio: finite(fin.pb_ratio),
         // Fund context fields — set by the fund path only.
         expense_ratio: None,
         nav_premium: None,
@@ -1685,7 +1712,12 @@ pub(crate) fn return_volatility(history: &[f64]) -> Option<f64> {
     }
     let mean = returns.iter().sum::<f64>() / returns.len() as f64;
     let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
-    Some(var.sqrt())
+    // One subnormal close makes a period return inf and the deviation NaN —
+    // absent, never a NaN σ the fund's risk leg, the dispersion floor and the
+    // pre-flag threshold would carry into the record (Codex I16). Filtered here
+    // because the fund's deep-history read calls this directly, not through
+    // `compute_metrics`.
+    finite(Some(var.sqrt()))
 }
 
 // ---- v2 rate-anchored scenario-target function ---------------------------------
@@ -1920,20 +1952,29 @@ pub fn spread_anchored_scenarios(
     let n_spread = spreads.len();
     let n_raw = raws.len();
 
-    let spread_ps = (n_spread >= MIN_ANCHOR_OBSERVATIONS).then(|| {
-        [
-            percentile(&spreads, 0.75), // bear
-            percentile(&spreads, 0.50), // base
-            percentile(&spreads, 0.25), // bull
-        ]
-    });
-    let raw_ps = (n_raw >= 1).then(|| {
-        [
-            percentile(&raws, 0.25), // bear
-            percentile(&raws, 0.50), // base
-            percentile(&raws, 0.75), // bull
-        ]
-    });
+    // A surface whose interpolation overflowed — two finite samples further
+    // apart than f64::MAX — is no surface: `None`, so the mapping falls to the
+    // next rung (recorded), never a triple with an inf edge the basis would
+    // persist as `null` (Codex I16).
+    let finite_triple = |ps: [f64; 3]| ps.iter().all(|p| p.is_finite()).then_some(ps);
+    let spread_ps = (n_spread >= MIN_ANCHOR_OBSERVATIONS)
+        .then(|| {
+            [
+                percentile(&spreads, 0.75), // bear
+                percentile(&spreads, 0.50), // base
+                percentile(&spreads, 0.25), // bull
+            ]
+        })
+        .and_then(finite_triple);
+    let raw_ps = (n_raw >= 1)
+        .then(|| {
+            [
+                percentile(&raws, 0.25), // bear
+                percentile(&raws, 0.50), // base
+                percentile(&raws, 0.75), // bull
+            ]
+        })
+        .and_then(finite_triple);
 
     let mut set = scenarios_from_surfaces(
         spot,
@@ -2132,10 +2173,18 @@ pub fn implied_expectations(
     if carry || multiples.iter().any(|m| !m.is_finite() || *m <= 0.0) {
         return None;
     }
+    // The inversion is unbounded where the pricing was not: a vanishing
+    // multiple keeps `driver × m` small while `spot / m` overflows, so the
+    // target gate never sees it — a non-finite driver or growth is no read,
+    // never an inf the audit would persist as `null` (Codex I16).
     let implied_drivers = multiples.map(|m| spot / m);
+    if implied_drivers.iter().any(|d| !d.is_finite()) {
+        return None;
+    }
     let implied_growth = trailing_print
         .filter(|t| *t > 0.0)
-        .map(|t| implied_drivers.map(|d| d / t - 1.0));
+        .map(|t| implied_drivers.map(|d| d / t - 1.0))
+        .filter(|g| g.iter().all(|x| x.is_finite()));
     Some(ImpliedExpectations {
         implied_drivers,
         implied_growth,
@@ -2485,7 +2534,8 @@ pub fn reanchor_scenarios(
 /// lower bound when volatility can't be computed. Shared by the stock and fund forms
 /// (`docs/portfolio-analysis.md` §Starting parameters).
 pub fn dispersion_floor(return_volatility: Option<f64>) -> f64 {
-    return_volatility
+    // `clamp` absorbs ±inf but passes NaN; a non-finite σ takes the lower bound.
+    finite(return_volatility)
         .map(|v| {
             (v * ANNUALIZATION_FACTOR * DISPERSION_FLOOR_VOL_SCALE)
                 .clamp(DISPERSION_FLOOR_MIN, DISPERSION_FLOOR_MAX)
@@ -2822,7 +2872,9 @@ pub fn scenario_targets_v2(
         read.drivers
     };
 
-    let forward_dividends = fin.ttm_dividends_per_share.unwrap_or(0.0);
+    // Finite by the FMP shaper's overflow rejection; held here for any other
+    // producer, since the basis persists it as a required float (Codex I16).
+    let forward_dividends = finite(fin.ttm_dividends_per_share).unwrap_or(0.0);
     let floor = dispersion_floor(m.return_volatility);
     let scenario = spread_anchored_scenarios(
         spot,
@@ -3527,14 +3579,29 @@ pub fn narrative_vs_reality(
         }
     };
 
-    let ratio = (reality > 0.0).then(|| expansion / reality);
+    // Both legs are quotients (the fallback's expansion a `powf`) over
+    // positive-only inputs, unbounded above: a feed-extreme print overflows
+    // one to inf. The read is then unreadable — a gap with its reason, never a
+    // non-finite leg the audit would persist as `null` (Codex I16).
+    if !(expansion.is_finite() && reality.is_finite()) {
+        return Err(
+            "a pace leg overflowed over a feed-extreme print — no finite read".to_string(),
+        );
+    }
+    // The classification reads the raw quotient: two finite legs can still
+    // overflow it, and an infinite ratio is expansion outrunning reality
+    // beyond any finite multiple — hype, never the justified branch a filtered
+    // `None` fell to (Codex I16, round 1). Only the persisted ratio is
+    // finite-or-absent.
+    let raw_ratio = (reality > 0.0).then(|| expansion / reality);
     let classification = if expansion < NARRATIVE_MIN_MULTIPLE_EXPANSION {
         NarrativeClass::Neutral
-    } else if reality <= 0.0 || ratio.is_some_and(|r| r > NARRATIVE_HYPE_RATIO) {
+    } else if reality <= 0.0 || raw_ratio.is_some_and(|r| r > NARRATIVE_HYPE_RATIO) {
         NarrativeClass::Hype
     } else {
         NarrativeClass::JustifiedExpensive
     };
+    let ratio = raw_ratio.filter(|r| r.is_finite());
     let matched_rule = (classification == NarrativeClass::Hype).then(|| {
         format!(
             "narrative-vs-reality hype: {} outran {} >{NARRATIVE_HYPE_RATIO}× (no \
@@ -3603,8 +3670,8 @@ pub fn tech_event_pre_flag(
     daily_return_volatility: Option<f64>,
 ) -> std::result::Result<TechEventPreFlag, String> {
     let vol = daily_return_volatility.ok_or("no realized-volatility read")?;
-    if vol <= 0.0 {
-        return Err("non-positive realized volatility".to_string());
+    if !(vol.is_finite() && vol > 0.0) {
+        return Err("non-positive or non-finite realized volatility".to_string());
     }
     let latest = holding_closes
         .last()
@@ -3638,6 +3705,11 @@ pub fn tech_event_pre_flag(
     }
     let relative_move = (latest.value / h0.value - 1.0) - (b1 / b0 - 1.0);
     let threshold = TECH_EVENT_SIGMA * vol * (sessions as f64).sqrt();
+    // Positive closes bound neither quotient: a subnormal anchor close
+    // overflows the move. Unevaluable, never a persisted inf (Codex I16).
+    if !(relative_move.is_finite() && threshold.is_finite()) {
+        return Err("non-finite sector-relative move over a feed-extreme close".to_string());
+    }
     Ok(TechEventPreFlag {
         fired: relative_move.abs() > threshold,
         relative_move,
@@ -4366,6 +4438,111 @@ mod tests {
             }
             other => panic!("expected the finite-target gate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn engine_metrics_over_feed_extreme_inputs_read_absent_never_non_finite() {
+        // Codex I16 (ruled 2026-08-29): an engine metric is a finite number or
+        // a gap. A subnormal close makes one period return inf and the σ NaN;
+        // a subnormal denominator overflows a ratio; `scale` would have
+        // clamped ±inf to a 0 / 100 sub-score and passed NaN into a required
+        // persisted float, and a crossing's `observed_value` is a bare `f64`.
+        assert_eq!(return_volatility(&[1e-310, 1.0, 1.0, 1.0]), None);
+        let fin = CompanyFinancials {
+            revenue: Some(f64::MAX),
+            revenue_prior: Some(1e-300),
+            net_income: Some(f64::MAX),
+            total_debt: Some(f64::MAX),
+            total_equity: Some(1e-300),
+            pe_ratio: Some(f64::INFINITY),
+            price_history: vec![1e-310, 1.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        let m = compute_metrics(&fin);
+        assert_eq!(m.revenue_growth, None, "{m:?}");
+        assert_eq!(m.debt_to_equity, None, "{m:?}");
+        assert_eq!(m.return_volatility, None, "{m:?}");
+        assert_eq!(m.pe_ratio, None, "{m:?}");
+        assert_eq!(m.net_margin, Some(1.0), "a finite ratio still reads: {m:?}");
+        assert_eq!(dispersion_floor(Some(f64::NAN)), DISPERSION_FLOOR_MIN);
+        // A ledger condition over a non-finite observation is unevaluable —
+        // never compared, never a persisted inf crossing.
+        let inf = ComputedMetrics {
+            ps_ratio: Some(f64::INFINITY),
+            ..Default::default()
+        };
+        let err = resolve_series(LedgerSeries::PsRatio, &inf, &strong()).unwrap_err();
+        assert!(err.contains("not a finite observation"), "{err}");
+    }
+
+    #[test]
+    fn a_percentile_surface_whose_interpolation_overflows_reads_no_surface() {
+        // Two finite samples further apart than f64::MAX overflow the
+        // interpolation to inf: the surface reads absent and the mapping falls
+        // to the recorded carry, never a triple with an inf edge the basis
+        // would persist as `null` (Codex I16).
+        let observations = [
+            AnchorObservation {
+                spread: None,
+                raw_multiple: -f64::MAX,
+            },
+            AnchorObservation {
+                spread: None,
+                raw_multiple: f64::MAX,
+            },
+        ];
+        let set = spread_anchored_scenarios(100.0, [5.0, 6.0, 7.0], &observations, 0.04, 0.0, 0.0);
+        assert_eq!(set.raw_percentiles, None, "{set:?}");
+        assert_eq!(set.spread_percentiles, None, "{set:?}");
+        assert!(set.current_multiple_carry, "{set:?}");
+        assert!(set.bear.is_finite() && set.base.is_finite() && set.bull.is_finite(), "{set:?}");
+    }
+
+    #[test]
+    fn implied_expectations_over_a_vanishing_multiple_read_none() {
+        // The inversion is unbounded where the pricing was not: driver × m
+        // stays small — the target gate passes — while spot / m overflows.
+        // No read, never an inf the audit would persist as `null` (Codex I16).
+        let observations = [AnchorObservation {
+            spread: None,
+            raw_multiple: 1e-300,
+        }];
+        let set = spread_anchored_scenarios(1e10, [1.0, 1.0, 1.0], &observations, 0.04, 0.0, 0.0);
+        assert!(set.bear.is_finite() && set.base.is_finite() && set.bull.is_finite(), "{set:?}");
+        assert_eq!(implied_expectations(1e10, &set, Some(1.0), "eps", true, 0.04), None);
+    }
+
+    #[test]
+    fn narrative_and_pre_flag_over_feed_extreme_prints_are_unreadable_never_non_finite() {
+        // Codex I16: the revision form's expansion leg overflows over a
+        // vanishing consensus mid beside a huge spot — a gap with its reason.
+        let mut fin = strong();
+        fin.consensus.as_mut().unwrap().eps_mid = Some(1e-300);
+        let err = narrative_vs_reality(&fin, 1e300, Some(1.0), Some(1.0), Some(30)).unwrap_err();
+        assert!(err.contains("overflowed"), "{err}");
+        // Both legs finite but their quotient not (Codex I16, round 1): a
+        // barely-positive revision beside a huge expansion is hype — the cap
+        // fires — with the ratio persisted absent, never the justified branch.
+        fin.consensus.as_mut().unwrap().eps_mid = Some(1.0 + f64::EPSILON);
+        let read = narrative_vs_reality(&fin, 1e300, Some(1.0), Some(1.0), Some(30)).unwrap();
+        assert!(read.expansion.is_finite() && read.reality > 0.0, "{read:?}");
+        assert_eq!(read.classification, NarrativeClass::Hype, "{read:?}");
+        assert!(read.hype_capped(), "{read:?}");
+        assert_eq!(read.ratio, None, "{read:?}");
+        // The pre-flag: an infinite σ is unevaluable, and so is a subnormal
+        // anchor close overflowing the sector-relative move.
+        let dv = |date: &str, value: f64| DatedValue {
+            date: date.to_string(),
+            value,
+        };
+        let closes = vec![dv("2026-01-02", 1e-310), dv("2026-01-05", 100.0)];
+        let bench = vec![dv("2026-01-02", 1.0), dv("2026-01-05", 1.0)];
+        let err = tech_event_pre_flag(&closes, &bench, "XLK", "2026-01-02", Some(f64::INFINITY))
+            .unwrap_err();
+        assert!(err.contains("non-finite"), "{err}");
+        let err =
+            tech_event_pre_flag(&closes, &bench, "XLK", "2026-01-02", Some(0.02)).unwrap_err();
+        assert!(err.contains("non-finite sector-relative move"), "{err}");
     }
 
     #[test]

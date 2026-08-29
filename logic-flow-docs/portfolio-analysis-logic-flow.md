@@ -284,6 +284,7 @@
   - Add signed cost-basis totals.
   - Add market values.
   - Determine the final net long or short side.
+  - A netted quantity, cost basis, or market value that does not finish finite fails the pull naming the symbol (`docs/schwab-integration.md` §What is pulled).
   - Preserve original rows for audit and display.
 
 - **Failure logic**
@@ -637,7 +638,7 @@ Computed before the grade for every stock and persisting even when the stock doe
   - `constrained`: runway < 12 months.
 
 - **Derived states** (computed only for an eligible overlay; each persists)
-  - **Execution read** — guidance-vs-actual misses, over higher-is-better operating metrics only. A guidance row and an actual pair only when their metric identity, units, issuer scope, and reporting period all match and the guidance is ex ante — published on or before the period end and strictly before the period's earliest actual, so a results release never supplies its own bound and a post-period preview never binds; the *bound* is the latest admissible revision's stated low (a range low winning over point guidance at the same date, then confidence), must be finite and positive, and a same-vintage conflict on either side drops the period (canonical: `docs/portfolio-analysis.md` §Starting parameters, the guidance vintage policy; each miss records the bound's and the actual's publication dates). A paired period *misses* when `(bound − actual) ÷ bound ≥ 5%`; `material_single_miss` when the newest comparable period misses by ≥ 20%; `repeated_miss` when ≥ 2 of one metric's latest four comparable periods miss (different metrics never combine, and two missed metrics in one period never count twice). [note: at this stage the read sees only carried prior observations; this run's research rows join at the Step-6e recompute.]
+  - **Execution read** — guidance-vs-actual misses, over higher-is-better operating metrics only. A guidance row and an actual pair only when their metric identity, units, issuer scope, and reporting period all match and the guidance is ex ante — published on or before the period end and strictly before the period's earliest actual, so a results release never supplies its own bound and a post-period preview never binds; the *bound* is the latest admissible revision's stated low (a range low winning over point guidance at the same date, then confidence), must be finite and positive, and a same-vintage conflict on either side drops the period (canonical: `docs/portfolio-analysis.md` §Starting parameters, the guidance vintage policy; each miss records the bound's and the actual's publication dates). A paired period *misses* when `(bound − actual) ÷ bound ≥ 5%`; `material_single_miss` when the newest comparable period misses by ≥ 20%; `repeated_miss` when ≥ 2 of one metric's latest four comparable periods miss (different metrics never combine, and two missed metrics in one period never count twice). An overflowed ratio is no miss, the period staying comparable. [note: at this stage the read sees only carried prior observations; this run's research rows join at the Step-6e recompute.]
   - **Economics deterioration** — recent two-quarter average gross margin non-positive **and** down ≥ 5 percentage points.
   - **Material dilution** — YoY diluted-share change ≥ +15%.
   - **Severe deterioration** — at least two of {repeated-or-material execution miss, constrained runway, economics deterioration, material dilution} hold, **and** at least one of those is the execution or the economics leg.
@@ -687,7 +688,7 @@ The letter’s three inputs (quality, valuation, risk), each on a 0–100 scale 
 
 #### Scenario targets (priced stocks)
 
-Bear / base / bull price targets — one-month and twelve-month — priced from a per-share driver and a rate-anchored multiple; they feed the return hurdle below. Computed before the letter is finalized; a stock with no admissible driver abstains here.
+Bear / base / bull price targets — one-month and twelve-month — priced from a per-share driver and a rate-anchored multiple; they feed the return hurdle below. Computed before the letter is finalized; a stock with no admissible driver abstains here. A target the arithmetic cannot finish as a finite number exits the holding as insufficient evidence, and every other derivation reads as a gap where its arithmetic does not finish finite (`docs/portfolio-analysis.md` §Evidence floor).
 
 - **Choose the driver** — the per-share fundamental the scenarios are priced from.
   - Inputs: consensus forward EPS, else consensus forward revenue per share (÷ diluted shares).
@@ -781,7 +782,7 @@ The alternative branch to the stock spine above; the fund engine makes the final
   - Inputs: per-sector P/E snapshots (blended across exchanges), the fund’s current sector weights, ~8–12 quarters of historical sector P/Es — each quarterly sample admitting only prints dated within its own quarter (after the prior quarter end, on or before its own), so one print backs at most one sample; a print whose date does not parse is inadmissible to every sample.
   - Equation:
     - Per sector: earnings yield = `1 ÷ P/E`.
-    - Composite earnings yield = `Σ(weightᵢ ÷ P/Eᵢ) ÷ Σ weightᵢ` over sectors with a usable P/E — renormalized over the **covered** weight; sectors without a usable P/E are skipped.
+    - Composite earnings yield = `Σ(weightᵢ ÷ P/Eᵢ) ÷ Σ weightᵢ` over sectors with a usable P/E — renormalized over the **covered** weight; sectors without a usable P/E are skipped. A usable print is finite, positive, within the plausible-aggregate ceiling, and served under the requested board — the shaper's rule (`docs/data-sources.md` §Financial Modeling Prep).
     - Coverage = the covered weight as an absolute share of the fund; **≥ 70% is required**, else the valuation is a gap (uncovered weight is reported, never averaged in as zero).
     - Valuation sub-score = the percentile rank of today’s composite yield within the same-weights-over-historical-multiples series = `(count of history ≤ today ÷ history length) × 100` (higher yield = cheaper = higher score).
     - [note: needs ≥ 8 history samples — distinct in-quarter observations by construction, since a sample admits only its own quarter's prints — each itself with ≥ 70% coverage.]
@@ -885,7 +886,7 @@ The inline gates referenced above, gathered — with each branch's requirements 
 - **Exposure-priced fund requires**
   - A usable current quote or NAV — an unusable market quote falls to a usable NAV rather than masking it.
   - `etf/info` and expense ratio.
-  - Usable sector and country weights.
+  - Usable sector and country weights — a row finite and within 0–100% as served, the adapter dropping any other (`docs/data-sources.md` §Financial Modeling Prep).
   - At least 70% valuation coverage.
   - At least one risk leg — volatility or drawdown (both absent → abstain).
   - At least eight constant-mix history samples, each on prints dated within its own quarter so one print backs at most one sample (fewer → abstain).
@@ -1389,7 +1390,7 @@ A descriptive, book-level summary of the finished run — for the results displa
 
 - **Calculations**
   - Verdict counts by disposition (graded, role-risk-only, not-rated, insufficient-evidence — role-risk-only kept separate from graded).
-  - Largest single-position weight and cash weight (descriptive reads only).
+  - Largest single-position weight and cash weight (descriptive reads only; both read zero over an unusable total or an overflowed quotient).
   - Positions closed since the prior run, acknowledged rather than dropped.
   - Run-level data-health read — target-provenance and degraded-input aggregates, the generation-health signals (context-pressure and output-length-stop), and the run's attention flag.
   - A deterministic one-line run overview string.
@@ -1406,7 +1407,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - Tag net alignment from the holdings diff — only for still-untagged episodes anchored to the immediately-prior run (that diff observed only that move); nothing is tagged on a first run.
   - Mature any window labels whose dates have arrived, including for symbols no longer held.
   - Each matured (scored) label measures, from split-adjusted daily closes: the price-only return (the always-present cross-entry common basis) and the maximum drawdown, plus — each recorded with a typed gap when its source is missing — the dividend-inclusive total return (the primary basis) and the price-only spreads vs the market (`^GSPC`) and the entry-stamped sector; on the 12-month window a confirmed ledger falsifier attached to its still-active episode (not one that landed post-maturity), whose bear-line basis resolves, additionally carries its signed trading-day lead time to the first close below that line, or `no-material-drawdown`.
-  - A failed price refresh leaves the label pending while inside the coverage grace; past the grace it closes as a typed unscorable label rather than staying pending. A failed dividend pull instead degrades to a price-only label, never blocking maturation.
+  - A failed price refresh leaves the label pending while inside the coverage grace; past the grace it closes as a typed unscorable label rather than staying pending. A failed dividend pull instead degrades to a price-only label, never blocking maturation. The series admits usable closes only; a covered window whose price arithmetic does not finish finite takes the same pending-then-typed-close path, and a benchmark leg that does not finish finite reads unavailable with its gap (`docs/portfolio-analysis.md` §Outcome learning).
   - Append or extend this run's decision episodes — the run's episode-creation step: open a new episode when a holding's recommendation state changed since the prior run (a verdict-branch flip or an action change), otherwise extend the still-active episode.
   - A holding's first analysis opens a debut episode; an abstention extends the standing episode without opening one; a reaffirmation after the episode has matured records nothing.
   - A thesis-change trigger is live off the attribution validator's audit — a resolved thesis-level external row or any labeled self-correction on a fresh pass; wording-only thesis edits never open an episode.
@@ -1484,7 +1485,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
   - The **run-summary listing** for the sidebar (columns only, never blobs).
   - The **latest standalone holdings snapshot**, when present — a separate single-row store distinct from the snapshot inside each run and never read by the job; when a run exists it feeds the dual-vintage comparison, and with no run yet it is the page body on its own.
   - The **latest quick-check state**, loaded alongside — the overlay that badges the latest live view (below), applied only when its swept run matches the rendered run.
-  - **As-built** an unparseable stored run costs only its own surface: the latest read skips it to the next-newest, an id fetch reads it as not-found, and the listing still emits its row marked **unreadable** with zeroed counts — never dropping the history listing or the next run's baseline.
+  - **As-built** an unparseable stored run costs only its own surface: the latest read skips it to the next-newest, an id fetch reads it as not-found, and the listing still emits its row marked **unreadable** with zeroed counts — never dropping the history listing or the next run's baseline. The write refuses a record that would not read back — naming the holding where the value sits in a per-holding record — so a non-finite required value fails the run rather than landing such a row (`docs/portfolio-analysis.md` §Failure posture).
 
 - **Per-holding display — priced branch** (the two arms in a paired side-by-side grid)
   - **Engine-baseline arm** — the letter sub-scores (quality / valuation / risk) plus a divider-separated **Setup** tile (the market-setup read, deliberately outside the letter), the engine conviction meter, the 1- and 12-month targets (base plus bear–bull band, each shown only when the engine authored it), the engine outlook (short / mid / long), the engine's own action, and a target-methodology reveal; the card-head letter is the engine (canonical) grade.
@@ -1638,7 +1639,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
   - Current positions from Schwab — the same holdings fetch the full run uses at Step 2.
 
 - **Logic**
-  - Normalize holdings by ticker — the same signed-quantity / cost-basis netting as the analysis run.
+  - Normalize holdings by ticker — the same signed-quantity / cost-basis netting as the analysis run. A netted sum that does not finish finite fails the pull naming the symbol, as in the run.
   - Persist a **standalone** pulled-at snapshot to its own single-row store — never read by the analysis job.
   - Compare symbol presence with the latest analysis for display tags — a **frontend, presence-only** comparison (new / no-longer-held); the backend compares nothing.
 

@@ -1929,7 +1929,16 @@ pub struct HoldingAudit {
 /// names each domain as enforced — a prompt-line change and an admission
 /// gate together, stamped so a pre-fix checkpoint cannot resume into rows
 /// the gate would reject.
-pub const PROMPT_VERSION: &str = "portfolio-v20";
+///
+/// `portfolio-v21`: the narrative-vs-reality render distinguishes a hype read
+/// whose ratio overflowed (a positive reality leg the expansion outran beyond
+/// any finite multiple — persisted with the ratio absent since the review's
+/// Codex I16) from one whose reality leg is non-positive, where the prompt
+/// had called both "reality flat or declining"; and a finite decimal leg
+/// whose ×100 overflows renders as the decimal ratio, never `inf%`. An
+/// edge-only render change, stamped on I12's precedent (Codex I16, round 2;
+/// ruled 2026-08-29).
+pub const PROMPT_VERSION: &str = "portfolio-v21";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

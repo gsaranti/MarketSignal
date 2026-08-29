@@ -682,14 +682,53 @@ pub fn latest_pull(conn: &Connection) -> Result<Option<HoldingsPull>> {
 /// `run_json`; `run_id` and `created_at` are projected into columns for listing and
 /// ordering. The unique `run_id` makes a re-insert of the same run a clean error
 /// rather than a silent duplicate.
+///
+/// The write validates before it lands: the serialized record is decoded back
+/// through its own type, and a record that would not read back — a non-finite
+/// required float serde wrote as `null` — is refused, the holding named where the
+/// value sits in a per-holding record, so the run fails under its hard persistence posture
+/// (`docs/portfolio-analysis.md` §Failure posture) instead of persisting a row
+/// every later read would loud-skip (the 2026-08-24 review's Codex I16, ruled
+/// 2026-08-29). The producers' finite-or-absent guards make this unreachable
+/// from the engine; the seam closes the class for whatever they miss.
 pub fn insert_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
     let run_json = serde_json::to_string(run)?;
+    if let Err(e) = serde_json::from_str::<PortfolioRun>(&run_json) {
+        let holding = unreadable_holding(run)
+            .map(|symbol| format!(" — holding {symbol}"))
+            .unwrap_or_default();
+        anyhow::bail!(
+            "portfolio run {} would not read back from its own record{holding}: {e}",
+            run.run_id
+        );
+    }
     conn.execute(
         "INSERT INTO portfolio_runs (run_id, created_at, run_json)
          VALUES (?1, ?2, ?3)",
         params![run.run_id, run.created_at, run_json],
     )?;
     Ok(())
+}
+
+/// The first holding whose audit or verdict does not survive its own JSON
+/// round-trip — the name [`insert_run`]'s refusal carries. `None` when the
+/// unreadable value sits outside the per-holding records.
+fn unreadable_holding(run: &PortfolioRun) -> Option<String> {
+    fn survives<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) -> bool {
+        serde_json::to_string(value)
+            .ok()
+            .is_some_and(|json| serde_json::from_str::<T>(&json).is_ok())
+    }
+    run.audit
+        .iter()
+        .find(|a| !survives(*a))
+        .map(|a| a.symbol.clone())
+        .or_else(|| {
+            run.verdicts
+                .iter()
+                .find(|v| !survives(*v))
+                .map(|v| v.symbol.clone())
+        })
 }
 
 /// The most recent run, or `None` before any exists. The prior run's verdicts
@@ -1119,6 +1158,129 @@ mod tests {
         insert_run(&conn, &run).unwrap();
         let back = latest_run(&conn).unwrap().unwrap();
         assert_eq!(back, run, "the whole run round-trips");
+    }
+
+    #[test]
+    fn serde_writes_a_non_finite_float_as_null_and_refuses_null_into_a_bare_f64() {
+        // The premise behind Codex I1 / I16, pinned rather than assumed: a
+        // non-finite `f64` serializes as `null`, `null` does not decode into a
+        // required `f64` (an `Option` reads it as `None`), and an out-of-range
+        // numeric literal is rejected at parse — so every JSON-number
+        // pass-through in the record is finite by the parser, and only the
+        // app's own arithmetic can produce a non-finite value.
+        assert_eq!(serde_json::to_string(&f64::INFINITY).unwrap(), "null");
+        assert_eq!(serde_json::to_string(&f64::NAN).unwrap(), "null");
+        assert!(serde_json::from_str::<f64>("null").is_err());
+        assert_eq!(serde_json::from_str::<Option<f64>>("null").unwrap(), None);
+        assert!(
+            serde_json::from_str::<f64>("1e999").is_err(),
+            "an out-of-range literal is rejected at parse, never read as inf"
+        );
+    }
+
+    #[test]
+    fn a_run_that_would_not_read_back_is_refused_at_the_write_naming_the_holding() {
+        // Codex I16 (ruled 2026-08-29): the write decodes its own record first.
+        // A non-finite required float is refused with the holding named — the
+        // run fails under its hard persistence posture — and no row lands, so
+        // the prior readable run stays the latest.
+        let conn = mem();
+        record_run(&conn, &sample_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
+        let mut poisoned = sample_run("run-poisoned", "2026-08-11T00:00:00Z");
+        poisoned.audit[0].quick_basis = Some(crate::portfolio::engine::QuickCheckBasis {
+            spot: 195.0,
+            drivers: [6.0, 7.0, 8.0],
+            spread_percentiles: None,
+            raw_percentiles: None,
+            forward_dividends: f64::INFINITY,
+            dispersion_floor: 0.05,
+            consensus_eps_mid: None,
+        });
+        let err = insert_run(&conn, &poisoned).unwrap_err().to_string();
+        assert!(
+            err.contains("would not read back") && err.contains("holding AAPL"),
+            "{err}"
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM portfolio_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "no unreadable row landed");
+        assert_eq!(latest_run(&conn).unwrap().unwrap().run_id, "run-good");
+    }
+
+    #[test]
+    fn a_run_built_over_feed_extreme_inputs_round_trips_through_the_store() {
+        // The regression Codex I16 asked for and the panic-posture slice
+        // declined for the targets alone: finite extremes through the real
+        // producers — every derivation reads absent where its arithmetic did
+        // not finish, nothing persists non-finite, and the run reads back
+        // equal. The store's own round-trip pin covers exact floats; this one
+        // covers the record built over hostile-but-finite feed values.
+        use crate::portfolio::engine::{
+            self, AnchorObservation, CompanyFinancials, DatedValue, QuickCheckBasis,
+        };
+        let conn = mem();
+        let fin = CompanyFinancials {
+            revenue: Some(f64::MAX),
+            revenue_prior: Some(1e-300),
+            total_debt: Some(f64::MAX),
+            total_equity: Some(1e-300),
+            // What an unguarded shaper sum would have handed over.
+            ttm_dividends_per_share: Some(f64::INFINITY),
+            price_history: vec![1e-310, 1.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        let metrics = engine::compute_metrics(&fin);
+        let forward_dividends = engine::finite(fin.ttm_dividends_per_share).unwrap_or(0.0);
+        let floor = engine::dispersion_floor(metrics.return_volatility);
+        let observations = [AnchorObservation {
+            spread: None,
+            raw_multiple: 1e-300,
+        }];
+        let set = engine::spread_anchored_scenarios(
+            1e10,
+            [1.0, 1.0, 1.0],
+            &observations,
+            0.04,
+            forward_dividends,
+            floor,
+        );
+        let dv = |date: &str, value: f64| DatedValue {
+            date: date.to_string(),
+            value,
+        };
+        let closes = vec![dv("2026-01-02", 1e-310), dv("2026-01-05", 100.0)];
+        let bench = vec![dv("2026-01-02", 1.0), dv("2026-01-05", 1.0)];
+
+        let mut run = sample_run("run-extreme", "2026-08-12T00:00:00Z");
+        let audit = &mut run.audit[0];
+        audit.metrics = metrics;
+        audit.quick_basis = Some(QuickCheckBasis {
+            spot: 1e10,
+            drivers: [1.0, 1.0, 1.0],
+            spread_percentiles: set.spread_percentiles,
+            raw_percentiles: set.raw_percentiles,
+            forward_dividends,
+            dispersion_floor: floor,
+            consensus_eps_mid: None,
+        });
+        audit.implied_expectations =
+            engine::implied_expectations(1e10, &set, Some(1.0), "eps", true, 0.04);
+        audit.narrative =
+            engine::narrative_vs_reality(&fin, 1e300, Some(1e-300), None, Some(30)).ok();
+        audit.tech_event_pre_flag =
+            engine::tech_event_pre_flag(&closes, &bench, "XLK", "2026-01-02", Some(0.02)).ok();
+
+        insert_run(&conn, &run).unwrap();
+        let back = latest_run(&conn).unwrap().unwrap();
+        assert_eq!(back, run, "the extreme-input run round-trips");
+        let a = &back.audit[0];
+        assert_eq!(a.metrics.revenue_growth, None, "{:?}", a.metrics);
+        assert_eq!(a.metrics.return_volatility, None, "{:?}", a.metrics);
+        assert_eq!(a.quick_basis.as_ref().unwrap().forward_dividends, 0.0);
+        assert_eq!(a.implied_expectations, None);
+        assert_eq!(a.narrative, None);
+        assert_eq!(a.tech_event_pre_flag, None);
     }
 
     #[test]

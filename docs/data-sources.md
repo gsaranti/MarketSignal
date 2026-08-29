@@ -77,9 +77,17 @@ The dated EOD closes, the news dates, the per-symbol earnings rows, the dividend
 A row whose date does not parse as a calendar date is unreadable and dropped.
 A served array with no readable row reads malformed.
 The dividend windower is stricter: it parses every row's date and rejects the whole body on an undatable one.
+It rejects a body whose in-window amounts sum past a finite number the same way, so an overflowed trailing sum lands as the recorded dividends gap and a zero leg rather than as a figure (ruled 2026-08-29 off the 2026-08-24 review's Codex I16).
 The quarterly statement rows' period and filing dates ride this rule, so the TTM basis's newest-first order and the restatement tie-break read calendar order (the 2026-08-24 review's Priority-1 minor).
 The consensus read orders its forward rows on parsed dates and keeps the near row's period as served — a label, never compared.
 The sector-P/E snapshot and history rows share one shaper, so a snapshot row without a datable date drops as well.
+That shaper holds the report adapter's integrity contract as well (ruled 2026-08-29 off the review's Codex I9).
+Every row's exchange must be present and equal to the board the call was pinned to, and a row served under another board — or without one — reads the whole body malformed, the served board named.
+A sector-P/E print is usable only when finite, positive, and within the plausible-aggregate ceiling the report's sector-P/E adapter applies (`SECTOR_PE_MAX`, calibrated in code off the live distribution probe), and an out-of-band print is dropped like an unreadable row.
+A fund weighting row (`etf/sector-weightings`, `etf/country-weightings`) is usable only when its served percent is finite and within 0–100, the endpoints included (ruled 2026-08-29 off the review's Codex I7).
+Any other weighting row is unreadable and dropped.
+A body with some rows dropped keeps its `ok` tracker row — every shaper's posture — and only an all-unreadable body reads malformed.
+A dated-EOD close is usable only when finite and strictly positive — the quote's usability rule applied at the EOD parse, canonical at [portfolio-analysis.md §Evidence floor](portfolio-analysis.md#evidence-floor) — and any other row is unreadable and dropped.
 The fund composite-yield history compares those dates as parsed calendar dates, never as text ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)).
 The family was the as-built exception, recorded off the statement-date slice's Codex round, until the large-scale review's Codex I2 and I14 closed it (2026-08-28).
 

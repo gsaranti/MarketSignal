@@ -71,9 +71,16 @@ impl Holdings {
     ///
     /// Idempotent: a snapshot that already carries source rows is already normalized
     /// and is returned unchanged, so a re-normalization can never lose the raw rows.
-    pub fn normalized(mut self) -> Holdings {
+    ///
+    /// The lots are finite by the parser; their sums are not. A netted quantity,
+    /// cost basis, or market value that does not finish as a finite number is
+    /// `Err` naming the symbol — the Step-2 pull fails before any per-holding
+    /// work, rather than the run refusing at persist hours later when the
+    /// required float on its holdings would not read back (the 2026-08-24
+    /// review's Codex I16, its reviewer round; ruled 2026-08-29).
+    pub fn normalized(mut self) -> Result<Holdings> {
         if !self.source_rows.is_empty() {
-            return self;
+            return Ok(self);
         }
         let raw = std::mem::take(&mut self.positions);
         let mut order: Vec<String> = Vec::new();
@@ -97,12 +104,31 @@ impl Holdings {
                 }
             }
         }
+        for key in &order {
+            let p = &merged[key];
+            if !(p.quantity.is_finite() && p.cost_basis.is_finite() && p.market_value.is_finite()) {
+                anyhow::bail!(
+                    "holdings normalization: {key}'s netted quantity / cost basis / market value \
+                     did not finish as a finite number — the lots' sums overflowed"
+                );
+            }
+        }
+        // The book's own sums — cash across accounts and the account total the
+        // live adapter derives from every position plus cash — are as
+        // unbounded as a lot's, and persist on the run's holdings and the
+        // standalone snapshot as required floats (Codex I16, round 1).
+        if !(self.cash.is_finite() && self.account_total.is_finite()) {
+            anyhow::bail!(
+                "holdings normalization: the book's summed cash / account total did not finish \
+                 as a finite number — the accounts' sums overflowed"
+            );
+        }
         self.positions = order
             .into_iter()
             .map(|k| merged.remove(&k).expect("every ordered key was inserted"))
             .collect();
         self.source_rows = raw;
-        self
+        Ok(self)
     }
 }
 
@@ -386,6 +412,36 @@ mod tests {
     }
 
     #[test]
+    fn normalization_refuses_a_netted_sum_that_is_not_finite() {
+        // Codex I16, reviewer round (ruled 2026-08-29): lots are parser-finite,
+        // their sums are not — two extreme lots overflow the netted market
+        // value, which persists on the run's holdings as a required float. The
+        // pull fails naming the symbol before any per-holding work, rather than
+        // the run refusing at persist hours later.
+        let err = snapshot(vec![
+            row("AAPL", 1.0, 1.0, f64::MAX),
+            row("aapl", 1.0, 1.0, f64::MAX),
+        ])
+        .normalized()
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("AAPL") && err.contains("not finish as a finite number"),
+            "{err}"
+        );
+        // The book's sums too (Codex I16, round 1): every position finite, the
+        // summed cash or the derived account total not.
+        let book = Holdings {
+            positions: vec![row("AAPL", 1.0, 1.0, 1.0)],
+            cash: f64::MAX,
+            account_total: f64::INFINITY,
+            source_rows: vec![],
+        };
+        let err = book.normalized().unwrap_err().to_string();
+        assert!(err.contains("cash / account total"), "{err}");
+    }
+
+    #[test]
     fn normalization_nets_same_symbol_rows_across_accounts() {
         // Two accounts each hold AAPL: quantities, cost-basis totals, and market
         // values each sum — never a share-weighted average price.
@@ -394,7 +450,7 @@ mod tests {
             row("MSFT", 10.0, 3_000.0, 4_200.0),
             row("aapl", 50.0, 8_000.0, 9_750.0),
         ])
-        .normalized();
+        .normalized().unwrap();
         assert_eq!(h.positions.len(), 2, "same-symbol rows merge case-insensitively");
         let aapl = &h.positions[0];
         assert_eq!(aapl.symbol, "AAPL");
@@ -414,7 +470,7 @@ mod tests {
             row("XYZ", 100.0, 10_000.0, 12_000.0),
             row("XYZ", -140.0, -14_000.0, -16_800.0),
         ])
-        .normalized();
+        .normalized().unwrap();
         assert_eq!(h.positions.len(), 1);
         let net = &h.positions[0];
         assert_eq!(net.quantity, -40.0);
@@ -431,7 +487,7 @@ mod tests {
             row("HEDG", 100.0, 9_000.0, 11_000.0),
             row("HEDG", -100.0, -10_000.0, -11_000.0),
         ])
-        .normalized();
+        .normalized().unwrap();
         let net = &h.positions[0];
         assert_eq!(net.quantity, 0.0);
         assert_eq!(net.market_value - net.cost_basis, 1_000.0);
@@ -443,8 +499,8 @@ mod tests {
             row("AAPL", 100.0, 14_000.0, 19_500.0),
             row("MSFT", 10.0, 3_000.0, 4_200.0),
         ])
-        .normalized();
-        let twice = once.clone().normalized();
+        .normalized().unwrap();
+        let twice = once.clone().normalized().unwrap();
         assert_eq!(once, twice, "re-normalizing an already-normalized snapshot is a no-op");
         assert_eq!(once.positions.len(), 2);
         assert_eq!(once.account_total, 23_700.0);

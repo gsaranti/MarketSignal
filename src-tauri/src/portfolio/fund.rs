@@ -743,7 +743,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
 
     let vol = per_period_volatility(fin);
     let annual_vol = vol.map(|v| v * 15.87);
-    let drawdown = engine::max_drawdown(&fin.daily_closes, &fin.price_history);
+    // Finite-or-absent like every engine metric (Codex I16): the risk leg
+    // scales it into a required sub-score.
+    let drawdown = engine::finite(engine::max_drawdown(&fin.daily_closes, &fin.price_history));
 
     // A structurally unpriceable class takes the typed role / risk readout — never
     // `insufficient-evidence` (the evidence isn't deficient; the class is).
@@ -914,7 +916,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             raw_multiple: 1.0 / h.value,
         })
         .collect();
-    let distributions = fin.ttm_dividends_per_share.unwrap_or(0.0);
+    // Finite by the FMP shaper's overflow rejection; held here for any other
+    // producer, since the basis persists it as a required float (Codex I16).
+    let distributions = engine::finite(fin.ttm_dividends_per_share).unwrap_or(0.0);
     let floor = engine::dispersion_floor(vol);
     let scenario = engine::spread_anchored_scenarios(
         spot,
@@ -1068,9 +1072,13 @@ pub struct FundExposureBasis {
 /// side), so the two compare like with like.
 pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
     let classification = classify(fund);
+    // A non-finite weight is not a weight (the adapter drops such rows; this
+    // holds for any other producer) — it persists on the basis as a required
+    // float, so it never enters the comparison (Codex I7 / I16).
     let top_sector = fund
         .sector_weights
         .iter()
+        .filter(|(_, w)| w.is_finite())
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .cloned();
     FundExposureBasis {
@@ -1084,7 +1092,10 @@ pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
 
 /// The top exposure weights for the readout's tilt line, largest first, capped at 5.
 fn top_weights(weights: &[(String, f64)]) -> Vec<(String, f64)> {
-    let mut sorted = weights.to_vec();
+    // Same rule as `exposure_basis`: a non-finite weight never reaches the
+    // readout's persisted tilt (Codex I7 / I16).
+    let mut sorted: Vec<(String, f64)> =
+        weights.iter().filter(|(_, w)| w.is_finite()).cloned().collect();
     sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     sorted.truncate(5);
     sorted
@@ -1455,6 +1466,21 @@ mod tests {
         let mut ultra_long = fund();
         ultra_long.name = Some("ProShares Ultra S&P500".to_string());
         assert_eq!(classify(&ultra_long).class, FundStrategyClass::LeveragedInverse);
+    }
+
+    #[test]
+    fn a_non_finite_weight_never_reaches_the_tilt_or_the_exposure_basis() {
+        // Codex I7 / I16: the adapter drops such rows; the engine holds the
+        // same line for any other producer, since both the readout's tilt and
+        // the exposure basis persist the weight as a required float.
+        let mut f = fund();
+        f.sector_weights = vec![
+            ("Technology".into(), f64::NAN),
+            ("Energy".into(), 0.2),
+            ("Utilities".into(), f64::INFINITY),
+        ];
+        assert_eq!(top_weights(&f.sector_weights), vec![("Energy".to_string(), 0.2)]);
+        assert_eq!(exposure_basis(&f).top_sector, Some(("Energy".to_string(), 0.2)));
     }
 
     #[test]
