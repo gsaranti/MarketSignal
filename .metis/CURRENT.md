@@ -2,66 +2,67 @@
 
 ## What happened
 
-**Group 2 (Codex I18 ruled → I17) landed** — `5c2195a`, pushed; the record's
-§I17 / §I18 carry the rulings, resolutions, one reviewer round
-(approve-with-nits, three nits folded in) and two Codex rounds. **I18 ruled
-(b):** the stamp axes are the resume contract — a slice that changes what a
-completed holding's verdict or audit means moves the axis it changed; a
-rebuild moving none resumes, restored holdings carrying pre-change behaviour;
-**no build identity** (declined: `CARGO_PKG_VERSION` is frozen by the
-no-release rule, a `build.rs` hash is blind to uncommitted edits, and an
-exe-mtime probe would refuse the fix → rebuild → resume recovery the big run
-may need). A **sixth stamp axis** joined: `store::CHECKPOINT_FORMAT_VERSION`
-(`checkpoint-v2`; a pre-stamp header decodes as `checkpoint-v1`) for the
-trail's own shape — the loader returns such a header alone, rows unread, and
-the gate refuses with its reason (Codex round 1's fold-in). **I17:**
-deep-history and benchmark health ride each checkpoint row
-(`store::HoldingHealth`), the counts rebuilt from rows through
-`health_counts`; the accumulators keep only the three keyed maps. None of the
-five semantic axes moved. BUILD §Seams gained the constant and the
-resume-contract sentence, §What remains item 1 reads three groups remaining,
-and INDEX gained the checkpoint-trail resume-contract row.
+**Group 3 (Codex I19 ruled → I8 + I10 + I12) landed** — `2c35dff`, pushed;
+the record's §I8 / §I10 / §I12 / §I19 carry the rulings, resolutions, one
+reviewer round (approve-with-nits, four of five nits folded in) and seven
+Codex rounds. **I19 ruled (2):** the period-word guard — a value that reads
+as a 1900–2099 year printed without a thousands separator, right after
+`for / in / of / by / through / fiscal / fy` (the alphabetic run immediately
+left of the digits), rejects; a guidance range rejects when both endpoints
+read so and the word precedes the left one; a real count in that band after
+such a word is the accepted loss; the negative lexicon **declined**; the
+competing-noun shape stays with the persisted-excerpt audit and the stem
+table's post-run calibration. **I8:** the prompt reads `fund::us_share`
+(now `pub`), the guard's own read. **I10:** the one-month methodology line
+in the prompt and the card's reveal, the spec fixture real. **I12:**
+`fmt_crossing_pair` — both crossing sites, one comparison-safe precision
+whose invariant is *the rendered pair, parsed back, orders as the values
+do*, a round-trip fallback past ten places. Only `PROMPT_VERSION` moved →
+`portfolio-v22`. **New I20** (ruled at its addition off Codex round 1's P1:
+attribute, never re-filter — each accepted observation row records the
+prompt stamp it was admitted under; no serde default) queued as its own
+slice. Codex rounds 2–7 were all that one formatter's invariant being stated
+loosely then tightened — **state a render's invariant as a checkable
+property before the first Codex round.** BUILD's observation bullet and
+§What remains item 1 updated at session-end.
 
 ## Current state
 
-Nothing in flight; `main` at the session-end commit atop `5c2195a`, tree
-clean, pushed. Queue ahead of the run, in order (record §Disposition): **(3)
-I8 + I10 + I12, I19 ruled at the top** — the prompt renders under one bump,
-`portfolio-v22`; **(4) I11 + I13** — continuity-attribution mirrors; **(5)
-I15 ruled at its plan (wire vs retire) + §A4 seed edge**. Carried untouched
+Nothing in flight; `main` at the session-end commit atop `2c35dff`, tree
+clean, pushed. Queue ahead of the run (record §Disposition): **(4) I11 +
+I13** — continuity-attribution mirrors of the grade-version and flow-basis
+gates; **(5) I15 ruled at its plan (wire vs retire) + §A4 seed edge**; **I20
+its own slice**, placement and stamp axis at its plan. Carried untouched
 (unchanged): the cloud report job's unguarded `run_job` seam; the negative
 composite yield; `progress.rs`'s poisonable terminal-leg locks; the `ok`
 tracker row's dropped-count detail; `trade-opportunities-logic-flow.md:397`
-"never sized"; `/api/tags` probes on the 600 s backstop; seed passes the whole
-prior ledger per topic; 6g qualitative trips un-trip unless re-researched; an
-IPv6-loopback wire test. Watch set: records stamp `portfolio-v21`; the
-`model arm value off its declared domain` retry class is a watched read.
-Named residuals: FY periods normalize to 12-31 (I4); the one-month
-methodology reaches neither model nor UI (I10, group 3); the I5 off-scale tag
-survives only for a finite positive leg whose move from spot overflows; a
-resume restoring a poisoned audit fails at persist the same way (I16, bounded
-by the 48 h window); `ScenarioSet.raw_observations` keeps its count beside a
-`None` surface (cosmetic, accepted).
+"never sized"; `/api/tags` probes on the 600 s backstop; seed passes the
+whole prior ledger per topic; 6g qualitative trips un-trip unless
+re-researched; an IPv6-loopback wire test. Watch set: records stamp
+`portfolio-v22`; the `model arm value off its declared domain` retry class
+is a watched read. Named residuals: FY periods normalize to 12-31 (I4); the
+I5 off-scale tag survives only for a finite positive leg whose move from
+spot overflows; a resume restoring a poisoned audit fails at persist the
+same way (I16); `ScenarioSet.raw_observations` keeps its count beside a
+`None` surface (cosmetic); I19's word list misses `for the year 2025`, `in
+early 2025`, `by year-end 2025`, `for CY2025` (calibration candidates, off
+the run); the crossing render promises order, never distance.
 
 ## Open questions
 
-- None. (The INDEX-row question closed: one row, "Checkpoint trail resume
-  contract and format stamp", beside the checkpoint/resume row under §Shared
-  across both jobs — the record's §I18 deferral is discharged.)
+- I20's placement (before group 4, between, or after group 5) and which axis
+  its row-shape change moves — the prompt stamp on I3's `portfolio-v17`
+  precedent, or the checkpoint format stamp on §I18's contract — both at its
+  plan, user-ruled.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` **group 3: I19 ruled at the
-top → I8 + I10 + I12** — read §I8, §I10, §I12 and §I19 in the record first;
-present I19's three answers (a negative lexicon of competing financial nouns;
-a period-word guard on a 1900–2099 value after "for / in / of / by / through /
-fiscal"; leave both shapes to the persisted-excerpt audit and calibrate the
-stem table off the run) with a recommendation, then plan the three renders
-under one `PROMPT_VERSION` bump to `portfolio-v22`, any I19 guard riding it.
-Keep the loop per group, record every reviewer and Codex round, sweep
-`logic-flow-docs/` mirrors, and ask of every fix — and again after any
-review-round fold-in — what stamp it moves across the axes (prompt content
-`portfolio-v21`, grade band, stored-target basis, floor rule
-`evidence-floor-v4`, the trail's format `checkpoint-v2`; the overlay stamp
-`pre-profit-v3`). Do not launch or propose the big run — the user names that
-session.
+`/metis-session-start`, then `/metis-plan-task` **group 4: I11 + I13** —
+read §I11 and §I13 in the record first, plan both under one code locus and
+one stamp axis, and ask of each fix — and again after any review-round
+fold-in — what stamp it moves (prompt `portfolio-v22`, grade `grade-v2.2`,
+targets `targets-v5`, floor `evidence-floor-v4`, format `checkpoint-v2`;
+overlay `pre-profit-v3`). If the user prefers I20 first, its plan settles
+its placement and axis. Keep the loop per group, record every reviewer and
+Codex round, sweep `logic-flow-docs/` mirrors. Do not launch or propose the
+big run — the user names that session.

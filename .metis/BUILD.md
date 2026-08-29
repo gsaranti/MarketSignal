@@ -537,10 +537,15 @@ Each is easy to break by accident, so a plan should say how it honors them:
   to another clause's number. The filter is a syntactic admission test that
   cannot tell what the one number it admits means, and it loses an
   untrimmable row rather than admitting a wrong one; the contract rides the
-  prompt stamp (`portfolio::PROMPT_VERSION`), and its residual is the
-  review's queued I19 (ruled 2026-08-28 off Codex I3 across five Codex
-  rounds, the semantic classifiers of the first two rounds each leaking by
-  ordering; canonical at `docs/portfolio-workflow.md §Step 6e`).
+  prompt stamp (`portfolio::PROMPT_VERSION`) (ruled 2026-08-28 off Codex I3
+  across five Codex rounds, the semantic classifiers of the first two rounds
+  each leaking by ordering). One residual shape is closed syntactically — a
+  value that is itself the period, a 1900–2099 year printed without a
+  thousands separator right after `for / in / of / by / through / fiscal /
+  fy`, rejects — while the competing-noun shape stays with the persisted
+  excerpt for audit and the stem table's post-run calibration, a negative
+  lexicon declined (ruled 2026-08-29 off the review's I19; canonical at
+  `docs/portfolio-workflow.md §Step 6e`).
 
 ### What each built slice left for the next
 
@@ -694,12 +699,12 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I8,
-   I10–I13, I15 and I19 (I1–I5 and I14 resolved 2026-08-28, I6, I7, I9,
-   I16, I17 and I18 2026-08-29; I19 a ruling item) and the §A4 seed edge sit
-   ahead of the run in the remaining three of five groups cut on one code
-   locus and one stamp axis (ruled 2026-08-29; the record's §Disposition
-   owns the grouping);
+   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I11, I13,
+   I15 and I20 (I1–I5 and I14 resolved 2026-08-28, I6–I10, I12 and I16–I19
+   2026-08-29; I20 ruled at its addition) and the §A4 seed edge sit ahead of
+   the run in the remaining two of five groups cut on one code locus and one
+   stamp axis, I20 its own slice (ruled 2026-08-29; the record's
+   §Disposition owns the grouping);
    and the user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
