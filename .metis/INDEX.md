@@ -195,6 +195,8 @@ build status lives in `BUILD.md`.*
 - Selective re-analysis + mixed-vintage safety — portfolio-analysis.md §Triggering; portfolio-workflow.md §Step 6, §Step 7
 - Evidence events — portfolio-analysis.md §Starting parameters
 - Portfolio pre-profit execution / financing overlay — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g; data-sources.md §Portfolio Analysis — endpoint surface; storage.md §Local Analysis Suite Storage
+- Pre-profit observation source excerpt (the §Step 6e statement is canonical) — portfolio-workflow.md §Step 6e, §Step 6d; portfolio-analysis.md §Starting parameters; storage.md §Local Analysis Suite Storage
+- Guidance vintage policy (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6d, §Step 6e; storage.md §Local Analysis Suite Storage
 - Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 7; storage.md §Local Analysis Suite Storage
 - Portfolio hard-forensic outcome — portfolio-analysis.md §Portfolio action, §Starting parameters; portfolio-workflow.md §Step 6g; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
 - Narrative-vs-reality read — Portfolio form (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6b, §Step 6f, §Step 6g; trade-opportunities.md §The two non-negotiables; storage.md §Local Analysis Suite Storage
@@ -211,6 +213,7 @@ build status lives in `BUILD.md`.*
 - Fund path — portfolio-analysis.md §Asset eligibility
 - Fund strategy classification & routing — portfolio-analysis.md §Asset eligibility; portfolio-workflow.md §Step 3, §Step 6b
 - Closed-end fund leg — detection and the price-vs-NAV read (the §Asset eligibility statement is canonical) — portfolio-analysis.md §Asset eligibility, §Evidence floor; portfolio-workflow.md §Step 3, §Step 6a; data-sources.md §Portfolio Analysis — endpoint surface
+- Fund history in-quarter sample admission (the §Asset eligibility statement is canonical) — portfolio-analysis.md §Asset eligibility, §Evidence floor
 - Listing-resolution guard — portfolio-analysis.md §Asset eligibility, §Starting parameters; portfolio-workflow.md §Step 3, §Step 6a
 - Quote / NAV usability floor and the evidence-floor version stamp (the §Evidence floor statement is canonical) — portfolio-analysis.md §Evidence floor, §Failure posture; storage.md §Local Analysis Suite Storage
 - House-view freshness gate — portfolio-workflow.md §Step 5
@@ -334,4 +337,4 @@ the run's own dated record follows it.*
 - Trade Opportunities documentation audit — the 28 findings, their verification verdicts, seven rulings, dispositions, and two review rounds — verification/2026-08-19-trade-opportunities-documentation-audit.md; BUILD.md §What remains
 - Fund depth — the four rulings, the CEF probe findings, the built leg, and six review rounds — verification/2026-08-21-fund-depth-rulings.md; BUILD.md §What remains (Built)
 - Research-loop slice — the eight review rounds, the fix inventory, and the three 2026-08-24 channel rulings — verification/2026-08-24-research-loop-rulings.md; BUILD.md §What remains (Built)
-- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I18 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains
+- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I19 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains
