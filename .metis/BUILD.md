@@ -688,7 +688,9 @@ every stacked runtime confirmation at once.
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
    posture) and the Priority-1/-2/-3 minors are resolved; Codex's I7–I13 and
    I15–I19 (I1–I5 and I14 resolved 2026-08-28, I6 2026-08-29; I18 and I19
-   ruling items) and the §A4 seed edge sit ahead of the run, one finding per slice;
+   ruling items) and the §A4 seed edge sit ahead of the run in five groups
+   cut on one code locus and one stamp axis (ruled 2026-08-29; the record's
+   §Disposition owns the grouping);
    and the user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
