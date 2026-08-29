@@ -424,7 +424,8 @@ BUILD cites version constants rather than duplicating their current values,
 so this brief cannot go stale as they move:
 `portfolio::PROMPT_VERSION`, `engine::GRADE_PARAMETER_VERSION`,
 `engine::SCENARIO_TARGET_PARAMETER_VERSION`,
-`pre_profit::PRE_PROFIT_PARAMETER_VERSION` and `portability::FORMAT_VERSION`.
+`pre_profit::PRE_PROFIT_PARAMETER_VERSION`, `engine::EVIDENCE_FLOOR_VERSION`
+and `portability::FORMAT_VERSION`.
 Persisted records carry the stamp they were written under, so a recalibration
 stays attributable and old rows never silently re-grade.
 
@@ -506,6 +507,16 @@ Each is easy to break by accident, so a plan should say how it honors them:
   generic "letters can move" row is citable evidence the validator accepts
   (ruled 2026-08-27, off the fund-momentum slice's Codex rounds; canonical at
   `docs/portfolio-analysis.md §Starting parameters`).
+- **A price or NAV is usable only when finite and strictly positive.** The
+  evidence floor tests usability, never presence — at the FMP quote parse
+  (the one seam every quote consumer rides, the quick check's price refresh
+  and the commodity quote included) and again at both engine floors, an
+  unusable fund quote falling to a usable NAV — and the floor rule is
+  stamped (`engine::EVIDENCE_FLOOR_VERSION`) on the checkpoint header and
+  every audit record, so a resume never crosses a floor-rule change and a
+  pre-stamp record reads as the presence floor (ruled 2026-08-28 off the
+  review's Codex I1; canonical at `docs/portfolio-analysis.md §Evidence
+  floor`).
 
 ### What each built slice left for the next
 
@@ -659,9 +670,10 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I1–I17 and
-   the §A4 seed edge sit ahead of the run, one finding per slice; and the
-   user names the launch session at its start. Its checklist is
+   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I2–I18 (I1
+   resolved 2026-08-28; I18 a ruling item) and the §A4 seed edge sit ahead
+   of the run, one finding per slice; and the user names the launch session
+   at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
    shape 2026-08-18** (construction / lean / sizing watches removed, the

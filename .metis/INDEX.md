@@ -212,6 +212,7 @@ build status lives in `BUILD.md`.*
 - Fund strategy classification & routing — portfolio-analysis.md §Asset eligibility; portfolio-workflow.md §Step 3, §Step 6b
 - Closed-end fund leg — detection and the price-vs-NAV read (the §Asset eligibility statement is canonical) — portfolio-analysis.md §Asset eligibility, §Evidence floor; portfolio-workflow.md §Step 3, §Step 6a; data-sources.md §Portfolio Analysis — endpoint surface
 - Listing-resolution guard — portfolio-analysis.md §Asset eligibility, §Starting parameters; portfolio-workflow.md §Step 3, §Step 6a
+- Quote / NAV usability floor and the evidence-floor version stamp (the §Evidence floor statement is canonical) — portfolio-analysis.md §Evidence floor, §Failure posture; storage.md §Local Analysis Suite Storage
 - House-view freshness gate — portfolio-workflow.md §Step 5
 - Post-research target refinement — shadow mode (the §Step 6e statement is canonical) — portfolio-workflow.md §Step 6e; portfolio-analysis.md §The per-holding pipeline, §The holding verdict; trade-opportunities-workflow.md §Step 5f
 - Research-fed fraud claim — advisory (the §Step 5c statement is canonical) — trade-opportunities-workflow.md §Step 5c; portfolio-workflow.md §Step 6d, §Step 6g; portfolio-analysis.md §Starting parameters; trade-opportunities.md §Starting parameters
@@ -333,4 +334,4 @@ the run's own dated record follows it.*
 - Trade Opportunities documentation audit — the 28 findings, their verification verdicts, seven rulings, dispositions, and two review rounds — verification/2026-08-19-trade-opportunities-documentation-audit.md; BUILD.md §What remains
 - Fund depth — the four rulings, the CEF probe findings, the built leg, and six review rounds — verification/2026-08-21-fund-depth-rulings.md; BUILD.md §What remains (Built)
 - Research-loop slice — the eight review rounds, the fix inventory, and the three 2026-08-24 channel rulings — verification/2026-08-24-research-loop-rulings.md; BUILD.md §What remains (Built)
-- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I17 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains
+- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I18 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains
