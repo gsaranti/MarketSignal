@@ -46,10 +46,11 @@ positive leg whose move from spot overflows the percentage arithmetic.
 
 ## Open questions
 
-- A §Standing constraints bullet for the model-arm gate — any future model-arm
-  numeric field (Trade Opportunities' when built) must route through
-  `validate_model_arm` — was surfaced at session end but not written, per
-  "only what is actually needed"; decide whether BUILD should carry it.
+- None. The session-end question — whether BUILD should carry a standing
+  constraint for the model-arm gate — closed in the docs instead (`3db2c0e`):
+  the canonical at `portfolio-analysis.md` §The holding verdict now states the
+  rule generally (every model-arm numeric field is gated at decode; a slice
+  adding one extends the gate), so no BUILD bullet is needed.
 
 ## Where to start
 
