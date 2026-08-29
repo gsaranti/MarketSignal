@@ -530,6 +530,7 @@ I2 and I14 are resolved together (2026-08-28; the rulings and resolutions are re
 I3 is resolved (2026-08-28; the rulings and resolution are recorded under §I3), leaving Codex I4–I13, I15–I18 and the §A4 seed edge.
 I19, added 2026-08-28 off I3's Codex round 2 and re-cut off its rounds 3 and 4 — the one-fact contract's single-number ambiguity — joins the queue as a ruling item on the same terms.
 I4 is resolved (2026-08-28; the rulings and resolution are recorded under §I4), leaving Codex I5–I13, I15–I19 and the §A4 seed edge.
+I5 is resolved (2026-08-28; the rulings and resolution are recorded under §I5), leaving Codex I6–I13, I15–I19 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -711,6 +712,29 @@ It never reads `graded.model_view.price_targets` on the action path.
 This means the model can author a materially different forward target band in the intrinsic call, but its own subsequent action call cannot use that numeric forecast; only its derived letter survives into the decision.
 The omission conflicts with the canonical statement that price targets exist in both arms and that target-implied upside / downside is in the action evidence set (`docs/portfolio-analysis.md:320-333`; `docs/portfolio-workflow.md:353-355`).
 The logic-flow “exact inputs” list mirrors the implementation's ambiguity by naming one implied band after listing both arms (`logic-flow-docs/portfolio-analysis-logic-flow.md:1286-1291`) and should identify the arm or require both.
+
+Ruled 2026-08-28: the action prompt renders both horizons for both arms — the engine's and the model's one-month and twelve-month implied bear/base/bull moves against spot; the one-month leg's methodology stays I10's.
+Ruled 2026-08-28: an off-domain model leg (non-finite or non-positive) prints as authored with an `(off-scale as authored)` tag in place of a percentage, and a band authored bear above bull carries `(band inverted as authored)` — the frontend's posture, never reordered, never dropped; I6 owns the upstream domain validation.
+Ruled 2026-08-28: one line per arm and per horizon — the engine's lines keep their label and the provenance sentence weighs the engine's moves alone, the model's lines are labelled as its own band authored at interpretation, unvalidated, with no provenance to discount, and the system prompt names both arms and how each is weighed.
+Ruled 2026-08-28: `portfolio::PROMPT_VERSION` moves to `portfolio-v19` and no other stamp moves, both app stores' checkpoint headers read by copy-out before the bump.
+Ruled 2026-08-28: the engine's one-month line renders `(gap)` where the leg is `None`.
+Ruled 2026-08-28: INDEX gains no row — the action-call row already points at the canonical sections.
+**Resolved 2026-08-28.**
+As-built before the fix, `action_user_prompt` rendered the model arm's letter and sub-scores, then one implied-moves line from the engine's twelve-month band alone, labelled engine targets, and never read `model_view.price_targets`, so the model's own authored forecast never reached the rung it then decided.
+The fix renders four lines under one usable-spot guard through `implied_moves_section` — the engine's one-month and twelve-month bands, then the model's — each bear / base / bull as a percentage move from spot.
+An engine leg the scenario function could not derive prints `(gap)`, the twelve-month line taking the same posture as the ruled one-month line so the two engine horizons read in one register (stated at the plan as an assumption).
+A model leg outside the declared domain prints as authored with its tag in place of a percentage, and a band authored bear above bull carries the inverted tag.
+The two tags are independent reads: a NaN leg compares false on the inverted predicate, so a NaN bear or bull is never tagged inverted, while an in-domain bear above an off-scale bull carries both.
+The off-scale guard reads the derived move as well as the raw value, so a finite authored level whose percentage from spot overflows prints as authored rather than as `inf%` (Codex round 1).
+The provenance line is engine-scoped by label and says the model's bands carry none.
+The system prompt names the implied upside/downside of both arms' targets, the engine's discounted by their provenance, the model's the verdict's own forward call.
+`PROMPT_VERSION` moves to `portfolio-v19`; no grade, target, floor, or pre-profit stamp moves.
+Both app stores were read by copy-out: neither holds a `portfolio_checkpoints` table (the prod store has no portfolio run; the dev store's one run predates the checkpoint slice), so no trail of any stamp exists to lose.
+Canonical at `portfolio-analysis.md` §Portfolio action (the both-arms, engine-render, and model-render sentences), with `portfolio-workflow.md` §Step 6f's prompt-input sentence, the logic-flow's Priced-digest bullet and its exclusion line's off-scale exception, and the watch set's stamp line.
+Three tests pinned (one extended, two added): the digest test reads all four lines, the model's twelve-month base move at the stub's 1.05× differing from the engine's, the engine-scoped provenance line, and the system prompt's both-arms phrase, with neither tag present on a well-formed verdict; a mutated clone pins the engine one-month `(gap)` beside a rendered twelve-month line, the inverted tag on a bear-above-bull band, the off-scale tag on a NaN / negative / zero band with no inverted tag beside it, a NaN bear never tagged inverted while an in-domain bear above an off-scale bull carries both tags, a finite `1e308` base over a $1 spot printing as authored with no `inf` on the page, and no implied line for either arm without a usable spot while the provenance line still renders; and the `portfolio-v19` literal on the constant.
+The reviewer's round approved with five notes, four closed in the slice: the NaN-exclusivity claim in the test comment and this record re-cut to the predicate's actual reach with the both-tags case pinned, the spot guard reading finite and positive as ruled, the canonical's model-render sentence split at its two claims, and the logic-flow's Priced-digest bullet trimmed to the inputs with the render rules pointed at the canonical; the fifth, the Display render of an authored off-scale value, needed no change.
+Codex round 1 found two items: the off-scale guard read the raw value only, so a finite authored level whose move from spot overflowed the percentage arithmetic rendered `+inf%` — closed by guarding the derived move, the boundary pinned; and the canonical's evidence-set sentence still read as if both arms carried typed provenance while its engine-render sentence said the bands "render discounted" — closed by scoping provenance to the engine in the evidence-set sentence and splitting render from weighting, the render raw and the weighing the model's.
+Codex round 2 approved the slice.
 
 ### I6 — major: the declared model-arm numeric domains are prompt-only, so out-of-domain values derive letters and enter scoring
 

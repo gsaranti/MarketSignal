@@ -1901,7 +1901,19 @@ pub struct HoldingAudit {
 /// guidance row's own issue date, never the fetch date. A prompt-line
 /// change, stamped so a pre-fix checkpoint cannot resume into rows dated
 /// under no stated meaning.
-pub const PROMPT_VERSION: &str = "portfolio-v18";
+///
+/// `portfolio-v19`: the action call receives both arms' price targets (the
+/// 2026-08-24 review's Codex I5). The action prompt had rendered the model
+/// arm's letter and sub-scores only, then implied moves from the engine's
+/// twelve-month band alone, so the model's own authored forecast never
+/// reached the rung it then decided. The prompt now renders both arms'
+/// one-month and twelve-month implied bear/base/bull moves — the engine's
+/// under their provenance (`(gap)` where a leg was underivable), the model's
+/// as its own unvalidated band, an off-domain leg or an inverted band tagged
+/// as authored — and the system prompt names both arms and how each is
+/// weighed. An evidence-set change to the action call, stamped so a pre-fix
+/// checkpoint cannot resume into rungs decided on a different input set.
+pub const PROMPT_VERSION: &str = "portfolio-v19";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

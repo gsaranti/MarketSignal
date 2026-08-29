@@ -1306,14 +1306,14 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Holding identity: symbol, name, quantity, total cost basis, and total market value.
   - Unrealized P/L, with the tax framing flagged as a user consideration, never the mover.
   - The prior run's action, as a continuity baseline (move only on materially moved evidence).
-  - Priced digest: engine arm grade, sub-scores, risk tier, and dead-money state; model arm letter and sub-scores; the verdict's conviction and horizon outlook; implied twelve-month bear/base/bull moves as percentages against the current price; a one-line target provenance; the financial summary; the pre-profit overlay when present.
+  - Priced digest: engine arm grade, sub-scores, risk tier, and dead-money state; model arm letter and sub-scores; the verdict's conviction and horizon outlook; implied one-month and twelve-month bear/base/bull moves as percentages against the current price for both arms — the engine's under a one-line target provenance, the model's as its own authored band, the gap and as-authored tag rules canonical at `portfolio-analysis.md` §Portfolio action; the financial summary; the pre-profit overlay when present.
   - Role-risk digest: class label, role, exposure tilt, expense drag, observable risk, structural flag, the closed-end price-vs-NAV line when one exists, and evidence gaps.
   - The forensic filings state and the commodity context, rendered for both digests when the dossier carries them — the role-risk interpretation call renders neither, so for a role-risk holding they reach the model only here.
   - The same-stock option overlay (shared with the interpretation call).
   - The engine's per-holding action set, shown as evidence with the engine's own pick withheld.
   - The investor profile: objective, risk tolerance, horizon, and tax posture — without the cash row.
 - **Deliberately excluded**
-  - House view, research, computed metrics, and absolute target prices.
+  - House view, research, computed metrics, and absolute target prices (an off-scale model leg printing its authored value beside its tag is the one exception).
   - Every book-level value: cash, weights, concentration, other holdings.
 - **Returns**
   - One rung from the fixed ladder plus a short rationale (prompted as one sentence; an empty rationale fails the run).

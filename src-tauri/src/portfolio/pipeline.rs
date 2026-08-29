@@ -3857,6 +3857,62 @@ fn nav_premium_line(premium: f64) -> String {
     )
 }
 
+/// The action prompt's implied-moves block — **both arms, both horizons**
+/// (`docs/portfolio-analysis.md` §Portfolio action; the 2026-08-24 review's
+/// Codex I5). Each line is bear / base / bull as a percentage move from spot.
+/// An engine leg the scenario function could not derive prints `(gap)`. A
+/// model leg outside the declared domain (non-finite or non-positive), or one
+/// whose move from spot overflows to a non-finite percentage, prints as
+/// authored with an `(off-scale as authored)` tag in place of a percentage,
+/// and a band authored bear above bull carries `(band inverted as authored)` —
+/// the frontend's posture: annotate, never reorder, never drop. I6 owns the
+/// upstream domain validation; this is the render's fail-closed read.
+fn implied_moves_section(spot: f64, graded: &GradedVerdict) -> String {
+    let mv = |v: f64| (v / spot - 1.0) * 100.0;
+    let pct = |v: f64| format!("{:+.1}%", mv(v));
+    let engine_line = |label: &str, t: Option<&PriceTarget>| match t {
+        Some(t) => format!(
+            "IMPLIED {label} MOVES vs spot {spot:.2} (engine targets): bear {} / base {} / \
+             bull {}.\n",
+            pct(t.bear),
+            pct(t.base),
+            pct(t.bull),
+        ),
+        None => format!("IMPLIED {label} MOVES vs spot {spot:.2} (engine targets): (gap).\n"),
+    };
+    let model_leg = |v: f64| {
+        if v.is_finite() && v > 0.0 && mv(v).is_finite() {
+            pct(v)
+        } else {
+            format!("{v} (off-scale as authored)")
+        }
+    };
+    let model_line = |label: &str, t: &ModelPriceTarget| {
+        format!(
+            "IMPLIED {label} MOVES vs spot {spot:.2} (model targets — your own band authored \
+             at interpretation, unvalidated, no provenance to discount): bear {} / base {} / \
+             bull {}{}.\n",
+            model_leg(t.bear),
+            model_leg(t.base),
+            model_leg(t.bull),
+            if t.bear > t.bull {
+                " (band inverted as authored)"
+            } else {
+                ""
+            },
+        )
+    };
+    let e = &graded.price_targets;
+    let m = &graded.model_view.price_targets;
+    format!(
+        "{}{}{}{}",
+        engine_line("1-MONTH", e.one_month.as_ref()),
+        engine_line("12-MONTH", e.twelve_month.as_ref()),
+        model_line("1-MONTH", &m.one_month),
+        model_line("12-MONTH", &m.twelve_month),
+    )
+}
+
 /// The system prompt for the **per-holding action call** — the profile's one
 /// entry point into the job (`docs/portfolio-analysis.md` §Portfolio action).
 /// Tunnel vision is stated as the contract: the decision weighs this holding
@@ -3875,8 +3931,10 @@ pub fn action_system_prompt() -> String {
      ladder — sell-all, trim, hold, add, add-aggressively — the rung only: no \
      share counts, dollar amounts, or portfolio weights. Weigh the verdict's own \
      evidence: both arms' grades and scores, the conviction, the horizon \
-     outlook, the targets' implied upside/downside against the current price \
-     (discounted by their stated provenance), and the capital-efficiency read — \
+     outlook, the implied upside/downside of BOTH arms' targets against the \
+     current price (the engine's discounted by their stated provenance; the \
+     model's are the verdict's own forward call, authored unvalidated, with no \
+     provenance to discount), and the capital-efficiency read — \
      only a `fails` hurdle is dead money, and a fails read leans toward \
      realizing some or all of the position once the forward prospects are \
      independently judged poor; the possible tax benefit of booking a loss (or \
@@ -3974,23 +4032,24 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 graded.horizon_outlook.mid,
                 graded.horizon_outlook.long,
             ));
-            if let (Some(spot), Some(tm)) = (
-                d.financials.current_price,
-                graded.price_targets.twelve_month.as_ref(),
-            ) {
-                if spot > 0.0 {
-                    p.push_str(&format!(
-                        "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (engine targets): bear \
-                         {:+.1}% / base {:+.1}% / bull {:+.1}%.\n",
-                        (tm.bear / spot - 1.0) * 100.0,
-                        (tm.base / spot - 1.0) * 100.0,
-                        (tm.bull / spot - 1.0) * 100.0,
-                    ));
-                }
+            // Both arms' implied moves, both horizons (the 2026-08-24 review's
+            // Codex I5, ruled 2026-08-28): the action call acts on the model's
+            // choices by design (`ModelView`), so its own authored forecast
+            // reaches the rung it decides, not only the letter derived from it.
+            // No usable spot → no implied line for either arm; the quote floor
+            // makes that unreachable on a priced holding, the guard stays
+            // defensive.
+            if let Some(spot) = d
+                .financials
+                .current_price
+                .filter(|s| s.is_finite() && *s > 0.0)
+            {
+                p.push_str(&implied_moves_section(spot, graded));
             }
             let t = &engine.target_meta;
             p.push_str(&format!(
-                "TARGET PROVENANCE: {} — weigh the implied moves by it.\n",
+                "TARGET PROVENANCE (engine targets): {} — weigh the engine's implied \
+                 moves by it; the model's bands carry no provenance to discount.\n",
                 if t.rate_anchored {
                     "rate-anchored (real forward signal)"
                 } else if t.current_multiple_carry {
@@ -7481,7 +7540,44 @@ mod tests {
         assert!(user.contains("deliberately not shown"), "{user}");
         assert!(user.contains("THE VERDICT"), "{user}");
         assert!(user.contains("Unrealized P/L"), "{user}");
+        // Both arms' targets reach the rung, both horizons (Codex I5): the
+        // engine's lines under their provenance, the model's own band beside
+        // them — the stub authors its twelve-month base at 1.05× the engine's,
+        // so the two base moves must differ on the page.
+        let spot = d.financials.current_price.unwrap();
+        let pct = |v: f64| format!("{:+.1}%", (v / spot - 1.0) * 100.0);
+        let engine_12 = graded.price_targets.twelve_month.as_ref().unwrap();
+        let model_12 = &graded.model_view.price_targets.twelve_month;
+        assert!(
+            user.contains(&format!(
+                "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (engine targets): bear {} / base {} \
+                 / bull {}.",
+                pct(engine_12.bear),
+                pct(engine_12.base),
+                pct(engine_12.bull)
+            )),
+            "{user}"
+        );
+        assert!(
+            user.contains(&format!(
+                "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (model targets — your own band \
+                 authored at interpretation, unvalidated, no provenance to discount): bear {} \
+                 / base {} / bull {}.",
+                pct(model_12.bear),
+                pct(model_12.base),
+                pct(model_12.bull)
+            )),
+            "{user}"
+        );
+        assert_ne!(pct(engine_12.base), pct(model_12.base));
+        assert_eq!(user.matches("IMPLIED 1-MONTH MOVES vs spot").count(), 2, "{user}");
+        assert_eq!(user.matches("IMPLIED 12-MONTH MOVES vs spot").count(), 2, "{user}");
+        assert!(user.contains("TARGET PROVENANCE (engine targets):"), "{user}");
+        assert!(user.contains("weigh the engine's implied moves by it"), "{user}");
+        assert!(!user.contains("off-scale as authored"), "{user}");
+        assert!(!user.contains("band inverted as authored"), "{user}");
         let system = action_system_prompt();
+        assert!(system.contains("BOTH arms' targets"), "{system}");
         assert!(system.contains("TUNNEL VISION IS THE CONTRACT"), "{system}");
         assert!(system.contains("ONE rung"), "{system}");
         assert!(system.contains("never a bound"), "{system}");
@@ -7592,6 +7688,175 @@ mod tests {
         });
         assert!(action.contains("SAME-UNDERLYING OPTION OVERLAY"), "{action}");
         assert!(!action.contains("SHORT INTEREST"), "positioning stays interpretation-side: {action}");
+    }
+
+    #[test]
+    fn action_prompt_tags_off_domain_model_legs_and_gaps_engine_legs_as_authored() {
+        // The render annotates, never reorders or drops (Codex I5, ruled
+        // 2026-08-28): an engine leg the scenario function could not derive
+        // prints `(gap)`; a model leg outside the declared domain prints as
+        // authored with its tag in place of a percentage; a band authored bear
+        // above bull carries the inverted tag — the frontend's posture. I6 owns
+        // the upstream domain validation; this is the render's fail-closed read.
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
+            panic!("expected a priced verdict");
+        };
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let engine_set =
+            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
+        let mut g = graded.clone();
+        g.price_targets.one_month = None;
+        g.model_view.price_targets.one_month = ModelPriceTarget {
+            base: 100.0,
+            bear: 120.0,
+            bull: 90.0,
+        };
+        g.model_view.price_targets.twelve_month = ModelPriceTarget {
+            base: f64::NAN,
+            bear: -5.0,
+            bull: 0.0,
+        };
+        let render = |d: &HoldingDossier| {
+            action_user_prompt(&ActionInput {
+                dossier: d,
+                subject: ActionSubject::Priced {
+                    graded: &g,
+                    engine: &engine_output,
+                    pre_profit: None,
+                },
+                engine_set: &engine_set,
+                profile: &d.profile,
+            })
+        };
+        let user = render(&d);
+        let spot = d.financials.current_price.unwrap();
+        let pct = |v: f64| format!("{:+.1}%", (v / spot - 1.0) * 100.0);
+        assert!(
+            user.contains(&format!(
+                "IMPLIED 1-MONTH MOVES vs spot {spot:.2} (engine targets): (gap)."
+            )),
+            "{user}"
+        );
+        // The engine's twelve-month leg is untouched and still renders as moves.
+        let engine_12 = g.price_targets.twelve_month.as_ref().unwrap();
+        assert!(
+            user.contains(&format!(
+                "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (engine targets): bear {}",
+                pct(engine_12.bear)
+            )),
+            "{user}"
+        );
+        // Inverted: authored numbers, authored order, the tag beside them.
+        assert!(
+            user.contains(&format!(
+                "bear {} / base {} / bull {} (band inverted as authored).",
+                pct(120.0),
+                pct(100.0),
+                pct(90.0)
+            )),
+            "{user}"
+        );
+        // Off-scale: the raw authored value with its tag, no percentage.
+        assert!(
+            user.contains(
+                "bear -5 (off-scale as authored) / base NaN (off-scale as authored) / bull 0 \
+                 (off-scale as authored)."
+            ),
+            "{user}"
+        );
+        // Bear -5 sits below bull 0 on plain arithmetic, so the off-scale band
+        // carries no inverted tag here; the two tags are independent reads.
+        assert_eq!(user.matches("band inverted as authored").count(), 1, "{user}");
+        // A NaN leg compares false on the inverted predicate, so a NaN bear or
+        // bull is never tagged inverted; an in-domain bear above an off-scale
+        // bull carries both tags — annotate, never drop.
+        let mut both = g.clone();
+        both.model_view.price_targets.one_month = ModelPriceTarget {
+            base: 100.0,
+            bear: f64::NAN,
+            bull: 90.0,
+        };
+        both.model_view.price_targets.twelve_month = ModelPriceTarget {
+            base: 100.0,
+            bear: 120.0,
+            bull: -5.0,
+        };
+        let user3 = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::Priced {
+                graded: &both,
+                engine: &engine_output,
+                pre_profit: None,
+            },
+            engine_set: &engine_set,
+            profile: &d.profile,
+        });
+        assert!(
+            user3.contains(&format!(
+                "bear NaN (off-scale as authored) / base {} / bull {}.",
+                pct(100.0),
+                pct(90.0)
+            )),
+            "{user3}"
+        );
+        assert!(
+            user3.contains(&format!(
+                "bear {} / base {} / bull -5 (off-scale as authored) (band inverted as authored).",
+                pct(120.0),
+                pct(100.0)
+            )),
+            "{user3}"
+        );
+        assert_eq!(user3.matches("band inverted as authored").count(), 1, "{user3}");
+        // A finite, positive leg whose move from spot overflows the percentage
+        // arithmetic is off-scale too — the guard reads the derived move, so the
+        // prompt never carries `inf%` (Codex round 1).
+        let mut penny = strong_financials();
+        penny.current_price = Some(1.0);
+        let d4 = dossier(AssetClass::Stock, penny);
+        let mut huge = g.clone();
+        huge.model_view.price_targets.twelve_month = ModelPriceTarget {
+            base: 1e308,
+            bear: 0.5,
+            bull: 2.0,
+        };
+        let user4 = action_user_prompt(&ActionInput {
+            dossier: &d4,
+            subject: ActionSubject::Priced {
+                graded: &huge,
+                engine: &engine_output,
+                pre_profit: None,
+            },
+            engine_set: &engine_set,
+            profile: &d4.profile,
+        });
+        assert!(!user4.contains("inf"), "{user4}");
+        assert!(
+            user4.contains("bear -50.0% / base 1")
+                && user4.contains("0 (off-scale as authored) / bull +100.0%."),
+            "{user4}"
+        );
+        // No usable spot → no implied line for either arm; the provenance line
+        // still renders, since it describes the targets rather than the moves.
+        let mut unpriced = strong_financials();
+        unpriced.current_price = None;
+        let d2 = dossier(AssetClass::Stock, unpriced);
+        let user2 = render(&d2);
+        assert!(!user2.contains("IMPLIED "), "{user2}");
+        assert!(user2.contains("TARGET PROVENANCE (engine targets):"), "{user2}");
+    }
+
+    #[test]
+    fn prompt_version_is_stamped_for_the_action_call_evidence_set() {
+        // Codex I5 changed the action call's evidence set (both arms' targets,
+        // both horizons), so a pre-fix checkpoint cannot resume into rungs
+        // decided on a different input set: the stamp moved and stays pinned.
+        assert_eq!(PROMPT_VERSION, "portfolio-v19");
     }
 
     #[test]
