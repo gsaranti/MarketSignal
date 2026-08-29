@@ -1882,7 +1882,16 @@ pub struct HoldingAudit {
 /// speculation. A value-format and label change under an unchanged line
 /// header, stamped so a pre-fix checkpoint cannot resume into the corrected
 /// render.
-pub const PROMPT_VERSION: &str = "portfolio-v16";
+///
+/// `portfolio-v17`: the pre-profit observation row's source excerpt (the
+/// 2026-08-24 review's Codex I3). The 6d distillation schema's
+/// `pre_profit_observations` row gains a required `source_excerpt` — the
+/// fetched page's own sentence that states the value, quoted verbatim — and
+/// the prompt line asks for it, so Step 6e's corroboration binds the number
+/// to one sentence about the declared metric at its printed sign rather than
+/// to "somewhere on the page". A schema and prompt-line change, stamped so a
+/// pre-fix checkpoint cannot resume into rows the new leg would reject.
+pub const PROMPT_VERSION: &str = "portfolio-v17";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

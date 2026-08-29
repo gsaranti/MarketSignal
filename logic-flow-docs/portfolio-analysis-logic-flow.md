@@ -1121,7 +1121,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
     - Higher-is-better, lower-is-better, or target-band direction.
     - Units and reporting period.
     - Company scope and publication date.
-    - Source URL and confidence.
+    - Source URL, the page's own sentence stating the value quoted verbatim, and confidence.
   - Backfill coverage when required:
     - Periods and sources checked.
     - `complete`, `partial`, or `unscorable`.
@@ -1164,7 +1164,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 
 - **Pre-profit observation validation (built — producer active)**
   - Each sourced observation a research row supplies is checked **structurally** before it enters the period history — a finite numeric value, units, a reporting period, an issuer scope, a source URL, an ISO publication date, a confidence in [0, 1], and a direction (polarity) consistent with the metric kind (the row also carries its actual-versus-guidance role, read later when pairing). A **malformed** row (any of those legs bad) or a **duplicate** — of a stored observation, or of an earlier accepted row in the same batch — is rejected and logged with its reason; every other row is accepted and merged into the period history (append, sort, dedup). A structurally valid but as-yet-**unpaired** row — an actual with no matching guidance, or the reverse — is kept, not rejected: pairing into misses happens later in the execution read, and an unpaired row simply waits for a future match.
-  - The two activation legs the slice owed are **built and binding**: **confirm the correct company** (the holding-identity cross-check — the fetched page must name the holding by symbol or a distinctive issuer-name token, generic corporate suffixes never qualifying) and **confirm the source states the number** (source-text corroboration at number boundaries — a value never corroborates off a longer number or a decimal it merely prefixes). Every row's source page must have been fetched by this holding's own loop; an unevidenced call rejects every candidate.
+  - The two activation legs the slice owed are **built and binding**: **confirm the correct company** (the holding-identity cross-check — the fetched page must name the holding by symbol or a distinctive issuer-name token, generic corporate suffixes never qualifying) and **confirm the source states the number** (source-text corroboration inside the row's quoted source excerpt, which must itself appear verbatim in the page and is read with the page's own neighbours around it — at number boundaries and at the printed sign, so a value never corroborates off a longer number, a decimal it merely prefixes, or a print of the opposite sign such as `-41` or the accounting `(41)`, even when the quote is trimmed to the digits — and the excerpt must carry the declared metric's own language and state exactly one number, the value, a guidance-low / guidance-high row alone quoting a range's two endpoints; canonical: `docs/portfolio-workflow.md` §Step 6e). Every row's source page must have been fetched by this holding's own loop; an unevidenced call rejects every candidate.
   - Periods normalize to one ISO-period-end convention per issuer before the dedup key is taken, so period spellings compare exactly.
 
 - **Cold-start and history-gap backfill (built)**

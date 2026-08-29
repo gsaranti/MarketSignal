@@ -10558,6 +10558,7 @@ mod tests {
             period: period.into(),
             issuer_scope: "company".into(),
             source_url: "https://example.com/ir".into(),
+            source_excerpt: format!("reported deliveries of {value} units"),
             published_at: "2026-08-01".into(),
             confidence: 0.9,
         }

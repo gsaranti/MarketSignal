@@ -457,12 +457,13 @@ fn combined_schema(role_risk: bool, overlay_eligible: bool) -> Value {
                         "period": { "type": "string" },
                         "issuer_scope": { "type": "string" },
                         "source_url": { "type": "string" },
+                        "source_excerpt": { "type": "string" },
                         "published_at": { "type": "string" },
                         "confidence": { "type": "number" }
                     },
                     "required": ["metric_kind", "observation_role", "polarity", "numeric_value",
                                   "units", "period", "issuer_scope", "source_url",
-                                  "published_at", "confidence"]
+                                  "source_excerpt", "published_at", "confidence"]
                 }
             });
             properties["backfill"] = json!({
@@ -1730,13 +1731,23 @@ fn reduce_prompt(
              emitted here).\n",
         );
         if inputs.overlay_eligible {
-            out.push_str(
+            out.push_str(&format!(
                 "- pre_profit_observations: typed, sourced operating observations (production, \
                  deliveries, bookings/backlog/reservations, guidance, unit economics) extracted \
-                 ONLY from source text that states the value; the app computes every comparison.\n\
+                 ONLY from source text that states the value; each row quotes in source_excerpt, \
+                 VERBATIM and at most {} characters, the SHORTEST span of the fetched page that \
+                 names the metric and states the value with its sign and NO other number — a \
+                 year, a quarter, a percentage, or a prior-period figure beside the value inside \
+                 the quote rejects the row, so trim to the one clause; only a guidance-low / \
+                 guidance-high row may \
+                 quote a range's two endpoints joined by 'to', '-', or 'and' (the app verifies \
+                 the quote against the page and the value inside it — a paraphrase, a quote \
+                 trimmed to the digits, or a clause about another metric rejects the row); the \
+                 app computes every comparison.\n\
                  - backfill: the required backfill attempt's checked periods, sources, and \
                  coverage state, where the agenda required one.\n",
-            );
+                crate::portfolio::pre_profit::SOURCE_EXCERPT_CAP_CHARS
+            ));
         }
         let identified: Vec<&crate::portfolio::KeyDriver> = inputs
             .ledger_key_drivers
@@ -2898,6 +2909,66 @@ mod tests {
     }
 
     #[test]
+    fn assumption_and_indicator_inherit_the_sign_rule() {
+        // The shared corroboration primitive reads the printed sign (the
+        // review's Codex I3), so a positive forward fact never grounds on a
+        // negative print — the accounting `(1.2)` — and a positive indicator
+        // never on `-25%`; the negative facts the page actually states do.
+        let mut research = research_one_topic();
+        research.page_texts.insert(
+            "https://reuters.com/widget".to_string(),
+            "Widget Industries guided to a (1.2) billion loss; bookings fell -25% to 120 units."
+                .to_string(),
+        );
+        let assumption = |value: f64| {
+            combined_body(json!({
+                "forward_assumption": {
+                    "fact_type": "issued guidance", "numeric_value": value,
+                    "stated_low": null, "stated_high": null, "units": "USD B",
+                    "as_of": "2026-08-20", "source_url": "https://reuters.com/widget",
+                    "confidence": 0.9, "affects": "forward revenue",
+                    "conflict_handling": "supplement"
+                }
+            }))
+        };
+        let model = ScriptDistill::new(vec![assumption(1.2)]);
+        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        assert!(out.forward_assumption.is_none());
+        assert!(
+            out.gaps.iter().any(|g| g.contains("never states the value")),
+            "{:?}",
+            out.gaps
+        );
+        let model = ScriptDistill::new(vec![assumption(-1.2)]);
+        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        assert!(out.forward_assumption.is_some(), "{:?}", out.gaps);
+
+        let indicator = |value: f64| {
+            combined_body(json!({
+                "leading_indicator": {
+                    "metric_name": "widget bookings", "value": value,
+                    "direction": "inflecting-up", "as_of": "2026-08-20",
+                    "source_url": "https://reuters.com/widget", "confidence": 0.8,
+                    "confirms_driver": "demand"
+                }
+            }))
+        };
+        // A sub-1 value tries its percent render: the page prints -25%, never
+        // a positive 25.
+        let model = ScriptDistill::new(vec![indicator(0.25)]);
+        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        assert!(out.leading_indicator.is_none());
+        assert!(
+            out.gaps.iter().any(|g| g.contains("never states the metric's value")),
+            "{:?}",
+            out.gaps
+        );
+        let model = ScriptDistill::new(vec![indicator(-0.25)]);
+        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        assert!(out.leading_indicator.is_some(), "{:?}", out.gaps);
+    }
+
+    #[test]
     fn indicator_driver_reference_verifies_against_ledger_ids() {
         // Ruled 2026-08-24: only a confirms_driver_id resolving to a current
         // ledger driver grants the cap-suppression anchor; an unknown or
@@ -3041,6 +3112,7 @@ mod tests {
                 "units": "vehicles", "period": "2026-06-30",
                 "issuer_scope": "consolidated",
                 "source_url": "https://reuters.com/widget",
+                "source_excerpt": "reported deliveries of 12,000 vehicles",
                 "published_at": "2026-08-20", "confidence": 0.9
             }],
             "backfill": null
@@ -3056,6 +3128,24 @@ mod tests {
         let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
         assert!(out.pre_profit_observations.is_empty());
         assert!(out.gaps.iter().any(|g| g.contains("not overlay-eligible")));
+    }
+
+    #[test]
+    fn the_observation_row_schema_requires_the_source_excerpt() {
+        // The Step-6e excerpt leg has teeth only if the schema makes the model
+        // quote the sentence: a required string field on the row, and the
+        // prompt line asking for it verbatim.
+        let schema = combined_schema(false, true);
+        let row = &schema["properties"]["pre_profit_observations"]["items"];
+        assert_eq!(row["properties"]["source_excerpt"]["type"], "string");
+        let required = row["required"].as_array().expect("required list");
+        assert!(required.iter().any(|f| f == "source_excerpt"));
+        let research = research_one_topic();
+        let mut ins = inputs(&research, &[], &[]);
+        ins.overlay_eligible = true;
+        let prompt = reduce_prompt(&ins, None, &HashMap::new(), &[]);
+        assert!(prompt.contains("source_excerpt"), "{prompt}");
+        assert!(prompt.contains("VERBATIM"), "{prompt}");
     }
 
     #[test]

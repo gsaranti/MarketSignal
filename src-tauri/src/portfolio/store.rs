@@ -1122,6 +1122,57 @@ mod tests {
     }
 
     #[test]
+    fn an_observation_row_round_trips_its_source_excerpt_through_the_run() {
+        // The pre-profit row's quoted excerpt persists on accepted and
+        // rejected rows alike, through the run record's JSON (the large-scale
+        // review's I3, Codex round 1).
+        use crate::portfolio::pre_profit::{
+            compute_overlay, MetricKind, ObservationPolarity, ObservationRole,
+            PreProfitObservation, RejectedObservation,
+        };
+        let row = |value: f64, excerpt: &str| PreProfitObservation {
+            metric_kind: MetricKind::Deliveries,
+            observation_role: ObservationRole::Actual,
+            polarity: ObservationPolarity::HigherIsBetter,
+            numeric_value: value,
+            units: "units".into(),
+            period: "2026-06-30".into(),
+            issuer_scope: "company".into(),
+            source_url: "https://example.com/report".into(),
+            source_excerpt: excerpt.into(),
+            published_at: "2026-08-01".into(),
+            confidence: 0.9,
+        };
+        let mut overlay = compute_overlay(
+            &crate::portfolio::engine::CompanyFinancials::default(),
+            None,
+            vec![],
+        );
+        overlay
+            .observations
+            .push(row(141.0, "deliveries reached 141 units"));
+        overlay.rejected.push(RejectedObservation {
+            observation: row(41.0, "revenue was 41 million"),
+            reason: "metric-context check failed".into(),
+        });
+        let conn = mem();
+        let mut run = sample_run("run-1", "2026-06-25T12:00:00Z");
+        run.audit[0].pre_profit = Some(overlay);
+        insert_run(&conn, &run).unwrap();
+        let back = latest_run(&conn).unwrap().unwrap();
+        assert_eq!(back, run, "the run with its overlay rows round-trips");
+        let overlay = back.audit[0].pre_profit.as_ref().expect("overlay persisted");
+        assert_eq!(
+            overlay.observations[0].source_excerpt,
+            "deliveries reached 141 units"
+        );
+        assert_eq!(
+            overlay.rejected[0].observation.source_excerpt,
+            "revenue was 41 million"
+        );
+    }
+
+    #[test]
     fn quick_check_basis_and_rate_prints_round_trip() {
         let conn = mem();
         let mut run = sample_run("run-1", "2026-08-03T12:00:00Z");

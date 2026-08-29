@@ -65,6 +65,11 @@ const ECONOMICS_MARGIN_DROP_PP: f64 = 0.05;
 /// overlay's absent backfill attempt is not read as a v2 waiver.
 pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v2";
 
+/// The cap on a row's quoted source excerpt (drafted): the excerpt is a
+/// locator — the page's own sentence that states the value — never a page,
+/// so an over-cap quote rejects structurally before any page comparison.
+pub const SOURCE_EXCERPT_CAP_CHARS: usize = 400;
+
 /// Boundary slack on the computed-ratio threshold tests: a value exactly on a
 /// documented boundary (a 15% YoY share rise, a 20% miss) can evaluate a few ULPs
 /// below its constant (`115.0 / 100.0 − 1.0 < 0.15` in f64), and the documented
@@ -199,6 +204,13 @@ pub struct PreProfitObservation {
     pub period: String,
     pub issuer_scope: String,
     pub source_url: String,
+    /// The page's own sentence that states the value, quoted verbatim — the
+    /// locator the app verifies against the fetched page (whitespace-run
+    /// normalized), corroborates the value inside sign-aware, and reads the
+    /// metric-family language from (`docs/portfolio-workflow.md` §Step 6e).
+    /// Persisted on every accepted and rejected row so an audit can read the
+    /// sentence a number was taken from.
+    pub source_excerpt: String,
     pub published_at: String,
     /// Extraction confidence, 0–1.
     pub confidence: f64,
@@ -841,19 +853,43 @@ fn month_end(year: i32, month: u32) -> Option<String> {
 }
 
 /// The source-text corroboration test: the observation's numeric value must
-/// appear in the fetched page's text (commas stripped; an integer value also
-/// matches its decimal render). Deterministic and deliberately literal — the
-/// model may extract a row only from source text that states the value.
+/// appear in the text (commas stripped; an integer value also matches its
+/// decimal render) **at the sign it was stated with** — the magnitude is
+/// located at number boundaries and the printed sign read beside it
+/// ([`printed_negative`]), so a positive candidate never corroborates off
+/// `-41` or the accounting `(41)`, and a negative one never off a bare `41`.
+/// Zero is unsigned. Deterministic and deliberately literal — the model may
+/// extract a row only from source text that states the value. Shared by the
+/// forward-assumption and leading-indicator legs, which inherit the sign rule.
 pub(crate) fn value_in_text(value: f64, text: &str) -> bool {
     let haystack: String = text.replace(',', "");
+    let len = haystack.len();
+    !value_stated_in(value, &haystack, 0..len).is_empty()
+}
+
+/// The occurrence search behind [`value_in_text`]: `haystack` is already
+/// comma-stripped, and only an occurrence whose digits lie inside `span`
+/// counts — while the boundary and the sign are still read from the
+/// neighbours outside it, which is how the excerpt leg reads a quoted span
+/// with the page's own context around it. Returns every qualifying
+/// occurrence's span in text order — a value printed twice binds through
+/// whichever occurrence the metric states.
+fn value_stated_in(
+    value: f64,
+    haystack: &str,
+    span: std::ops::Range<usize>,
+) -> Vec<std::ops::Range<usize>> {
+    let magnitude = value.abs();
     // An integer value matches either render ("41" or "41.0") — the boundary
     // rules below would otherwise reject "41" against a printed "41.0".
-    let needles: Vec<String> = if value.fract() == 0.0 && value.abs() < 1e15 {
-        vec![format!("{}", value as i64), format!("{}.0", value as i64)]
+    let needles: Vec<String> = if magnitude.fract() == 0.0 && magnitude < 1e15 {
+        vec![format!("{}", magnitude as i64), format!("{}.0", magnitude as i64)]
     } else {
-        let s = format!("{value}");
+        let s = format!("{magnitude}");
         vec![s.trim_end_matches('0').trim_end_matches('.').to_string()]
     };
+    let wants_negative = value < 0.0;
+    let unsigned = value == 0.0;
     // Number-boundary containment: "41" must not corroborate off "141", "412",
     // "41.5", or "3.41" — a neighbor may be neither a digit nor a decimal
     // point that continues a number.
@@ -868,21 +904,314 @@ pub(crate) fn value_in_text(value: f64, text: &str) -> bool {
             && (bytes[i].is_ascii_digit()
                 || (bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit()))
     };
+    let mut hits = Vec::new();
     for needle in needles {
         if needle.is_empty() {
             continue;
         }
-        let mut from = 0;
-        while let Some(pos) = haystack[from..].find(&needle) {
+        let mut from = span.start;
+        while let Some(pos) = haystack[from..span.end].find(&needle) {
             let start = from + pos;
             let end = start + needle.len();
-            if !continues_left(start) && !continues_right(end) {
-                return true;
+            if !continues_left(start)
+                && !continues_right(end)
+                && (unsigned || printed_negative(haystack, start, end) == wants_negative)
+            {
+                hits.push(start..end);
             }
             from = start + 1;
         }
     }
-    false
+    hits.sort_by_key(|hit| hit.start);
+    hits
+}
+
+/// What reading the value through a quoted excerpt found.
+enum ExcerptRead {
+    /// The excerpt never appears in the page.
+    NotInPage,
+    /// The excerpt appears, but the value is not stated inside it as the page
+    /// prints it.
+    ValueNotStated,
+    /// The value is stated: the comma-stripped quote and every sign-correct
+    /// occurrence's span in it.
+    Stated {
+        quoted: String,
+        value_spans: Vec<std::ops::Range<usize>>,
+    },
+}
+
+/// How many chars of page context ride on each side of a quoted span when the
+/// value is read inside it: enough for a sign through a currency symbol and
+/// the range test behind it (`-$41`, `40-45`), a parenthesis pair, a leading
+/// digit, and a decimal continuation. The context is cut before commas are
+/// stripped, so a comma inside it costs one char of reach — the adjacent digit
+/// or sign is still exposed; keep that margin if the constant ever moves.
+const EXCERPT_EDGE_CHARS: usize = 4;
+
+/// Whether the value is stated inside the quoted excerpt **as the page prints
+/// it**: for each occurrence of the (whitespace-collapsed) excerpt in the
+/// (whitespace-collapsed) page, the value is searched within the quoted span
+/// only, with [`EXCERPT_EDGE_CHARS`] of the page's own text on either side
+/// supplying the boundary and the sign — so a quote trimmed to the digits
+/// cannot shed a `-`, a `(`, or a leading digit that sits just outside it,
+/// and a number just outside the quote never counts as quoted.
+fn value_stated_in_excerpt(value: f64, page: &str, excerpt: &str) -> ExcerptRead {
+    if excerpt.is_empty() {
+        return ExcerptRead::NotInPage;
+    }
+    let step = excerpt.chars().next().map_or(1, char::len_utf8);
+    let quoted = excerpt.replace(',', "");
+    let mut found = false;
+    let mut from = 0;
+    while let Some(pos) = page[from..].find(excerpt) {
+        found = true;
+        let start = from + pos;
+        let end = start + excerpt.len();
+        let prefix_start = page[..start]
+            .char_indices()
+            .rev()
+            .nth(EXCERPT_EDGE_CHARS - 1)
+            .map_or(0, |(i, _)| i);
+        let suffix_end = page[end..]
+            .char_indices()
+            .nth(EXCERPT_EDGE_CHARS)
+            .map_or(page.len(), |(i, _)| end + i);
+        let prefix = page[prefix_start..start].replace(',', "");
+        let suffix = page[end..suffix_end].replace(',', "");
+        let window = format!("{prefix}{quoted}{suffix}");
+        let span = prefix.len()..prefix.len() + quoted.len();
+        let hits = value_stated_in(value, &window, span);
+        if !hits.is_empty() {
+            return ExcerptRead::Stated {
+                value_spans: hits
+                    .into_iter()
+                    .map(|hit| hit.start - prefix.len()..hit.end - prefix.len())
+                    .collect(),
+                quoted,
+            };
+        }
+        from = start + step;
+    }
+    if found {
+        ExcerptRead::ValueNotStated
+    } else {
+        ExcerptRead::NotInPage
+    }
+}
+
+/// Whether the number occupying `haystack[start..end]` is printed negative: a
+/// minus sign (ASCII hyphen-minus or U+2212) hugging the digits whose own left
+/// neighbour is neither a digit nor a percent sign nor a closing parenthesis
+/// (`of -41` is a sign; `40-45`, `40%-45%`, and a date's `-30` are
+/// separators), optionally through one currency symbol (`-$41`), or an
+/// accounting parenthesis pair wrapping exactly the number (`(41)`, never
+/// `(41 units)`). A spaced hyphen (`40 - 45`) and an en dash never read as a
+/// sign, so a range's upper endpoint stays a positive statement.
+fn printed_negative(haystack: &str, start: usize, end: usize) -> bool {
+    let mut before = haystack[..start].chars().rev();
+    let mut prev = before.next();
+    if matches!(prev, Some('$' | '€' | '£')) {
+        prev = before.next();
+    }
+    match prev {
+        Some('-' | '−') => !before
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() || matches!(c, '%' | ')')),
+        Some('(') => haystack[end..].starts_with(')'),
+        _ => false,
+    }
+}
+
+/// The metric-family stems a row's excerpt must carry for its declared kind
+/// (drafted, calibratable): the corroborated sentence must be *about* the
+/// metric the row types, so a revenue sentence can never back a deliveries row.
+/// Each stem matches case-insensitively at a word start, so "delivered" /
+/// "deliveries" / "delivery" all read `deliver` while "border" never reads
+/// `order`.
+fn metric_stems(kind: MetricKind) -> &'static [&'static str] {
+    match kind {
+        MetricKind::Production => &["produc", "output", "manufactur", "built"],
+        MetricKind::Deliveries => &["deliver", "shipment", "shipped"],
+        // Plural and compound forms only: a bare `order` reads "in order to"
+        // and a bare `contract` any legal clause (the slice's Codex round 1).
+        MetricKind::Bookings => &[
+            "booking",
+            "booked",
+            "orders",
+            "order intake",
+            "order value",
+            "contracts",
+            "contract value",
+            "contract wins",
+            "signed contract",
+        ],
+        MetricKind::Backlog => &[
+            "backlog",
+            "order book",
+            "remaining performance",
+            "unfilled",
+            "unshipped",
+        ],
+        MetricKind::Reservations => &[
+            "reservation",
+            "reserved",
+            "pre-order",
+            "preorder",
+            "deposit",
+            "waitlist",
+        ],
+        MetricKind::UnitEconomics => &[
+            "margin",
+            "per unit",
+            "per vehicle",
+            "per mile",
+            "per customer",
+            "per user",
+            "unit economics",
+            "unit-economics",
+            "unit cost",
+            "cost per",
+            "revenue per",
+            "average selling",
+            "average revenue",
+            "contribution margin",
+            "payback",
+            "lifetime value",
+            "acquisition cost",
+        ],
+    }
+}
+
+/// Every word-start occurrence of the kind's stems in the text (its left
+/// neighbour not alphanumeric), case-insensitive; spans index the original.
+fn metric_stem_spans(text: &str, kind: MetricKind) -> Vec<std::ops::Range<usize>> {
+    let lower = text.to_ascii_lowercase();
+    let mut spans = Vec::new();
+    for stem in metric_stems(kind) {
+        let mut from = 0;
+        while let Some(pos) = lower[from..].find(stem) {
+            let start = from + pos;
+            let word_start = lower[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric());
+            if word_start {
+                spans.push(start..start + stem.len());
+            }
+            from = start + stem.len();
+        }
+    }
+    spans
+}
+
+/// Whether the excerpt carries metric-family language for the row's kind —
+/// the stem table's own pin; the validator reads the spans through
+/// [`excerpt_binds_metric`].
+#[cfg(test)]
+fn excerpt_names_metric(excerpt: &str, kind: MetricKind) -> bool {
+    !metric_stem_spans(excerpt, kind).is_empty()
+}
+
+/// The number census over a comma-stripped quote: every digit run, a decimal
+/// continuation included. A year, a quarter, a percentage, and a date part
+/// all count — the contract asks for a quote with one number in it, and a
+/// sub-quote without the period token always exists when the period sits
+/// outside the metric's clause (the slice's Codex round 3).
+fn quoted_numbers(quoted: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = quoted.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        out.push(start..i);
+    }
+    out
+}
+
+/// Why the metric-context binding failed.
+enum MetricContext {
+    /// The quote carries no stem for the row's kind.
+    NoLanguage,
+    /// The quote states more than the one fact — its number count.
+    ManyNumbers(usize),
+    /// The quote's one number is not the value, or a quoted range's endpoint
+    /// is not the one the row's role names.
+    NotTheValue,
+}
+
+/// The metric-context binding — the narrow one-fact contract (ruled
+/// 2026-08-28 off the slice's Codex round 3, replacing the positional
+/// binding of rounds 1 and 2): the quote must carry the row's metric-family
+/// language and state **exactly one number**, the row's value at its sign.
+/// Every digit run counts, so a year, a quarter, a percentage, or a
+/// prior-period figure beside the value rejects the quote and the model must
+/// trim to the clause; a sentence that cannot be trimmed loses its row, which
+/// is safer than admitting a wrong one. The one carve-out is a guidance
+/// range: a guidance-low or guidance-high row may quote two numbers joined
+/// by a hyphen, a dash, `to`, or `and`, and its value must be the endpoint
+/// its role names. A compound sentence therefore can never lend a stem to a
+/// number from another clause. The contract is a syntactic admission filter,
+/// never semantic proof: it cannot tell what the one number it admits means,
+/// so a stem with no number of its own beside a competing noun the lexicon
+/// does not know ("deliveries and revenue of 41 million"), or a value that
+/// is itself the period ("delivery guidance for 2025"), still passes — the
+/// persisted excerpt is the audit for that residual (the review's I19).
+fn excerpt_binds_metric(
+    quoted: &str,
+    value_spans: &[std::ops::Range<usize>],
+    role: ObservationRole,
+    kind: MetricKind,
+) -> Result<(), MetricContext> {
+    if metric_stem_spans(quoted, kind).is_empty() {
+        return Err(MetricContext::NoLanguage);
+    }
+    let numbers = quoted_numbers(quoted);
+    match numbers.as_slice() {
+        [only] if value_spans.contains(only) => Ok(()),
+        [_] => Err(MetricContext::NotTheValue),
+        [left, right] if range_partners(quoted, left, right) => {
+            let endpoint = match role {
+                ObservationRole::GuidanceLow => left,
+                ObservationRole::GuidanceHigh => right,
+                _ => return Err(MetricContext::ManyNumbers(2)),
+            };
+            if value_spans.contains(endpoint) {
+                Ok(())
+            } else {
+                Err(MetricContext::NotTheValue)
+            }
+        }
+        _ => Err(MetricContext::ManyNumbers(numbers.len())),
+    }
+}
+
+/// Whether two printed numbers are the ends of one range — joined by a
+/// hyphen, a dash, `to`, or `and` (`130-140`, `130 to 140`, `between 130
+/// and 140`).
+fn range_partners(quoted: &str, a: &std::ops::Range<usize>, b: &std::ops::Range<usize>) -> bool {
+    let (l, r) = if a.start <= b.start { (a, b) } else { (b, a) };
+    l.end <= r.start && matches!(quoted[l.end..r.start].trim(), "-" | "–" | "—" | "to" | "and")
+}
+
+/// Whitespace-run normalization for the verbatim excerpt match: readability
+/// extraction and the model's quoting may differ in line breaks and run
+/// lengths, never in words, so runs collapse to one space on both sides.
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The holding-identity cross-check: the fetched page must mention the
@@ -894,11 +1223,15 @@ fn page_mentions_holding(text: &str, symbol: &str, company_name: Option<&str>) -
     crate::portfolio::text_names_holding(text, symbol, company_name)
 }
 
-/// The two activation legs over one row (`docs/portfolio-workflow.md` §Step
-/// 6e — the research-loop slice's recorded obligation, discharged here): the
-/// row's source page must have been fetched by THIS holding's loop, must
-/// mention the holding (identity cross-check), and must state the value
-/// (source-text corroboration).
+/// The activation legs over one row (`docs/portfolio-workflow.md` §Step 6e —
+/// the research-loop slice's recorded obligation, discharged here): the row's
+/// source page must have been fetched by THIS holding's loop, must mention the
+/// holding (identity cross-check), and must state the value (source-text
+/// corroboration) — the last read through the row's quoted excerpt: the
+/// excerpt must appear verbatim in the page (whitespace-run normalized), the
+/// value must appear inside it at its sign, and the excerpt must carry the
+/// row's metric-family language, so the number is bound to one sentence about
+/// the declared metric rather than to "somewhere on the page".
 fn validate_against_source(
     o: &PreProfitObservation,
     evidence: &SourceEvidence<'_>,
@@ -919,13 +1252,45 @@ fn validate_against_source(
                 .to_string(),
         );
     }
-    if !value_in_text(o.numeric_value, text) {
-        return Err(
-            "source-text corroboration failed: the stated value does not appear in the fetched \
-             page"
+    let excerpt = collapse_whitespace(&o.source_excerpt);
+    let page = collapse_whitespace(text);
+    let (quoted, value_spans) = match value_stated_in_excerpt(o.numeric_value, &page, &excerpt) {
+        ExcerptRead::NotInPage => {
+            return Err(
+                "source-text corroboration failed: the quoted excerpt does not appear in the \
+                 fetched page"
+                    .to_string(),
+            );
+        }
+        ExcerptRead::ValueNotStated => {
+            return Err(
+                "source-text corroboration failed: the stated value does not appear at its \
+                 sign in the quoted excerpt as the page prints it"
+                    .to_string(),
+            );
+        }
+        ExcerptRead::Stated {
+            quoted,
+            value_spans,
+        } => (quoted, value_spans),
+    };
+    excerpt_binds_metric(&quoted, &value_spans, o.observation_role, o.metric_kind).map_err(
+        |why| match why {
+            MetricContext::NoLanguage => format!(
+                "metric-context check failed: the quoted excerpt carries no {} language",
+                o.metric_kind.as_str()
+            ),
+            MetricContext::ManyNumbers(count) => format!(
+                "metric-context check failed: the quoted excerpt states {count} numbers — a \
+                 quote states the value and no other number, only a guidance-low or \
+                 guidance-high row a range's two endpoints"
+            ),
+            MetricContext::NotTheValue => "metric-context check failed: the quoted excerpt's \
+                                           one number is not the stated value, or not the \
+                                           range endpoint the row's role names"
                 .to_string(),
-        );
-    }
+        },
+    )?;
     Ok(())
 }
 
@@ -1016,6 +1381,16 @@ fn validate_observation(o: &PreProfitObservation) -> Result<(), String> {
     }
     if !o.source_url.trim().starts_with("http") {
         return Err("missing or non-URL source".to_string());
+    }
+    // The excerpt is a locator, checked against the page only once the row is
+    // otherwise well-formed: present, and short enough to be one sentence.
+    if o.source_excerpt.trim().is_empty() {
+        return Err("missing source excerpt".to_string());
+    }
+    if o.source_excerpt.trim().chars().count() > SOURCE_EXCERPT_CAP_CHARS {
+        return Err(format!(
+            "source excerpt exceeds {SOURCE_EXCERPT_CAP_CHARS} characters"
+        ));
     }
     // An ISO date (or an RFC 3339 timestamp's date prefix) — a bare non-date
     // string cannot anchor the observation's publication.
@@ -1331,6 +1706,7 @@ mod tests {
             period: period.into(),
             issuer_scope: "company".into(),
             source_url: "https://example.com/report".into(),
+            source_excerpt: format!("reported {} of {value} units", kind.as_str()),
             published_at: "2026-08-01".into(),
             confidence: 0.9,
         }
@@ -1554,16 +1930,15 @@ mod tests {
     /// A source-evidence fixture whose one page mentions the holding and
     /// states the given values — the activation legs' pass case.
     fn evidence_texts(values: &[f64]) -> std::collections::HashMap<String, String> {
+        // One sentence per value, so each row's quoted excerpt ("reported
+        // deliveries of N units") is a verbatim substring of the page.
         let stated = values
             .iter()
-            .map(|v| format!("{v}"))
+            .map(|v| format!("ACME Motors (NASDAQ: ACME) reported deliveries of {v} units this period."))
             .collect::<Vec<_>>()
-            .join(" and ");
+            .join(" ");
         let mut texts = std::collections::HashMap::new();
-        texts.insert(
-            "https://example.com/report".to_string(),
-            format!("ACME Motors (NASDAQ: ACME) reported deliveries of {stated} units this period."),
-        );
+        texts.insert("https://example.com/report".to_string(), stated);
         texts
     }
 
@@ -1661,8 +2036,8 @@ mod tests {
         let (_, rejected) = validate_observations(vec![good.clone()], &[], Some(&evidence));
         assert!(rejected[0].reason.contains("never mentions the holding"));
 
-        // A page that mentions the holding but never states the value fails
-        // corroboration.
+        // A page that mentions the holding but never printed the quoted
+        // sentence fails corroboration at the excerpt leg.
         let mut texts = std::collections::HashMap::new();
         texts.insert(
             "https://example.com/report".to_string(),
@@ -1674,14 +2049,18 @@ mod tests {
             company_name: None,
         };
         let (_, rejected) = validate_observations(vec![good.clone()], &[], Some(&evidence));
-        assert!(rejected[0].reason.contains("does not appear"));
+        assert!(rejected[0].reason.contains("quoted excerpt does not appear"));
 
-        // A digit-substring never corroborates: 41 must not match inside 141.
-        let short = observation(MetricKind::Deliveries, ObservationRole::Actual, 41.0, "2026-Q2");
+        // A digit-substring never corroborates: 41 must not match inside 141,
+        // even when the quoted sentence is genuinely on the page.
+        let short = PreProfitObservation {
+            source_excerpt: "reported deliveries of 141 units".into(),
+            ..observation(MetricKind::Deliveries, ObservationRole::Actual, 41.0, "2026-Q2")
+        };
         let mut texts = std::collections::HashMap::new();
         texts.insert(
             "https://example.com/report".to_string(),
-            "$ACME reported 141 deliveries.".to_string(),
+            "$ACME reported deliveries of 141 units this period.".to_string(),
         );
         let evidence = SourceEvidence {
             texts: &texts,
@@ -1689,14 +2068,17 @@ mod tests {
             company_name: None,
         };
         let (_, rejected) = validate_observations(vec![short], &[], Some(&evidence));
-        assert!(rejected[0].reason.contains("does not appear"));
+        assert!(rejected[0].reason.contains("does not appear at its sign in the quoted excerpt"));
 
         // Comma-separated renderings still corroborate (12,000 states 12000).
-        let big = observation(MetricKind::Deliveries, ObservationRole::Actual, 12000.0, "2026-Q2");
+        let big = PreProfitObservation {
+            source_excerpt: "reported deliveries of 12,000 units".into(),
+            ..observation(MetricKind::Deliveries, ObservationRole::Actual, 12000.0, "2026-Q2")
+        };
         let mut texts = std::collections::HashMap::new();
         texts.insert(
             "https://example.com/report".to_string(),
-            "$ACME reported 12,000 deliveries.".to_string(),
+            "$ACME reported deliveries of 12,000 units this period.".to_string(),
         );
         let evidence = SourceEvidence {
             texts: &texts,
@@ -1705,6 +2087,324 @@ mod tests {
         };
         let (accepted, _) = validate_observations(vec![big], &[], Some(&evidence));
         assert_eq!(accepted.len(), 1);
+    }
+
+    #[test]
+    fn the_excerpt_is_a_bounded_locator_checked_before_the_page() {
+        let good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
+        let missing = PreProfitObservation {
+            source_excerpt: "  ".into(),
+            ..good.clone()
+        };
+        let over_cap = PreProfitObservation {
+            source_excerpt: "x".repeat(SOURCE_EXCERPT_CAP_CHARS + 1),
+            ..good.clone()
+        };
+        let texts = evidence_texts(&[100.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let (accepted, rejected) =
+            validate_observations(vec![good, missing, over_cap], &[], Some(&evidence));
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(rejected.len(), 2);
+        assert!(rejected.iter().any(|r| r.reason == "missing source excerpt"));
+        assert!(rejected.iter().any(|r| r.reason.contains("exceeds")));
+    }
+
+    #[test]
+    fn the_excerpt_binds_the_value_to_one_sentence_about_the_metric() {
+        // The review's I3 case: a release states 41 in a revenue sentence and
+        // 141 in the deliveries sentence. A deliveries-41 row can ride neither
+        // — the revenue sentence carries no deliveries language, the
+        // deliveries sentence never states 41 — and the page as a whole no
+        // longer vouches for a number found "somewhere on it".
+        let mut texts = std::collections::HashMap::new();
+        texts.insert(
+            "https://example.com/report".to_string(),
+            "$ACME reported revenue of 41 million.\nDeliveries   rose to 141 units in the \
+             quarter, while gross margin was (12)%."
+                .to_string(),
+        );
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let row = |value: f64, excerpt: &str| PreProfitObservation {
+            source_excerpt: excerpt.into(),
+            ..observation(MetricKind::Deliveries, ObservationRole::Actual, value, "2026-Q2")
+        };
+        // The revenue sentence quoted: the value is there, the metric is not.
+        let (_, rejected) = validate_observations(
+            vec![row(41.0, "reported revenue of 41 million")],
+            &[],
+            Some(&evidence),
+        );
+        assert!(
+            rejected[0].reason.contains("no deliveries language"),
+            "{}",
+            rejected[0].reason
+        );
+        // The deliveries sentence quoted: the metric is there, 41 is not.
+        let (_, rejected) = validate_observations(
+            vec![row(41.0, "Deliveries rose to 141 units")],
+            &[],
+            Some(&evidence),
+        );
+        assert!(
+            rejected[0].reason.contains("at its sign in the quoted excerpt"),
+            "{}",
+            rejected[0].reason
+        );
+        // A sentence the page never printed rejects before either leg.
+        let (_, rejected) = validate_observations(
+            vec![row(41.0, "Deliveries rose to 41 units")],
+            &[],
+            Some(&evidence),
+        );
+        assert!(
+            rejected[0].reason.contains("quoted excerpt does not appear"),
+            "{}",
+            rejected[0].reason
+        );
+        // The honest row: the deliveries sentence with its own number, matched
+        // across the page's whitespace run and line break.
+        let (accepted, rejected) = validate_observations(
+            vec![row(141.0, "Deliveries rose to 141 units in the quarter")],
+            &[],
+            Some(&evidence),
+        );
+        assert_eq!(accepted.len(), 1, "{rejected:?}");
+        // A positive unit-economics row cannot ride the accounting-negative
+        // print; the negative row it actually states does.
+        let margin = PreProfitObservation {
+            source_excerpt: "gross margin was (12)%".into(),
+            ..observation(MetricKind::UnitEconomics, ObservationRole::Actual, 12.0, "2026-Q2")
+        };
+        let (_, rejected) = validate_observations(vec![margin.clone()], &[], Some(&evidence));
+        assert!(
+            rejected[0].reason.contains("at its sign"),
+            "{}",
+            rejected[0].reason
+        );
+        let negative = PreProfitObservation {
+            numeric_value: -12.0,
+            ..margin
+        };
+        let (accepted, rejected) = validate_observations(vec![negative], &[], Some(&evidence));
+        assert_eq!(accepted.len(), 1, "{rejected:?}");
+    }
+
+    #[test]
+    fn the_excerpt_edge_reads_the_page_neighbours() {
+        // The reviewer's round-1 cases: a quote trimmed to the digits must not
+        // shed the sign, the parenthesis, or the leading digit that sits just
+        // outside it on the page — the value is read inside the quoted span
+        // with the page's own neighbours, and a number just outside the quote
+        // never counts as quoted.
+        let page = |text: &str| {
+            let mut texts = std::collections::HashMap::new();
+            texts.insert("https://example.com/report".to_string(), text.to_string());
+            texts
+        };
+        let row = |kind: MetricKind, value: f64, excerpt: &str| PreProfitObservation {
+            source_excerpt: excerpt.into(),
+            ..observation(kind, ObservationRole::Actual, value, "2026-Q2")
+        };
+        let run = |texts: &std::collections::HashMap<String, String>,
+                   candidate: PreProfitObservation| {
+            let evidence = SourceEvidence {
+                texts,
+                symbol: "ACME",
+                company_name: None,
+            };
+            validate_observations(vec![candidate], &[], Some(&evidence))
+        };
+        // The sign just outside a digit-leading quote.
+        let texts = page("$ACME booked a loss of -41 million in deliveries revenue.");
+        let (accepted, rejected) =
+            run(&texts, row(MetricKind::Deliveries, 41.0, "41 million in deliveries"));
+        assert!(accepted.is_empty());
+        assert!(rejected[0].reason.contains("at its sign"), "{}", rejected[0].reason);
+        // The leading digit just outside it.
+        let texts = page("$ACME deliveries: 141 units delivered this quarter.");
+        let (accepted, rejected) =
+            run(&texts, row(MetricKind::Deliveries, 41.0, "41 units delivered"));
+        assert!(accepted.is_empty());
+        assert!(rejected[0].reason.contains("at its sign"), "{}", rejected[0].reason);
+        // The opening parenthesis just outside it: the positive row rejects,
+        // the negative row the page states passes.
+        let texts = page("$ACME margin: (12)% margin on deliveries this quarter.");
+        let (accepted, rejected) =
+            run(&texts, row(MetricKind::UnitEconomics, 12.0, "12)% margin on deliveries"));
+        assert!(accepted.is_empty());
+        assert!(rejected[0].reason.contains("at its sign"), "{}", rejected[0].reason);
+        let (accepted, rejected) =
+            run(&texts, row(MetricKind::UnitEconomics, -12.0, "12)% margin on deliveries"));
+        assert_eq!(accepted.len(), 1, "{rejected:?}");
+        // A number just outside the quoted span is not quoted.
+        let texts = page("$ACME 41 deliveries rose sharply.");
+        let (accepted, rejected) =
+            run(&texts, row(MetricKind::Deliveries, 41.0, "deliveries rose sharply"));
+        assert!(accepted.is_empty());
+        assert!(rejected[0].reason.contains("at its sign"), "{}", rejected[0].reason);
+        // A legitimate digit-leading quote still passes.
+        let texts = page("$ACME said: 41 units delivered in Q2.");
+        let (accepted, rejected) =
+            run(&texts, row(MetricKind::Deliveries, 41.0, "41 units delivered"));
+        assert_eq!(accepted.len(), 1, "{rejected:?}");
+    }
+
+    #[test]
+    fn the_quote_states_one_number_the_metric_owns() {
+        // The narrow one-fact contract (Codex round 3, replacing the positional
+        // binding of rounds 1 and 2): a quote carries the metric stem and
+        // exactly one number, the row's value at its sign — every digit run
+        // counts — so a compound sentence rejects whichever way round it is
+        // and the model must trim to the clause; a guidance-low / -high row
+        // alone may quote a range's two endpoints.
+        let page = |text: &str| {
+            let mut texts = std::collections::HashMap::new();
+            texts.insert("https://example.com/report".to_string(), text.to_string());
+            texts
+        };
+        let row = |kind: MetricKind, role: ObservationRole, value: f64, excerpt: &str| {
+            PreProfitObservation {
+                source_excerpt: excerpt.into(),
+                ..observation(kind, role, value, "2026-Q2")
+            }
+        };
+        let run = |texts: &std::collections::HashMap<String, String>,
+                   candidate: PreProfitObservation| {
+            let evidence = SourceEvidence {
+                texts,
+                symbol: "ACME",
+                company_name: None,
+            };
+            validate_observations(vec![candidate], &[], Some(&evidence))
+        };
+        let actual = ObservationRole::Actual;
+        let deliveries = MetricKind::Deliveries;
+        // Compound sentences reject in both orderings and for every number
+        // they print; the trimmed clause passes.
+        for sentence in [
+            "revenue was 41 million while deliveries reached 141 units",
+            "deliveries reached 141 units, while revenue was 41 million",
+            "deliveries increased 25%, while revenue was 41 million",
+            "Revenue was 41 million while deliveries reached 2,025 units",
+            "revenue was 41 million while deliveries were 41 units",
+        ] {
+            let texts = page(&format!("$ACME said {sentence}."));
+            for value in [41.0, 141.0, 2025.0, 25.0] {
+                let (accepted, rejected) = run(&texts, row(deliveries, actual, value, sentence));
+                assert!(accepted.is_empty(), "{sentence} / {value}: {accepted:?}");
+                if !rejected[0].reason.contains("does not appear") {
+                    assert!(
+                        rejected[0].reason.contains("states 2 numbers"),
+                        "{sentence} / {value}: {}",
+                        rejected[0].reason
+                    );
+                }
+            }
+        }
+        let texts = page("$ACME said revenue was 41 million while deliveries reached 141 units.");
+        let (accepted, rejected) =
+            run(&texts, row(deliveries, actual, 141.0, "deliveries reached 141 units"));
+        assert_eq!(accepted.len(), 1, "{rejected:?}");
+        let (accepted, rejected) =
+            run(&texts, row(deliveries, actual, 41.0, "revenue was 41 million"));
+        assert!(accepted.is_empty());
+        assert!(
+            rejected[0].reason.contains("no deliveries language"),
+            "{}",
+            rejected[0].reason
+        );
+        let texts = page("$ACME: Revenue was 41 million while deliveries reached 2,025 units.");
+        let (accepted, rejected) =
+            run(&texts, row(deliveries, actual, 2025.0, "deliveries reached 2,025 units"));
+        assert_eq!(accepted.len(), 1, "{rejected:?}");
+        // Every digit run counts: a period token, a percentage, or a prior
+        // print beside the value rejects the quote; the clause without them
+        // passes, and a sentence that cannot be trimmed loses its row.
+        for (sentence, clause) in [
+            ("In Q2 2026, deliveries reached 141 units", "deliveries reached 141 units"),
+            ("Deliveries were 141 units, up from 120", "Deliveries were 141 units"),
+            ("141 units delivered in Q2", "141 units delivered"),
+            ("FY26 deliveries reached 141 units on 2026-06-30", "deliveries reached 141 units"),
+        ] {
+            let texts = page(&format!("$ACME: {sentence}."));
+            let (accepted, _) = run(&texts, row(deliveries, actual, 141.0, sentence));
+            assert!(accepted.is_empty(), "{sentence}");
+            let (accepted, rejected) = run(&texts, row(deliveries, actual, 141.0, clause));
+            assert_eq!(accepted.len(), 1, "{clause}: {rejected:?}");
+        }
+        let texts = page("$ACME: deliveries rose 12% to 141 units.");
+        let (accepted, rejected) =
+            run(&texts, row(deliveries, actual, 141.0, "deliveries rose 12% to 141 units"));
+        assert!(accepted.is_empty());
+        assert!(
+            rejected[0].reason.contains("states 2 numbers"),
+            "{}",
+            rejected[0].reason
+        );
+        // A guidance range: both endpoints bind to the role that names them,
+        // hyphenated or worded; the wrong role, or an actual, rejects.
+        for sentence in [
+            "guided deliveries of 130-140 units",
+            "guided deliveries of between 130 and 140 units",
+            "guided deliveries of 130 to 140 units",
+        ] {
+            let texts = page(&format!("$ACME {sentence}."));
+            let (accepted, rejected) =
+                run(&texts, row(deliveries, ObservationRole::GuidanceLow, 130.0, sentence));
+            assert_eq!(accepted.len(), 1, "{sentence}: {rejected:?}");
+            let (accepted, rejected) =
+                run(&texts, row(deliveries, ObservationRole::GuidanceHigh, 140.0, sentence));
+            assert_eq!(accepted.len(), 1, "{sentence}: {rejected:?}");
+            let (accepted, rejected) =
+                run(&texts, row(deliveries, ObservationRole::GuidanceHigh, 130.0, sentence));
+            assert!(accepted.is_empty(), "{sentence}");
+            assert!(
+                rejected[0].reason.contains("not the stated value"),
+                "{}",
+                rejected[0].reason
+            );
+            let (accepted, _) = run(&texts, row(deliveries, actual, 130.0, sentence));
+            assert!(accepted.is_empty(), "{sentence}");
+        }
+        // The lexicon case: "in order to" is not bookings language.
+        let sentence = "revenue was 41 million in order to fund expansion";
+        let texts = page(&format!("$ACME said {sentence}."));
+        let (accepted, rejected) = run(&texts, row(MetricKind::Bookings, actual, 41.0, sentence));
+        assert!(accepted.is_empty());
+        assert!(
+            rejected[0].reason.contains("no bookings language"),
+            "{}",
+            rejected[0].reason
+        );
+    }
+
+    #[test]
+    fn metric_stems_match_at_word_starts_only() {
+        assert!(excerpt_names_metric("reported deliveries of 41 units", MetricKind::Deliveries));
+        assert!(excerpt_names_metric("Delivered 41 vehicles", MetricKind::Deliveries));
+        assert!(excerpt_names_metric("orders rose to 41", MetricKind::Bookings));
+        assert!(excerpt_names_metric("order intake of 41", MetricKind::Bookings));
+        assert!(!excerpt_names_metric("the border crossing handled 41", MetricKind::Bookings));
+        // A bare `order` or `contract` is not bookings language (Codex round 1).
+        assert!(!excerpt_names_metric(
+            "revenue was 41 million in order to fund expansion",
+            MetricKind::Bookings
+        ));
+        assert!(!excerpt_names_metric("under the contract, revenue was 41", MetricKind::Bookings));
+        assert!(!excerpt_names_metric("revenue of 41 million", MetricKind::Deliveries));
+        assert!(excerpt_names_metric("gross margin of -4.1%", MetricKind::UnitEconomics));
+        assert!(excerpt_names_metric("backlog stood at 41", MetricKind::Backlog));
+        assert!(excerpt_names_metric("reservations reached 41", MetricKind::Reservations));
+        assert!(excerpt_names_metric("produced 41 units", MetricKind::Production));
     }
 
     #[test]
@@ -1720,9 +2420,46 @@ mod tests {
         // matches its decimal render.
         assert!(value_in_text(41.0, "delivered 41 units"));
         assert!(value_in_text(41.5, "guided to 41.5 units"));
-        assert!(value_in_text(41.0, "(41)"));
         assert!(value_in_text(41.0, "delivered 41.0 units"));
         assert!(!value_in_text(41.0, "delivered 41.05 units"));
+    }
+
+    #[test]
+    fn corroboration_reads_the_printed_sign() {
+        // A positive candidate never corroborates off a negative print — a
+        // hugging minus (ASCII or U+2212), through a currency symbol, or the
+        // accounting parenthesis pair — and a negative candidate never off a
+        // bare or `+` print.
+        assert!(!value_in_text(41.0, "(41)"));
+        assert!(!value_in_text(41.0, "a loss of -41 million"));
+        assert!(!value_in_text(41.0, "a loss of −41 million"));
+        assert!(!value_in_text(41.0, "a loss of -$41 million"));
+        assert!(value_in_text(-41.0, "(41)"));
+        assert!(value_in_text(-41.0, "(41.0)"));
+        assert!(value_in_text(-41.0, "a loss of -41 million"));
+        assert!(value_in_text(-41.0, "a loss of −41 million"));
+        assert!(value_in_text(-41.0, "a loss of -$41 million"));
+        assert!(!value_in_text(-41.0, "delivered 41 units"));
+        assert!(!value_in_text(-41.0, "delivered +41 units"));
+        assert!(value_in_text(41.0, "delivered +41 units"));
+        // A hyphen between digits is a range or date separator, never a sign;
+        // a spaced hyphen and an en dash never read as signs either.
+        assert!(value_in_text(45.0, "guided to 40-45 units"));
+        assert!(!value_in_text(-45.0, "guided to 40-45 units"));
+        assert!(value_in_text(45.0, "guided to 40 - 45 units"));
+        assert!(value_in_text(45.0, "guided to 40–45 units"));
+        assert!(value_in_text(30.0, "the quarter ended 2026-06-30"));
+        // A minus after a percent sign or a closing parenthesis is a range
+        // separator too, never a sign on the upper endpoint.
+        assert!(value_in_text(45.0, "guided to 40%-45% growth"));
+        assert!(!value_in_text(-45.0, "guided to 40%-45% growth"));
+        assert!(value_in_text(45.0, "a (40)-45 swing"));
+        // Parentheses wrapping more than the number are prose, not a sign.
+        assert!(value_in_text(41.0, "(41 units)"));
+        assert!(!value_in_text(-41.0, "(41 units)"));
+        // Zero is unsigned.
+        assert!(value_in_text(0.0, "backlog of (0)"));
+        assert!(value_in_text(0.0, "backlog of 0"));
     }
 
     #[test]
@@ -1829,7 +2566,7 @@ mod tests {
         let mut texts = std::collections::HashMap::new();
         texts.insert(
             "https://example.com/report".to_string(),
-            "$ACME reported 100 deliveries.".to_string(),
+            "$ACME reported deliveries of 100 units this period.".to_string(),
         );
         let evidence = SourceEvidence {
             texts: &texts,
@@ -2254,5 +2991,36 @@ mod tests {
         let json = serde_json::to_string(&overlay).expect("serialize");
         let back: PreProfitOverlay = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(overlay, back);
+        // An overlay carrying an accepted and a rejected row round-trips both
+        // rows' source excerpts through its JSON (Codex round 1).
+        let texts = evidence_texts(&[100.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let rejected = PreProfitObservation {
+            source_excerpt: "a sentence the page never printed 90".into(),
+            ..observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q1")
+        };
+        let overlay = compute_overlay_with_sources(
+            &burning_stock(),
+            None,
+            vec![
+                observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2"),
+                rejected,
+            ],
+            Some(&evidence),
+        );
+        assert_eq!(overlay.observations.len(), 1);
+        assert_eq!(overlay.rejected.len(), 1);
+        let json = serde_json::to_string(&overlay).expect("serialize");
+        let back: PreProfitOverlay = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(overlay, back);
+        assert_eq!(back.observations[0].source_excerpt, "reported deliveries of 100 units");
+        assert_eq!(
+            back.rejected[0].observation.source_excerpt,
+            "a sentence the page never printed 90"
+        );
     }
 }
