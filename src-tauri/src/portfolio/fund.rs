@@ -471,31 +471,60 @@ pub fn composite_yield(
 /// convention as the snapshot — so the vs-own-history read compares like to like. A
 /// sample date whose coverage falls below the guard is skipped rather than composed
 /// off a sliver.
+///
+/// Each sample admits, per sector per exchange, only the latest print dated WITHIN
+/// its own quarter — after the prior quarter end, on or before its own — so one
+/// print backs at most one sample and the floor's count is a count of distinct
+/// in-quarter observations (the 2026-08-24 review's Codex I2, ruled 2026-08-28: the
+/// on-or-before select with no age bound let one stale print stand in for all
+/// twelve samples, pass the eight-observation floor, and anchor twelve targets).
+/// Dates compare as parsed calendar dates, never as strings; a print whose date
+/// does not parse is inadmissible to every sample — the adapter drops such rows at
+/// its shaper, and the parse here is the belt behind that brace.
 pub fn composite_yield_history(
     weights: &[(String, f64)],
     history: &HashMap<String, Vec<SectorPe>>,
     as_of: NaiveDate,
 ) -> Vec<DatedValue> {
+    // Parse once: each sector's datable prints, an undatable row dropped.
+    let dated: Vec<(&String, Vec<(NaiveDate, &SectorPe)>)> = history
+        .iter()
+        .map(|(sector, prints)| {
+            let parsed = prints
+                .iter()
+                .filter_map(|p| {
+                    NaiveDate::parse_from_str(&p.date, "%Y-%m-%d")
+                        .ok()
+                        .map(|d| (d, p))
+                })
+                .collect();
+            (sector, parsed)
+        })
+        .collect();
     let mut out = Vec::new();
     for q in 1..=HISTORY_SAMPLE_QUARTERS {
         let sample_date = quarter_end_before(as_of, q);
+        let prior_quarter_end = quarter_end_before(as_of, q + 1);
         let date_str = sample_date.format("%Y-%m-%d").to_string();
-        // Per sector: the latest print on or before the sample date, per exchange,
-        // then the same blend as the snapshot.
+        // Per sector: the latest print within the sample's own quarter, per
+        // exchange, then the same blend as the snapshot.
         let mut rows: Vec<SectorPe> = Vec::new();
-        for (sector, prints) in history {
-            let mut latest_by_exchange: HashMap<&str, &SectorPe> = HashMap::new();
-            for p in prints {
-                if p.date.as_str() <= date_str.as_str() {
-                    let slot = latest_by_exchange.entry(p.exchange.as_str()).or_insert(p);
-                    if p.date > slot.date {
-                        *slot = p;
-                    }
+        for (sector, prints) in &dated {
+            let mut latest_by_exchange: HashMap<&str, (NaiveDate, &SectorPe)> = HashMap::new();
+            for (d, p) in prints {
+                if *d <= prior_quarter_end || *d > sample_date {
+                    continue;
+                }
+                let slot = latest_by_exchange
+                    .entry(p.exchange.as_str())
+                    .or_insert((*d, p));
+                if *d > slot.0 {
+                    *slot = (*d, p);
                 }
             }
-            for p in latest_by_exchange.values() {
+            for (_, p) in latest_by_exchange.values() {
                 rows.push(SectorPe {
-                    sector: sector.clone(),
+                    sector: (*sector).clone(),
                     exchange: p.exchange.clone(),
                     date: p.date.clone(),
                     pe: p.pe,
@@ -817,8 +846,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     let history = composite_yield_history(&fund.sector_weights, inp.sector_pe_history, inp.as_of);
     if history.len() < MIN_COMPOSITE_HISTORY {
         return FundEngineVerdict::InsufficientEvidence(format!(
-            "only {} constant-mix composite history samples (need {MIN_COMPOSITE_HISTORY}) — \
-             the vs-own-history valuation read has no basis",
+            "only {} constant-mix composite history samples on distinct in-quarter prints \
+             (need {MIN_COMPOSITE_HISTORY}) — the vs-own-history valuation read has no basis",
             history.len()
         ));
     }
@@ -1133,8 +1162,9 @@ mod tests {
     }
 
     fn history() -> HashMap<String, Vec<SectorPe>> {
-        // Quarterly prints back through 2022 for each sector, both exchanges, so
-        // every sampled quarter finds a print on or before it.
+        // Quarterly prints back through 2022 for each sector, both exchanges —
+        // one mid-quarter-end-month print per quarter, so every sampled quarter
+        // finds a print within it.
         let mut map: HashMap<String, Vec<SectorPe>> = HashMap::new();
         let dates = [
             "2022-09-15", "2022-12-15", "2023-03-15", "2023-06-15", "2023-09-15",
@@ -1500,26 +1530,169 @@ mod tests {
 
     #[test]
     fn composite_history_over_non_finite_weights_keeps_finite_samples_only() {
-        // Prints old enough that every quarter sample sees them; a NaN weight
-        // row rides along and changes nothing — every sample is finite and
-        // equals the clean composite.
-        let mut history: HashMap<String, Vec<SectorPe>> = HashMap::new();
-        for row in snapshot() {
-            history.entry(row.sector.clone()).or_default().push(SectorPe {
-                date: "2020-01-01".to_string(),
-                ..row
-            });
-        }
-        let as_of = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
-        let clean = composite_yield(&weights(), &blend_sector_pes(&snapshot())).unwrap();
+        // The quarterly fixture backs every sample; a NaN weight row rides along
+        // and changes nothing — every sample is finite and equals the clean
+        // composite over the same prints.
+        let clean = composite_yield_history(&weights(), &history(), as_of());
+        assert_eq!(clean.len(), HISTORY_SAMPLE_QUARTERS);
         let mut w = weights();
         w.push(("Energy".to_string(), f64::NAN));
-        let samples = composite_yield_history(&w, &history, as_of);
+        let samples = composite_yield_history(&w, &history(), as_of());
         assert_eq!(samples.len(), HISTORY_SAMPLE_QUARTERS);
-        for s in &samples {
+        for (s, c) in samples.iter().zip(&clean) {
             assert!(s.value.is_finite(), "{s:?}");
-            assert!((s.value - clean.yield_value).abs() < 1e-12, "{s:?}");
+            assert_eq!(s.date, c.date);
+            assert!((s.value - c.value).abs() < 1e-12, "{s:?} vs {c:?}");
         }
+    }
+
+    /// Every sector, both exchanges, one print per listed date at the given P/E.
+    fn prints_at(dates: &[(&str, f64)]) -> HashMap<String, Vec<SectorPe>> {
+        let mut map: HashMap<String, Vec<SectorPe>> = HashMap::new();
+        for (sector, _) in weights() {
+            for (date, pe) in dates {
+                for exchange in ["NYSE", "NASDAQ"] {
+                    map.entry(sector.to_ascii_lowercase()).or_default().push(SectorPe {
+                        sector: sector.clone(),
+                        exchange: exchange.to_string(),
+                        date: date.to_string(),
+                        pe: *pe,
+                    });
+                }
+            }
+        }
+        map
+    }
+
+    fn history_floor_reason(history: &HashMap<String, Vec<SectorPe>>) -> Option<String> {
+        let inputs = FundEngineInputs {
+            fund: &fund(),
+            financials: &financials(282.0),
+            sector_pe: &snapshot(),
+            sector_pe_history: history,
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        match analyze_fund(&inputs) {
+            FundEngineVerdict::InsufficientEvidence(reason) => Some(reason),
+            FundEngineVerdict::Priced(_) => None,
+            other => panic!("the fixture is an equity fund: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_stale_print_backs_no_history_sample_and_the_fund_abstains() {
+        // Codex I2 (ruled 2026-08-28): the on-or-before select with no age bound
+        // let a lone old print stand in for all twelve quarterly samples, pass the
+        // eight-observation floor as twelve independent observations, score a
+        // 0-or-100 percentile, and anchor twelve targets. A print backs only its
+        // own quarter's sample, so one print is zero samples and the floor names
+        // the count.
+        let stale = prints_at(&[("2020-01-01", 20.0)]);
+        assert!(composite_yield_history(&weights(), &stale, as_of()).is_empty());
+        let reason = history_floor_reason(&stale).expect("abstains");
+        assert!(
+            reason.contains("only 0 constant-mix composite history samples")
+                && reason.contains("distinct in-quarter"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn a_sample_admits_only_prints_dated_within_its_own_quarter() {
+        // The window is exclusive at the prior quarter end and inclusive at the
+        // sample's own: a print ON a quarter end backs that quarter alone, the
+        // next day's print backs the following quarter alone, and the same print
+        // never backs two samples.
+        let q6 = quarter_end_before(as_of(), 6);
+        let q5 = quarter_end_before(as_of(), 5);
+        let day_after_q6 = q6.succ_opt().unwrap();
+        let history = prints_at(&[
+            (&q6.format("%Y-%m-%d").to_string(), 20.0),
+            (&day_after_q6.format("%Y-%m-%d").to_string(), 25.0),
+        ]);
+        let samples = composite_yield_history(&weights(), &history, as_of());
+        let got: Vec<(String, f64)> = samples.iter().map(|s| (s.date.clone(), s.value)).collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0].0, q6.format("%Y-%m-%d").to_string());
+        assert!((got[0].1 - 1.0 / 20.0).abs() < 1e-12, "{got:?}");
+        assert_eq!(got[1].0, q5.format("%Y-%m-%d").to_string());
+        assert!((got[1].1 - 1.0 / 25.0).abs() < 1e-12, "{got:?}");
+    }
+
+    #[test]
+    fn a_dateless_print_never_qualifies_for_any_sample() {
+        // Stored as served, a dateless row read as `""` — before every sample
+        // date — and held an exchange's slot wherever no dated print qualified
+        // (Codex I14). The sampler parses, so it is inadmissible everywhere: alone
+        // it yields nothing, and beside the quarterly fixture it moves nothing
+        // even at a wild P/E.
+        let dateless = prints_at(&[("", 20.0)]);
+        assert!(composite_yield_history(&weights(), &dateless, as_of()).is_empty());
+        let clean = composite_yield_history(&weights(), &history(), as_of());
+        let mut mixed = history();
+        for (sector, prints) in prints_at(&[("", 1.0)]) {
+            mixed.entry(sector).or_default().extend(prints);
+        }
+        let samples = composite_yield_history(&weights(), &mixed, as_of());
+        assert_eq!(samples, clean);
+    }
+
+    #[test]
+    fn a_non_padded_in_quarter_print_is_admitted_chronologically() {
+        // The feed family's documented wire quirk: as source text "2026-6-15"
+        // sorted after "2026-12-31", so the lexicographic sampler excluded it in
+        // its own quarter and misselected it for later ones (Codex I14). Parsed,
+        // it is the same print.
+        let clean = composite_yield_history(&weights(), &history(), as_of());
+        let mut unpadded = history();
+        for prints in unpadded.values_mut() {
+            for p in prints.iter_mut() {
+                let d = NaiveDate::parse_from_str(&p.date, "%Y-%m-%d").unwrap();
+                p.date = format!("{}-{}-{}", d.format("%Y"), d.format("%-m"), d.format("%-d"));
+            }
+        }
+        assert!(unpadded.values().flatten().any(|p| p.date.len() < 10), "the fixture de-padded");
+        let samples = composite_yield_history(&weights(), &unpadded, as_of());
+        assert_eq!(samples, clean);
+    }
+
+    #[test]
+    fn the_history_floor_counts_distinct_in_quarter_samples() {
+        // Prints for the seven most recent sampled quarters abstain; eight price.
+        let recent = |quarters: usize| {
+            let cutoff = quarter_end_before(as_of(), quarters + 1);
+            let mut map = history();
+            for prints in map.values_mut() {
+                prints.retain(|p| NaiveDate::parse_from_str(&p.date, "%Y-%m-%d").unwrap() > cutoff);
+            }
+            map
+        };
+        let seven = recent(7);
+        assert_eq!(composite_yield_history(&weights(), &seven, as_of()).len(), 7);
+        let reason = history_floor_reason(&seven).expect("seven abstains");
+        assert!(reason.contains("only 7 constant-mix"), "{reason}");
+        let eight = recent(8);
+        assert_eq!(composite_yield_history(&weights(), &eight, as_of()).len(), 8);
+        assert_eq!(history_floor_reason(&eight), None, "eight prices");
+    }
+
+    #[test]
+    fn the_snapshot_blend_reads_no_date() {
+        // The other sector-P/E consumer (Codex I14's separate pin): the snapshot
+        // blend keys on sector alone, averaging the exchange prints, so the
+        // shaper's canonical date render — or any date at all — changes nothing
+        // there.
+        let clean = blend_sector_pes(&snapshot());
+        let redated: Vec<SectorPe> = snapshot()
+            .into_iter()
+            .enumerate()
+            .map(|(i, row)| SectorPe {
+                date: if i % 2 == 0 { "2026-7-15".to_string() } else { String::new() },
+                ..row
+            })
+            .collect();
+        assert_eq!(blend_sector_pes(&redated), clean);
     }
 
     #[test]

@@ -778,13 +778,13 @@ The dead-money read — whether the scenario returns clear the required return f
 The alternative branch to the stock spine above; the fund engine makes the final priced-fund vs role-risk-only classification here in Step 6b (the routing rules are at Step 6a §Fund routing). A role-risk-only fund takes no grade, target, or risk tier — only the role-risk readout at the end of this section.
 
 - **Fund valuation** — what the fund’s sector mix costs now vs its own history; the priced fund’s one real valuation input.
-  - Inputs: per-sector P/E snapshots (blended across exchanges), the fund’s current sector weights, ~8–12 quarters of historical sector P/Es.
+  - Inputs: per-sector P/E snapshots (blended across exchanges), the fund’s current sector weights, ~8–12 quarters of historical sector P/Es — each quarterly sample admitting only prints dated within its own quarter (after the prior quarter end, on or before its own), so one print backs at most one sample; a print whose date does not parse is inadmissible to every sample.
   - Equation:
     - Per sector: earnings yield = `1 ÷ P/E`.
     - Composite earnings yield = `Σ(weightᵢ ÷ P/Eᵢ) ÷ Σ weightᵢ` over sectors with a usable P/E — renormalized over the **covered** weight; sectors without a usable P/E are skipped.
     - Coverage = the covered weight as an absolute share of the fund; **≥ 70% is required**, else the valuation is a gap (uncovered weight is reported, never averaged in as zero).
     - Valuation sub-score = the percentile rank of today’s composite yield within the same-weights-over-historical-multiples series = `(count of history ≤ today ÷ history length) × 100` (higher yield = cheaper = higher score).
-    - [note: needs ≥ 8 history samples, each itself with ≥ 70% coverage.]
+    - [note: needs ≥ 8 history samples — distinct in-quarter observations by construction, since a sample admits only its own quarter's prints — each itself with ≥ 70% coverage.]
 
 - **Fund sub-scores and grade**
   - **Quality** — no fund quality axis exists, so it is a fixed neutral **50** (never presented as fund quality; its presence forces the low-confidence marker).
@@ -888,7 +888,7 @@ The inline gates referenced above, gathered — with each branch's requirements 
   - Usable sector and country weights.
   - At least 70% valuation coverage.
   - At least one risk leg — volatility or drawdown (both absent → abstain).
-  - At least eight constant-mix history samples (fewer → abstain).
+  - At least eight constant-mix history samples, each on prints dated within its own quarter so one print backs at most one sample (fewer → abstain).
 
 - **Floor failure**
   - Mark `insufficient-evidence` with named reasons.

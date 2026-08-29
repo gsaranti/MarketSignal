@@ -6531,8 +6531,16 @@ fn weights_from_value(value: &Value, label_key: &str) -> Vec<(String, f64)> {
         .collect()
 }
 
-/// Shape `sector-pe-snapshot` / `historical-sector-pe` rows; a row without a usable
-/// P/E is skipped, and a missing exchange echoes the requested one.
+/// Shape `sector-pe-snapshot` / `historical-sector-pe` rows under the suite's
+/// dated-row rule (`docs/data-sources.md` §Financial Modeling Prep): the date is
+/// stored as its CANONICAL fixed-width render ([`canonical_date`]), never the
+/// source text, and a row whose date is missing or does not parse is unreadable
+/// and dropped — on both endpoints, the snapshot included (the 2026-08-24
+/// review's Codex I14, ruled 2026-08-28). Stored as served, a dateless row
+/// read as `""`, before every sample date, and held an exchange's history slot
+/// wherever no dated print qualified, and a non-zero-padded print sorted out of
+/// calendar order under the sampler's then-lexicographic compare. A row without
+/// a usable P/E is skipped, and a missing exchange echoes the requested one.
 fn sector_pe_rows_from_value(
     value: &Value,
     requested_exchange: &str,
@@ -6543,11 +6551,7 @@ fn sector_pe_rows_from_value(
     rows.iter()
         .filter_map(|row| {
             let sector = row.get("sector").and_then(Value::as_str)?.to_string();
-            let date = row
-                .get("date")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+            let date = canonical_date(row.get("date").and_then(Value::as_str)?)?;
             let pe = match row.get("pe") {
                 Some(Value::Number(n)) => n.as_f64()?,
                 Some(Value::String(s)) => s.trim().parse::<f64>().ok()?,
@@ -7337,5 +7341,100 @@ mod suite_tests {
         assert_eq!(rows.len(), 2, "the row without a usable P/E is skipped");
         assert_eq!(rows[1].exchange, "NYSE", "missing exchange echoes the request");
         assert!((rows[1].pe - 11.4).abs() < 1e-9, "string P/E parses");
+    }
+
+    /// The tracker rows a source under `ctx` finished, as (group, status, detail).
+    fn finished_rows(
+        rec: &crate::progress::RecordingReporter,
+    ) -> Vec<(String, String, Option<String>)> {
+        rec.messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished {
+                    group,
+                    status,
+                    detail,
+                    ..
+                } => Some((group, status, detail)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sector_pe_rows_store_the_canonical_date_and_drop_undatable_rows() {
+        // Codex I14 (ruled 2026-08-28): the sector-P/E family joins the dated-row
+        // rule as written. Stored as served, a non-zero-padded "2026-6-15" (the
+        // feed family's documented wire quirk) sorted after "2026-12-31" under the
+        // fund sampler's lexicographic compare, and a dateless row read as `""` —
+        // before every sample date, so it held an exchange's history slot wherever
+        // no dated print qualified. Now the render is canonical, and a missing or
+        // unparseable date drops the row on the snapshot and the history alike.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let history = r#"[
+          {"date":"2026-6-15","sector":"Technology","exchange":"NYSE","pe":30.1},
+          {"date":"2026-03-16","sector":"Technology","exchange":"NYSE","pe":29.5},
+          {"sector":"Technology","exchange":"NYSE","pe":28.0},
+          {"date":"Q4 2025","sector":"Technology","exchange":"NYSE","pe":27.0},
+          {"date":"2025-06-31","sector":"Technology","exchange":"NYSE","pe":26.0}
+        ]"#;
+        let snapshot = r#"[
+          {"date":"2026-7-15","sector":"Technology","exchange":"NYSE","pe":30.1},
+          {"sector":"Energy","exchange":"NYSE","pe":11.4}
+        ]"#;
+        let undatable = r#"[
+          {"sector":"Technology","exchange":"NYSE","pe":28.0},
+          {"date":"soon","sector":"Energy","exchange":"NYSE","pe":11.4}
+        ]"#;
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: history },
+            Canned::Reply { status: 200, headers: vec![], body: snapshot },
+            Canned::Reply { status: 200, headers: vec![], body: undatable },
+            Canned::Reply { status: 200, headers: vec![], body: undatable },
+        ]);
+        let source = source(&server.base_url).with_context(ctx);
+
+        let rows = source
+            .fetch_historical_sector_pe("Technology", "NYSE", "2022-01-01", "2026-07-15")
+            .unwrap();
+        let dates: Vec<&str> = rows.iter().map(|r| r.date.as_str()).collect();
+        assert_eq!(
+            dates,
+            vec!["2026-06-15", "2026-03-16"],
+            "canonical render kept, the dateless / non-date / impossible-date rows dropped: {rows:?}"
+        );
+        let rows = source.fetch_sector_pe_snapshot("NYSE", "2026-07-15").unwrap();
+        assert_eq!(rows.len(), 1, "the snapshot drops its dateless row too: {rows:?}");
+        assert_eq!(rows[0].date, "2026-07-15");
+
+        // A served array with no readable row is the existing `malformed` branch
+        // on both endpoints — never a benign `empty` — while the `Ok(vec![])`
+        // return contract keeps the snapshot's bounded date walk-back unchanged.
+        let rows = source
+            .fetch_historical_sector_pe("Technology", "NYSE", "2022-01-01", "2026-07-15")
+            .unwrap();
+        assert!(rows.is_empty(), "{rows:?}");
+        let rows = source.fetch_sector_pe_snapshot("NYSE", "2026-07-15").unwrap();
+        assert!(rows.is_empty(), "{rows:?}");
+        let finished = finished_rows(&rec);
+        assert_eq!(finished.len(), 4, "{finished:?}");
+        assert_eq!(finished[0].1, "ok", "{:?}", finished[0]);
+        assert_eq!(finished[1].1, "ok", "{:?}", finished[1]);
+        for row in &finished[2..] {
+            assert_eq!(row.1, "malformed", "{row:?}");
+            assert!(
+                row.2
+                    .as_deref()
+                    .is_some_and(|d| d.contains("no served row was readable")),
+                "{row:?}"
+            );
+        }
+        assert_eq!(finished[2].0, "sector-pe-history");
+        assert_eq!(finished[3].0, "sector-pe");
     }
 }

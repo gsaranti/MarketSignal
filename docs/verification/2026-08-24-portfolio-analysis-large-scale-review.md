@@ -526,6 +526,7 @@ The resume prompt usage is resolved (2026-08-28; the rulings and resolution are 
 The IPv6-literal fetch is resolved (2026-08-28; the rulings and resolution are recorded under its bullet), leaving Codex I1–I17 and the §A4 seed edge — the named slices before the Codex items are all handled.
 I1 is resolved (2026-08-28; the rulings and resolution are recorded under §I1), leaving Codex I2–I17 and the §A4 seed edge.
 I18, added 2026-08-28 off I1's Codex round 1 — the resume-across-a-rebuild question — joins the queue as a ruling item on the same terms.
+I2 and I14 are resolved together (2026-08-28; the rulings and resolutions are recorded under §I2 and §I14), leaving Codex I3–I13, I15–I18 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -599,6 +600,17 @@ A single unchanged print can thus produce a 0-or-100 valuation percentile, pass 
 
 This contradicts the logic-flow contract's “~8–12 quarters” and “≥ 8 history samples” language (`logic-flow-docs/portfolio-analysis-logic-flow.md:779-786`).
 Each sample needs a bounded-distance observation from its intended quarter, missing dates must be rejected, and the evidence floor must count distinct source observations / quarters rather than generated sample dates.
+
+Ruled 2026-08-28: the bound is the sample's own quarter — after the prior quarter end, on or before its own — with no drafted max-age constant, so one print backs at most one sample and the floor counts distinct observations by construction.
+Ruled 2026-08-28: the fix moves `engine::EVIDENCE_FLOOR_VERSION` to `evidence-floor-v3`; the grade, target, and prompt stamps do not move, since a healthy daily feed yields identical samples.
+Ruled 2026-08-28: I14 is absorbed into this slice — parsing dates at the sampler closes its sampler half, and its shaper leg lands with it.
+Ruled 2026-08-28: no watch-set line and no data-health counter — a thin-history abstention surfaces under the existing floor-reasons watch, and a failed history fetch already lands in the fund's gaps.
+**Resolved 2026-08-28.**
+`fund::composite_yield_history` parses every print's date once, drops an undatable row, and admits per sector per exchange only the latest print dated within the sample's own quarter, comparing parsed dates rather than strings.
+The floor code is unchanged — `history.len()` now counts distinct in-quarter samples by construction — and its reason names them.
+Codex round 1 approved the slice — the I14 shaper leg included — with no findings.
+Seven tests pinned: the NaN-weight pin re-based onto the quarterly fixture (it had asserted twelve samples off one 2020 print), one stale print backing no sample and the fund abstaining naming `0`, the window boundary (a print on a quarter end backs that quarter alone, the next day's the following quarter alone), a dateless print never qualifying alone or beside dated prints, a non-padded in-quarter print admitted chronologically, seven in-quarter quarters abstaining and eight pricing, and the snapshot blend reading no date.
+Canonical at `portfolio-analysis.md` §Asset eligibility (the in-quarter admission and undatable-print sentences) with the §Evidence floor stamp sentence at `evidence-floor-v3`, mirrored in the logic-flow's fund-valuation inputs and note lines and its §Evidence floor fund bullet.
 
 ### I3 — major: pre-profit source corroboration can validate the wrong sign and an unrelated number
 
@@ -722,6 +734,15 @@ The snapshot blend ignores dates and the history sampler keys on them, so the tw
 No persisted record carries the prints' source form, so no watch-set read can catch a misselection after the fact; `docs/data-sources.md` §Financial Modeling Prep names the family as the as-built exception until this lands.
 The fix is the statement-date slice's: store the canonical fixed-width render at the shaper, rule what a dateless row means, and pin both consumers; no stamp is expected to move.
 Surfaced by Codex round 1 on the statement-date slice and recorded there as not actioned; ruled its own slice 2026-08-28.
+
+Ruled 2026-08-28: absorbed into the I2 slice.
+Ruled 2026-08-28: a sector-P/E row whose date is missing or does not parse joins the dated-row rule as written — dropped at the shared shaper on both endpoints, the snapshot included, an all-unreadable body reading malformed — and every kept date is stored as the canonical fixed-width render.
+**Resolved 2026-08-28 (with I2).**
+`fmp::sector_pe_rows_from_value` stores `canonical_date`'s render and drops an undatable row; the `Ok(vec![])` return contract holds, so the snapshot's bounded date walk-back is unchanged.
+The sampler consumer compares parsed dates (§I2); the snapshot consumer is pinned to read no date.
+One test pinned at the shaper off one mock server — the canonical render kept and the dateless, non-date, and impossible-date rows dropped on the history, the snapshot dropping its dateless row, and the all-undatable body reading `malformed` with its cause on both endpoints — beside the sampler pins under §I2.
+`data-sources.md` §Financial Modeling Prep now places the family under the rule in place of the as-built exception.
+No stamp moves on this half.
 
 ### I15 — minor: the conditional topic's activation reason reaches no consumer, and its news-seed branch is unreachable
 

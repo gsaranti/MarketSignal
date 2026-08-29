@@ -1429,8 +1429,13 @@ pub fn usable_price(value: Option<f64>) -> Option<f64> {
 /// ([`usable_price`] — finite and strictly positive on the stock price and both
 /// fund legs, an unusable fund quote falling to a usable NAV), off the
 /// 2026-08-24 review's Codex I1 (ruled 2026-08-28; the stamp off its Codex
-/// round 1).
-pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v2";
+/// round 1). `evidence-floor-v3`: the fund analog's eight-sample history floor
+/// counts distinct in-quarter observations — each constant-mix sample admits
+/// only prints dated within its own quarter
+/// ([`crate::portfolio::fund::composite_yield_history`]), where under v2 one
+/// stale print could back all twelve samples — off the review's Codex I2
+/// (ruled 2026-08-28).
+pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v3";
 
 /// The stamp a record or trail persisted before the field existed decodes as
 /// (the serde default on both fields): it was floored under the presence rule,
