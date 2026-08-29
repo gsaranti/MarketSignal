@@ -2431,11 +2431,12 @@ fn append_shared_delta(
                 CrossingOutcome::Confirmed => "confirmed",
                 CrossingOutcome::FirstBreach => "first breach",
             };
+            let (observed, threshold) = fmt_crossing_pair(c.observed_value, c.threshold);
             push_delta(
                 entries,
                 format!(
-                    "ledger {role} '{}' {outcome}: observed {:.4} vs threshold {:.4}",
-                    c.statement, c.observed_value, c.threshold
+                    "ledger {role} '{}' {outcome}: observed {observed} vs threshold {threshold}",
+                    c.statement
                 ),
             );
         }
@@ -3541,12 +3542,10 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
              low-confidence marker). Expense ratio (decimal fraction of assets per \
              year; 0.0075 = 0.75%/yr): {}. US share: {}.\n",
             fmt_expense_ratio(f.fund.expense_ratio),
-            f.fund
-                .country_weights
-                .iter()
-                .filter(|(c, _)| c.to_ascii_lowercase().contains("united states"))
-                .map(|(_, w)| format!("{:.0}%", w * 100.0))
-                .next()
+            // The guard's own read (`fund::us_share`): every US alias summed and
+            // capped, never a first-label read of one spelling (Codex I8).
+            crate::portfolio::fund::us_share(&f.fund)
+                .map(|s| format!("{:.0}%", s * 100.0))
                 .unwrap_or_else(|| "(gap)".to_string()),
         ));
         if let Some(cov) = e.metrics.composite_coverage {
@@ -3595,9 +3594,12 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         ));
     }
     if let Some(om) = &e.price_targets.one_month {
+        // Both horizons expose their methodology (`docs/portfolio-analysis.md`
+        // §The holding verdict); the one-month line had printed bare numbers,
+        // so the model could not see which basis the band stood on (Codex I10).
         p.push_str(&format!(
-            "ENGINE ONE-MONTH TARGETS: bear {:.2} / base {:.2} / bull {:.2}\n",
-            om.bear, om.base, om.bull
+            "ENGINE ONE-MONTH TARGETS: bear {:.2} / base {:.2} / bull {:.2}\n  methodology: {}\n",
+            om.bear, om.base, om.bull, om.methodology
         ));
     }
 
@@ -3822,15 +3824,60 @@ fn fmt_expense_ratio(v: Option<f64>) -> String {
     let Some(x) = v else {
         return "(gap)".to_string();
     };
-    let places: usize = if x == 0.0 {
+    let places = render_places(x);
+    let pct = places - 2;
+    format!("{x:.places$} ({:.pct$}%/yr)", x * 100.0)
+}
+
+/// The decimal places a prompt-rendered value takes: four (one basis point),
+/// extended up to ten where a nonzero value would otherwise round to zero —
+/// the expense-ratio render's own rule, shared so every site that prints a
+/// ledger-unit value states it at the same precision.
+fn render_places(x: f64) -> usize {
+    if x == 0.0 {
         4
     } else {
         (4..=10)
             .find(|p| (x * 10f64.powi(*p as i32)).round() != 0.0)
             .unwrap_or(10)
+    }
+}
+
+/// The ledger-crossing prompt render — the observed value and the threshold
+/// as one pair at one shared precision, for both sites that print a crossing
+/// (the input-delta entry and the 6f ENGINE CONDITION CROSSINGS section).
+/// `ConditionCrossing` carries no series, so the rule is series-agnostic:
+/// four places had flattened a sub-basis-point expense ratio to `0.0000`
+/// while the direct render extended its precision, and the two sites had
+/// printed the threshold at two precisions in one prompt (the 2026-08-24
+/// review's Codex I12). The precision is **comparison-safe** (the group's
+/// Codex round 1): it starts at the pair's [`render_places`] floor and
+/// extends, to ten places, until the rendered pair orders as the values do
+/// — `0.00006` against `0.00005` had rendered `0.0001` against `0.0001`,
+/// a real crossing shown as equality. The test is on the rendered pair read
+/// back as numbers, never on the strings: the two must order as the values
+/// do, so `-0.0000000000` beside `0.0000000000` — distinct strings that read
+/// as equal — is refused (the group's Codex round 3). Rounding is monotone,
+/// so a pair that orders correctly never inverts. Two distinct values still
+/// alike at ten places fall back to the shortest round-trip render (`{}`),
+/// which differs for any two distinct `f64`s and keeps their order — the
+/// engine's comparison is exact and a zero margin is valid, so a crossing
+/// can sit closer than that (the group's Codex round 2).
+fn fmt_crossing_pair(observed: f64, threshold: f64) -> (String, String) {
+    // A negative zero would print `-0.0000`; it is zero.
+    let observed = if observed == 0.0 { 0.0 } else { observed };
+    let threshold = if threshold == 0.0 { 0.0 } else { threshold };
+    let order = observed.partial_cmp(&threshold);
+    let faithful = |o: &str, t: &str| match (o.parse::<f64>(), t.parse::<f64>()) {
+        (Ok(o), Ok(t)) => o.partial_cmp(&t) == order,
+        _ => false,
     };
-    let pct = places - 2;
-    format!("{x:.places$} ({:.pct$}%/yr)", x * 100.0)
+    let floor = render_places(observed).max(render_places(threshold));
+    let render = |places: usize| (format!("{observed:.places$}"), format!("{threshold:.places$}"));
+    (floor..=10)
+        .map(render)
+        .find(|(o, t)| faithful(o, t))
+        .unwrap_or_else(|| (format!("{observed}"), format!("{threshold}")))
 }
 
 /// The IV-skew prompt render — the put-minus-call difference with an explicit
@@ -4424,9 +4471,10 @@ pub fn ledger_prompt_section(
                             "first-breach note (not yet confirmed — a lone print)"
                         }
                     };
+                    let (observed, threshold) = fmt_crossing_pair(c.observed_value, c.threshold);
                     p.push_str(&format!(
-                        "- {what}: '{}' — observed {:.4} vs threshold {} (observation {})\n",
-                        c.statement, c.observed_value, c.threshold, c.observation_id
+                        "- {what}: '{}' — observed {observed} vs threshold {threshold} (observation {})\n",
+                        c.statement, c.observation_id
                     ));
                 }
                 for u in &e.unevaluable {
@@ -7894,8 +7942,9 @@ mod tests {
         // both horizons) and Codex I6 made the model arm's declared domain a
         // decode gate with its clauses in the prompt, so a pre-fix checkpoint
         // cannot resume into rows the gate would reject: the stamp moved and
-        // stays pinned.
-        assert_eq!(PROMPT_VERSION, "portfolio-v21");
+        // stays pinned. Group 3 (Codex I8 / I10 / I12 renders and the I19
+        // period-word guard, ruled 2026-08-29) moved it again.
+        assert_eq!(PROMPT_VERSION, "portfolio-v22");
     }
 
     #[test]
@@ -8982,6 +9031,178 @@ mod tests {
     }
 
     #[test]
+    fn crossing_pairs_render_at_one_comparison_safe_precision() {
+        // Codex I12: one formatter for the pair — four places extending where
+        // a nonzero value would round to zero (the expense-ratio rule), and
+        // further (the group's Codex rounds 1–3) until the rendered pair, read
+        // back as numbers, orders as the values do, so a real crossing never
+        // renders as equality and, on that fixed-decimal branch, the two
+        // values print at one shared precision; past ten places the
+        // round-trip fallback prints each at its own shortest exact form.
+        // Order is the guarantee, not distance: `0.0000451`
+        // against `0.0000449` renders `0.00005` against `0.00004`, the gap
+        // magnified, and `0.0000649` against `0.0000451` renders `0.00006`
+        // against `0.00005`, the gap shrunk — fixed-precision rounding can
+        // do either to a distance, and the render promises neither.
+        let pair = |o: f64, t: f64| {
+            let (a, b) = fmt_crossing_pair(o, t);
+            format!("{a} vs {b}")
+        };
+        assert_eq!(pair(0.0075, 0.0075), "0.0075 vs 0.0075");
+        assert_eq!(pair(-0.45, -0.4), "-0.4500 vs -0.4000");
+        assert_eq!(pair(1234.5678, 1234.5677), "1234.5678 vs 1234.5677");
+        assert_eq!(pair(0.03 / 100.0, 0.0), "0.0003 vs 0.0000");
+        // Each value alone would take four places and print `0.0001`; the
+        // pair extends until the crossing shows.
+        assert_eq!(pair(0.00006, 0.00005), "0.00006 vs 0.00005");
+        // The observed value's own floor governs both, so the threshold never
+        // reads as `0.0001` beside `0.00004`.
+        assert_eq!(pair(0.00004, 0.00005), "0.00004 vs 0.00005");
+        assert_eq!(pair(0.00001, 0.00002), "0.00001 vs 0.00002");
+        assert_eq!(pair(-0.00004, 0.00003), "-0.00004 vs 0.00003");
+        // A negative zero is zero.
+        assert_eq!(pair(-0.0, 0.0), "0.0000 vs 0.0000");
+        // Past ten places the pair falls back to the shortest round-trip
+        // render, so a zero-margin crossing that close still reads as one
+        // (Codex round 2) — distinct values never render alike.
+        assert_eq!(pair(1e-12, 0.0), "0.000000000001 vs 0");
+        assert_eq!(pair(0.1000000000001, 0.1), "0.1000000000001 vs 0.1");
+        let (o, t) = fmt_crossing_pair(0.1 + f64::EPSILON, 0.1);
+        assert_ne!(o, t);
+        assert!(o.parse::<f64>().unwrap() > t.parse::<f64>().unwrap());
+        // The stop test reads the pair back as numbers (Codex round 3): a
+        // tiny negative against zero renders `-0.0000000000` beside
+        // `0.0000000000` at ten places — distinct strings that read as equal
+        // — so it falls through to the round-trip render like any other
+        // crossing too close to show.
+        assert_eq!(pair(-1e-12, 0.0), "-0.000000000001 vs 0");
+        assert_eq!(pair(0.0, -1e-12), "0 vs -0.000000000001");
+        assert_eq!(pair(-1e-12, 1e-12), "-0.000000000001 vs 0.000000000001");
+        // Every rendered pair orders as its values do.
+        for (o, t) in [
+            (0.0075, 0.0075),
+            (-0.45, -0.4),
+            (0.00006, 0.00005),
+            (0.00004, 0.00005),
+            (-1e-12, 0.0),
+            (0.1 + f64::EPSILON, 0.1),
+            (-0.0, 0.0),
+        ] {
+            let (ro, rt) = fmt_crossing_pair(o, t);
+            assert_eq!(
+                ro.parse::<f64>().unwrap().partial_cmp(&rt.parse::<f64>().unwrap()),
+                o.partial_cmp(&t),
+                "{o} vs {t} rendered {ro} vs {rt}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_crossing_renders_state_observed_and_threshold_identically() {
+        // Codex I12: the input-delta entry and the 6f ENGINE CONDITION
+        // CROSSINGS section print the same crossing through one pair
+        // formatter — a sub-basis-point expense ratio no longer flattens to
+        // `0.0000` at either site, the threshold no longer prints at four
+        // places in one and shortest-round-trip in the other, and a crossing
+        // whose two values each round to `0.0001` shows as the crossing it is.
+        let prior = prior_with_conditions();
+        let crossing = |observed: f64, threshold: f64| ConditionCrossing {
+            condition_id: "keep-1".into(),
+            statement: "Expense ratio rises".into(),
+            role: ConditionRole::Falsifier,
+            outcome: CrossingOutcome::Confirmed,
+            observed_value: observed,
+            threshold,
+            observation_id: "2026-07-16".into(),
+            confirmed_at: Some("2026-07-16".into()),
+        };
+        let eval = LedgerEvaluation {
+            crossings: vec![crossing(0.00006, 0.00005), crossing(-0.45, -0.4)],
+            unevaluable: vec![],
+            unevaluable_series: vec![],
+            updated_states: vec![],
+        };
+        let section = ledger_prompt_section(Some(&prior), Some(&eval), false, &[], None);
+        let d = fund_dossier(us_equity_fund());
+        let mut entries = Vec::new();
+        append_shared_delta(&mut entries, &d, PositionChange::Unchanged, Some(&eval), Some(1.0));
+        let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+        for rendered in [
+            "observed 0.00006 vs threshold 0.00005",
+            "observed -0.4500 vs threshold -0.4000",
+        ] {
+            assert!(section.contains(rendered), "{rendered}: {section}");
+            assert!(
+                labels.iter().any(|l| l.contains(rendered)),
+                "{rendered}: {labels:?}"
+            );
+        }
+        assert!(!section.contains("0.0000 vs"), "{section}");
+        assert!(!section.contains("0.0001 vs threshold 0.0001"), "{section}");
+        assert!(!section.contains("threshold -0.4 "), "{section}");
+    }
+
+    #[test]
+    fn the_priced_fund_prompt_renders_the_guards_us_share_and_both_horizons_methodology() {
+        // Codex I8: the FUND CONTEXT line reads `fund::us_share` — every US
+        // alias summed and capped, the ≥ 70% guard's own read — where it had
+        // taken the first label containing "united states", so a `US` row
+        // passed the guard at 97% while the prompt said `(gap)`.
+        let prompt_for = |weights: Vec<(String, f64)>| {
+            let mut fund = us_equity_fund();
+            fund.country_weights = weights;
+            let d = fund_dossier(fund);
+            let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+                EngineVerdict::Analyzed(o) => o,
+                other => panic!("{other:?}"),
+            };
+            interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
+                dossier: &d,
+                prior_ledger: d.prior_ledger(),
+                engine: &engine_output,
+                distilled: "",
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: None,
+                narrative: None,
+            })
+        };
+        let us = prompt_for(vec![("US".into(), 0.97), ("Canada".into(), 0.03)]);
+        assert!(us.contains("US share: 97%."), "{us}");
+        let summed = prompt_for(vec![
+            ("United States".into(), 0.5),
+            ("USA".into(), 0.2),
+            ("U.S.".into(), 0.1),
+            ("Canada".into(), 0.2),
+        ]);
+        assert!(summed.contains("US share: 80%."), "{summed}");
+        let capped = prompt_for(vec![
+            ("United States of America".into(), 0.8),
+            ("us".into(), 0.5),
+        ]);
+        assert!(capped.contains("US share: 100%."), "{capped}");
+        let gap = prompt_for(vec![]);
+        assert!(gap.contains("US share: (gap)."), "{gap}");
+        // Both horizons' engine targets carry their methodology (Codex I10):
+        // the one-month line names its basis like the twelve-month one.
+        assert!(
+            us.contains("ENGINE SCENARIO TARGETS (baseline arm; twelve-month rolling): bear"),
+            "{us}"
+        );
+        let one_month = us
+            .find("ENGINE ONE-MONTH TARGETS: bear")
+            .unwrap_or_else(|| panic!("{us}"));
+        let tail = &us[one_month..];
+        let line_end = tail.find('\n').unwrap();
+        assert!(
+            tail[line_end..].starts_with("\n  methodology: One-month (rolling) base = spot"),
+            "{tail}"
+        );
+        assert!(tail.contains(engine::SCENARIO_TARGET_PARAMETER_VERSION), "{tail}");
+    }
+
+    #[test]
     fn expense_ratio_renders_both_readings_on_every_fund_prompt() {
         // All three fund prompts route through the one formatter: the role-risk
         // prompt, the priced branch's FUND CONTEXT arm, and the action prompt's
@@ -9024,7 +9245,7 @@ mod tests {
             narrative: None,
         });
         assert!(
-            interp.contains("0.0075 = 0.75%/yr): 0.0003 (0.03%/yr). US share:"),
+            interp.contains("0.0075 = 0.75%/yr): 0.0003 (0.03%/yr). US share: 99%."),
             "{interp}"
         );
 

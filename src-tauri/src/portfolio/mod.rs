@@ -1940,7 +1940,23 @@ pub struct HoldingAudit {
 /// whose ×100 overflows renders as the decimal ratio, never `inf%`. An
 /// edge-only render change, stamped on I12's precedent (Codex I16, round 2;
 /// ruled 2026-08-29).
-pub const PROMPT_VERSION: &str = "portfolio-v21";
+///
+/// `portfolio-v22`: the group-3 prompt renders and the period-word guard (the
+/// 2026-08-24 review's Codex I8, I10, I12 and I19, ruled 2026-08-29). The
+/// priced-fund FUND CONTEXT line renders the ≥ 70% guard's own US share
+/// (`fund::us_share` — every alias summed, capped) where it had read the
+/// first "united states" label alone; the one-month engine targets carry
+/// their methodology line like the twelve-month ones; both ledger-crossing
+/// renders print observed and threshold as one pair at one comparison-safe
+/// precision — the expense-ratio render's floor, extended until the rendered
+/// pair, read back as numbers, orders as the values do, the shortest
+/// round-trip render past ten places; and Step 6e's one-fact admission
+/// filter rejects a value that is itself the period — a 1900–2099 year
+/// printed without a thousands separator right after `for / in / of / by /
+/// through / fiscal / FY`, a range when both endpoints read so — with the 6d
+/// prompt line stating the rule. Prompt content and the admission leg move
+/// together on I3's `portfolio-v17` precedent; no other axis moves.
+pub const PROMPT_VERSION: &str = "portfolio-v22";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

@@ -542,6 +542,8 @@ I15, ruled at its plan, and the §A4 seed edge are one group — the research lo
 A group never crosses a stamp axis, and a batch still never mixes code and doc findings.
 I7, I9 and I16 are resolved (2026-08-29; the rulings and resolutions are recorded under §I7, §I9 and §I16), leaving Codex I8, I10–I13, I15, I17–I19 and the §A4 seed edge.
 I18 is ruled and I17 resolved with it (2026-08-29; the rulings and resolutions are recorded under §I17 and §I18, the trail's shape stamped `checkpoint-v2`), leaving Codex I8, I10–I13, I15, I19 and the §A4 seed edge.
+I19 is ruled and I8, I10 and I12 resolved with it (2026-08-29; the rulings and resolutions are recorded under §I8, §I10, §I12 and §I19, the prompt stamp moved to `portfolio-v22`), leaving Codex I11, I13, I15 and the §A4 seed edge.
+I20, added 2026-08-29 off group 3's Codex round 1 — a carried observation row carries no admission stamp — joins the queue on the same terms, ruled at its addition (attribute, never re-filter; recorded under §I20), leaving Codex I11, I13, I15, I20 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -822,6 +824,12 @@ Multiple US-alias rows are likewise summed by the engine but truncated to the fi
 
 This is a direct mismatch with the logic-flow claim that the fund's US country-weight share is rendered (`logic-flow-docs/portfolio-analysis-logic-flow.md:795-800`).
 The prompt should consume the already-computed classified share or a shared helper, not reimplement the label policy.
+Ruled 2026-08-29 (group 3, with I10, I12 and I19 under one `PROMPT_VERSION` bump): the prompt reads the shared helper — `fund::us_share`, the guard's own function, made public — rather than a share plumbed onto the engine output, since a persisted field for a render alone would touch the store and the frontend type.
+Resolved 2026-08-29: the FUND CONTEXT line renders `fund::us_share(&f.fund)` — every alias summed, capped at 1, `(gap)` on no weightings — so the model sees the share the ≥ 70% guard read; canonical at `docs/portfolio-analysis.md` §Asset eligibility, mirrored in the logic-flow's fund-metrics US-share bullet.
+One test pinned: a `US` row renders 97%, three aliases sum to 80%, an over-served set caps at 100%, and no weightings render `(gap)`; the existing fund-prompt test now asserts the fixture's 99%.
+`PROMPT_VERSION` moved to `portfolio-v22` with the group.
+Reviewer round 1 (2026-08-29): approve-with-nits, two folded in here — the prompt test renamed `the_priced_fund_prompt_renders_the_guards_us_share_and_both_horizons_methodology` for the I10 assertion it also carries, and `us_share`'s doc naming `US_LABELS` in plain code (a private intra-doc link from a public fn would warn under `cargo doc`); the round is recorded whole under §I19.
+Codex round 1 (2026-08-29): no finding here — the shared US-share render read correct under static inspection; the round is recorded whole under §I19.
 
 ### I9 — minor: the fund-specific sector-P/E adapter bypasses the suite's established integrity guards
 
@@ -848,6 +856,12 @@ The interpretation prompt renders the twelve-month targets with their methodolog
 The Portfolio page's "Target methodology" reveal renders only `twelve_month.methodology` (`src/components/PortfolioView.vue:2001-2006`), and the component spec's default fixture carries `one_month: null`, so it cannot catch the omission (`tests/components/PortfolioView.spec.ts:44`).
 Surfaced by the Codex round on the `targets-v5` slice, which changed the one-month band's basis — neither the model nor the reader can see which basis a one-month band stands on.
 Pre-existing rather than introduced by that slice; it is its own slice (prompt, view, and spec).
+Ruled 2026-08-29 (group 3): the prompt, the card's reveal and the spec move together; the spec's base fixture carries a one-month target with a methodology so the default card exercises both horizons, a null-one-month case beside it; the action call's implied-moves block keeps provenance, not methodology (I5's shape).
+Resolved 2026-08-29: the ENGINE ONE-MONTH TARGETS line carries `methodology:` like the twelve-month line; the Portfolio card's Target methodology reveal renders each authored horizon's methodology, one-month first; the logic-flow's prompt-input and card bullets say so.
+Pinned: the prompt-level test asserts the one-month methodology line follows its targets; the spec asserts both paragraphs after the click, one-month first, and a null one-month renders only the twelve-month paragraph.
+`PROMPT_VERSION` moved to `portfolio-v22` with the group.
+Reviewer round 1 (2026-08-29): approve-with-nits, nothing folded in here — the fixture-masking check passed, no spec asserting on the newly rendered 1-mo tile or its numbers; the round is recorded whole under §I19.
+Codex round 1 (2026-08-29): no finding here — the prompt and UI methodology disclosure read correct under static inspection; the round is recorded whole under §I19.
 
 ### I11 — minor: a scenario-target parameter-version change has no cross-run continuity attribution
 
@@ -864,6 +878,33 @@ The edge is reachable: the adapter divides any numeric `expenseRatio` by 100 unq
 The two sites also disagree on the threshold: the input-delta entry prints it at four places and the 6f section shortest-round-trip (`{}`), so one crossing states its threshold two ways in one prompt.
 `ConditionCrossing` carries no series, so the fix is series-agnostic — one shared formatter at both sites, four places extending where a nonzero value would round to zero, the expense-ratio render's own rule — and a `PROMPT_VERSION` event.
 Surfaced by Codex rounds 1–2 on the `portfolio-v14` expense-ratio slice and recorded there as deferred; ruled its own slice 2026-08-27.
+Ruled 2026-08-29 (group 3): one shared formatter on the expense-ratio render's places rule, at both sites, for observed and threshold alike; render precision stays out of `docs/` on the `portfolio-v14` precedent — the code doc-comment and this record are its home.
+Resolved 2026-08-29: `render_places` is lifted out of `fmt_expense_ratio` and `fmt_crossing_value` prints a crossing value on it — four places extending to ten where a nonzero value would round to zero — at the input-delta entry and the 6f ENGINE CONDITION CROSSINGS section.
+Two tests pinned: the formatter over zero, a signed value, a sub-basis-point value, and the half-basis-point boundary (which rounds away from zero at four places, as the expense-ratio rule stands); and both renders stating `observed 0.00004 vs threshold 0.00003` and `observed -0.4500 vs threshold -0.4000` identically.
+`PROMPT_VERSION` moved to `portfolio-v22` with the group.
+Reviewer round 1 (2026-08-29): approve-with-nits, nothing folded in here — no other `vs threshold` render exists and no test had pinned the old forms; the round is recorded whole under §I19.
+Codex round 1 (2026-08-29) found the per-value precision comparison-unsafe: `0.00006` against `0.00005` rendered `0.0001` against `0.0001`, a real crossing shown as equality, and `0.00004` against `0.00005` rendered at two precisions, the gap exaggerated.
+Closed: `fmt_crossing_pair` renders observed and threshold together at one precision — the pair's `render_places` floor, extended to ten places until the two strings differ whenever the values do — at both sites, `fmt_crossing_value` retired; rounding is monotone, so differing strings keep the values' order, and values closer than half a unit at ten places render alike, below any margin's meaning.
+The pins re-based: the pair test covers an equal pair, signed values, a value beside zero, the `0.00006`-against-`0.00005` case each value alone would print as `0.0001`, the observed floor governing the threshold, a negative zero reading as zero, and the ten-place floor; the prompt-level test renders `observed 0.00006 vs threshold 0.00005` at both sites and refuses `0.0001 vs threshold 0.0001`.
+No stamp moves off the round — the render stays under `portfolio-v22`.
+Codex round 2 (2026-08-29) found the ten-place floor still comparison-unsafe: the engine's comparison is exact (`value > threshold + margin`, the margin clamped to zero or above, zero valid), so an `above` crossing at `0.1` against `0.1000000000001` emits while the render read `0.1000000000 vs 0.1000000000`; the round-1 "below any margin's meaning" claim overclaimed.
+Closed: past ten places the pair falls back to the shortest round-trip render, which differs for any two distinct values and keeps their order; the two floor pins re-based to the fallback, with a one-ulp crossing pinned to render distinct and ordered.
+No stamp moves off the round.
+Codex round 3 (2026-08-29) found the strings-differ stop test still unsafe on a sign crossing: `-1e-12` against zero renders `-0.0000000000` beside `0.0000000000` at ten places — distinct strings that read as equal — and stopped there, while a zero-margin `below` condition is an exact crossing.
+Closed: the stop test reads the rendered pair back as numbers and accepts only a pair that orders as the values do, so that case and any like it fall through to the round-trip render; pinned for the negative-against-zero, zero-against-negative and symmetric sign-crossing pairs, with every pinned pair asserted to order as its values do.
+No stamp moves off the round.
+Codex round 4 (2026-08-29) found documentation residue: the `portfolio-v22` history paragraph and the formatter's doc comment still stated the round-1 invariant ("until the strings differ"), which round 3 had shown insufficient.
+Closed: both, and the pair test's comment, now state the enforced invariant — the rendered pair, read back as numbers, orders as the values do, the shortest round-trip render past ten places; the round-1 "Closed" line above stands as history.
+No stamp moves off the round.
+Codex round 5 (2026-08-29) found the pair test's comment overstating the guarantee — "a sub-basis-point gap is never exaggerated" — where the formatter guarantees order and one shared precision, never distance: `0.0000451` against `0.0000449` renders `0.00005` against `0.00004`, the gap magnified.
+Closed: the comment states the guarantee as order and, on the fixed-decimal branch, one shared precision, distance named as not guaranteed; distance fidelity is not adopted as a requirement — the render is the crossing's comparison aid beside its confirmed / first-breach tag, and the values persist exact on the crossing itself.
+No stamp moves off the round.
+Codex round 6 (2026-08-29) found the replacement wording absolute — "as any fixed-precision decimal render magnifies it" — where rounding can magnify, preserve, or shrink a gap: `0.0000649` against `0.0000451` renders `0.00006` against `0.00005`, the gap shrunk.
+Closed: the comment and the round-5 line above give both examples and say the render promises neither.
+No stamp moves off the round.
+Codex round 7 (2026-08-29) found the shared-precision claim unqualified — the round-trip fallback past ten places prints each value at its own shortest exact form (`0.000000000001` against `0`), so one shared precision holds on the fixed-decimal branch alone.
+Closed: the comment and the round-5 line above scope the shared-precision guarantee to the fixed-decimal branch and name the fallback's form.
+No stamp moves off the round.
 
 ### I13 — minor: an equity-source flip steps debt/equity and price/book past the continuity gate
 
@@ -1003,3 +1044,33 @@ A value that is itself the period or a unit — "delivery guidance for 2025" —
 Both shapes are bounded to a quoted, persisted excerpt the audit can read, and the run's rejection split is the evidence for how often either arrives.
 Answers exist per shape: a negative lexicon of competing financial nouns (revenue, margin, profit, cash, …) whose presence in the quote rejects it; a period-word guard that rejects a value immediately preceded by "for", "in", "of", "by", "through", or "fiscal" when it reads as a 1900–2099 year; or leaving both to the persisted-excerpt audit and calibrating the stem table off the run.
 Surfaced by I3's second Codex round, re-cut by its third (2026-08-28), which closed the bare-year-beside-the-value half by making every digit run count, and broadened by its fourth to the candidate-is-the-period shape; queued ahead of the run as a ruling item, one finding per slice, like I1–I18.
+Ruled 2026-08-29: the period-word guard is adopted, its word list `for`, `in`, `of`, `by`, `through`, `fiscal` and `fy` (drafted, calibratable); the range carve-out reads the word before the left endpoint and rejects when both endpoints read as years; a digit run printed with a thousands separator is a count, never a year, and is exempt; a genuine count in the 1900–2099 band after such a word is the accepted loss of an optional row.
+Ruled 2026-08-29: the negative lexicon is declined — the semantic-lexicon shape I3's first two rounds leaked on, and one that collides with the UnitEconomics stems (`revenue per`, `margin`) so it would be a second per-kind table drafted blind; the competing-noun shape stays with the persisted-excerpt audit, the run's rejection split calibrating the stem table.
+Ruled 2026-08-29: the guard rides `PROMPT_VERSION` on I3's `portfolio-v17` precedent, with the 6d prompt line stating the rule; `PRE_PROFIT_PARAMETER_VERSION` and the other axes do not move.
+Resolved 2026-08-29: `excerpt_binds_metric` returns `MetricContext::PeriodValue` — its reason naming the shape — through `reads_as_year` and `period_word_before`, the comma marks carried on `ExcerptRead::Stated` from the stripping; the 6d bullet tells the model a four-digit year after a period word is the period and a row valued at it rejects; canonical at `docs/portfolio-workflow.md` §Step 6e, mirrored in the logic-flow's 6e activation-legs bullet.
+Two tests pinned: the guard over the seven words, `FY2025`, the period range in both roles, the accepted loss, and the admitted shapes (another word, a non-year, a decimal, a comma-bearing run, a range whose left endpoint is no year); and the 6d prompt stating the rule on the overlay-eligible branch alone.
+`PROMPT_VERSION` moved to `portfolio-v22` with the group.
+Reviewer round 1 (2026-08-29) approved the group with five nits, four folded in: the comma hugging the run from outside (`in 2025, deliveries` — the mark sits at the span's end, never inside it) pinned in the reject list; the phrasings the immediate-left word does not reach recorded below as calibration candidates; the fund-prompt test renamed for the I10 assertion it also carries (§I8); `us_share`'s doc link made plain (§I8); the logic-flow 6e mirror's appended clause left standing, the file outside the `docs/` sentence rule; no stamp moves off the round.
+Calibration candidates off the round, for the post-run stem-table pass: `guidance for the year 2025`, `in early 2025`, `by year-end 2025` and `for CY2025` still admit a row valued 2025, the immediate-left word being `year`, `early`, `end` or `cy` — the word list is drafted and moves on the run's rejection split, never blind.
+Codex round 1 (2026-08-29) returned reject-with-reasons on three items.
+P1 — the guard does not re-validate carried observation rows — is pushed back as a group defect: the carry is the documented history contract (`docs/portfolio-workflow.md` §Step 6b and §Step 6e), §I3 ruled 2026-08-28 that no store holds a research-produced row, and nothing has run live since, so no pre-`v22` row exists and the fresh-start rule bars a migration for data that never existed.
+The forward question P1 does raise — whether a carried row re-admits through the current excerpt-only legs (metric language, one number, period word) when the admission contract moves, the post-run word-list calibration being the first case — is surfaced for ruling; the page legs stood at admission and cannot re-run.
+Ruled 2026-08-29: attribute, never re-filter — each accepted row records the prompt stamp it was admitted under, and the question is queued as I20 on the same terms as I1–I19, its own slice.
+P2 — the crossing pair's per-value precision was comparison-unsafe — is closed under §I12.
+P3 — BUILD's standing-constraint bullet and §What remains still read this group as queued — is a `.metis/` write, deferred to session-end on §I18's precedent beside CURRENT.md's stamp list.
+No stamp moves off the round.
+Codex round 2 (2026-08-29) returned one remaining P2 — the ten-place floor of the crossing render — closed under §I12; the P1 push-back was confirmed by Codex's own read-only database check (zero production Portfolio runs, one development run with no `source_excerpt`), I20 accepted as the forward provenance requirement, and P3's session-end deferral accepted; no stamp moves off the round.
+Codex round 3 (2026-08-29) returned one remaining P2 — the crossing render's stop test on a sign crossing that rounds to negative zero — closed under §I12; no stamp moves off the round.
+Codex round 4 (2026-08-29) returned one remaining P2 — the stale "strings differ" wording in the `portfolio-v22` history paragraph and the formatter's doc comment — closed under §I12, the functional correction judged sound; no stamp moves off the round.
+Codex round 5 (2026-08-29) returned one remaining P2 — the pair test's comment claiming distance fidelity the formatter does not guarantee — closed under §I12 as a comment correction, distance fidelity not adopted as a requirement, functional behaviour approved; no stamp moves off the round.
+Codex round 6 (2026-08-29) returned one remaining P2 — the replacement comment's absolute "magnifies" where rounding may also preserve or shrink a gap — closed under §I12 as a wording correction, functional behaviour approved; no stamp moves off the round.
+Codex round 7 (2026-08-29) returned one remaining P2 — the comment's shared-precision claim unqualified by the round-trip fallback — closed under §I12 as a wording correction, functional behaviour approved; no stamp moves off the round.
+
+### I20 — minor (ruled): a carried observation row carries no admission stamp
+
+An accepted `pre_profit_observation` row persists with its excerpt, source and vintage, and the overlay carries the pre-profit parameter stamp, but nothing on the row says which admission contract admitted it (`pre_profit.rs`, `PreProfitObservation`; the overlay's `parameter_version`).
+The history carries whole across runs (`compute_overlay_with_sources`, the prior overlay's rows merged with this run's accepted rows), so every admission-contract move — the excerpt leg (`portfolio-v17`), the publication date (`portfolio-v18`), the period-word guard (`portfolio-v22`), and the post-run calibration of the stem table and word list to come — leaves rows admitted under the looser filter in the history with no way to tell them from rows the current filter would admit.
+No store holds such a row today (§I3's ruling stands; nothing has run live since), so this is a forward contract, not a migration.
+Surfaced by group 3's Codex round 1 (2026-08-29) as its P1, pushed back there as a group defect and re-cut here as the ruling it is; queued ahead of the run on the same terms as I1–I19, one finding per slice.
+Ruled 2026-08-29 (at its addition): attribute, never re-filter — each accepted row records the prompt stamp it was admitted under, the history is never re-admitted through a later filter, and the audit and any later calibration slice read the stamp to tell old rows apart, on the standing stamp doctrine (a persisted record carries the stamp it was written under, so a recalibration stays attributable and old rows never silently re-grade); the re-admit-at-carry alternative is declined, since a later, stricter filter would erase an older row's miss history.
+The field takes no serde default (no store holds a row — §I3's precedent), and the slice's plan asks which axis the row's new shape moves, on §I18's contract.

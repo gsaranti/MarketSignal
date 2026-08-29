@@ -1998,6 +1998,14 @@ const keyFigures = computed(() => {
                       v-if="openMethodology.has(v.symbol)"
                       class="hc-methodology"
                     >
+                      <!-- Both horizons expose their methodology, one-month
+                           first to match the target order above. -->
+                      <p
+                        v-if="v.disposition.price_targets.one_month"
+                        class="hc-prose"
+                      >
+                        {{ v.disposition.price_targets.one_month.methodology }}
+                      </p>
                       <p
                         v-if="v.disposition.price_targets.twelve_month"
                         class="hc-prose"

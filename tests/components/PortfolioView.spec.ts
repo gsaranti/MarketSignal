@@ -41,7 +41,14 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     conviction: "medium",
     horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
     price_targets: {
-      one_month: null,
+      // Both horizons carry a methodology; the null one-month fixture had
+      // hidden the reveal's omission of it (large-scale review, Codex I10).
+      one_month: {
+        base: 205,
+        bear: 195,
+        bull: 215,
+        methodology: "v5 one-month 2σ band",
+      },
       twelve_month: {
         base: 210,
         bear: 180,
@@ -549,9 +556,45 @@ describe("PortfolioView verdict cards", () => {
     const reveal = wrapper.findAll(".holding-card .hc-reveal")[0];
     expect(reveal.attributes("aria-expanded")).toBe("false");
     expect(wrapper.text()).not.toContain("v2 spread-anchored multiples");
+    expect(wrapper.text()).not.toContain("v5 one-month 2σ band");
     await reveal.trigger("click");
     expect(reveal.attributes("aria-expanded")).toBe("true");
-    expect(wrapper.text()).toContain("v2 spread-anchored multiples");
+    // Both horizons' methodology, one-month first (Codex I10).
+    const prose = wrapper
+      .findAll(".holding-card .hc-methodology .hc-prose")
+      .map((p) => p.text());
+    expect(prose).toHaveLength(3); // one-month, twelve-month, rationale
+    expect(prose[0]).toBe("v5 one-month 2σ band");
+    expect(prose[1]).toBe("v2 spread-anchored multiples");
+  });
+
+  test("the methodology reveal omits a one-month paragraph the engine never authored", async () => {
+    const noOneMonth: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict("AAPL", {
+          status: "priced",
+          ...graded({
+            price_targets: {
+              one_month: null,
+              twelve_month: {
+                base: 210,
+                bear: 180,
+                bull: 240,
+                methodology: "v2 spread-anchored multiples",
+              },
+            },
+          }),
+        }),
+      ],
+    };
+    const wrapper = mountView({ run: noOneMonth });
+    await wrapper.findAll(".holding-card .hc-reveal")[0].trigger("click");
+    const prose = wrapper
+      .findAll(".holding-card .hc-methodology .hc-prose")
+      .map((p) => p.text());
+    expect(prose).toHaveLength(2); // twelve-month, rationale
+    expect(prose[0]).toBe("v2 spread-anchored multiples");
   });
 
   test("a low-confidence letter carries its visible marker", () => {

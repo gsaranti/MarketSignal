@@ -370,7 +370,11 @@ pub fn classify(fund: &FundData) -> FundClassification {
 }
 
 /// The fund's US share from its country weightings, `None` when none are reported.
-fn us_share(fund: &FundData) -> Option<f64> {
+/// This is the ≥ 70% US-exposure guard's own read — every alias in
+/// `US_LABELS` summed, capped at 1 — and the one the priced-fund prompt
+/// renders, so the model never sees a share the guard did not (the 2026-08-24
+/// review's Codex I8; `docs/portfolio-analysis.md` §Asset eligibility).
+pub fn us_share(fund: &FundData) -> Option<f64> {
     if fund.country_weights.is_empty() {
         return None;
     }

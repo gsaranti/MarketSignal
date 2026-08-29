@@ -964,11 +964,14 @@ enum ExcerptRead {
     /// The excerpt appears, but the value is not stated inside it as the page
     /// prints it.
     ValueNotStated,
-    /// The value is stated: the comma-stripped quote and every sign-correct
-    /// occurrence's span in it.
+    /// The value is stated: the comma-stripped quote, every sign-correct
+    /// occurrence's span in it, and where the stripping removed a comma — each
+    /// mark the count of retained bytes before it, so a mark strictly inside a
+    /// digit run says the page printed that run with a thousands separator.
     Stated {
         quoted: String,
         value_spans: Vec<std::ops::Range<usize>>,
+        comma_marks: Vec<usize>,
     },
 }
 
@@ -993,6 +996,18 @@ fn value_stated_in_excerpt(value: f64, page: &str, excerpt: &str) -> ExcerptRead
     }
     let step = excerpt.chars().next().map_or(1, char::len_utf8);
     let quoted = excerpt.replace(',', "");
+    let comma_marks: Vec<usize> = excerpt
+        .bytes()
+        .scan(0usize, |retained, b| {
+            if b == b',' {
+                Some(Some(*retained))
+            } else {
+                *retained += 1;
+                Some(None)
+            }
+        })
+        .flatten()
+        .collect();
     let mut found = false;
     let mut from = 0;
     while let Some(pos) = page[from..].find(excerpt) {
@@ -1020,6 +1035,7 @@ fn value_stated_in_excerpt(value: f64, page: &str, excerpt: &str) -> ExcerptRead
                     .map(|hit| hit.start - prefix.len()..hit.end - prefix.len())
                     .collect(),
                 quoted,
+                comma_marks,
             };
         }
         from = start + step;
@@ -1182,6 +1198,42 @@ enum MetricContext {
     /// The quote's one number is not the value, or a quoted range's endpoint
     /// is not the one the row's role names.
     NotTheValue,
+    /// The quote's one number (or its range) is the period the sentence
+    /// names, not the value.
+    PeriodValue,
+}
+
+/// The words that make a following year a period label, never a value —
+/// "guidance for 2025", "in 2025", "as of 2025", "by 2025", "through 2025",
+/// "fiscal 2025", "FY2025" (drafted, calibratable; ruled 2026-08-29 off the
+/// review's I19). Read as the alphabetic run immediately left of the digits,
+/// whitespace skipped, so `FY2025` yields `fy`.
+const PERIOD_WORDS: &[&str] = &["for", "in", "of", "by", "through", "fiscal", "fy"];
+
+/// Whether the digit run at `span` reads as a calendar year: exactly four
+/// digits (no decimal continuation), 1900–2099, and printed without a
+/// thousands separator — a comma mark strictly inside the run says the page
+/// printed `2,025`, a count and never a year.
+fn reads_as_year(quoted: &str, span: &std::ops::Range<usize>, comma_marks: &[usize]) -> bool {
+    let run = &quoted[span.clone()];
+    run.len() == 4
+        && run.bytes().all(|b| b.is_ascii_digit())
+        && (1900..=2099).contains(&run.parse::<u32>().unwrap_or(0))
+        && !comma_marks.iter().any(|m| span.start < *m && *m < span.end)
+}
+
+/// Whether the word immediately before `start` (whitespace skipped, the
+/// maximal ASCII-alphabetic run) is one of [`PERIOD_WORDS`].
+fn period_word_before(quoted: &str, start: usize) -> bool {
+    let before = quoted[..start].trim_end();
+    let word_start = before
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_alphabetic())
+        .last()
+        .map_or(before.len(), |(i, _)| i);
+    let word = before[word_start..].to_ascii_lowercase();
+    !word.is_empty() && PERIOD_WORDS.contains(&word.as_str())
 }
 
 /// The metric-context binding — the narrow one-fact contract (ruled
@@ -1196,14 +1248,22 @@ enum MetricContext {
 /// by a hyphen, a dash, `to`, or `and`, and its value must be the endpoint
 /// its role names. A compound sentence therefore can never lend a stem to a
 /// number from another clause. The contract is a syntactic admission filter,
-/// never semantic proof: it cannot tell what the one number it admits means,
-/// so a stem with no number of its own beside a competing noun the lexicon
-/// does not know ("deliveries and revenue of 41 million"), or a value that
-/// is itself the period ("delivery guidance for 2025"), still passes — the
-/// persisted excerpt is the audit for that residual (the review's I19).
+/// never semantic proof: it cannot tell what the one number it admits means.
+/// One shape it can tell syntactically is closed here (ruled 2026-08-29 off
+/// the review's I19): a value that is itself the period — the one number
+/// reads as a 1900–2099 year printed without a thousands separator and sits
+/// right after one of [`PERIOD_WORDS`] ("delivery guidance for 2025"), or
+/// for a range both endpoints read so and the word precedes the left one
+/// ("guidance for 2025-2026") — rejects. A genuine count in that band after
+/// such a word ("deliveries of 1950 units") is the accepted loss, an optional
+/// row. What remains — a stem with no number of its own beside a competing
+/// noun the lexicon does not know ("deliveries and revenue of 41 million") —
+/// still passes; the persisted excerpt is the audit for that residual and
+/// the run's rejection split calibrates the stem table.
 fn excerpt_binds_metric(
     quoted: &str,
     value_spans: &[std::ops::Range<usize>],
+    comma_marks: &[usize],
     role: ObservationRole,
     kind: MetricKind,
 ) -> Result<(), MetricContext> {
@@ -1212,7 +1272,13 @@ fn excerpt_binds_metric(
     }
     let numbers = quoted_numbers(quoted);
     match numbers.as_slice() {
-        [only] if value_spans.contains(only) => Ok(()),
+        [only] if value_spans.contains(only) => {
+            if reads_as_year(quoted, only, comma_marks) && period_word_before(quoted, only.start) {
+                Err(MetricContext::PeriodValue)
+            } else {
+                Ok(())
+            }
+        }
         [_] => Err(MetricContext::NotTheValue),
         [left, right] if range_partners(quoted, left, right) => {
             let endpoint = match role {
@@ -1220,10 +1286,15 @@ fn excerpt_binds_metric(
                 ObservationRole::GuidanceHigh => right,
                 _ => return Err(MetricContext::ManyNumbers(2)),
             };
-            if value_spans.contains(endpoint) {
-                Ok(())
-            } else {
+            if !value_spans.contains(endpoint) {
                 Err(MetricContext::NotTheValue)
+            } else if reads_as_year(quoted, left, comma_marks)
+                && reads_as_year(quoted, right, comma_marks)
+                && period_word_before(quoted, left.start)
+            {
+                Err(MetricContext::PeriodValue)
+            } else {
+                Ok(())
             }
         }
         _ => Err(MetricContext::ManyNumbers(numbers.len())),
@@ -1285,7 +1356,11 @@ fn validate_against_source(
     }
     let excerpt = collapse_whitespace(&o.source_excerpt);
     let page = collapse_whitespace(text);
-    let (quoted, value_spans) = match value_stated_in_excerpt(o.numeric_value, &page, &excerpt) {
+    let (quoted, value_spans, comma_marks) = match value_stated_in_excerpt(
+        o.numeric_value,
+        &page,
+        &excerpt,
+    ) {
         ExcerptRead::NotInPage => {
             return Err(
                 "source-text corroboration failed: the quoted excerpt does not appear in the \
@@ -1303,25 +1378,36 @@ fn validate_against_source(
         ExcerptRead::Stated {
             quoted,
             value_spans,
-        } => (quoted, value_spans),
+            comma_marks,
+        } => (quoted, value_spans, comma_marks),
     };
-    excerpt_binds_metric(&quoted, &value_spans, o.observation_role, o.metric_kind).map_err(
-        |why| match why {
-            MetricContext::NoLanguage => format!(
-                "metric-context check failed: the quoted excerpt carries no {} language",
-                o.metric_kind.as_str()
-            ),
-            MetricContext::ManyNumbers(count) => format!(
-                "metric-context check failed: the quoted excerpt states {count} numbers — a \
-                 quote states the value and no other number, only a guidance-low or \
-                 guidance-high row a range's two endpoints"
-            ),
-            MetricContext::NotTheValue => "metric-context check failed: the quoted excerpt's \
-                                           one number is not the stated value, or not the \
-                                           range endpoint the row's role names"
-                .to_string(),
-        },
-    )?;
+    excerpt_binds_metric(
+        &quoted,
+        &value_spans,
+        &comma_marks,
+        o.observation_role,
+        o.metric_kind,
+    )
+    .map_err(|why| match why {
+        MetricContext::NoLanguage => format!(
+            "metric-context check failed: the quoted excerpt carries no {} language",
+            o.metric_kind.as_str()
+        ),
+        MetricContext::ManyNumbers(count) => format!(
+            "metric-context check failed: the quoted excerpt states {count} numbers — a \
+             quote states the value and no other number, only a guidance-low or \
+             guidance-high row a range's two endpoints"
+        ),
+        MetricContext::NotTheValue => "metric-context check failed: the quoted excerpt's \
+                                       one number is not the stated value, or not the \
+                                       range endpoint the row's role names"
+            .to_string(),
+        MetricContext::PeriodValue => "metric-context check failed: the quoted excerpt's \
+                                       one number reads as the period the sentence names \
+                                       (a 1900–2099 year after for / in / of / by / \
+                                       through / fiscal / FY), not the value"
+            .to_string(),
+    })?;
     Ok(())
 }
 
@@ -2635,6 +2721,101 @@ mod tests {
             "{}",
             rejected[0].reason
         );
+    }
+
+    #[test]
+    fn the_value_that_is_the_period_rejects() {
+        // The one syntactic shape of the one-fact residual closed by ruling
+        // (the review's I19, 2026-08-29): the quote's one number reads as a
+        // 1900–2099 year printed without a thousands separator and sits right
+        // after for / in / of / by / through / fiscal / FY — so it is the
+        // period the sentence names, never the value. A range rejects when
+        // both endpoints read so and the word precedes the left one. A
+        // genuine count in the band after such a word is the accepted loss,
+        // pinned as a choice; a comma-bearing run, a non-year, or a value
+        // after any other word admits.
+        let page = |text: &str| {
+            let mut texts = std::collections::HashMap::new();
+            texts.insert("https://example.com/report".to_string(), text.to_string());
+            texts
+        };
+        let row = |kind: MetricKind, role: ObservationRole, value: f64, excerpt: &str| {
+            PreProfitObservation {
+                source_excerpt: excerpt.into(),
+                ..observation(kind, role, value, "2026-Q2")
+            }
+        };
+        let run = |texts: &std::collections::HashMap<String, String>,
+                   candidate: PreProfitObservation| {
+            let evidence = SourceEvidence {
+                texts,
+                symbol: "ACME",
+                company_name: None,
+            };
+            validate_observations(vec![candidate], &[], Some(&evidence))
+        };
+        let actual = ObservationRole::Actual;
+        let deliveries = MetricKind::Deliveries;
+        for (sentence, value) in [
+            ("delivery guidance for 2025", 2025.0),
+            ("deliveries in 2025", 2025.0),
+            ("deliveries as of 2025", 2025.0),
+            ("deliveries by 2025", 2025.0),
+            ("deliveries through 2025", 2025.0),
+            ("deliveries in fiscal 2025", 2025.0),
+            ("FY2025 deliveries", 2025.0),
+            ("FY 1999 deliveries", 1999.0),
+            // A comma hugging the run from outside sits at the span's end,
+            // never inside it, so it exempts nothing (reviewer round 1).
+            ("in 2025, deliveries", 2025.0),
+            // The accepted loss: a real count in the year band after `of`.
+            ("deliveries of 1950 units", 1950.0),
+        ] {
+            let texts = page(&format!("$ACME reported {sentence}."));
+            let (accepted, rejected) = run(&texts, row(deliveries, actual, value, sentence));
+            assert!(accepted.is_empty(), "{sentence}: {accepted:?}");
+            assert!(
+                rejected[0].reason.contains("reads as the period"),
+                "{sentence}: {}",
+                rejected[0].reason
+            );
+        }
+        // A period range rejects for both roles; the word before the left
+        // endpoint governs the right one, whose own neighbour is the dash.
+        for sentence in ["delivery guidance for 2025-2026", "delivery guidance for 2025 to 2026"] {
+            let texts = page(&format!("$ACME issued {sentence}."));
+            for (role, value) in [
+                (ObservationRole::GuidanceLow, 2025.0),
+                (ObservationRole::GuidanceHigh, 2026.0),
+            ] {
+                let (accepted, rejected) = run(&texts, row(deliveries, role, value, sentence));
+                assert!(accepted.is_empty(), "{sentence} / {value}: {accepted:?}");
+                assert!(
+                    rejected[0].reason.contains("reads as the period"),
+                    "{sentence} / {value}: {}",
+                    rejected[0].reason
+                );
+            }
+        }
+        // Admitted: a value after any other word, a non-year, a comma-bearing
+        // run (a year never prints with a thousands separator), and a range
+        // whose left endpoint is no year.
+        for (sentence, role, value) in [
+            ("delivered 2025 vehicles", actual, 2025.0),
+            ("deliveries for the year reached 2025", actual, 2025.0),
+            ("delivery guidance for 41000", ObservationRole::GuidanceLow, 41000.0),
+            ("delivery guidance for 2100", ObservationRole::GuidanceLow, 2100.0),
+            ("delivery guidance for 1899", ObservationRole::GuidanceLow, 1899.0),
+            ("delivery guidance for 2025.5", ObservationRole::GuidanceLow, 2025.5),
+            ("a total of 2,025 units delivered", actual, 2025.0),
+            ("delivery guidance for 2,025 units", ObservationRole::GuidanceLow, 2025.0),
+            ("delivery guidance for 1500-2025 units", ObservationRole::GuidanceHigh, 2025.0),
+            ("delivery guidance for 1,950-2,025 units", ObservationRole::GuidanceLow, 1950.0),
+        ] {
+            let texts = page(&format!("$ACME said {sentence}."));
+            let (accepted, rejected) = run(&texts, row(deliveries, role, value, sentence));
+            assert_eq!(accepted.len(), 1, "{sentence}: {rejected:?}");
+        }
     }
 
     #[test]

@@ -1738,8 +1738,10 @@ fn reduce_prompt(
                  VERBATIM and at most {} characters, the SHORTEST span of the fetched page that \
                  names the metric and states the value with its sign and NO other number — a \
                  year, a quarter, a percentage, or a prior-period figure beside the value inside \
-                 the quote rejects the row, so trim to the one clause; only a guidance-low / \
-                 guidance-high row may \
+                 the quote rejects the row, so trim to the one clause; a four-digit year right \
+                 after 'for', 'in', 'of', 'by', 'through', 'fiscal', or 'FY' is the period the \
+                 sentence names, never the value, and a row whose value is that year rejects; \
+                 only a guidance-low / guidance-high row may \
                  quote a range's two endpoints joined by 'to', '-', or 'and' (the app verifies \
                  the quote against the page and the value inside it — a paraphrase, a quote \
                  trimmed to the digits, or a clause about another metric rejects the row); \
@@ -3166,6 +3168,33 @@ mod tests {
         );
         assert!(prompt.contains("never the fetch date"), "{prompt}");
         assert!(prompt.contains("by vintage"), "{prompt}");
+    }
+
+    #[test]
+    fn the_observation_row_prompt_states_the_one_fact_and_period_word_contract() {
+        // Step 6e's admission filter is stated to the model where the row is
+        // authored: the quote states the value and no other number (trim to
+        // the clause), and — ruled 2026-08-29 off the review's I19 — a
+        // four-digit year right after a period word is the period, never the
+        // value, so a row whose value is that year rejects.
+        let research = research_one_topic();
+        let mut ins = inputs(&research, &[], &[]);
+        ins.overlay_eligible = true;
+        let prompt = reduce_prompt(&ins, None, &HashMap::new(), &[]);
+        assert!(prompt.contains("NO other number"), "{prompt}");
+        assert!(prompt.contains("so trim to the one clause"), "{prompt}");
+        assert!(
+            prompt.contains(
+                "a four-digit year right after 'for', 'in', 'of', 'by', 'through', 'fiscal', \
+                 or 'FY' is the period the sentence names, never the value"
+            ),
+            "{prompt}"
+        );
+        assert!(prompt.contains("a row whose value is that year rejects"), "{prompt}");
+        // The bullet rides the overlay-eligible branch alone.
+        ins.overlay_eligible = false;
+        let prompt = reduce_prompt(&ins, None, &HashMap::new(), &[]);
+        assert!(!prompt.contains("a four-digit year right after"), "{prompt}");
     }
 
     #[test]
