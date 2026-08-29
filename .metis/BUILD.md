@@ -685,8 +685,8 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I4–I13 and
-   I15–I19 (I1, I2, I3, and I14 resolved 2026-08-28; I18 and I19 ruling
+   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I5–I13 and
+   I15–I19 (I1–I4 and I14 resolved 2026-08-28; I18 and I19 ruling
    items) and the §A4 seed edge sit ahead of the run, one finding per slice;
    and the user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
