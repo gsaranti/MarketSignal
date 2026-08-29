@@ -511,8 +511,9 @@ Each is easy to break by accident, so a plan should say how it honors them:
 - **A price or NAV is usable only when finite and strictly positive.** The
   evidence floor tests usability, never presence — at the FMP quote parse
   (the one seam every quote consumer rides, the quick check's price refresh
-  and the commodity quote included) and again at both engine floors, an
-  unusable fund quote falling to a usable NAV — and the floor rule is
+  and the commodity quote included), at the dated-EOD parse (both pulls,
+  2026-08-29) and again at both engine floors, an unusable fund quote
+  falling to a usable NAV — and the floor rule is
   stamped (`engine::EVIDENCE_FLOOR_VERSION`) on the checkpoint header and
   every audit record, so a resume never crosses a floor-rule change and a
   pre-stamp record reads as the presence floor (ruled 2026-08-28 off the
@@ -686,11 +687,12 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I7–I13 and
-   I15–I19 (I1–I5 and I14 resolved 2026-08-28, I6 2026-08-29; I18 and I19
-   ruling items) and the §A4 seed edge sit ahead of the run in five groups
-   cut on one code locus and one stamp axis (ruled 2026-08-29; the record's
-   §Disposition owns the grouping);
+   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I8,
+   I10–I13, I15 and I17–I19 (I1–I5 and I14 resolved 2026-08-28, I6, I7, I9
+   and I16 2026-08-29; I18 and I19 ruling items) and the §A4 seed edge sit
+   ahead of the run in the remaining four of five groups cut on one code
+   locus and one stamp axis (ruled 2026-08-29; the record's §Disposition
+   owns the grouping);
    and the user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
