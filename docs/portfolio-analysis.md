@@ -591,9 +591,20 @@ They are recorded here so the spec matches the engine, not to pin them.
   The research leg contributes only app-validated typed observations — `{metric kind, observation role (actual / guidance low / guidance high / point guidance / contextual level), polarity (higher-is-better / lower-is-better / target-band), numeric value, units, period, issuer scope, source URL, source excerpt, published at, confidence}` — over production, deliveries, bookings / backlog / reservations, guidance, and unit economics; the app merges them into a period-keyed history and the engine, not the model, computes attainment and comparable-period changes.
   On the first overlay-eligible full pass, and on any later full pass where a previously used guidance metric still has fewer than four comparable stored periods, the pre-profit research topic must make a **bounded backfill attempt over the latest four reported periods** for the issuer's principal guided operating metric or metrics.
   A stored period is comparable for that count when it holds both a guidance bound and an actual for the metric.
-  The overlay's parameter version is `pre-profit-v2` since that comparable-period correction (2026-08-27), after the `pre-profit-v1` baseline, so an overlay's backfill record reads under the rule that produced it.
+  The overlay's parameter version is `pre-profit-v3` since the guidance vintage policy (2026-08-28), after the `pre-profit-v2` comparable-period correction (2026-08-27) and the `pre-profit-v1` baseline, so an overlay's backfill record and its execution read each read under the rule that produced them.
   The attempt is an obligation to search, not to produce a row: it records the periods and sources checked plus `complete` / `partial` / `unscorable`, and missing or incomparable history remains a typed gap rather than an inferred observation.
   The engine's **guidance lower bound** is the stated low for a range or the stated value for point guidance.
+  The bound is read under the **guidance vintage policy** (ruled 2026-08-28 off the large-scale review's Codex I4).
+  A guidance row is admissible for a period only when it is **ex ante** — published on or before the period end and strictly before the period's earliest actual publication — so a results release restating the period's guidance beside its actual can never supply its own attainment test.
+  A post-period preview typed as guidance never binds for the same reason.
+  Among the admissible rows the **latest revision binds** — the standing guidance at results time — a range low over point guidance at the same date, then the higher confidence.
+  The actual is the highest-confidence row, then the latest published, so a restatement wins over the release it restates.
+  A residual tie between different values on either side is a **conflict**, and the period is not comparable rather than bound by persistence order.
+  A revision from the same source is a distinct observation, never a duplicate, so the policy sees every vintage ([storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage)).
+  Publication dates compare as parsed calendar dates, never as strings.
+  A row's `published at` is the quoted page's own publication date — a guidance row's issue date, never the fetch date — which the Step-6d prompt states.
+  Each recorded miss carries the bound's and the actual's publication dates, so an audit sees which revision it was measured against.
+  The period-end leg reads the normalized ISO period end, so for a fiscal year not ending in December it is loose and the earliest-actual leg carries the rule — a named residual.
   The execution-miss rule applies only to a **higher-is-better metric with a finite positive bound**; other polarities remain sourced context unless a future calibrated rule defines their attainment direction.
   A comparable actual is an **execution miss** only when it is at least **5% below** the guidance lower bound, drafted as `(bound − actual) ÷ bound ≥ 0.05`; a smaller shortfall is in-line noise, not a miss.
   **Repeated miss** means misses in at least two **distinct reported periods for the same normalized metric identity, issuer scope / perimeter, and units** among that metric's latest four comparable periods; two different metrics in one period never count twice and misses from different metrics never combine.

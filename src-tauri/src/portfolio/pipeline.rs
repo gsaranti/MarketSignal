@@ -10544,22 +10544,37 @@ mod tests {
         fin
     }
 
+    /// A well-formed row whose period normalizes to its ISO period end and
+    /// whose publication date is role-aware under the guidance vintage policy
+    /// (Codex I4) — guidance sixty days before the period end, an actual
+    /// thirty days after — so a fixture pair is ex ante by construction.
     fn pre_profit_observation(
         role: ObservationRole,
         value: f64,
         period: &str,
     ) -> PreProfitObservation {
+        let period = crate::portfolio::pre_profit::normalize_period(period);
+        let end = chrono::NaiveDate::parse_from_str(&period, "%Y-%m-%d")
+            .expect("the fixture period normalizes");
+        let days = if role == ObservationRole::Actual {
+            30
+        } else {
+            -60
+        };
+        let published_at = (end + chrono::Duration::days(days))
+            .format("%Y-%m-%d")
+            .to_string();
         PreProfitObservation {
             metric_kind: MetricKind::Deliveries,
             observation_role: role,
             polarity: ObservationPolarity::HigherIsBetter,
             numeric_value: value,
             units: "units".into(),
-            period: period.into(),
+            period,
             issuer_scope: "company".into(),
             source_url: "https://example.com/ir".into(),
             source_excerpt: format!("reported deliveries of {value} units"),
-            published_at: "2026-08-01".into(),
+            published_at,
             confidence: 0.9,
         }
     }

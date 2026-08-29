@@ -5151,6 +5151,13 @@ mod tests {
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("evidence-floor"), "{err}");
 
+        // A pre-profit parameter drift refuses too: the trail's completed
+        // holdings paired guidance under another vintage rule (Codex I4).
+        let mut drifted = cp.clone();
+        drifted.header.pre_profit_parameter_version = "pre-profit-v2".into();
+        let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("pre-profit"), "{err}");
+
         // A trail persisted before the stamp existed deserializes as the
         // presence floor and is refused with the same reason — never dropped
         // as an unreadable header (Codex I1, round 2).

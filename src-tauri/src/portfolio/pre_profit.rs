@@ -63,7 +63,15 @@ const ECONOMICS_MARGIN_DROP_PP: f64 = 0.05;
 /// resume gate refuses a trail stamped under another. `pre-profit-v2`: the
 /// backfill obligation counts comparable (bound + actual) periods, so a v1
 /// overlay's absent backfill attempt is not read as a v2 waiver.
-pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v2";
+/// `pre-profit-v3`: the guidance vintage policy (the 2026-08-24 review's
+/// Codex I4) — the execution read pairs an actual only against ex-ante
+/// guidance (dated on or before the period end and strictly before the
+/// period's earliest actual), the latest such revision binding, and a
+/// same-vintage conflict on either side drops the period; a v2 read could
+/// pair a results release's restated guidance against its own actual and
+/// selected among revisions by persistence order, so a v2 record's
+/// execution read does not mean what a v3 read means.
+pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v3";
 
 /// The cap on a row's quoted source excerpt (drafted): the excerpt is a
 /// locator — the page's own sentence that states the value — never a page,
@@ -229,9 +237,21 @@ impl PreProfitObservation {
     }
 
     /// The dedup key (`docs/storage.md` — "deduplicated by issuer + normalized
-    /// metric identity + role + period + source observation").
-    fn dedup_key(&self) -> (String, String, String, ObservationRole, String, String) {
+    /// metric identity + role + period + source URL + publication date +
+    /// value"). A duplicate is the same fact re-offered — the same source
+    /// stating the same value on the same date; a same-source revision (a new
+    /// date and value) or a same-page conflict (one date, two values) is a
+    /// distinct observation that must reach the execution read, where the
+    /// guidance vintage policy selects the revision or drops the conflicting
+    /// period (Codex I4, round 1). The date is the parsed ISO render so the two
+    /// spellings of one day collapse; the value keys on its bit pattern (every
+    /// admitted value is finite).
+    #[allow(clippy::type_complexity)]
+    fn dedup_key(&self) -> (String, String, String, ObservationRole, String, String, String, u64) {
         let (kind, units, scope) = self.identity();
+        let published = published_date(self)
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| self.published_at.trim().to_string());
         (
             kind,
             units,
@@ -239,6 +259,8 @@ impl PreProfitObservation {
             self.observation_role,
             self.period.trim().to_string(),
             self.source_url.trim().to_string(),
+            published,
+            self.numeric_value.to_bits(),
         )
     }
 }
@@ -348,13 +370,22 @@ pub struct ExecutionMiss {
     pub period: String,
     /// `(bound − actual) ÷ bound`.
     pub miss_ratio: f64,
+    /// The ISO date the binding guidance was published — the vintage the
+    /// bound was read from under the guidance vintage policy
+    /// (`docs/portfolio-analysis.md` §Starting parameters), so an audit can
+    /// see which revision a miss was measured against.
+    pub bound_published_at: String,
+    /// The ISO date the selected actual was published.
+    pub actual_published_at: String,
 }
 
 /// The engine's guidance-attainment read over the validated observation history.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionRead {
     /// Periods (across identities) where an actual and a finite positive
-    /// higher-is-better guidance bound were comparable.
+    /// higher-is-better guidance bound were comparable under the guidance
+    /// vintage policy (an ex-ante bound, no same-vintage conflict on either
+    /// side).
     pub comparable_periods: usize,
     pub misses: Vec<ExecutionMiss>,
     /// Misses in ≥ 2 distinct periods for one metric identity among its latest four
@@ -1337,7 +1368,7 @@ pub fn validate_observations(
             rejected.push(RejectedObservation {
                 observation: candidate,
                 reason: "duplicate of a stored observation (issuer + metric identity + role + \
-                         period + source)"
+                         period + source + publication date + value)"
                     .to_string(),
             });
             continue;
@@ -1393,13 +1424,9 @@ fn validate_observation(o: &PreProfitObservation) -> Result<(), String> {
         ));
     }
     // An ISO date (or an RFC 3339 timestamp's date prefix) — a bare non-date
-    // string cannot anchor the observation's publication.
-    let published = o.published_at.trim();
-    if published
-        .get(..10)
-        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-        .is_none()
-    {
+    // string cannot anchor the observation's publication, nor take a vintage
+    // at pairing (the same parse, shared with the execution read).
+    if published_date(o).is_none() {
         return Err(format!(
             "published-at {:?} is not an ISO date",
             o.published_at
@@ -1437,55 +1464,144 @@ pub fn merge_observations(
     history
 }
 
+/// The calendar date a row was published: the ISO date prefix of
+/// `published_at` (an RFC 3339 timestamp's date part), **parsed** rather than
+/// compared as a string, so `2026-05-01` and `2026-05-01T09:00:00Z` read as
+/// one day. `None` for an undatable row — impossible past validation, so the
+/// read fails closed on it rather than panicking.
+fn published_date(o: &PreProfitObservation) -> Option<chrono::NaiveDate> {
+    o.published_at
+        .trim()
+        .get(..10)
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+}
+
+/// A guidance row as the pairing reads it.
+#[derive(Clone, Copy)]
+struct GuidanceRow {
+    value: f64,
+    range_low: bool,
+    published: chrono::NaiveDate,
+    confidence: f64,
+}
+
+/// An actual as the pairing reads it.
+#[derive(Clone, Copy)]
+struct ActualRow {
+    value: f64,
+    published: chrono::NaiveDate,
+    confidence: f64,
+}
+
+/// The binding guidance for one identity + period under the **guidance
+/// vintage policy** (`docs/portfolio-analysis.md` §Starting parameters): only
+/// an ex-ante row is admissible — published on or before the period end and
+/// strictly before the period's earliest actual, so a results release can
+/// never supply its own bound and a post-period preview never binds — and
+/// among those the **latest revision** binds, a range low over point guidance
+/// at the same date, then the higher confidence. A residual tie between
+/// different values is a conflict and yields nothing: the period is not
+/// comparable rather than bound by persistence order.
+fn select_bound(
+    period_end: chrono::NaiveDate,
+    earliest_actual: chrono::NaiveDate,
+    rows: &[GuidanceRow],
+) -> Option<GuidanceRow> {
+    let mut admissible: Vec<&GuidanceRow> = rows
+        .iter()
+        .filter(|g| g.published <= period_end && g.published < earliest_actual)
+        .collect();
+    admissible.sort_by(|a, b| {
+        b.published
+            .cmp(&a.published)
+            .then_with(|| b.range_low.cmp(&a.range_low))
+            .then_with(|| b.confidence.total_cmp(&a.confidence))
+    });
+    let first = *admissible.first()?;
+    let conflict = admissible
+        .iter()
+        .skip(1)
+        .take_while(|g| {
+            g.published == first.published
+                && g.range_low == first.range_low
+                && g.confidence.total_cmp(&first.confidence).is_eq()
+        })
+        .any(|g| g.value != first.value);
+    (!conflict).then_some(*first)
+}
+
+/// The actual for one identity + period: the highest confidence, then the
+/// latest publication (a restatement over the release it restates); a
+/// residual tie between different values is a conflict and yields nothing.
+fn select_actual(rows: &[ActualRow]) -> Option<ActualRow> {
+    let mut ordered: Vec<&ActualRow> = rows.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.confidence
+            .total_cmp(&a.confidence)
+            .then_with(|| b.published.cmp(&a.published))
+    });
+    let first = *ordered.first()?;
+    let conflict = ordered
+        .iter()
+        .skip(1)
+        .take_while(|a| {
+            a.confidence.total_cmp(&first.confidence).is_eq() && a.published == first.published
+        })
+        .any(|a| a.value != first.value);
+    (!conflict).then_some(*first)
+}
+
 /// The guidance-attainment read: pair actuals against guidance lower bounds per
-/// metric identity and period, compute miss ratios, and derive the repeated /
-/// material states over each identity's latest four comparable periods.
+/// metric identity and period under the guidance vintage policy
+/// ([`select_bound`], [`select_actual`]), compute miss ratios, and derive the
+/// repeated / material states over each identity's latest four comparable
+/// periods.
 pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
     use std::collections::BTreeMap;
 
-    // identity → period → (bound, actual): deterministic iteration via BTreeMap.
-    // Only higher-is-better rows enter (the rule's polarity guard); the bound is
-    // the stated low for a range, the stated value for point guidance — a
-    // GuidanceLow wins over a PointGuidance for the same period.
+    // identity → period → every candidate row: deterministic iteration via
+    // BTreeMap, the selection per period a pure function of the candidates.
+    // Only higher-is-better rows enter (the rule's polarity guard); the bound
+    // is the stated low for a range, the stated value for point guidance.
     type Key = (String, String, String);
-    let mut bounds: BTreeMap<Key, BTreeMap<String, (f64, bool)>> = BTreeMap::new();
-    let mut actuals: BTreeMap<Key, BTreeMap<String, (f64, f64, String)>> = BTreeMap::new();
+    let mut bounds: BTreeMap<Key, BTreeMap<String, Vec<GuidanceRow>>> = BTreeMap::new();
+    let mut actuals: BTreeMap<Key, BTreeMap<String, Vec<ActualRow>>> = BTreeMap::new();
 
     for o in observations {
         if o.polarity != ObservationPolarity::HigherIsBetter {
             continue;
         }
+        // An undatable row cannot take a vintage, so it never pairs.
+        let Some(published) = published_date(o) else {
+            continue;
+        };
         let key = o.identity();
         let period = o.period.trim().to_string();
         match o.observation_role {
             ObservationRole::GuidanceLow | ObservationRole::PointGuidance => {
-                let is_range_low = o.observation_role == ObservationRole::GuidanceLow;
-                let entry = bounds.entry(key).or_default().entry(period);
-                entry
-                    .and_modify(|(bound, range_low)| {
-                        // A range's stated low takes precedence over point guidance.
-                        if is_range_low && !*range_low {
-                            *bound = o.numeric_value;
-                            *range_low = true;
-                        }
-                    })
-                    .or_insert((o.numeric_value, is_range_low));
+                bounds
+                    .entry(key)
+                    .or_default()
+                    .entry(period)
+                    .or_default()
+                    .push(GuidanceRow {
+                        value: o.numeric_value,
+                        range_low: o.observation_role == ObservationRole::GuidanceLow,
+                        published,
+                        confidence: o.confidence,
+                    });
             }
             ObservationRole::Actual => {
-                let entry = actuals.entry(key).or_default().entry(period);
-                entry
-                    .and_modify(|(value, confidence, published)| {
-                        // Deterministic pick among multiple actuals: highest
-                        // confidence, then latest published-at.
-                        if (o.confidence, o.published_at.as_str())
-                            > (*confidence, published.as_str())
-                        {
-                            *value = o.numeric_value;
-                            *confidence = o.confidence;
-                            *published = o.published_at.clone();
-                        }
-                    })
-                    .or_insert((o.numeric_value, o.confidence, o.published_at.clone()));
+                actuals
+                    .entry(key)
+                    .or_default()
+                    .entry(period)
+                    .or_default()
+                    .push(ActualRow {
+                        value: o.numeric_value,
+                        published,
+                        confidence: o.confidence,
+                    });
             }
             ObservationRole::GuidanceHigh | ObservationRole::ContextualLevel => {}
         }
@@ -1497,11 +1613,20 @@ pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
             continue;
         };
         // Comparable periods for this identity, newest first — the miss window.
-        let mut comparable: Vec<(&String, f64, f64)> = period_bounds
+        let mut comparable: Vec<(&String, GuidanceRow, ActualRow)> = period_bounds
             .iter()
-            .filter_map(|(period, (bound, _))| {
-                let (actual, _, _) = period_actuals.get(period)?;
-                (bound.is_finite() && *bound > 0.0).then_some((period, *bound, *actual))
+            .filter_map(|(period, guidance)| {
+                let reports = period_actuals.get(period)?;
+                // The period end anchors the ex-ante leg; a period that never
+                // normalized (impossible past validation) fails closed here.
+                let period_end = chrono::NaiveDate::parse_from_str(period, "%Y-%m-%d").ok()?;
+                // Ex ante is measured against the FIRST time the actual became
+                // public, not the actual selected — a restatement's later date
+                // must not readmit a release's restated guidance.
+                let earliest_actual = reports.iter().map(|a| a.published).min()?;
+                let actual = select_actual(reports)?;
+                let bound = select_bound(period_end, earliest_actual, guidance)?;
+                (bound.value.is_finite() && bound.value > 0.0).then_some((period, bound, actual))
             })
             .collect();
         comparable.sort_by(|a, b| b.0.cmp(a.0));
@@ -1514,7 +1639,7 @@ pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
 
         let mut missed_periods = 0usize;
         for (i, (period, bound, actual)) in comparable.iter().enumerate() {
-            let miss_ratio = (bound - actual) / bound;
+            let miss_ratio = (bound.value - actual.value) / bound.value;
             if at_least(miss_ratio, EXECUTION_MISS_RATIO) {
                 missed_periods += 1;
                 read.misses.push(ExecutionMiss {
@@ -1523,6 +1648,8 @@ pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
                     issuer_scope: key.2.clone(),
                     period: (*period).clone(),
                     miss_ratio,
+                    bound_published_at: bound.published.format("%Y-%m-%d").to_string(),
+                    actual_published_at: actual.published.format("%Y-%m-%d").to_string(),
                 });
                 if i == 0 && at_least(miss_ratio, MATERIAL_MISS_RATIO) {
                     read.material_single_miss = true;
@@ -1691,25 +1818,52 @@ mod tests {
         }
     }
 
+    /// A well-formed row. The period normalizes to its ISO period end (the
+    /// history only ever holds normalized periods), and the publication date
+    /// is role-aware under the guidance vintage policy (Codex I4) — a guidance
+    /// row dated sixty days before its period end, every other role thirty
+    /// days after — so a fixture's guidance and actual pair by construction; a
+    /// period that does not normalize keeps a fixed date.
     fn observation(
         kind: MetricKind,
         role: ObservationRole,
         value: f64,
         period: &str,
     ) -> PreProfitObservation {
+        let period = normalize_period(period);
+        let published_at = chrono::NaiveDate::parse_from_str(&period, "%Y-%m-%d")
+            .ok()
+            .map(|end| {
+                let days = match role {
+                    ObservationRole::GuidanceLow
+                    | ObservationRole::GuidanceHigh
+                    | ObservationRole::PointGuidance => -60,
+                    ObservationRole::Actual | ObservationRole::ContextualLevel => 30,
+                };
+                (end + chrono::Duration::days(days))
+                    .format("%Y-%m-%d")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "2026-08-01".to_string());
         PreProfitObservation {
             metric_kind: kind,
             observation_role: role,
             polarity: ObservationPolarity::HigherIsBetter,
             numeric_value: value,
             units: "units".into(),
-            period: period.into(),
+            period,
             issuer_scope: "company".into(),
             source_url: "https://example.com/report".into(),
             source_excerpt: format!("reported {} of {value} units", kind.as_str()),
-            published_at: "2026-08-01".into(),
+            published_at,
             confidence: 0.9,
         }
+    }
+
+    /// The row re-dated — the vintage tests' one knob.
+    fn dated(mut o: PreProfitObservation, published_at: &str) -> PreProfitObservation {
+        o.published_at = published_at.into();
+        o
     }
 
     // ---- Eligibility ----
@@ -2000,6 +2154,96 @@ mod tests {
         assert_eq!(accepted[0].period, "2026-03-31");
         assert_eq!(rejected.len(), 1);
         assert!(rejected[0].reason.contains("duplicate"));
+    }
+
+    #[test]
+    fn a_same_source_revision_is_not_a_duplicate_and_the_vintage_read_selects_it() {
+        // Codex I4, round 1: the dedup key once read identity + role + period +
+        // source, so an issuer page updated with revised guidance re-offered
+        // the old key and the revision was rejected — the vintage policy never
+        // saw it. Through the production validator: stored guidance 100 from
+        // the page in January, the same page offering 90 in May, the actual 88
+        // in July — the revision enters and binds (2.2%, in-line), in either
+        // candidate order.
+        let mut prior = compute_overlay(&burning_stock(), None, vec![]);
+        prior.observations.push(dated(
+            observation(MetricKind::Deliveries, ObservationRole::PointGuidance, 100.0, "2026-06-30"),
+            "2026-01-15",
+        ));
+        let revised = dated(
+            observation(MetricKind::Deliveries, ObservationRole::PointGuidance, 90.0, "2026-06-30"),
+            "2026-05-10",
+        );
+        let actual = dated(
+            observation(MetricKind::Deliveries, ObservationRole::Actual, 88.0, "2026-06-30"),
+            "2026-07-25",
+        );
+        let texts = evidence_texts(&[90.0, 88.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        for candidates in [
+            vec![revised.clone(), actual.clone()],
+            vec![actual.clone(), revised.clone()],
+        ] {
+            let refined = compute_overlay_with_sources(
+                &burning_stock(),
+                Some(&prior),
+                candidates,
+                Some(&evidence),
+            );
+            assert!(refined.rejected.is_empty(), "{:?}", refined.rejected);
+            assert_eq!(refined.observations.len(), 3);
+            assert_eq!(refined.execution.comparable_periods, 1);
+            assert!(refined.execution.misses.is_empty(), "{:?}", refined.execution.misses);
+        }
+        // The exact fact re-offered — the same page, date, and value — is
+        // still the duplicate the key exists to stop.
+        let refined = compute_overlay_with_sources(
+            &burning_stock(),
+            Some(&prior),
+            vec![revised.clone(), revised, actual],
+            Some(&evidence),
+        );
+        assert_eq!(refined.rejected.len(), 1);
+        assert!(refined.rejected[0].reason.contains("duplicate"));
+        assert_eq!(refined.observations.len(), 3);
+    }
+
+    #[test]
+    fn a_same_page_conflict_enters_the_history_and_drops_the_period() {
+        // Codex I4, round 1: one page offering two values for the same
+        // guidance on one date once collapsed to the first row seen; now both
+        // enter, the read finds the same-vintage conflict, and the period is
+        // not comparable — both rows persisted for the audit.
+        let guide = |value: f64| {
+            dated(
+                observation(MetricKind::Deliveries, ObservationRole::PointGuidance, value, "2026-06-30"),
+                "2026-05-01",
+            )
+        };
+        let actual = dated(
+            observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-06-30"),
+            "2026-07-25",
+        );
+        let texts = evidence_texts(&[100.0, 110.0, 90.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let refined = compute_overlay_with_sources(
+            &burning_stock(),
+            None,
+            vec![guide(100.0), guide(110.0), actual],
+            Some(&evidence),
+        );
+        assert!(refined.rejected.is_empty(), "{:?}", refined.rejected);
+        assert_eq!(refined.observations.len(), 3);
+        assert_eq!(refined.execution.comparable_periods, 0);
+        assert!(refined.execution.misses.is_empty());
     }
 
     #[test]
@@ -2562,7 +2806,10 @@ mod tests {
     fn a_period_that_does_not_normalize_to_iso_rejects_the_row() {
         // Two model-authored rows sharing a fabricated prose period must never
         // pair into an execution miss — the one-ISO-convention rule has teeth.
-        let good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
+        // The fixture pre-normalizes, so the raw spelling is put back to prove
+        // validation's own normalization end to end.
+        let mut good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
+        good.period = "2026-Q2".into();
         let mut texts = std::collections::HashMap::new();
         texts.insert(
             "https://example.com/report".to_string(),
@@ -2633,6 +2880,12 @@ mod tests {
         assert!((read.misses[0].miss_ratio - 0.25).abs() < 1e-12);
         assert!(read.material_single_miss);
         assert!(!read.repeated_miss);
+        // The miss records the vintages it was read from (Codex I4): the
+        // fixture's guidance sits sixty days before the 2026-06-30 period end,
+        // its actual thirty days after.
+        assert_eq!(read.misses[0].period, "2026-06-30");
+        assert_eq!(read.misses[0].bound_published_at, "2026-05-01");
+        assert_eq!(read.misses[0].actual_published_at, "2026-07-30");
     }
 
     #[test]
@@ -2699,6 +2952,188 @@ mod tests {
         let read = execution_read(&history);
         assert_eq!(read.misses.len(), 1);
         assert!((read.misses[0].miss_ratio - (5.0 / 95.0)).abs() < 1e-12);
+    }
+
+    // ---- Guidance vintage (Codex I4) ----
+
+    /// A deliveries row for the 2026-06-30 period, re-dated — the vintage
+    /// tests' one fixture.
+    fn q2(role: ObservationRole, value: f64, published_at: &str) -> PreProfitObservation {
+        dated(
+            observation(MetricKind::Deliveries, role, value, "2026-06-30"),
+            published_at,
+        )
+    }
+
+    #[test]
+    fn a_results_release_never_supplies_its_own_guidance() {
+        // The finding's case: a results release restating the period's
+        // guidance beside the actual is dated the same day, so the guidance is
+        // retrospective and the pair never forms — one page can never supply
+        // both sides of its own attainment test.
+        let history = vec![
+            q2(ObservationRole::PointGuidance, 100.0, "2026-07-25"),
+            q2(ObservationRole::Actual, 80.0, "2026-07-25"),
+        ];
+        let read = execution_read(&history);
+        assert_eq!(read.comparable_periods, 0);
+        assert!(read.misses.is_empty());
+        assert!(!read.material_single_miss);
+    }
+
+    #[test]
+    fn the_latest_ex_ante_revision_binds_in_either_order() {
+        // Original guidance 100 in January, revised to 90 in May, actual 88 in
+        // July: the standing guidance at results time binds, so the 2.2%
+        // shortfall is in-line; under the original it would be a 12% miss.
+        let original = q2(ObservationRole::PointGuidance, 100.0, "2026-01-15");
+        let revised = q2(ObservationRole::PointGuidance, 90.0, "2026-05-10");
+        let actual = q2(ObservationRole::Actual, 88.0, "2026-07-25");
+        for history in [
+            vec![original.clone(), revised.clone(), actual.clone()],
+            vec![actual.clone(), revised.clone(), original.clone()],
+        ] {
+            let read = execution_read(&history);
+            assert_eq!(read.comparable_periods, 1);
+            assert!(read.misses.is_empty(), "{:?}", read.misses);
+        }
+        // Without the revision the original binds and the period misses.
+        let read = execution_read(&[original, actual]);
+        assert_eq!(read.misses.len(), 1);
+        assert!((read.misses[0].miss_ratio - 0.12).abs() < 1e-12);
+        assert_eq!(read.misses[0].bound_published_at, "2026-01-15");
+        assert_eq!(read.misses[0].actual_published_at, "2026-07-25");
+    }
+
+    #[test]
+    fn guidance_after_the_period_end_is_a_preview_not_a_promise() {
+        // A post-period pre-announcement typed as guidance never binds; a row
+        // dated on the period end itself is still ex ante.
+        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
+        let preview = q2(ObservationRole::PointGuidance, 100.0, "2026-07-03");
+        let read = execution_read(&[preview, actual.clone()]);
+        assert_eq!(read.comparable_periods, 0);
+        let on_the_end = q2(ObservationRole::PointGuidance, 100.0, "2026-06-30");
+        let read = execution_read(&[on_the_end, actual]);
+        assert_eq!(read.comparable_periods, 1);
+        assert_eq!(read.misses.len(), 1);
+    }
+
+    #[test]
+    fn guidance_dated_on_the_first_actual_is_retrospective_even_under_a_restatement() {
+        // The press release (low confidence) and a later 10-Q restatement
+        // (high confidence, the one selected): guidance dated on the press
+        // release is retrospective against the period's EARLIEST actual, not
+        // the actual selected.
+        let release = PreProfitObservation {
+            confidence: 0.6,
+            ..q2(ObservationRole::Actual, 90.0, "2026-07-25")
+        };
+        let restated = q2(ObservationRole::Actual, 91.0, "2026-08-10");
+        let retrospective = q2(ObservationRole::PointGuidance, 100.0, "2026-07-25");
+        let read = execution_read(&[release.clone(), restated.clone(), retrospective]);
+        assert_eq!(read.comparable_periods, 0);
+        // Ex-ante guidance pairs with the selected (restated) actual.
+        let ex_ante = q2(ObservationRole::PointGuidance, 100.0, "2026-06-01");
+        let read = execution_read(&[release, restated, ex_ante]);
+        assert_eq!(read.comparable_periods, 1);
+        assert_eq!(read.misses.len(), 1);
+        assert!((read.misses[0].miss_ratio - 0.09).abs() < 1e-12);
+        assert_eq!(read.misses[0].bound_published_at, "2026-06-01");
+        assert_eq!(read.misses[0].actual_published_at, "2026-08-10");
+    }
+
+    #[test]
+    fn vintage_beats_role_and_range_low_wins_only_at_the_same_date() {
+        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
+        let range_low = q2(ObservationRole::GuidanceLow, 95.0, "2026-05-01");
+        let point = q2(ObservationRole::PointGuidance, 100.0, "2026-05-01");
+        let read = execution_read(&[point.clone(), range_low.clone(), actual.clone()]);
+        assert!(
+            (read.misses[0].miss_ratio - (5.0 / 95.0)).abs() < 1e-12,
+            "range low over point at one date"
+        );
+        // A later point guidance displaces the earlier range low.
+        let later_point = q2(ObservationRole::PointGuidance, 98.0, "2026-06-01");
+        let read = execution_read(&[point, range_low, later_point, actual]);
+        assert!(
+            (read.misses[0].miss_ratio - (8.0 / 98.0)).abs() < 1e-12,
+            "{:?}",
+            read.misses
+        );
+        assert_eq!(read.misses[0].bound_published_at, "2026-06-01");
+    }
+
+    #[test]
+    fn a_same_vintage_conflict_makes_the_period_not_comparable_on_either_side() {
+        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
+        let guide = |value: f64, confidence: f64| PreProfitObservation {
+            confidence,
+            ..q2(ObservationRole::PointGuidance, value, "2026-05-01")
+        };
+        // Same date, role, and confidence with different values: a conflict.
+        let read = execution_read(&[guide(100.0, 0.9), guide(110.0, 0.9), actual.clone()]);
+        assert_eq!(read.comparable_periods, 0);
+        // The same value twice (two sources) is no conflict.
+        let read = execution_read(&[guide(100.0, 0.9), guide(100.0, 0.9), actual.clone()]);
+        assert_eq!(read.comparable_periods, 1);
+        // Confidence breaks the tie before it becomes a conflict.
+        let read = execution_read(&[guide(100.0, 0.9), guide(110.0, 0.8), actual.clone()]);
+        assert_eq!(read.comparable_periods, 1);
+        assert!((read.misses[0].miss_ratio - 0.10).abs() < 1e-12);
+        // The actual side under the same rule.
+        let guidance = guide(100.0, 0.9);
+        let report = |value: f64| q2(ObservationRole::Actual, value, "2026-07-25");
+        let read = execution_read(&[guidance.clone(), report(90.0), report(95.0)]);
+        assert_eq!(read.comparable_periods, 0);
+        let read = execution_read(&[guidance, report(90.0), report(90.0)]);
+        assert_eq!(read.comparable_periods, 1);
+    }
+
+    #[test]
+    fn publication_dates_compare_as_dates_never_as_strings() {
+        // A timestamp form on the period end is still on the period end; two
+        // actuals on one day in two forms tie on the date (and conflict on
+        // value) rather than the longer string winning.
+        let guidance = q2(ObservationRole::PointGuidance, 100.0, "2026-06-30T23:00:00Z");
+        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
+        let read = execution_read(&[guidance.clone(), actual.clone()]);
+        assert_eq!(read.comparable_periods, 1);
+        assert_eq!(read.misses[0].bound_published_at, "2026-06-30");
+        let timestamped = q2(ObservationRole::Actual, 95.0, "2026-07-25T09:00:00Z");
+        let read = execution_read(&[guidance, actual, timestamped]);
+        assert_eq!(
+            read.comparable_periods,
+            0,
+            "a same-day value conflict, never a string order"
+        );
+    }
+
+    #[test]
+    fn an_undatable_row_or_period_never_pairs_and_never_panics() {
+        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
+        let guidance = q2(ObservationRole::PointGuidance, 100.0, "2026-05-01");
+        let read = execution_read(&[dated(guidance.clone(), "recently"), actual.clone()]);
+        assert_eq!(read.comparable_periods, 0);
+        let read = execution_read(&[guidance.clone(), dated(actual.clone(), "recently")]);
+        assert_eq!(read.comparable_periods, 0);
+        // A period that never normalized (impossible past validation) cannot
+        // anchor the period-end leg, so the pair fails closed.
+        let prose = |mut o: PreProfitObservation| {
+            o.period = "thirteen weeks ended".into();
+            o
+        };
+        let read = execution_read(&[prose(guidance), prose(actual)]);
+        assert_eq!(read.comparable_periods, 0);
+    }
+
+    #[test]
+    fn the_overlay_stamp_is_pre_profit_v3() {
+        // The vintage policy changes what a persisted execution read means, so
+        // the stamp moves and the resume gate refuses a v2 trail.
+        assert_eq!(PRE_PROFIT_PARAMETER_VERSION, "pre-profit-v3");
+        let overlay = compute_overlay(&burning_stock(), None, vec![]);
+        assert_eq!(overlay.parameter_version, "pre-profit-v3");
     }
 
     #[test]

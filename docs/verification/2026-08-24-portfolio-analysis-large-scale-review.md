@@ -529,6 +529,7 @@ I18, added 2026-08-28 off I1's Codex round 1 — the resume-across-a-rebuild que
 I2 and I14 are resolved together (2026-08-28; the rulings and resolutions are recorded under §I2 and §I14), leaving Codex I3–I13, I15–I18 and the §A4 seed edge.
 I3 is resolved (2026-08-28; the rulings and resolution are recorded under §I3), leaving Codex I4–I13, I15–I18 and the §A4 seed edge.
 I19, added 2026-08-28 off I3's Codex round 2 and re-cut off its rounds 3 and 4 — the one-fact contract's single-number ambiguity — joins the queue as a ruling item on the same terms.
+I4 is resolved (2026-08-28; the rulings and resolution are recorded under §I4), leaving Codex I5–I13, I15–I19 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -674,6 +675,32 @@ An actual-results release that retrospectively repeats the period's guidance can
 Either choice can flip the 5% miss, 20% material-miss, repeated-miss, conviction, and action-set results.
 
 The code and logic-flow document need one explicit guidance-vintage policy, and the pairing key must enforce it with the already-persisted publication dates.
+
+Ruled 2026-08-28: the vintage policy is the latest ex-ante guidance — the standing guidance at results time — original-guidance and walk-down counting declined.
+Ruled 2026-08-28: the chronology has two legs, both binding — a guidance row dated on or before its period end and strictly before the period's earliest actual publication; the FY-normalizes-to-12-31 residual is named, the earliest-actual leg carrying a non-December fiscal year.
+Ruled 2026-08-28: the 6d prompt names `published_at` — the quoted page's own publication date, a guidance row's issue date, never the fetch date — and `portfolio::PROMPT_VERSION` moves to `portfolio-v18` (no v17 trail exists to lose).
+Ruled 2026-08-28: a same-vintage conflict — the same date, role, and confidence with different values — makes the period not comparable on the guidance and the actual side, the actual side's encounter-order tail going with it.
+Ruled 2026-08-28: the execution read gains no counter of vintage-excluded rows — the exclusions are re-derivable from the persisted rows and the stamp attributes the rule.
+Ruled 2026-08-28: `ExecutionMiss` carries `bound_published_at` and `actual_published_at` with no serde default, both app stores read to confirm no persisted miss predates the fields.
+Ruled 2026-08-28 (Codex round 1): the dedup key gains the publication date and the value — a duplicate is the same source stating the same value on the same date — so a same-source revision reaches the vintage read and a same-page conflict reaches the conflict rule, both pinned through the production validator.
+**Resolved 2026-08-28.**
+As-built before the fix, `execution_read` kept `(value, is_range_low)` per guidance row — `published_at` and confidence discarded — paired on identity and period alone, and let the first same-role bound encountered stand except that a range low displaced point guidance, so a results release restating the period's guidance beside its actual supplied both sides of its own attainment test and a revised guidance was selected by persistence order.
+The fix reads every candidate row per identity and period and selects under the guidance vintage policy.
+A guidance row is admissible only when its parsed publication date is on or before the period end (the normalized ISO period the row carries) and strictly before the period's earliest actual publication — the first time the actual became public, not the actual selected, so a restatement's later date never readmits a release's restated guidance.
+Among the admissible rows the latest binds, a range low over point guidance at the same date, then the higher confidence (`select_bound`).
+The actual is the highest confidence, then the latest published (`select_actual`).
+A residual tie between different values on either side is a conflict, and the period is not comparable.
+Publication dates parse from the ISO prefix (`published_date`) and compare as dates, an undatable row or period failing closed without a panic, and each miss records the bound's and the actual's publication dates.
+The 6d prompt line names `published_at` as the quoted page's own publication date, never the fetch date.
+`PRE_PROFIT_PARAMETER_VERSION` moves to `pre-profit-v3` (a v2 read does not mean what a v3 read means; the resume gate refuses a v2 trail, now pinned) and `PROMPT_VERSION` to `portfolio-v18`; no grade, target, or floor stamp moves.
+Both app stores were read by copy-out: the prod store holds no portfolio run, and the dev store's one run (attempt 2) carries 33 overlays stamped `pre-profit-v1`, every `misses` array empty and no observation row, so no persisted miss predates the new fields.
+Canonical at `portfolio-analysis.md` §Starting parameters (the vintage, chronology, selection, conflict, date-comparison, `published at`, miss-dates, and fiscal-year residual sentences, with the stamp sentence at `pre-profit-v3`), `portfolio-workflow.md` §Step 6d's `published_at` sentence and §Step 6e's pointer sentence, the logic-flow's Execution-read bullet and validation-bullet clause, and the watch set's stamp line and vintage-read line.
+Residual, by ruling: the period-end leg reads the normalized ISO period end, loose for a fiscal year not ending in December, where the earliest-actual leg carries the rule.
+The reviewer's round approved with four nits, each closed in the slice: the period-normalization test pushes the raw spelling through validation again (the pre-normalizing fixture had made its assert tautological), validation's publication-date check shares `published_date` with the pairing, two double-claim sentences are split, and the §Step 6e pointer is trimmed to a pointer.
+Codex round 1 found the policy defeated one seam earlier: the dedup key read identity + role + period + source URL, so an issuer page updated with revised guidance re-offered the stored key and the revision was rejected as a duplicate, and one page offering two values on one date collapsed to the first row seen — persistence order selecting again, the slice's order-independence test having called `execution_read` past the validator.
+The fix widens the key to the parsed publication date and the value's bit pattern (`dedup_key`), the rejection reason naming both, so a duplicate is the same fact re-offered and every other row reaches the read; `storage.md`'s key sentence, its consequence sentence, the §Step 6e duplicate sentence, the canonical's same-source sentence, and the logic-flow's duplicate clause mirror it.
+Codex round 2 approved the slice.
+Fourteen tests pinned (twelve added, two extended) and two fixture helpers re-based to ISO periods and role-aware dates: the results-release case pairing nothing, the existing miss-rule pin carrying the fixture's two dates; a same-source revision entering through the production validator and binding in either candidate order while the exact fact re-offered still rejects as a duplicate; a same-page conflict entering and dropping the period; the latest ex-ante revision binding in either order and the original binding without it; a post-period preview never binding while a row on the period end does; guidance dated on the first actual staying retrospective under a selected restatement, the miss carrying both dates; vintage beating role and a range low winning only at the same date; the same-vintage conflict dropping the period on either side, equal values no conflict, confidence breaking the tie first; dates comparing as dates never strings; an undatable row or period never pairing; the `pre-profit-v3` stamp on the constant and the overlay; the resume gate refusing a `pre-profit-v2` header; and the prompt line naming the date.
 
 ### I5 — major: the action decision never receives the model arm's price targets
 

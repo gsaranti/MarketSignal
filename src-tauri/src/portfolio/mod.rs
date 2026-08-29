@@ -1891,7 +1891,17 @@ pub struct HoldingAudit {
 /// to one sentence about the declared metric at its printed sign rather than
 /// to "somewhere on the page". A schema and prompt-line change, stamped so a
 /// pre-fix checkpoint cannot resume into rows the new leg would reject.
-pub const PROMPT_VERSION: &str = "portfolio-v17";
+///
+/// `portfolio-v18`: the observation row's `published_at` named in the 6d
+/// prompt (the 2026-08-24 review's Codex I4). The guidance vintage policy
+/// makes the row's publication date load-bearing for the first time — the
+/// execution read pairs an actual only against ex-ante guidance and the
+/// latest revision binds — and the prompt had never said what the date is,
+/// so the line now asks for the quoted page's own publication date, a
+/// guidance row's own issue date, never the fetch date. A prompt-line
+/// change, stamped so a pre-fix checkpoint cannot resume into rows dated
+/// under no stated meaning.
+pub const PROMPT_VERSION: &str = "portfolio-v18";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

@@ -1742,8 +1742,10 @@ fn reduce_prompt(
                  guidance-high row may \
                  quote a range's two endpoints joined by 'to', '-', or 'and' (the app verifies \
                  the quote against the page and the value inside it — a paraphrase, a quote \
-                 trimmed to the digits, or a clause about another metric rejects the row); the \
-                 app computes every comparison.\n\
+                 trimmed to the digits, or a clause about another metric rejects the row); \
+                 published_at is the ISO date the quoted page was published — a guidance \
+                 row's own issue date, never the fetch date — since the app pairs guidance \
+                 to actuals by vintage; the app computes every comparison.\n\
                  - backfill: the required backfill attempt's checked periods, sources, and \
                  coverage state, where the agenda required one.\n",
                 crate::portfolio::pre_profit::SOURCE_EXCERPT_CAP_CHARS
@@ -3146,6 +3148,24 @@ mod tests {
         let prompt = reduce_prompt(&ins, None, &HashMap::new(), &[]);
         assert!(prompt.contains("source_excerpt"), "{prompt}");
         assert!(prompt.contains("VERBATIM"), "{prompt}");
+    }
+
+    #[test]
+    fn the_observation_row_prompt_names_the_publication_date() {
+        // The guidance vintage policy reads `published_at` as the quoted
+        // page's own publication date (Codex I4); the prompt line says so,
+        // since a date the model is never told the meaning of is noise to a
+        // rule that binds on it.
+        let research = research_one_topic();
+        let mut ins = inputs(&research, &[], &[]);
+        ins.overlay_eligible = true;
+        let prompt = reduce_prompt(&ins, None, &HashMap::new(), &[]);
+        assert!(
+            prompt.contains("published_at is the ISO date the quoted page was published"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("never the fetch date"), "{prompt}");
+        assert!(prompt.contains("by vintage"), "{prompt}");
     }
 
     #[test]
