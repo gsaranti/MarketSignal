@@ -359,8 +359,9 @@ this section carries only the decisions a plan must not work against.
     Stooq removed 2026-08-12 — FMP dated-EOD is the only price rung)
     computes the engine arm for both jobs. Both are **two-arm**: the
     engine's values are the incorruptible baseline beside an **unrestricted
-    model arm**, structurally validated only, the two scored head-to-head by a
-    deterministic scoreboard. The per-job field schemas differ — BUILD does not
+    model arm** — validated structurally and on each field's declared domain,
+    never against the engine (ruled 2026-08-29, Codex I6) — the two scored
+    head-to-head by a deterministic scoreboard. The per-job field schemas differ — BUILD does not
     restate them; they are enumerated once at `docs/local-models.md`. The
     boundary — **model-arm judgment values never alter or bind the engine
     baseline** — is single-homed per job at `docs/portfolio-analysis.md §The
@@ -685,9 +686,9 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I6–I13 and
-   I15–I19 (I1–I5 and I14 resolved 2026-08-28; I18 and I19 ruling
-   items) and the §A4 seed edge sit ahead of the run, one finding per slice;
+   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I7–I13 and
+   I15–I19 (I1–I5 and I14 resolved 2026-08-28, I6 2026-08-29; I18 and I19
+   ruling items) and the §A4 seed edge sit ahead of the run, one finding per slice;
    and the user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
@@ -762,9 +763,6 @@ Recorded rather than absorbed, each needing a decision before it becomes work:
 - **Carried-audit data-health mixing** — carried audits mix prior-run retrieval
   outcomes into the run-level counts on selective runs, so one stale
   multiple-carry audit re-trips attention every run.
-- **Unannotated off-scale model-arm renders** — model-arm sub-scores and targets
-  are grammar-unbounded and render unannotated when off-scale; the inverted-band
-  case got a tag, off-scale values did not.
 - **`rate_prints.fetched_at`** — stamped with the run's `created_at` though the
   FRED fetch precedes the per-holding loop; consumed only by a last-resort
   fallback.

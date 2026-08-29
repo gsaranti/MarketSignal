@@ -180,6 +180,7 @@ build status lives in `BUILD.md`.*
 - Portfolio Analysis workflow — portfolio-workflow.md
 - Holding verdict schema — portfolio-analysis.md §The holding verdict
 - Two-arm verdict — Portfolio form (the boundary statement is single-homed) — portfolio-analysis.md §The holding verdict, §Intrinsic verdict, §Portfolio action, §Outcome learning, §Storage and display, §Starting parameters; portfolio-workflow.md §Step 6d, §Step 6f, §Step 6g, §Step 7; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage
+- Model-arm numeric domain (the §The holding verdict statement is canonical) — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6f; local-models.md §The local-model adapter seam
 - Intrinsic-verdict vs portfolio-action separation — portfolio-analysis.md §Intrinsic verdict, §Portfolio action; portfolio-workflow.md §Step 6f
 - Intrinsic-verdict discriminated union — portfolio-analysis.md §Intrinsic verdict, §Asset eligibility; portfolio-workflow.md §Step 6f; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Portfolio action — the per-holding action call — portfolio-analysis.md §Portfolio action; portfolio-workflow.md §Step 6f
