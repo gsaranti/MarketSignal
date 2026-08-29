@@ -532,6 +532,14 @@ I19, added 2026-08-28 off I3's Codex round 2 and re-cut off its rounds 3 and 4 �
 I4 is resolved (2026-08-28; the rulings and resolution are recorded under §I4), leaving Codex I5–I13, I15–I19 and the §A4 seed edge.
 I5 is resolved (2026-08-28; the rulings and resolution are recorded under §I5), leaving Codex I6–I13, I15–I19 and the §A4 seed edge.
 I6 is resolved (2026-08-29; the rulings and resolution are recorded under §I6), leaving Codex I7–I13, I15–I19 and the §A4 seed edge.
+Fix grouping revised 2026-08-29 for the Codex minors and the §A4 seed edge, the one-finding rule otherwise standing: a group is cut on one code locus and one stamp axis, runs the plan → implement → review → Codex → commit loop once, and each member is still marked resolved on its own line.
+Five groups follow, in order.
+I7, I9 and I16 are one group — the FMP shapers' integrity guards and the required-float audit, no stamp expected.
+I18 ruled, then I17, are one group — I17 changes the trail's row shape, the case I18 asks about, so the ruling governs the implementation.
+I8, I10 and I12, with I19 ruled at the top, are one group — the prompt renders under one `PROMPT_VERSION` bump, a guard off I19 riding it since that contract rides the prompt stamp.
+I11 and I13 are one group — the continuity-attribution mirrors of the grade-version and flow-basis gates.
+I15, ruled at its plan, and the §A4 seed edge are one group — the research loop's residue.
+A group never crosses a stamp axis, and a batch still never mixes code and doc findings.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
