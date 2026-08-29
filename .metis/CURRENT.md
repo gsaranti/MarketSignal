@@ -2,58 +2,63 @@
 
 ## What happened
 
-**Codex I2 landed with I14 absorbed** (`51e0f2f`). `fund::composite_yield_history`
-admits, per sector per exchange, only the latest print dated **within the
-sample's own quarter** (exclusive at the prior quarter end, inclusive at its
-own; no drafted constant) on **parsed dates**, so one print backs at most one
-of the twelve samples and the fund analog's ≥ 8 floor counts distinct
-observations by construction — the floor code itself is unchanged. The
-shaper `fmp::sector_pe_rows_from_value` joined the `data-sources.md` dated-row
-rule as written: canonical render stored, a missing/unparseable date drops the
-row on **both** endpoints (snapshot included), an all-undatable body reads
-`malformed` while `Ok(vec![])` keeps the snapshot walk-back unchanged.
-`EVIDENCE_FLOOR_VERSION` → **`evidence-floor-v3`**; no other stamp moved.
-Six rulings; reviewer approve-with-nits (three comment/doc nits closed); Codex
-round 1 clean. Lessons: a fixture test was *asserting the bug* (twelve samples
-off one 2020 print) — re-based, not deleted; I14 was absorbed because parsing
-dates at the sampler necessarily closed its sampler half, and a one-finding
-slice that half-closes a queued sibling should say so at plan time.
-**`BUILD.md` / `INDEX.md` were not bumped** this session (not authorized).
+**Codex I3 landed** (`c8db4a3`). Pre-profit source corroboration is sign-aware
+and excerpt-bound: `value_in_text` reads the printed sign beside each
+boundary-clean occurrence (a hugging minus or accounting parens; a hyphen after
+a digit, `%`, or `)` is a separator) and returns every span — the
+forward-assumption and indicator legs inherit it; the row carries a required
+`source_excerpt` (no serde default) verified in the page with four chars of page
+context each side; the metric-context binding is the **narrow one-fact
+contract** (ruled off Codex round 3 after the nearest-number and positional
+bindings of rounds 1–2 each leaked an ordering): stem + exactly one number = the
+value at its sign, every digit run counting, a guidance-low/high row alone
+quoting a range's endpoints — recorded as a *syntactic admission filter*, an
+untrimmable sentence losing its row by design. `PROMPT_VERSION` →
+**`portfolio-v17`**; no other stamp. Both app stores read: no persisted producer
+row predates the field. Six plan rulings, five Codex rounds, two reviewer
+rounds; twelve tests. Lessons: a semantic classifier over prose leaks by
+ordering — fail-closed counting beat three rounds of patching; verify a
+reviewer's runtime premise (copy-out DB read) rather than leave it conditional.
+**`BUILD.md` / `INDEX.md` not bumped** (not authorized).
 
 ## Current state
 
-Nothing in flight; `main` at `51e0f2f`, tree clean, pushed. Queue ahead of
-the run (record §Disposition): **Codex I3–I13, I15–I18** and the **§A4 seed
-edge**, one finding per slice, a batch never mixing code and doc findings.
-I18 is a ruling item (build-identity stamp on the trail vs. the stamp axes);
-I15's shape (wire / retire) is ruled at its plan; I16 is the required-`f64`
-audit with a store round-trip regression; I17 follows the telemetry's row
-pattern. Carried untouched: the cloud report job's unguarded `run_job` seam;
-the negative composite yield; `progress.rs`'s poisonable terminal-leg locks;
-the `ok` tracker row's dropped-count detail;
+Nothing in flight; `main` at `c8db4a3`, tree clean, pushed. Queue ahead of the
+run (record §Disposition): **Codex I4–I13, I15–I19** and the **§A4 seed edge**,
+one finding per slice, a batch never mixing code and doc findings. I18 and
+**I19** (new — the one-fact contract's single-number ambiguity: a competing
+noun the stem lexicon doesn't know, or a value that is itself the period;
+answers: negative-noun lexicon / period-word guard / audit + calibration) are
+ruling items; I15's shape is ruled at its plan; I16 the required-`f64` audit;
+I17 the telemetry row pattern. Carried untouched (unchanged): the cloud report
+job's unguarded `run_job` seam; the negative composite yield; `progress.rs`'s
+poisonable terminal-leg locks; the `ok` tracker row's dropped-count detail;
 `trade-opportunities-logic-flow.md:397` "never sized"; `/api/tags` probes on
-the 600 s backstop; seed passes the whole prior ledger per topic; 6g
-qualitative trips un-trip unless re-researched; an IPv6-loopback wire test.
-The watch set's attempt-2-prior line stays true (reads back under
-`evidence-floor-v1`; a `v2` trail is refused by reason).
+the 600 s backstop; seed passes the whole prior ledger per topic; 6g qualitative
+trips un-trip unless re-researched; an IPv6-loopback wire test. Watch set: the
+attempt-2-prior line stays true (reads back under `evidence-floor-v1`; a
+mismatched trail is refused by reason); records now stamp `portfolio-v17`.
 
 ## Open questions
 
 - `BUILD.md` §What remains item 1 still reads "Codex's I2–I18 (I1 resolved
-  …)" — needs "I3–I13, I15–I18 (I1, I2, I14 resolved 2026-08-28)"; whether
-  `INDEX.md` gains a row for the in-quarter history admission (canonical at
-  `portfolio-analysis.md` §Asset eligibility, the shaper rule at
-  `data-sources.md` §Financial Modeling Prep). User-run edits.
+  …)" — needs "I4–I13, I15–I19 (I1, I2, I3, I14 resolved 2026-08-28; I19
+  added)"; whether `INDEX.md`'s §Verification records row ("Codex I1–I18
+  additions") moves to I19, and whether INDEX gains rows for the in-quarter
+  history admission and the observation-excerpt contract (canonical
+  `portfolio-workflow.md` §Step 6e). User-run edits.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` **Codex I3** (pre-profit
-source corroboration: sign and adjacent-number validation — confirm it is the
-first `### I` section with no `Resolved` line) and re-read every line anchor
-and every pointer's owning heading first, checking whether a later slice
-already closed it. Present assumptions and flags before implementing — the
-user rules first. Keep the loop per finding (plan → implement → review → Codex
-→ commit), record every Codex round, sweep `logic-flow-docs/` mirrors, and ask
-of every fix what stamp it moves across the four axes (prompt content, grade
-band, stored-target basis, floor rule — `EVIDENCE_FLOOR_VERSION` now `v3`).
-Do not launch or propose the big run — the user names that session.
+`/metis-session-start`, then `/metis-plan-task` **Codex I4** (guidance
+attainment: no ex-ante chronology or deterministic revision-selection policy —
+confirm it is the first `### I` section with no `Resolved` line) and re-read
+every line anchor and every pointer's owning heading first, checking whether a
+later slice already closed it (I3 touched `execution_read`'s neighbours: rows
+now carry `source_excerpt`). Present assumptions and flags before implementing
+— the user rules first. Keep the loop per finding (plan → implement → review →
+Codex → commit), record every Codex round, sweep `logic-flow-docs/` mirrors, and
+ask of every fix what stamp it moves across the four axes (prompt content now
+`portfolio-v17`, grade band, stored-target basis, floor rule
+`evidence-floor-v3`). Do not launch or propose the big run — the user names
+that session.
