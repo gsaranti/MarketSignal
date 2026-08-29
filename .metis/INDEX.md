@@ -293,6 +293,7 @@ build status lives in `BUILD.md`.*
 - Run data-health roll-up — portfolio-analysis.md §Portfolio roll-up, §Starting parameters, §Failure posture; interface.md §Main Layout
 - Re-check class resolution contract — trade-opportunities-workflow.md §Step 3c, §Step 5h; portfolio-workflow.md §Step 6g
 - Per-item checkpoint/resume + research caching, both jobs — portfolio-analysis.md §Failure posture (the Portfolio contract is canonical), §Starting parameters; portfolio-workflow.md §Step 2, §Step 6, §Step 6g; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §Step 5; run-tracking.md §Cancellation; storage.md §Local Analysis Suite Storage; data-portability.md §What moves, and what deliberately does not
+- Checkpoint trail resume contract and format stamp (the §Failure posture statement is canonical) — portfolio-analysis.md §Failure posture; BUILD.md §Seams a plan builds on
 - Research loop & context management — web-research.md §The research loop and context management
 - Research agenda — portfolio-analysis.md; trade-opportunities.md
 - Seed lineage — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 3b; configuration.md §Research Context Management; storage.md §Local Analysis Suite Storage; trade-opportunities.md §The opportunity, §Signal inputs, §Discovery memory

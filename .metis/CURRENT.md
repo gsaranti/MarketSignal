@@ -19,7 +19,8 @@ deep-history and benchmark health ride each checkpoint row
 (`store::HoldingHealth`), the counts rebuilt from rows through
 `health_counts`; the accumulators keep only the three keyed maps. None of the
 five semantic axes moved. BUILD §Seams gained the constant and the
-resume-contract sentence; §What remains item 1 reads three groups remaining.
+resume-contract sentence, §What remains item 1 reads three groups remaining,
+and INDEX gained the checkpoint-trail resume-contract row.
 
 ## Current state
 
@@ -44,10 +45,9 @@ by the 48 h window); `ScenarioSet.raw_observations` keeps its count beside a
 
 ## Open questions
 
-- INDEX row for the checkpoint-format stamp (the record's §I18 deferral names
-  one): a new "Checkpoint trail format stamp — portfolio-analysis.md
-  §Failure posture" row, or fold it into the existing "Quote / NAV usability
-  floor and the evidence-floor version stamp" row? INDEX is user-run.
+- None. (The INDEX-row question closed: one row, "Checkpoint trail resume
+  contract and format stamp", beside the checkpoint/resume row under §Shared
+  across both jobs — the record's §I18 deferral is discharged.)
 
 ## Where to start
 
