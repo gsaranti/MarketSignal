@@ -187,30 +187,74 @@ pub struct CheckpointHeader {
     /// instead of the header loud-skipping as unreadable.
     #[serde(default = "crate::portfolio::engine::evidence_floor_v1")]
     pub evidence_floor_version: String,
+    /// The trail's own shape stamp ([`CHECKPOINT_FORMAT_VERSION`]), so a trail
+    /// written under another header or row shape is refused at the resume gate
+    /// with its reason rather than loud-skipping every row and offering a
+    /// resume that restores nothing. A trail persisted before the field decodes
+    /// as `checkpoint-v1`, the pre-stamp shape (ruled 2026-08-29, Codex I18).
+    #[serde(default = "checkpoint_format_v1")]
+    pub checkpoint_format_version: String,
     pub model_ids: Vec<String>,
 }
 
-/// The run-level accumulators the post-loop consumers read (data health's
-/// deep-history and benchmark gaps, episode sector identities, prompt-header
+/// The checkpoint trail's shape stamp — what the header and each holding row
+/// persist. It moves whenever a slice changes the trail's shape, and only then:
+/// what a completed holding's verdict and audit *mean* is stamped on the five
+/// version axes the header carries, which a slice changing those semantics is
+/// obliged to move (`docs/portfolio-analysis.md` §Failure posture, ruled
+/// 2026-08-29). History: `checkpoint-v1` — telemetry on the row, cumulative
+/// counters on the accumulators; `checkpoint-v2` — the deep-history and
+/// benchmark health on the row (Codex I17).
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v2";
+
+/// The `serde(default)` for a header persisted before the stamp existed.
+fn checkpoint_format_v1() -> String {
+    "checkpoint-v1".to_string()
+}
+
+/// The run-level keyed identities the post-loop consumers read (episode
+/// sector identities, the commodity context's industry key, prompt-header
 /// names) — re-written beside each holding checkpoint so completed holdings'
-/// contributions survive a failure. The data-health context-fit and
-/// fired-retry rows deliberately do **not** live here: they ride each
-/// [`CheckpointHolding`], so the trail's telemetry membership is its row
-/// membership by construction (ruled 2026-08-28, off Codex round 1).
+/// contributions survive a failure. Every entry is keyed by symbol, so a
+/// re-analysis overwrites its own entry and a resume can never count a
+/// holding twice. Nothing counted lives here: the data-health context-fit
+/// and fired-retry rows (ruled 2026-08-28, off Codex round 1) and the
+/// deep-history and benchmark health (Codex I17, 2026-08-29) ride each
+/// [`CheckpointHolding`], so the trail's contribution membership is its row
+/// membership by construction — a cumulative count re-written whole beside
+/// the next holding's write survived a dropped row and counted that holding
+/// again when it re-analyzed.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointAccumulators {
-    pub deep_history_failures: usize,
-    pub benchmark_gaps: Vec<String>,
     pub sector_by_symbol:
         std::collections::HashMap<String, crate::portfolio::outcome::SectorIdentity>,
     pub industry_by_symbol: std::collections::HashMap<String, Option<String>>,
     pub profile_name_by_symbol: std::collections::HashMap<String, Option<String>>,
 }
 
+/// One completed holding's contribution to the run-level data-health counts,
+/// carried on its checkpoint row like its telemetry, so a resume rebuilds the
+/// counts from the rows it restored rather than seeding a cumulative counter
+/// — one re-written whole beside the next holding's write survived a dropped
+/// row and counted that holding again when it re-analyzed (Codex I17).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HoldingHealth {
+    /// This holding's deep-history (FMP dated-EOD) fetch degraded — its anchor
+    /// window starved to the documented fallback.
+    pub deep_history_failed: bool,
+    /// The sector-benchmark series this holding read as unavailable — off a
+    /// fresh failed fetch or the per-process memo alike, since its pre-flag
+    /// starved either way — so the run-level list rebuilt from the rows
+    /// deduplicates by benchmark whichever rows landed. `None` where no
+    /// benchmark was read or the series resolved.
+    pub benchmark_gap: Option<String>,
+}
+
 /// One completed holding's checkpoint — exactly what the loop pushed for it,
-/// plus the holding's own local-model telemetry: the prompt-size observations
+/// plus the holding's own local-model telemetry — the prompt-size observations
 /// and fired bounded retries of its calls, in call order, drained from the
-/// analyst at its checkpoint boundary. Riding the row rather than the
+/// analyst at its checkpoint boundary — and its data-health contribution
+/// ([`HoldingHealth`]). Riding the row rather than the
 /// accumulators makes the trail's telemetry membership its row membership by
 /// construction — a row that never landed (the fail-soft write failed) or no
 /// longer reads takes its calls with it, and that holding re-analyzes whole —
@@ -218,8 +262,9 @@ pub struct CheckpointAccumulators {
 /// superseded calls of holdings the resumed process re-analyzes — the
 /// interrupted holding's abandoned calls and a dropped row's originals
 /// (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-28). No
-/// `serde(default)` on the telemetry fields — a row predating them takes the
-/// documented loud-skip at load and re-analyzes.
+/// `serde(default)` on the telemetry or health fields — a row predating them
+/// takes the documented loud-skip at load and re-analyzes, and the format
+/// stamp refuses such a trail at the gate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointHolding {
     pub verdict: crate::portfolio::HoldingVerdict,
@@ -229,6 +274,9 @@ pub struct CheckpointHolding {
     pub prompt_usage: Vec<crate::local_model::PromptUsage>,
     /// This holding's rows of the data-health model-retry read.
     pub model_retries: Vec<crate::local_model::RetryEvent>,
+    /// This holding's deep-history and benchmark contribution to the
+    /// data-health counts.
+    pub health: HoldingHealth,
 }
 
 /// A loaded checkpoint: header, accumulators, and the completed-holding rows.
@@ -284,7 +332,10 @@ pub fn save_checkpoint_progress(
 /// Load the interrupted run's checkpoint, if one exists. At most one header row
 /// exists (a new run discards before opening its own); an unreadable header or
 /// row is loud-skipped — a corrupt checkpoint costs the resume offer, never an
-/// error surface (the intact new-run path is always available).
+/// error surface (the intact new-run path is always available). A header
+/// stamped under another trail format loads alone — its accumulators and rows
+/// are not read, since the gate refuses the trail on the stamp — so a stale
+/// trail costs its refusal reason, never a loud-skip per row (Codex I18).
 pub fn load_checkpoint(conn: &Connection) -> Result<Option<Checkpoint>> {
     let row: Option<(String, String, String)> = conn
         .query_row(
@@ -304,6 +355,13 @@ pub fn load_checkpoint(conn: &Connection) -> Result<Option<Checkpoint>> {
             return Ok(None);
         }
     };
+    if header.checkpoint_format_version != CHECKPOINT_FORMAT_VERSION {
+        return Ok(Some(Checkpoint {
+            header,
+            accumulators: CheckpointAccumulators::default(),
+            holdings: Vec::new(),
+        }));
+    }
     let accumulators: CheckpointAccumulators = match serde_json::from_str(&acc_json) {
         Ok(a) => a,
         Err(e) => {
@@ -961,14 +1019,9 @@ mod tests {
         conn
     }
 
-    /// A holding's checkpoint row round-trips its context-fit and fired-retry
-    /// rows exactly — the seed a resumed run's data-health read starts from
-    /// (`docs/portfolio-analysis.md §Failure posture`).
-    #[test]
-    fn checkpoint_rows_round_trip_prompt_usage_and_retry_events() {
-        let conn = mem();
-        let run = sample_run("run-1", "2026-08-28T12:00:00+00:00");
-        let header = CheckpointHeader {
+    /// A current-format checkpoint header pinned to `run`.
+    fn checkpoint_header(run: &PortfolioRun) -> CheckpointHeader {
+        CheckpointHeader {
             run_id: run.run_id.clone(),
             created_at: run.created_at.clone(),
             prior_run_id: None,
@@ -992,11 +1045,28 @@ mod tests {
             pre_profit_parameter_version:
                 crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION.into(),
             evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.into(),
+            checkpoint_format_version: CHECKPOINT_FORMAT_VERSION.into(),
             model_ids: vec!["stub-analyst".into()],
-        };
+        }
+    }
+
+    /// A holding's checkpoint row round-trips its context-fit and fired-retry
+    /// rows and its data-health contribution exactly — what a resumed run's
+    /// data-health read rebuilds from — and the header its format stamp
+    /// (`docs/portfolio-analysis.md §Failure posture`).
+    #[test]
+    fn checkpoint_rows_round_trip_telemetry_health_and_the_format_stamp() {
+        let conn = mem();
+        let run = sample_run("run-1", "2026-08-28T12:00:00+00:00");
+        let header = checkpoint_header(&run);
         save_checkpoint_header(&conn, &header).unwrap();
         let acc = CheckpointAccumulators {
-            deep_history_failures: 1,
+            sector_by_symbol: [(
+                "AAPL".to_string(),
+                crate::portfolio::outcome::SectorIdentity::resolve(Some("Technology")),
+            )]
+            .into_iter()
+            .collect(),
             ..Default::default()
         };
         let row = CheckpointHolding {
@@ -1015,11 +1085,50 @@ mod tests {
                 stage: "interpret AAPL".into(),
                 cause: "transport-level connection failure".into(),
             }],
+            health: HoldingHealth {
+                deep_history_failed: true,
+                benchmark_gap: Some("XLK".into()),
+            },
         };
         save_checkpoint_progress(&conn, &run.run_id, "AAPL", &row, &acc).unwrap();
         let cp = load_checkpoint(&conn).unwrap().expect("trail exists");
         assert_eq!(cp.accumulators, acc);
         assert_eq!(cp.holdings, vec![row]);
+        assert_eq!(cp.header.checkpoint_format_version, CHECKPOINT_FORMAT_VERSION);
+    }
+
+    /// A trail stamped under another format loads its header alone — the
+    /// accumulators and rows are not read, a row that would decode included —
+    /// so the resume gate refuses it on the stamp with its reason and no row
+    /// is loud-skipped as one that "will re-analyze" (Codex I18, round 1).
+    #[test]
+    fn a_trail_under_another_format_loads_its_header_alone() {
+        let conn = mem();
+        let run = sample_run("run-1", "2026-08-28T12:00:00+00:00");
+        let mut header = checkpoint_header(&run);
+        header.checkpoint_format_version = "checkpoint-v1".into();
+        save_checkpoint_header(&conn, &header).unwrap();
+        let acc = CheckpointAccumulators {
+            sector_by_symbol: [(
+                "AAPL".to_string(),
+                crate::portfolio::outcome::SectorIdentity::resolve(Some("Technology")),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let row = CheckpointHolding {
+            verdict: run.verdicts[0].clone(),
+            audit: run.audit[0].clone(),
+            prompt_usage: vec![],
+            model_retries: vec![],
+            health: HoldingHealth::default(),
+        };
+        save_checkpoint_progress(&conn, &run.run_id, "AAPL", &row, &acc).unwrap();
+        let cp = load_checkpoint(&conn).unwrap().expect("the header loads");
+        assert_eq!(cp.header.checkpoint_format_version, "checkpoint-v1");
+        assert!(cp.holdings.is_empty(), "rows under another format are not read");
+        assert_eq!(cp.accumulators, CheckpointAccumulators::default());
     }
 
     #[test]

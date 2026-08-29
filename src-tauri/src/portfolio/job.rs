@@ -652,10 +652,15 @@ pub const RESUME_WINDOW_HOURS: i64 = 48;
 /// Whether an interrupted run's checkpoints can resume — `Ok(())` = offerable
 /// (`docs/portfolio-analysis.md` §Failure posture: offered only while the
 /// checkpoints exist and the pinned pull is younger than the resume window).
-/// The version stamps must match the current binary and roster: the pinned
-/// contract cannot be re-created from an updated app, so a mismatch refuses
-/// rather than mixing verdicts across contracts. The Err carries the reason the
-/// UI shows.
+/// The stamps are the resume contract (ruled 2026-08-29, Codex I18): the five
+/// version axes stamp what a completed holding's verdict and audit mean, the
+/// format stamp the trail's own shape, the roster the models, and the
+/// prior-run id the baseline — a mismatch on any refuses rather than mixing
+/// verdicts across contracts. A rebuild that moves none resumes, the restored
+/// holdings carrying the pre-change behaviour: a slice that changes
+/// completed-holding semantics is obliged to move the axis it changed, and one
+/// that changes the trail's shape the format stamp; no build identity is
+/// checked. The Err carries the reason the UI shows.
 pub fn resume_eligibility(
     conn: &Connection,
     cp: &store::Checkpoint,
@@ -688,6 +693,9 @@ pub fn resume_eligibility(
     }
     if cp.header.evidence_floor_version != crate::portfolio::engine::EVIDENCE_FLOOR_VERSION {
         return Err("the evidence-floor rule changed since the interrupted run".into());
+    }
+    if cp.header.checkpoint_format_version != store::CHECKPOINT_FORMAT_VERSION {
+        return Err("the checkpoint format changed since the interrupted run".into());
     }
     if cp.header.model_ids != current_model_ids {
         return Err("the configured model roster changed since the interrupted run".into());
@@ -1306,6 +1314,7 @@ fn run_analysis(
             pre_profit_parameter_version:
                 crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION.to_string(),
             evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
+            checkpoint_format_version: store::CHECKPOINT_FORMAT_VERSION.to_string(),
             model_ids: vec![analyst.reasoner_id(), analyst.fast_id()],
         };
         if let Err(e) =
@@ -1328,8 +1337,12 @@ fn run_analysis(
     // never landed or no longer reads re-analyzes whole with its calls
     // re-issued, and the interrupted holding's abandoned calls reach no row
     // (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-28).
+    // The deep-history and benchmark health rides each row the same way
+    // (Codex I17): the counts are rebuilt from `health_rows` at the roll-up,
+    // never seeded from a cumulative accumulator.
     let mut prompt_usage: Vec<crate::local_model::PromptUsage> = Vec::new();
     let mut model_retries: Vec<crate::local_model::RetryEvent> = Vec::new();
+    let mut health_rows: Vec<store::HoldingHealth> = Vec::new();
     if let Some(cp) = &resume {
         ctx.step_started(
             "resume",
@@ -1341,21 +1354,21 @@ fn run_analysis(
             audits.push(row.audit.clone());
             prompt_usage.extend(row.prompt_usage.iter().cloned());
             model_retries.extend(row.model_retries.iter().cloned());
+            health_rows.push(row.health.clone());
         }
         ctx.step_finished("resume", "ok", None);
     }
 
-    // Deep-history health counter for the run-level data-health roll-up: a
-    // non-empty gap list from `deep_price_history` means the FMP fetch degraded
-    // and the holding's anchor window starved to its documented fallback.
-    // A resume seeds every run-level accumulator from the checkpoint trail so
-    // the completed holdings' contributions survive into the finished run's
-    // data health and episode identities.
+    // A resume seeds the run-level keyed identities from the checkpoint trail
+    // so the completed holdings' contributions survive into the finished run's
+    // episode identities and prompt headers. The data-health counts are not
+    // seeded: each restored row carried its own contribution into
+    // `health_rows` above, and the roll-up rebuilds the counts from the rows
+    // (Codex I17).
     let seeded = resume
         .as_ref()
         .map(|cp| cp.accumulators.clone())
         .unwrap_or_default();
-    let mut deep_history_failures = seeded.deep_history_failures;
 
     // The run-level sector-P/E surface, fetched on first need and memoized across
     // funds (`docs/portfolio-workflow.md` §Step 6a): the snapshot once per exchange
@@ -1394,12 +1407,16 @@ fn run_analysis(
     // symbol across holdings — `docs/portfolio-workflow.md` §Step 5): fetched on
     // first need by a carried stock whose pre-flag will read it; `None` caches a
     // failed or empty fetch so a broken benchmark costs one request, not one per
-    // holding. Failures collect run-level for data health.
+    // holding. The memo's second field is whether that fetch degraded (a gap
+    // note or no closes), recorded on every reading holding's health row —
+    // memo hit or fresh miss alike — and deduplicated by benchmark at the
+    // roll-up. The memo is per process, so a run-level list pushed only at
+    // the fetch counted a benchmark failing in both halves of a resumed run
+    // twice (Codex I17).
     let mut benchmark_closes: std::collections::HashMap<
         String,
-        Option<Vec<crate::portfolio::engine::DatedValue>>,
+        (Option<Vec<crate::portfolio::engine::DatedValue>>, bool),
     > = std::collections::HashMap::new();
-    let mut benchmark_gaps: Vec<String> = seeded.benchmark_gaps;
 
     for position in &holdings.positions {
         // A selective run analyzes only the work-list; everything else carries
@@ -1539,9 +1556,10 @@ fn run_analysis(
         } else {
             company_data.deep_price_history(&position.symbol)
         };
-        if !deep_gaps.is_empty() {
-            deep_history_failures += 1;
-        }
+        // This holding's deep-history health, carried on its checkpoint row: a
+        // non-empty gap list means the FMP fetch degraded and the anchor
+        // window starved to its documented fallback.
+        let deep_history_failed = !deep_gaps.is_empty();
         if !deep_closes.is_empty() {
             fmp_financials.daily_closes = deep_closes;
         }
@@ -1664,28 +1682,30 @@ fn run_analysis(
         }
         // This holding's sector-benchmark series — the pre-flag's read-against
         // leg, fetched only where the flag is evaluable at all (a carried stock
-        // whose sector resolved to a SPDR benchmark).
+        // whose sector resolved to a SPDR benchmark). Its health-row read is
+        // `Some(bench)` where the memoized fetch degraded, off a fresh fetch or
+        // a memo hit alike.
+        let mut benchmark_gap: Option<String> = None;
         let sector_benchmark = if is_stock && prior.is_some() {
             sector_by_symbol
                 .get(&position.symbol.to_ascii_uppercase())
                 .and_then(|s| s.benchmark.clone())
                 .and_then(|bench| {
-                    benchmark_closes
+                    let (closes, degraded) = benchmark_closes
                         .entry(bench.clone())
                         .or_insert_with(|| {
                             let (closes, gaps) = company_data.deep_price_history(&bench);
-                            if !gaps.is_empty() || closes.is_empty() {
-                                benchmark_gaps.push(format!(
-                                    "sector benchmark {bench} unavailable this run"
-                                ));
-                            }
-                            (!closes.is_empty()).then_some(closes)
+                            let degraded = !gaps.is_empty() || closes.is_empty();
+                            ((!closes.is_empty()).then_some(closes), degraded)
                         })
-                        .clone()
-                        .map(|closes| dossier::BenchmarkSeries {
-                            symbol: bench,
-                            closes,
-                        })
+                        .clone();
+                    if degraded {
+                        benchmark_gap = Some(bench.clone());
+                    }
+                    closes.map(|closes| dossier::BenchmarkSeries {
+                        symbol: bench,
+                        closes,
+                    })
                 })
         } else {
             None
@@ -1958,16 +1978,23 @@ fn run_analysis(
         // Drain the holding just completed: its calls ride its own row, and
         // the run-level vectors take a copy *before* the fail-soft write, so a
         // lost checkpoint never loses an in-process observation while the row
-        // that did not land takes its calls out of the trail with it.
+        // that did not land takes its calls out of the trail with it. Its
+        // health row rides the same way (Codex I17).
         let holding_usage = analyst.take_prompt_usage();
         let holding_retries = analyst.take_retry_events();
         prompt_usage.extend(holding_usage.iter().cloned());
         model_retries.extend(holding_retries.iter().cloned());
+        let health = store::HoldingHealth {
+            deep_history_failed,
+            benchmark_gap,
+        };
+        health_rows.push(health.clone());
         let cp_row = store::CheckpointHolding {
             verdict: verdicts.last().expect("just pushed").clone(),
             audit: audits.last().expect("just pushed").clone(),
             prompt_usage: holding_usage,
             model_retries: holding_retries,
+            health,
         };
         if let Err(e) = store::save_checkpoint_progress(
             conn,
@@ -1975,8 +2002,6 @@ fn run_analysis(
             &position.symbol,
             &cp_row,
             &store::CheckpointAccumulators {
-                deep_history_failures,
-                benchmark_gaps: benchmark_gaps.clone(),
                 sector_by_symbol: sector_by_symbol.clone(),
                 industry_by_symbol: industry_by_symbol.clone(),
                 profile_name_by_symbol: profile_name_by_symbol.clone(),
@@ -2131,12 +2156,16 @@ fn run_analysis(
     // observation reaches the read.
     prompt_usage.extend(analyst.take_prompt_usage());
     model_retries.extend(analyst.take_retry_events());
+    // The data-health counts, rebuilt from every completed holding's row —
+    // restored and this process's alike — so a resume counts a re-analyzed
+    // holding once and a benchmark failing in both processes once (Codex I17).
+    let health = health_counts(&health_rows);
     let roll_up = build_roll_up(
         &holdings,
         &verdicts,
         &holdings_diff.exited,
         &audits,
-        deep_history_failures,
+        health.deep_history_failures,
         rates.history_gap.is_some(),
         house_view_omitted,
         FeedGaps {
@@ -2144,7 +2173,7 @@ fn run_analysis(
             positioning: cot_gaps.len(),
             cboe: cboe_gap.is_some(),
             finra: finra_gap.is_some(),
-            benchmark: benchmark_gaps.len(),
+            benchmark: health.benchmark_gaps.len(),
         },
         prompt_usage,
         model_retries,
@@ -2400,6 +2429,28 @@ pub(crate) struct FeedGaps {
     pub cboe: bool,
     pub finra: bool,
     pub benchmark: usize,
+}
+
+/// The run-level data-health counts every completed holding's health row
+/// contributes ([`store::HoldingHealth`]): the holdings whose deep-history
+/// fetch degraded, and the distinct sector-benchmark series any holding read
+/// as unavailable. Rebuilt from the rows — restored and fresh alike — rather
+/// than accumulated, so a resumed run counts a re-analyzed holding once and a
+/// benchmark failing in both processes once (Codex I17).
+struct HealthCounts {
+    deep_history_failures: usize,
+    /// Distinct, sorted by benchmark symbol.
+    benchmark_gaps: Vec<String>,
+}
+
+fn health_counts(rows: &[store::HoldingHealth]) -> HealthCounts {
+    let deep_history_failures = rows.iter().filter(|h| h.deep_history_failed).count();
+    let benchmark_gaps: std::collections::BTreeSet<String> =
+        rows.iter().filter_map(|h| h.benchmark_gap.clone()).collect();
+    HealthCounts {
+        deep_history_failures,
+        benchmark_gaps: benchmark_gaps.into_iter().collect(),
+    }
 }
 
 /// Build the deterministic portfolio roll-up (`docs/portfolio-analysis.md` §Portfolio
@@ -2851,6 +2902,28 @@ mod tests {
         assert!(!over_age("2026-07-08T15:00:00+00:00", today));
         // Unparseable stays conservatively over-age.
         assert!(over_age("soon", today));
+    }
+
+    /// The data-health counts are rebuilt from the completed holdings' rows:
+    /// each degraded deep-history fetch counts once per holding, and a
+    /// benchmark read as unavailable by several holdings — or by one holding
+    /// in each half of a resumed run — counts once (Codex I17).
+    #[test]
+    fn health_counts_rebuild_from_rows_and_deduplicate_benchmarks() {
+        let row = |deep: bool, bench: Option<&str>| store::HoldingHealth {
+            deep_history_failed: deep,
+            benchmark_gap: bench.map(str::to_string),
+        };
+        let counts = health_counts(&[
+            row(true, Some("XLK")),
+            row(false, Some("XLK")),
+            row(true, None),
+            row(false, Some("XLF")),
+        ]);
+        assert_eq!(counts.deep_history_failures, 2);
+        assert_eq!(counts.benchmark_gaps, ["XLF", "XLK"]);
+        let empty = health_counts(&[]);
+        assert_eq!((empty.deep_history_failures, empty.benchmark_gaps.len()), (0, 0));
     }
 
     /// The enriching-feed gaps are counted and named on the summary line but
@@ -5224,6 +5297,221 @@ mod tests {
         };
         let err = resume_eligibility(&conn, &legacy, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("evidence-floor"), "{err}");
+
+        // A checkpoint-format drift refuses too: the trail's rows were written
+        // under another shape, and the gate refuses with its reason rather than
+        // loud-skipping every row and offering a resume that restores nothing
+        // (Codex I17 / I18, ruled 2026-08-29).
+        let mut drifted = cp.clone();
+        drifted.header.checkpoint_format_version = "checkpoint-v1".into();
+        let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("checkpoint format"), "{err}");
+
+        // A trail persisted before the format stamp existed decodes as
+        // `checkpoint-v1` and is refused with the same reason.
+        let mut json = serde_json::to_value(&cp.header).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("checkpoint_format_version")
+            .expect("the current producer writes the field");
+        let pre_stamp: store::CheckpointHeader = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(pre_stamp.checkpoint_format_version, "checkpoint-v1");
+        let legacy = store::Checkpoint {
+            header: pre_stamp,
+            ..cp.clone()
+        };
+        let err = resume_eligibility(&conn, &legacy, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("checkpoint format"), "{err}");
+        // Through the real loader (Codex I18, round 1): the stripped header
+        // written back to the trail loads as `checkpoint-v1` with its rows
+        // unread — AAPL's row still decodes and is still not restored — and
+        // the gate refuses it with the format reason.
+        conn.execute(
+            "UPDATE portfolio_checkpoints SET header_json = ?1 WHERE run_id = ?2",
+            rusqlite::params![serde_json::to_string(&json).unwrap(), cp.header.run_id],
+        )
+        .unwrap();
+        let loaded = store::load_checkpoint(&conn).unwrap().expect("the header still loads");
+        assert_eq!(loaded.header.checkpoint_format_version, "checkpoint-v1");
+        assert!(loaded.holdings.is_empty(), "rows under another format are not read");
+        let err = resume_eligibility(&conn, &loaded, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("checkpoint format"), "{err}");
+    }
+
+    /// A resume rebuilds the deep-history count from the rows it restored
+    /// (Codex I17): a holding whose row dropped re-analyzes and counts once,
+    /// where the retired cumulative counter — re-written whole beside the next
+    /// holding's write — kept its first contribution and counted it again.
+    #[test]
+    fn a_resume_counts_a_re_analyzed_holdings_deep_history_failure_once() {
+        let (_dir, paths) = paths();
+        let three = holdings_of(vec![
+            stock("AAPL", 20.0, 3_900.0),
+            stock("GOOG", 20.0, 3_900.0),
+            stock("MSFT", 20.0, 3_900.0),
+        ]);
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(three),
+            &DegradedDeepHistoryData,
+            &StubMarket,
+            &FailOn::on("MSFT"),
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        let conn = storage::open(&paths.db_path).unwrap();
+        let cp = store::load_checkpoint(&conn).unwrap().expect("trail exists");
+        assert_eq!(cp.holdings.len(), 2, "AAPL and GOOG completed before MSFT failed");
+        assert!(
+            cp.holdings.iter().all(|h| h.health.deep_history_failed),
+            "each completed holding's row carries its own degraded fetch"
+        );
+
+        // AAPL's row stops reading: it loud-skips at load and re-analyzes.
+        // GOOG's row — the write that carried the retired counter's AAPL
+        // contribution — still stands.
+        conn.execute(
+            "UPDATE portfolio_checkpoint_holdings SET row_json = '{' WHERE symbol = 'AAPL'",
+            [],
+        )
+        .unwrap();
+        let cp = store::load_checkpoint(&conn).unwrap().expect("trail exists");
+        assert_eq!(cp.holdings.len(), 1);
+        assert_eq!(cp.holdings[0].verdict.symbol, "GOOG");
+        let ids = vec!["stub-analyst".to_string(), "stub-analyst".to_string()];
+        resume_eligibility(&conn, &cp, &ids, chrono::Utc::now()).expect("resumable");
+
+        let outcome = run_portfolio_job(
+            &NoPullSource,
+            &DegradedDeepHistoryData,
+            &StubMarket,
+            &FailOn::recording(60_000),
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            Some(cp),
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected a successful resume, got {other:?}"),
+        };
+        assert_eq!(run.verdicts.len(), 3, "restored GOOG + re-analyzed AAPL and MSFT");
+        let dh = run.roll_up.data_health.as_ref().expect("data health persists");
+        assert_eq!(
+            dh.deep_history_failures, 3,
+            "three holdings, each degraded once — never AAPL twice: {}",
+            dh.summary
+        );
+    }
+
+    /// A company-data source whose stocks resolve to the Technology sector
+    /// (SPDR benchmark `XLK`) and whose deep-history fetch degrades for every
+    /// symbol — the benchmark's included — so a carried stock's pre-flag read
+    /// finds its benchmark unavailable.
+    struct TechSectorDegradedData;
+    impl CompanyDataSource for TechSectorDegradedData {
+        fn financials(&self, symbol: &str) -> CompanyFinancials {
+            DegradedDeepHistoryData.financials(symbol)
+        }
+        fn facts(&self, symbol: &str) -> SecData {
+            DegradedDeepHistoryData.facts(symbol)
+        }
+        fn deep_price_history(
+            &self,
+            symbol: &str,
+        ) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
+            DegradedDeepHistoryData.deep_price_history(symbol)
+        }
+        fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
+            use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
+            ProfileLookup::Resolved(ProfileIdentity {
+                company_name: Some(format!("{symbol} Inc.")),
+                exchange: Some("NASDAQ".into()),
+                sector: Some("Technology".into()),
+                industry: None,
+            })
+        }
+    }
+
+    /// A resume deduplicates the benchmark gap list by benchmark (Codex I17):
+    /// the sector-benchmark memo is per process, so a benchmark failing in
+    /// both halves of a resumed run reached the retired run-level list twice
+    /// with no write failure needed; rebuilt from the rows it counts once.
+    #[test]
+    fn a_resume_counts_a_benchmark_failing_in_both_processes_once() {
+        let (_dir, paths) = paths();
+        // A prior run, so each stock carries a prior verdict and its pre-flag
+        // read reaches the benchmark at all.
+        let prior = full_run(&paths, two_stocks());
+        assert_eq!(prior.verdicts.len(), 2);
+
+        // The interrupted run: AAPL reads XLK off a fresh failed fetch, MSFT
+        // fails before its own read.
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &TechSectorDegradedData,
+            &StubMarket,
+            &FailOn::on("MSFT"),
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        let conn = storage::open(&paths.db_path).unwrap();
+        let cp = store::load_checkpoint(&conn).unwrap().expect("trail exists");
+        assert_eq!(cp.holdings.len(), 1);
+        assert_eq!(cp.holdings[0].verdict.symbol, "AAPL");
+        assert_eq!(
+            cp.holdings[0].health.benchmark_gap.as_deref(),
+            Some("XLK"),
+            "the row carries the benchmark it read as unavailable"
+        );
+        let ids = vec!["stub-analyst".to_string(), "stub-analyst".to_string()];
+        resume_eligibility(&conn, &cp, &ids, chrono::Utc::now()).expect("resumable");
+
+        // Resume: MSFT reads XLK afresh in the new process and finds it
+        // unavailable again.
+        let outcome = run_portfolio_job(
+            &NoPullSource,
+            &TechSectorDegradedData,
+            &StubMarket,
+            &FailOn::recording(60_000),
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            Some(cp),
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected a successful resume, got {other:?}"),
+        };
+        assert_eq!(run.verdicts.len(), 2, "restored AAPL + resumed MSFT");
+        let dh = run.roll_up.data_health.as_ref().expect("data health persists");
+        assert_eq!(
+            dh.benchmark_gaps, 1,
+            "one benchmark, read unavailable by both halves — never twice: {}",
+            dh.summary
+        );
+        assert_eq!(dh.deep_history_failures, 2, "{}", dh.summary);
     }
 
     fn full_run(paths: &ReportPaths, holdings: Holdings) -> PortfolioRun {

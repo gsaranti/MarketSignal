@@ -1279,8 +1279,10 @@ pub struct DataHealth {
     /// same posture. `#[serde(default)]` for pre-field runs.
     #[serde(default)]
     pub finra_gap: bool,
-    /// Sector-benchmark series that failed to fetch (each starves the
-    /// technology-event pre-flag for its holdings) — same counted-only posture.
+    /// Distinct sector-benchmark series a completed holding read as
+    /// unavailable (each starves the technology-event pre-flag for its
+    /// holdings) — same counted-only posture; rebuilt from the holdings' rows,
+    /// so a resumed run counts a benchmark once (Codex I17).
     /// `#[serde(default)]` for pre-field runs.
     #[serde(default)]
     pub benchmark_gaps: usize,

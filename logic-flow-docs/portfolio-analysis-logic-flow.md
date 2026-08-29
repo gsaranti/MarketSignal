@@ -412,7 +412,7 @@
 
 The following sequence runs once for every holding in the work list.
 
-Each completed holding checkpoints separately as it lands — verdict, audit, and the refreshed run-level accumulators — so a failure or cancellation resumes the unfinished holdings (Resume behavior, below); the between-holdings cancellation check runs beside it.
+Each completed holding checkpoints separately as it lands — verdict, audit, its own telemetry and data-health contribution, and the refreshed run-level keyed identities — so a failure or cancellation resumes the unfinished holdings (Resume behavior, below); the between-holdings cancellation check runs beside it.
 
 ### Work-list logic
 
@@ -447,7 +447,9 @@ Each completed holding checkpoints separately as it lands — verdict, audit, an
   - No fresh holdings pull occurs; per-holding retrieval (option chains included) still runs live at each resumed holding’s own Step 6a.
   - Starting resume window: 48 hours.
   - A version, roster, or baseline change since the interrupted run refuses the resume with its reason.
+  - The stamps are the contract: the five version axes stamp completed-holding semantics and the checkpoint format stamp the trail's shape, so a rebuild moving none resumes with the restored holdings' pre-change behaviour, and no build identity is checked (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-29).
   - Each restored holding row carries its own prompt-usage observations and fired-retry events, so the finished run's data-health read spans both processes and counts no call twice, omitting only the superseded calls of holdings the resumed process re-analyzed — the interrupted holding's abandoned calls reach no row, and a row that never landed or no longer reads takes its calls with it (`docs/portfolio-analysis.md` §Failure posture).
+  - Each restored row likewise carries its holding's deep-history and benchmark health, and the finished run rebuilds the data-health counts from the rows — a re-analyzed holding counts once and a benchmark unavailable in both processes once (`docs/portfolio-analysis.md` §Failure posture).
 
 ---
 
@@ -1376,7 +1378,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 
 - **Output**
   - Validated intrinsic verdict and thesis ledger.
-  - Completed per-holding checkpoint (verdict + audit row, plus the refreshed run-level accumulators).
+  - Completed per-holding checkpoint (verdict + audit row with the holding's telemetry and data-health contribution, plus the refreshed run-level keyed identities).
 
 ---
 

@@ -541,6 +541,7 @@ I11 and I13 are one group — the continuity-attribution mirrors of the grade-ve
 I15, ruled at its plan, and the §A4 seed edge are one group — the research loop's residue.
 A group never crosses a stamp axis, and a batch still never mixes code and doc findings.
 I7, I9 and I16 are resolved (2026-08-29; the rulings and resolutions are recorded under §I7, §I9 and §I16), leaving Codex I8, I10–I13, I15, I17–I19 and the §A4 seed edge.
+I18 is ruled and I17 resolved with it (2026-08-29; the rulings and resolutions are recorded under §I17 and §I18, the trail's shape stamped `checkpoint-v2`), leaving Codex I8, I10–I13, I15, I19 and the §A4 seed edge.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -964,6 +965,14 @@ The run-level accumulators keep the older cumulative shape (`store.rs`, `Checkpo
 The keyed maps (`sector_by_symbol`, `industry_by_symbol`, `profile_name_by_symbol`) are immune, a re-analysis overwriting its entry.
 The fix follows the telemetry's pattern: carry each holding's contribution on its row and rebuild the counts from the restored rows at resume, the gap list deduplicated by benchmark.
 Surfaced by the resume-prompt-usage slice's first Codex round (2026-08-28); queued ahead of the run, one finding per slice, like I1–I16.
+Ruled 2026-08-29: the fix follows the telemetry's pattern as written — each holding's deep-history flag and the benchmark it read as unavailable ride its checkpoint row (`store::HoldingHealth`), the counts rebuilt from the restored and written rows at the roll-up through one pure `health_counts`, the benchmark list deduplicated by symbol; the accumulators keep only the keyed identities.
+Ruled 2026-08-29: a holding's benchmark read lands on its row off a fresh fetch or the per-process memo alike, so the rebuilt list is right whichever rows landed.
+Ruled 2026-08-29: carried (unselected) holdings contribute no health row, as they contributed nothing to the retired counters; no compat for the pre-I17 row or accumulator shape, the format stamp of §I18 refusing such a trail; no frontend change.
+Ruled 2026-08-29: none of the five version axes moves; the trail's shape moves the checkpoint format stamp to `checkpoint-v2` (§I18).
+Resolved 2026-08-29: `CheckpointAccumulators` holds the three keyed maps alone; `CheckpointHolding.health` carries `deep_history_failed` and `benchmark_gap` with no serde default; the loop records the deep-history flag at the fetch and the benchmark read at the memo (which memoizes the degraded flag beside the closes), pushes the row before the fail-soft write, and the roll-up reads `health_counts` over every row; `DataHealth.benchmark_gaps` documents itself as the distinct count.
+Four tests pinned: the store round-trip carries the health row and the format stamp; `health_counts` counts two degraded holdings and one benchmark across four rows; a three-stock run whose AAPL row is corrupted after its write resumes to a deep-history count of three, never four; and a benchmark failing in both halves of a resumed run counts once, its row naming the benchmark.
+Canonical at `docs/portfolio-analysis.md` §Failure posture, mirrored in the logic-flow's Step 6 preamble, Resume behavior, and Step 6g output.
+Reviewer round 1 (2026-08-29) approved with three nits, all folded in: the new `health_counts` test had taken the feed-gaps test's doc comment (moved back), this resolution named `RunDataHealth` for `DataHealth`, and the §Failure posture health-row sentence carried two claims (split); no stamp moves off the round.
 
 ### I18 — minor (ruling): the checkpoint trail resumes across any code change that moves no stamp
 
@@ -974,6 +983,16 @@ The exposure is bounded: the trail is transient, discarded by any new run, and o
 The mix is the pre-change behaviour for the restored holdings, never a corrupt record.
 Two answers exist: a build-identity stamp on the trail, refusing a resume across any rebuild (the intent the `resume_eligibility` doc comment already states — the pinned contract cannot be re-created from an updated app), or an explicit ruling that the stamp axes are the contract and a slice that changes completed-holding semantics moves one.
 Surfaced by I1's first Codex round (2026-08-28); queued ahead of the run as a ruling item, one finding per slice, like I1–I17.
+Ruled 2026-08-29: the stamp axes are the contract — the five version axes stamp what a completed holding's verdict and audit mean, the roster the models, the prior-run identity the baseline — and a slice that changes completed-holding semantics is obliged to move the axis it changed; a rebuild moving none resumes, the restored holdings carrying the pre-change behaviour, the bounded residual as recorded.
+Ruled 2026-08-29: a build-identity stamp is declined — `CARGO_PKG_VERSION` is frozen by the no-release rule, a `build.rs` hash or timestamp does not refresh on a source edit under tauri-build's rerun set and a git hash is blind to uncommitted edits, so the only honest identity is an executable mtime probe, and it would refuse the fix-then-resume recovery an hours-long run exists to keep, a CSS-only rebuild included.
+Ruled 2026-08-29: the trail's own shape is a sixth stamp — `store::CHECKPOINT_FORMAT_VERSION` on the header, `checkpoint-v2` with I17, a header lacking the field decoding as `checkpoint-v1` on the evidence-floor precedent — so a shape change refuses at the gate with its reason rather than loud-skipping every row and offering a resume that restores nothing against a pinned pull.
+Resolved 2026-08-29: `resume_eligibility` checks the format stamp after the floor stamp, and its doc comment states the contract in place of "cannot be re-created from an updated app"; the contract is canonical at `docs/portfolio-analysis.md` §Failure posture and mirrored in the logic-flow's Resume behavior.
+Two cases pinned beside the floor refusals: a `checkpoint-v1` header and a header lacking the field are both refused with the format reason.
+Codex round 1 (2026-08-29) found two items: the loader still decoded and loud-skipped every row of a trail under another format before the gate ran, so the recorded "refuses rather than loud-skipping every row" overclaimed and the pre-stamp test bypassed the real loader; and BUILD's version-constant list omits `store::CHECKPOINT_FORMAT_VERSION`.
+Closed: `load_checkpoint` returns a header under another format alone — its accumulators and rows unread — so the gate's reason is the only surface a stale trail reaches, pinned twice: the store loader leaves a decodable row unrestored under a `checkpoint-v1` header, and the job gate refuses the stripped header written back to the trail through the real loader.
+Deferred to session-end: the BUILD §Seams version-constant list gains `store::CHECKPOINT_FORMAT_VERSION` (a `.metis/` write, beside the CURRENT.md stamp list and the INDEX row).
+No stamp moves off the round.
+Codex round 2 (2026-08-29) approved the correction round with the session-end follow-up standing.
 
 ### I19 — minor (ruling): the one-fact contract's single-number ambiguity
 
