@@ -19,7 +19,10 @@ row predates the field. Six plan rulings, five Codex rounds, two reviewer
 rounds; twelve tests. Lessons: a semantic classifier over prose leaks by
 ordering — fail-closed counting beat three rounds of patching; verify a
 reviewer's runtime premise (copy-out DB read) rather than leave it conditional.
-**`BUILD.md` / `INDEX.md` not bumped** (not authorized).
+**`BUILD.md` bumped** at session end (user-run): §What remains' count line
+to I4–I13, I15–I19 and a §Standing constraints bullet — a research-fed
+observation row is admitted on syntax, never on meaning. `INDEX.md` not
+bumped.
 
 ## Current state
 
@@ -41,12 +44,11 @@ mismatched trail is refused by reason); records now stamp `portfolio-v17`.
 
 ## Open questions
 
-- `BUILD.md` §What remains item 1 still reads "Codex's I2–I18 (I1 resolved
-  …)" — needs "I4–I13, I15–I19 (I1, I2, I3, I14 resolved 2026-08-28; I19
-  added)"; whether `INDEX.md`'s §Verification records row ("Codex I1–I18
-  additions") moves to I19, and whether INDEX gains rows for the in-quarter
-  history admission and the observation-excerpt contract (canonical
-  `portfolio-workflow.md` §Step 6e). User-run edits.
+- Whether `INDEX.md`'s §Verification records row ("Codex I1–I18 additions")
+  moves to I19, and whether INDEX gains rows for the in-quarter history
+  admission (canonical `portfolio-analysis.md` §Asset eligibility) and the
+  observation-excerpt contract (canonical `portfolio-workflow.md` §Step 6e).
+  User-run edits.
 
 ## Where to start
 

@@ -517,6 +517,21 @@ Each is easy to break by accident, so a plan should say how it honors them:
   pre-stamp record reads as the presence floor (ruled 2026-08-28 off the
   review's Codex I1; canonical at `docs/portfolio-analysis.md §Evidence
   floor`).
+- **A research-fed observation row is admitted on syntax, never on meaning.**
+  The pre-profit producer's typed rows — the one model→engine channel that
+  feeds a deterministic rule from prose — enter only through a verbatim,
+  persisted `source_excerpt` the app verifies in the fetched page: the value
+  at its printed sign inside the quote (read with the page's own neighbours,
+  so a quote trimmed to the digits sheds nothing), the metric's own language,
+  and exactly one number, every digit counting, a guidance-low/high row alone
+  quoting a range's endpoints — so a compound sentence can never lend a stem
+  to another clause's number. The filter is a syntactic admission test that
+  cannot tell what the one number it admits means, and it loses an
+  untrimmable row rather than admitting a wrong one; the contract rides the
+  prompt stamp (`portfolio::PROMPT_VERSION`), and its residual is the
+  review's queued I19 (ruled 2026-08-28 off Codex I3 across five Codex
+  rounds, the semantic classifiers of the first two rounds each leaking by
+  ordering; canonical at `docs/portfolio-workflow.md §Step 6e`).
 
 ### What each built slice left for the next
 
@@ -670,10 +685,10 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I2–I18 (I1
-   resolved 2026-08-28; I18 a ruling item) and the §A4 seed edge sit ahead
-   of the run, one finding per slice; and the user names the launch session
-   at its start. Its checklist is
+   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I4–I13 and
+   I15–I19 (I1, I2, I3, and I14 resolved 2026-08-28; I18 and I19 ruling
+   items) and the §A4 seed edge sit ahead of the run, one finding per slice;
+   and the user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
    shape 2026-08-18** (construction / lean / sizing watches removed, the
