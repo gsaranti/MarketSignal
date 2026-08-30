@@ -727,12 +727,12 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I15 and
-   I20 (I1–I5 and I14 resolved 2026-08-28, I6–I13 and I16–I19 2026-08-29;
-   I20 ruled at its addition) and the §A4 seed edge sit ahead of the run in
-   the last of five groups cut on one code locus and one stamp axis, I20 its
-   own slice (ruled 2026-08-29; the record's §Disposition owns the
-   grouping), the fresh-start-2 compat cut landed ahead of them the same
+   posture), the Priority-1/-2/-3 minors and the §A4 seed edge are
+   resolved; Codex's I20 alone (I1–I5 and I14 resolved 2026-08-28, I6–I13
+   and I15–I19 2026-08-29; I20 ruled at its addition) sits ahead of the run
+   as its own slice — the five groups cut on one code locus and one stamp
+   axis all landed 2026-08-29, the record's §Disposition owning the
+   grouping, the fresh-start-2 compat cut landed ahead of them the same
    day; the run starts from a wiped store, so every
    holding is a debut and every read against a prior is a run-2 watch, a
    second run following only on the user's decision after run 1's result;
