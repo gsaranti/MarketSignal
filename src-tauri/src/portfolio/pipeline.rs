@@ -919,6 +919,7 @@ pub fn analyze_holding(
                     dossier.financials.current_price,
                     &research_supported,
                     price_bridge.is_some(),
+                    crate::portfolio::ContinuityStamps::of(&dossier.financials),
                 );
                 // The action placeholder is overwritten by the decision below and
                 // never rendered into its prompt.
@@ -1399,6 +1400,7 @@ pub fn analyze_holding(
         dossier.financials.current_price,
         &research_supported,
         price_bridge.is_some(),
+        crate::portfolio::ContinuityStamps::of(&dossier.financials),
     );
 
     // The engine stand-in arm — mechanical outlook / conviction / action baselines
@@ -1784,6 +1786,7 @@ fn validate_condition(
     research_supported: &std::collections::HashSet<String>,
     updated_states: &std::collections::HashMap<String, ConditionEvalState>,
     price_basis_verified: bool,
+    stamps: crate::portfolio::ContinuityStamps,
     audit: &mut LedgerAudit,
 ) -> LedgerCondition {
     let statement = statement.trim().to_string();
@@ -1856,17 +1859,20 @@ fn validate_condition(
                     superseded_by: Some(new_id.clone()),
                     condition: prev,
                 });
+                // A fresh streak starts stamped with the basis and source the
+                // prompt stated for this series (`ContinuityStamps`), so the
+                // first evaluation can already disagree with a flip.
                 (
                     new_id,
                     Some(prev_id),
-                    Some(ConditionEvalState::default()),
+                    Some(stamps.authored_state(core.series)),
                     false,
                 )
             } else {
                 (
                     uuid::Uuid::new_v4().to_string(),
                     None,
-                    Some(ConditionEvalState::default()),
+                    Some(stamps.authored_state(core.series)),
                     false,
                 )
             }
@@ -1953,6 +1959,7 @@ pub fn validate_ledger_rewrite(
         spot,
         &std::collections::HashSet::new(),
         true,
+        crate::portfolio::ContinuityStamps::NONE,
     )
 }
 
@@ -1961,7 +1968,10 @@ pub fn validate_ledger_rewrite(
 /// `related_condition_id` linkage) — the source-backed-finding leg a
 /// qualitative tripped/fired claim needs. The research-less
 /// [`validate_ledger_rewrite`] passes the empty set, so a qualitative claim
-/// can never self-certify.
+/// can never self-certify. `stamps` is the authoring surface's continuity
+/// stamps — the basis and equity source the prompt stated — written onto every
+/// new or superseding quantitative condition per series
+/// ([`crate::portfolio::ContinuityStamps`]); the wrapper passes none.
 #[allow(clippy::too_many_arguments)]
 pub fn validate_ledger_rewrite_with_research(
     draft: &LedgerDraft,
@@ -1973,6 +1983,7 @@ pub fn validate_ledger_rewrite_with_research(
     spot: Option<f64>,
     research_supported: &std::collections::HashSet<String>,
     price_basis_verified: bool,
+    stamps: crate::portfolio::ContinuityStamps,
 ) -> (ThesisLedger, LedgerAudit) {
     // Structural, not conventional: a `role_risk_only` monitor is condition-only —
     // no engine scenario target exists on that branch — regardless of what the
@@ -2117,6 +2128,7 @@ pub fn validate_ledger_rewrite_with_research(
             research_supported,
             &updated_states,
             price_basis_verified,
+            stamps,
             &mut audit,
         ));
     }
@@ -2166,6 +2178,7 @@ pub fn validate_ledger_rewrite_with_research(
             research_supported,
             &updated_states,
             price_basis_verified,
+            stamps,
             &mut audit,
         ));
     }
@@ -2336,6 +2349,33 @@ fn grade_branch(prior: &HoldingVerdict) -> engine::GradeBranch {
         }
         _ => engine::GradeBranch::Stock,
     }
+}
+
+/// The input-delta row for a scenario-target parameter boundary — the target
+/// mirror of the grade rows: only over a priced prior with a stamped target
+/// record, naming the horizons the boundary can have moved on the prior's branch
+/// (`engine::target_parameter_change`), so an engine target move across it is
+/// attributed to the parameter change rather than to evidence or a
+/// self-correction (the 2026-08-24 review's Codex I11).
+fn target_boundary_row(prior_stamp: &str, horizons: engine::TargetHorizons) -> String {
+    format!(
+        "scenario-target parameters changed ({prior_stamp} -> {}) — the {} can move with \
+         no input change",
+        engine::SCENARIO_TARGET_PARAMETER_VERSION,
+        horizons.label()
+    )
+}
+
+/// The continuity NOTE for the same boundary, in the interpretation prompt —
+/// the grade NOTE's shape, naming the horizons.
+fn target_boundary_note(horizons: engine::TargetHorizons) -> String {
+    format!(
+        "NOTE: the scenario-target function's parameters changed since the prior verdict \
+         (target parameter version changed), so the {} may have moved with no change in \
+         the company's inputs. Attribute such a target move in what_changed to the \
+         parameter change — not to company change or a self-correction.\n",
+        horizons.label()
+    )
 }
 
 fn push_delta(entries: &mut Vec<crate::portfolio::DeltaEntry>, label: String) {
@@ -2605,6 +2645,31 @@ fn priced_input_delta(
             ),
         ),
         None => {}
+    }
+    // The scenario-target stamp reads its own history on the same rule (Codex
+    // I11): over a priced prior with a stamped target record, on the prior's
+    // branch, naming the horizons the rows after its stamp touched — so a target
+    // that moved on a version bump alone is never attributed to company evidence
+    // or a self-correction (which marks `thesis_changed` and can open a successor
+    // episode). `None` whenever the stamp is, so this never renders empty.
+    let target_boundary = match &prior.disposition {
+        VerdictDisposition::Priced(_) => engine::target_parameter_change(
+            dossier.prior_target_parameter_version.as_deref(),
+            grade_branch(prior),
+        ),
+        _ => None,
+    };
+    if let Some(horizons) = target_boundary {
+        push_delta(
+            &mut entries,
+            target_boundary_row(
+                dossier
+                    .prior_target_parameter_version
+                    .as_deref()
+                    .unwrap_or_default(),
+                horizons,
+            ),
+        );
     }
     append_shared_delta(&mut entries, dossier, position_change, ledger_eval, price_bridge);
     if let Some(f) = tech_pre_flag.filter(|f| f.fired) {
@@ -2979,6 +3044,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         true,
         input.input_delta,
         input.dossier.financials.statement_basis,
+        input.dossier.financials.equity_source,
     ));
     p
 }
@@ -3778,6 +3844,19 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
                 ),
                 None => {}
             }
+            // The scenario-target stamp's NOTE, on the same rule (Codex I11) —
+            // the delta row's twin, so the attribution the 6g validator checks
+            // has a named cause to resolve to.
+            let target_boundary = match &prior.disposition {
+                VerdictDisposition::Priced(_) => engine::target_parameter_change(
+                    d.prior_target_parameter_version.as_deref(),
+                    grade_branch(prior),
+                ),
+                _ => None,
+            };
+            if let Some(horizons) = target_boundary {
+                p.push_str(&target_boundary_note(horizons));
+            }
             // The v7 retrospective: the prior run's BOTH-arm values plus what has
             // happened since — a deliberate reversal of the v4 anchoring guard,
             // because self-assessment against the baseline is the point of the
@@ -3800,6 +3879,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         false,
         input.input_delta,
         input.dossier.financials.statement_basis,
+        input.dossier.financials.equity_source,
     ));
 
     p
@@ -4343,7 +4423,8 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
 /// (`docs/portfolio-analysis.md` §The position thesis ledger). This is the first
 /// prior-run *content* the prompt carries — the standing view the model tests
 /// against fresh evidence rather than re-deriving from scratch.
-/// `statement_basis` is the holding's stamped basis this run — rendered once beside
+/// `statement_basis` is the holding's stamped basis this run and `equity_source`
+/// which balance sheet supplied the two instants' equity — rendered once beside
 /// the vocabulary by [`statement_basis_line`].
 pub fn ledger_prompt_section(
     prior: Option<&ThesisLedger>,
@@ -4351,6 +4432,7 @@ pub fn ledger_prompt_section(
     role_risk: bool,
     input_delta: &[crate::portfolio::DeltaEntry],
     statement_basis: Option<crate::portfolio::StatementBasis>,
+    equity_source: Option<crate::portfolio::EquitySource>,
 ) -> String {
     let mut p = String::new();
     // The conditions a fresh research finding bears on this run — the delta's
@@ -4366,7 +4448,7 @@ pub fn ledger_prompt_section(
     for s in engine::LedgerSeries::ALL {
         p.push_str(&format!("- {}: {}\n", s.as_kebab(), s.describe()));
     }
-    p.push_str(&statement_basis_line(statement_basis));
+    p.push_str(&statement_basis_line(statement_basis, equity_source));
 
     match prior {
         Some(l) => {
@@ -4535,8 +4617,15 @@ pub fn ledger_prompt_section(
 /// the flow series are unevaluable here rather than silently on some basis, while
 /// an instant still reads where a balance sheet exists
 /// (`docs/portfolio-analysis.md` §Starting parameters; large-scale review
-/// 2026-08-24, Priority-1 minor).
-fn statement_basis_line(basis: Option<crate::portfolio::StatementBasis>) -> String {
+/// 2026-08-24, Priority-1 minor). The instants' sentence names which balance
+/// sheet supplied their equity this run (`equity_source`, stamped at the SEC
+/// merge — Codex I13, `portfolio-v23`): the source is the instants' own
+/// continuity stamp, so the model reads what the evaluation gates on; `None` —
+/// no equity line reached the engine — says the instants are unevaluable here.
+fn statement_basis_line(
+    basis: Option<crate::portfolio::StatementBasis>,
+    equity_source: Option<crate::portfolio::EquitySource>,
+) -> String {
     let kebabs = |keep: fn(&engine::LedgerSeries) -> bool| {
         engine::LedgerSeries::ALL
             .iter()
@@ -4547,19 +4636,29 @@ fn statement_basis_line(basis: Option<crate::portfolio::StatementBasis>) -> Stri
     };
     let flow = kebabs(|s| s.flow_basis());
     let instants = kebabs(|s| s.statement_derived() && !s.flow_basis());
-    match basis {
+    let flow_line = match basis {
         Some(b) => format!(
             "The flow series ({flow}) are read on this holding's statement basis this \
-             run: {}. Author their thresholds on that basis. The balance-sheet series \
-             ({instants}) read the latest balance sheet — an instant on no flow basis.\n",
+             run: {}. Author their thresholds on that basis.",
             b.label()
         ),
         None => format!(
             "The flow series ({flow}) have no statement basis this run — no flow lines \
-             reached the engine — so they are unevaluable here. The balance-sheet \
-             series ({instants}) read the latest balance sheet where one exists.\n"
+             reached the engine — so they are unevaluable here."
         ),
-    }
+    };
+    let instants_line = match equity_source {
+        Some(src) => format!(
+            "The balance-sheet series ({instants}) read the latest balance sheet — an \
+             instant on no flow basis — supplied this run by {}.",
+            src.label()
+        ),
+        None => format!(
+            "The balance-sheet series ({instants}) have no balance sheet this run — no \
+             equity line reached the engine — so they are unevaluable here."
+        ),
+    };
+    format!("{flow_line} {instants_line}\n")
 }
 
 /// A one-line description of the position's change since the prior run, for the
@@ -5878,6 +5977,7 @@ mod tests {
             prior_consensus_eps_mid: None,
             prior_matured_notes: Vec::new(),
             prior_grade_parameter_version: None,
+            prior_target_parameter_version: None,
             prior_authoring_close: None,
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
@@ -7034,6 +7134,7 @@ mod tests {
             None,
             &std::collections::HashSet::new(),
             false,
+            crate::portfolio::ContinuityStamps::NONE,
         );
         let c = &ledger.conditions[0];
         assert!(c.quant.is_none(), "re-anchored core must not persist: {c:?}");
@@ -7055,6 +7156,7 @@ mod tests {
             None,
             &std::collections::HashSet::new(),
             false,
+            crate::portfolio::ContinuityStamps::NONE,
         );
         let c = &ledger.conditions[0];
         assert_eq!(c.condition_id, "px-1", "carried id");
@@ -7070,6 +7172,7 @@ mod tests {
             None,
             &std::collections::HashSet::new(),
             true,
+            crate::portfolio::ContinuityStamps::NONE,
         );
         let c = &ledger.conditions[0];
         assert_eq!(c.quant.as_ref().expect("quant supersede").threshold, 150.0);
@@ -7934,8 +8037,10 @@ mod tests {
         // decode gate with its clauses in the prompt, so a pre-fix checkpoint
         // cannot resume into rows the gate would reject: the stamp moved and
         // stays pinned. Group 3 (Codex I8 / I10 / I12 renders and the I19
-        // period-word guard, ruled 2026-08-29) moved it again.
-        assert_eq!(PROMPT_VERSION, "portfolio-v22");
+        // period-word guard, ruled 2026-08-29) moved it again, and group 4
+        // (the Codex I11 target-boundary NOTE and the I13 equity-source line
+        // in the basis sentence, beside the new evaluation-state stamp) again.
+        assert_eq!(PROMPT_VERSION, "portfolio-v23");
     }
 
     #[test]
@@ -8657,6 +8762,151 @@ mod tests {
         silent(&fund, "never-priced fund prior with no stamp");
     }
 
+    /// Codex I11: the scenario-target stamp carries the same attribution, read
+    /// from the prior audit's `target_meta.parameter_version`. The production
+    /// history is a single anchor row (the store is wiped before the first run
+    /// under `targets-v5`), so every stamp a prior can carry is silent — the
+    /// current one, no target record, `targets-v4` itself, an unrecognized one —
+    /// on both branches, and a never-priced prior is silent whatever it carries;
+    /// the row and the NOTE are pinned on explicit horizons so the next bump's
+    /// row lands on tested text.
+    ///
+    /// When a `targets-v6` row lands, the `targets-v5` stamp stops being
+    /// silent: move its silence cases to v6 and add the positive case here — a
+    /// priced prior stamped v5 rendering exactly one row and one NOTE through
+    /// the wiring, naming v6's horizons on the prior's branch.
+    #[test]
+    fn the_target_stamp_boundary_is_silent_on_every_reachable_stamp_and_renders_the_horizons() {
+        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let prompt = |d: &HoldingDossier| {
+            interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
+                dossier: d,
+                prior_ledger: d.prior_ledger(),
+                engine: &engine_output,
+                distilled: "",
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: None,
+                narrative: None,
+            })
+        };
+        let delta = |d: &HoldingDossier| {
+            priced_input_delta(
+                d,
+                &engine_output,
+                PositionChange::Unchanged,
+                None,
+                None,
+                None,
+                false,
+                Some(1.0),
+            )
+        };
+        let silent = |d: &HoldingDossier, case: &str| {
+            let p = prompt(d);
+            assert!(
+                !p.contains("target parameter version changed")
+                    && !p.contains("scenario-target parameters changed"),
+                "{case}: {p}"
+            );
+            let rows = delta(d);
+            assert!(
+                rows
+                    .iter()
+                    .all(|e| !e.label.contains("scenario-target parameters changed")),
+                "{case}: {rows:?}"
+            );
+        };
+
+        let base = dossier(AssetClass::Stock, strong_financials());
+        let (stock_prior, _) =
+            analyze_holding(&StubAnalyst, &base, &rates(), "2026-08-01").unwrap();
+        assert!(matches!(
+            stock_prior.disposition,
+            VerdictDisposition::Priced(_)
+        ));
+        let mut stock = dossier(AssetClass::Stock, strong_financials());
+        stock.prior_verdict = Some(stock_prior);
+        stock.prior_target_parameter_version =
+            Some(engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string());
+        silent(&stock, "stock on the current stamp");
+        stock.prior_target_parameter_version = None;
+        silent(&stock, "stock with no target record");
+        stock.prior_target_parameter_version = Some("targets-v4".into());
+        silent(&stock, "stock from targets-v4 (unrecognized by ruling)");
+        stock.prior_target_parameter_version = Some("targets-v9.9".into());
+        silent(&stock, "stock from an unrecognized stamp");
+
+        let (fund_prior, _) = analyze_holding(
+            &StubAnalyst,
+            &fund_dossier(us_equity_fund()),
+            &rates(),
+            "2026-08-01",
+        )
+        .unwrap();
+        assert!(matches!(
+            fund_prior.disposition,
+            VerdictDisposition::Priced(_)
+        ));
+        let mut fund = fund_dossier(us_equity_fund());
+        fund.prior_verdict = Some(fund_prior);
+        for stamp in [
+            Some(engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string()),
+            None,
+            Some("targets-v4".into()),
+        ] {
+            fund.prior_target_parameter_version = stamp;
+            silent(&fund, "fund prior");
+        }
+
+        // A never-priced prior had no target to move, whatever it carries.
+        stock.prior_verdict = Some(HoldingVerdict {
+            symbol: "AAPL".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated {
+                reason: "fixture".into(),
+            },
+            thesis_ledger: None,
+            analyzed_at: None,
+            action_source: Default::default(),
+            side_reversed: false,
+        });
+        stock.prior_target_parameter_version = Some("targets-v4".into());
+        silent(&stock, "never-priced prior");
+
+        // The renders, on explicit horizons — the label is the engine's one
+        // vocabulary for both.
+        let row = target_boundary_row("targets-v4", engine::TargetHorizons::ONE_MONTH);
+        assert_eq!(
+            row,
+            format!(
+                "scenario-target parameters changed (targets-v4 -> {}) — the one-month \
+                 target can move with no input change",
+                engine::SCENARIO_TARGET_PARAMETER_VERSION
+            )
+        );
+        let note = target_boundary_note(engine::TargetHorizons::BOTH);
+        assert!(
+            note.starts_with(
+                "NOTE: the scenario-target function's parameters changed since the prior \
+                 verdict (target parameter version changed), so the one-month and \
+                 twelve-month targets may have moved with no change in the company's inputs."
+            ),
+            "{note}"
+        );
+        assert!(
+            note.contains("Attribute such a target move in what_changed to the parameter change")
+                && note.ends_with('\n')
+                && !note.contains("  "),
+            "{note}"
+        );
+    }
+
     #[test]
     fn house_view_blocks_carry_the_scope_line_in_both_prompts() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
@@ -9105,7 +9355,7 @@ mod tests {
             unevaluable_series: vec![],
             updated_states: vec![],
         };
-        let section = ledger_prompt_section(Some(&prior), Some(&eval), false, &[], None);
+        let section = ledger_prompt_section(Some(&prior), Some(&eval), false, &[], None, None);
         let d = fund_dossier(us_equity_fund());
         let mut entries = Vec::new();
         append_shared_delta(&mut entries, &d, PositionChange::Unchanged, Some(&eval), Some(1.0));
@@ -9806,6 +10056,139 @@ mod tests {
         assert!(ledger.authored_band_relation.is_none());
     }
 
+    /// Codex round 1 on group 4 (I11 + I13): a new or superseding quantitative
+    /// condition is stamped at authoring from the surface the prompt described,
+    /// per series — so the first full-pass evaluation after a debut has a stamp
+    /// to disagree with, where the run-1 ledger's instants used to carry none
+    /// until run 2's evaluation adopted silently across the very flip I13 gates.
+    #[test]
+    fn a_new_condition_is_stamped_at_authoring_per_series_so_a_flip_before_its_first_evaluation_is_caught(
+    ) {
+        use crate::portfolio::{ContinuityStamps, EquitySource, FalsifierDraft, StatementBasis};
+        let falsifier = |statement: &str, series: &str, threshold: f64| FalsifierDraft {
+            statement: statement.into(),
+            quant: Some(QuantCoreDraft {
+                series: series.into(),
+                comparator: "above".into(),
+                threshold,
+                margin: 0.0,
+            }),
+            technology_class: false,
+            tripped: false,
+        };
+        let draft_with = |de_threshold: f64| {
+            let mut draft = stub_ledger_draft(None, "AAPL", false);
+            draft.falsifiers = vec![
+                falsifier(
+                    &format!("debt/equity above {de_threshold}"),
+                    "debt-to-equity",
+                    de_threshold,
+                ),
+                falsifier("net margin above 90%", "net-margin", 0.9),
+                falsifier("price above 500", "price", 500.0),
+            ];
+            draft.triggers = vec![];
+            draft
+        };
+        let validate = |draft: &LedgerDraft, prior: Option<&ThesisLedger>, stamps| {
+            validate_ledger_rewrite_with_research(
+                draft,
+                prior,
+                None,
+                LedgerBranch::Priced,
+                false,
+                None,
+                None,
+                &std::collections::HashSet::new(),
+                true,
+                stamps,
+            )
+        };
+        let state_of = |ledger: &ThesisLedger, kebab: &str| {
+            ledger
+                .conditions
+                .iter()
+                .find(|c| c.quant.as_ref().is_some_and(|q| q.series.as_kebab() == kebab))
+                .unwrap_or_else(|| panic!("{kebab}"))
+                .eval_state
+                .clone()
+                .expect("a quantitative condition starts machine state")
+        };
+
+        // The debut surface: TTM flows, FMP's quarterly equity.
+        let authored = ContinuityStamps {
+            statement_basis: Some(StatementBasis::Ttm),
+            equity_source: Some(EquitySource::FmpQuarterly),
+        };
+        let (debut, _) = validate(&draft_with(3.0), None, authored);
+        let de = state_of(&debut, "debt-to-equity");
+        assert_eq!(de.authored_statement_basis, Some(StatementBasis::Ttm));
+        assert_eq!(de.authored_equity_source, Some(EquitySource::FmpQuarterly));
+        assert_eq!(de.breach_streak, 0);
+        let nm = state_of(&debut, "net-margin");
+        assert_eq!(nm.authored_statement_basis, Some(StatementBasis::Ttm));
+        assert_eq!(
+            nm.authored_equity_source, None,
+            "a flow series never carries the equity stamp"
+        );
+        let px = state_of(&debut, "price");
+        assert_eq!(
+            (px.authored_statement_basis, px.authored_equity_source),
+            (None, None),
+            "a price series carries neither"
+        );
+
+        // The research-less wrapper stamps nothing — a surface with no lines.
+        let (bare, _) =
+            validate_ledger_rewrite(&draft_with(3.0), None, None, LedgerBranch::Priced, false, None, None);
+        let bare_de = state_of(&bare, "debt-to-equity");
+        assert_eq!(
+            (bare_de.authored_statement_basis, bare_de.authored_equity_source),
+            (None, None)
+        );
+
+        // A superseding core (edited threshold) starts a fresh streak stamped with
+        // THIS run's surface; a carried-verbatim core keeps its carried state.
+        let later = ContinuityStamps {
+            statement_basis: Some(StatementBasis::Annual),
+            equity_source: Some(EquitySource::SecAnnual),
+        };
+        let (next, audit) = validate(&draft_with(4.0), Some(&debut), later);
+        assert_eq!(audit.superseded.len(), 1, "{:?}", audit.superseded);
+        let de2 = state_of(&next, "debt-to-equity");
+        assert_eq!(de2.authored_statement_basis, Some(StatementBasis::Annual));
+        assert_eq!(de2.authored_equity_source, Some(EquitySource::SecAnnual));
+        let nm2 = state_of(&next, "net-margin");
+        assert_eq!(
+            nm2.authored_statement_basis,
+            Some(StatementBasis::Ttm),
+            "carried verbatim: the carried stamp stands"
+        );
+
+        // The teeth: the debut's D/E condition, evaluated for the first time on a
+        // surface whose equity leg fell to SEC's annual print, is typed
+        // unevaluable — never silently adopted and compared across the step.
+        let mut fin = strong_financials();
+        fin.statement_basis = Some(StatementBasis::Ttm);
+        fin.equity_source = Some(EquitySource::SecAnnual);
+        let mut metrics = engine::compute_metrics(&fin);
+        metrics.debt_to_equity = Some(3.5);
+        let eval = engine::evaluate_ledger_conditions(&debut, &metrics, &fin, "2026-08-20");
+        assert!(
+            eval.crossings.iter().all(|c| !c.statement.contains("debt/equity")),
+            "{:?}",
+            eval.crossings
+        );
+        assert!(
+            eval.unevaluable.iter().any(|u| u.contains("debt/equity above 3")
+                && u.contains(
+                    "equity source changed (FMP's latest quarterly balance sheet → SEC's"
+                )),
+            "{:?}",
+            eval.unevaluable
+        );
+    }
+
     #[test]
     fn rewrite_stamps_spots_authoring_time_band_relation() {
         let draft = stub_ledger_draft(None, "AAPL", false);
@@ -10404,6 +10787,7 @@ mod tests {
             None,
             &supported,
             true,
+            crate::portfolio::ContinuityStamps::NONE,
         );
         let q = ledger
             .conditions
@@ -10426,6 +10810,7 @@ mod tests {
             None,
             &unrelated,
             true,
+            crate::portfolio::ContinuityStamps::NONE,
         );
         assert!(ledger.conditions.iter().all(|c| !c.tripped));
         assert!(audit
@@ -10650,7 +11035,7 @@ mod tests {
     #[test]
     fn ledger_section_renders_debut_prior_and_crossings() {
         // Debut: the vocabulary and the authoring instruction.
-        let s = ledger_prompt_section(None, None, false, &[], None);
+        let s = ledger_prompt_section(None, None, false, &[], None, None);
         assert!(s.contains("ENGINE SERIES"), "{s}");
         assert!(s.contains("net-margin"), "{s}");
         assert!(s.contains("debut"), "{s}");
@@ -10676,7 +11061,7 @@ mod tests {
             unevaluable_series: vec![engine::LedgerSeries::NetMargin],
             updated_states: vec![],
         };
-        let s = ledger_prompt_section(Some(&prior), Some(&eval), false, &[], None);
+        let s = ledger_prompt_section(Some(&prior), Some(&eval), false, &[], None, None);
         assert!(s.contains("the debut thesis"), "original thesis renders: {s}");
         assert!(s.contains("the standing thesis"), "{s}");
         assert!(s.contains("CONFIRMED BREACH"), "{s}");
@@ -10691,7 +11076,7 @@ mod tests {
         assert!(!s.contains("Target weight range"), "{s}");
 
         // The role_risk variant names the branch reductions.
-        let rr = ledger_prompt_section(Some(&prior), None, true, &[], None);
+        let rr = ledger_prompt_section(Some(&prior), None, true, &[], None, None);
         assert!(rr.contains("trim/sell only"), "{rr}");
 
         // The research-supported mark (2026-08-24 review F3): a fresh research
@@ -10707,13 +11092,13 @@ mod tests {
             label: "research finding (t): a claim [https://x.example/a]".into(),
             related_condition_id: Some("keep-1".into()),
         }];
-        let marked = ledger_prompt_section(Some(&prior), Some(&eval), false, &tied, None);
+        let marked = ledger_prompt_section(Some(&prior), Some(&eval), false, &tied, None, None);
         assert!(
             marked.contains("RESEARCH-SUPPORTED THIS RUN: a fresh source-backed finding"),
             "{marked}"
         );
         assert!(!marked.contains("keep-1"), "condition ids stay out of the prompt: {marked}");
-        let rr_marked = ledger_prompt_section(Some(&prior), None, true, &tied, None);
+        let rr_marked = ledger_prompt_section(Some(&prior), None, true, &tied, None, None);
         assert!(rr_marked.contains("RESEARCH-SUPPORTED THIS RUN"), "{rr_marked}");
 
         // Both interpretation prompts carry the section.
@@ -10751,7 +11136,15 @@ mod tests {
         let flow = "net-margin, gross-margin, revenue-growth, pe-ratio, ps-ratio";
         let instants = "debt-to-equity, pb-ratio";
 
-        let ttm = ledger_prompt_section(None, None, false, &[], Some(StatementBasis::Ttm));
+        use crate::portfolio::EquitySource;
+        let ttm = ledger_prompt_section(
+            None,
+            None,
+            false,
+            &[],
+            Some(StatementBasis::Ttm),
+            Some(EquitySource::FmpQuarterly),
+        );
         assert!(
             ttm.contains("- net-margin: net margin (decimal)\n"),
             "{ttm}"
@@ -10768,10 +11161,13 @@ mod tests {
             ttm.contains(&format!("The flow series ({flow}) are read on")),
             "{ttm}"
         );
+        // Codex I13 (`portfolio-v23`): the instants' sentence names which balance
+        // sheet supplied their equity — the source their evaluation gates on.
         assert!(
             ttm.contains(&format!(
                 "The balance-sheet series ({instants}) read the latest balance sheet — \
-                 an instant on no flow basis"
+                 an instant on no flow basis — supplied this run by FMP's latest \
+                 quarterly balance sheet.\n"
             )),
             "{ttm}"
         );
@@ -10784,32 +11180,61 @@ mod tests {
             "{ttm}"
         );
 
-        let annual = ledger_prompt_section(None, None, false, &[], Some(StatementBasis::Annual));
+        let annual = ledger_prompt_section(
+            None,
+            None,
+            false,
+            &[],
+            Some(StatementBasis::Annual),
+            Some(EquitySource::SecAnnual),
+        );
         assert!(
             annual.contains("statement basis this run: SEC annual (latest full year"),
             "{annual}"
         );
         assert!(!annual.contains("TTM (four trailing quarters)"), "{annual}");
+        assert!(
+            annual.contains(
+                "supplied this run by SEC's latest annual stockholders' equity (the \
+                 quarterly balance-sheet leg fell back).\n"
+            ) && !annual.contains("FMP's latest quarterly balance sheet"),
+            "{annual}"
+        );
 
-        // No statement lines: the line says so rather than naming a basis.
-        let none = ledger_prompt_section(None, None, false, &[], None);
+        // No statement lines and no equity: each sentence says so rather than
+        // naming a basis or a source.
+        let none = ledger_prompt_section(None, None, false, &[], None, None);
         assert!(none.contains("no statement basis this run"), "{none}");
-        assert!(none.contains("unevaluable here"), "{none}");
+        assert!(none.contains("so they are unevaluable here"), "{none}");
         assert!(
             none.contains(&format!(
-                "({instants}) read the latest balance sheet where one exists"
+                "The balance-sheet series ({instants}) have no balance sheet this run — \
+                 no equity line reached the engine — so they are unevaluable here.\n"
             )),
             "{none}"
         );
         assert!(!none.contains("statement basis this run:"), "{none}");
+        assert!(!none.contains("supplied this run by"), "{none}");
+
+        // A balance-sheet instant standing alone (FMP's own beside thin quarters):
+        // no flow basis, but the instants still read — and name their source.
+        let instant_only =
+            ledger_prompt_section(None, None, false, &[], None, Some(EquitySource::FmpQuarterly));
+        assert!(instant_only.contains("no statement basis this run"), "{instant_only}");
+        assert!(
+            instant_only.contains("supplied this run by FMP's latest quarterly balance sheet."),
+            "{instant_only}"
+        );
+        assert!(!instant_only.contains("have no balance sheet this run"), "{instant_only}");
 
         // The role/risk branch carries the same line (a fund reads `None`).
-        let rr = ledger_prompt_section(None, None, true, &[], None);
+        let rr = ledger_prompt_section(None, None, true, &[], None, None);
         assert!(rr.contains("no statement basis this run"), "{rr}");
 
-        // The interpretation prompt reads the dossier's stamped basis.
+        // The interpretation prompt reads the dossier's stamped basis and source.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.financials.statement_basis = Some(StatementBasis::Annual);
+        d.financials.equity_source = Some(EquitySource::SecAnnual);
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -10825,6 +11250,10 @@ mod tests {
             tech_pre_flag: None,
             narrative: None,
         });
+        assert!(
+            user.contains("supplied this run by SEC's latest annual stockholders' equity"),
+            "{user}"
+        );
         assert!(
             user.contains("statement basis this run: SEC annual"),
             "{user}"

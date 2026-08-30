@@ -6,7 +6,7 @@ It is forward-looking, unlike the dated records beside it — those are written 
 Findings go into a dated record once the run completes; this file is then the index of what that record has to answer.
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
-Records this run persists stamp `portfolio-v22`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, ledger-basis vocabulary, IV-skew convention, observation-excerpt, guidance-vintage, action-target, model-arm-domain, finite-record (Codex I7 / I9 / I16), and prompt-render / period-word-guard (Codex I8 / I10 / I12 / I19) slices all landed since the 2026-08-18 revision with no live run between, and the fresh-start-2 compat cut landed with no stamp.
+Records this run persists stamp `portfolio-v23`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, ledger-basis vocabulary, IV-skew convention, observation-excerpt, guidance-vintage, action-target, model-arm-domain, finite-record (Codex I7 / I9 / I16), prompt-render / period-word-guard (Codex I8 / I10 / I12 / I19), and continuity-attribution (Codex I11 / I13) slices all landed since the 2026-08-18 revision with no live run between, and the fresh-start-2 compat cut landed with no stamp.
 The dev store is wiped before this run (ruled 2026-08-29), so every holding is a debut: no prior verdict exists, and nothing that reads against one — the retrospective, the input delta, the ledger evaluation and its crossings, the what-changed audit, the parameter-boundary NOTE, the statement-basis and equity-source gates, episode extension — can fire on run 1.
 The quick check is the exception: it runs between runs against run 1's own persisted comparators, so its first sweep is a run-1 watch (the oracle under §Thesis ledger and the quick check).
 The items below that read against a prior are therefore run-2 watches, and a second run follows only on the user's decision after run 1's result.
@@ -29,11 +29,18 @@ The basis-flip rate when a one-quarter feed gap drops a holding to the SEC annua
 The gate types a statement-derived series unevaluable once per flip, so what the run measures is how often the gate fires and how much of the valuation surface it types unevaluable.
 An annual-basis holding whose rewritten ledger still says "TTM" in a statement condition is the retired vocabulary leaking back — the prompt now states the basis beside the series list, so read a few annual-basis ledgers for it.
 
+The equity-source flip rate when the FMP balance-sheet leg gaps and the equity leg falls to SEC's annual stockholders' equity, or returns from it.
+Run 1 stamps every debt/equity and price/book condition authored on a surface with an equity leg with that source at authoring (6g) — one authored with no equity leg stays unstamped until a full pass evaluates it — and can disagree with nothing; on run 2 the first evaluation already has that stamp to disagree with, so the gate types the two instants unevaluable once per flip, naming the source change, and a pass on which the basis and the source flip together is one unevaluable pass, not two.
+A between-run sweep withholds every debt/equity condition not stamped with its own FMP-quarterly source — SEC-stamped after a full pass whose FMP leg gapped ("cannot compare across the source"), or unstamped ("carries no equity-source stamp") — the filing family `unknown`, rather than confirming it off the fresh leg; read the sweep notes for both.
+Read the basis line of a few prompts for the source it names.
+A ledger whose price/book condition confirmed within days of an FMP balance-sheet gap healing is the flip the gate exists to stop.
+
 Target provenance rendering against the sell-all cascade.
 Every priced interpretation carries the `TargetMeta` derivation flags — rate-anchored vs current-multiple carry, flat or clamp-flattened driver, dispersion floor — and a floor-widened band inherits its base's signal quality.
 
 The parameter-boundary continuity NOTE and its what-changed attribution.
 No prior exists on run 1, so no holding carries a NOTE or a boundary row, and any row citing a recalibration or a re-homing is a defect; on run 2 every prior is stamped `grade-v2.2`, the current stamp, so the same holds there.
+The scenario-target boundary reads the same way: every run-2 prior is stamped `targets-v5`, the current stamp, so a row or NOTE citing a scenario-target parameter change is a defect on either run.
 
 The one-month band's cap saturation under `targets-v5`.
 With the band √t-scaled to the month, the 15% cap binds from a daily σ of ~1.64% (~26% annualized), so the run measures the share of priced names pinned at the cap.

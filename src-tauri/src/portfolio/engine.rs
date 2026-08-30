@@ -122,7 +122,10 @@ pub(crate) enum GradeParameterChange {
 
 /// The branch a stamped record was graded on. The fund path carries its own
 /// bands and never reads the holding P/E, so a bump can touch one branch and
-/// leave the other's records meaning exactly what they did.
+/// leave the other's records meaning exactly what they did. The scenario-target
+/// stamp history reads the same split — the fund form swaps the consensus
+/// ladder for the exposure composite — so one branch key serves both
+/// ([`target_parameter_change`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GradeBranch {
     Stock,
@@ -282,6 +285,111 @@ const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
 /// v5 names both. The stamp moves whenever a stored target's basis changes, by
 /// correction as much as by calibration.
 pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v5";
+
+/// The horizons a scenario-target parameter boundary can have moved on one
+/// branch — the meaning a target-stamp mismatch carries to its consumers (the
+/// what-changed delta row and the continuity NOTE), so each names the horizons
+/// the boundary could actually have moved rather than "the targets" (the
+/// 2026-08-24 review's Codex I11, the grade stamp's [`GradeParameterChange`]
+/// mirrored onto the target axis).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TargetHorizons {
+    pub one_month: bool,
+    pub twelve_month: bool,
+}
+
+impl TargetHorizons {
+    pub(crate) const NONE: Self = Self { one_month: false, twelve_month: false };
+    pub(crate) const ONE_MONTH: Self = Self { one_month: true, twelve_month: false };
+    pub(crate) const BOTH: Self = Self { one_month: true, twelve_month: true };
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            one_month: self.one_month || other.one_month,
+            twelve_month: self.twelve_month || other.twelve_month,
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        !self.one_month && !self.twelve_month
+    }
+
+    /// The prompt's name for the moved targets — one vocabulary for the delta
+    /// row and the NOTE. Never rendered empty: [`target_parameter_change`]
+    /// returns `None` where no horizon moved.
+    pub(crate) fn label(self) -> &'static str {
+        match (self.one_month, self.twelve_month) {
+            (true, true) => "one-month and twelve-month targets",
+            (true, false) => "one-month target",
+            (false, true) => "twelve-month target",
+            (false, false) => "no target",
+        }
+    }
+}
+
+/// The target stamp history, oldest first: each version with the horizons its
+/// bump can have moved on the stock and the fund branch. The boundary a prior
+/// sits across is the union of the rows after its version, read on the
+/// holding's branch — so every bump appends a row here (a test pins the last
+/// row to the current stamp). A single anchor row today: the store is wiped
+/// before the first run under `targets-v5` (ruled 2026-08-29), so no prior
+/// stamped earlier can exist and `targets-v4` reads as unrecognized; the
+/// anchor row's own horizons document what v5 changed and are read by no
+/// prior — only the rows after a stamp count.
+const SCENARIO_TARGET_PARAMETER_HISTORY: &[(&str, TargetHorizons, TargetHorizons)] = &[
+    // v5: the one-month band √t-scaled (`build_price_targets`, both forms) and the
+    // anchor share-count basis — the stock consensus ladder's revenue-per-share
+    // rung, so the twelve-month scenario prices and, through `PR_base`, the
+    // one-month base. The fund form has no consensus ladder.
+    ("targets-v5", TargetHorizons::BOTH, TargetHorizons::ONE_MONTH),
+];
+
+/// The horizons a prior record's target stamp sits across on `branch` — the
+/// branch the PRIOR record was priced on — or `None` when the record carries
+/// the current stamp, the boundary moved nothing on that branch, or the stamp
+/// is missing or unrecognized (the same rule as [`grade_parameter_change`]: an
+/// undescribable boundary asserts no cause, since a citable row for it would
+/// let a real move be attributed to it). A prior with no target record
+/// (`target_meta: None` — a never-priced prior) reaches here as `None` and
+/// stays silent: it had no target to move.
+pub(crate) fn target_parameter_change(
+    prior: Option<&str>,
+    branch: GradeBranch,
+) -> Option<TargetHorizons> {
+    target_parameter_change_in(
+        SCENARIO_TARGET_PARAMETER_HISTORY,
+        SCENARIO_TARGET_PARAMETER_VERSION,
+        prior,
+        branch,
+    )
+}
+
+/// [`target_parameter_change`] over an explicit history and current stamp, so
+/// the union rule is pinned past the single anchor row the production history
+/// holds today.
+fn target_parameter_change_in(
+    history: &[(&str, TargetHorizons, TargetHorizons)],
+    current: &str,
+    prior: Option<&str>,
+    branch: GradeBranch,
+) -> Option<TargetHorizons> {
+    let stamp = prior?;
+    if stamp == current {
+        return None;
+    }
+    let after = history
+        .iter()
+        .position(|(v, _, _)| *v == stamp)
+        .map(|i| &history[i + 1..])?;
+    let union = after
+        .iter()
+        .map(|(_, stock, fund)| match branch {
+            GradeBranch::Stock => *stock,
+            GradeBranch::Fund => *fund,
+        })
+        .fold(TargetHorizons::NONE, TargetHorizons::union);
+    (!union.is_empty()).then_some(union)
+}
 
 // -- Risk tiers and the capital-efficiency hurdle (`docs/portfolio-analysis.md`
 //    §Starting parameters).
@@ -505,6 +613,18 @@ pub struct CompanyFinancials {
     /// Read by the ledger evaluation to detect a basis change: it does not alter any
     /// value, only whether a statement-derived condition is comparable this pass.
     pub statement_basis: Option<crate::portfolio::StatementBasis>,
+    /// Which balance sheet supplied `total_equity` — the denominator of debt/equity
+    /// and price/book — stamped at the SEC merge (`dossier::merge_financials`), the
+    /// one seam that knows what finally filled it. `None` where no equity line
+    /// reached the engine (a fund, or both legs empty) and on the quick check's
+    /// sweep surface, which is not the authority on it.
+    ///
+    /// Read by the ledger evaluation beside `statement_basis`, on the two
+    /// balance-sheet instants alone: a fail-soft gap on the FMP balance-sheet leg
+    /// flips the equity leg between a quarter-end instant and a year-end one under
+    /// an unchanged flow basis, and both series step with nothing having happened
+    /// ([`crate::portfolio::EquitySource`]). It alters no value.
+    pub equity_source: Option<crate::portfolio::EquitySource>,
 }
 
 /// The shared statement canonicalization policy, applied **in place**: quarterly
@@ -1144,6 +1264,24 @@ pub fn evaluate_ledger_conditions(
     evaluate_ledger_conditions_gated(ledger, metrics, fin, run_date, |_| true)
 }
 
+/// One continuity stamp's read for a pass: the discontinuity note when the
+/// stamped value disagrees with this pass's, the stamp adopted either way — a
+/// first evaluation adopts silently (there is nothing to disagree with), a flip
+/// re-stamps so the gate fires once per flip. `None` current (the sweep's
+/// cleared surface, a fund) reads and moves nothing.
+fn restamp<T: Copy + PartialEq>(
+    stamped: &mut Option<T>,
+    current: Option<T>,
+    note: impl Fn(T, T) -> String,
+) -> Option<String> {
+    let current = current?;
+    let flip = stamped
+        .filter(|prior| *prior != current)
+        .map(|prior| note(prior, current));
+    *stamped = Some(current);
+    flip
+}
+
 /// The cadence-gated form of [`evaluate_ledger_conditions`] — the engine-only quick
 /// check's entry (`docs/portfolio-analysis.md` §The quick check): market-data
 /// conditions evaluate on every pass, filing-cadence conditions only when a fresh
@@ -1201,29 +1339,56 @@ pub fn evaluate_ledger_conditions_gated(
         // The annual fallback itself is retained: falling back is honest, and the
         // basis-flip rate is a big-run watch. It is the CROSSING it manufactures
         // that is not.
+        //
+        // The two balance-sheet instants (debt / equity and price / book) carry a
+        // second stamp on the same channel: the SOURCE of their equity denominator
+        // (the 2026-08-24 review's Codex I13). The FMP balance-sheet leg is
+        // fail-soft, so a gap on one run and a return on the next flips the equity
+        // leg between FMP's quarter-end instant and SEC's year-end one under an
+        // unchanged flow basis, and both series step with nothing having happened —
+        // the same size class as the flow step, and price / book is market-cadence
+        // (two distinct closes confirm). A flow series never reads the equity
+        // stamp. A pass on which both stamps change is ONE unevaluable pass, both
+        // adopted together — never two; either alone fires once per flip.
         if quant.series.statement_derived() {
-            if let Some(current_basis) = fin.statement_basis {
-                match st.authored_statement_basis {
-                    Some(prior) if prior != current_basis => {
-                        out.unevaluable.push(format!(
-                            "condition '{}': statement basis changed ({} → {}) — the level \
-                             moved with the measurement, so this pass cannot compare it",
-                            cond.statement,
+            let mut flips = Vec::new();
+            flips.extend(restamp(
+                &mut st.authored_statement_basis,
+                fin.statement_basis,
+                |prior, current| {
+                    format!(
+                        "statement basis changed ({} → {})",
+                        prior.label(),
+                        current.label()
+                    )
+                },
+            ));
+            if !quant.series.flow_basis() {
+                flips.extend(restamp(
+                    &mut st.authored_equity_source,
+                    fin.equity_source,
+                    |prior, current| {
+                        format!(
+                            "equity source changed ({} → {})",
                             prior.label(),
-                            current_basis.label()
-                        ));
-                        out.unevaluable_series.push(quant.series);
-                        st.authored_statement_basis = Some(current_basis);
-                        st.breach_streak = 0;
-                        st.first_breach_at = None;
-                        st.confirmed_at = None;
-                        out.updated_states.push((cond.condition_id.clone(), st));
-                        continue;
-                    }
-                    // First evaluation: adopt without a discontinuity — there is
-                    // nothing to disagree with.
-                    _ => st.authored_statement_basis = Some(current_basis),
-                }
+                            current.label()
+                        )
+                    },
+                ));
+            }
+            if !flips.is_empty() {
+                out.unevaluable.push(format!(
+                    "condition '{}': {} — the level moved with the measurement, so this \
+                     pass cannot compare it",
+                    cond.statement,
+                    flips.join("; ")
+                ));
+                out.unevaluable_series.push(quant.series);
+                st.breach_streak = 0;
+                st.first_breach_at = None;
+                st.confirmed_at = None;
+                out.updated_states.push((cond.condition_id.clone(), st));
+                continue;
             }
         }
 
@@ -3818,6 +3983,7 @@ mod tests {
             // The shared fixture stands on a contiguous quarterly window, as the
             // production adopt path would stamp it.
             statement_basis: Some(crate::portfolio::StatementBasis::Ttm),
+            equity_source: Some(crate::portfolio::EquitySource::FmpQuarterly),
             current_price: Some(195.0),
             market_cap: Some(3.0e12),
             shares_outstanding: Some(1.5e10),
@@ -5149,6 +5315,94 @@ mod tests {
             grade_parameter_change(Some("grade-v2"), Fund),
             Some(FundMomentum)
         );
+    }
+
+    /// The target stamp reads its own history the same way — per branch,
+    /// cumulatively over the rows after the prior's stamp. The production
+    /// history is a single anchor row (the store is wiped before the first run
+    /// under `targets-v5`, so no earlier prior can exist), which makes every
+    /// reachable stamp silent: the current one, a missing one, an unrecognized
+    /// one, and `targets-v4` itself. The union rule is pinned over an explicit
+    /// history so the next bump's row lands on a tested path. The history's
+    /// last row must be the current stamp.
+    ///
+    /// When a `targets-v6` row lands, the `targets-v5` stamp stops being
+    /// silent: move its silence assertions to v6 and pin v5 as the first
+    /// firing stamp against the production history here.
+    #[test]
+    fn target_parameter_change_reads_the_history_per_branch() {
+        use GradeBranch::{Fund, Stock};
+        const BOTH: TargetHorizons = TargetHorizons::BOTH;
+        const NONE: TargetHorizons = TargetHorizons::NONE;
+        const ONE_MONTH: TargetHorizons = TargetHorizons::ONE_MONTH;
+        // No production row moves a twelve-month leg alone yet; the shape is
+        // spelled out here so the union rule is pinned before one does.
+        const TWELVE_MONTH: TargetHorizons = TargetHorizons {
+            one_month: false,
+            twelve_month: true,
+        };
+        assert_eq!(
+            SCENARIO_TARGET_PARAMETER_HISTORY.last().map(|(v, _, _)| *v),
+            Some(SCENARIO_TARGET_PARAMETER_VERSION),
+            "a bump appends its row to the target stamp history"
+        );
+        for branch in [Stock, Fund] {
+            assert_eq!(
+                target_parameter_change(Some(SCENARIO_TARGET_PARAMETER_VERSION), branch),
+                None
+            );
+            assert_eq!(
+                target_parameter_change(Some("targets-v4"), branch),
+                None,
+                "no store holds a targets-v4 record: unrecognized, by ruling"
+            );
+            assert_eq!(target_parameter_change(Some("targets-v9.9"), branch), None);
+            assert_eq!(target_parameter_change(Some(""), branch), None);
+            assert_eq!(target_parameter_change(None, branch), None);
+        }
+
+        // The union rule over an explicit history: v6 moved the fund twelve-month
+        // leg alone, v7 the stock one-month leg alone.
+        let history: &[(&str, TargetHorizons, TargetHorizons)] = &[
+            ("targets-v5", BOTH, ONE_MONTH),
+            ("targets-v6", NONE, TWELVE_MONTH),
+            ("targets-v7", ONE_MONTH, NONE),
+        ];
+        let change =
+            |prior, branch| target_parameter_change_in(history, "targets-v7", prior, branch);
+        assert_eq!(change(Some("targets-v7"), Stock), None, "current stamp");
+        assert_eq!(change(Some("targets-v7"), Fund), None, "current stamp");
+        assert_eq!(change(Some("targets-v6"), Stock), Some(ONE_MONTH));
+        assert_eq!(change(Some("targets-v6"), Fund), None, "v7 never touched funds");
+        assert_eq!(
+            change(Some("targets-v5"), Stock),
+            Some(ONE_MONTH),
+            "v6 never touched stocks; the v5 row's own horizons are not read"
+        );
+        assert_eq!(change(Some("targets-v5"), Fund), Some(TWELVE_MONTH));
+        assert_eq!(change(Some("targets-v4"), Stock), None, "unrecognized");
+        assert_eq!(change(None, Fund), None);
+
+        // Two rows touching different horizons union to both.
+        let both: &[(&str, TargetHorizons, TargetHorizons)] = &[
+            ("targets-v5", NONE, NONE),
+            ("targets-v6", ONE_MONTH, NONE),
+            ("targets-v7", TWELVE_MONTH, NONE),
+        ];
+        assert_eq!(
+            target_parameter_change_in(both, "targets-v7", Some("targets-v5"), Stock),
+            Some(BOTH)
+        );
+        assert_eq!(
+            target_parameter_change_in(both, "targets-v7", Some("targets-v5"), Fund),
+            None,
+            "a branch the rows never touched"
+        );
+
+        // The prompt vocabulary.
+        assert_eq!(ONE_MONTH.label(), "one-month target");
+        assert_eq!(TWELVE_MONTH.label(), "twelve-month target");
+        assert_eq!(BOTH.label(), "one-month and twelve-month targets");
     }
 
     #[test]
@@ -6515,6 +6769,258 @@ mod tests {
     }
 
     #[test]
+    fn an_equity_source_flip_cannot_confirm_a_crossing() {
+        use crate::portfolio::{EquitySource, StatementBasis};
+        // Codex I13. The thesis is intact and the flow basis unchanged — TTM on
+        // both runs; only the equity LEG moved: a fail-soft gap on the FMP
+        // balance-sheet leg on the prior run filled equity from SEC's annual
+        // print, this run's FMP leg returned, and price/book steps from a
+        // year-end denominator to a quarter-end one with nothing having happened.
+        // P/B is market-cadence, so one more distinct close would confirm.
+        let mut fin = strong();
+        fin.statement_basis = Some(StatementBasis::Ttm);
+        fin.equity_source = Some(EquitySource::FmpQuarterly);
+        let mut metrics = compute_metrics(&fin);
+        metrics.pb_ratio = Some(9.0); // was ~6.2 on the year-end equity
+        let standing = ConditionEvalState {
+            last_observation_id: Some("2026-07-14".into()),
+            last_value: Some(6.2),
+            breach_streak: 1,
+            first_breach_at: Some("2026-07-14".into()),
+            acknowledged_observation_id: Some("2026-05-01".into()),
+            authored_statement_basis: Some(StatementBasis::Ttm),
+            authored_equity_source: Some(EquitySource::SecAnnual),
+            ..Default::default()
+        };
+        let ledger = ledger_of(vec![quant_cond(
+            "pb",
+            LedgerSeries::PbRatio,
+            LedgerComparator::Above,
+            8.0,
+            0.0,
+            Some(standing),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
+        assert!(
+            eval.crossings.is_empty(),
+            "a source step must not cross: {:?}",
+            eval.crossings
+        );
+        assert_eq!(eval.unevaluable.len(), 1);
+        assert!(
+            eval.unevaluable[0].contains(
+                "equity source changed (SEC's latest annual stockholders' equity (the \
+                 quarterly balance-sheet leg fell back) → FMP's latest quarterly balance \
+                 sheet) — the level moved"
+            ) && !eval.unevaluable[0].contains("statement basis changed")
+                && !eval.unevaluable[0].contains("  "),
+            "{}",
+            eval.unevaluable[0]
+        );
+        assert_eq!(eval.unevaluable_series, vec![LedgerSeries::PbRatio]);
+        let (_, st) = &eval.updated_states[0];
+        assert_eq!(st.breach_streak, 0, "the old source's streak cannot carry across");
+        assert_eq!(st.first_breach_at, None);
+        assert_eq!(
+            st.authored_equity_source,
+            Some(EquitySource::FmpQuarterly),
+            "the new source is adopted, so the gate fires once per flip"
+        );
+        assert_eq!(
+            st.authored_statement_basis,
+            Some(StatementBasis::Ttm),
+            "the basis stamp stands — it did not move"
+        );
+        assert_eq!(
+            st.acknowledged_observation_id,
+            Some("2026-05-01".into()),
+            "NOT the clean arm"
+        );
+
+        // Re-evaluated on the adopted source, the same level counts normally.
+        let mut cond = ledger.conditions[0].clone();
+        cond.eval_state = Some(st.clone());
+        let after = evaluate_ledger_conditions(
+            &ledger_of(vec![cond]),
+            &metrics,
+            &fin,
+            "2026-08-04",
+        );
+        assert!(after.unevaluable.is_empty(), "the flip is not permanent");
+    }
+
+    #[test]
+    fn a_debt_equity_source_flip_is_unevaluable_never_an_immediate_confirmation() {
+        use crate::portfolio::{EquitySource, StatementBasis};
+        // Debt/equity is filing-cadence — a breach confirms at count one — so a
+        // source step would confirm a falsifier in a single pass. The direction
+        // here is the mirror of the P/B case: FMP's quarterly leg gapped this run
+        // and SEC's annual equity filled in.
+        let mut fin = strong();
+        fin.equity_source = Some(EquitySource::SecAnnual);
+        let mut metrics = compute_metrics(&fin);
+        metrics.debt_to_equity = Some(3.5); // was 0.5 on the quarter-end equity
+        let standing = ConditionEvalState {
+            last_observation_id: Some("2026-03-31".into()),
+            last_value: Some(0.5),
+            authored_statement_basis: Some(StatementBasis::Ttm),
+            authored_equity_source: Some(EquitySource::FmpQuarterly),
+            ..Default::default()
+        };
+        let ledger = ledger_of(vec![quant_cond(
+            "de",
+            LedgerSeries::DebtToEquity,
+            LedgerComparator::Above,
+            3.0,
+            0.0,
+            Some(standing),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
+        assert!(eval.crossings.is_empty(), "{:?}", eval.crossings);
+        assert_eq!(eval.unevaluable_series, vec![LedgerSeries::DebtToEquity]);
+        assert!(
+            eval.unevaluable[0].contains(
+                "equity source changed (FMP's latest quarterly balance sheet → SEC's \
+                 latest annual stockholders' equity"
+            ),
+            "{}",
+            eval.unevaluable[0]
+        );
+        let (_, st) = &eval.updated_states[0];
+        assert_eq!(st.confirmed_at, None);
+        assert_eq!(st.breach_streak, 0);
+        assert_eq!(st.authored_equity_source, Some(EquitySource::SecAnnual));
+    }
+
+    #[test]
+    fn a_flow_series_never_reads_the_equity_stamp() {
+        use crate::portfolio::{EquitySource, StatementBasis};
+        // Scope check: the equity source is the two instants' stamp alone. A flow
+        // series evaluates normally whatever the equity leg did and adopts no
+        // equity stamp, so a later source flip can never cost it a pass.
+        let mut fin = strong();
+        fin.statement_basis = Some(StatementBasis::Ttm);
+        fin.equity_source = Some(EquitySource::SecAnnual);
+        let metrics = compute_metrics(&fin);
+        let standing = ConditionEvalState {
+            authored_statement_basis: Some(StatementBasis::Ttm),
+            authored_equity_source: None,
+            ..Default::default()
+        };
+        let ledger = ledger_of(vec![quant_cond(
+            "nm",
+            LedgerSeries::NetMargin,
+            LedgerComparator::Below,
+            0.9,
+            0.0,
+            Some(standing),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
+        assert!(eval.unevaluable.is_empty(), "{:?}", eval.unevaluable);
+        assert_eq!(eval.crossings.len(), 1, "the flow condition still evaluates");
+        let (_, st) = &eval.updated_states[0];
+        assert_eq!(st.authored_equity_source, None, "no equity stamp on a flow series");
+        assert_eq!(st.authored_statement_basis, Some(StatementBasis::Ttm));
+    }
+
+    #[test]
+    fn a_simultaneous_basis_and_source_flip_is_one_pass() {
+        use crate::portfolio::{EquitySource, StatementBasis};
+        // The FMP quarterly surface gapped wholesale: the flows fell to the SEC
+        // annual basis AND the equity to SEC's annual print. One unevaluable pass
+        // naming both, both stamps adopted together — never two passes.
+        let mut fin = strong();
+        fin.statement_basis = Some(StatementBasis::Annual);
+        fin.equity_source = Some(EquitySource::SecAnnual);
+        let mut metrics = compute_metrics(&fin);
+        metrics.pb_ratio = Some(9.0);
+        let standing = ConditionEvalState {
+            last_observation_id: Some("2026-07-14".into()),
+            last_value: Some(6.2),
+            breach_streak: 1,
+            first_breach_at: Some("2026-07-14".into()),
+            authored_statement_basis: Some(StatementBasis::Ttm),
+            authored_equity_source: Some(EquitySource::FmpQuarterly),
+            ..Default::default()
+        };
+        let ledger = ledger_of(vec![quant_cond(
+            "pb",
+            LedgerSeries::PbRatio,
+            LedgerComparator::Above,
+            8.0,
+            0.0,
+            Some(standing),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
+        assert!(eval.crossings.is_empty());
+        assert_eq!(eval.unevaluable.len(), 1, "{:?}", eval.unevaluable);
+        assert!(
+            eval.unevaluable[0].contains("statement basis changed (TTM (four trailing quarters) → SEC annual")
+                && eval.unevaluable[0].contains("); equity source changed (FMP's latest quarterly balance sheet → SEC's"),
+            "{}",
+            eval.unevaluable[0]
+        );
+        let (_, st) = &eval.updated_states[0];
+        assert_eq!(st.authored_statement_basis, Some(StatementBasis::Annual));
+        assert_eq!(st.authored_equity_source, Some(EquitySource::SecAnnual));
+        assert_eq!(st.breach_streak, 0);
+
+        // The next pass is clean: both flips were consumed at once.
+        let mut cond = ledger.conditions[0].clone();
+        cond.eval_state = Some(st.clone());
+        let after = evaluate_ledger_conditions(
+            &ledger_of(vec![cond]),
+            &metrics,
+            &fin,
+            "2026-08-04",
+        );
+        assert!(after.unevaluable.is_empty(), "{:?}", after.unevaluable);
+    }
+
+    #[test]
+    fn a_first_evaluation_adopts_both_stamps_on_an_instant_and_a_cleared_source_moves_nothing() {
+        use crate::portfolio::{EquitySource, StatementBasis};
+        let mut fin = strong();
+        fin.statement_basis = Some(StatementBasis::Ttm);
+        fin.equity_source = Some(EquitySource::FmpQuarterly);
+        let metrics = compute_metrics(&fin);
+        let ledger = ledger_of(vec![quant_cond(
+            "pb",
+            LedgerSeries::PbRatio,
+            LedgerComparator::Above,
+            50.0,
+            0.0,
+            Some(ConditionEvalState::default()),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
+        assert!(eval.unevaluable.is_empty(), "{:?}", eval.unevaluable);
+        let (_, st) = &eval.updated_states[0];
+        assert_eq!(st.authored_statement_basis, Some(StatementBasis::Ttm));
+        assert_eq!(st.authored_equity_source, Some(EquitySource::FmpQuarterly));
+
+        // The sweep clears both markers (it is not the authority on either), so
+        // a carried stamp stands untouched and the condition evaluates.
+        fin.statement_basis = None;
+        fin.equity_source = None;
+        let mut cond = ledger.conditions[0].clone();
+        cond.eval_state = Some(ConditionEvalState {
+            authored_statement_basis: Some(StatementBasis::Annual),
+            authored_equity_source: Some(EquitySource::SecAnnual),
+            ..Default::default()
+        });
+        let swept = evaluate_ledger_conditions(
+            &ledger_of(vec![cond]),
+            &metrics,
+            &fin,
+            "2026-08-04",
+        );
+        assert!(swept.unevaluable.is_empty(), "{:?}", swept.unevaluable);
+        let (_, st) = &swept.updated_states[0];
+        assert_eq!(st.authored_statement_basis, Some(StatementBasis::Annual));
+        assert_eq!(st.authored_equity_source, Some(EquitySource::SecAnnual));
+    }
+
+    #[test]
     fn a_negative_debt_equity_never_clears_a_standing_breach_streak() {
         // The defect's teeth. A negative debt/equity (liabilities past the equity
         // base — maximal leverage) cannot breach "debt/equity above 3", so it used
@@ -6726,6 +7232,7 @@ mod tests {
             confirmed_at: Some("2026-08-01".into()),
             acknowledged_observation_id: Some("2026-07-15".into()),
             authored_statement_basis: None,
+            authored_equity_source: None,
         };
         let carried = ledger_of(vec![quant_cond(
             "p",

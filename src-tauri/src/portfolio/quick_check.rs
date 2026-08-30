@@ -1400,7 +1400,13 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         // the new stamp while the multiples were still on the old one, and the
         // genuine flip at the next full pass would then pass unnoticed. The full
         // pass computes every evaluated value from one basis, so it owns the gate.
+        // The equity-source marker clears on the same terms (Codex I13): the
+        // sweep's debt/equity reads its own FMP-only refresh — no SEC merge, so no
+        // source is stamped — while price/book is rescaled from the stored audit,
+        // and one marker cannot describe both here either. A debt/equity condition
+        // stamped with another source is withheld below instead.
         eval_fin.statement_basis = None;
+        eval_fin.equity_source = None;
         let mut metrics = engine::compute_metrics(&eval_fin);
         if let (Some((price, _)), Some(b), Some(stored)) =
             (inp.price, basis, inp.audit.map(|a| &a.metrics))
@@ -1439,13 +1445,68 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 }
             }
         };
-        let eval = engine::evaluate_ledger_conditions_gated(
-            &overlaid,
+        // Codex rounds 1–2 on group 4 (I13): the sweep's debt/equity reads its
+        // own FMP-only refresh — FMP's quarterly balance sheet, always — and the
+        // sweep cannot re-stamp (it is not the authority: the marker is cleared
+        // above). So it evaluates a D/E condition only when its streak is stamped
+        // with the sweep's own source, and withholds it whole otherwise — another
+        // source (SEC's annual equity, after a full pass whose FMP leg gapped: a
+        // healed gap would step it, and a filing-cadence breach confirms at count
+        // one), or no stamp at all (authored on a surface with no equity leg: a
+        // sweep confirmation would persist unstamped, and the next full pass
+        // would adopt whichever source it found, SEC included, with nothing to
+        // disagree with). Withheld means typed unevaluable, no state movement,
+        // the filing family downgraded to `unknown` like any
+        // allowed-but-unresolvable series; the stamp lands at the next full pass.
+        // Price/book is rescaled from the stored audit on the stamp's own source
+        // and evaluates — an unstamped P/B has no stored ratio to rescale.
+        let sweep_equity_source = crate::portfolio::EquitySource::FmpQuarterly;
+        let withheld_reason = |c: &crate::portfolio::LedgerCondition| -> Option<String> {
+            let quant = c.quant.as_ref()?;
+            if quant.series != engine::LedgerSeries::DebtToEquity {
+                return None;
+            }
+            match c.eval_state.as_ref().and_then(|s| s.authored_equity_source) {
+                Some(src) if src == sweep_equity_source => None,
+                Some(src) => Some(format!(
+                    "debt/equity streak accumulated on {} — the sweep reads {} and \
+                     cannot compare across the source; the full pass owns the gate",
+                    src.label(),
+                    sweep_equity_source.label()
+                )),
+                None => Some(format!(
+                    "debt/equity streak carries no equity-source stamp — the sweep \
+                     reads {} and cannot vouch the streak was accumulated on it; the \
+                     full pass stamps it",
+                    sweep_equity_source.label()
+                )),
+            }
+        };
+        let evaluable = ThesisLedger {
+            conditions: overlaid
+                .conditions
+                .iter()
+                .filter(|c| withheld_reason(c).is_none())
+                .cloned()
+                .collect(),
+            ..overlaid.clone()
+        };
+        let mut eval = engine::evaluate_ledger_conditions_gated(
+            &evaluable,
             &metrics,
             &eval_fin,
             inp.today,
             allow,
         );
+        if allow(engine::LedgerSeries::DebtToEquity) {
+            for c in &overlaid.conditions {
+                if let Some(reason) = withheld_reason(c) {
+                    eval.unevaluable
+                        .push(format!("condition '{}': {reason}", c.statement));
+                    eval.unevaluable_series.push(engine::LedgerSeries::DebtToEquity);
+                }
+            }
+        }
         for line in &eval.unevaluable {
             // An allowed-but-unresolvable condition: its family could not vouch.
             notes.push(format!("unevaluable this sweep: {line}"));
@@ -2814,6 +2875,110 @@ mod tests {
             .condition_states
             .iter()
             .all(|(id, _)| id != "c-margin"));
+    }
+
+    /// Codex rounds 1–2 on group 4 (I13): the sweep's debt/equity reads FMP's
+    /// quarterly balance sheet, so a D/E condition whose streak was accumulated
+    /// on SEC's annual equity is withheld — unevaluable, no flag, no state
+    /// movement, the filing family `unknown` — where the fresh print would have
+    /// confirmed a breach at count one off the source step alone; so is an
+    /// unstamped one (authored on a surface with no equity leg), whose sweep
+    /// confirmation would otherwise persist unstamped for the next full pass to
+    /// adopt any source under; only the condition stamped with the sweep's own
+    /// source evaluates.
+    #[test]
+    fn a_debt_equity_condition_not_stamped_with_the_sweeps_source_is_withheld_not_confirmed() {
+        use crate::portfolio::{ConditionEvalState, EquitySource};
+        let quarter_ends = ["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"];
+        let statements = || CompanyFinancials {
+            symbol: "AAPL".into(),
+            quarterly_income: (0..4)
+                .map(|i| engine::QuarterlyIncomeRow {
+                    period_end: quarter_ends[i].to_string(),
+                    filing_date: None,
+                    revenue: Some(100.0),
+                    eps_diluted: Some(1.0),
+                    diluted_shares: Some(100.0),
+                    net_income: Some(10.0),
+                    gross_profit: Some(40.0),
+                    cost_of_revenue: Some(60.0),
+                    operating_income: None,
+                })
+                .collect(),
+            // Levered 3× on FMP's quarter-end equity — breaches "above 2".
+            total_debt: Some(300.0),
+            total_equity: Some(100.0),
+            ..Default::default()
+        };
+        let sweep = |source: Option<EquitySource>| {
+            let conn = mem();
+            let mut cond = price_condition("c-de", ConditionRole::Falsifier, 2.0);
+            cond.statement = "debt/equity above 2".into();
+            cond.quant = Some(QuantCore {
+                series: LedgerSeries::DebtToEquity,
+                comparator: LedgerComparator::Above,
+                threshold: 2.0,
+                margin: 0.0,
+            });
+            cond.eval_state = Some(ConditionEvalState {
+                authored_equity_source: source,
+                ..Default::default()
+            });
+            let verdict = priced_verdict("AAPL", vec![cond]);
+            store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(basis()))))
+                .unwrap();
+            let mut stub = StubData::quiet(200.0, "2026-08-01");
+            stub.filings = FilingSweep::Filings(vec![RecentFiling {
+                form: "10-Q".into(),
+                filing_date: "2026-07-30".into(),
+                ..Default::default()
+            }]);
+            stub.statements = statements();
+            let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+            s.holdings.into_iter().next().unwrap()
+        };
+
+        // Accumulated on SEC's annual equity, or never stamped: withheld whole,
+        // each with its own note.
+        for (source, note) in [
+            (
+                Some(EquitySource::SecAnnual),
+                "debt/equity streak accumulated on SEC's latest annual",
+            ),
+            (None, "debt/equity streak carries no equity-source stamp"),
+        ] {
+            let h = sweep(source);
+            assert!(h.flag.is_none(), "{source:?}: {:?}", h.flag);
+            assert!(
+                h.notes
+                    .iter()
+                    .any(|n| n.contains("unevaluable this sweep") && n.contains(note)),
+                "{source:?}: {:?}",
+                h.notes
+            );
+            assert!(
+                h.condition_states.iter().all(|(id, _)| id != "c-de"),
+                "{source:?}: no state movement: {:?}",
+                h.condition_states
+            );
+            let fam = h
+                .families
+                .iter()
+                .find(|f| f.family == SweepFamily::Filing)
+                .unwrap();
+            assert_eq!(fam.state, SweepState::Unknown, "{source:?}");
+        }
+
+        // Stamped with the sweep's own source: evaluates, and the filing-cadence
+        // breach confirms at count one.
+        let h = sweep(Some(EquitySource::FmpQuarterly));
+        let flag = h.flag.as_ref().expect("filing-cadence breach confirms");
+        assert_eq!(flag.trigger, FlagTrigger::ConfirmedFalsifierBreach);
+        assert!(
+            h.notes.iter().all(|n| !n.contains("debt/equity streak")),
+            "{:?}",
+            h.notes
+        );
     }
 
     #[test]

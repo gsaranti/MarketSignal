@@ -384,6 +384,16 @@ pub struct HoldingDossier {
     /// so an engine-driven letter or sub-score move is attributed to that boundary,
     /// not to evidence.
     pub prior_grade_parameter_version: Option<String>,
+    /// The scenario-target parameter version the prior verdict's targets were
+    /// priced under (from the prior audit row's `target_meta`; `None` when the
+    /// run carries no audit row for the symbol or the audit carries no target
+    /// record — a never-priced prior). Meaningful only beside a priced
+    /// `prior_verdict` — the input delta and the interpretation prompt read the
+    /// horizons its boundary can have moved on the holding's branch
+    /// ([`crate::portfolio::engine::target_parameter_change`]) so an
+    /// engine-driven target move is attributed to that boundary, not to evidence
+    /// or a self-correction (the 2026-08-24 review's Codex I11).
+    pub prior_target_parameter_version: Option<String>,
     /// The prior audit's split-bridge anchor bar — the exact re-basis factor's
     /// stored leg ([`crate::portfolio::HoldingAudit::authoring_close`]). `None`
     /// on a debut or a prior row from a no-price exit.
@@ -471,6 +481,10 @@ pub struct PriorHolding {
     /// The grade-parameter version the prior letter and sub-scores were computed
     /// under (`None` when the run carries no audit row for the symbol).
     pub grade_parameter_version: Option<String>,
+    /// The scenario-target parameter version the prior targets were priced under
+    /// (`None` when the run carries no audit row for the symbol or the audit
+    /// carries no target record).
+    pub target_parameter_version: Option<String>,
     /// The prior pre-profit overlay record — the observation history's carry path.
     pub pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
     /// The verdict's **effective analysis vintage** (`analyzed_at`, else the
@@ -654,7 +668,21 @@ pub fn merge_financials(
         sec_filled_a_flow |= fill(&mut fmp.gross_profit, sec.gross_profit);
         sec_filled_a_flow |= fill(&mut fmp.net_income, sec.net_income);
     }
-    fill(&mut fmp.total_equity, sec.stockholders_equity);
+    // The equity fill stamps its own SOURCE — the balance-sheet instants' second
+    // continuity marker (`CompanyFinancials::equity_source`, the 2026-08-24
+    // review's Codex I13): FMP's quarterly balance sheet where the FMP leg supplied
+    // equity, SEC's annual print where it fell back, `None` where neither did.
+    // This is the one seam that knows what finally filled it, so no producer can
+    // set the level without recording its source; the stamp alters no value.
+    let fmp_supplied_equity = fmp.total_equity.is_some();
+    let sec_filled_equity = fill(&mut fmp.total_equity, sec.stockholders_equity);
+    fmp.equity_source = if fmp_supplied_equity {
+        Some(crate::portfolio::EquitySource::FmpQuarterly)
+    } else if sec_filled_equity {
+        Some(crate::portfolio::EquitySource::SecAnnual)
+    } else {
+        None
+    };
 
     // Refine the basis stamp now that the fills have run — see
     // [`apply_ttm_statement_basis`]. An adopted TTM window stands; otherwise the basis
@@ -668,8 +696,8 @@ pub fn merge_financials(
     // basis for flows that never reached the engine (Codex rounds 1–2 on the
     // ledger-basis slice). Equity-SOURCE continuity — a D/E or P/B step when the
     // equity leg moves between FMP's quarterly instant and SEC's annual one — is
-    // not this stamp's and never fully was (an FMP balance-sheet gap flips the
-    // source under an unchanged TTM basis); recorded, not tracked.
+    // not this stamp's (an FMP balance-sheet gap flips the source under an
+    // unchanged TTM basis); it rides `equity_source` above, the instants' own.
     if !ttm_statement_basis {
         fmp.statement_basis = sec_filled_a_flow.then_some(crate::portfolio::StatementBasis::Annual);
     }
@@ -776,6 +804,7 @@ pub fn assemble(
     let (
         prior_verdict,
         prior_grade_parameter_version,
+        prior_target_parameter_version,
         prior_pre_profit,
         prior_vintage,
         prior_spot,
@@ -787,6 +816,7 @@ pub fn assemble(
         Some(p) => (
             Some(p.verdict),
             p.grade_parameter_version,
+            p.target_parameter_version,
             p.pre_profit,
             Some(p.vintage),
             p.spot,
@@ -795,7 +825,7 @@ pub fn assemble(
             p.metrics,
             p.authoring_close,
         ),
-        None => (None, None, None, None, None, None, Vec::new(), None, None),
+        None => (None, None, None, None, None, None, None, Vec::new(), None, None),
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
@@ -966,6 +996,7 @@ pub fn assemble(
         prior_matured_notes,
         prior_metrics,
         prior_grade_parameter_version,
+        prior_target_parameter_version,
         prior_authoring_close,
         prior_pre_profit,
         listing,
@@ -1151,22 +1182,32 @@ pub fn prior_verdict_for(
         .audit
         .iter()
         .find(|a| a.symbol.eq_ignore_ascii_case(symbol));
-    let (grade_parameter_version, pre_profit, spot, consensus_eps_mid, metrics, authoring_close) =
-        match audit_row {
-            Some(a) => {
-                let spot = a.quick_basis.as_ref().map(|b| b.spot);
-                let mid = a.quick_basis.as_ref().and_then(|b| b.consensus_eps_mid);
-                (
-                    Some(a.grade_parameter_version.clone()),
-                    a.pre_profit.clone(),
-                    spot,
-                    mid,
-                    Some(a.metrics.clone()),
-                    a.authoring_close.clone(),
-                )
-            }
-            None => (None, None, None, None, None, None),
-        };
+    let (
+        grade_parameter_version,
+        target_parameter_version,
+        pre_profit,
+        spot,
+        consensus_eps_mid,
+        metrics,
+        authoring_close,
+    ) = match audit_row {
+        Some(a) => {
+            let spot = a.quick_basis.as_ref().map(|b| b.spot);
+            let mid = a.quick_basis.as_ref().and_then(|b| b.consensus_eps_mid);
+            (
+                Some(a.grade_parameter_version.clone()),
+                // The target stamp rides the typed target record, so a prior with
+                // no target record (never priced) carries none — silent downstream.
+                a.target_meta.as_ref().map(|t| t.parameter_version.clone()),
+                a.pre_profit.clone(),
+                spot,
+                mid,
+                Some(a.metrics.clone()),
+                a.authoring_close.clone(),
+            )
+        }
+        None => (None, None, None, None, None, None, None),
+    };
     // The prior run's matured outcome lines for this symbol — the deterministic
     // scored ground the retrospective block renders (empty until windows mature).
     let matured_notes = run
@@ -1186,6 +1227,7 @@ pub fn prior_verdict_for(
     Some(PriorHolding {
         verdict,
         grade_parameter_version,
+        target_parameter_version,
         pre_profit,
         vintage,
         spot,
@@ -1386,6 +1428,39 @@ mod tests {
         assert!((merged.pe_ratio.unwrap() - 30.0).abs() < 1e-6);
         assert!((merged.ps_ratio.unwrap() - 7.5).abs() < 1e-6);
         assert!((merged.pb_ratio.unwrap() - 50.0).abs() < 1e-6);
+    }
+
+    /// Codex I13: the merge stamps which balance sheet supplied the equity — the
+    /// instants' own continuity marker — on either flow basis, and `None` where
+    /// no leg did.
+    #[test]
+    fn merge_stamps_which_balance_sheet_supplied_the_equity() {
+        use crate::portfolio::EquitySource;
+        let sec = CompanyFacts {
+            stockholders_equity: Some(60_000_000_000),
+            ..Default::default()
+        };
+        // FMP's quarterly balance sheet supplied equity: FMP's, SEC's print unread.
+        let mut fmp = fmp_only();
+        fmp.total_equity = Some(50_000_000_000.0);
+        let merged = merge_financials(fmp, &sec, true);
+        assert_eq!(merged.total_equity, Some(50_000_000_000.0));
+        assert_eq!(merged.equity_source, Some(EquitySource::FmpQuarterly));
+        // The FMP leg gapped: SEC's annual print fills and the stamp says so — on
+        // either flow basis, since the instant sits outside the flow-basis rule.
+        for ttm in [true, false] {
+            let merged = merge_financials(fmp_only(), &sec, ttm);
+            assert_eq!(merged.total_equity, Some(60_000_000_000.0));
+            assert_eq!(
+                merged.equity_source,
+                Some(EquitySource::SecAnnual),
+                "ttm={ttm}"
+            );
+        }
+        // Neither leg: no equity, no source.
+        let merged = merge_financials(fmp_only(), &CompanyFacts::default(), false);
+        assert_eq!(merged.total_equity, None);
+        assert_eq!(merged.equity_source, None);
     }
 
     #[test]
@@ -2293,13 +2368,14 @@ Sources and footnotes.
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
         let prior = prior_verdict_for(latest.as_ref(), "aapl").expect("case-insensitive match");
         assert_eq!(prior.verdict.symbol, "AAPL");
-        // No audit row for the symbol -> no stamp to read.
+        // No audit row for the symbol -> no stamp to read, on either axis.
         assert_eq!(prior.grade_parameter_version, None);
+        assert_eq!(prior.target_parameter_version, None);
         assert!(prior.pre_profit.is_none());
     }
 
     #[test]
-    fn prior_verdict_lookup_carries_the_stamped_grade_parameter_version() {
+    fn prior_verdict_lookup_carries_the_stamped_grade_and_target_parameter_versions() {
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
         let run = crate::portfolio::PortfolioRun {
@@ -2345,7 +2421,11 @@ Sources and footnotes.
                 evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
                 degraded_inputs: vec![],
                 action_annotations: vec![],
-                target_meta: None,
+                // The target stamp rides the typed target record (Codex I11).
+                target_meta: Some(crate::portfolio::engine::TargetMeta {
+                    parameter_version: "targets-v4".into(),
+                    ..Default::default()
+                }),
                 grade_parameter_version: "grade-v2".into(),
                 ledger_audit: None,
                 quick_basis: None,
@@ -2367,6 +2447,7 @@ Sources and footnotes.
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
         let prior = prior_verdict_for(latest.as_ref(), "AAPL").expect("verdict present");
         assert_eq!(prior.grade_parameter_version.as_deref(), Some("grade-v2"));
+        assert_eq!(prior.target_parameter_version.as_deref(), Some("targets-v4"));
         // No `analyzed_at` on the verdict -> the vintage falls back to the
         // container run's `created_at`.
         assert_eq!(prior.vintage, "2026-08-03T00:00:00Z");

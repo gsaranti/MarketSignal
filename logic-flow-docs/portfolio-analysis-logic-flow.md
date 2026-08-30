@@ -835,6 +835,7 @@ After the branch's engine values are set, the prior ledger's conditions are eval
   - Evaluate quantitative falsifiers and action triggers.
   - Advance streaks only on a new observation.
   - Preserve condition state by app-controlled condition ID.
+  - Withhold a debt/equity condition not stamped with the sweep's own FMP-quarterly equity source — stamped with another, or with none — unevaluable, no state movement, the filing family `unknown`; the full pass stamps and compares it.
 
 - **Technology-event pre-flag**
   - Compare the stock’s move with its sector.
@@ -1239,6 +1240,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Continuity block**
   - Whether a prior verdict exists.
   - A parameter-boundary note when a priced prior verdict's grade-parameter stamp sits across a boundary that changed this holding's record on the prior's own branch — a band recalibration, or (fund only) the momentum re-homing; a stock across the fund-momentum boundary, a never-priced prior, and an unrecognized stamp get none, and neither does the input delta.
+  - A second parameter-boundary note when a priced prior verdict's scenario-target stamp sits across a target-history row touching its branch, naming the union of horizons those rows can have moved; the current stamp, an unrecognized one (`targets-v4` included — the history holds the `targets-v5` anchor row alone, the store wiped before the first run under it), and a prior with no target record get none, and neither does the input delta.
   - The semantic prior-analysis recall — the Step-6a hits, when any.
   - The rendered input delta with its what-changed-entry rules (the vocabulary is Step 6b §Input delta; the attribution check is Step 6g). With a prior verdict, a firing technology-event pre-flag, narrative read, hard forensic state, or rendered latest-report sections reaches the model twice — as its own section and as a delta row; a debut carries no delta rows, and a house view reduced to the recent-stance list earns none.
 - **Retrospective (when a prior priced verdict exists)**
@@ -1249,7 +1251,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Prior thesis ledger** — one ledger per holding, model-authored on the prior run and shared by both arms (not an engine-arm or model-arm ledger of its own).
   - The prior ledger as a **model-facing projection** (not the complete persisted record) — thesis (original + current), key drivers, the whole bear/base/bull monitor, and every falsifier and trigger (both roles), each with its statement plus, for quantitative ones, the machine core and current breach streak, plus the research-supported mark where a fresh distilled claim cites the condition this run (Step 6g §Ledger validation). Unscoped, unlike the house view and retrospective above. Held out of the prompt: the app-owned bookkeeping (condition ids, supersession lineage, downgrade/trip flags, the rest of the evaluation state, the authored band relation) and the model-authored falsifier `technology_class` tag.
   - Beside it, **this run's engine condition evaluation**: the engine's deterministic re-evaluation of that ledger's *quantitative* conditions against this run's computed surface — each crossing tagged confirmed or first-breach, plus the typed unevaluable notes. The engine evaluates the conditions; it does not author the ledger.
-  - The **engine-series vocabulary** the rewritten ledger's quantitative conditions must use — the closed labels, none naming a basis — with **this run's statement basis** for the flow family (TTM, SEC annual, or none), the two balance-sheet instants named as such, so flow-series thresholds are authored on the basis Step 6g evaluates them against.
+  - The **engine-series vocabulary** the rewritten ledger's quantitative conditions must use — the closed labels, none naming a basis — with **this run's statement basis** for the flow family (TTM, SEC annual, or none), the two balance-sheet instants named as such, so flow-series thresholds are authored on the basis Step 6g evaluates them against — and which balance sheet supplied the two instants' equity this run (FMP's quarterly, SEC's annual, or none), the instants' own continuity stamp, so their thresholds are authored on the source Step 6g gates on.
 - **Deliberately excluded**
   - The investor profile.
   - The engine's current-run stand-in outlook, conviction, and action picks.
@@ -1370,6 +1372,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Unresolvable condition becomes qualitative (downgraded and logged, never dropped).
   - App assigns and preserves condition IDs.
   - Changed machine logic starts a fresh evaluation streak.
+  - A fresh streak starts stamped with the statement basis and, on a balance-sheet instant, the equity source the prompt stated, so its first evaluation can already disagree with a flip.
 
 - **Attention handling**
   - Successful full pass clears the prior attention flag.

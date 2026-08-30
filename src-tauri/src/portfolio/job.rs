@@ -4521,6 +4521,7 @@ mod tests {
                             confirmed_at: Some("2026-08-03".into()),
                             acknowledged_observation_id: None,
                             authored_statement_basis: None,
+                            authored_equity_source: None,
                         },
                     )],
                     last_hurdle_state: None,

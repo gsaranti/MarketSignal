@@ -889,6 +889,42 @@ impl StatementBasis {
     }
 }
 
+/// Which balance sheet supplied a holding's stockholders' equity — the denominator
+/// of debt/equity and price/book, the two balance-sheet instants outside the
+/// flow-basis rule (`docs/portfolio-analysis.md` §Starting parameters, the
+/// leverage leg): FMP's latest quarterly balance sheet first, SEC's annual
+/// `stockholders_equity` the fallback, stamped at `dossier::merge_financials`.
+///
+/// It is persisted on the two instants' condition evaluation state beside the
+/// statement basis because the FMP balance-sheet leg is fail-soft: a gap on one
+/// run and a return on the next flips the equity leg between a quarter-end
+/// instant and a year-end one under an unchanged flow basis, and both series
+/// step with nothing having happened — the flow-basis step's size class, on a
+/// stamp that never covered it (the 2026-08-24 review's Codex I13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EquitySource {
+    /// FMP's latest quarterly balance sheet — the preferred leg.
+    FmpQuarterly,
+    /// SEC's latest annual `stockholders_equity` — filled where the FMP leg
+    /// returned nothing.
+    SecAnnual,
+}
+
+impl EquitySource {
+    /// The prompt's name for the source — one vocabulary for the ledger section's
+    /// basis line and the evaluation's source-change note.
+    pub fn label(&self) -> &'static str {
+        match self {
+            EquitySource::FmpQuarterly => "FMP's latest quarterly balance sheet",
+            EquitySource::SecAnnual => {
+                "SEC's latest annual stockholders' equity (the quarterly balance-sheet leg \
+                 fell back)"
+            }
+        }
+    }
+}
+
 /// A quantitative condition's **evaluation state** — engine state, distinct from the
 /// model-authored ledger content (`docs/storage.md §Local Analysis Suite Storage`),
 /// observation-identity-keyed so the breach streak advances only on a distinct new
@@ -918,10 +954,68 @@ pub struct ConditionEvalState {
     /// A statement-derived series compared across a basis change is comparing two
     /// different measurements, so the engine types it **unevaluable** for that pass
     /// and re-stamps — the streak cannot carry across, because the observations in it
-    /// were taken on the other basis. `None` until the first evaluation, which
-    /// adopts the current basis without a discontinuity (there is nothing to
-    /// disagree with).
+    /// were taken on the other basis. Stamped at authoring from the surface the
+    /// prompt described ([`ContinuityStamps`], Step 6g); a condition authored
+    /// where that surface carried no basis stays `None` until its first
+    /// evaluation, which adopts the current basis without a discontinuity (there
+    /// is nothing to disagree with).
     pub authored_statement_basis: Option<StatementBasis>,
+    /// The equity source a balance-sheet instant's streak — debt/equity or
+    /// price/book — was accumulated under, stamped at authoring
+    /// ([`ContinuityStamps`]) or else by the engine on first evaluation beside
+    /// the basis ([`EquitySource`]); `None` on every other series, which never
+    /// read it. A source change is the instants' own
+    /// discontinuity, under the same one-pass-unevaluable-and-re-stamp treatment
+    /// as a basis change, and a pass on which both change is one pass, both
+    /// adopted together. No serde default (the fresh-start-2 rule).
+    pub authored_equity_source: Option<EquitySource>,
+}
+
+/// The continuity stamps of one authoring surface — the statement basis and the
+/// equity source the interpretation prompt described to the model when it
+/// authored a quantitative condition ([`ConditionEvalState`]'s two `authored_*`
+/// fields). Step 6g stamps every new or superseding quantitative condition from
+/// them, per series, so the first full-pass evaluation after a debut already has
+/// a stamp to disagree with; a condition authored where the surface carried
+/// none adopts at its first evaluation. Without this the run-1 ledger's instants
+/// carried no stamp until run 2's evaluation, which adopted silently across the
+/// very flip the equity gate exists for (Codex round 1 on the 2026-08-24
+/// review's group 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ContinuityStamps {
+    pub statement_basis: Option<StatementBasis>,
+    pub equity_source: Option<EquitySource>,
+}
+
+impl ContinuityStamps {
+    /// No stamps — a surface with neither statement lines nor an equity leg (the
+    /// research-less validator wrapper the tests use).
+    pub const NONE: Self = Self {
+        statement_basis: None,
+        equity_source: None,
+    };
+
+    /// The stamps of the financials the prompt rendered.
+    pub fn of(fin: &engine::CompanyFinancials) -> Self {
+        Self {
+            statement_basis: fin.statement_basis,
+            equity_source: fin.equity_source,
+        }
+    }
+
+    /// A newly authored quantitative condition's starting state on `series`: the
+    /// basis stamp on every statement-derived series, the equity stamp on the
+    /// two balance-sheet instants alone — the same per-series rule the
+    /// evaluation's gate reads (`engine::evaluate_ledger_conditions_gated`).
+    pub fn authored_state(self, series: engine::LedgerSeries) -> ConditionEvalState {
+        let statement = series.statement_derived();
+        let instant = statement && !series.flow_basis();
+        ConditionEvalState {
+            authored_statement_basis: self.statement_basis.filter(|_| statement),
+            authored_equity_source: self.equity_source.filter(|_| instant),
+            ..Default::default()
+        }
+    }
 }
 
 /// One ledger condition — a key falsifier or an action trigger, **quantitative**
@@ -1859,7 +1953,29 @@ pub struct HoldingAudit {
 /// through / fiscal / FY`, a range when both endpoints read so — with the 6d
 /// prompt line stating the rule. Prompt content and the admission leg move
 /// together on I3's `portfolio-v17` precedent; no other axis moves.
-pub const PROMPT_VERSION: &str = "portfolio-v22";
+///
+/// `portfolio-v23`: the two continuity-attribution mirrors (the 2026-08-24
+/// review's Codex I11 and I13, group 4, ruled 2026-08-29). The scenario-target
+/// stamp gains the grade stamp's mechanism — a stamp history
+/// (`engine::SCENARIO_TARGET_PARAMETER_HISTORY`), the prior audit's
+/// `target_meta.parameter_version` carried onto the dossier, an input-delta row
+/// and a continuity NOTE naming the horizons a boundary can have moved on the
+/// prior's branch — where a target moved on a version bump alone had been
+/// attributable to company evidence or a self-correction. And the two
+/// balance-sheet instants carry a second continuity stamp, the equity source
+/// (`EquitySource`, stamped at the SEC merge, `authored_equity_source` on the
+/// evaluation state), under the flow-basis gate's one-pass-unevaluable
+/// treatment, with the ledger section's basis line naming which balance sheet
+/// supplied their equity this run. A prompt-content change (the NOTE and the
+/// basis line) beside a new persisted evaluation-state field, stamped so a
+/// pre-fix checkpoint cannot resume into rows the new stamp never reached;
+/// the grade, target, evidence-floor, pre-profit and checkpoint-format axes
+/// stay — the target function itself is unchanged. Codex round 1 on the group
+/// added, under the same stamp, the authoring stamps ([`ContinuityStamps`] —
+/// Step 6g writes the prompt's basis and source onto every new or superseding
+/// quantitative condition) and the sweep's withhold of a debt/equity condition
+/// stamped off its own FMP-quarterly source.
+pub const PROMPT_VERSION: &str = "portfolio-v23";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2820,6 +2936,7 @@ mod tests {
                     confirmed_at: None,
                     acknowledged_observation_id: None,
                     authored_statement_basis: None,
+                    authored_equity_source: None,
                 }),
             }],
             authored_band_relation: None,
