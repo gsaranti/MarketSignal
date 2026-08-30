@@ -216,14 +216,22 @@ pub trait HoldingAnalyst {
     /// finished verdict plus the investor profile — tunnel vision, no book
     /// context (the 122B reasoner in thinking mode, live).
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision>;
-    /// The model id [`Self::distill`] runs on (the fast tier — or the reasoner,
-    /// when the fast tier fell back to it). `analyze_holding` records it on the
-    /// audit only after a distill call actually ran.
+    /// The configured distillation-tier id, used only as the compatibility
+    /// fallback for analysts that do not expose [`Self::take_model_calls`].
     fn fast_id(&self) -> String;
     /// The model id [`Self::interpret`], [`Self::interpret_role_risk`], and
     /// [`Self::decide_action`] run on. Recorded on the audit only after one of
     /// those calls actually ran.
     fn reasoner_id(&self) -> String;
+    /// Drain the model ids of outbound calls since the last drain, in issue
+    /// order. `Some` means the analyst provides exact call telemetry (including
+    /// an honestly empty vector); `None` keeps deterministic/custom stubs on
+    /// the configured-id compatibility path. The live analyst records the
+    /// request's routed model before every daemon call, so research-before-
+    /// distill order and a distill routed up to the reasoner survive exactly.
+    fn take_model_calls(&self) -> Option<Vec<String>> {
+        None
+    }
     /// Drain the prompt-size observations the calls above accumulated since
     /// the last drain ([`crate::local_model::PromptUsage`]) — the data-health
     /// context-fit read (`docs/portfolio-analysis.md` §Portfolio roll-up). The
@@ -541,15 +549,28 @@ pub fn analyze_holding(
     let commodity_consulted = std::cell::Cell::new(false);
     let short_interest_consulted = std::cell::Cell::new(false);
     // The model ids this holding's verdict was **actually** authored with, in
-    // first-call order — recorded beside each call that ran, never read off the
-    // analyst's configuration: a no-model exit persists none, the role/risk branch
-    // the reasoner only, the priced path the fast tier and the reasoner (one entry
-    // when they are the same model).
+    // first-call order. The live analyst drains the routed id of every outbound
+    // request; deterministic/custom stubs without call telemetry retain the
+    // configured-id fallback. A no-model exit persists none, and duplicate ids
+    // collapse without disturbing their first-call position.
     let models_used: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
     let used_model = |id: String| {
         let mut used = models_used.borrow_mut();
         if !used.contains(&id) {
             used.push(id);
+        }
+    };
+    // A prior holding can fail after issuing a call but before it produces an
+    // audit. Clear that abandoned per-holding telemetry before this holding's
+    // first gate; exact telemetry must never leak across rows.
+    let exact_model_telemetry = analyst.take_model_calls().is_some();
+    let record_stage_models = |fallback: String| {
+        if exact_model_telemetry {
+            for id in analyst.take_model_calls().unwrap_or_default() {
+                used_model(id);
+            }
+        } else {
+            used_model(fallback);
         }
     };
     // The audit's source list. **Both** audit construction sites go through this — the
@@ -877,7 +898,7 @@ pub fn analyze_holding(
                     true,
                     run_date,
                 )?;
-                used_model(analyst.fast_id());
+                record_stage_models(analyst.fast_id());
                 // The fund research's fresh claims join the rendered delta with
                 // their ledger ties, as on the priced path.
                 push_research_delta_entries(&mut input_delta, &rr_distilled, prior_ledger);
@@ -891,7 +912,7 @@ pub fn analyze_holding(
                         distilled: &rr_distilled.combined,
                     })
                     .context("interpreting the role/risk holding")?;
-                used_model(analyst.reasoner_id());
+                record_stage_models(analyst.reasoner_id());
                 // The 6g what-changed attribution validator — external claims
                 // resolve against the rendered delta or downgrade to
                 // self-correction; a debut records no audit.
@@ -952,7 +973,7 @@ pub fn analyze_holding(
                         profile: &dossier.profile,
                     })
                     .context("deciding the role/risk holding's action")?;
-                used_model(analyst.reasoner_id());
+                record_stage_models(analyst.reasoner_id());
                 ensure_action_rationale(&symbol, &decision)?;
                 rr.action = decision.action;
                 rr.action_rationale = decision.rationale;
@@ -1146,7 +1167,7 @@ pub fn analyze_holding(
         false,
         run_date,
     )?;
-    used_model(analyst.fast_id());
+    record_stage_models(analyst.fast_id());
     let distilled = distilled_research.combined.clone();
 
     // Step 6e — the observation-driven overlay finalization
@@ -1357,7 +1378,7 @@ pub fn analyze_holding(
             input_delta: &input_delta,
         })
         .context("interpreting the holding")?;
-    used_model(analyst.reasoner_id());
+    record_stage_models(analyst.reasoner_id());
     // The 6g what-changed attribution validator — every external row resolves
     // against the rendered delta or downgrades to self-correction with a logged
     // reason; a debut records no audit.
@@ -1457,7 +1478,7 @@ pub fn analyze_holding(
             profile: &dossier.profile,
         })
         .context("deciding the holding's action")?;
-    used_model(analyst.reasoner_id());
+    record_stage_models(analyst.reasoner_id());
     ensure_action_rationale(&symbol, &decision)?;
     graded.action = decision.action;
     graded.action_rationale = decision.rationale;
@@ -5014,15 +5035,20 @@ impl HoldingAnalyst for StubAnalyst {
 
 // ---- The live local analyst (Ollama daemon) ----------------------------------
 
-/// The live [`HoldingAnalyst`]: wraps a [`LocalModelClient`] and the roster's reasoner
-/// and fast model ids. Distillation runs on the fast model — or on the reasoner when no
-/// fast tier is configured; interpretation runs on the reasoner in thinking mode with
-/// the grammar-constrained interpretation schema, so the returned object is
-/// structurally valid by construction.
+/// The live [`HoldingAnalyst`]: wraps a [`LocalModelClient`] and the roster's
+/// reasoner and fast model ids. Distillation normally runs on the fast model,
+/// routes an oversized prompt or reservation-bound retry to the reasoner, and
+/// uses the reasoner directly when no fast tier is configured. Interpretation
+/// runs on the reasoner in thinking mode with the grammar-constrained schema,
+/// so the returned object is structurally valid by construction.
 pub struct LocalAnalyst {
     client: LocalModelClient,
     reasoner_model: String,
     fast_model: String,
+    /// Routed model ids accumulated for the current holding, in outbound-call
+    /// order. This is separate from prompt usage because provenance must also
+    /// survive a transport failure before the daemon returns counters.
+    model_calls: std::sync::Mutex<Vec<String>>,
     /// Prompt-size observations accumulated since the job's last drain
     /// ([`HoldingAnalyst::take_prompt_usage`] — once per holding checkpoint).
     /// A `Mutex` only for the `&self` receivers — the per-holding loop is
@@ -5070,6 +5096,7 @@ impl LocalAnalyst {
             client,
             reasoner_model,
             fast_model,
+            model_calls: std::sync::Mutex::new(Vec::new()),
             prompt_usage: std::sync::Mutex::new(Vec::new()),
             retry: crate::local_model::RetryOnce::new(),
             research_ctx: None,
@@ -5082,6 +5109,16 @@ impl LocalAnalyst {
     pub fn with_research(mut self, ctx: LiveResearchCtx) -> Self {
         self.research_ctx = Some(ctx);
         self
+    }
+
+    /// Record the request's actual routed model immediately before issue.
+    /// Failed and retried attempts count as calls; the holding audit dedups the
+    /// drained sequence while retaining first-call order.
+    fn record_model_call(&self, req: &ChatRequest) {
+        self.model_calls
+            .lock()
+            .expect("model-call lock is never poisoned")
+            .push(req.model_id.clone());
     }
 
     /// Record one call's usage observation. Recorded unconditionally: the
@@ -5260,8 +5297,15 @@ const KEEP_ALIVE_RESIDENT: i64 = -1;
 /// Thinking stages (interpretation, role-risk, construction): chains run tens
 /// of thousands of tokens and count against the same budget as the answer.
 const NUM_PREDICT_THINKING: u32 = 65_536;
-/// Distillation emits 2–3 sentences; generous by two orders of magnitude.
+/// Normal distillation ceiling. The response is a potentially wide structured
+/// object: combined narrative, per-topic claims and URLs, typed side channels,
+/// and bounded observation excerpts. A reservation-bound stop gets one larger
+/// retry below; this first ceiling remains the runaway/latency guardrail.
 const NUM_PREDICT_DISTILL: u32 = 8_192;
+/// One evidence-triggered distillation re-attempt after the normal reservation
+/// binds exactly. It issues on the reasoner's 128 K context so the prompt and
+/// this full ceiling fit together under the same 60% input sizing guard.
+const NUM_PREDICT_DISTILL_RETRY: u32 = 32_768;
 
 /// The distill stage's context size, resolved per *model*, not per call: Ollama
 /// reloads a resident runner whenever a request's load-time options — `num_ctx`
@@ -5323,15 +5367,29 @@ fn distill_route<'a>(
 fn distill_request(
     model: &str,
     num_ctx: u32,
+    num_predict: u32,
     prompt: String,
     schema: &serde_json::Value,
 ) -> ChatRequest {
     let mut req = ChatRequest::new(model, vec![ChatMessage::user(prompt)]);
     req.think = Some(false);
     req.format_schema = Some(schema.clone());
-    req.options = Some(options::non_thinking_general(num_ctx, NUM_PREDICT_DISTILL));
+    req.options = Some(options::non_thinking_general(num_ctx, num_predict));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
+}
+
+/// The only stop that activates the larger distillation attempt: the normal
+/// request declared the normal ceiling and the daemon reports that it generated
+/// exactly that many tokens. A stop below it is context-bound or unattributable
+/// and keeps the existing hard-failure posture.
+fn hit_normal_distill_reservation(
+    req: &ChatRequest,
+    resp: &crate::local_model::ChatResponse,
+) -> bool {
+    resp.done_reason.as_deref() == Some("length")
+        && crate::local_model::request_num_predict(req) == Some(NUM_PREDICT_DISTILL)
+        && resp.eval_count == Some(u64::from(NUM_PREDICT_DISTILL))
 }
 
 /// Build one research-loop turn's request: thinking on, the web tools and the
@@ -5441,6 +5499,7 @@ impl HoldingAnalyst for LocalAnalyst {
                     tools,
                     format,
                 );
+                self.analyst.record_model_call(&req);
                 let resp = self.analyst.client.chat(&req)?;
                 self.analyst.record_usage(self.stage.to_string(), &req, &resp);
                 ensure_not_output_limited(self.stage, &req, &resp)?;
@@ -5479,6 +5538,10 @@ impl HoldingAnalyst for LocalAnalyst {
     fn distill_research(&self, inputs: &DistillInputs) -> Result<DistilledResearch> {
         struct ModelAdapter<'a> {
             analyst: &'a LocalAnalyst,
+            /// Stages that spent their single re-attempt on an expanded output
+            /// request. The outer parse/transport retry gate must not add a
+            /// third call afterward.
+            spent_output_retries: std::cell::RefCell<std::collections::HashSet<String>>,
         }
         impl distill::DistillModel for ModelAdapter<'_> {
             fn distill_call(
@@ -5495,21 +5558,72 @@ impl HoldingAnalyst for LocalAnalyst {
                     &self.analyst.fast_model,
                     &self.analyst.reasoner_model,
                 )?;
-                let req = distill_request(model, num_ctx, prompt, schema);
+                let req = distill_request(
+                    model,
+                    num_ctx,
+                    NUM_PREDICT_DISTILL,
+                    prompt.clone(),
+                    schema,
+                );
+                self.analyst.record_model_call(&req);
                 let resp = self.analyst.client.chat(&req)?;
                 self.analyst.record_usage(stage.to_string(), &req, &resp);
+                if hit_normal_distill_reservation(&req, &resp) {
+                    // The rendered prompt already passed the reasoner's 60%
+                    // input guard, leaving more than the 32 K expanded ceiling
+                    // in its 128 K context. Route the one evidence-triggered
+                    // re-attempt there even when the normal call used a 32 K
+                    // fast tier, whose shared context could not hold both.
+                    self.spent_output_retries
+                        .borrow_mut()
+                        .insert(stage.to_string());
+                    let expanded_req = distill_request(
+                        &self.analyst.reasoner_model,
+                        NUM_CTX_INTERPRET,
+                        NUM_PREDICT_DISTILL_RETRY,
+                        prompt,
+                        schema,
+                    );
+                    self.analyst.record_model_call(&expanded_req);
+                    let expanded_resp = self.analyst.client.chat(&expanded_req)?;
+                    self.analyst.record_usage(stage.to_string(), &expanded_req, &expanded_resp);
+                    ensure_not_output_limited(stage, &expanded_req, &expanded_resp).with_context(
+                        || {
+                            format!(
+                                "{stage}: expanded distillation attempt also length-stopped after \
+                                 the normal {NUM_PREDICT_DISTILL}-token reservation bound"
+                            )
+                        },
+                    )?;
+                    ensure_nonempty_completion(stage, &expanded_resp)?;
+                    return Ok(expanded_resp.content);
+                }
                 ensure_not_output_limited(stage, &req, &resp)?;
                 ensure_nonempty_completion(stage, &resp)?;
                 Ok(resp.content)
             }
 
             fn retry_permitted(&self, stage: &str, err: &anyhow::Error) -> bool {
+                // A normal-reservation stop already spent this stage's single
+                // re-attempt on the expanded request. Do not let the outer
+                // parse/transport retry layer add a third call afterward.
+                if self.spent_output_retries.borrow().contains(stage) {
+                    return false;
+                }
                 self.analyst
                     .retry
                     .permit(self.analyst.client.progress(), stage, err)
             }
         }
-        distill::distill(&ModelAdapter { analyst: self }, inputs)
+        distill::distill(
+            &ModelAdapter {
+                analyst: self,
+                spent_output_retries: std::cell::RefCell::new(
+                    std::collections::HashSet::new(),
+                ),
+            },
+            inputs,
+        )
     }
 
     fn distill_input_budget(&self) -> usize {
@@ -5531,6 +5645,7 @@ impl HoldingAnalyst for LocalAnalyst {
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("interpret {}", input.dossier.position.symbol);
         self.retry.run(self.client.progress(), &stage, || {
+            self.record_model_call(&req);
             let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
             self.record_usage(stage.clone(), &req, &resp);
             ensure_not_output_limited(&stage, &req, &resp)?;
@@ -5544,6 +5659,7 @@ impl HoldingAnalyst for LocalAnalyst {
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("role-risk {}", input.dossier.position.symbol);
         self.retry.run(self.client.progress(), &stage, || {
+            self.record_model_call(&req);
             let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
             self.record_usage(stage.clone(), &req, &resp);
             ensure_not_output_limited(&stage, &req, &resp)?;
@@ -5568,6 +5684,7 @@ impl HoldingAnalyst for LocalAnalyst {
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("action {}", input.dossier.position.symbol);
         self.retry.run(self.client.progress(), &stage, || {
+            self.record_model_call(&req);
             let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
             self.record_usage(stage.clone(), &req, &resp);
             ensure_not_output_limited(&stage, &req, &resp)?;
@@ -5593,6 +5710,15 @@ impl HoldingAnalyst for LocalAnalyst {
 
     fn reasoner_id(&self) -> String {
         self.reasoner_model.clone()
+    }
+
+    fn take_model_calls(&self) -> Option<Vec<String>> {
+        Some(std::mem::take(
+            &mut *self
+                .model_calls
+                .lock()
+                .expect("model-call lock is never poisoned"),
+        ))
     }
 
     fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
@@ -5867,6 +5993,47 @@ mod tests {
             analyst.take_prompt_usage().is_empty(),
             "drain empties the buffer"
         );
+    }
+
+    #[test]
+    fn local_analyst_records_routed_models_in_first_call_order() {
+        let analyst = LocalAnalyst::new(
+            LocalModelClient::new("http://127.0.0.1:1").unwrap(),
+            "reasoner".into(),
+            "fast-tier".into(),
+        );
+        let research = research_turn_request(
+            "reasoner",
+            vec![ChatMessage::user("brief")],
+            None,
+            None,
+        );
+        analyst.record_model_call(&research);
+
+        let fast_budget = distill::input_budget_chars(NUM_CTX_DISTILL);
+        let (routed, num_ctx) = distill_route(
+            "distill TEST reduce",
+            fast_budget + 1,
+            &analyst.fast_model,
+            &analyst.reasoner_model,
+        )
+        .unwrap();
+        assert_eq!(routed, "reasoner", "oversized distill routes upward");
+        let distill = distill_request(
+            routed,
+            num_ctx,
+            NUM_PREDICT_DISTILL,
+            "wide prompt".into(),
+            &serde_json::json!({"type": "object"}),
+        );
+        analyst.record_model_call(&distill);
+
+        assert_eq!(
+            analyst.take_model_calls(),
+            Some(vec!["reasoner".to_string(), "reasoner".to_string()]),
+            "the request's routed id is recorded, not the configured fast slot"
+        );
+        assert_eq!(analyst.take_model_calls(), Some(Vec::new()));
     }
 
     fn position(asset_class: AssetClass) -> Position {
@@ -6338,6 +6505,53 @@ mod tests {
         }
     }
 
+    /// Exact-call telemetry stub: research really is the first modeled stage,
+    /// followed by distillation and the reasoner judgments.
+    #[derive(Default)]
+    struct TelemetryTieredStub {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+    impl TelemetryTieredStub {
+        fn called(&self, model: &str) {
+            self.calls.lock().unwrap().push(model.to_string());
+        }
+    }
+    impl HoldingAnalyst for TelemetryTieredStub {
+        fn research(
+            &self,
+            _dossier: &HoldingDossier,
+            plan: &ResearchPlan,
+        ) -> Result<HoldingResearch> {
+            self.called("reasoner");
+            Ok(research::offline_stub(plan))
+        }
+        fn distill_research(&self, inputs: &DistillInputs) -> Result<DistilledResearch> {
+            self.called("fast-tier");
+            Ok(distill::offline_consolidate(inputs))
+        }
+        fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+            self.called("reasoner");
+            StubAnalyst.interpret(input)
+        }
+        fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
+            self.called("reasoner");
+            StubAnalyst.interpret_role_risk(input)
+        }
+        fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
+            self.called("reasoner");
+            StubAnalyst.decide_action(input)
+        }
+        fn fast_id(&self) -> String {
+            "fast-tier".into()
+        }
+        fn reasoner_id(&self) -> String {
+            "reasoner".into()
+        }
+        fn take_model_calls(&self) -> Option<Vec<String>> {
+            Some(std::mem::take(&mut *self.calls.lock().unwrap()))
+        }
+    }
+
     /// The role/risk fixture: a bond fund routes to the union's other branch.
     fn bond_fund() -> FundData {
         let mut bond = us_equity_fund();
@@ -6407,6 +6621,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(a.model_ids, vec!["stub-analyst".to_string()]);
+
+        // Exact telemetry supersedes configured-stage guesses: live research
+        // is the first model call, so a distinct roster persists reasoner then
+        // fast tier (and dedups the later reasoner judgments in place).
+        let exact = TelemetryTieredStub::default();
+        let (_, a) = analyze_holding(
+            &exact,
+            &dossier(AssetClass::Stock, strong_financials()),
+            &rates(),
+            "2026-08-03",
+        )
+        .unwrap();
+        assert_eq!(a.model_ids, vec!["reasoner".to_string(), "fast-tier".to_string()]);
     }
 
     #[test]
@@ -9690,7 +9917,13 @@ mod tests {
         let d = dossier(AssetClass::Stock, strong_financials());
 
         let schema = serde_json::json!({"type": "object"});
-        let distill = distill_request("fast-model", NUM_CTX_DISTILL, "prompt".into(), &schema);
+        let distill = distill_request(
+            "fast-model",
+            NUM_CTX_DISTILL,
+            NUM_PREDICT_DISTILL,
+            "prompt".into(),
+            &schema,
+        );
         assert_eq!(distill.think, Some(false));
         assert_eq!(distill.keep_alive, Some(-1));
         let opts = distill.options.as_ref().unwrap();
@@ -9770,6 +10003,61 @@ mod tests {
         assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET);
         assert_eq!(opts["num_predict"], NUM_PREDICT_THINKING, "output reservation");
         assert!(role_risk.format_schema.is_some(), "grammar-constrained");
+    }
+
+    #[test]
+    fn distill_expands_only_an_exact_normal_reservation_stop() {
+        let schema = serde_json::json!({"type": "object"});
+        let normal = distill_request(
+            "fast-tier",
+            NUM_CTX_DISTILL,
+            NUM_PREDICT_DISTILL,
+            "prompt".into(),
+            &schema,
+        );
+        let response = |eval_count| crate::local_model::ChatResponse {
+            content: "partial".into(),
+            thinking: None,
+            prompt_eval_count: Some(1_000),
+            eval_count,
+            done_reason: Some("length".into()),
+            tool_calls: None,
+        };
+        assert!(hit_normal_distill_reservation(
+            &normal,
+            &response(Some(u64::from(NUM_PREDICT_DISTILL)))
+        ));
+        assert!(
+            !hit_normal_distill_reservation(&normal, &response(Some(8_000))),
+            "a context-bound stop must not repeat with a larger ceiling"
+        );
+        assert!(
+            !hit_normal_distill_reservation(&normal, &response(None)),
+            "an unattributed stop must not guess at a lever"
+        );
+
+        let expanded = distill_request(
+            "reasoner",
+            NUM_CTX_INTERPRET,
+            NUM_PREDICT_DISTILL_RETRY,
+            "prompt".into(),
+            &schema,
+        );
+        assert_eq!(
+            crate::local_model::request_num_ctx(&expanded),
+            Some(NUM_CTX_INTERPRET)
+        );
+        assert_eq!(
+            crate::local_model::request_num_predict(&expanded),
+            Some(NUM_PREDICT_DISTILL_RETRY)
+        );
+        assert!(
+            !hit_normal_distill_reservation(
+                &expanded,
+                &response(Some(u64::from(NUM_PREDICT_DISTILL_RETRY)))
+            ),
+            "the expanded ceiling never activates a second expansion"
+        );
     }
 
     /// The output-budget guard: a `done_reason: "length"` response fails typed —

@@ -1629,13 +1629,12 @@ pub struct HoldingAudit {
     /// from them and the house view only where a prompt rendered it.
     pub sources: Vec<String>,
     /// The local model ids the verdict was **actually authored with**, in
-    /// first-call order — recorded beside each call that ran, never read off the
-    /// configured roster: empty on every no-model exit (not-rated, the listing
-    /// guard, an evidence-floor abstention); the fast tier plus the reasoner on
-    /// both analyzed branches (one entry when they are the same model) — the
-    /// role/risk branch runs the fund agenda's research and a
-    /// pure-consolidation distillation since the research slice retired the
-    /// stub-time bypass.
+    /// first-call order — drained from each outbound request's routed model,
+    /// never inferred from the configured roster: empty on every no-model exit
+    /// (not-rated, the listing guard, an evidence-floor abstention); normally
+    /// reasoner then fast tier on analyzed live branches because research
+    /// precedes distillation, with each id present only if a call actually used
+    /// it and duplicate ids collapsed in place.
     pub model_ids: Vec<String>,
     /// The prompt/schema version the interpretation ran under.
     pub prompt_version: String,
