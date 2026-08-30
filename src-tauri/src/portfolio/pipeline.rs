@@ -2356,14 +2356,74 @@ fn semantic_recall_prompt_section(d: &HoldingDossier) -> String {
 
 // ---- The what-changed attribution (the metric-level 6g validator) ----------------
 
-/// Format one optional value for an input-delta label — `(absent)` where that run
-/// could not compute the metric, never a fabricated zero.
-fn delta_val(v: Option<f64>) -> String {
-    v.map(|x| format!("{x:.4}"))
-        .unwrap_or_else(|| "(absent)".to_string())
+/// The decimal floor for one comparison value. A nonzero value extends past
+/// `min_places` rather than rendering as zero; a still-smaller value falls back
+/// to its shortest round-trip representation in [`comparison_safe_pair`] or
+/// [`delta_value`].
+fn comparison_places(x: f64, min_places: usize) -> usize {
+    if x == 0.0 {
+        min_places
+    } else {
+        (min_places..=10)
+            .find(|p| (x * 10f64.powi(*p as i32)).round() != 0.0)
+            .unwrap_or(10)
+    }
 }
 
-/// Append one input-delta entry, assigning the next bracketed id.
+/// Render two values at one shared precision while preserving their numeric
+/// ordering when the strings are read back. Input-delta rows use different
+/// presentation floors (spot 2, metrics 4, sub-scores 0), but none may turn an
+/// exact `old != new` into a displayed equality. Values too close to distinguish
+/// at ten places use their shortest round-trip representations.
+fn comparison_safe_pair(old: f64, new: f64, min_places: usize) -> (String, String) {
+    let old = if old == 0.0 { 0.0 } else { old };
+    let new = if new == 0.0 { 0.0 } else { new };
+    let order = old.partial_cmp(&new);
+    let faithful = |a: &str, b: &str| match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(a), Ok(b)) => a.partial_cmp(&b) == order,
+        _ => false,
+    };
+    let floor = comparison_places(old, min_places).max(comparison_places(new, min_places));
+    let render = |places: usize| (format!("{old:.places$}"), format!("{new:.places$}"));
+    (floor..=10)
+        .map(render)
+        .find(|(a, b)| faithful(a, b))
+        .unwrap_or_else(|| (format!("{old}"), format!("{new}")))
+}
+
+/// Format one side of an optional input-delta pair — `(absent)` where that run
+/// could not compute the metric, and never a fabricated zero for a tiny value.
+fn delta_value(v: Option<f64>, min_places: usize) -> String {
+    let Some(x) = v else {
+        return "(absent)".to_string();
+    };
+    let x = if x == 0.0 { 0.0 } else { x };
+    let places = comparison_places(x, min_places);
+    let rendered = format!("{x:.places$}");
+    if x != 0.0 && rendered.parse::<f64>() == Ok(0.0) {
+        format!("{x}")
+    } else {
+        rendered
+    }
+}
+
+/// Render an optional old/new pair. Two present values share comparison-safe
+/// precision; an absent side stays explicit and the present side keeps the
+/// requested presentation floor without flattening a tiny nonzero value.
+fn optional_delta_pair(
+    old: Option<f64>,
+    new: Option<f64>,
+    min_places: usize,
+) -> (String, String) {
+    match (old, new) {
+        (Some(old), Some(new)) => comparison_safe_pair(old, new, min_places),
+        (old, new) => (
+            delta_value(old, min_places),
+            delta_value(new, min_places),
+        ),
+    }
+}
+
 /// The grade branch a PRIOR record was scored on — its persisted asset class,
 /// the key the job routes the fund path on (`job.rs`, `is_fund`), so the class
 /// is the branch for every record ever written; the fund path's
@@ -2407,6 +2467,7 @@ fn target_boundary_note(horizons: engine::TargetHorizons) -> String {
     )
 }
 
+/// Append one input-delta entry, assigning the next bracketed id.
 fn push_delta(entries: &mut Vec<crate::portfolio::DeltaEntry>, label: String) {
     let id = format!("D{}", entries.len() + 1);
     entries.push(crate::portfolio::DeltaEntry {
@@ -2548,7 +2609,8 @@ fn priced_input_delta(
     ) {
         let old = old * f;
         if old != new {
-            push_delta(&mut entries, format!("spot: {old:.2} -> {new:.2}"));
+            let (old, new) = comparison_safe_pair(old, new, 2);
+            push_delta(&mut entries, format!("spot: {old} -> {new}"));
         }
     }
     if let Some(prior_metrics) = dossier.prior_metrics.as_ref() {
@@ -2563,9 +2625,10 @@ fn priced_input_delta(
             if c.name == "NAV premium" && !cef {
                 continue;
             }
+            let (old, new) = optional_delta_pair(c.old, c.new, 4);
             push_delta(
                 &mut entries,
-                format!("metric {}: {} -> {}", c.name, delta_val(c.old), delta_val(c.new)),
+                format!("metric {}: {old} -> {new}", c.name),
             );
         }
     }
@@ -2578,9 +2641,10 @@ fn priced_input_delta(
         ];
         for (name, old, new) in axes {
             if old != new {
+                let (old, new) = comparison_safe_pair(old, new, 0);
                 push_delta(
                     &mut entries,
-                    format!("engine sub-score {name}: {old:.0} -> {new:.0}"),
+                    format!("engine sub-score {name}: {old} -> {new}"),
                 );
             }
         }
@@ -2609,12 +2673,11 @@ fn priced_input_delta(
             .and_then(|t| price_bridge.map(|f| t.base * f));
         let new_base = engine_output.price_targets.twelve_month.as_ref().map(|t| t.base);
         if price_bridge.is_some() && prior_basis_certified && old_base != new_base {
+            let (old_base, new_base) = optional_delta_pair(old_base, new_base, 4);
             push_delta(
                 &mut entries,
                 format!(
-                    "engine twelve-month base target: {} -> {}",
-                    delta_val(old_base),
-                    delta_val(new_base)
+                    "engine twelve-month base target: {old_base} -> {new_base}"
                 ),
             );
         }
@@ -2755,9 +2818,10 @@ fn role_risk_input_delta(
     let mut entries = Vec::new();
     if let Some(prior_metrics) = dossier.prior_metrics.as_ref() {
         for c in engine::metric_delta(prior_metrics, fund_metrics) {
+            let (old, new) = optional_delta_pair(c.old, c.new, 4);
             push_delta(
                 &mut entries,
-                format!("metric {}: {} -> {}", c.name, delta_val(c.old), delta_val(c.new)),
+                format!("metric {}: {old} -> {new}", c.name),
             );
         }
     }
@@ -3158,10 +3222,24 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
     {
         let mv = &g.model_view;
         let mt = &mv.price_targets;
+        let (model_label, action_read) = match prior.action_source {
+            ActionSource::ModelChosen => (
+                "prior MODEL arm (yours)",
+                format!("action {} (model-chosen)", g.action.as_kebab()),
+            ),
+            ActionSource::RuleDemoted => (
+                "prior MODEL arm (authored read; action later rule-demoted)",
+                format!(
+                    "persisted action {} (rule-demoted after authoring; the prior model-chosen \
+                     rung is unavailable in this record)",
+                    g.action.as_kebab()
+                ),
+            ),
+        };
         p.push_str(&format!(
-            "- prior MODEL arm (yours): letter {} (q {:.0} / v {:.0} / m {:.0} / r {:.0}); \
+            "- {model_label}: letter {} (q {:.0} / v {:.0} / m {:.0} / r {:.0}); \
              1-mo base {:.2} [{:.2}\u{2013}{:.2}], 12-mo base {:.2} [{:.2}\u{2013}{:.2}]; \
-             conviction {:?}, {}, action {}\n",
+             conviction {:?}, {}, {action_read}\n",
             mv.letter.as_str(),
             mv.sub_scores.quality,
             mv.sub_scores.valuation,
@@ -3175,7 +3253,6 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
             mt.twelve_month.bull,
             g.conviction,
             outlook(&g.horizon_outlook),
-            g.action.as_kebab(),
         ));
     }
 
@@ -3996,20 +4073,7 @@ fn render_places(x: f64) -> usize {
 /// engine's comparison is exact and a zero margin is valid, so a crossing
 /// can sit closer than that (the group's Codex round 2).
 fn fmt_crossing_pair(observed: f64, threshold: f64) -> (String, String) {
-    // A negative zero would print `-0.0000`; it is zero.
-    let observed = if observed == 0.0 { 0.0 } else { observed };
-    let threshold = if threshold == 0.0 { 0.0 } else { threshold };
-    let order = observed.partial_cmp(&threshold);
-    let faithful = |o: &str, t: &str| match (o.parse::<f64>(), t.parse::<f64>()) {
-        (Ok(o), Ok(t)) => o.partial_cmp(&t) == order,
-        _ => false,
-    };
-    let floor = render_places(observed).max(render_places(threshold));
-    let render = |places: usize| (format!("{observed:.places$}"), format!("{threshold:.places$}"));
-    (floor..=10)
-        .map(render)
-        .find(|(o, t)| faithful(o, t))
-        .unwrap_or_else(|| (format!("{observed}"), format!("{threshold}")))
+    comparison_safe_pair(observed, threshold, 4)
 }
 
 /// The IV-skew prompt render — the put-minus-call difference with an explicit
@@ -4137,9 +4201,11 @@ pub fn action_system_prompt() -> String {
      capital-efficiency read — \
      only a `fails` hurdle is dead money, and a fails read leans toward \
      realizing some or all of the position once the forward prospects are \
-     independently judged poor; the possible tax benefit of booking a loss (or \
-     the tax cost of realizing a gain) is a user consideration to FLAG in the \
-     rationale, never the mover of the rung. For a role/risk-only vehicle (a \
+     independently judged poor. Follow the INVESTOR PROFILE's tax posture: for a \
+     tax-aware profile, a possible benefit from booking a loss or cost from \
+     realizing a gain is a user consideration to FLAG in the rationale, never \
+     the mover of the rung; for a tax-exempt profile, apply no tax consideration. \
+     For a role/risk-only vehicle (a \
      class this pipeline cannot price) decide from its role read, expense drag, \
      observable risk, structural flags, and evidence gaps — an add-side rung \
      there must be earned by the vehicle's own merits, stated in the rationale. \
@@ -4165,22 +4231,36 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     p.push_str(&holding_header(d));
 
     let pl = d.position.market_value - d.position.cost_basis;
+    let tax_read = if !input.profile.tax_sensitive {
+        "tax-exempt profile — no tax consideration applied"
+    } else if pl < 0.0 {
+        "an unrealized loss — booking it may carry a tax benefit; flag as a user \
+         consideration, never the mover"
+    } else if pl > 0.0 {
+        "an unrealized gain — realizing it may carry a tax cost; flag as a user \
+         consideration, never the mover"
+    } else {
+        "at break-even — no unrealized gain or loss to flag for tax"
+    };
     p.push_str(&format!(
-        "Unrealized P/L: ${pl:.0} total ({})\n",
-        if pl < 0.0 {
-            "an unrealized loss — booking it may carry a tax benefit; flag as a user \
-             consideration, never the mover"
-        } else {
-            "an unrealized gain — a sale realizes it as taxable; flag as a user \
-             consideration, never the mover"
-        }
+        "Unrealized P/L: ${pl:.0} total ({tax_read})\n"
     ));
-    if let Some(prior) = d.prior_verdict.as_ref().and_then(crate::portfolio::carried_action) {
-        p.push_str(&format!(
-            "Prior run's action for this holding: {} (continuity baseline — move \
-             only on materially moved evidence).\n",
-            prior.as_kebab()
-        ));
+    if let Some(prior) = d.prior_verdict.as_ref() {
+        if let Some(action) = crate::portfolio::carried_action(prior) {
+            match prior.action_source {
+                ActionSource::ModelChosen => p.push_str(&format!(
+                    "Prior model-chosen action for this holding: {} (continuity baseline — \
+                     move only on materially moved evidence).\n",
+                    action.as_kebab()
+                )),
+                ActionSource::RuleDemoted => p.push_str(&format!(
+                    "Prior persisted action for this holding: {} (rule-demoted by the \
+                     over-age carry rule, not chosen by a model; provenance context only, \
+                     not a continuity anchor).\n",
+                    action.as_kebab()
+                )),
+            }
+        }
     }
 
     match &input.subject {
@@ -8109,6 +8189,66 @@ mod tests {
     }
 
     #[test]
+    fn action_prompt_distinguishes_rule_demotion_and_follows_tax_posture() {
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        let mut prior = v.clone();
+        prior.action_source = ActionSource::RuleDemoted;
+        let VerdictDisposition::Priced(prior_graded) = &mut prior.disposition else {
+            panic!("expected a priced prior");
+        };
+        prior_graded.action = Action::Hold;
+        d.prior_verdict = Some(prior);
+        d.profile.tax_sensitive = false;
+
+        let VerdictDisposition::Priced(graded) = &v.disposition else {
+            panic!("expected a priced verdict");
+        };
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let engine_set =
+            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
+        let render = |d: &HoldingDossier| {
+            action_user_prompt(&ActionInput {
+                dossier: d,
+                subject: ActionSubject::Priced {
+                    graded,
+                    engine: &engine_output,
+                    pre_profit: None,
+                },
+                engine_set: &engine_set,
+                profile: &d.profile,
+            })
+        };
+
+        let exempt = render(&d);
+        assert!(
+            exempt.contains(
+                "Prior persisted action for this holding: hold (rule-demoted by the over-age \
+                 carry rule, not chosen by a model; provenance context only, not a continuity \
+                 anchor)."
+            ),
+            "{exempt}"
+        );
+        assert!(!exempt.contains("Prior model-chosen action"), "{exempt}");
+        assert!(
+            exempt.contains("tax-exempt profile — no tax consideration applied"),
+            "{exempt}"
+        );
+        assert!(!exempt.contains("tax benefit"), "{exempt}");
+        assert!(!exempt.contains("tax cost"), "{exempt}");
+
+        d.profile.tax_sensitive = true;
+        let taxable = render(&d);
+        assert!(taxable.contains("may carry a tax cost"), "{taxable}");
+        let system = action_system_prompt();
+        assert!(system.contains("Follow the INVESTOR PROFILE's tax posture"), "{system}");
+        assert!(system.contains("for a tax-exempt profile, apply no tax consideration"), "{system}");
+    }
+
+    #[test]
     fn evidence_leg_sections_render_when_present_and_stay_silent_when_absent() {
         use crate::portfolio::dossier::{
             OptionOverlay, OverlayClass, OverlayDirection, OverlayLeg,
@@ -8381,8 +8521,10 @@ mod tests {
         // Review 2 M11's constant-period revision semantics moved it to v25;
         // M1's forward-assumption currency admission moved it to v26; the M4 /
         // M5 / Q4 fund-classification contract moved it to v27; M14's
-        // industry-routed commodity context moves it to v28.
-        assert_eq!(PROMPT_VERSION, "portfolio-v28");
+        // industry-routed commodity context moved it to v28; M17 / M19 / M20's
+        // comparison-safe delta, action-provenance, and profile-tax contract
+        // moves it to v29.
+        assert_eq!(PROMPT_VERSION, "portfolio-v29");
     }
 
     #[test]
@@ -8660,6 +8802,40 @@ mod tests {
         assert!(user.contains("any vintage"), "{user}");
         assert!(user.contains("1-month window scored: total return +4.2%"), "{user}");
         assert!(user.contains("Write self_assessment against this"), "{user}");
+
+        // A carry rule can overwrite the persisted action without preserving
+        // the model's original rung. The retrospective keeps the authored model
+        // read but names that action provenance instead of calling the rule's
+        // hold "yours".
+        let prior = d.prior_verdict.as_mut().unwrap();
+        prior.action_source = ActionSource::RuleDemoted;
+        let VerdictDisposition::Priced(graded) = &mut prior.disposition else {
+            panic!("expected a priced prior");
+        };
+        graded.action = Action::Hold;
+        let demoted = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
+            dossier: &d,
+            prior_ledger: d.prior_ledger(),
+            engine: &engine_output,
+            distilled: "distilled findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+        });
+        assert!(
+            demoted.contains("prior MODEL arm (authored read; action later rule-demoted)"),
+            "{demoted}"
+        );
+        assert!(
+            demoted.contains(
+                "persisted action hold (rule-demoted after authoring; the prior model-chosen \
+                 rung is unavailable in this record)"
+            ),
+            "{demoted}"
+        );
+        assert!(!demoted.contains("prior MODEL arm (yours)"), "{demoted}");
 
         // A debut renders no retrospective and says so in the model-arm brief.
         let debut = dossier(AssetClass::Stock, strong_financials());
@@ -9487,6 +9663,59 @@ mod tests {
     }
 
     #[test]
+    fn input_delta_renders_every_exact_move_as_a_visible_move() {
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let (mut prior, _) =
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-01").unwrap();
+        let VerdictDisposition::Priced(prior_graded) = &mut prior.disposition else {
+            panic!("expected a priced prior");
+        };
+        prior_graded.sub_scores.quality = 61.7;
+        d.prior_verdict = Some(prior);
+        d.prior_spot = Some(195.001);
+        d.financials.current_price = Some(195.002);
+
+        let mut engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let mut prior_metrics = engine_output.metrics.clone();
+        prior_metrics.net_margin = Some(0.10001);
+        engine_output.metrics.net_margin = Some(0.10002);
+        engine_output.sub_scores.quality = 62.3;
+        d.prior_metrics = Some(prior_metrics);
+
+        let entries = priced_input_delta(
+            &d,
+            &engine_output,
+            PositionChange::Unchanged,
+            None,
+            None,
+            None,
+            false,
+            Some(1.0),
+        );
+        let labels = entries
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"spot: 195.001 -> 195.002"), "{labels:?}");
+        assert!(
+            labels.contains(&"metric net margin: 0.10001 -> 0.10002"),
+            "{labels:?}"
+        );
+        assert!(
+            labels.contains(&"engine sub-score quality: 61.7 -> 62.3"),
+            "{labels:?}"
+        );
+        for label in labels {
+            if let Some((old, new)) = label.split_once(" -> ") {
+                assert_ne!(old.rsplit_once(": ").map_or(old, |(_, value)| value), new, "{label}");
+            }
+        }
+    }
+
+    #[test]
     fn the_nav_premium_delta_row_is_gated_to_the_closed_end_form() {
         // An open-end ETF's transient premium flicker must not seed a 6g input
         // delta row every run; on the closed-end form the move IS the read.
@@ -9727,6 +9956,25 @@ mod tests {
                 "{o} vs {t} rendered {ro} vs {rt}"
             );
         }
+    }
+
+    #[test]
+    fn comparison_safe_pairs_respect_each_delta_surface_floor() {
+        assert_eq!(
+            comparison_safe_pair(61.7, 62.3, 0),
+            ("61.7".to_string(), "62.3".to_string())
+        );
+        assert_eq!(
+            comparison_safe_pair(195.001, 195.002, 2),
+            ("195.001".to_string(), "195.002".to_string())
+        );
+        assert_eq!(
+            comparison_safe_pair(0.10001, 0.10002, 4),
+            ("0.10001".to_string(), "0.10002".to_string())
+        );
+        assert_eq!(delta_value(Some(1e-12), 4), "0.000000000001");
+        assert_eq!(delta_value(Some(-0.0), 4), "0.0000");
+        assert_eq!(delta_value(None, 4), "(absent)");
     }
 
     #[test]

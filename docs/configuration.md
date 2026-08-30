@@ -158,7 +158,8 @@ The default posture:
   (The engine's forensic and risk discipline still applies; only the cash constraint is lifted — whole-book concentration belongs to the future portfolio planner.)
 - **tax sensitivity — no precise modeling.**
   No tax-lot, holding-period, account-type, or marginal-rate calculation is applied to actions — the job never computes a tax harvest.
-  It does treat the **possible tax benefit of realizing a loss** as one *generic, qualitative* counterweight once a position's forward prospects have already been judged poor, weighed beside the redeployment value of freed cash ([portfolio-analysis.md §Portfolio action](portfolio-analysis.md#portfolio-action)); it is framed as *possible* precisely because account type and rate are unmodeled, so the user judges their own specifics.
+  Because this preset is tax-aware, it treats the **possible tax benefit of realizing a loss** as one *generic, qualitative* counterweight once a position's forward prospects have already been judged poor, weighed beside the redeployment value of freed cash ([portfolio-analysis.md §Portfolio action](portfolio-analysis.md#portfolio-action)); it is framed as *possible* precisely because account type and rate are unmodeled, so the user judges their own specifics.
+  A tax-exempt profile applies no tax consideration.
 
 These defaults are the stated posture the suite runs against until a configurable profile exists.
 

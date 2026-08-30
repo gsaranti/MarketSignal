@@ -2000,7 +2000,12 @@ pub struct HoldingAudit {
 /// `portfolio-v28`: commodity context uses the profile industry to route uranium
 /// to its own print and to withhold oil / gas proxies from coal producers
 /// (Review 2 M14). Guard-terminal benchmark suppression changes retrieval only.
-pub const PROMPT_VERSION: &str = "portfolio-v28";
+///
+/// `portfolio-v29`: input deltas preserve every exact move in their rendered
+/// old/new pair, rule-demoted actions keep their provenance in continuity and
+/// retrospective context, and action tax framing follows the investor profile
+/// (Review 2 M17 / M19 / M20).
+pub const PROMPT_VERSION: &str = "portfolio-v29";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
