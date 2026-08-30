@@ -103,12 +103,10 @@ pub struct DistilledClaim {
     pub claim: String,
     pub source_url: String,
     pub vintage: String,
-    #[serde(default)]
     pub cached: bool,
     /// The ledger condition this claim bears on, where the distillation named
     /// one (validated against known condition ids) — the seed assembly's
     /// "claims tied to an open condition" priority key.
-    #[serde(default)]
     pub related_condition_id: Option<String>,
 }
 
@@ -338,7 +336,6 @@ pub struct ResearchSeed {
     pub headline: String,
     pub url: String,
     pub source: String,
-    #[serde(default)]
     pub published: Option<String>,
 }
 
@@ -458,10 +455,8 @@ pub struct EvidenceClaim {
     /// Deterministic seed lineage: the seed whose URL this claim's source
     /// resolves to, where one does (`surfaced_by` — stamped free, no model
     /// attribution involved).
-    #[serde(default)]
     pub surfaced_by: Option<String>,
     /// The app-computed source annotation for the claim's document.
-    #[serde(default)]
     pub annotation: Option<SourceAnnotation>,
 }
 
@@ -470,11 +465,9 @@ pub struct EvidenceClaim {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FollowupProposal {
     pub question: String,
-    #[serde(default)]
     pub rationale: String,
     /// The mid-loop technology-event escalation flag: the orchestrator
     /// approves it like any follow-up, then activates the conditional topic.
-    #[serde(default)]
     pub technology_event: bool,
 }
 
@@ -484,16 +477,12 @@ pub struct FollowupProposal {
 pub struct PassFindings {
     pub findings: String,
     pub claims: Vec<EvidenceClaim>,
-    #[serde(default)]
     pub followup: Option<FollowupProposal>,
     /// A material forward fact flagged for the Step-6e refinement.
-    #[serde(default)]
     pub material_forward_fact: bool,
     /// Model-attributed seed lineage, validated against known seed IDs
     /// (unknown references dropped and logged).
-    #[serde(default)]
     pub seeded_by: Vec<String>,
-    #[serde(default)]
     pub topic_answered: bool,
 }
 
@@ -503,15 +492,12 @@ pub struct PassFindings {
 pub struct TopicResearch {
     pub topic_key: String,
     pub title: String,
-    #[serde(default)]
     pub conditional_reason: Option<String>,
     /// The seeding object's vintage when this topic seeded; `None` = cold.
-    #[serde(default)]
     pub seeded_vintage: Option<String>,
     pub passes: Vec<PassFindings>,
     /// Set when the topic never ran (budget exhausted before it) — the
     /// fail-soft degraded-input gap.
-    #[serde(default)]
     pub skipped: Option<String>,
 }
 
@@ -521,28 +507,22 @@ pub struct HoldingResearch {
     pub topics: Vec<TopicResearch>,
     /// The once-per-holding disconfirming-fetch pass (after the topics), or
     /// `None` with its gap recorded when the budget was exhausted.
-    #[serde(default)]
     pub disconfirming: Option<PassFindings>,
     pub fetches_spent: u32,
     pub elapsed_secs: u64,
     /// Recorded degraded-input gaps (skipped topics, an unspent disconfirming
     /// pass, dropped claims/seeds).
-    #[serde(default)]
     pub gaps: Vec<String>,
     /// Any search served by the Tavily fallback (degraded mode, for the
     /// audit).
-    #[serde(default)]
     pub tavily_fallback_used: bool,
     /// The seeds fed to this loop (leads, never evidence).
-    #[serde(default)]
     pub seeds: Vec<ResearchSeed>,
     /// Per-topic seeded-vs-cold decisions, logged for the audit record.
-    #[serde(default)]
     pub seed_decisions: Vec<String>,
     /// The fetched pages' extracted text (normalized URL → capped text) — the
     /// Step-6e activation legs' corroboration base (transient run state; the
     /// audit record never carries it).
-    #[serde(default)]
     pub page_texts: std::collections::HashMap<String, String>,
 }
 

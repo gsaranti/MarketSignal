@@ -444,11 +444,11 @@ pub fn analyze_holding(
     // against the prior read (`docs/portfolio-analysis.md` §Starting
     // parameters): the prior audit's anchor bar re-read from this run's fresh
     // series is the exact cumulative re-basis factor since the prior pass.
-    // `Some(1.0)` — the unchanged common case, and every pre-field prior (no
-    // anchor: comparisons run as stored until this run stamps one). `None` — an
-    // anchor exists but its bar is missing from the fresh window: the basis is
-    // unverifiable, so price-denominated prior comparisons are excluded rather
-    // than run cross-basis.
+    // `Some(1.0)` — the unchanged common case, and a prior with no anchor (a
+    // no-price exit's row: comparisons run as stored until this run stamps one).
+    // `None` — an anchor exists but its bar is missing from the fresh window:
+    // the basis is unverifiable, so price-denominated prior comparisons are
+    // excluded rather than run cross-basis.
     let price_bridge: Option<f64> = match &dossier.prior_authoring_close {
         None => Some(1.0),
         Some(anchor) => engine::split_bridge_factor(&dossier.financials.daily_closes, anchor),
@@ -616,7 +616,7 @@ pub fn analyze_holding(
         degraded_inputs: degraded.clone(),
         action_annotations: Vec::new(),
         target_meta,
-        grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
+        grade_parameter_version: engine::GRADE_PARAMETER_VERSION.to_string(),
         ledger_audit,
         quick_basis: None,
         authoring_close: authoring_close.clone(),
@@ -1418,8 +1418,8 @@ pub fn analyze_holding(
         price_targets: engine_output.price_targets.clone(),
         price_target_rationale: interpretation.price_target_rationale,
         options_signal: dossier.options_signal.clone(),
-        risk_tier: Some(engine_output.risk_tier),
-        dead_money: Some(engine_output.hurdle.state),
+        risk_tier: engine_output.risk_tier,
+        dead_money: engine_output.hurdle.state,
         low_confidence_grade: engine_output.low_confidence_grade,
         fund_class_label: engine_output.fund_class_label.clone(),
         structural_flag: engine_output.structural_flag,
@@ -1489,7 +1489,7 @@ pub fn analyze_holding(
             .into_iter()
             .collect(),
         target_meta: Some(engine_output.target_meta.clone()),
-        grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
+        grade_parameter_version: engine::GRADE_PARAMETER_VERSION.to_string(),
         ledger_audit: Some(ledger_audit),
         // An unresolvable pass persists NO quick-check basis: the row's anchor
         // is the carried prior-basis one, and a fresh-basis spot/consensus
@@ -2208,8 +2208,7 @@ pub fn validate_ledger_rewrite_with_research(
     // rewritten driver whose name carries (trimmed, case-insensitive) keeps
     // the prior driver's id — the referential anchor the next run's leading
     // indicator must cite — while a new or renamed driver mints a fresh one
-    // (a changed statement is a different driver; a legacy prior with no id
-    // yields a fresh id the same way).
+    // (a changed statement is a different driver).
     let mut prior_driver_pool: Vec<&KeyDriver> = prior
         .map(|p| p.key_drivers.iter().collect())
         .unwrap_or_default();
@@ -2550,17 +2549,17 @@ fn priced_input_delta(
                 ),
             );
         }
-        if pg.risk_tier != Some(engine_output.risk_tier) {
+        if pg.risk_tier != engine_output.risk_tier {
             push_delta(
                 &mut entries,
                 format!(
                     "risk tier: {} -> {}",
-                    pg.risk_tier.map(|t| t.as_str()).unwrap_or("(absent)"),
+                    pg.risk_tier.as_str(),
                     engine_output.risk_tier.as_str()
                 ),
             );
         }
-        if pg.dead_money != Some(engine_output.hurdle.state) {
+        if pg.dead_money != engine_output.hurdle.state {
             push_delta(
                 &mut entries,
                 format!(
@@ -2583,10 +2582,11 @@ fn priced_input_delta(
         ),
         _ => None,
     };
+    // `boundary` is `None` whenever the stamp is, so this never renders empty.
     let prior_stamp = dossier
         .prior_grade_parameter_version
         .as_deref()
-        .unwrap_or("pre-stamp");
+        .unwrap_or_default();
     match boundary {
         Some(engine::GradeParameterChange::Letters) => push_delta(
             &mut entries,
@@ -4072,14 +4072,8 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 graded.sub_scores.valuation,
                 graded.sub_scores.risk,
                 graded.sub_scores.momentum,
-                graded
-                    .risk_tier
-                    .map(|t| t.as_str())
-                    .unwrap_or("(gap)"),
-                graded
-                    .dead_money
-                    .map(|s| format!("{s:?}").to_lowercase())
-                    .unwrap_or_else(|| "(gap)".to_string()),
+                graded.risk_tier.as_str(),
+                format!("{:?}", graded.dead_money).to_lowercase(),
             ));
             {
                 let mv = &graded.model_view;
@@ -6386,8 +6380,6 @@ mod tests {
                 // The options signal rides on the verdict but never entered the grade.
                 assert!(g.options_signal.put_call_volume.is_some());
                 // The new engine reads persist on the priced branch.
-                assert!(g.risk_tier.is_some());
-                assert!(g.dead_money.is_some());
             }
             other => panic!("expected a priced verdict, got {other:?}"),
         }
@@ -6417,7 +6409,6 @@ mod tests {
                 assert!(g.low_confidence_grade);
                 let tm = g.price_targets.twelve_month.as_ref().unwrap();
                 assert!(tm.methodology.contains("fund exposure composite"));
-                assert!(g.risk_tier.is_some());
                 // The deterministic classification reaches the card-visible verdict.
                 assert_eq!(g.fund_class_label.as_deref(), Some("US equity fund"));
                 assert!(!g.structural_flag);
@@ -8469,10 +8460,9 @@ mod tests {
         // No prior verdict: new holding, no recalibration note.
         assert!(!prompt(&d).contains("recalibrated"), "no prior verdict");
 
-        // Prior verdict from a pre-stamp run (None = the v1 bands): the note fires —
-        // the exact shape of the first post-tune run over run 3b21ae85's book.
+        // Prior verdict stamped across the v2 retune: the note fires.
         d.prior_verdict = Some(prior);
-        d.prior_grade_parameter_version = None;
+        d.prior_grade_parameter_version = Some("grade-v2".into());
         let p = prompt(&d);
         assert!(p.contains("recalibrated"), "{p}");
         assert!(p.contains("what_changed"), "{p}");
@@ -8482,7 +8472,7 @@ mod tests {
         assert!(!prompt(&d).contains("recalibrated"), "same-version prior");
 
         // A prior that was never priced had no letter to move: no note, whatever
-        // its stamp says.
+        // its stamp says — and a prior with no stamp asserts no cause.
         d.prior_verdict = Some(HoldingVerdict {
             symbol: "AAPL".into(),
             asset_class: AssetClass::Stock,
@@ -8503,10 +8493,10 @@ mod tests {
     /// read from the stamp history on the PRIOR record's branch and only over a
     /// priced prior. A stock across v2.1 → v2.2 gets neither NOTE nor delta row
     /// (a citable "letters can move" row would be false evidence for a real
-    /// move); a priced fund gets the re-homing NOTE and row across v2.1, v2, and
-    /// pre-stamp alike (no stamped or unstamped fund-letter change exists); a
-    /// pre-stamp stock gets the recalibration; an unrecognized stamp and a
-    /// never-priced prior get nothing; the branch is the prior's persisted asset
+    /// move); a priced fund gets the re-homing NOTE and row across v2.1 and v2
+    /// alike (no fund-letter change exists since); an unrecognized stamp, a
+    /// missing stamp, and a never-priced prior get nothing; the branch is the
+    /// prior's persisted asset
     /// class, so a fund record without the derived label still reads as a fund;
     /// and a symbol reclassified between runs reads its prior's branch, not the
     /// current dossier's.
@@ -8596,9 +8586,7 @@ mod tests {
         stock.prior_grade_parameter_version = Some("grade-v2".into());
         recalibrated(&stock, "stock across v2 (signed P/E)");
         stock.prior_grade_parameter_version = None;
-        recalibrated(&stock, "stock from a pre-stamp prior");
-        let rows = boundary_rows(&delta(&stock));
-        assert!(rows[0].contains("(pre-stamp -> "), "{rows:?}");
+        silent(&stock, "stock with no stamp (no audit row)");
         stock.prior_grade_parameter_version = Some("grade-v9.9".into());
         silent(&stock, "stock from an unrecognized stamp");
 
@@ -8623,17 +8611,12 @@ mod tests {
         fund.prior_grade_parameter_version = Some("grade-v2".into());
         rehomed(&fund, "fund across v2 (v2.1 never touched funds)");
         fund.prior_grade_parameter_version = None;
-        rehomed(
-            &fund,
-            "fund from a pre-stamp prior (no fund-letter change since)",
-        );
-        let rows = boundary_rows(&delta(&fund));
-        assert!(rows[0].contains("(pre-stamp -> "), "{rows:?}");
+        silent(&fund, "fund with no stamp (no audit row)");
         fund.prior_grade_parameter_version = Some("grade-v9.9".into());
         silent(&fund, "fund from an unrecognized stamp");
 
         // The branch is the prior's persisted asset class — the routing key — so a
-        // fund record without the derived `fund_class_label` (the pre-field shape)
+        // fund record without the derived `fund_class_label` (no label derived)
         // still reads the fund branch.
         let mut unlabeled = fund_prior.clone();
         if let VerdictDisposition::Priced(g) = &mut unlabeled.disposition {
@@ -8671,7 +8654,7 @@ mod tests {
         fund.prior_grade_parameter_version = Some("grade-v2.1".into());
         silent(&fund, "never-priced fund prior");
         fund.prior_grade_parameter_version = None;
-        silent(&fund, "never-priced pre-stamp fund prior");
+        silent(&fund, "never-priced fund prior with no stamp");
     }
 
     #[test]
@@ -11506,20 +11489,4 @@ mod tests {
         assert_eq!(overlay.observations.len(), 4, "history carried, not reset");
     }
 
-    #[test]
-    fn pre_overlay_audit_json_decodes_with_a_none_overlay() {
-        // A HoldingAudit persisted before the field existed decodes with `None`
-        // (the `#[serde(default)]` contract the whole-row carry path relies on).
-        let (_, audit) = analyze_holding(
-            &StubAnalyst,
-            &dossier(AssetClass::Stock, strong_financials()),
-            &rates(),
-            "2026-08-03",
-        )
-        .unwrap();
-        let mut json = serde_json::to_value(&audit).unwrap();
-        json.as_object_mut().unwrap().remove("pre_profit");
-        let back: HoldingAudit = serde_json::from_value(json).unwrap();
-        assert!(back.pre_profit.is_none());
-    }
 }

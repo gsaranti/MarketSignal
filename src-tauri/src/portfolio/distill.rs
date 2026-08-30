@@ -183,7 +183,6 @@ pub struct DistilledResearch {
     pub topic_layer: Vec<TopicDistillate>,
     /// Analyzed or dormant topics the model failed to re-emit — their stored
     /// seed rows are deleted rather than left stale (each is also a gap line).
-    #[serde(default)]
     pub unreconciled_topics: Vec<String>,
     pub forward_assumption: Option<ResearchForwardAssumption>,
     pub leading_indicator: Option<ValidatedLeadingIndicator>,
@@ -215,18 +214,13 @@ pub struct ResearchAuditRecord {
     pub gaps: Vec<String>,
     /// Topics whose stored seed rows the job deleted because the distillation
     /// failed to re-emit them reconciled (mirrored from the distilled layer).
-    #[serde(default)]
     pub unreconciled_topics: Vec<String>,
-    #[serde(default)]
     pub forward_assumption: Option<ResearchForwardAssumption>,
-    #[serde(default)]
     pub leading_indicator: Option<ValidatedLeadingIndicator>,
-    #[serde(default)]
     pub forensic_event: Option<ForensicEventClaim>,
     /// The Step-6e conflict-policy resolution for the forward assumption —
     /// the rule the engine matched, or the failed condition that rejected it
     /// (`docs/portfolio-workflow.md` §Step 6e; every resolution is recorded).
-    #[serde(default)]
     pub forward_assumption_resolution: Option<String>,
 }
 

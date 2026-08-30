@@ -41,18 +41,19 @@ use crate::storage;
 /// marker, which is exactly why the archive stamps one.
 /// v2 (quick-check slice): the `portfolio_quick_checks` store joined the archive —
 /// every new durable local-suite store joins as part of the slice that lands it
-/// (`docs/data-portability.md` §Build-order placement). A v1 archive imports
-/// complete under its own five-entry set (`required_db_entries`).
+/// (`docs/data-portability.md` §Build-order placement). A v1 archive — the
+/// shipped build's format — imports complete under its own five-entry set
+/// (`required_db_entries`).
 /// v3 (outcome-learning slice): the `portfolio_outcome_episodes` store (decision
 /// episodes outliving run retention) and the shared `price_bars` cache joined —
-/// the cache moves so imported pending episodes can mature offline. A v2 archive
-/// imports complete at six entries.
+/// the cache moves so imported pending episodes can mature offline.
 /// v4 (research-loop slice): the web tool's shared stores joined — the
 /// `web_documents` cache (so an imported corpus's research reuse serves repeat
 /// fetches offline) and the `web_source_state` learned extraction layer —
 /// plus Portfolio's `portfolio_research_seeds` per-topic distilled-findings
-/// layer (the research-reuse seeds, surviving run retention). A v3 archive
-/// imports complete at eight entries.
+/// layer (the research-reuse seeds, surviving run retention). The v2 and v3
+/// shapes were pre-release formats no shipped build wrote; import refuses them
+/// outright (`check_format_version`, ruled 2026-08-29).
 pub const FORMAT_VERSION: u32 = 4;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
@@ -96,15 +97,15 @@ const DB_ENTRY_NAMES: [&str; 11] = [
 ];
 
 /// The db entries an archive's own format version requires — the versioned
-/// closed set (`docs/data-portability.md` §Import flow): a v1 archive predates
-/// the quick-check store, so it is complete at five entries, and a v2 one
-/// predates the outcome-learning stores, complete at six; requiring a later
-/// format's entries of an older archive would refuse it as truncated.
+/// closed set (`docs/data-portability.md` §Import flow): a v1 archive — the
+/// shipped build's format — predates the quick-check store, so it is complete
+/// at five entries; requiring the current format's entries of it would refuse
+/// it as truncated. The v2 and v3 shapes were pre-release dev formats no
+/// shipped build wrote and are refused at [`check_format_version`] (ruled
+/// 2026-08-29 — no data compat pre-release).
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
     match format_version {
         v if v >= 4 => &DB_ENTRY_NAMES,
-        3 => &DB_ENTRY_NAMES[..8],
-        2 => &DB_ENTRY_NAMES[..6],
         _ => &DB_ENTRY_NAMES[..5],
     }
 }
@@ -1176,6 +1177,12 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
+    if matches!(manifest.format_version, 2 | 3) {
+        bail!(
+            "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
+            manifest.format_version
+        );
+    }
     Ok(())
 }
 
@@ -2134,7 +2141,7 @@ mod tests {
     }
 
     #[test]
-    fn a_v2_archive_without_the_outcome_entries_imports_complete() {
+    fn a_v2_stamp_is_refused_as_a_pre_release_format() {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
@@ -2162,8 +2169,8 @@ mod tests {
         let err = import_archive(&target, &truncated, None, false).unwrap_err();
         assert!(err.to_string().contains("missing or not listed"), "{err}");
 
-        // …while a v2 archive is complete at six entries — backward
-        // compatibility by version, never sparse tolerance.
+        // …and re-stamping it v2 does not rescue it: v2 was a pre-release
+        // format no shipped build wrote, refused outright (ruled 2026-08-29).
         manifest.format_version = 2;
         entries.insert(
             "manifest.json".to_string(),
@@ -2172,16 +2179,13 @@ mod tests {
         let v2_path = source.db_path.parent().unwrap().join("v2.zip");
         rebuild_zip(&entries, &v2_path);
         let (_c, target) = temp_store();
-        let loaded = import_archive(&target, &v2_path, None, false).unwrap();
-        assert_eq!(loaded.reports, 2);
-        assert_eq!(table_count(&target, "portfolio_outcome_episodes"), 0);
-        assert_eq!(table_count(&target, "price_bars"), 0);
-        // The quick-check store — v2's own addition — still rides.
-        assert_eq!(table_count(&target, "portfolio_quick_checks"), 1);
+        let err = import_archive(&target, &v2_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("pre-release format"), "{err}");
+        assert_eq!(table_count(&target, "reports"), 0, "nothing imported");
     }
 
     #[test]
-    fn a_v3_archive_without_the_web_entries_imports_complete() {
+    fn a_v3_stamp_is_refused_as_a_pre_release_format() {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
@@ -2216,7 +2220,8 @@ mod tests {
         let err = import_archive(&target, &truncated, None, false).unwrap_err();
         assert!(err.to_string().contains("missing or not listed"), "{err}");
 
-        // …while a v3 archive is complete at eight entries.
+        // …and re-stamping it v3 does not rescue it: v3 was a pre-release
+        // format no shipped build wrote, refused outright (ruled 2026-08-29).
         manifest.format_version = 3;
         entries.insert(
             "manifest.json".to_string(),
@@ -2225,13 +2230,9 @@ mod tests {
         let v3_path = source.db_path.parent().unwrap().join("v3.zip");
         rebuild_zip(&entries, &v3_path);
         let (_c, target) = temp_store();
-        let loaded = import_archive(&target, &v3_path, None, false).unwrap();
-        assert_eq!(loaded.reports, 2);
-        assert_eq!(table_count(&target, "web_documents"), 0);
-        assert_eq!(table_count(&target, "web_source_state"), 0);
-        // The v3 additions still ride.
-        assert_eq!(table_count(&target, "portfolio_outcome_episodes"), 1);
-        assert_eq!(table_count(&target, "price_bars"), 1);
+        let err = import_archive(&target, &v3_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("pre-release format"), "{err}");
+        assert_eq!(table_count(&target, "reports"), 0, "nothing imported");
     }
 
     #[test]

@@ -443,7 +443,7 @@ export interface PriceTargets {
 }
 
 // The deterministic per-branch risk tier and the three-state capital-efficiency
-// (dead-money) read — engine-computed, absent on runs persisted before the fields.
+// (dead-money) read — engine-computed on every priced verdict.
 export type RiskTier = "low" | "medium" | "high";
 export type HurdleState = "clears" | "indeterminate" | "fails" | "unscorable";
 
@@ -498,25 +498,24 @@ export interface GradedVerdict {
   // action call from the holding's own evidence plus the investor profile
   // (tunnel vision; the whole-book reconciliation is the future planner's job).
   action: PortfolioAction;
-  // The action call's one-line rationale — empty on runs persisted before the
-  // action call existed.
-  action_rationale?: string;
+  // The action call's one-line rationale.
+  action_rationale: string;
   conviction: PortfolioConviction;
   horizon_outlook: HorizonOutlook;
   price_targets: PriceTargets;
   price_target_rationale: string;
   options_signal: OptionsSignal;
-  // Engine reads added by the fund slice — null/false on pre-field runs.
-  risk_tier: RiskTier | null;
-  dead_money: HurdleState | null;
+  // Engine reads added by the fund slice.
+  risk_tier: RiskTier;
+  dead_money: HurdleState;
   // True when the letter rests on an imputed (neutral-50) sub-score — rendered as
   // the visible low-confidence marker beside the letter (every priced fund, per
   // the fund-grade contract).
   low_confidence_grade: boolean;
   // The fund path's deterministic strategy classification, shown on the card
-  // (docs/portfolio-analysis.md §Asset eligibility) — null for a stock and on
-  // pre-field runs; the structural flag marks an option-overlay fund on the
-  // priced branch (leveraged/inverse routes to role_risk_only instead).
+  // (docs/portfolio-analysis.md §Asset eligibility) — null for a stock; the
+  // structural flag marks an option-overlay fund on the priced branch
+  // (leveraged/inverse routes to role_risk_only instead).
   fund_class_label: string | null;
   structural_flag: boolean;
   financial_summary: string;
@@ -544,8 +543,7 @@ export interface RoleRiskVerdict {
   expense_drag: number | null;
   observable_risk: number | null;
   structural_flag: boolean;
-  // The closed-end structure marker (the CEF leg) — false on rows persisted
-  // before the leg (serde default).
+  // The closed-end structure marker (the CEF leg).
   is_cef: boolean;
   // Price vs NAV (market price ÷ NAV − 1; positive = premium), rendered only on
   // the closed-end form; null is the named gap, carried in evidence_gaps.
@@ -555,8 +553,8 @@ export interface RoleRiskVerdict {
   // the profile — the full ladder open; the engine set stays the reduced
   // {sell-all, trim, hold} as annotated evidence.
   action: PortfolioAction;
-  // The action call's one-line rationale — empty on pre-action-call runs.
-  action_rationale?: string;
+  // The action call's one-line rationale.
+  action_rationale: string;
   what_changed: string;
 }
 
@@ -587,17 +585,16 @@ export interface ThesisLedger {
   branch: "priced" | "role-risk-only";
   original_thesis: string;
   current_thesis: string;
-  // driver_id is the app-assigned stable identity (empty on rows written
-  // before it existed) — display ignores it today; it anchors the research
-  // loop's leading-indicator reference backend-side.
+  // driver_id is the app-assigned stable identity — display ignores it today;
+  // it anchors the research loop's leading-indicator reference backend-side.
   key_drivers: { driver_id: string; name: string; series: string | null }[];
   monitor: MonitorScenario[];
   what_must_improve: string;
   what_must_not_break: string;
   conditions: unknown[];
-  // Spot's relationship to the monitor band at authoring — app-stamped; absent
-  // on pre-stamp ledgers and wherever no band exists (role-risk-only, no spot).
-  authored_band_relation?: "inside" | "below-band" | "above-band" | null;
+  // Spot's relationship to the monitor band at authoring — app-stamped; null
+  // wherever no band exists (role-risk-only, no spot).
+  authored_band_relation: "inside" | "below-band" | "above-band" | null;
 }
 
 // How a verdict's action came to be — the canonical vocabulary from
@@ -612,21 +609,21 @@ export interface HoldingVerdict {
   position_change: PositionChange;
   disposition: VerdictDisposition;
   // The holding's thesis ledger — the card's "why we hold this view" anchor.
-  // Absent on not-rated positions and on runs persisted before the ledger.
-  thesis_ledger?: ThesisLedger | null;
+  // Null on not-rated positions.
+  thesis_ledger: ThesisLedger | null;
   // The analysis vintage (UTC RFC3339) of the full pass that produced this
   // verdict — differs from the run's created_at on a verdict a selective run
-  // carried forward; absent on runs persisted before the field (their vintage
-  // is the run's created_at).
-  analyzed_at?: string | null;
-  // Absent on pre-field runs (reads as model-chosen).
-  action_source?: ActionSource | null;
+  // carried forward. Null on a debut insufficient-evidence exit, which keeps
+  // the vintage of a prior it does not have (its vintage is the run's
+  // created_at).
+  analyzed_at: string | null;
+  action_source: ActionSource;
   // Set on a carried verdict whose position's net side reversed since it was
   // written (docs/portfolio-analysis.md §Triggering) — the carried thesis is for
   // the opposite position, badged so the stale wrong-direction advice is visible.
   // A selective run no longer force-includes on a reversal (ruled 2026-08-16);
-  // absent/false on fresh passes and on runs persisted before the field.
-  side_reversed?: boolean;
+  // false on fresh passes.
+  side_reversed: boolean;
 }
 
 // A position present last run but absent now — surfaced in the roll-up only,
@@ -659,12 +656,12 @@ export interface DataHealth {
   // Run-level enriching-feed gaps (commodity context / CFTC positioning / the
   // CBOE backdrop / FINRA short interest / sector-benchmark series) — counted
   // and named in `summary`, never attention triggers (the feeds are fail-soft
-  // and additive). Absent on runs persisted before the fields existed.
-  commodity_gaps?: number;
-  positioning_gaps?: number;
-  cboe_gap?: boolean;
-  finra_gap?: boolean;
-  benchmark_gaps?: number;
+  // and additive).
+  commodity_gaps: number;
+  positioning_gaps: number;
+  cboe_gap: boolean;
+  finra_gap: boolean;
+  benchmark_gaps: number;
   // Local chat calls under context pressure (the digest-compression covenant's
   // detection leg) — near-full (≥ 90% of num_ctx) or likely front-truncated (a
   // reported count too small to cover the chars actually sent; Ollama's count
@@ -675,9 +672,8 @@ export interface DataHealth {
   peak_prompt: PromptUsage | null;
   // Model calls the bounded retry-once recovered (docs/local-models.md §The
   // local-model adapter seam) — each fired retry's stage and failure class.
-  // Named in `summary` and an attention trigger. Absent on runs persisted
-  // before the field existed.
-  model_retries?: RetryEvent[];
+  // Named in `summary` and an attention trigger.
+  model_retries: RetryEvent[];
   attention: boolean;
   summary: string;
 }
@@ -714,8 +710,7 @@ export interface PortfolioRollUp {
   top_position_weight: number;
   cash_weight: number;
   exited: ExitedPosition[];
-  // Absent on runs persisted before the field existed.
-  data_health?: DataHealth | null;
+  data_health: DataHealth;
   overview: string;
 }
 
@@ -723,7 +718,7 @@ export interface PortfolioRollUp {
 // deterministic scoreboard's unit (docs/portfolio-analysis.md §Outcome learning).
 export interface TargetCalibrationRead {
   window_months: number;
-  parameter_version?: string | null;
+  parameter_version: string | null;
   scored: number;
   coverage_rate: number | null;
   nominal_coverage: number;
@@ -764,15 +759,15 @@ export interface MaturedNote {
 }
 
 // The subset of the run's outcome-learning records the page renders: the
-// model-vs-engine scoreboard reads and the matured lines. Absent on pre-outcome
-// runs; the fuller record (cohorts, lead times, eligibility) stays backend-only.
+// model-vs-engine scoreboard reads and the matured lines; the fuller record
+// (cohorts, lead times, eligibility) stays backend-only.
 export interface OutcomeRecordsView {
   matured: MaturedNote[];
   reads: {
     target_calibration: TargetCalibrationRead[];
-    model_target_calibration?: TargetCalibrationRead[];
-    head_to_head?: HeadToHeadRead[];
-    outlook_direction?: OutlookDirectionRead[];
+    model_target_calibration: TargetCalibrationRead[];
+    head_to_head: HeadToHeadRead[];
+    outlook_direction: OutlookDirectionRead[];
   };
 }
 
@@ -785,9 +780,8 @@ export interface PortfolioRun {
   // The per-holding audit records (sources, metrics, model ids…) — persisted
   // for traceability; not rendered by the Portfolio page in this slice.
   audit: unknown[];
-  // This run's outcome-learning records (scoreboard subset) — absent on runs
-  // persisted before the outcome slice.
-  outcome?: OutcomeRecordsView | null;
+  // This run's outcome-learning records (scoreboard subset).
+  outcome: OutcomeRecordsView;
 }
 
 // --- Portfolio quick check ---------------------------------------------------

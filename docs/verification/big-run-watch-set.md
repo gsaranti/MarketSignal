@@ -6,7 +6,10 @@ It is forward-looking, unlike the dated records beside it — those are written 
 Findings go into a dated record once the run completes; this file is then the index of what that record has to answer.
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
-Records this run persists stamp `portfolio-v22`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, ledger-basis vocabulary, IV-skew convention, observation-excerpt, guidance-vintage, action-target, model-arm-domain, finite-record (Codex I7 / I9 / I16), and prompt-render / period-word-guard (Codex I8 / I10 / I12 / I19) slices all landed since the 2026-08-18 revision with no live run between.
+Records this run persists stamp `portfolio-v22`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, ledger-basis vocabulary, IV-skew convention, observation-excerpt, guidance-vintage, action-target, model-arm-domain, finite-record (Codex I7 / I9 / I16), and prompt-render / period-word-guard (Codex I8 / I10 / I12 / I19) slices all landed since the 2026-08-18 revision with no live run between, and the fresh-start-2 compat cut landed with no stamp.
+The dev store is wiped before this run (ruled 2026-08-29), so every holding is a debut: no prior verdict exists, and nothing that reads against one — the retrospective, the input delta, the ledger evaluation and its crossings, the what-changed audit, the parameter-boundary NOTE, the statement-basis and equity-source gates, episode extension — can fire on run 1.
+The quick check is the exception: it runs between runs against run 1's own persisted comparators, so its first sweep is a run-1 watch (the oracle under §Thesis ledger and the quick check).
+The items below that read against a prior are therefore run-2 watches, and a second run follows only on the user's decision after run 1's result.
 Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime), the sub-distillation-cap watch (§The research loop), and the one-month cap-saturation watch (§Grade, valuation and targets).
 Revised again 2026-08-27 with the technology-event pre-flag watch (§Thesis ledger and the quick check).
 
@@ -30,7 +33,7 @@ Target provenance rendering against the sell-all cascade.
 Every priced interpretation carries the `TargetMeta` derivation flags — rate-anchored vs current-multiple carry, flat or clamp-flattened driver, dispersion floor — and a floor-widened band inherits its base's signal quality.
 
 The parameter-boundary continuity NOTE and its what-changed attribution.
-Attempt 2's priors are stamped `grade-v2.1`, so a stock carries no NOTE and no boundary row, and a priced fund carries the momentum re-homing row — read each fund's momentum delta against it, and any stock row citing a recalibration is a defect.
+No prior exists on run 1, so no holding carries a NOTE or a boundary row, and any row citing a recalibration or a re-homing is a defect; on run 2 every prior is stamped `grade-v2.2`, the current stamp, so the same holds there.
 
 The one-month band's cap saturation under `targets-v5`.
 With the band √t-scaled to the month, the 15% cap binds from a daily σ of ~1.64% (~26% annualized), so the run measures the share of priced names pinned at the cap.
@@ -60,7 +63,7 @@ The ThesisAnchor render on the Portfolio card: the three-line clamp and its reve
 No component spec pins the overflow/reveal behavior, so this is the first read of it at scale — a thesis that never overflows and one that clamps both need to appear.
 
 The debut-gap self-resolution.
-The rate-anchor and pre-basis fund families read `unknown` until this run re-persists them.
+Run 1 persists every quick-check basis and fund comparator fresh (a debut resolves its price bridge at exactly 1.0), so the first sweep after it reads them all; a family reading `unknown` there is a genuinely withheld or missing input — an unresolvable price basis, a failed leg — never an expected state.
 
 Priced-fund ledger flag rates, now that authoring and evaluation share the 180-day window.
 
@@ -72,7 +75,6 @@ The first live selective run — the selection UI, the in-run tail sweep, and ca
 
 The transition-only `PriceOutsideBand` flag's live behavior: leave, re-enter and side-cross flag rates against the stamped authoring relation.
 The authoring-time-outside design question was settled in code — a standing outside state no longer flags.
-Pre-sweep ledgers carry no stamp and read authored-inside until re-analyzed, so early rates will understate.
 
 ## The research loop
 
@@ -125,7 +127,7 @@ The settled response to pressure is to compress digests, never to raise `num_ctx
 The first two-arm vintage: the retrospective and model-arm brief's prompt fit under the same instrumentation, feasibility-annotation rates, model-vs-engine divergence rates, and the paired two-arm card render at 47-position scale.
 
 The narrative-vs-reality comparator debut.
-No prior run has persisted the audit-basis comparator, so every holding should carry no pace read this run — a missing comparator must record as a debut or typed unreadable-pace reason, never a fabricated neutral — and the run must persist the comparator the next run's read needs.
+No prior run exists, so every holding carries no pace read on run 1 — a missing comparator must record as a debut reason, never a fabricated neutral — and run 1 must persist the comparator run 2's read needs.
 
 ## Listing and identity shapes
 
@@ -179,4 +181,4 @@ Read `data-health` early.
 It carries the deep-price fetch health, the context-pressure and truncation flags, the fired-retry events, and the run-level roll-up with its attention state — several items above resolve off that one surface before the per-holding cards are worth reading.
 
 One expected absence: Step-6a semantic recall retrieves nothing this run.
-The per-holding summary partition holds no rows until this run persists them, retrieval going live from the second run — an empty recall is design, not a defect.
+The per-holding summary partition holds no rows until this run persists them, retrieval going live only on a later run — an empty recall is design, not a defect.

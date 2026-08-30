@@ -240,17 +240,14 @@ pub struct FalsifierEvent {
     /// recorded onto the latest matured episode as context for the next episode,
     /// feeding no lead-time read (that read is bounded to the matured episode's own
     /// window).
-    #[serde(default)]
     pub post_maturity: bool,
     /// Signed trading-day distance from `confirmed_at` to the first within-window
     /// close below the recorded twelve-month bear-case line: positive = the
     /// falsifier confirmed before the breach, zero = same session, negative = the
     /// line had already broken. Stamped when the 12-month window matures.
-    #[serde(default)]
     pub lead_time_trading_days: Option<i64>,
     /// Explicit `no-material-drawdown`: no within-window close below the bear line
     /// by maturity.
-    #[serde(default)]
     pub no_material_drawdown: Option<bool>,
 }
 
@@ -263,24 +260,22 @@ pub struct CalibrationSnapshot {
     pub sub_scores: SubScores,
     pub grade: Grade,
     pub conviction: Conviction,
-    pub risk_tier: Option<RiskTier>,
+    pub risk_tier: RiskTier,
     /// The scenario bands and base-case targets (price targets — target
     /// calibration scores these against the price-only label).
     pub price_targets: PriceTargets,
-    pub dead_money: Option<HurdleState>,
+    pub dead_money: HurdleState,
     /// The full hurdle read (scenario total-return distribution + the tier-scaled
-    /// hurdle rate) where the audit carried it; `None` on pre-field audits.
+    /// hurdle rate) the audit carried.
     pub hurdle: Option<HurdleRead>,
     /// The run-level DGS2 print the hurdle was anchored on.
     pub dgs2: Option<f64>,
     /// The authoring-time spot the targets were computed from (the quick-check
-    /// basis's print). Target calibration scores bands **in return space over
-    /// this spot**: the authored band is an absolute price in the authoring-time
-    /// basis, while label-time closes are retroactively split-adjusted, so a
-    /// price-space comparison would shear across a split. `None` (pre-field, or
-    /// no basis persisted) excludes the episode from band scoring rather than
-    /// comparing across bases.
-    #[serde(default)]
+    /// basis's print). Target calibration scores bands **in return space over this
+    /// spot**: the authored band is an absolute price in the authoring-time basis,
+    /// while label-time closes are retroactively split-adjusted, so a price-space
+    /// comparison would shear across a split. `None` (no basis persisted) excludes
+    /// the episode from band scoring rather than comparing across bases.
     pub authoring_spot: Option<f64>,
     /// Cap signals in force at the decision (the pre-profit overlay's matched
     /// rules; empty when none).
@@ -377,7 +372,6 @@ pub struct ScoredLabel {
     /// proximate bar at or before that session — those labels are excluded from
     /// band scoring (the residual error of the bridge is intraday
     /// quote-vs-close, never a split or a gap).
-    #[serde(default)]
     pub anchor_close: Option<f64>,
     /// Price-only forward return — the cross-entry common basis.
     pub price_return: f64,
@@ -385,17 +379,14 @@ pub struct ScoredLabel {
     /// the anchor price. `None` = the label-time dividends re-pull failed — the
     /// labeled price-only fallback, with the gap recorded.
     pub total_return: Option<f64>,
-    #[serde(default)]
     pub total_return_gap: Option<String>,
     /// Maximum drawdown over the window's closes (≤ 0).
     pub max_drawdown: f64,
     /// Price-only return spread vs the market benchmark (both sides price-only).
     pub vs_market: Option<f64>,
-    #[serde(default)]
     pub market_leg_gap: Option<String>,
     /// Price-only return spread vs the entry-stamped sector benchmark.
     pub vs_sector: Option<f64>,
-    #[serde(default)]
     pub sector_leg_gap: Option<String>,
     /// The run date the label recorded on.
     pub labeled_at: String,
@@ -429,18 +420,14 @@ pub struct DecisionEpisode {
     pub observations: Vec<EpisodeObservation>,
     /// Tagged once, by the first run after the anchor, from its deterministic
     /// holdings diff.
-    #[serde(default)]
     pub alignment: Option<ObservedNetAlignment>,
-    #[serde(default)]
     pub falsifier_events: Vec<FalsifierEvent>,
     pub labels: Vec<WindowLabel>,
     pub state: EpisodeState,
-    /// The validated self-corrections accumulated on this episode — seeded from
-    /// the opening run's what-changed audit and extended by later fresh passes
+    /// The validated self-corrections accumulated on this episode — seeded from the
+    /// opening run's what-changed audit and extended by later fresh passes
     /// (`docs/portfolio-analysis.md §Outcome learning`; the 6g attribution
-    /// validator labels them, downgrades included). Zero on episodes persisted
-    /// before the validator landed (`#[serde(default)]`).
-    #[serde(default)]
+    /// validator labels them, downgrades included).
     pub self_correction_count: u32,
 }
 
@@ -567,8 +554,7 @@ pub struct CohortWindowRead {
 pub struct TargetCalibrationRead {
     pub window_months: u32,
     /// The target-function parameter version this read aggregates (`None` groups
-    /// pre-version episodes).
-    #[serde(default)]
+    /// episodes whose snapshot carries none).
     pub parameter_version: Option<String>,
     /// Bands scored (vintage-fresh episodes whose window scored and whose snapshot
     /// carried the matching band plus the authoring spot).
@@ -638,7 +624,7 @@ pub struct FalsifierLeadTimeRead {
 /// The per-holding self-correction accumulation — the cumulative calibration
 /// signal over the counts the 6g attribution validator labels
 /// (`docs/portfolio-analysis.md §Outcome learning`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SelfCorrectionRead {
     pub total: u32,
     /// Holdings with a non-zero count, `(symbol, count)`.
@@ -648,7 +634,7 @@ pub struct SelfCorrectionRead {
 /// The proposal eligibility record — the typed below-bar note
 /// (`docs/portfolio-analysis.md §Outcome learning`: no proposal below the bar; the
 /// proposal statistics themselves ride a later slice once matured data exists).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EligibilityRecord {
     /// Unique holdings with at least one **scored** matured window.
     pub unique_matured_holdings: usize,
@@ -661,25 +647,19 @@ pub struct EligibilityRecord {
 /// computed over the updated episode set: cohort return-spreads, both arms'
 /// target-band calibration and their head-to-head, outlook-direction hit-rates,
 /// falsifier lead-times, self-correction, and proposal eligibility.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DerivedReads {
     pub cohorts: Vec<CohortWindowRead>,
     pub target_calibration: Vec<TargetCalibrationRead>,
     /// The model arm's band calibration — same scorer and exclusion rules as
     /// `target_calibration`, over the episodes' frozen model bands (empty until
     /// episodes mature); each arm's read covers that arm's own full band
-    /// population. `#[serde(default)]` so a run persisted before the field
-    /// existed still decodes.
-    #[serde(default)]
+    /// population.
     pub model_target_calibration: Vec<TargetCalibrationRead>,
-    /// The paired model-vs-engine head-to-head ([`HeadToHeadRead`]) — the ONLY
-    /// read the arms are compared on. `#[serde(default)]` so a run persisted
-    /// before the field existed still decodes.
-    #[serde(default)]
+    /// The paired model-vs-engine head-to-head ([`HeadToHeadRead`]) — the ONLY read
+    /// the arms are compared on.
     pub head_to_head: Vec<HeadToHeadRead>,
-    /// Both arms' outlook direction hit-rates. `#[serde(default)]` so a run
-    /// persisted before the field existed still decodes.
-    #[serde(default)]
+    /// Both arms' outlook direction hit-rates.
     pub outlook_direction: Vec<OutlookDirectionRead>,
     pub falsifier_lead_times: Vec<FalsifierLeadTimeRead>,
     pub self_correction: SelfCorrectionRead,
@@ -687,9 +667,8 @@ pub struct DerivedReads {
 }
 
 /// This run's outcome-learning records, persisted with the run
-/// (`docs/portfolio-workflow.md §Step 7a, §Step 8`). `#[serde(default)]` on the run
-/// field keeps pre-outcome runs decodable.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// (`docs/portfolio-workflow.md §Step 7a, §Step 8`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutcomeRecords {
     pub opened: Vec<OpenedEpisodeNote>,
     /// Symbols whose active episode this run extended (re-affirmed / carried /
@@ -1066,8 +1045,8 @@ pub fn mature_labels(
         // closes are retroactively split-adjusted, and both bridge legs share the
         // authoring instant — anchoring on the next-session entry instead would
         // inject its overnight gap into the line (an upward gap fabricates a
-        // breach, a downward one hides it). No spot or no bridge bar (pre-field
-        // episodes, a start-uncovered series, an uncovered intrinsic session)
+        // breach, a downward one hides it). No spot or no bridge bar (no authoring
+        // spot persisted, a start-uncovered series, an uncovered intrinsic session)
         // leaves the events unstamped, excluded from the read — never a
         // cross-basis comparison.
         let bear_line_12m = match &ep.body {
@@ -1730,7 +1709,7 @@ pub struct PlanSummary {
 /// Append-or-extend this run's decision episodes in place
 /// (`docs/portfolio-workflow.md §Step 8`): open on an observable
 /// recommendation-state change — including the never-seeded debut of a symbol
-/// with no episode at all (the upgrade seam) — extend the **latest** active
+/// with no episode at all (the unseeded seam) — extend the **latest** active
 /// episode on a re-affirmation / carry / abstention, record nothing
 /// post-maturity, and attach this run's confirmed falsifier crossings to the
 /// latest active episode (the latest matured episode, typed post-maturity, when
@@ -1774,12 +1753,13 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
         let mut decision =
             episode_decision(prior_v, verdict, is_fresh, standing, thesis_changed);
         // Two seeding seams convert an `Extend` into the debut open
-        // ([`OpenReason::Debut`]); an abstention still never opens. **Upgrade**: a
-        // prior run that predates the episode machinery yields `Extend` for a
-        // stable holding, but a symbol with no episode at all was never seeded —
-        // not a post-maturity re-affirmation, which leaves matured history
-        // behind. **Recovery**: a symbol whose active episode row was unreadable
-        // and unsuperseded re-seeds unconditionally — `lost_active` membership
+        // ([`OpenReason::Debut`]); an abstention still never opens. **Unseeded**:
+        // a stable holding yields `Extend`, but a symbol with no readable episode
+        // at all — none ever opened for it, or its matured history pruned — was
+        // never seeded and opens its debut; a symbol whose matured episode still
+        // reads is a post-maturity re-affirmation and is left behind.
+        // **Recovery**: a symbol whose active episode row was unreadable and
+        // unsuperseded re-seeds unconditionally — `lost_active` membership
         // already means nothing readable is newer than the corrupt row, so any
         // readable active episode is an older predecessor whose forecast stopped
         // accruing when the lost successor opened; extending it would graft the
@@ -1889,7 +1869,7 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                                 )
                                 .collect(),
                             grade_parameter_version: audit
-                                .and_then(|a| a.grade_parameter_version.clone()),
+                                .map(|a| a.grade_parameter_version.clone()),
                             target_parameter_version: audit
                                 .and_then(|a| a.target_meta.as_ref())
                                 .map(|t| t.parameter_version.clone()),
@@ -2658,8 +2638,8 @@ mod tests {
                 implied_volatility: None,
                 iv_skew: None,
             },
-            risk_tier: Some(RiskTier::Medium),
-            dead_money: Some(HurdleState::Indeterminate),
+            risk_tier: RiskTier::Medium,
+            dead_money: HurdleState::Indeterminate,
             low_confidence_grade: false,
             fund_class_label: None,
             structural_flag: false,
@@ -2783,7 +2763,7 @@ mod tests {
             degraded_inputs: vec![],
             action_annotations: vec![],
             target_meta: None,
-            grade_parameter_version: None,
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
             ledger_audit: None,
             quick_basis: None,
             authoring_close: None,
@@ -3035,11 +3015,11 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_outcome_prior_run_seeds_a_debut_episode() {
-        // The upgrade seam: the prior run predates the episode machinery, so the
-        // store is empty while a prior verdict exists. An unchanged
-        // recommendation must still seed the symbol's debut episode — otherwise
-        // stable holdings stay outside outcome learning until their
+    fn an_unseeded_symbol_with_a_prior_verdict_seeds_a_debut_episode() {
+        // The unseeded seam: the store holds no episode for the symbol (none ever
+        // opened, or its matured history pruned) while a prior verdict exists. An
+        // unchanged recommendation must still seed the symbol's debut episode —
+        // otherwise stable holdings stay outside outcome learning until their
         // recommendation happens to change.
         let c1 = "2026-08-04T12:00:00+00:00";
         let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
@@ -3193,7 +3173,7 @@ mod tests {
             degraded_inputs: vec![],
             action_annotations: vec![],
             target_meta: None,
-            grade_parameter_version: None,
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
             ledger_audit: Some(crate::portfolio::LedgerAudit {
                 crossings: vec![crate::portfolio::ConditionCrossing {
                     condition_id: "c-1".into(),
@@ -3263,7 +3243,7 @@ mod tests {
             degraded_inputs: vec![],
             action_annotations: vec![],
             target_meta: None,
-            grade_parameter_version: None,
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
             ledger_audit: Some(crate::portfolio::LedgerAudit {
                 crossings: vec![crate::portfolio::ConditionCrossing {
                     condition_id: "c-1".into(),
@@ -3319,7 +3299,7 @@ mod tests {
             degraded_inputs: vec![],
             action_annotations: vec![],
             target_meta: None,
-            grade_parameter_version: None,
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
             ledger_audit: Some(crate::portfolio::LedgerAudit {
                 crossings: vec![crate::portfolio::ConditionCrossing {
                     condition_id: "c-1".into(),
@@ -3383,7 +3363,7 @@ mod tests {
             degraded_inputs: vec![],
             action_annotations: vec![],
             target_meta: None,
-            grade_parameter_version: None,
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
             ledger_audit: Some(crate::portfolio::LedgerAudit {
                 crossings: vec![crate::portfolio::ConditionCrossing {
                     condition_id: "c-1".into(),
@@ -3481,7 +3461,7 @@ mod tests {
             degraded_inputs: vec![],
             action_annotations: vec![],
             target_meta: None,
-            grade_parameter_version: None,
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
             ledger_audit: Some(crate::portfolio::LedgerAudit {
                 crossings: vec![crate::portfolio::ConditionCrossing {
                     condition_id: "c-1".into(),
@@ -3798,7 +3778,7 @@ mod tests {
                     },
                     grade: Grade::B,
                     conviction: Conviction::Medium,
-                    risk_tier: Some(RiskTier::Medium),
+                    risk_tier: RiskTier::Medium,
                     price_targets: PriceTargets {
                         one_month: Some(crate::portfolio::PriceTarget {
                             base: 105.0,
@@ -3813,7 +3793,7 @@ mod tests {
                             methodology: "test".into(),
                         }),
                     },
-                    dead_money: Some(HurdleState::Indeterminate),
+                    dead_money: HurdleState::Indeterminate,
                     hurdle: None,
                     dgs2: Some(0.04),
                     authoring_spot: Some(100.0),
@@ -4205,8 +4185,11 @@ mod tests {
         // The anchor sits 430 days back: the 1-month window is past the
         // 91-day grace, the 12-month window (65 days matured) inside it.
         let conn = mem_conn();
-        let anchor = (chrono::Utc::now() - chrono::Duration::days(430)).date_naive();
         let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
+        // The episode dates its anchor by ET session (`old_episode`), so the
+        // tiny-bar window keys on the same session — a UTC date would sit one
+        // day ahead of it between 20:00 and 24:00 ET.
+        let anchor = crate::market_clock::et_date_of(&anchor_at).unwrap();
         let mut episodes = vec![old_episode("AAPL", &anchor_at)];
         let source = TinyEntry {
             symbol: "AAPL",
@@ -4244,8 +4227,11 @@ mod tests {
         // can overflow; the spread reads absent WITH its gap naming why —
         // never an inf serde writes as `null` beside no gap.
         let conn = mem_conn();
-        let anchor = (chrono::Utc::now() - chrono::Duration::days(430)).date_naive();
         let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
+        // The episode dates its anchor by ET session (`old_episode`), so the
+        // tiny-bar window keys on the same session — a UTC date would sit one
+        // day ahead of it between 20:00 and 24:00 ET.
+        let anchor = crate::market_clock::et_date_of(&anchor_at).unwrap();
         let mut episodes = vec![old_episode("AAPL", &anchor_at)];
         let source = TinyEntry {
             symbol: MARKET_BENCHMARK,

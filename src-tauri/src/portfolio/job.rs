@@ -2239,14 +2239,14 @@ fn run_analysis(
         audit: audits,
         // The persisted rate cache the engine-only quick paths' fail-soft reads
         // (`docs/portfolio-analysis.md` §The quick check).
-        rate_prints: Some(crate::portfolio::RatePrints {
+        rate_prints: crate::portfolio::RatePrints {
             dgs2: rates.dgs2,
             dgs10: rates.dgs10,
             dgs2_as_of: rates.dgs2_date.clone(),
             dgs10_as_of: rates.dgs10_date.clone(),
             fetched_at: created_at.clone(),
-        }),
-        outcome: Some(outcome_records),
+        },
+        outcome: outcome_records,
     };
 
     ctx.step_started("persist", "Persist run");
@@ -2268,7 +2268,8 @@ fn run_analysis(
     // Matured reads embed as durable learnings in the Portfolio memory partition —
     // best-effort: a failed or invalid embedding costs the memory row (logged),
     // never the persisted run (`docs/portfolio-analysis.md` §Outcome learning).
-    if let (Some(sources), Some(records)) = (outcome_sources, run.outcome.as_ref()) {
+    if let Some(sources) = outcome_sources {
+        let records = &run.outcome;
         if let Some(embedder) = sources.embedder {
             if let Some(text) = crate::portfolio::outcome::matured_learning_text(records, &run_date)
             {
@@ -2397,7 +2398,7 @@ fn run_analysis(
                 // The retained states predate this run, so their rate cache must not
                 // shadow the fresher prints this run just fetched — the next sweep's
                 // fail-soft prefers the prior state's cache over the run blob's.
-                rate_cache: run.rate_prints.clone(),
+                rate_cache: Some(run.rate_prints.clone()),
                 holdings: retained_holdings,
             };
             store::save_quick_check(conn, &state)?;
@@ -2527,7 +2528,7 @@ fn build_roll_up(
         top_position_weight,
         cash_weight,
         exited: exited.to_vec(),
-        data_health: Some(build_data_health(
+        data_health: build_data_health(
             audits,
             deep_history_failures,
             dgs10_history_gap,
@@ -2535,7 +2536,7 @@ fn build_roll_up(
             feed_gaps,
             prompt_usage,
             model_retries,
-        )),
+        ),
         overview: format!(
             "{graded} graded{role_note}, {not_rated} not rated, {insufficient} \
              insufficient-evidence; top position {:.0}% of the account, cash {:.0}%.{exited_note}",
@@ -3678,7 +3679,7 @@ mod tests {
 
         // The data-health aggregate rides the roll-up: a clean run reads
         // rate-anchored with no deep-history degradation and no attention flag.
-        let dh = run.roll_up.data_health.as_ref().expect("data health on the roll-up");
+        let dh = &run.roll_up.data_health;
         assert_eq!(dh.targets_total, 1);
         assert_eq!(dh.rate_anchored_count, 1);
         assert_eq!(dh.deep_history_failures, 0);
@@ -3724,7 +3725,7 @@ mod tests {
             PortfolioJobOutcome::Successful(run) => *run,
             other => panic!("expected success, got {other:?}"),
         };
-        let dh = run.roll_up.data_health.as_ref().unwrap();
+        let dh = &run.roll_up.data_health;
         assert_eq!(dh.deep_history_failures, 1);
         assert_eq!(dh.current_multiple_carry_count, 1, "{}", dh.summary);
         assert!(dh.attention, "{}", dh.summary);
@@ -3847,7 +3848,7 @@ mod tests {
         );
         // The run-level degradation also aggregates into the data-health read — the
         // "degraded run that looks clean" gap the first live run exposed.
-        let dh = run.roll_up.data_health.as_ref().expect("data health on the roll-up");
+        let dh = &run.roll_up.data_health;
         assert!(dh.dgs10_history_gap);
         assert!(dh.attention, "{}", dh.summary);
         assert!(dh.summary.contains("DGS10 anchor history failed run-wide"), "{}", dh.summary);
@@ -4669,7 +4670,7 @@ mod tests {
         );
         // The retained sweep predates the run: its rate cache follows the run's
         // fresher prints so a later FRED failure never falls back past them.
-        assert_eq!(retained.rate_cache, second.rate_prints);
+        assert_eq!(retained.rate_cache, Some(second.rate_prints));
     }
 
     #[test]
@@ -5172,11 +5173,7 @@ mod tests {
         // the read the big-run prompt-fit and fired-retry watches consume: the
         // retries list pre-crash AAPL then post-resume MSFT, the peak is AAPL's
         // pre-crash 120 k fill over MSFT's 60 k, and AAPL's pressure row survives.
-        let dh = run
-            .roll_up
-            .data_health
-            .as_ref()
-            .expect("the data-health aggregate persists");
+        let dh = &run.roll_up.data_health;
         let retry_stages: Vec<&str> = dh.model_retries.iter().map(|r| r.stage.as_str()).collect();
         assert_eq!(retry_stages, ["interpret AAPL", "interpret MSFT"], "{retry_stages:?}");
         let peak = dh.peak_prompt.as_ref().expect("a peak is recorded");
@@ -5281,23 +5278,6 @@ mod tests {
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("pre-profit"), "{err}");
 
-        // A trail persisted before the stamp existed deserializes as the
-        // presence floor and is refused with the same reason — never dropped
-        // as an unreadable header (Codex I1, round 2).
-        let mut json = serde_json::to_value(&cp.header).unwrap();
-        json.as_object_mut()
-            .unwrap()
-            .remove("evidence_floor_version")
-            .expect("the current producer writes the field");
-        let v1: store::CheckpointHeader = serde_json::from_value(json).unwrap();
-        assert_eq!(v1.evidence_floor_version, "evidence-floor-v1");
-        let legacy = store::Checkpoint {
-            header: v1,
-            ..cp.clone()
-        };
-        let err = resume_eligibility(&conn, &legacy, &ids, chrono::Utc::now()).unwrap_err();
-        assert!(err.contains("evidence-floor"), "{err}");
-
         // A checkpoint-format drift refuses too: the trail's rows were written
         // under another shape, and the gate refuses with its reason rather than
         // loud-skipping every row and offering a resume that restores nothing
@@ -5306,29 +5286,16 @@ mod tests {
         drifted.header.checkpoint_format_version = "checkpoint-v1".into();
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("checkpoint format"), "{err}");
-
-        // A trail persisted before the format stamp existed decodes as
-        // `checkpoint-v1` and is refused with the same reason.
-        let mut json = serde_json::to_value(&cp.header).unwrap();
-        json.as_object_mut()
-            .unwrap()
-            .remove("checkpoint_format_version")
-            .expect("the current producer writes the field");
-        let pre_stamp: store::CheckpointHeader = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(pre_stamp.checkpoint_format_version, "checkpoint-v1");
-        let legacy = store::Checkpoint {
-            header: pre_stamp,
-            ..cp.clone()
-        };
-        let err = resume_eligibility(&conn, &legacy, &ids, chrono::Utc::now()).unwrap_err();
-        assert!(err.contains("checkpoint format"), "{err}");
-        // Through the real loader (Codex I18, round 1): the stripped header
-        // written back to the trail loads as `checkpoint-v1` with its rows
-        // unread — AAPL's row still decodes and is still not restored — and
-        // the gate refuses it with the format reason.
+        // Through the real loader (Codex I18, round 1): a header under another
+        // format written to the trail loads with its rows unread — AAPL's row
+        // still decodes and is still not restored — and the gate refuses it
+        // with the format reason.
         conn.execute(
             "UPDATE portfolio_checkpoints SET header_json = ?1 WHERE run_id = ?2",
-            rusqlite::params![serde_json::to_string(&json).unwrap(), cp.header.run_id],
+            rusqlite::params![
+                serde_json::to_string(&drifted.header).unwrap(),
+                cp.header.run_id
+            ],
         )
         .unwrap();
         let loaded = store::load_checkpoint(&conn).unwrap().expect("the header still loads");
@@ -5406,7 +5373,7 @@ mod tests {
             other => panic!("expected a successful resume, got {other:?}"),
         };
         assert_eq!(run.verdicts.len(), 3, "restored GOOG + re-analyzed AAPL and MSFT");
-        let dh = run.roll_up.data_health.as_ref().expect("data health persists");
+        let dh = &run.roll_up.data_health;
         assert_eq!(
             dh.deep_history_failures, 3,
             "three holdings, each degraded once — never AAPL twice: {}",
@@ -5505,7 +5472,7 @@ mod tests {
             other => panic!("expected a successful resume, got {other:?}"),
         };
         assert_eq!(run.verdicts.len(), 2, "restored AAPL + resumed MSFT");
-        let dh = run.roll_up.data_health.as_ref().expect("data health persists");
+        let dh = &run.roll_up.data_health;
         assert_eq!(
             dh.benchmark_gaps, 1,
             "one benchmark, read unavailable by both halves — never twice: {}",
@@ -5643,7 +5610,7 @@ mod tests {
         let (_dir, paths) = paths();
         // Run 1: both stocks debut an episode; nothing is due to mature.
         let first = full_run(&paths, two_stocks());
-        let records = first.outcome.as_ref().expect("outcome records on the run");
+        let records = &first.outcome;
         assert_eq!(records.opened.len(), 2);
         assert!(records
             .opened
@@ -5665,7 +5632,7 @@ mod tests {
         // state is unchanged, so both episodes extend (no new anchor) and this
         // run's diff tags them.
         let second = full_run(&paths, two_stocks());
-        let records = second.outcome.as_ref().unwrap();
+        let records = &second.outcome;
         assert!(records.opened.is_empty(), "a re-affirmation never mints an episode");
         assert_eq!(records.extended.len(), 2);
         assert_eq!(records.alignment_tags.len(), 2);
@@ -5739,7 +5706,7 @@ mod tests {
             PortfolioJobOutcome::Successful(run) => *run,
             other => panic!("expected success, got {other:?}"),
         };
-        let records = run.outcome.as_ref().unwrap();
+        let records = &run.outcome;
         assert_eq!(
             records
                 .matured

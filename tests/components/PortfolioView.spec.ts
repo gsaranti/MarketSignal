@@ -65,6 +65,7 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     },
     risk_tier: "medium",
     dead_money: "indeterminate",
+    action_rationale: "Hold — the thesis is intact.",
     low_confidence_grade: false,
     fund_class_label: null,
     structural_flag: false,
@@ -188,8 +189,37 @@ const run: PortfolioRun = {
       },
     ],
     overview: "Two graded holdings; one exit acknowledged.",
+    data_health: {
+      targets_total: 1,
+      rate_anchored_count: 1,
+      raw_percentile_count: 0,
+      current_multiple_carry_count: 0,
+      dispersion_floor_count: 0,
+      deep_history_failures: 0,
+      dgs10_history_gap: false,
+      house_view_omitted: false,
+      commodity_gaps: 0,
+      positioning_gaps: 0,
+      cboe_gap: false,
+      finra_gap: false,
+      benchmark_gaps: 0,
+      context_pressure: [],
+      peak_prompt: null,
+      model_retries: [],
+      attention: false,
+      summary: "Data health: clean.",
+    },
   },
   audit: [],
+  outcome: {
+    matured: [],
+    reads: {
+      target_calibration: [],
+      model_target_calibration: [],
+      head_to_head: [],
+      outlook_direction: [],
+    },
+  },
   // The persist-seam marker the backend ships (always concrete on the wire).
 };
 
@@ -440,6 +470,7 @@ describe("PortfolioView setup tile and thesis monitor", () => {
             nav_premium: null,
             evidence_gaps: [],
             action: "hold",
+            action_rationale: "Hold — the sleeve does its job.",
             what_changed: "new holding",
           },
           {
@@ -690,6 +721,7 @@ describe("PortfolioView verdict cards", () => {
             nav_premium: null,
             evidence_gaps: ["no on-plan duration/credit surface"],
             action: "hold",
+            action_rationale: "Hold — the sleeve does its job.",
             what_changed: "new holding",
           },
           { asset_class: "etf" }
@@ -744,6 +776,7 @@ describe("PortfolioView verdict cards", () => {
             nav_premium,
             evidence_gaps: [],
             action: "hold",
+            action_rationale: "Hold — the sleeve does its job.",
             what_changed: "new holding",
           },
           { asset_class: "etf" }
@@ -1475,6 +1508,7 @@ describe("PortfolioView selective re-analysis", () => {
             nav_premium: null,
             evidence_gaps: [],
             action: "hold",
+            action_rationale: "Hold — the sleeve does its job.",
             what_changed: "carried",
           },
           {
@@ -1506,12 +1540,36 @@ describe("PortfolioView per-holding action", () => {
       }),
       verdict("AAPL", {
         status: "priced",
-        ...graded({ action: "hold" }),
+        ...graded({
+          action: "hold",
+          action_rationale: "Thesis intact; nothing to act on.",
+        }),
       }),
+      verdict(
+        "BND",
+        {
+          status: "role-risk-only",
+          class_label: "bond fund",
+          role_summary: "Core fixed-income sleeve.",
+          exposure_tilt: [],
+          expense_drag: null,
+          observable_risk: null,
+          structural_flag: false,
+          is_cef: false,
+          nav_premium: null,
+          evidence_gaps: [],
+          action: "trim",
+          action_rationale: "Duration risk outweighs the sleeve's role.",
+          what_changed: "new holding",
+        },
+        { asset_class: "etf" }
+      ),
     ],
   };
 
   test("the action call's rationale renders under the rung", () => {
+    // Every persisted verdict carries its rationale (the pipeline rejects an
+    // empty one on both branches), so each card renders its own.
     const wrapper = mountView({ run: actionRun });
     const msft = wrapper
       .findAll(".holding-card")
@@ -1520,7 +1578,12 @@ describe("PortfolioView per-holding action", () => {
     const aapl = wrapper
       .findAll(".holding-card")
       .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
-    expect(aapl.find(".hc-rationale").exists()).toBe(false);
+    expect(aapl.find(".hc-rationale").text()).toContain("Thesis intact");
+    // The role-risk branch renders its rationale the same way.
+    const bnd = wrapper
+      .findAll(".holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "BND")!;
+    expect(bnd.find(".hc-rationale").text()).toContain("Duration risk");
   });
 });
 

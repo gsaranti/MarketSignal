@@ -377,8 +377,8 @@ pub struct HoldingDossier {
     /// `None` on a debut or a prior run without an audit row.
     pub prior_metrics: Option<crate::portfolio::engine::ComputedMetrics>,
     /// The grade-parameter version the prior verdict's letter and sub-scores were
-    /// computed under (from the prior run's audit row; `None` = a pre-stamp run,
-    /// i.e. the v1 bands). Meaningful only beside a priced `prior_verdict` — the
+    /// computed under (from the prior run's audit row; `None` when the run carries
+    /// no audit row for the symbol). Meaningful only beside a priced `prior_verdict` — the
     /// input delta and the interpretation prompt read the boundary it sits across
     /// on the holding's branch ([`crate::portfolio::engine::grade_parameter_change`])
     /// so an engine-driven letter or sub-score move is attributed to that boundary,
@@ -386,12 +386,12 @@ pub struct HoldingDossier {
     pub prior_grade_parameter_version: Option<String>,
     /// The prior audit's split-bridge anchor bar — the exact re-basis factor's
     /// stored leg ([`crate::portfolio::HoldingAudit::authoring_close`]). `None`
-    /// on a debut or a pre-field prior row.
+    /// on a debut or a prior row from a no-price exit.
     pub prior_authoring_close: Option<crate::portfolio::engine::DatedValue>,
     /// The prior run's pre-profit overlay record (from the audit row) — the
     /// period-keyed observation history accumulates through it
-    /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut, a
-    /// pre-overlay run, or a fund.
+    /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut or a
+    /// fund.
     pub prior_pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
     /// The loop-time listing-resolution guard's outcome for a stock
     /// (`docs/portfolio-analysis.md` §Asset eligibility) — computed at gather time,
@@ -469,7 +469,7 @@ pub struct SemanticRecall {
 pub struct PriorHolding {
     pub verdict: HoldingVerdict,
     /// The grade-parameter version the prior letter and sub-scores were computed
-    /// under (`None` = a pre-stamp run, i.e. the v1 bands).
+    /// under (`None` when the run carries no audit row for the symbol).
     pub grade_parameter_version: Option<String>,
     /// The prior pre-profit overlay record — the observation history's carry path.
     pub pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
@@ -494,7 +494,7 @@ pub struct PriorHolding {
     /// The prior audit's split-bridge anchor bar
     /// ([`crate::portfolio::HoldingAudit::authoring_close`]) — re-read from this
     /// run's fresh series it yields the exact re-basis factor since the prior
-    /// pass. `None` on pre-field rows (those comparisons run as stored).
+    /// pass. `None` on a no-price exit's row (those comparisons run as stored).
     pub authoring_close: Option<crate::portfolio::engine::DatedValue>,
 }
 
@@ -502,7 +502,7 @@ impl HoldingDossier {
     /// The prior run's thesis ledger for this holding — it rides the prior verdict
     /// (`docs/portfolio-analysis.md` §The position thesis ledger: read at dossier
     /// assembly, re-evaluated and rewritten each run). `None` on a debut or a
-    /// pre-ledger prior run.
+    /// not-rated prior.
     pub fn prior_ledger(&self) -> Option<&crate::portfolio::ThesisLedger> {
         self.prior_verdict
             .as_ref()
@@ -1126,7 +1126,7 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
 
 /// Look up the prior run's carry-over for one holding (the continuity input): the
 /// verdict plus the audit-row legs — the grade-parameter version its letter and
-/// sub-scores were computed under (`None` = a pre-stamp run, i.e. the v1 bands) and the
+/// sub-scores were computed under (`None` when the run carries no audit row) and the
 /// pre-profit overlay record whose observation history accumulates. Reads the
 /// job's **already-loaded** prior run — the job loads `store::latest_run` once
 /// per run and threads it here, rather than this lookup re-reading (and
@@ -1157,7 +1157,7 @@ pub fn prior_verdict_for(
                 let spot = a.quick_basis.as_ref().map(|b| b.spot);
                 let mid = a.quick_basis.as_ref().and_then(|b| b.consensus_eps_mid);
                 (
-                    a.grade_parameter_version.clone(),
+                    Some(a.grade_parameter_version.clone()),
                     a.pre_profit.clone(),
                     spot,
                     mid,
@@ -1171,22 +1171,18 @@ pub fn prior_verdict_for(
     // scored ground the retrospective block renders (empty until windows mature).
     let matured_notes = run
         .outcome
-        .as_ref()
-        .map(|o| {
-            o.matured
-                .iter()
-                .filter(|m| m.symbol.eq_ignore_ascii_case(symbol))
-                .map(|m| {
-                    let detail = match (m.total_return, m.price_return) {
-                        (Some(tr), _) => format!("total return {:+.1}%", tr * 100.0),
-                        (None, Some(pr)) => format!("price-only return {:+.1}%", pr * 100.0),
-                        _ => m.outcome.clone(),
-                    };
-                    format!("{}-month window {}: {}", m.window_months, m.outcome, detail)
-                })
-                .collect()
+        .matured
+        .iter()
+        .filter(|m| m.symbol.eq_ignore_ascii_case(symbol))
+        .map(|m| {
+            let detail = match (m.total_return, m.price_return) {
+                (Some(tr), _) => format!("total return {:+.1}%", tr * 100.0),
+                (None, Some(pr)) => format!("price-only return {:+.1}%", pr * 100.0),
+                _ => m.outcome.clone(),
+            };
+            format!("{}-month window {}: {}", m.window_months, m.outcome, detail)
         })
-        .unwrap_or_default();
+        .collect();
     Some(PriorHolding {
         verdict,
         grade_parameter_version,
@@ -2286,18 +2282,18 @@ Sources and footnotes.
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
                 exited: vec![],
-                data_health: None,
+                data_health: Default::default(),
                 overview: String::new(),
             },
             audit: vec![],
-            rate_prints: None,
-            outcome: None,
+            rate_prints: Default::default(),
+            outcome: Default::default(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
         let prior = prior_verdict_for(latest.as_ref(), "aapl").expect("case-insensitive match");
         assert_eq!(prior.verdict.symbol, "AAPL");
-        // No audit row for the symbol -> a pre-stamp read (the v1 bands).
+        // No audit row for the symbol -> no stamp to read.
         assert_eq!(prior.grade_parameter_version, None);
         assert!(prior.pre_profit.is_none());
     }
@@ -2335,7 +2331,7 @@ Sources and footnotes.
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
                 exited: vec![],
-                data_health: None,
+                data_health: Default::default(),
                 overview: String::new(),
             },
             audit: vec![crate::portfolio::HoldingAudit {
@@ -2350,7 +2346,7 @@ Sources and footnotes.
                 degraded_inputs: vec![],
                 action_annotations: vec![],
                 target_meta: None,
-                grade_parameter_version: Some("grade-v2".into()),
+                grade_parameter_version: "grade-v2".into(),
                 ledger_audit: None,
                 quick_basis: None,
                 authoring_close: None,
@@ -2364,8 +2360,8 @@ Sources and footnotes.
                 narrative: None,
                 option_overlay: None,
             }],
-            rate_prints: None,
-            outcome: None,
+            rate_prints: Default::default(),
+            outcome: Default::default(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
@@ -2414,12 +2410,12 @@ Sources and footnotes.
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
                 exited: vec![],
-                data_health: None,
+                data_health: Default::default(),
                 overview: String::new(),
             },
             audit: vec![],
-            rate_prints: None,
-            outcome: None,
+            rate_prints: Default::default(),
+            outcome: Default::default(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();

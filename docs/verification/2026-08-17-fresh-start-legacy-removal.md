@@ -10,6 +10,7 @@ The code must therefore carry **no one-time / construction-era legacy logic** ke
 
 Scope confirmed by the user: **remove all of it** (the whole construction-era decode layer), and do it **now** as its own slice.
 Boundary held: general `#[serde(default)]` forward-compat that is *not* construction-specific stays (ordinary schema evolution across binary versions — e.g. `PortfolioRun.data_health`).
+Superseded 2026-08-29: that kept class was cut too, since the dev store is wiped before the big run and no local-suite data compat is required pre-release ([2026-08-29-fresh-start-2-local-suite-compat-removal.md](2026-08-29-fresh-start-2-local-suite-compat-removal.md)).
 The unparseable-blob **loud-skip** robustness (`decode_run` / `PortfolioRunSummary.readable`) also stays — a corrupt row is a store-integrity concern, not construction-era legacy.
 
 ## What was removed

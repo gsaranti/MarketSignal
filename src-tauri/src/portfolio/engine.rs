@@ -90,8 +90,7 @@ const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 /// outcome-learning cohorts for what it changed ([`grade_parameter_change`]).
 /// v2 (the 2026-08-03 shadow-tune against run
 /// `3b21ae85`, certified v1-exact first): the recentered-growth bands above plus
-/// the negative-D/E → 0 guard; runs decoding `None` predate the stamp and carry
-/// the v1 bands.
+/// the negative-D/E → 0 guard.
 // v2.1 (2026-08-05, piece-3 walk): the dossier's P/E derive went signed, making
 // the negative-P/E fixed-score guard reachable for loss-makers — an input-
 // semantics change that can move letters, so it is stamped as its own version
@@ -152,22 +151,18 @@ const GRADE_PARAMETER_HISTORY: &[(
 
 /// The change a prior record's stamp sits across on `branch` — the branch the
 /// PRIOR record was scored on — or `None` when the record carries the current
-/// stamp or the boundary changed nothing on that branch. A pre-stamp `None`
-/// prior sits before the first row and crosses the whole history: the band
-/// retune on the stock branch, the momentum re-homing alone on the fund branch,
-/// whose letter formula has not moved since the fund path landed (2026-07-16,
-/// before the first stamp). An unrecognized stamp reads as no describable
-/// boundary: asserting a cause whose semantics are unknowable would hand the
-/// model citable evidence for it (the resume gate and the certification leg
-/// still refuse the raw mismatch).
+/// stamp or the boundary changed nothing on that branch. A prior with no stamp
+/// (no audit row for the symbol) and an unrecognized stamp both read as no
+/// describable boundary: asserting a cause whose semantics are unknowable would
+/// hand the model citable evidence for it (the resume gate and the certification
+/// leg still refuse the raw mismatch).
 pub(crate) fn grade_parameter_change(
     prior: Option<&str>,
     branch: GradeBranch,
 ) -> Option<GradeParameterChange> {
-    let after = match prior {
-        Some(GRADE_PARAMETER_VERSION) => return None,
-        None => GRADE_PARAMETER_HISTORY,
-        Some(stamp) => GRADE_PARAMETER_HISTORY
+    let after = match prior? {
+        GRADE_PARAMETER_VERSION => return None,
+        stamp => GRADE_PARAMETER_HISTORY
             .iter()
             .position(|(v, _, _)| *v == stamp)
             .map(|i| &GRADE_PARAMETER_HISTORY[i + 1..])?,
@@ -343,13 +338,11 @@ pub struct DatedValue {
 pub struct RateAnchors {
     pub dgs2: f64,
     pub dgs10: f64,
-    /// The prints' observation dates (ISO), where the source carried them — the
-    /// as-of dates the persisted rate cache records for the quick paths' fail-soft
+    /// The prints' observation dates (ISO), where the source carried them — the as-of
+    /// dates the persisted rate cache records for the quick paths' fail-soft
     /// (`docs/portfolio-analysis.md` §Starting parameters, rate-cache max age).
-    /// `None` on fixtures and pre-field runs (`#[serde(default)]`).
-    #[serde(default)]
+    /// `None` on fixtures.
     pub dgs2_date: Option<String>,
-    #[serde(default)]
     pub dgs10_date: Option<String>,
     /// Dated `DGS10` observations covering the trailing anchor window plus alignment
     /// slack, sorted oldest-first.
@@ -359,7 +352,6 @@ pub struct RateAnchors {
     /// inadmissible, the targets on their documented raw-percentile / carry fallback
     /// — never a new failure state (`docs/portfolio-analysis.md` §Starting
     /// parameters). Only the two run-level prints hard-fail (§Failure posture).
-    #[serde(default)]
     pub history_gap: Option<String>,
 }
 
@@ -378,18 +370,12 @@ pub struct QuarterlyIncomeRow {
     pub diluted_shares: Option<f64>,
     /// Statement lines for the TTM statement basis (`docs/portfolio-analysis.md`
     /// §Starting parameters — four-quarter sums feeding the margin / growth /
-    /// multiple inputs, the grade-band slice's F5 closure). `#[serde(default)]`
-    /// keeps rows persisted before the fields decodable.
-    #[serde(default)]
+    /// multiple inputs, the grade-band slice's F5 closure).
     pub net_income: Option<f64>,
-    #[serde(default)]
     pub gross_profit: Option<f64>,
-    #[serde(default)]
     pub cost_of_revenue: Option<f64>,
     /// Quarterly operating income — the pre-profit overlay's eligibility leg (TTM
     /// operating income ≤ 0 — `docs/portfolio-analysis.md` §Starting parameters).
-    /// `#[serde(default)]` keeps rows persisted before the field decodable.
-    #[serde(default)]
     pub operating_income: Option<f64>,
 }
 
@@ -403,8 +389,7 @@ pub struct QuarterlyCashFlowRow {
     pub period_end: String,
     /// The statement feed's filing date — the canonicalization tie-break when one
     /// period arrives twice (a restatement): the latest filing wins, never wire
-    /// order. `#[serde(default)]` for pre-field fixtures.
-    #[serde(default)]
+    /// order.
     pub filing_date: Option<String>,
     /// The feed's reported free cash flow, where present.
     pub free_cash_flow: Option<f64>,
@@ -448,24 +433,18 @@ pub struct ConsensusEstimate {
     pub revenue_high: Option<f64>,
     /// Forward annual rows the read blended: 2 on the NTM blend, 1 on a single
     /// forward row (0 only on a hand-built fixture — read as 1).
-    #[serde(default)]
     pub periods_used: u8,
     /// The near row's blend weight (1.0 on a single-row read).
-    #[serde(default)]
     pub near_weight: f64,
     /// Forward rows that actually **contributed** to the blended EPS mid — the
     /// corroboration count the targets-v4 clamp release reads for the EPS rung.
-    /// `periods_used` counts blended rows, not rows behind any given field:
-    /// inside an active blend a leg only one row carries is used alone, and a
-    /// boundary-day near row (weight exactly 0) is present without
-    /// contributing — either way a single estimate would masquerade as
-    /// two-row corroboration (Codex rounds 1–2). `#[serde(default)]` for
-    /// pre-field records.
-    #[serde(default)]
+    /// `periods_used` counts blended rows, not rows behind any given field: inside an
+    /// active blend a leg only one row carries is used alone, and a boundary-day near
+    /// row (weight exactly 0) is present without contributing — either way a single
+    /// estimate would masquerade as two-row corroboration (Codex rounds 1–2).
     pub eps_mid_rows: u8,
     /// The revenue rung's counterpart: forward rows contributing to the revenue
     /// mid.
-    #[serde(default)]
     pub revenue_mid_rows: u8,
 }
 
@@ -497,30 +476,23 @@ pub struct CompanyFinancials {
     pub price_history: Vec<f64>,
     /// Deep **dated** daily closes (oldest first) — the v2 anchor join's price side
     /// and the drawdown read (FMP dated EOD).
-    #[serde(default)]
     pub daily_closes: Vec<DatedValue>,
     /// Trailing quarterly income prints, newest first — the v2 anchor window's
     /// trailing driver source (needs ~4 extra quarters beyond the window for TTM).
-    #[serde(default)]
     pub quarterly_income: Vec<QuarterlyIncomeRow>,
     /// Trailing quarterly cash-flow prints, newest first — the pre-profit overlay's
     /// TTM burn / runway / capex legs (`docs/portfolio-analysis.md` §Starting
-    /// parameters). `#[serde(default)]` for pre-field fixtures and stored runs.
-    #[serde(default)]
+    /// parameters).
     pub quarterly_cash_flow: Vec<QuarterlyCashFlowRow>,
     /// Balance-sheet liquid-resource lines from the latest quarterly print — the
     /// pre-profit runway numerator (`liquid resources = cash and cash equivalents +
-    /// short-term investments`). `#[serde(default)]` for pre-field fixtures.
-    #[serde(default)]
+    /// short-term investments`).
     pub cash_and_equivalents: Option<f64>,
-    #[serde(default)]
     pub short_term_investments: Option<f64>,
     /// The forward consensus (nearest coming fiscal year) — the v2 driver ladder.
-    #[serde(default)]
     pub consensus: Option<ConsensusEstimate>,
     /// Trailing-twelve-month dividends per share — the forward-dividend estimate the
     /// twelve-month total return adds (a sustainable basis, never a raw special).
-    #[serde(default)]
     pub ttm_dividends_per_share: Option<f64>,
     /// Tagged inputs a source could not resolve, carried into the prompt so the model
     /// reasons over what is absent rather than inferring it.
@@ -532,7 +504,6 @@ pub struct CompanyFinancials {
     ///
     /// Read by the ledger evaluation to detect a basis change: it does not alter any
     /// value, only whether a statement-derived condition is comparable this pass.
-    #[serde(default)]
     pub statement_basis: Option<crate::portfolio::StatementBasis>,
 }
 
@@ -607,17 +578,14 @@ pub struct ComputedMetrics {
     pub ps_ratio: Option<f64>,
     pub pb_ratio: Option<f64>,
     /// Fund context: the reported expense ratio (decimal), where the holding is a
-    /// fund. `#[serde(default)]` keeps pre-field audits decodable.
-    #[serde(default)]
+    /// fund.
     pub expense_ratio: Option<f64>,
     /// Fund context: price-vs-NAV premium (decimal; meaningful on the closed-end
     /// form, context elsewhere).
-    #[serde(default)]
     pub nav_premium: Option<f64>,
     /// Fund context: the share of fund weight the exposure-priced composite actually
     /// prices (`docs/portfolio-analysis.md` §Asset eligibility — the uncovered share
     /// is reported beside the read, never averaged in).
-    #[serde(default)]
     pub composite_coverage: Option<f64>,
 }
 
@@ -703,33 +671,23 @@ pub struct TargetMeta {
     /// carried (recorded, never silent).
     pub current_multiple_carry: bool,
     /// Forward annual consensus rows behind the driver (2 = the NTM blend, 1 = a
-    /// single forward row; `None` on the fund form). `#[serde(default)]` for
-    /// pre-field audits.
-    #[serde(default)]
+    /// single forward row; `None` on the fund form).
     pub consensus_rows: Option<u8>,
-    /// The near row's NTM blend weight (1.0 on a single-row read; `None` on the
-    /// fund form or a pre-blend record) — persisted so a stored run's driver
-    /// provenance is fully recoverable. `#[serde(default)]` for pre-field audits.
-    #[serde(default)]
+    /// The near row's NTM blend weight (1.0 on a single-row read; `None` on the fund
+    /// form) — persisted so a stored run's driver provenance is fully recoverable.
     pub consensus_near_weight: Option<f64>,
     /// True when the growth clamp flattened a *published* driver spread to a single
     /// value — without this the calibration data can't tell "published flat" from
-    /// "clamp-flattened". `#[serde(default)]` for pre-field audits.
-    #[serde(default)]
+    /// "clamp-flattened".
     pub clamp_flattened: bool,
     /// True when the scenario band was widened to the volatility-scaled dispersion
-    /// floor. `#[serde(default)]` for pre-field audits.
-    #[serde(default)]
+    /// floor.
     pub dispersion_floor_applied: bool,
-    /// (targets-v4) anchor observations dropped by the multiple sanity bound —
-    /// raw multiples above the current multiple × the drafted factor.
-    /// `#[serde(default)]` for pre-v4 audits.
-    #[serde(default)]
+    /// (targets-v4) anchor observations dropped by the multiple sanity bound — raw
+    /// multiples above the current multiple × the drafted factor.
     pub anchor_bounded: usize,
     /// (targets-v4) true when the trough release priced the unclamped consensus
     /// (corroborated rows + current multiple above the anchor window's rich end).
-    /// `#[serde(default)]` for pre-v4 audits.
-    #[serde(default)]
     pub clamp_released: bool,
     pub parameter_version: String,
 }
@@ -763,11 +721,9 @@ pub struct EngineOutput {
     /// The stored closed-form re-anchor basis the engine-only quick paths read
     /// (`docs/portfolio-analysis.md` §The quick check) — persisted on the audit.
     pub quick_basis: Option<QuickCheckBasis>,
-    /// The implied-expectations range ([`ImpliedExpectations`]) — computed on
-    /// the stock path; `None` on the fund path (its settled flat driver prices
-    /// no driver trajectory to invert), the current-multiple carry, and
-    /// pre-field runs (`#[serde(default)]`).
-    #[serde(default)]
+    /// The implied-expectations range ([`ImpliedExpectations`]) — computed on the
+    /// stock path; `None` on the fund path (its settled flat driver prices no driver
+    /// trajectory to invert), the current-multiple carry.
     pub implied_expectations: Option<ImpliedExpectations>,
 }
 
@@ -1264,8 +1220,8 @@ pub fn evaluate_ledger_conditions_gated(
                         out.updated_states.push((cond.condition_id.clone(), st));
                         continue;
                     }
-                    // First evaluation, or a pre-stamp state: adopt without a
-                    // discontinuity — there is nothing to disagree with.
+                    // First evaluation: adopt without a discontinuity — there is
+                    // nothing to disagree with.
                     _ => st.authored_statement_basis = Some(current_basis),
                 }
             }
@@ -1451,15 +1407,6 @@ pub fn usable_price(value: Option<f64>) -> Option<f64> {
 /// review's Codex I16, its reviewer round (the stamp off its Codex round 1;
 /// ruled 2026-08-29).
 pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v4";
-
-/// The stamp a record or trail persisted before the field existed decodes as
-/// (the serde default on both fields): it was floored under the presence rule,
-/// so it reads `evidence-floor-v1` — a run stays readable, and a trail is
-/// refused by the resume gate's own reason rather than dropped as an
-/// unreadable header (Codex I1, round 2).
-pub fn evidence_floor_v1() -> String {
-    "evidence-floor-v1".to_string()
-}
 
 /// Analyze a holding's financials into sub-scores, a grade, and scenario targets — or
 /// abstain. The evidence floor fails when there is no usable current price
@@ -1811,9 +1758,7 @@ pub struct QuickCheckBasis {
     pub spot: f64,
     /// `[bear, base, bull]` per-share drivers the full pass settled on.
     pub drivers: [f64; 3],
-    #[serde(default)]
     pub spread_percentiles: Option<[f64; 3]>,
-    #[serde(default)]
     pub raw_percentiles: Option<[f64; 3]>,
     /// The forward-dividend (fund: distribution) leg of the twelve-month total return.
     pub forward_dividends: f64,
@@ -1822,7 +1767,6 @@ pub struct QuickCheckBasis {
     /// The NTM consensus EPS mid the run read (`None` where no consensus existed) —
     /// the quick check's revision-preflight comparator
     /// (`docs/portfolio-analysis.md` §Starting parameters, the large-revision-move leg).
-    #[serde(default)]
     pub consensus_eps_mid: Option<f64>,
 }
 
@@ -5169,10 +5113,9 @@ mod tests {
     /// record's branch: the current stamp is no boundary; a stock crossing
     /// v2.1 → v2.2 sees nothing while a fund sees the momentum re-homing; a
     /// `grade-v2` fund crosses only that same change (v2.1 never touched funds)
-    /// while a `grade-v2` stock crosses the signed-P/E letter change; a
-    /// pre-stamp prior crosses the whole history — the retune for a stock, the
-    /// re-homing alone for a fund; an unrecognized stamp asserts no cause. The
-    /// history's last row must be the current stamp.
+    /// while a `grade-v2` stock crosses the signed-P/E letter change; a prior
+    /// with no stamp and an unrecognized stamp assert no cause. The history's
+    /// last row must be the current stamp.
     #[test]
     fn grade_parameter_change_reads_the_history_per_branch() {
         use GradeBranch::{Fund, Stock};
@@ -5190,8 +5133,9 @@ mod tests {
             assert_eq!(grade_parameter_change(Some("grade-v9.9"), branch), None);
             assert_eq!(grade_parameter_change(Some(""), branch), None);
         }
-        assert_eq!(grade_parameter_change(None, Stock), Some(Letters));
-        assert_eq!(grade_parameter_change(None, Fund), Some(FundMomentum));
+        // No stamp at all (no audit row for the symbol) asserts no cause either.
+        assert_eq!(grade_parameter_change(None, Stock), None);
+        assert_eq!(grade_parameter_change(None, Fund), None);
         assert_eq!(grade_parameter_change(Some("grade-v2.1"), Stock), None);
         assert_eq!(
             grade_parameter_change(Some("grade-v2.1"), Fund),
@@ -6018,11 +5962,11 @@ mod tests {
             }
             // The derivation leg replays the CURRENT band constants, so it only
             // certifies a run stamped with the current grade parameter version —
-            // an older-vintage run (or a pre-stamp `None`) keeps the roll-up check
-            // alone. (Run `3b21ae85` was derivation-certified exact against its own
-            // v1 bands on 2026-08-03, before the grade-v2 retune — the evidence
-            // record in `docs/verification/`.)
-            if audit.grade_parameter_version.as_deref() != Some(GRADE_PARAMETER_VERSION) {
+            // an older-vintage run keeps the roll-up check alone. (Run `3b21ae85`
+            // was derivation-certified exact against its own v1 bands on
+            // 2026-08-03, before the grade-v2 retune — the evidence record in
+            // `docs/verification/`.)
+            if audit.grade_parameter_version != GRADE_PARAMETER_VERSION {
                 continue;
             }
 
@@ -6547,12 +6491,12 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_stamp_state_adopts_the_basis_without_a_discontinuity() {
+    fn a_first_evaluation_adopts_the_basis_without_a_discontinuity() {
         use crate::portfolio::StatementBasis;
-        // Upgrade path: states persisted before the marker existed carry `None`, and
-        // there is nothing for the current basis to disagree with — so the first pass
-        // adopts silently rather than spending every holding's first sweep on a
-        // fabricated discontinuity.
+        // A new condition's state starts `Default`, and there is nothing for the
+        // current basis to disagree with — so the first pass adopts silently
+        // rather than spending every condition's first evaluation on a fabricated
+        // discontinuity.
         let mut fin = strong();
         fin.statement_basis = Some(StatementBasis::Annual);
         let metrics = compute_metrics(&fin);

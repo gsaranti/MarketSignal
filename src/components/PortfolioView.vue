@@ -719,7 +719,7 @@ function classLabel(v: HoldingVerdict): string {
   if (v.disposition.status === "priced") {
     // A priced fund shows its deterministic strategy classification (e.g. "US
     // equity fund" — docs/portfolio-analysis.md §Asset eligibility); null for a
-    // stock and on runs persisted before the field.
+    // stock.
     if (v.disposition.fund_class_label)
       return `${v.disposition.fund_class_label} · reduced verdict`;
     return `${base} · ${v.asset_class === "stock" ? "full verdict" : "reduced verdict"}`;
@@ -800,7 +800,7 @@ function armAOutlook(d: GradedVerdict): HorizonOutlook {
 // The matured scoreboard lines for one symbol, from the run's outcome records —
 // engine-computed, quiet-note register on the card foot.
 function maturedLinesFor(symbol: string): string[] {
-  const matured = props.run?.outcome?.matured ?? [];
+  const matured = props.run?.outcome.matured ?? [];
   return matured
     .filter((m) => m.symbol.toUpperCase() === symbol.toUpperCase())
     .map((m) => {
@@ -819,10 +819,10 @@ function maturedLinesFor(symbol: string): string[] {
 // same-events contract) plus the outlook direction hit-rates. Empty until v7
 // episodes mature.
 const scoreboardLines = computed<string[]>(() => {
-  const reads = props.run?.outcome?.reads;
+  const reads = props.run?.outcome.reads;
   if (!reads) return [];
   const lines: string[] = [];
-  for (const h of reads.head_to_head ?? []) {
+  for (const h of reads.head_to_head) {
     if (
       h.scored > 0 &&
       h.model_mean_interval_score !== null &&
@@ -837,7 +837,7 @@ const scoreboardLines = computed<string[]>(() => {
   }
   for (const window of [1, 6, 12]) {
     const arm = (name: string) =>
-      (reads.outlook_direction ?? []).find(
+      reads.outlook_direction.find(
         (r) => r.arm === name && r.window_months === window && r.scored > 0
       );
     const engine = arm("engine");
@@ -1629,10 +1629,7 @@ const keyFigures = computed(() => {
                         ACTION_LABELS[v.disposition.action]
                       }}</span>
                     </div>
-                    <p
-                      v-if="v.disposition.action_rationale"
-                      class="hc-prose hc-rationale"
-                    >
+                    <p class="hc-prose hc-rationale">
                       {{ v.disposition.action_rationale }}
                     </p>
                     <dl class="hc-kv">
@@ -2150,10 +2147,7 @@ const keyFigures = computed(() => {
                         ACTION_LABELS[v.disposition.action]
                       }}</span>
                     </div>
-                    <p
-                      v-if="v.disposition.action_rationale"
-                      class="hc-prose hc-rationale"
-                    >
+                    <p class="hc-prose hc-rationale">
                       {{ v.disposition.action_rationale }}
                     </p>
                     <dl class="hc-kv">
@@ -2359,10 +2353,9 @@ const keyFigures = computed(() => {
             </header>
             <p class="rollup-overview hc-prose">{{ run.roll_up.overview }}</p>
             <!-- Run-level data health: how the target surface was actually sourced.
-                 Absent on runs persisted before the field existed. The attention tag
-                 reuses the sanctioned grade-D "amber" pair (design system §Grade
-                 scale — Portfolio's attention flag). -->
-            <div v-if="run.roll_up.data_health" class="rollup-datahealth">
+                 The attention tag reuses the sanctioned grade-D "amber" pair
+                 (design system §Grade scale — Portfolio's attention flag). -->
+            <div class="rollup-datahealth">
               <span class="hc-kicker">Data health</span>
               <p class="dh-line hc-prose">
                 <span

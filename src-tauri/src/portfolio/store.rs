@@ -182,17 +182,13 @@ pub struct CheckpointHeader {
     pub grade_parameter_version: String,
     pub target_parameter_version: String,
     pub pre_profit_parameter_version: String,
-    /// A trail persisted before the field decodes as the presence floor,
-    /// `evidence-floor-v1`, so the resume gate refuses it with its own reason
-    /// instead of the header loud-skipping as unreadable.
-    #[serde(default = "crate::portfolio::engine::evidence_floor_v1")]
+    /// The evidence-floor rule the trail's completed holdings were floored under
+    /// ([`crate::portfolio::engine::EVIDENCE_FLOOR_VERSION`]).
     pub evidence_floor_version: String,
     /// The trail's own shape stamp ([`CHECKPOINT_FORMAT_VERSION`]), so a trail
     /// written under another header or row shape is refused at the resume gate
     /// with its reason rather than loud-skipping every row and offering a
-    /// resume that restores nothing. A trail persisted before the field decodes
-    /// as `checkpoint-v1`, the pre-stamp shape (ruled 2026-08-29, Codex I18).
-    #[serde(default = "checkpoint_format_v1")]
+    /// resume that restores nothing (ruled 2026-08-29, Codex I18).
     pub checkpoint_format_version: String,
     pub model_ids: Vec<String>,
 }
@@ -206,11 +202,6 @@ pub struct CheckpointHeader {
 /// counters on the accumulators; `checkpoint-v2` — the deep-history and
 /// benchmark health on the row (Codex I17).
 pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v2";
-
-/// The `serde(default)` for a header persisted before the stamp existed.
-fn checkpoint_format_v1() -> String {
-    "checkpoint-v1".to_string()
-}
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -262,9 +253,9 @@ pub struct HoldingHealth {
 /// superseded calls of holdings the resumed process re-analyzes — the
 /// interrupted holding's abandoned calls and a dropped row's originals
 /// (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-28). No
-/// `serde(default)` on the telemetry or health fields — a row predating them
-/// takes the documented loud-skip at load and re-analyzes, and the format
-/// stamp refuses such a trail at the gate.
+/// `serde(default)` on any field — a row under another shape takes the
+/// documented loud-skip at load and re-analyzes, and the format stamp refuses
+/// such a trail at the gate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointHolding {
     pub verdict: crate::portfolio::HoldingVerdict,
@@ -1226,7 +1217,7 @@ mod tests {
                 top_position_weight: 0.66,
                 cash_weight: 0.34,
                 exited: vec![],
-                data_health: None,
+                data_health: Default::default(),
                 overview: "single fixture holding".into(),
             },
             audit: vec![HoldingAudit {
@@ -1241,7 +1232,7 @@ mod tests {
                 evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
                 degraded_inputs: vec![],
                 action_annotations: vec![],
-                grade_parameter_version: None,
+                grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
                 ledger_audit: None,
                 quick_basis: None,
                 authoring_close: None,
@@ -1255,8 +1246,8 @@ mod tests {
                 narrative: None,
                 option_overlay: None,
             }],
-            rate_prints: None,
-            outcome: None,
+            rate_prints: Default::default(),
+            outcome: Default::default(),
         }
     }
 
@@ -1447,13 +1438,13 @@ mod tests {
     fn quick_check_basis_and_rate_prints_round_trip() {
         let conn = mem();
         let mut run = sample_run("run-1", "2026-08-03T12:00:00Z");
-        run.rate_prints = Some(crate::portfolio::RatePrints {
+        run.rate_prints = crate::portfolio::RatePrints {
             dgs2: 0.04,
             dgs10: 0.045,
             dgs2_as_of: Some("2026-08-01".into()),
             dgs10_as_of: Some("2026-08-01".into()),
             fetched_at: "2026-08-03T12:00:00Z".into(),
-        });
+        };
         run.audit[0].quick_basis = Some(crate::portfolio::engine::QuickCheckBasis {
             spot: 195.0,
             drivers: [6.0, 6.5, 7.0],
@@ -1468,36 +1459,12 @@ mod tests {
             expense_ratio: Some(0.0009),
             us_share: Some(0.97),
             top_sector: Some(("Technology".into(), 0.31)),
-            structural_flag: Some(false),
+            structural_flag: false,
         });
         insert_run(&conn, &run).unwrap();
         assert_eq!(latest_run(&conn).unwrap().unwrap(), run);
     }
 
-    #[test]
-    fn a_pre_basis_blob_decodes_with_absent_quick_fields() {
-        // A run persisted before the quick-check basis existed must decode as the
-        // absent-basis path (`docs/portfolio-analysis.md` §The quick check — the
-        // rate-dependent families read `unknown` until a full run re-persists).
-        let conn = mem();
-        let run = sample_run("run-old", "2026-07-31T00:00:00Z");
-        let mut value = serde_json::to_value(&run).unwrap();
-        value.as_object_mut().unwrap().remove("rate_prints");
-        for audit in value["audit"].as_array_mut().unwrap() {
-            let a = audit.as_object_mut().unwrap();
-            a.remove("quick_basis");
-            a.remove("fund_exposure");
-        }
-        conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json) VALUES (?1, ?2, ?3)",
-            rusqlite::params![run.run_id, run.created_at, value.to_string()],
-        )
-        .unwrap();
-        let back = latest_run(&conn).unwrap().unwrap();
-        assert!(back.rate_prints.is_none());
-        assert!(back.audit[0].quick_basis.is_none());
-        assert!(back.audit[0].fund_exposure.is_none());
-    }
 
     #[test]
     fn latest_run_is_none_before_any_insert() {
@@ -1608,36 +1575,6 @@ mod tests {
         assert_eq!(latest.run_id, "run-good");
     }
 
-    #[test]
-    fn a_run_persisted_before_the_evidence_floor_stamp_decodes_as_the_presence_floor() {
-        // Codex I1, round 2: the audit's `evidence_floor_version` is new, and
-        // the store holds a run persisted before it (attempt 2, the big run's
-        // diff / carry baseline). A missing field decodes as `evidence-floor-v1`
-        // — the presence rule it was floored under — never an unreadable run.
-        let conn = mem();
-        let run = sample_run("run-v1", "2026-08-10T00:00:00Z");
-        let mut json = serde_json::to_value(&run).unwrap();
-        let audits = json["audit"].as_array_mut().expect("the fixture carries audits");
-        assert!(!audits.is_empty());
-        for audit in audits.iter_mut() {
-            audit
-                .as_object_mut()
-                .unwrap()
-                .remove("evidence_floor_version")
-                .expect("the current producer writes the field");
-        }
-        conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json) VALUES (?1, ?2, ?3)",
-            params![run.run_id, run.created_at, json.to_string()],
-        )
-        .unwrap();
-        let back = latest_run(&conn).unwrap().expect("a pre-field run still reads");
-        assert_eq!(back.run_id, "run-v1");
-        assert!(back
-            .audit
-            .iter()
-            .all(|a| a.evidence_floor_version == "evidence-floor-v1"));
-    }
 
     #[test]
     fn latest_quick_check_skips_an_unparseable_state_instead_of_erroring() {

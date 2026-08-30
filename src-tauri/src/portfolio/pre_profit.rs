@@ -3621,7 +3621,7 @@ mod tests {
     // ---- Serde stability ----
 
     #[test]
-    fn overlay_round_trips_and_pre_field_json_decodes() {
+    fn overlay_round_trips_through_json() {
         let overlay = compute_overlay(&burning_stock(), None, vec![]);
         let json = serde_json::to_string(&overlay).expect("serialize");
         let back: PreProfitOverlay = serde_json::from_str(&json).expect("deserialize");

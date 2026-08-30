@@ -109,7 +109,6 @@ pub struct FamilySweep {
     pub family: SweepFamily,
     pub state: SweepState,
     /// The degraded-sweep / first-breach note, where one applies.
-    #[serde(default)]
     pub note: Option<String>,
 }
 
@@ -169,22 +168,17 @@ pub struct HoldingQuickState {
     pub families: Vec<FamilySweep>,
     /// The attention flag (plus which trigger raised it) — carried until a full
     /// pass; a later clean sweep never clears it.
-    #[serde(default)]
     pub flag: Option<AttentionFlag>,
     /// Accumulated unexamined evidence events, deduplicated on (kind, detail).
-    #[serde(default)]
     pub evidence_events: Vec<EvidenceEvent>,
     /// The freshest condition evaluation state per `condition_id` — the engine
     /// state the write carve-out covers; the next full run overlays these onto the
     /// prior ledger before its own evaluation so streaks and acknowledgments chain.
-    #[serde(default)]
     pub condition_states: Vec<(String, ConditionEvalState)>,
     /// The last hurdle state this store observed — the "newly crossing into
     /// `fails`" comparator (seeded from the run's `dead_money` on first sweep).
-    #[serde(default)]
     pub last_hurdle_state: Option<HurdleState>,
     /// Quiet notes (first-breach observations, per-condition degradations).
-    #[serde(default)]
     pub notes: Vec<String>,
 }
 
@@ -198,7 +192,6 @@ pub struct QuickCheckState {
     pub last_checked_at: String,
     /// The freshest successful `DGS2`/`DGS10` prints — the rate cache later quick
     /// checks (and their fail-soft) read alongside the run blob's.
-    #[serde(default)]
     pub rate_cache: Option<RatePrints>,
     pub holdings: Vec<HoldingQuickState>,
 }
@@ -491,7 +484,7 @@ pub fn run_quick_check(
             let cached = prior_state
                 .as_ref()
                 .and_then(|s| s.rate_cache.clone())
-                .or_else(|| run.rate_prints.clone());
+                .or_else(|| Some(run.rate_prints.clone()));
             match cached {
                 Some(c) if rate_cache_fresh(&c, &today) => {
                     ctx.step_finished(
@@ -559,7 +552,7 @@ pub fn run_quick_check(
             prior_state
                 .as_ref()
                 .and_then(|s| s.rate_cache.clone())
-                .or_else(|| run.rate_prints.clone())
+                .or_else(|| Some(run.rate_prints.clone()))
         }),
         holdings: holdings_state,
     };
@@ -860,8 +853,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     // its price basis carries its anchor but withholds the quick basis (and
     // stamps the monitor target-less). Its band, multiple, and revision legs
     // don't exist to check — the families read `unknown`, never a silent
-    // `fresh_clear` vouch through legs the basis withheld. (A pre-field or
-    // abstained row lacks the anchor too, so it never matches.)
+    // `fresh_clear` vouch through legs the basis withheld. (An abstained row
+    // lacks the anchor too, so it never matches.)
     let comparators_withheld = priced
         && inp
             .audit
@@ -885,8 +878,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     // gives the exact cumulative re-basis factor since the last full pass —
     // exactly 1.0 in the unchanged common case. `Some(f)`: stored
     // price-denominated comparators convert through `f` (1.0 also covers a
-    // pre-field row with no anchor, which runs as stored until a full pass
-    // stamps one). `None`: an anchor exists but its bar is missing from the
+    // no-price exit's row, which carries no anchor and runs as stored until a
+    // full pass stamps one). `None`: an anchor exists but its bar is missing from the
     // fresh window — the basis is unverifiable, so price-denominated
     // comparisons are excluded this sweep rather than run cross-basis.
     let bridge: Option<f64> = match inp.audit.and_then(|a| a.authoring_close.as_ref()) {
@@ -1240,23 +1233,10 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             // every-fund contract (a structural-flag reclassification counts).
             // The flag reads from the fund's *name* blob, so it stays checkable
             // when only the asset class is missing — but needs a healthy info
-            // leg, a returned name (a missing one would fake a flag-clear), AND
-            // a stored value: a legacy basis persisted before the field reads
-            // `None`, and comparing a fabricated default would invent (or hide)
-            // a transition.
+            // leg and a returned name (a missing one would fake a flag-clear).
             let flag_comparable = info_leg_healthy && fresh_fund.name.is_some();
-            let flag_moved = match stored.structural_flag {
-                Some(stored_flag) => {
-                    flag_comparable && Some(stored_flag) != fresh_exposure.structural_flag
-                }
-                None => {
-                    degraded.push(
-                        "stored basis predates the overlay-flag leg — it was not checked"
-                            .to_string(),
-                    );
-                    false
-                }
-            };
+            let flag_moved =
+                flag_comparable && stored.structural_flag != fresh_exposure.structural_flag;
             if fresh_fund.name.is_none() {
                 degraded.push(
                     "fund name unreadable this sweep — the overlay-flag leg was not checked"
@@ -1267,10 +1247,6 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 || flag_moved
                 || (class_comparable && stored.class_label != fresh_exposure.class_label);
             if expense_moved || class_moved {
-                let flag_text = |f: Option<bool>| match f {
-                    Some(b) => b.to_string(),
-                    None => "unknown".to_string(),
-                };
                 events.push(event(
                     EvidenceEventKind::FundInfoChange,
                     format!(
@@ -1280,8 +1256,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                         fresh_exposure.class_label,
                         stored.expense_ratio,
                         fresh_exposure.expense_ratio,
-                        flag_text(stored.structural_flag),
-                        flag_text(fresh_exposure.structural_flag)
+                        stored.structural_flag,
+                        fresh_exposure.structural_flag
                     ),
                     inp.now,
                 ));
@@ -1642,13 +1618,13 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 // reads are ratios, basis-free either way.
                 let scenario = engine::reanchor_scenarios(&hurdle_basis, *price / f, r.dgs10);
                 let tier = match &inp.verdict.disposition {
-                    VerdictDisposition::Priced(g) => g.risk_tier,
+                    VerdictDisposition::Priced(g) => Some(g.risk_tier),
                     _ => None,
                 };
                 if let Some(tier) = tier {
                     let hurdle = engine::hurdle_read(&scenario, r.dgs2, tier);
                     let prior_hurdle = last_hurdle_state.or(match &inp.verdict.disposition {
-                        VerdictDisposition::Priced(g) => g.dead_money,
+                        VerdictDisposition::Priced(g) => Some(g.dead_money),
                         _ => None,
                     });
                     if hurdle.state == HurdleState::Fails
@@ -1689,7 +1665,7 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                      resolvable full pass"
                         .into()
                 } else {
-                    "no stored re-anchor basis (run predates the quick-check basis) — \
+                    "no stored re-anchor basis (the last full pass persisted none) — \
                      hurdle unknown until the next full run"
                         .into()
                 }),
@@ -1742,7 +1718,7 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 // already outside was an examined observation (the model wrote the
                 // ledger seeing it), so re-raising it every sweep — and force-
                 // including the holding on every selective run — is noise. A
-                // pre-stamp ledger reads as authored-inside, today's behavior.
+                // ledger authored with no spot to relate reads as authored-inside.
                 let current = crate::portfolio::BandRelation::of(*price, bear, bull);
                 let authored = ledger
                     .authored_band_relation
@@ -2016,8 +1992,8 @@ mod tests {
                     implied_volatility: None,
                     iv_skew: None,
                 },
-                risk_tier: Some(RiskTier::Medium),
-                dead_money: Some(HurdleState::Indeterminate),
+                risk_tier: RiskTier::Medium,
+                dead_money: HurdleState::Indeterminate,
                 low_confidence_grade: false,
                 fund_class_label: None,
                 structural_flag: false,
@@ -2064,7 +2040,7 @@ mod tests {
             degraded_inputs: vec![],
             action_annotations: vec![],
             target_meta: None,
-            grade_parameter_version: Some("grade-v2".into()),
+            grade_parameter_version: "grade-v2".into(),
             ledger_audit: None,
             quick_basis,
             authoring_close: None,
@@ -2100,18 +2076,18 @@ mod tests {
                 top_position_weight: 0.66,
                 cash_weight: 0.34,
                 exited: vec![],
-                data_health: None,
+                data_health: Default::default(),
                 overview: "fixture".into(),
             },
             audit: vec![audit],
-            rate_prints: Some(RatePrints {
+            rate_prints: RatePrints {
                 dgs2: 0.04,
                 dgs10: 0.045,
                 dgs2_as_of: Some("2026-07-18".into()),
                 dgs10_as_of: Some("2026-07-18".into()),
                 fetched_at: "2026-07-20T00:00:00Z".into(),
-            }),
-            outcome: None,
+            },
+            outcome: Default::default(),
         }
     }
 
@@ -2219,15 +2195,15 @@ mod tests {
                 top_position_weight: 0.4,
                 cash_weight: 0.2,
                 exited: vec![],
-                data_health: None,
+                data_health: Default::default(),
                 overview: "fixture".into(),
             },
             audit: vec![
                 audit_for("FRESH", Some(basis())),
                 audit_for("CARRD", Some(basis())),
             ],
-            rate_prints: None,
-            outcome: None,
+            rate_prints: Default::default(),
+            outcome: Default::default(),
         };
         store::insert_run(&conn, &run).unwrap();
         let mut data = StubData::quiet(195.0, "2026-08-02");
@@ -2897,7 +2873,7 @@ mod tests {
             expense_ratio: Some(0.001),
             us_share: Some(0.75),
             top_sector: Some(("Technology".into(), 0.30)),
-            structural_flag: Some(false),
+            structural_flag: false,
         });
         let mut run = sample_run(verdict, audit);
         run.holdings.positions[0].asset_class = AssetClass::MutualFund;
@@ -2985,7 +2961,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
-                structural_flag: Some(false),
+                structural_flag: false,
             })),
         )
         .unwrap();
@@ -3033,7 +3009,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: None,
                 top_sector: None,
-                structural_flag: Some(false),
+                structural_flag: false,
             })),
         )
         .unwrap();
@@ -3079,7 +3055,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
-                structural_flag: Some(false),
+                structural_flag: false,
             })),
         )
         .unwrap();
@@ -3128,7 +3104,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
-                structural_flag: Some(false),
+                structural_flag: false,
             })),
         )
         .unwrap();
@@ -3177,7 +3153,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
-                structural_flag: Some(false),
+                structural_flag: false,
             })),
         )
         .unwrap();
@@ -3220,55 +3196,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_legacy_basis_without_the_flag_degrades_instead_of_fabricating_a_transition() {
-        // A basis persisted before the flag field decodes `None`: comparing a
-        // fabricated default would invent a false→true event on a genuinely
-        // flagged fund (or hide a real clear) — the leg degrades instead.
-        let conn = mem();
-        store::insert_run(
-            &conn,
-            &fund_run(Some(fund::FundExposureBasis {
-                class_label: "US equity fund".into(),
-                expense_ratio: Some(0.001),
-                us_share: Some(0.75),
-                top_sector: Some(("Technology".into(), 0.30)),
-                structural_flag: None,
-            })),
-        )
-        .unwrap();
-        let mut stub = StubData::quiet(200.0, "2026-08-01");
-        stub.fund = FundData {
-            symbol: "BONDX".into(),
-            name: Some("Fixture Covered Call ETF".into()),
-            asset_class: Some("Equity".into()),
-            expense_ratio: Some(0.001),
-            aum: None,
-            nav: None,
-            sector_weights: vec![("Technology".into(), 0.30)],
-            country_weights: vec![("United States".into(), 0.75)],
-            profile_is_fund: None,
-            profile_description: None,
-            gaps: vec![],
-        };
-        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
-        let h = &s.holdings[0];
-        assert!(h.evidence_events.is_empty(), "{:?}", h.evidence_events);
-        let fam = h
-            .families
-            .iter()
-            .find(|f| f.family == SweepFamily::FundInfo)
-            .unwrap();
-        assert_eq!(fam.state, SweepState::Unknown);
-        assert!(
-            fam.note
-                .as_ref()
-                .unwrap()
-                .contains("predates the overlay-flag leg"),
-            "{:?}",
-            fam.note
-        );
-    }
 
     #[test]
     fn an_unresolvable_filing_condition_downgrades_the_filing_family() {

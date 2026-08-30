@@ -281,9 +281,7 @@ pub enum PositionChange {
     New,
     Increased,
     Decreased,
-    /// The neutral state (no add/trim detected), and the default a run persisted
-    /// before this field existed decodes to — so a legacy verdict claims no user
-    /// action rather than fabricating one.
+    /// The neutral state (no add/trim detected).
     #[default]
     Unchanged,
 }
@@ -434,8 +432,7 @@ impl Action {
 
 /// How a verdict's action came to be — the canonical two-value vocabulary from
 /// `docs/portfolio-analysis.md` §Outcome learning: **`model-chosen`** (a model
-/// pass actually chose it — every verdict before selective re-analysis, and the
-/// default a pre-field run decodes to) or **`rule-demoted`** (an over-age
+/// pass actually chose it — every fresh verdict) or **`rule-demoted`** (an over-age
 /// carried add-family action rule-demoted to *hold* at the roll-up — a labeled
 /// rule-based weaken that stays out of the pooled outcome cohorts, so the hold
 /// cohort measures only holds a model actually chose; §Triggering).
@@ -627,9 +624,7 @@ pub struct GradedVerdict {
     /// only, no sizing; the whole-book reconciliation is the future portfolio
     /// planner's job (`docs/portfolio-analysis.md` §Portfolio action).
     pub action: Action,
-    /// The action call's one-line rationale for the chosen rung. Empty on runs
-    /// persisted before the action call existed (`#[serde(default)]`).
-    #[serde(default)]
+    /// The action call's one-line rationale for the chosen rung.
     pub action_rationale: String,
     pub conviction: Conviction,
     pub horizon_outlook: HorizonOutlook,
@@ -640,29 +635,23 @@ pub struct GradedVerdict {
     pub price_target_rationale: String,
     pub options_signal: OptionsSignal,
     /// The deterministic per-branch risk tier (`docs/portfolio-analysis.md` §Starting
-    /// parameters). `#[serde(default)]` so a run persisted before the field decodes.
-    #[serde(default)]
-    pub risk_tier: Option<RiskTier>,
+    /// parameters).
+    pub risk_tier: RiskTier,
     /// The three-state capital-efficiency / dead-money read — only `fails` is dead
-    /// money. `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
-    pub dead_money: Option<HurdleState>,
+    /// money.
+    pub dead_money: HurdleState,
     /// True when the letter rests on an imputed (neutral-50) sub-score — the visible
     /// low-confidence marker beside the letter (`docs/portfolio-analysis.md` §Asset
     /// eligibility, the priced-fund grade contract; also any stock graded over an
-    /// imputed axis). `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
+    /// imputed axis).
     pub low_confidence_grade: bool,
     /// The fund path's deterministic strategy classification label (`None` for a
     /// stock) — "the classification is deterministic, shown on the card"
     /// (`docs/portfolio-analysis.md` §Asset eligibility), the priced branch included.
-    /// `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
     pub fund_class_label: Option<String>,
     /// The deterministic structural path-dependency flag on the priced branch (an
     /// option-overlay fund; leveraged / inverse routes to `role_risk_only` instead) —
-    /// card-visible beside the classification. `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
+    /// card-visible beside the classification.
     pub structural_flag: bool,
     /// A concise read of the company's financial health (model prose).
     pub financial_summary: String,
@@ -734,16 +723,12 @@ pub struct RoleRiskVerdict {
     /// The deterministic structurally-path-dependent flag (leveraged / inverse and
     /// option-overlay vehicles).
     pub structural_flag: bool,
-    /// The closed-end structure marker (the CEF leg, ruled 2026-08-21) — detection
-    /// is the profile's `isFund` flag plus the closed-end description fragment;
-    /// `false` on rows persisted before the leg (`#[serde(default)]`).
-    #[serde(default)]
+    /// The closed-end structure marker (the CEF leg, ruled 2026-08-21) — detection is
+    /// the profile's `isFund` flag plus the closed-end description fragment.
     pub is_cef: bool,
     /// Price vs NAV (market price ÷ NAV − 1; positive = premium), rendered only on
     /// the closed-end form — `None` is the named gap (no NAV on the current data
-    /// surface), carried in `evidence_gaps` rather than fabricated
-    /// (`#[serde(default)]` on pre-leg rows).
-    #[serde(default)]
+    /// surface), carried in `evidence_gaps` rather than fabricated.
     pub nav_premium: Option<f64>,
     /// The typed evidence gaps — this branch's confidence surface (never a fabricated
     /// High / Medium / Low conviction).
@@ -752,9 +737,7 @@ pub struct RoleRiskVerdict {
     /// branch's own attributes plus the investor profile — rung only, the full
     /// ladder open (`docs/portfolio-analysis.md` §Portfolio action).
     pub action: Action,
-    /// The action call's one-line rationale. Empty on pre-action-call runs
-    /// (`#[serde(default)]`).
-    #[serde(default)]
+    /// The action call's one-line rationale.
     pub action_rationale: String,
     /// The continuity diff against the prior run (model prose, or "new holding").
     pub what_changed: String,
@@ -935,9 +918,9 @@ pub struct ConditionEvalState {
     /// A statement-derived series compared across a basis change is comparing two
     /// different measurements, so the engine types it **unevaluable** for that pass
     /// and re-stamps — the streak cannot carry across, because the observations in it
-    /// were taken on the other basis. `None` = a pre-stamp state, which adopts the
-    /// current basis without a discontinuity (there is nothing to disagree with).
-    #[serde(default)]
+    /// were taken on the other basis. `None` until the first evaluation, which
+    /// adopts the current basis without a discontinuity (there is nothing to
+    /// disagree with).
     pub authored_statement_basis: Option<StatementBasis>,
 }
 
@@ -952,33 +935,26 @@ pub struct LedgerCondition {
     pub condition_id: String,
     pub role: ConditionRole,
     /// The trigger's action family (`None` on a falsifier).
-    #[serde(default)]
     pub trigger_family: Option<TriggerFamily>,
     /// The model's statement of the condition (prose).
     pub statement: String,
     /// The validated machine core — present only on a quantitative condition.
-    #[serde(default)]
     pub quant: Option<QuantCore>,
     /// Logged when a claimed-quantitative condition failed executability validation
     /// and was downgraded to qualitative (never dropped —
     /// `docs/portfolio-workflow.md` §Step 6g).
-    #[serde(default)]
     pub downgraded_reason: Option<String>,
     /// A third-party technology-event falsifier (`docs/portfolio-analysis.md` §The
     /// position thesis ledger — the first-class qualitative falsifier class).
-    #[serde(default)]
     pub technology_class: bool,
     /// The validated tripped (falsifier) / fired (trigger) claim — set only when the
     /// claim mapped to the engine's deterministic crossing; an unmapped claim is
     /// cleared and logged, so the ledger can't be quietly rewritten to fit a verdict.
-    #[serde(default)]
     pub tripped: bool,
     /// The id of the condition this one superseded (a rewrite that changed the
     /// machine core — fresh streak, the old condition closed into the audit).
-    #[serde(default)]
     pub supersedes: Option<String>,
     /// Engine evaluation state (quantitative conditions only; app-owned).
-    #[serde(default)]
     pub eval_state: Option<ConditionEvalState>,
 }
 
@@ -1042,14 +1018,10 @@ pub struct KeyDriver {
     /// The app-assigned stable identity (ruled 2026-08-24): assigned at ledger
     /// validation, preserved across rewrites while the driver's name carries,
     /// and the referential anchor a validated leading indicator must cite
-    /// before its presence may suppress the narrative cap. Empty on rows
-    /// written before the id existed — an unidentifiable driver simply grants
-    /// no suppression until the next rewrite assigns it one.
-    #[serde(default)]
+    /// before its presence may suppress the narrative cap.
     pub driver_id: String,
     pub name: String,
     /// The engine series backing the driver, where one exists.
-    #[serde(default)]
     pub series: Option<engine::LedgerSeries>,
 }
 
@@ -1075,9 +1047,8 @@ pub struct ThesisLedger {
     /// Key falsifiers and action triggers.
     pub conditions: Vec<LedgerCondition>,
     /// Spot's relationship to the monitor band at authoring — app-stamped beside
-    /// the engine targets; `None` on pre-stamp ledgers (read as authored-inside)
-    /// and wherever no band exists (`role_risk_only`, missing spot).
-    #[serde(default)]
+    /// the engine targets; `None` wherever no band exists (`role_risk_only`,
+    /// missing spot).
     pub authored_band_relation: Option<BandRelation>,
 }
 
@@ -1106,7 +1077,6 @@ pub struct ConditionCrossing {
     /// the next full run reads it. Anything positioning the confirmation in time —
     /// the falsifier lead-time read above all — must date it here, not at the
     /// consuming run.
-    #[serde(default)]
     pub confirmed_at: Option<String>,
 }
 
@@ -1129,7 +1099,6 @@ pub enum CrossingOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClosedCondition {
     /// The successor's condition id on a supersession; `None` on a removal.
-    #[serde(default)]
     pub superseded_by: Option<String>,
     pub condition: LedgerCondition,
 }
@@ -1155,9 +1124,7 @@ pub struct LedgerAudit {
     pub rejected_claims: Vec<String>,
     /// Draft conditions dropped as duplicates of one already validated this pass
     /// (identical role + machine core, or an identical qualitative statement) — a
-    /// repetitive model can't pad the ledger with copies. `#[serde(default)]` for
-    /// records written before the field.
-    #[serde(default)]
+    /// repetitive model can't pad the ledger with copies.
     pub duplicates: Vec<String>,
 }
 
@@ -1169,45 +1136,39 @@ pub struct HoldingVerdict {
     /// How the position changed since the prior run — set by the app from the
     /// deterministic holdings diff ([`diff`]; `docs/portfolio-analysis.md` §What
     /// changed: the what-changed line carries the position delta), never authored by
-    /// the model. `#[serde(default)]` so a run persisted before the field existed
-    /// still decodes.
-    #[serde(default)]
+    /// the model.
     pub position_change: PositionChange,
     pub disposition: VerdictDisposition,
     /// The holding's thesis ledger (`docs/portfolio-analysis.md` §The position
     /// thesis ledger) — present on an analyzed (priced / role-risk-only) verdict, and
     /// carried unchanged on an insufficient-evidence exit; `None` on a not-rated
-    /// position and on runs persisted before the ledger existed (`#[serde(default)]`
-    /// — the debut path).
-    #[serde(default)]
+    /// position.
     pub thesis_ledger: Option<ThesisLedger>,
     /// The holding's **analysis vintage** — the UTC RFC3339 timestamp of the full
     /// pass that produced this verdict (`docs/portfolio-analysis.md` §Triggering:
-    /// carried verdicts ride vintage-stamped). A selective run stamps fresh verdicts
-    /// with its own `created_at` and materializes a carried verdict's prior vintage,
-    /// so `None` survives only on verdicts persisted by their own analyzing run
-    /// before the field existed — where the run's `created_at` is the honest
-    /// fallback ([`effective_vintage`]).
-    #[serde(default)]
+    /// carried verdicts ride vintage-stamped). The job stamps it at persist — a
+    /// fresh verdict with the run's own `created_at`, a carried verdict with the
+    /// vintage it carries, an insufficient-evidence exit with its prior's vintage
+    /// — so `None` persists only on a debut abstention, which has no prior to
+    /// inherit from; [`effective_vintage`] reads the run's `created_at` there,
+    /// which is that verdict's own run.
     pub analyzed_at: Option<String>,
     /// How the action came to be ([`ActionSource`]) — `model-chosen` unless the
     /// over-age rule demoted a carried add-family action.
-    #[serde(default)]
     pub action_source: ActionSource,
     /// Set on a **carried** verdict whose position's net side reversed since the
-    /// verdict was written (`docs/portfolio-analysis.md` §Triggering) — the
-    /// carried thesis describes the opposite position. Surfaced as a non-blocking
-    /// card badge so the stale, wrong-direction advice is visible rather than
-    /// silently trusted; a selective run no longer force-includes on a reversal
-    /// (selective = strictly the user's selection, ruled 2026-08-16). A fresh pass
-    /// leaves this `false`. `#[serde(default)]` for runs persisted before the field.
-    #[serde(default)]
+    /// verdict was written (`docs/portfolio-analysis.md` §Triggering) — the carried
+    /// thesis describes the opposite position. Surfaced as a non-blocking card badge
+    /// so the stale, wrong-direction advice is visible rather than silently trusted;
+    /// a selective run no longer force-includes on a reversal (selective = strictly
+    /// the user's selection, ruled 2026-08-16). A fresh pass leaves this `false`.
     pub side_reversed: bool,
 }
 
 /// A verdict's effective analysis vintage: its own `analyzed_at` stamp, else the
-/// `created_at` of the run it rides in (correct for pre-field runs, whose every
-/// verdict was produced by its own run — a carried verdict is always stamped at
+/// `created_at` of the run it rides in — the fallback for a debut abstention
+/// (no prior vintage to inherit) and for a verdict the job has not stamped yet,
+/// both by construction their own run's (a carried verdict is always stamped at
 /// carry time, so the fallback never mis-dates one).
 pub fn effective_vintage<'a>(verdict: &'a HoldingVerdict, run_created_at: &'a str) -> &'a str {
     verdict.analyzed_at.as_deref().unwrap_or(run_created_at)
@@ -1221,10 +1182,8 @@ pub fn effective_vintage<'a>(verdict: &'a HoldingVerdict, run_created_at: &'a st
 /// 2026-07-31 first live run: 43 of 44 anchor windows empty, invisible outside the
 /// audits). Computed deterministically from the audits' typed `target_meta` plus the
 /// run-scoped deep-history counter, persisted with the roll-up, and rendered as one
-/// line on the Portfolio page's roll-up card. (Runs persisted before 2026-08-12
-/// also carry a `deep_history_fallbacks` key from the retired Stooq-primary era;
-/// serde ignores it on decode.)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// line on the Portfolio page's roll-up card.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DataHealth {
     /// Priced holdings carrying a `target_meta` (the denominator).
     pub targets_total: usize,
@@ -1242,56 +1201,41 @@ pub struct DataHealth {
     /// The run-level DGS10 anchor-history request failed (every spread observation
     /// inadmissible run-wide).
     pub dgs10_history_gap: bool,
-    /// The house view was omitted for staleness — the latest report is older than
-    /// the pinned freshness window (`docs/portfolio-workflow.md` §Step 5), so it
-    /// was recorded as a gap rather than fed as current. `#[serde(default)]` for
-    /// pre-field runs.
-    #[serde(default)]
+    /// The house view was omitted for staleness — the latest report is older than the
+    /// pinned freshness window (`docs/portfolio-workflow.md` §Step 5), so it was
+    /// recorded as a gap rather than fed as current.
     pub house_view_omitted: bool,
-    /// Local chat calls whose prompt filled at least
-    /// [`CONTEXT_PRESSURE_FRACTION`] of their declared `num_ctx` — the
-    /// digest-compression covenant's detection leg (`docs/portfolio-analysis.md`
-    /// §Portfolio roll-up): `num_ctx` overflow silently front-truncates, so a
-    /// near-full prompt is surfaced here rather than discovered as a corrupted
-    /// read. `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
+    /// Local chat calls whose prompt filled at least [`CONTEXT_PRESSURE_FRACTION`] of
+    /// their declared `num_ctx` — the digest-compression covenant's detection leg
+    /// (`docs/portfolio-analysis.md` §Portfolio roll-up): `num_ctx` overflow silently
+    /// front-truncates, so a near-full prompt is surfaced here rather than discovered
+    /// as a corrupted read.
     pub context_pressure: Vec<crate::local_model::PromptUsage>,
     /// The run's fullest local prompt (by fraction of its `num_ctx`), recorded
-    /// regardless of pressure — the measurement the big-run prompt-fit watch
-    /// reads. `None` when no call reported a count. `#[serde(default)]` for
-    /// pre-field runs.
-    #[serde(default)]
+    /// regardless of pressure — the measurement the big-run prompt-fit watch reads.
+    /// `None` when no call reported a count.
     pub peak_prompt: Option<crate::local_model::PromptUsage>,
-    /// Run-level commodity-context series gaps (FRED energy / IMF metals / FMP
-    /// gold — `docs/portfolio-workflow.md` §Step 5). Counted, never attention:
-    /// the feed is enriching and fail-soft. `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
+    /// Run-level commodity-context series gaps (FRED energy / IMF metals / FMP gold —
+    /// `docs/portfolio-workflow.md` §Step 5). Counted, never attention: the feed is
+    /// enriching and fail-soft.
     pub commodity_gaps: usize,
     /// Run-level CFTC positioning contract gaps — same enriching-feed posture.
-    /// `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
     pub positioning_gaps: usize,
     /// The CBOE put/call backdrop was unavailable this run — same posture.
-    /// `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
     pub cboe_gap: bool,
-    /// The FINRA consolidated short-interest file was unavailable this run —
-    /// same posture. `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
+    /// The FINRA consolidated short-interest file was unavailable this run — same
+    /// posture.
     pub finra_gap: bool,
-    /// Distinct sector-benchmark series a completed holding read as
-    /// unavailable (each starves the technology-event pre-flag for its
-    /// holdings) — same counted-only posture; rebuilt from the holdings' rows,
-    /// so a resumed run counts a benchmark once (Codex I17).
-    /// `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
+    /// Distinct sector-benchmark series a completed holding read as unavailable (each
+    /// starves the technology-event pre-flag for its holdings) — same counted-only
+    /// posture; rebuilt from the holdings' rows, so a resumed run counts a benchmark
+    /// once (Codex I17).
     pub benchmark_gaps: usize,
-    /// Model calls the bounded retry-once recovered — each fired retry's stage
-    /// and failure class (`docs/local-models.md §The local-model adapter
-    /// seam`). In a persisted run every listed re-attempt succeeded (a second
-    /// failure fails the run), so entries measure the absorbed transient rate —
-    /// the big-run retry watch's read. `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
+    /// Model calls the bounded retry-once recovered — each fired retry's stage and
+    /// failure class (`docs/local-models.md §The local-model adapter seam`). In a
+    /// persisted run every listed re-attempt succeeded (a second failure fails the
+    /// run), so entries measure the absorbed transient rate — the big-run retry
+    /// watch's read.
     pub model_retries: Vec<crate::local_model::RetryEvent>,
     /// Infrastructure degradation worth surfacing prominently: deep-history
     /// failures, any current-multiple carry, a run-wide DGS10 history gap,
@@ -1334,8 +1278,7 @@ pub struct PortfolioRollUp {
     pub insufficient_evidence_count: usize,
     /// Analyzed holdings on the `role_risk_only` branch (`docs/portfolio-analysis.md`
     /// §Intrinsic verdict) — counted beside the priced (graded) holdings, never
-    /// pooled with them. `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
+    /// pooled with them.
     pub role_risk_only_count: usize,
     /// The largest single-position weight (0.0–1.0) — the concentration read.
     pub top_position_weight: f64,
@@ -1343,14 +1286,10 @@ pub struct PortfolioRollUp {
     pub cash_weight: f64,
     /// Positions closed since the last run (`docs/portfolio-analysis.md` §Holdings
     /// change tracking) — graded nowhere, but acknowledged here rather than silently
-    /// dropped. Empty on a first run or when nothing was sold. `#[serde(default)]` so a
-    /// run persisted before the field existed still decodes.
-    #[serde(default)]
+    /// dropped. Empty on a first run or when nothing was sold.
     pub exited: Vec<ExitedPosition>,
-    /// The run-level data-health aggregate. `#[serde(default)]` (`None`) so runs
-    /// persisted before the field existed still decode.
-    #[serde(default)]
-    pub data_health: Option<DataHealth>,
+    /// The run-level data-health aggregate.
+    pub data_health: DataHealth,
     /// A short deterministic synthesis line.
     pub overview: String,
 }
@@ -1573,7 +1512,6 @@ pub struct ForensicRead {
     pub state: ForensicFilingState,
     /// The matched hard rule, recorded when tripped (engine conviction capped
     /// Low; the add family barred from the engine action set).
-    #[serde(default)]
     pub matched_rule: Option<String>,
 }
 
@@ -1609,139 +1547,104 @@ pub struct HoldingAudit {
     pub prompt_version: String,
     /// The evidence-floor rule version the holding was floored under
     /// (`engine::EVIDENCE_FLOOR_VERSION`) — attribution, so a floor correction
-    /// never silently re-reads a prior abstention or priced verdict. A run
-    /// persisted before the field decodes as the presence floor,
-    /// `evidence-floor-v1` (`engine::evidence_floor_v1`), never unreadable.
-    #[serde(default = "engine::evidence_floor_v1")]
+    /// never silently re-reads a prior abstention or priced verdict.
     pub evidence_floor_version: String,
     /// Inputs a source could not resolve, carried from the financials' gap manifest.
     pub degraded_inputs: Vec<String>,
-    /// App-stamped annotations from the per-holding action call — today the one
-    /// case is a chosen rung outside the engine's per-holding action set, which
-    /// persists exactly as authored with the departure recorded here (the two-arm
-    /// contract: engine evidence annotates, never bars). Empty on runs persisted
-    /// before the action call existed (`#[serde(default)]`).
-    #[serde(default)]
+    /// App-stamped annotations from the per-holding action call — today the one case
+    /// is a chosen rung outside the engine's per-holding action set, which persists
+    /// exactly as authored with the departure recorded here (the two-arm contract:
+    /// engine evidence annotates, never bars).
     pub action_annotations: Vec<String>,
     /// How the scenario targets were derived — rung, fallbacks, and the parameter
     /// version target calibration keys on (`docs/portfolio-analysis.md` §Outcome
-    /// learning). `None` on a not-rated / abstained / role-risk-only holding, and on
-    /// runs persisted before the field existed (`#[serde(default)]`).
-    #[serde(default)]
+    /// learning). `None` on a not-rated / abstained / role-risk-only holding.
     pub target_meta: Option<engine::TargetMeta>,
     /// The grade-parameter version the letter and sub-scores were computed under
     /// ([`engine::GRADE_PARAMETER_VERSION`]) — the boundary marker that lets the
-    /// what-changed audit and outcome-learning cohorts recognize a parameter
-    /// boundary for what it changed: a band recalibration (letters moving with no
-    /// input change) or a stamped sub-score's input re-homing
-    /// ([`engine::grade_parameter_change`]). `None` on runs persisted before the
-    /// field existed (`#[serde(default)]`) — the pre-tune bands.
-    #[serde(default)]
-    pub grade_parameter_version: Option<String>,
+    /// what-changed audit and outcome-learning cohorts recognize a parameter boundary
+    /// for what it changed: a band recalibration (letters moving with no input
+    /// change) or a stamped sub-score's input re-homing
+    /// ([`engine::grade_parameter_change`]). Stamped on every audit, the early
+    /// exits included.
+    pub grade_parameter_version: String,
     /// The ledger legs of the continuity audit — crossings consumed, downgrades,
-    /// supersessions, closures, rejected claims (`docs/portfolio-workflow.md`
-    /// §Step 6g). `None` on a not-rated holding and on pre-ledger runs
-    /// (`#[serde(default)]`).
-    #[serde(default)]
+    /// supersessions, closures, rejected claims (`docs/portfolio-workflow.md` §Step
+    /// 6g). `None` on a not-rated holding.
     pub ledger_audit: Option<LedgerAudit>,
     /// The stored closed-form re-anchor basis for the engine-only quick paths
     /// (`docs/portfolio-analysis.md` §The quick check) — the anchor-window spread
     /// percentiles, drivers, and comparators the last full pass computed. `None` on
-    /// not-rated / abstained / role-risk-only holdings and on runs persisted before
-    /// the field existed (`#[serde(default)]` — those runs' rate-dependent quick
-    /// families read `unknown` until a full run re-persists).
-    #[serde(default)]
+    /// not-rated / abstained / role-risk-only holdings.
     pub quick_basis: Option<engine::QuickCheckBasis>,
     /// The split-bridge anchor bar (`docs/portfolio-analysis.md` §Starting
     /// parameters): the newest settled close strictly before the run's ET session,
     /// from this run's own fetched dated-EOD series. A later engine-only pass
-    /// re-reads the same bar date from its fresh fetch and the close ratio is
-    /// exactly the cumulative split re-basis between the two fetch times
-    /// ([`engine::split_bridge_factor`]), converting every stored
-    /// price-denominated value onto the fresh basis. Stamped on both analyzed
-    /// branches; `None` on pre-field rows and no-price exits — those rows'
-    /// comparisons run unbridged until their next full pass stamps one.
-    #[serde(default)]
+    /// re-reads the same bar date from its fresh fetch and the close ratio is exactly
+    /// the cumulative split re-basis between the two fetch times
+    /// ([`engine::split_bridge_factor`]), converting every stored price-denominated
+    /// value onto the fresh basis. Stamped on both analyzed branches; `None` on
+    /// no-price exits — those rows' comparisons run unbridged until their next full
+    /// pass stamps one.
     pub authoring_close: Option<engine::DatedValue>,
     /// The fund exposure comparators for the quick check's fund evidence-event legs
     /// (`docs/portfolio-analysis.md` §Starting parameters) — present on a fund
-    /// holding of either verdict branch; `None` on stocks and pre-field runs.
-    #[serde(default)]
+    /// holding of either verdict branch; `None` on stocks.
     pub fund_exposure: Option<fund::FundExposureBasis>,
-    /// The pre-profit execution / financing overlay record (`docs/portfolio-analysis.md`
-    /// §Starting parameters) — present on every priced stock (the eligibility result
-    /// persists even when the stock does not enter; the period-keyed observation
-    /// history rides here so it survives run retention and the selective carry).
-    /// `None` on funds, `role_risk_only` holdings, and pre-field runs
-    /// (`#[serde(default)]`).
-    #[serde(default)]
+    /// The pre-profit execution / financing overlay record
+    /// (`docs/portfolio-analysis.md` §Starting parameters) — present on every priced
+    /// stock (the eligibility result persists even when the stock does not enter; the
+    /// period-keyed observation history rides here so it survives run retention and
+    /// the selective carry). `None` on funds, `role_risk_only` holdings.
     pub pre_profit: Option<pre_profit::PreProfitOverlay>,
-    /// The full hurdle read behind the verdict's three-state `dead_money` field —
-    /// the scenario total-return distribution plus the tier-scaled hurdle rate,
-    /// persisted so a decision episode's calibration snapshot can freeze the
-    /// hurdle inputs (`docs/portfolio-analysis.md` §Outcome learning). `None` on
-    /// not-rated / abstained / role-risk-only holdings and pre-field runs
-    /// (`#[serde(default)]`).
-    #[serde(default)]
+    /// The full hurdle read behind the verdict's three-state `dead_money` field — the
+    /// scenario total-return distribution plus the tier-scaled hurdle rate, persisted
+    /// so a decision episode's calibration snapshot can freeze the hurdle inputs
+    /// (`docs/portfolio-analysis.md` §Outcome learning). `None` on not-rated /
+    /// abstained / role-risk-only holdings.
     pub hurdle: Option<engine::HurdleRead>,
     /// The hard-forensic filings-sweep record ([`ForensicRead`]) — present on a
-    /// priced stock whose gather ran the item-classified 8-K sweep (state
-    /// `Unknown` where it couldn't); `None` on funds, skipped retrievals, and
-    /// runs persisted before the field existed (`#[serde(default)]`).
-    #[serde(default)]
+    /// priced stock whose gather ran the item-classified 8-K sweep (state `Unknown`
+    /// where it couldn't); `None` on funds, skipped retrievals.
     pub forensic: Option<ForensicRead>,
     /// The input delta's technology-event pre-flag record
-    /// ([`engine::TechEventPreFlag`]) — present where the flag was evaluable
-    /// (a carried stock with a benchmark series and a volatility read); an
-    /// unevaluable flag records its reason in `degraded_inputs` instead.
-    /// `None` on debuts, funds, and pre-field runs (`#[serde(default)]`).
-    #[serde(default)]
+    /// ([`engine::TechEventPreFlag`]) — present where the flag was evaluable (a
+    /// carried stock with a benchmark series and a volatility read); an unevaluable
+    /// flag records its reason in `degraded_inputs` instead. `None` on debuts, funds.
     pub tech_event_pre_flag: Option<engine::TechEventPreFlag>,
-    /// This holding's FINRA short-interest row off the once-per-run
-    /// consolidated file (`docs/data-sources.md §FINRA`) — risk /
-    /// squeeze-context positioning evidence, held out of every sub-score.
-    /// `None` on funds, symbols absent from the file, runs whose file fetch
-    /// gapped, and pre-field runs (`#[serde(default)]`).
-    #[serde(default)]
+    /// This holding's FINRA short-interest row off the once-per-run consolidated file
+    /// (`docs/data-sources.md §FINRA`) — risk / squeeze-context positioning evidence,
+    /// held out of every sub-score. `None` on funds, symbols absent from the file,
+    /// runs whose file fetch gapped.
     pub short_interest: Option<crate::finra::ShortInterestRead>,
     /// The implied-expectations range ([`engine::ImpliedExpectations`]) the
-    /// interpretation prompt rendered — the priced-in anchor, recorded per
-    /// priced stock (`docs/portfolio-analysis.md` §Starting parameters).
-    /// `None` on funds, the current-multiple carry, every early exit, and
-    /// pre-field runs (`#[serde(default)]`).
-    #[serde(default)]
+    /// interpretation prompt rendered — the priced-in anchor, recorded per priced
+    /// stock (`docs/portfolio-analysis.md` §Starting parameters). `None` on funds,
+    /// the current-multiple carry, every early exit.
     pub implied_expectations: Option<engine::ImpliedExpectations>,
     /// The narrative-vs-reality read ([`engine::NarrativeRead`]) — the
-    /// conviction-layer red-flag ratio with, when tripped, its matched soft
-    /// rule (the engine arm's Medium ceiling), persisted as an annotation
-    /// exactly as a pre-profit ceiling is (`docs/portfolio-workflow.md`
-    /// §Step 6g). `None` on funds, debuts, unreadable paces (the reason rides
-    /// `degraded_inputs`), every early exit, and pre-field runs
-    /// (`#[serde(default)]`).
-    #[serde(default)]
+    /// conviction-layer red-flag ratio with, when tripped, its matched soft rule (the
+    /// engine arm's Medium ceiling), persisted as an annotation exactly as a
+    /// pre-profit ceiling is (`docs/portfolio-workflow.md` §Step 6g). `None` on
+    /// funds, debuts, unreadable paces (the reason rides `degraded_inputs`), every
+    /// early exit.
     pub narrative: Option<engine::NarrativeRead>,
-    /// The typed same-underlying option overlay
-    /// ([`dossier::OptionOverlay`]) the holding carried — legs, class,
-    /// coverage, and delta gaps, recorded wherever the dossier assembled one.
-    /// `None` on holdings with no option legs, funds, skipped retrievals, and
-    /// pre-field runs (`#[serde(default)]`).
-    #[serde(default)]
+    /// The typed same-underlying option overlay ([`dossier::OptionOverlay`]) the
+    /// holding carried — legs, class, coverage, and delta gaps, recorded wherever the
+    /// dossier assembled one. `None` on holdings with no option legs, funds, skipped
+    /// retrievals.
     pub option_overlay: Option<dossier::OptionOverlay>,
-    /// The validated what-changed attribution ([`WhatChangedAudit`]) — the typed
-    /// rows resolved against the rendered input delta at the 6g seam, with the
-    /// standing-thesis and self-correction signals outcome learning consumes.
-    /// `None` on debuts, every early exit, and pre-field runs
-    /// (`#[serde(default)]`).
-    #[serde(default)]
+    /// The validated what-changed attribution ([`WhatChangedAudit`]) — the typed rows
+    /// resolved against the rendered input delta at the 6g seam, with the
+    /// standing-thesis and self-correction signals outcome learning consumes. `None`
+    /// on debuts, every early exit.
     pub what_changed_audit: Option<WhatChangedAudit>,
     /// The research-loop audit record (`docs/storage.md §Local Analysis Suite
-    /// Storage` — the research-derived artifacts): sources with retrieval
-    /// timestamps, the distilled findings (the combined object and the
-    /// reconciled per-topic seed layer), per-topic seeded-vs-cold decisions,
-    /// budget spend, and the distillation shape. `None` on every no-research
-    /// exit (not-rated, the listing guard, an evidence-floor abstention) and
-    /// on runs persisted before the research loop landed (`#[serde(default)]`).
-    #[serde(default)]
+    /// Storage` — the research-derived artifacts): sources with retrieval timestamps,
+    /// the distilled findings (the combined object and the reconciled per-topic seed
+    /// layer), per-topic seeded-vs-cold decisions, budget spend, and the distillation
+    /// shape. `None` on every no-research exit (not-rated, the listing guard, an
+    /// evidence-floor abstention).
     pub research: Option<distill::ResearchAuditRecord>,
 }
 
@@ -1972,17 +1875,13 @@ pub struct PortfolioRun {
     /// The run-level `DGS2` / `DGS10` prints the targets and hurdles were computed
     /// from, with their as-of dates — the persisted rate cache the engine-only quick
     /// paths' fail-soft reads (`docs/portfolio-analysis.md` §The quick check;
-    /// §Starting parameters, rate-cache max age). `None` on runs persisted before
-    /// the field existed (`#[serde(default)]`).
-    #[serde(default)]
-    pub rate_prints: Option<RatePrints>,
-    /// This run's outcome-learning records — appended / extended episodes, this
-    /// run's alignment tags, newly matured window labels, and the derived
-    /// scorecard reads (`docs/portfolio-analysis.md` §Outcome learning;
-    /// `docs/portfolio-workflow.md` §Step 7a, §Step 8). `None` on runs persisted
-    /// before the field existed (`#[serde(default)]`).
-    #[serde(default)]
-    pub outcome: Option<outcome::OutcomeRecords>,
+    /// §Starting parameters, rate-cache max age).
+    pub rate_prints: RatePrints,
+    /// This run's outcome-learning records — appended / extended episodes, this run's
+    /// alignment tags, newly matured window labels, and the derived scorecard reads
+    /// (`docs/portfolio-analysis.md` §Outcome learning; `docs/portfolio-workflow.md`
+    /// §Step 7a, §Step 8).
+    pub outcome: outcome::OutcomeRecords,
 }
 
 /// The action a carried verdict would stand on — `None` where the disposition
@@ -2001,13 +1900,11 @@ pub(crate) fn carried_action(verdict: &HoldingVerdict) -> Option<Action> {
 /// The persisted run-level rate prints (see [`PortfolioRun::rate_prints`]). The
 /// as-of dates are the prints' FRED observation dates; `fetched_at` is the run
 /// timestamp, the age fallback where a source carried no observation date.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RatePrints {
     pub dgs2: f64,
     pub dgs10: f64,
-    #[serde(default)]
     pub dgs2_as_of: Option<String>,
-    #[serde(default)]
     pub dgs10_as_of: Option<String>,
     pub fetched_at: String,
 }
@@ -2168,7 +2065,6 @@ pub struct DeltaEntry {
     /// a qualitative tripped/fired claim needs, surfaced to the interpretation
     /// prompt as a research-supported mark on that condition
     /// (`docs/portfolio-workflow.md` §Step 6d, §Step 6g).
-    #[serde(default)]
     pub related_condition_id: Option<String>,
 }
 
@@ -2176,8 +2072,7 @@ pub struct DeltaEntry {
 /// (`docs/portfolio-workflow.md` §Step 6g): the post-validation rows (an
 /// unresolvable external attribution downgraded to self-correction), the input
 /// delta they resolved against, and the two signals outcome learning consumes.
-/// `None` on debuts (nothing to attribute), every early exit, and runs persisted
-/// before the validator existed.
+/// `None` on debuts (nothing to attribute) and every early exit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WhatChangedAudit {
     pub entries: Vec<WhatChangedEntry>,
@@ -2861,37 +2756,17 @@ mod tests {
         assert_eq!(role_families, vec!["trim", "sell"], "no add family on role_risk");
     }
 
-    #[test]
-    fn verdicts_persisted_before_the_ledger_decode_with_none() {
-        // A pre-ledger run's verdict JSON (no `thesis_ledger` key) decodes cleanly —
-        // the debut path for every holding on the first post-ledger run.
-        let legacy = json!({
-            "symbol": "AAPL",
-            "asset_class": "stock",
-            "disposition": { "status": "not-rated", "reason": "fixture" }
-        });
-        let parsed: HoldingVerdict = serde_json::from_value(legacy).unwrap();
-        assert!(parsed.thesis_ledger.is_none());
-        // The selective-slice fields decode from the same legacy JSON: no vintage
-        // stamp (the verdict's vintage is its own run's `created_at`) and the
-        // default model-chosen action source.
-        assert!(parsed.analyzed_at.is_none());
-        assert_eq!(parsed.action_source, ActionSource::ModelChosen);
-        assert_eq!(
-            effective_vintage(&parsed, "2026-07-31T12:00:00+00:00"),
-            "2026-07-31T12:00:00+00:00",
-            "a pre-field verdict's effective vintage is its run's created_at"
-        );
-    }
 
     #[test]
     fn a_stamped_vintage_wins_over_the_run_date() {
         let stamped = json!({
             "symbol": "AAPL",
             "asset_class": "stock",
+            "position_change": "unchanged",
             "disposition": { "status": "not-rated", "reason": "fixture" },
             "analyzed_at": "2026-07-01T09:00:00+00:00",
-            "action_source": "rule-demoted"
+            "action_source": "rule-demoted",
+            "side_reversed": false
         });
         let parsed: HoldingVerdict = serde_json::from_value(stamped).unwrap();
         assert_eq!(
@@ -3060,24 +2935,4 @@ mod tests {
         assert_eq!(round, v);
     }
 
-    #[test]
-    fn pre_cef_role_risk_rows_deserialize_with_defaults() {
-        // Rows persisted before the CEF leg carry neither `is_cef` nor
-        // `nav_premium` — the serde defaults must read them (false / None),
-        // never an error, so old runs keep rendering.
-        let old = r#"{
-            "class_label": "bond fund",
-            "role_summary": "core fixed-income sleeve",
-            "exposure_tilt": [],
-            "expense_drag": null,
-            "observable_risk": null,
-            "structural_flag": false,
-            "evidence_gaps": [],
-            "action": "hold",
-            "what_changed": "new holding"
-        }"#;
-        let v: RoleRiskVerdict = serde_json::from_str(old).unwrap();
-        assert!(!v.is_cef);
-        assert_eq!(v.nav_premium, None);
-    }
 }
