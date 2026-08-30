@@ -45,7 +45,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::portfolio::pre_profit::{BackfillAttempt, PreProfitObservation};
+use crate::portfolio::pre_profit::{BackfillAttempt, ObservationCandidate};
 use crate::portfolio::research::{DistilledClaim, HoldingResearch, TopicDistillate};
 
 // ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ pub struct DistilledResearch {
     pub forward_assumption: Option<ResearchForwardAssumption>,
     pub leading_indicator: Option<ValidatedLeadingIndicator>,
     pub forensic_event: Option<ForensicEventClaim>,
-    pub pre_profit_observations: Vec<PreProfitObservation>,
+    pub pre_profit_observations: Vec<ObservationCandidate>,
     pub backfill: Option<BackfillAttempt>,
     pub shape: DistillShape,
     /// Recorded degraded-input gaps (dropped claims/fields, dropped passes).
@@ -526,7 +526,7 @@ struct CombinedWire {
     #[serde(default)]
     forensic_event: Option<ForensicEventClaim>,
     #[serde(default)]
-    pre_profit_observations: Vec<PreProfitObservation>,
+    pre_profit_observations: Vec<ObservationCandidate>,
     #[serde(default)]
     backfill: Option<BackfillAttempt>,
 }
@@ -3184,6 +3184,10 @@ mod tests {
         assert_eq!(row["properties"]["source_excerpt"]["type"], "string");
         let required = row["required"].as_array().expect("required list");
         assert!(required.iter().any(|f| f == "source_excerpt"));
+        // The admission stamp is app-written at acceptance (Codex I20): the
+        // model's row neither carries nor requires it.
+        assert!(row["properties"].get("admitted_under").is_none());
+        assert!(!required.iter().any(|f| f == "admitted_under"));
         let research = research_one_topic();
         let mut ins = inputs(&research, &[], &[]);
         ins.overlay_eligible = true;

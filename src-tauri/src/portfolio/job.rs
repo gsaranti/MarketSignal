@@ -5282,7 +5282,13 @@ mod tests {
         // A checkpoint-format drift refuses too: the trail's rows were written
         // under another shape, and the gate refuses with its reason rather than
         // loud-skipping every row and offering a resume that restores nothing
-        // (Codex I17 / I18, ruled 2026-08-29).
+        // (Codex I17 / I18, ruled 2026-08-29) — the immediately prior
+        // `checkpoint-v2`, whose overlay rows carry no admission stamp (Codex
+        // I20), and the `v1` shape alike.
+        let mut drifted = cp.clone();
+        drifted.header.checkpoint_format_version = "checkpoint-v2".into();
+        let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("checkpoint format"), "{err}");
         let mut drifted = cp.clone();
         drifted.header.checkpoint_format_version = "checkpoint-v1".into();
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();

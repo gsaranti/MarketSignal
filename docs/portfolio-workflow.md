@@ -329,6 +329,14 @@ The residual that remains is a single-number quote whose number is not what the 
 A negative lexicon of competing nouns was declined at the same ruling.
 Units and period stay unbound by the excerpt — prose units rarely match the typed string, and a period render inside one sentence is unreliable — so the row's period remains the model's typed claim.
 The excerpt persists on every accepted and rejected row for audit by eye.
+Each accepted row also persists the prompt stamp it was admitted under (`admitted_under`), written by the app at acceptance and never by the model (ruled 2026-08-29 off the large-scale review's Codex I20).
+The admission contract rides `portfolio::PROMPT_VERSION`, so the stamp names the contract's own axis.
+The history is never re-admitted through a later filter.
+A row admitted under a looser contract stays in the history, telling itself apart by its stamp.
+The audit and any later calibration of the stem table read the stamp to tell old rows from rows the current contract would admit.
+The stamp sits outside the dedup key, so the same fact re-offered under a later contract rejects as a duplicate and the first admission stands.
+A rejected row takes no stamp: the rejected list is rebuilt from the candidate batch whenever the holding is re-analyzed, and the prior overlay's rejected rows are never read.
+A carried verdict carries its prior audit whole, rejected rows included, so the audit's own prompt version names the contract that rejected them in either case.
 The sign rule lives in the shared corroboration primitive, so the forward assumption's value and stated-range checks and the leading indicator's value check read at the printed sign too.
 The identity matcher is **structural, never list-driven**: the symbol matches only in ticker context (an exact-case word preceded by `$`, or by a colon whose own label word is an exchange / ticker marker — `NYSE: CAT` qualifies, a generic label like `Risk: LOW` never does — so a bare uppercase word is not identity evidence and English-word tickers can never match prose or page furniture), and an issuer-name token matches only as a distinctive capitalized word (generic corporate suffixes never qualify), a sentence-initial match additionally requiring the proper-noun run ("Target Corporation reported" identifies, "Target price increased" does not).
 A period that does not normalize to an ISO period-end **rejects the row** — two rows sharing a fabricated prose period must never pair into an execution miss.

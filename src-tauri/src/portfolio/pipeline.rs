@@ -11683,6 +11683,7 @@ mod tests {
             source_excerpt: format!("reported deliveries of {value} units"),
             published_at,
             confidence: 0.9,
+            admitted_under: crate::portfolio::PROMPT_VERSION.into(),
         }
     }
 

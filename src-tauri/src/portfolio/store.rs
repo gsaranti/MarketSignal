@@ -200,8 +200,10 @@ pub struct CheckpointHeader {
 /// obliged to move (`docs/portfolio-analysis.md` §Failure posture, ruled
 /// 2026-08-29). History: `checkpoint-v1` — telemetry on the row, cumulative
 /// counters on the accumulators; `checkpoint-v2` — the deep-history and
-/// benchmark health on the row (Codex I17).
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v2";
+/// benchmark health on the row (Codex I17); `checkpoint-v3` — the admission
+/// stamp on the overlay's observation rows inside the row's audit (Codex
+/// I20).
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v3";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1387,12 +1389,13 @@ mod tests {
     fn an_observation_row_round_trips_its_source_excerpt_through_the_run() {
         // The pre-profit row's quoted excerpt persists on accepted and
         // rejected rows alike, through the run record's JSON (the large-scale
-        // review's I3, Codex round 1).
+        // review's I3, Codex round 1), and an accepted row's admission stamp
+        // rides with it — whatever stamp it was admitted under (Codex I20).
         use crate::portfolio::pre_profit::{
-            compute_overlay, MetricKind, ObservationPolarity, ObservationRole,
-            PreProfitObservation, RejectedObservation,
+            compute_overlay, MetricKind, ObservationCandidate, ObservationPolarity,
+            ObservationRole, RejectedObservation,
         };
-        let row = |value: f64, excerpt: &str| PreProfitObservation {
+        let row = |value: f64, excerpt: &str| ObservationCandidate {
             metric_kind: MetricKind::Deliveries,
             observation_role: ObservationRole::Actual,
             polarity: ObservationPolarity::HigherIsBetter,
@@ -1412,7 +1415,7 @@ mod tests {
         );
         overlay
             .observations
-            .push(row(141.0, "deliveries reached 141 units"));
+            .push(row(141.0, "deliveries reached 141 units").admit("portfolio-v17"));
         overlay.rejected.push(RejectedObservation {
             observation: row(41.0, "revenue was 41 million"),
             reason: "metric-context check failed".into(),
@@ -1428,6 +1431,7 @@ mod tests {
             overlay.observations[0].source_excerpt,
             "deliveries reached 141 units"
         );
+        assert_eq!(overlay.observations[0].admitted_under, "portfolio-v17");
         assert_eq!(
             overlay.rejected[0].observation.source_excerpt,
             "revenue was 41 million"

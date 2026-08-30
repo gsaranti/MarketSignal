@@ -195,11 +195,14 @@ pub enum ObservationPolarity {
     TargetBand,
 }
 
-/// One app-validated operating observation — the research leg's only entry into the
-/// overlay. The model may extract a row only from source text that states the
-/// value; validation and computation own every comparison and state.
+/// One operating observation as the model offers it — the 6d wire row and the
+/// pre-admission candidate (`docs/portfolio-workflow.md` §Step 6d). The model
+/// may extract a row only from source text that states the value; validation
+/// and computation own every comparison and state. A candidate reaches the
+/// history only as a [`PreProfitObservation`], stamped at acceptance — this
+/// type carries no stamp field, so the model can never author one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PreProfitObservation {
+pub struct ObservationCandidate {
     pub metric_kind: MetricKind,
     pub observation_role: ObservationRole,
     pub polarity: ObservationPolarity,
@@ -224,43 +227,145 @@ pub struct PreProfitObservation {
     pub confidence: f64,
 }
 
-impl PreProfitObservation {
-    /// The normalized metric identity misses group under: kind + units + issuer
-    /// scope (`docs/portfolio-analysis.md` §Starting parameters — "the same
-    /// normalized metric identity, issuer scope / perimeter, and units").
-    pub(crate) fn identity(&self) -> (String, String, String) {
-        (
-            self.metric_kind.as_str().to_string(),
-            self.units.trim().to_ascii_lowercase(),
-            self.issuer_scope.trim().to_ascii_lowercase(),
-        )
+/// One app-validated operating observation in the overlay's period-keyed
+/// history — the research leg's only entry into the overlay: a candidate the
+/// admission contract accepted, carrying the prompt stamp it was admitted
+/// under. The fields mirror [`ObservationCandidate`] one for one; only the
+/// stamp is added, by [`ObservationCandidate::admit`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreProfitObservation {
+    pub metric_kind: MetricKind,
+    pub observation_role: ObservationRole,
+    pub polarity: ObservationPolarity,
+    pub numeric_value: f64,
+    pub units: String,
+    /// See [`ObservationCandidate::period`].
+    pub period: String,
+    pub issuer_scope: String,
+    pub source_url: String,
+    /// See [`ObservationCandidate::source_excerpt`].
+    pub source_excerpt: String,
+    pub published_at: String,
+    /// Extraction confidence, 0–1.
+    pub confidence: f64,
+    /// The prompt stamp (`portfolio::PROMPT_VERSION`) whose admission contract
+    /// admitted the row — written by the app at acceptance, never by the model
+    /// (`docs/portfolio-workflow.md` §Step 6e; the 2026-08-24 review's Codex
+    /// I20). The history is never re-admitted through a later filter, so a row
+    /// admitted under a looser contract stays in the history telling itself
+    /// apart by this stamp, read by the audit and by a later calibration of
+    /// the stem table. The dedup key leaves it out: the same fact re-offered
+    /// under a later contract is a duplicate, and the first admission stands.
+    /// No serde default — no store holds a row without it.
+    pub admitted_under: String,
+}
+
+/// The normalized metric identity misses group under: kind + units + issuer
+/// scope (`docs/portfolio-analysis.md` §Starting parameters — "the same
+/// normalized metric identity, issuer scope / perimeter, and units").
+fn identity_of(metric_kind: MetricKind, units: &str, issuer_scope: &str) -> (String, String, String) {
+    (
+        metric_kind.as_str().to_string(),
+        units.trim().to_ascii_lowercase(),
+        issuer_scope.trim().to_ascii_lowercase(),
+    )
+}
+
+/// The dedup key's shape: the identity, the role, the period, the source URL,
+/// the publication date, and the value's bit pattern.
+type DedupKey = (String, String, String, ObservationRole, String, String, String, u64);
+
+/// The dedup key (`docs/storage.md` — "deduplicated by issuer + normalized
+/// metric identity + role + period + source URL + publication date +
+/// value"). A duplicate is the same fact re-offered — the same source
+/// stating the same value on the same date; a same-source revision (a new
+/// date and value) or a same-page conflict (one date, two values) is a
+/// distinct observation that must reach the execution read, where the
+/// guidance vintage policy selects the revision or drops the conflicting
+/// period (Codex I4, round 1). The date is the parsed ISO render so the two
+/// spellings of one day collapse; the value keys on its bit pattern (every
+/// admitted value is finite). The admission stamp is deliberately outside
+/// the key (Codex I20): a stored row re-offered under a later contract is a
+/// duplicate and keeps its first stamp. Shared by the candidate and the
+/// admitted row, so a candidate's key compares against the history's.
+#[allow(clippy::too_many_arguments)]
+fn dedup_key_of(
+    metric_kind: MetricKind,
+    units: &str,
+    issuer_scope: &str,
+    observation_role: ObservationRole,
+    period: &str,
+    source_url: &str,
+    published_at: &str,
+    numeric_value: f64,
+) -> DedupKey {
+    let (kind, units, scope) = identity_of(metric_kind, units, issuer_scope);
+    let published = published_date(published_at)
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| published_at.trim().to_string());
+    (
+        kind,
+        units,
+        scope,
+        observation_role,
+        period.trim().to_string(),
+        source_url.trim().to_string(),
+        published,
+        numeric_value.to_bits(),
+    )
+}
+
+impl ObservationCandidate {
+    /// Admit the candidate into the history under the prompt stamp whose
+    /// contract accepted it — the one place a [`PreProfitObservation`] is
+    /// built from a model row, so every admitted row carries its stamp.
+    pub fn admit(self, admitted_under: &str) -> PreProfitObservation {
+        PreProfitObservation {
+            metric_kind: self.metric_kind,
+            observation_role: self.observation_role,
+            polarity: self.polarity,
+            numeric_value: self.numeric_value,
+            units: self.units,
+            period: self.period,
+            issuer_scope: self.issuer_scope,
+            source_url: self.source_url,
+            source_excerpt: self.source_excerpt,
+            published_at: self.published_at,
+            confidence: self.confidence,
+            admitted_under: admitted_under.to_string(),
+        }
     }
 
-    /// The dedup key (`docs/storage.md` — "deduplicated by issuer + normalized
-    /// metric identity + role + period + source URL + publication date +
-    /// value"). A duplicate is the same fact re-offered — the same source
-    /// stating the same value on the same date; a same-source revision (a new
-    /// date and value) or a same-page conflict (one date, two values) is a
-    /// distinct observation that must reach the execution read, where the
-    /// guidance vintage policy selects the revision or drops the conflicting
-    /// period (Codex I4, round 1). The date is the parsed ISO render so the two
-    /// spellings of one day collapse; the value keys on its bit pattern (every
-    /// admitted value is finite).
-    #[allow(clippy::type_complexity)]
-    fn dedup_key(&self) -> (String, String, String, ObservationRole, String, String, String, u64) {
-        let (kind, units, scope) = self.identity();
-        let published = published_date(self)
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| self.published_at.trim().to_string());
-        (
-            kind,
-            units,
-            scope,
+    fn dedup_key(&self) -> DedupKey {
+        dedup_key_of(
+            self.metric_kind,
+            &self.units,
+            &self.issuer_scope,
             self.observation_role,
-            self.period.trim().to_string(),
-            self.source_url.trim().to_string(),
-            published,
-            self.numeric_value.to_bits(),
+            &self.period,
+            &self.source_url,
+            &self.published_at,
+            self.numeric_value,
+        )
+    }
+}
+
+impl PreProfitObservation {
+    /// See [`identity_of`].
+    pub(crate) fn identity(&self) -> (String, String, String) {
+        identity_of(self.metric_kind, &self.units, &self.issuer_scope)
+    }
+
+    fn dedup_key(&self) -> DedupKey {
+        dedup_key_of(
+            self.metric_kind,
+            &self.units,
+            &self.issuer_scope,
+            self.observation_role,
+            &self.period,
+            &self.source_url,
+            &self.published_at,
+            self.numeric_value,
         )
     }
 }
@@ -313,10 +418,15 @@ pub fn backfill_required(current: &PreProfitOverlay, prior: Option<&PreProfitOve
 }
 
 /// A rejected candidate row with its validation reason — persisted so the audit
-/// shows what research offered and why it did not enter the history.
+/// shows what research offered and why it did not enter the history. It holds
+/// the candidate as offered and takes no admission stamp: the list is rebuilt
+/// from the candidate batch whenever the holding is re-analyzed (the prior
+/// overlay's rejected rows are never read), and a carried verdict carries its
+/// prior audit whole, rejected rows included, so the audit's own prompt
+/// version names the contract that rejected them either way.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RejectedObservation {
-    pub observation: PreProfitObservation,
+    pub observation: ObservationCandidate,
     pub reason: String,
 }
 
@@ -473,7 +583,7 @@ impl PreProfitOverlay {
 pub fn compute_overlay(
     fin: &CompanyFinancials,
     prior: Option<&PreProfitOverlay>,
-    candidates: Vec<PreProfitObservation>,
+    candidates: Vec<ObservationCandidate>,
 ) -> PreProfitOverlay {
     compute_overlay_with_sources(fin, prior, candidates, None)
 }
@@ -481,11 +591,12 @@ pub fn compute_overlay(
 /// The evidenced form — the research loop's producer path: candidate rows are
 /// validated with the two activation legs against the loop's fetched pages
 /// (`docs/portfolio-workflow.md` §Step 6e). The unevidenced [`compute_overlay`]
-/// rejects every candidate, so rows enter the history only through this seam.
+/// rejects every candidate, so rows enter the history only through this seam,
+/// each stamped with the prompt version it was admitted under (Codex I20).
 pub fn compute_overlay_with_sources(
     fin: &CompanyFinancials,
     prior: Option<&PreProfitOverlay>,
-    candidates: Vec<PreProfitObservation>,
+    candidates: Vec<ObservationCandidate>,
     evidence: Option<&SourceEvidence<'_>>,
 ) -> PreProfitOverlay {
     let mut gaps: Vec<String> = Vec::new();
@@ -1335,7 +1446,7 @@ fn page_mentions_holding(text: &str, symbol: &str, company_name: Option<&str>) -
 /// row's metric-family language, so the number is bound to one sentence about
 /// the declared metric rather than to "somewhere on the page".
 fn validate_against_source(
-    o: &PreProfitObservation,
+    o: &ObservationCandidate,
     evidence: &SourceEvidence<'_>,
 ) -> Result<(), String> {
     let normalized = crate::web_research::store::normalize_url(&o.source_url);
@@ -1417,8 +1528,11 @@ fn validate_against_source(
 /// convention before the dedup key is taken. With `evidence` present the two
 /// activation legs run per row; **without it every candidate is rejected** —
 /// the producer's rows can only enter through the research loop's lineage.
+/// An accepted row is stamped at acceptance with the prompt version whose
+/// contract admitted it ([`PreProfitObservation::admitted_under`]); a
+/// rejected row is returned as the candidate it was offered as.
 pub fn validate_observations(
-    candidates: Vec<PreProfitObservation>,
+    candidates: Vec<ObservationCandidate>,
     history: &[PreProfitObservation],
     evidence: Option<&SourceEvidence<'_>>,
 ) -> (Vec<PreProfitObservation>, Vec<RejectedObservation>) {
@@ -1460,7 +1574,7 @@ pub fn validate_observations(
             continue;
         }
         seen.insert(key);
-        accepted.push(candidate);
+        accepted.push(candidate.admit(crate::portfolio::PROMPT_VERSION));
     }
     (accepted, rejected)
 }
@@ -1476,7 +1590,7 @@ pub fn validate_observations(
 /// the recorded obligation when it connected the producer); an unevidenced
 /// call rejects every candidate, so this structural pass alone can never
 /// admit a row.
-fn validate_observation(o: &PreProfitObservation) -> Result<(), String> {
+fn validate_observation(o: &ObservationCandidate) -> Result<(), String> {
     if !o.numeric_value.is_finite() {
         return Err("non-finite numeric value".to_string());
     }
@@ -1512,7 +1626,7 @@ fn validate_observation(o: &PreProfitObservation) -> Result<(), String> {
     // An ISO date (or an RFC 3339 timestamp's date prefix) — a bare non-date
     // string cannot anchor the observation's publication, nor take a vintage
     // at pairing (the same parse, shared with the execution read).
-    if published_date(o).is_none() {
+    if published_date(&o.published_at).is_none() {
         return Err(format!(
             "published-at {:?} is not an ISO date",
             o.published_at
@@ -1555,8 +1669,8 @@ pub fn merge_observations(
 /// compared as a string, so `2026-05-01` and `2026-05-01T09:00:00Z` read as
 /// one day. `None` for an undatable row — impossible past validation, so the
 /// read fails closed on it rather than panicking.
-fn published_date(o: &PreProfitObservation) -> Option<chrono::NaiveDate> {
-    o.published_at
+fn published_date(published_at: &str) -> Option<chrono::NaiveDate> {
+    published_at
         .trim()
         .get(..10)
         .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
@@ -1658,7 +1772,7 @@ pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
             continue;
         }
         // An undatable row cannot take a vintage, so it never pairs.
-        let Some(published) = published_date(o) else {
+        let Some(published) = published_date(&o.published_at) else {
             continue;
         };
         let key = o.identity();
@@ -1921,7 +2035,7 @@ mod tests {
         role: ObservationRole,
         value: f64,
         period: &str,
-    ) -> PreProfitObservation {
+    ) -> ObservationCandidate {
         let period = normalize_period(period);
         let published_at = chrono::NaiveDate::parse_from_str(&period, "%Y-%m-%d")
             .ok()
@@ -1937,7 +2051,7 @@ mod tests {
                     .to_string()
             })
             .unwrap_or_else(|| "2026-08-01".to_string());
-        PreProfitObservation {
+        ObservationCandidate {
             metric_kind: kind,
             observation_role: role,
             polarity: ObservationPolarity::HigherIsBetter,
@@ -1952,10 +2066,22 @@ mod tests {
         }
     }
 
-    /// The row re-dated — the vintage tests' one knob.
-    fn dated(mut o: PreProfitObservation, published_at: &str) -> PreProfitObservation {
+    /// The candidate re-dated — the vintage tests' one knob.
+    fn dated(mut o: ObservationCandidate, published_at: &str) -> ObservationCandidate {
         o.published_at = published_at.into();
         o
+    }
+
+    /// An admitted row re-dated — the same knob on a history row.
+    fn redated(mut o: PreProfitObservation, published_at: &str) -> PreProfitObservation {
+        o.published_at = published_at.into();
+        o
+    }
+
+    /// The candidate admitted into a history fixture under the current prompt
+    /// stamp — what acceptance writes (Codex I20).
+    fn admitted(o: ObservationCandidate) -> PreProfitObservation {
+        o.admit(crate::portfolio::PROMPT_VERSION)
     }
 
     // ---- Eligibility ----
@@ -2191,15 +2317,15 @@ mod tests {
     #[test]
     fn validation_rejects_malformed_rows_with_reasons() {
         let good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
-        let bad_value = PreProfitObservation {
+        let bad_value = ObservationCandidate {
             numeric_value: f64::NAN,
             ..good.clone()
         };
-        let bad_source = PreProfitObservation {
+        let bad_source = ObservationCandidate {
             source_url: "not a url".into(),
             ..good.clone()
         };
-        let bad_polarity = PreProfitObservation {
+        let bad_polarity = ObservationCandidate {
             polarity: ObservationPolarity::LowerIsBetter,
             ..good.clone()
         };
@@ -2228,7 +2354,7 @@ mod tests {
         // Stored history holds normalized periods (it came from prior accepted
         // rows); a re-offered duplicate normalizes to the same key.
         let stored =
-            observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-06-30");
+            admitted(observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-06-30"));
         let dup = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
         let fresh = observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q1");
         let texts = evidence_texts(&[100.0, 90.0]);
@@ -2258,10 +2384,10 @@ mod tests {
         // in July — the revision enters and binds (2.2%, in-line), in either
         // candidate order.
         let mut prior = compute_overlay(&burning_stock(), None, vec![]);
-        prior.observations.push(dated(
+        prior.observations.push(admitted(dated(
             observation(MetricKind::Deliveries, ObservationRole::PointGuidance, 100.0, "2026-06-30"),
             "2026-01-15",
-        ));
+        )));
         let revised = dated(
             observation(MetricKind::Deliveries, ObservationRole::PointGuidance, 90.0, "2026-06-30"),
             "2026-05-10",
@@ -2389,7 +2515,7 @@ mod tests {
 
         // A digit-substring never corroborates: 41 must not match inside 141,
         // even when the quoted sentence is genuinely on the page.
-        let short = PreProfitObservation {
+        let short = ObservationCandidate {
             source_excerpt: "reported deliveries of 141 units".into(),
             ..observation(MetricKind::Deliveries, ObservationRole::Actual, 41.0, "2026-Q2")
         };
@@ -2407,7 +2533,7 @@ mod tests {
         assert!(rejected[0].reason.contains("does not appear at its sign in the quoted excerpt"));
 
         // Comma-separated renderings still corroborate (12,000 states 12000).
-        let big = PreProfitObservation {
+        let big = ObservationCandidate {
             source_excerpt: "reported deliveries of 12,000 units".into(),
             ..observation(MetricKind::Deliveries, ObservationRole::Actual, 12000.0, "2026-Q2")
         };
@@ -2428,11 +2554,11 @@ mod tests {
     #[test]
     fn the_excerpt_is_a_bounded_locator_checked_before_the_page() {
         let good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
-        let missing = PreProfitObservation {
+        let missing = ObservationCandidate {
             source_excerpt: "  ".into(),
             ..good.clone()
         };
-        let over_cap = PreProfitObservation {
+        let over_cap = ObservationCandidate {
             source_excerpt: "x".repeat(SOURCE_EXCERPT_CAP_CHARS + 1),
             ..good.clone()
         };
@@ -2469,7 +2595,7 @@ mod tests {
             symbol: "ACME",
             company_name: None,
         };
-        let row = |value: f64, excerpt: &str| PreProfitObservation {
+        let row = |value: f64, excerpt: &str| ObservationCandidate {
             source_excerpt: excerpt.into(),
             ..observation(MetricKind::Deliveries, ObservationRole::Actual, value, "2026-Q2")
         };
@@ -2516,7 +2642,7 @@ mod tests {
         assert_eq!(accepted.len(), 1, "{rejected:?}");
         // A positive unit-economics row cannot ride the accounting-negative
         // print; the negative row it actually states does.
-        let margin = PreProfitObservation {
+        let margin = ObservationCandidate {
             source_excerpt: "gross margin was (12)%".into(),
             ..observation(MetricKind::UnitEconomics, ObservationRole::Actual, 12.0, "2026-Q2")
         };
@@ -2526,7 +2652,7 @@ mod tests {
             "{}",
             rejected[0].reason
         );
-        let negative = PreProfitObservation {
+        let negative = ObservationCandidate {
             numeric_value: -12.0,
             ..margin
         };
@@ -2546,12 +2672,12 @@ mod tests {
             texts.insert("https://example.com/report".to_string(), text.to_string());
             texts
         };
-        let row = |kind: MetricKind, value: f64, excerpt: &str| PreProfitObservation {
+        let row = |kind: MetricKind, value: f64, excerpt: &str| ObservationCandidate {
             source_excerpt: excerpt.into(),
             ..observation(kind, ObservationRole::Actual, value, "2026-Q2")
         };
         let run = |texts: &std::collections::HashMap<String, String>,
-                   candidate: PreProfitObservation| {
+                   candidate: ObservationCandidate| {
             let evidence = SourceEvidence {
                 texts,
                 symbol: "ACME",
@@ -2608,13 +2734,13 @@ mod tests {
             texts
         };
         let row = |kind: MetricKind, role: ObservationRole, value: f64, excerpt: &str| {
-            PreProfitObservation {
+            ObservationCandidate {
                 source_excerpt: excerpt.into(),
                 ..observation(kind, role, value, "2026-Q2")
             }
         };
         let run = |texts: &std::collections::HashMap<String, String>,
-                   candidate: PreProfitObservation| {
+                   candidate: ObservationCandidate| {
             let evidence = SourceEvidence {
                 texts,
                 symbol: "ACME",
@@ -2740,13 +2866,13 @@ mod tests {
             texts
         };
         let row = |kind: MetricKind, role: ObservationRole, value: f64, excerpt: &str| {
-            PreProfitObservation {
+            ObservationCandidate {
                 source_excerpt: excerpt.into(),
                 ..observation(kind, role, value, "2026-Q2")
             }
         };
         let run = |texts: &std::collections::HashMap<String, String>,
-                   candidate: PreProfitObservation| {
+                   candidate: ObservationCandidate| {
             let evidence = SourceEvidence {
                 texts,
                 symbol: "ACME",
@@ -3046,8 +3172,8 @@ mod tests {
             .iter()
             .flat_map(|(period, bound, actual)| {
                 vec![
-                    observation(MetricKind::Deliveries, ObservationRole::GuidanceLow, *bound, period),
-                    observation(MetricKind::Deliveries, ObservationRole::Actual, *actual, period),
+                    admitted(observation(MetricKind::Deliveries, ObservationRole::GuidanceLow, *bound, period)),
+                    admitted(observation(MetricKind::Deliveries, ObservationRole::Actual, *actual, period)),
                 ]
             })
             .collect()
@@ -3104,8 +3230,8 @@ mod tests {
     fn two_metrics_missing_in_one_period_never_count_twice() {
         let mut history = guided_history(&[("2026-Q2", 100.0, 90.0)]);
         history.extend(vec![
-            observation(MetricKind::Bookings, ObservationRole::GuidanceLow, 200.0, "2026-Q2"),
-            observation(MetricKind::Bookings, ObservationRole::Actual, 180.0, "2026-Q2"),
+            admitted(observation(MetricKind::Bookings, ObservationRole::GuidanceLow, 200.0, "2026-Q2")),
+            admitted(observation(MetricKind::Bookings, ObservationRole::Actual, 180.0, "2026-Q2")),
         ]);
         let read = execution_read(&history);
         assert_eq!(read.misses.len(), 2);
@@ -3136,19 +3262,19 @@ mod tests {
     #[test]
     fn point_guidance_is_the_bound_and_range_low_wins() {
         let mut history = vec![
-            observation(MetricKind::Deliveries, ObservationRole::PointGuidance, 100.0, "2026-Q2"),
-            observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q2"),
+            admitted(observation(MetricKind::Deliveries, ObservationRole::PointGuidance, 100.0, "2026-Q2")),
+            admitted(observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q2")),
         ];
         let read = execution_read(&history);
         assert_eq!(read.misses.len(), 1, "point guidance supplies the bound");
 
         // A stated range low (95) displaces the point bound (100): 90 vs 95 → ~5.3%.
-        history.push(observation(
+        history.push(admitted(observation(
             MetricKind::Deliveries,
             ObservationRole::GuidanceLow,
             95.0,
             "2026-Q2",
-        ));
+        )));
         let read = execution_read(&history);
         assert_eq!(read.misses.len(), 1);
         assert!((read.misses[0].miss_ratio - (5.0 / 95.0)).abs() < 1e-12);
@@ -3159,10 +3285,10 @@ mod tests {
     /// A deliveries row for the 2026-06-30 period, re-dated — the vintage
     /// tests' one fixture.
     fn q2(role: ObservationRole, value: f64, published_at: &str) -> PreProfitObservation {
-        dated(
+        admitted(dated(
             observation(MetricKind::Deliveries, role, value, "2026-06-30"),
             published_at,
-        )
+        ))
     }
 
     #[test]
@@ -3313,9 +3439,9 @@ mod tests {
     fn an_undatable_row_or_period_never_pairs_and_never_panics() {
         let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
         let guidance = q2(ObservationRole::PointGuidance, 100.0, "2026-05-01");
-        let read = execution_read(&[dated(guidance.clone(), "recently"), actual.clone()]);
+        let read = execution_read(&[redated(guidance.clone(), "recently"), actual.clone()]);
         assert_eq!(read.comparable_periods, 0);
-        let read = execution_read(&[guidance.clone(), dated(actual.clone(), "recently")]);
+        let read = execution_read(&[guidance.clone(), redated(actual.clone(), "recently")]);
         assert_eq!(read.comparable_periods, 0);
         // A period that never normalized (impossible past validation) cannot
         // anchor the period-end leg, so the pair fails closed.
@@ -3338,9 +3464,9 @@ mod tests {
 
     #[test]
     fn lower_is_better_rows_never_enter_the_miss_rule() {
-        let mut o = observation(MetricKind::UnitEconomics, ObservationRole::GuidanceLow, 100.0, "2026-Q2");
+        let mut o = admitted(observation(MetricKind::UnitEconomics, ObservationRole::GuidanceLow, 100.0, "2026-Q2"));
         o.polarity = ObservationPolarity::LowerIsBetter;
-        let mut a = observation(MetricKind::UnitEconomics, ObservationRole::Actual, 150.0, "2026-Q2");
+        let mut a = admitted(observation(MetricKind::UnitEconomics, ObservationRole::Actual, 150.0, "2026-Q2"));
         a.polarity = ObservationPolarity::LowerIsBetter;
         let read = execution_read(&[o, a]);
         assert_eq!(read.comparable_periods, 0);
@@ -3463,7 +3589,7 @@ mod tests {
         let rows = |role: ObservationRole, periods: &[&str]| -> Vec<PreProfitObservation> {
             periods
                 .iter()
-                .map(|p| observation(MetricKind::Deliveries, role, 100.0, p))
+                .map(|p| admitted(observation(MetricKind::Deliveries, role, 100.0, p)))
                 .collect()
         };
         let periods = ["2026-Q2", "2026-Q1", "2025-Q4", "2025-Q3"];
@@ -3503,7 +3629,7 @@ mod tests {
         // A never-guided metric carries no obligation.
         assert!(!backfill_required(&with(actuals), Some(&base)));
         // A covered identity never discharges a thin one.
-        let bookings = |role| observation(MetricKind::Bookings, role, 50.0, "2026-Q2");
+        let bookings = |role| admitted(observation(MetricKind::Bookings, role, 50.0, "2026-Q2"));
         let mut mixed = four_pairs;
         mixed.push(bookings(ObservationRole::GuidanceLow));
         mixed.push(bookings(ObservationRole::Actual));
@@ -3634,7 +3760,7 @@ mod tests {
             symbol: "ACME",
             company_name: None,
         };
-        let rejected = PreProfitObservation {
+        let rejected = ObservationCandidate {
             source_excerpt: "a sentence the page never printed 90".into(),
             ..observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q1")
         };
@@ -3653,9 +3779,91 @@ mod tests {
         let back: PreProfitOverlay = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(overlay, back);
         assert_eq!(back.observations[0].source_excerpt, "reported deliveries of 100 units");
+        assert_eq!(back.observations[0].admitted_under, crate::portfolio::PROMPT_VERSION);
         assert_eq!(
             back.rejected[0].observation.source_excerpt,
             "a sentence the page never printed 90"
+        );
+        // The stamp is required on the wire (Codex I20): a persisted row
+        // without it fails to decode rather than reading as anything.
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("json");
+        value["observations"][0]
+            .as_object_mut()
+            .expect("row object")
+            .remove("admitted_under")
+            .expect("the stamp was written");
+        assert!(serde_json::from_value::<PreProfitOverlay>(value).is_err());
+    }
+
+    #[test]
+    fn an_accepted_row_is_stamped_with_the_prompt_version_at_acceptance() {
+        // Codex I20: the app writes the admission stamp on acceptance — the
+        // candidate type has no stamp field — and a rejected row goes back as
+        // the candidate it was offered as.
+        let texts = evidence_texts(&[100.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
+        let bad = ObservationCandidate {
+            source_excerpt: "a sentence the page never printed 90".into(),
+            ..observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q1")
+        };
+        let (accepted, rejected) =
+            validate_observations(vec![good.clone(), bad.clone()], &[], Some(&evidence));
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].admitted_under, crate::portfolio::PROMPT_VERSION);
+        assert_eq!(accepted[0], good.admit(crate::portfolio::PROMPT_VERSION));
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].observation, bad);
+    }
+
+    #[test]
+    fn a_carried_row_keeps_its_own_stamp_and_is_never_re_admitted() {
+        // Codex I20, attribute-never-re-filter: a history row admitted under an
+        // earlier contract rides the merge with its own stamp beside a fresh
+        // acceptance's, and the same fact re-offered under the current contract
+        // is a duplicate — the stored row keeps its first stamp.
+        let texts = evidence_texts(&[100.0, 110.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let earlier = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q1")
+            .admit("portfolio-v17");
+        let mut prior = compute_overlay(&burning_stock(), None, vec![]);
+        prior.observations.push(earlier.clone());
+        let overlay = compute_overlay_with_sources(
+            &burning_stock(),
+            Some(&prior),
+            vec![
+                observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q1"),
+                observation(MetricKind::Deliveries, ObservationRole::Actual, 110.0, "2026-Q2"),
+            ],
+            Some(&evidence),
+        );
+        let stamps: Vec<(&str, &str)> = overlay
+            .observations
+            .iter()
+            .map(|o| (o.period.as_str(), o.admitted_under.as_str()))
+            .collect();
+        let (q1, q2) = (normalize_period("2026-Q1"), normalize_period("2026-Q2"));
+        assert_eq!(
+            stamps,
+            vec![
+                (q2.as_str(), crate::portfolio::PROMPT_VERSION),
+                (q1.as_str(), "portfolio-v17"),
+            ]
+        );
+        assert!(overlay.observations.contains(&earlier), "the first admission stands");
+        assert_eq!(overlay.rejected.len(), 1);
+        assert!(
+            overlay.rejected[0].reason.contains("duplicate"),
+            "{}",
+            overlay.rejected[0].reason
         );
     }
 }
