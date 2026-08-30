@@ -2420,40 +2420,61 @@ fn assumption_fact_whitelisted(fact_type: &str) -> bool {
 
 /// Deterministic unit validation + magnitude normalization for the driver fill
 /// (drafted): the units must read **monetary** for either driver — an EPS fact
-/// accepts only per-share / currency vocabulary (so `"vehicles"` can never
-/// fill an EPS driver) and **rejects** any magnitude token (an EPS "in
-/// millions" is malformed), while a revenue fact must carry a currency or
-/// magnitude token, magnitude words scaling the value (trillion / billion /
-/// million / thousand, plus tn / bn / mn / mm) and a bare sub-1e6 value
-/// rejecting as unit-ambiguous. Single-letter suffixes ("B", "M") are
-/// deliberately not recognized — too ambiguous to scale on. Rejection is
-/// fail-soft: the structured targets stand.
+/// accepts only per-share / account-currency vocabulary (so `"vehicles"` can
+/// never fill an EPS driver), scales USD cents to dollars, rejects any
+/// magnitude token (an EPS "in millions" is malformed), and rejects a named
+/// foreign currency because this seam has no dated FX conversion. A revenue
+/// fact must carry account-currency or a magnitude token; magnitude words scale
+/// the value (trillion / billion / million / thousand, plus tn / bn / mn / mm)
+/// and a bare sub-1e6 value rejects as unit-ambiguous. Single-letter suffixes
+/// ("B", "M") are deliberately not recognized — too ambiguous to scale on.
+/// Rejection is fail-soft: the structured targets stand.
 fn normalized_assumption_value(
     metric: AssumptionMetric,
     value: f64,
     units: &str,
 ) -> Result<f64, String> {
-    const CURRENCY_TOKENS: &[&str] = &[
-        "usd", "eur", "gbp", "jpy", "cad", "aud", "chf", "dollar", "dollars", "cent", "cents",
+    const ACCOUNT_CURRENCY_TOKENS: &[&str] = &["usd", "dollar", "dollars"];
+    const CENT_TOKENS: &[&str] = &["cent", "cents"];
+    const FOREIGN_CURRENCY_TOKENS: &[&str] = &[
+        "eur", "euro", "euros", "gbp", "pound", "pounds", "sterling", "jpy", "yen", "cad",
+        "aud", "chf", "cny", "rmb", "hkd", "nzd", "inr", "krw", "sek", "nok", "dkk",
     ];
-    // The extra vocabulary a per-share unit may carry beside currency tokens.
-    const PER_SHARE_TOKENS: &[&str] =
-        &["per", "share", "shares", "eps", "diluted", "basic"];
+    // Descriptive vocabulary the unit may carry beside its denomination. These
+    // words never supply a currency or magnitude by themselves.
+    const UNIT_CONTEXT_TOKENS: &[&str] = &[
+        "us", "per", "share", "shares", "eps", "diluted", "basic", "revenue", "revenues",
+        "sales", "total", "annual", "annualized", "forward", "forecast", "forecasts",
+        "estimated", "estimate", "estimates", "in", "of", "account", "currency",
+    ];
+    const FOREIGN_CURRENCY_SYMBOLS: &[char] = &[
+        '€', '£', '¥', '￥', '₹', '₩', '₽', '₺', '₫', '฿', '₪', '₴', '₦', '₱', '₲', '₵', '₡',
+    ];
     if units.trim().is_empty() {
         return Err("rejected: the assumption carries no units".to_string());
     }
+    if let Some(symbol) = units
+        .chars()
+        .find(|symbol| FOREIGN_CURRENCY_SYMBOLS.contains(symbol))
+    {
+        return Err(format!(
+            "rejected: units {units:?} name foreign-currency symbol {symbol:?}, but no dated \
+             FX conversion exists for target refinement"
+        ));
+    }
     let lowered = units
         .replace('$', " usd ")
-        .replace('€', " eur ")
-        .replace('£', " gbp ")
+        .replace('¢', " cents ")
         .to_ascii_lowercase();
     let tokens: Vec<&str> = lowered
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|t| !t.is_empty())
         .collect();
     let mut magnitude: Option<f64> = None;
-    let mut currency = false;
-    let mut foreign = false;
+    let mut account_currency = false;
+    let mut cents = false;
+    let mut foreign_currency: Option<&str> = None;
+    let mut unsupported: Vec<&str> = Vec::new();
     for token in &tokens {
         let m = match *token {
             "trillion" | "trillions" | "tn" => Some(1e12),
@@ -2471,12 +2492,30 @@ fn normalized_assumption_value(
             magnitude = Some(m);
             continue;
         }
-        if CURRENCY_TOKENS.contains(token) {
-            currency = true;
-        } else if !PER_SHARE_TOKENS.contains(token) {
-            foreign = true;
+        if ACCOUNT_CURRENCY_TOKENS.contains(token) {
+            account_currency = true;
+        } else if CENT_TOKENS.contains(token) {
+            account_currency = true;
+            cents = true;
+        } else if FOREIGN_CURRENCY_TOKENS.contains(token) {
+            foreign_currency.get_or_insert(token);
+        } else if !UNIT_CONTEXT_TOKENS.contains(token) {
+            unsupported.push(token);
         }
     }
+    if let Some(currency) = foreign_currency {
+        return Err(format!(
+            "rejected: units {units:?} name foreign currency {currency:?}, but no dated FX \
+             conversion exists for target refinement"
+        ));
+    }
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "rejected: units {units:?} carry unsupported unit token(s): {}",
+            unsupported.join(", ")
+        ));
+    }
+    let denomination_scale = if cents { 0.01 } else { 1.0 };
     match metric {
         AssumptionMetric::ForwardEps => {
             if magnitude.is_some() {
@@ -2484,29 +2523,32 @@ fn normalized_assumption_value(
                     "rejected: a per-share fact cannot carry a magnitude in its units ({units:?})"
                 ));
             }
-            // Non-monetary vocabulary ("vehicles", "units") is not a
-            // per-share quantity; an empty unit string passes (the value is
-            // already per-share by the metric's contract).
-            if foreign {
-                return Err(format!(
-                    "rejected: units {units:?} name a non-per-share quantity"
-                ));
+            let normalized = value * denomination_scale;
+            if !normalized.is_finite() {
+                return Err("rejected: the normalized EPS assumption is non-finite".to_string());
             }
-            Ok(value)
+            Ok(normalized)
         }
         AssumptionMetric::ForwardRevenue => {
-            if !currency && magnitude.is_none() {
+            if !account_currency && magnitude.is_none() {
                 return Err(format!(
-                    "rejected: revenue units {units:?} carry no currency or magnitude token"
+                    "rejected: revenue units {units:?} carry no account-currency or magnitude \
+                     token"
                 ));
             }
-            match magnitude {
-                Some(m) => Ok(value * m),
-                None if value >= 1e6 => Ok(value),
-                None => Err(format!(
+            let normalized = value * magnitude.unwrap_or(1.0) * denomination_scale;
+            if !normalized.is_finite() {
+                return Err(
+                    "rejected: the normalized revenue assumption is non-finite".to_string(),
+                );
+            }
+            if magnitude.is_some() || normalized >= 1e6 {
+                Ok(normalized)
+            } else {
+                Err(format!(
                     "rejected: revenue value {value} with units {units:?} is unit-ambiguous \
                      (no magnitude token and below the 1e6 absolute-dollar floor — drafted)"
-                )),
+                ))
             }
         }
     }
@@ -4837,6 +4879,47 @@ mod tests {
             normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "USD per share"),
             Ok(7.4)
         );
+        // A subunit conversion is deterministic and local: cents become USD
+        // dollars before the per-share driver is filled.
+        assert_eq!(
+            normalized_assumption_value(
+                AssumptionMetric::ForwardEps,
+                150.0,
+                "cents per diluted share"
+            ),
+            Ok(1.5)
+        );
+        assert_eq!(
+            normalized_assumption_value(AssumptionMetric::ForwardEps, 150.0, "¢ per share"),
+            Ok(1.5)
+        );
+        assert_eq!(
+            normalized_assumption_value(
+                AssumptionMetric::ForwardRevenue,
+                150.0,
+                "million USD cents"
+            ),
+            Ok(1.5e6)
+        );
+        // Market conversion is not local: without a dated FX source, named
+        // foreign currencies and their symbols reject for either driver.
+        for units in ["EUR per share", "GBP per share", "€ per share"] {
+            let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 5.2, units)
+                .unwrap_err();
+            assert!(err.contains("no dated FX"), "{units}: {err}");
+        }
+        for units in ["EUR billions", "million JPY", "₹ billions"] {
+            let err = normalized_assumption_value(AssumptionMetric::ForwardRevenue, 5.2, units)
+                .unwrap_err();
+            assert!(err.contains("no dated FX"), "{units}: {err}");
+        }
+        let err = normalized_assumption_value(
+            AssumptionMetric::ForwardRevenue,
+            f64::MAX,
+            "USD trillions",
+        )
+        .unwrap_err();
+        assert!(err.contains("non-finite"), "{err}");
         // Conflicting magnitudes reject rather than guessing.
         let err = normalized_assumption_value(
             AssumptionMetric::ForwardRevenue,
@@ -4851,10 +4934,10 @@ mod tests {
         assert!(err.contains("no units"), "{err}");
         let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "vehicles")
             .unwrap_err();
-        assert!(err.contains("non-per-share"), "{err}");
+        assert!(err.contains("unsupported unit"), "{err}");
         let err = normalized_assumption_value(AssumptionMetric::ForwardRevenue, 2.0e6, "vehicles")
             .unwrap_err();
-        assert!(err.contains("no currency or magnitude"), "{err}");
+        assert!(err.contains("unsupported unit"), "{err}");
         // The whitelist matches whole tokens — "unfiled rumor" never satisfies
         // `filed` — and negating / hedging tokens disqualify outright.
         assert!(!assumption_fact_whitelisted("unfiled rumor"));
@@ -4884,6 +4967,37 @@ mod tests {
         };
         let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
         assert!(refined.matched_rule.contains("4500000000"), "{}", refined.matched_rule);
+
+        // The same conversion reaches the actual shadow recompute, while a
+        // foreign-currency declaration fails before any driver fill.
+        let mut fin = strong();
+        {
+            let c = fin.consensus.as_mut().unwrap();
+            c.eps_low = None;
+            c.eps_mid = None;
+            c.eps_high = None;
+        }
+        let mut input = ForwardAssumptionInput {
+            metric: AssumptionMetric::ForwardEps,
+            value: 150.0,
+            units: "cents per share".into(),
+            supersede: false,
+            fact_type: "issued company guidance".into(),
+            as_of: "2026-08-20".into(),
+            source_url: "https://ir.example.com/guidance".into(),
+        };
+        let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
+        assert_eq!(
+            refined
+                .quick_basis
+                .as_ref()
+                .and_then(|basis| basis.consensus_eps_mid),
+            Some(1.5)
+        );
+        input.value = 5.2;
+        input.units = "EUR per share".into();
+        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
+        assert!(err.contains("no dated FX"), "{err}");
     }
 
     /// The attempt-2 RKT shape: recovered current earnings against a trail of

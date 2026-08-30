@@ -8370,8 +8370,9 @@ mod tests {
         // period-word guard, ruled 2026-08-29) moved it again, and group 4
         // (the Codex I11 target-boundary NOTE and the I13 equity-source line
         // in the basis sentence, beside the new evaluation-state stamp) again;
-        // Review 2 M11's constant-period revision semantics move it to v25.
-        assert_eq!(PROMPT_VERSION, "portfolio-v25");
+        // Review 2 M11's constant-period revision semantics moved it to v25;
+        // M1's forward-assumption currency admission moves it to v26.
+        assert_eq!(PROMPT_VERSION, "portfolio-v26");
     }
 
     #[test]

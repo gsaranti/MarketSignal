@@ -1986,7 +1986,12 @@ pub struct HoldingAudit {
 /// driver, but its changing calendar weights can no longer manufacture the
 /// quick-check revision event or distort narrative-vs-reality; no common period
 /// makes revision unavailable and sends narrative to its operating fallback.
-pub const PROMPT_VERSION: &str = "portfolio-v25";
+///
+/// `portfolio-v26`: forward-assumption units scale USD cents to dollars and
+/// reject named foreign currencies because target refinement has no dated FX
+/// input. The shadow resolution and the interpretation input delta therefore
+/// move together under the corrected unit-admission semantics (Review 2 M1).
+pub const PROMPT_VERSION: &str = "portfolio-v26";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
