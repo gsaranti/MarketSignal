@@ -54,7 +54,11 @@ use crate::storage;
 /// layer (the research-reuse seeds, surviving run retention). The v2 and v3
 /// shapes were pre-release formats no shipped build wrote; import refuses them
 /// outright (`check_format_version`, ruled 2026-08-29).
-pub const FORMAT_VERSION: u32 = 4;
+/// v5 (redirect-cache slice): `web_documents.url` became the requested-URL key
+/// and the post-redirect `final_url` joined separately. New builds import v4 by
+/// treating its one URL as both values; the bump makes older builds reject v5
+/// instead of silently misreading requested-URL provenance as final.
+pub const FORMAT_VERSION: u32 = 5;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -230,10 +234,16 @@ struct PriceBarRow {
 
 /// One web-research document-cache row on the wire (`docs/storage.md §Local
 /// Analysis Suite Storage`): a fetched, readability-extracted document under
-/// its normalized URL, its original retrieval timestamp the immutable vintage.
+/// its normalized requested URL, with post-redirect provenance separate and
+/// its original retrieval timestamp the immutable vintage.
 #[derive(Debug, Serialize, Deserialize)]
 struct WebDocumentRow {
+    /// Normalized requested-URL cache key.
     url: String,
+    /// Normalized post-redirect provenance. Optional on an archive written by
+    /// the original v4 shape, where `url` represented both values.
+    #[serde(default)]
+    final_url: Option<String>,
     host: String,
     retrieved_at: String,
     title: String,
@@ -852,11 +862,12 @@ pub fn import_archive(
     }
     for row in &web_document_rows {
         tx.execute(
-            "INSERT INTO web_documents (url, host, retrieved_at, title, text,
+            "INSERT INTO web_documents (url, final_url, host, retrieved_at, title, text,
                                         extraction_quality, thin_stub)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 row.url,
+                row.final_url.as_deref().unwrap_or(&row.url),
                 row.host,
                 row.retrieved_at,
                 row.title,
@@ -1048,19 +1059,20 @@ fn read_outcome_episode_rows(conn: &Connection) -> Result<Vec<OutcomeEpisodeRow>
 
 fn read_web_document_rows(conn: &Connection) -> Result<Vec<WebDocumentRow>> {
     let mut stmt = conn.prepare(
-        "SELECT url, host, retrieved_at, title, text, extraction_quality, thin_stub
+        "SELECT url, final_url, host, retrieved_at, title, text, extraction_quality, thin_stub
          FROM web_documents ORDER BY url",
     )?;
     let rows = stmt
         .query_map([], |r| {
             Ok(WebDocumentRow {
                 url: r.get(0)?,
-                host: r.get(1)?,
-                retrieved_at: r.get(2)?,
-                title: r.get(3)?,
-                text: r.get(4)?,
-                extraction_quality: r.get(5)?,
-                thin_stub: r.get::<_, i64>(6)? != 0,
+                final_url: r.get(1)?,
+                host: r.get(2)?,
+                retrieved_at: r.get(3)?,
+                title: r.get(4)?,
+                text: r.get(5)?,
+                extraction_quality: r.get(6)?,
+                thin_stub: r.get::<_, i64>(7)? != 0,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1403,6 +1415,17 @@ mod tests {
     use super::*;
     use crate::vector_memory::embedding_to_blob;
 
+    #[test]
+    fn original_v4_web_document_rows_default_the_missing_final_url() {
+        let row: WebDocumentRow = serde_json::from_str(
+            r#"{"url":"https://reuters.com/a","host":"reuters.com",
+                "retrieved_at":"2026-08-20T12:00:00+00:00","title":"t",
+                "text":"body","extraction_quality":0.9,"thin_stub":false}"#,
+        )
+        .unwrap();
+        assert_eq!(row.final_url, None);
+    }
+
     /// A provisioned empty store under a temp dir (guard returned to keep it
     /// alive), mirroring `pipeline`'s tempdir-not-`:memory:` test pattern.
     fn temp_store() -> (tempfile::TempDir, ReportPaths) {
@@ -1495,10 +1518,11 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO web_documents (url, host, retrieved_at, title, text,
+            "INSERT INTO web_documents (url, final_url, host, retrieved_at, title, text,
                                         extraction_quality, thin_stub)
-             VALUES ('https://reuters.com/widget', 'reuters.com', '2026-07-06T10:00:00+00:00',
-                     'Widget beats', 'Widget Co reported…', 0.9, 0)",
+             VALUES ('https://reuters.com/go-widget', 'https://reuters.com/widget',
+                     'reuters.com', '2026-07-06T10:00:00+00:00', 'Widget beats',
+                     'Widget Co reported…', 0.9, 0)",
             [],
         )
         .unwrap();
@@ -1658,14 +1682,15 @@ mod tests {
         assert_eq!(close.to_bits(), 195.25f64.to_bits());
         // The web-research stores ride it too (format v4): the cached document
         // with its original retrieval vintage, and the learned source state.
-        let (retrieved_at, thin): (String, i64) = conn
+        let (final_url, retrieved_at, thin): (String, String, i64) = conn
             .query_row(
-                "SELECT retrieved_at, thin_stub FROM web_documents
-                 WHERE url = 'https://reuters.com/widget'",
+                "SELECT final_url, retrieved_at, thin_stub FROM web_documents
+                 WHERE url = 'https://reuters.com/go-widget'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
+        assert_eq!(final_url, "https://reuters.com/widget");
         assert_eq!(retrieved_at, "2026-07-06T10:00:00+00:00");
         assert_eq!(thin, 0);
         let (profile, render_first): (String, i64) = conn
@@ -1727,6 +1752,52 @@ mod tests {
         );
         // Import never touches app_settings — the target's stays empty.
         assert_eq!(table_count(&target, "app_settings"), 0);
+    }
+
+    #[test]
+    fn a_v4_archive_imports_its_single_url_as_key_and_provenance() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let exported = source.db_path.parent().unwrap().join("export-v5.zip");
+        export_archive(&source, &exported, None, None).unwrap();
+
+        let mut entries = read_archive_entries(&exported);
+        let original = String::from_utf8(entries["db/web_documents.ndjson"].clone()).unwrap();
+        let mut old_rows = String::new();
+        for line in original.lines().filter(|line| !line.trim().is_empty()) {
+            let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+            let final_url = row["final_url"].as_str().unwrap().to_string();
+            row.as_object_mut().unwrap().remove("final_url");
+            row["url"] = serde_json::Value::String(final_url);
+            old_rows.push_str(&serde_json::to_string(&row).unwrap());
+            old_rows.push('\n');
+        }
+        replace_entry_rechecksummed(
+            &mut entries,
+            "db/web_documents.ndjson",
+            old_rows.into_bytes(),
+        );
+        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest.format_version = 4;
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let old_archive = source.db_path.parent().unwrap().join("import-v4.zip");
+        rebuild_zip(&entries, &old_archive);
+
+        let (_b, target) = temp_store();
+        import_archive(&target, &old_archive, None, false).unwrap();
+        let conn = storage::open(&target.db_path).unwrap();
+        let (key, final_url): (String, String) = conn
+            .query_row(
+                "SELECT url, final_url FROM web_documents",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(key, "https://reuters.com/widget");
+        assert_eq!(final_url, key);
     }
 
     #[test]
@@ -2191,8 +2262,8 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None, None).unwrap();
 
-        // Drop the two v4-only entries and their listings. Under the archive's
-        // own (v4) version that is truncation and must refuse…
+        // Drop the entries introduced in v4 and their listings. Under the
+        // archive's own current (v5) version that is truncation and must refuse…
         let mut entries = read_archive_entries(&dest);
         for name in [
             "db/web_documents.ndjson",
@@ -2214,7 +2285,7 @@ mod tests {
             "manifest.json".to_string(),
             serde_json::to_vec_pretty(&manifest).unwrap(),
         );
-        let truncated = source.db_path.parent().unwrap().join("truncated-v4.zip");
+        let truncated = source.db_path.parent().unwrap().join("truncated-v5.zip");
         rebuild_zip(&entries, &truncated);
         let (_b, target) = temp_store();
         let err = import_archive(&target, &truncated, None, false).unwrap_err();

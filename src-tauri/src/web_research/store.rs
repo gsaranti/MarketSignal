@@ -8,10 +8,12 @@
 //! `storage::init_schema`.
 //!
 //! The document cache is the cross-run per-fetch layer both jobs' failure
-//! postures name: fetched, readability-extracted documents keyed by
-//! **normalized URL**, each carrying its **original retrieval timestamp** —
-//! the immutable evidence vintage, never rewritten on reuse — and served only
-//! within the shared ~4-week freshness window (older entries age out).
+//! postures name: fetched, readability-extracted documents keyed by the
+//! **normalized requested URL**, with the normalized final URL kept separately
+//! so a redirecting seed hits on every re-read without losing provenance.
+//! Each carries its **original retrieval timestamp** — the immutable evidence
+//! vintage, never rewritten on reuse — and serves only within the shared
+//! ~4-week freshness window (older entries age out).
 //! Portfolio's higher-level distilled-findings layer is a separate,
 //! job-partitioned store over these same fetches.
 //!
@@ -44,13 +46,15 @@ const RENDER_FIRST_THIN_RATIO: f64 = 0.8;
 
 /// Create the web-research tables if absent. Idempotent; called from
 /// `storage::init_schema`. Both tables are exported by data portability
-/// (format v4): cached documents let an imported corpus's research reuse work
-/// offline, and the source state is learned analytical behavior that does not
-/// regenerate quickly. Import pre-checks mirror the two primary keys.
+/// (joined in format v4; the requested/final URL split is format v5): cached
+/// documents let an imported corpus's research reuse work offline, and the
+/// source state is learned analytical behavior that does not regenerate
+/// quickly. Import pre-checks mirror the two primary keys.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS web_documents (
             url                TEXT PRIMARY KEY,
+            final_url          TEXT,
             host               TEXT NOT NULL,
             retrieved_at       TEXT NOT NULL,
             title              TEXT NOT NULL,
@@ -58,6 +62,23 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             extraction_quality REAL NOT NULL,
             thin_stub          INTEGER NOT NULL
         )",
+        [],
+    )?;
+    // Additive migration from the research-loop slice's original shape, where
+    // `url` served as both the lookup key and final-URL provenance. Existing
+    // rows were stored under their final URL, so that same value is the honest
+    // backfill for both columns.
+    if !crate::storage::column_exists(conn, "web_documents", "final_url")? {
+        conn.execute("ALTER TABLE web_documents ADD COLUMN final_url TEXT", [])?;
+    }
+    conn.execute(
+        "UPDATE web_documents SET final_url = url
+         WHERE final_url IS NULL OR trim(final_url) = ''",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_web_documents_final_url
+         ON web_documents(final_url)",
         [],
     )?;
     conn.execute(
@@ -87,16 +108,17 @@ pub fn normalize_url(url: &str) -> String {
     }
 }
 
-/// Cache a fetched document under its normalized final URL. A live re-fetch
-/// of the same URL replaces the row whole — content and vintage together, a
-/// fresh retrieval; *reuse* never rewrites `retrieved_at` because reads never
-/// write.
-pub fn put_document(conn: &Connection, page: &FetchedPage) -> Result<()> {
+/// Cache a fetched document under its normalized requested URL while retaining
+/// its normalized final URL separately. A live re-fetch of the same requested
+/// URL replaces the row whole — destination, content, and vintage together;
+/// *reuse* never rewrites `retrieved_at` because reads never write.
+pub fn put_document(conn: &Connection, requested_url: &str, page: &FetchedPage) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO web_documents
-             (url, host, retrieved_at, title, text, extraction_quality, thin_stub)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (url, final_url, host, retrieved_at, title, text, extraction_quality, thin_stub)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
+            normalize_url(requested_url),
             normalize_url(&page.final_url),
             page.host,
             page.retrieved_at,
@@ -109,37 +131,67 @@ pub fn put_document(conn: &Connection, page: &FetchedPage) -> Result<()> {
     Ok(())
 }
 
-/// A cached document, served only while its own retrieval vintage is inside
-/// the shared freshness window — an expired entry reads as absent.
+/// Decode one cache row into the fetched-page contract.
+fn cached_page(r: &rusqlite::Row<'_>) -> rusqlite::Result<FetchedPage> {
+    Ok(FetchedPage {
+        final_url: r.get::<_, String>(0)?,
+        host: r.get(1)?,
+        retrieved_at: r.get(2)?,
+        title: r.get(3)?,
+        text: r.get(4)?,
+        extraction_quality: r.get(5)?,
+        thin_stub: r.get::<_, i64>(6)? != 0,
+    })
+}
+
+/// Whether a cached page's own retrieval vintage is inside the shared window.
+fn page_is_fresh(page: &FetchedPage, now: DateTime<Utc>) -> bool {
+    DateTime::parse_from_rfc3339(&page.retrieved_at)
+        .map(|t| {
+            now.signed_duration_since(t.with_timezone(&Utc)).num_days()
+                < RESEARCH_FRESHNESS_DAYS
+        })
+        .unwrap_or(false)
+}
+
+/// A cached document, looked up first by its requested-URL key and then by its
+/// final URL (so a later direct link to a previously redirected destination
+/// also reuses the row). Only a row whose own retrieval vintage is inside the
+/// shared freshness window serves; expired or malformed vintages read absent.
 pub fn get_fresh_document(
     conn: &Connection,
     url: &str,
     now: DateTime<Utc>,
 ) -> Result<Option<FetchedPage>> {
-    let row = conn
+    let key = normalize_url(url);
+    let exact = conn
         .query_row(
-            "SELECT url, host, retrieved_at, title, text, extraction_quality, thin_stub
+            "SELECT COALESCE(final_url, url), host, retrieved_at, title, text,
+                    extraction_quality, thin_stub
              FROM web_documents WHERE url = ?1",
-            params![normalize_url(url)],
-            |r| {
-                Ok(FetchedPage {
-                    final_url: r.get::<_, String>(0)?,
-                    host: r.get(1)?,
-                    retrieved_at: r.get(2)?,
-                    title: r.get(3)?,
-                    text: r.get(4)?,
-                    extraction_quality: r.get(5)?,
-                    thin_stub: r.get::<_, i64>(6)? != 0,
-                })
-            },
+            params![key],
+            cached_page,
         )
         .optional()?;
-    Ok(row.filter(|page| {
-        DateTime::parse_from_rfc3339(&page.retrieved_at)
-            .map(|t| now.signed_duration_since(t.with_timezone(&Utc)).num_days()
-                < RESEARCH_FRESHNESS_DAYS)
-            .unwrap_or(false)
-    }))
+    if exact.as_ref().is_some_and(|page| page_is_fresh(page, now)) {
+        return Ok(exact);
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(final_url, url), host, retrieved_at, title, text,
+                extraction_quality, thin_stub
+         FROM web_documents
+         WHERE final_url = ?1 AND url <> ?1
+         ORDER BY retrieved_at DESC, url ASC",
+    )?;
+    let mut rows = stmt.query(params![key])?;
+    while let Some(row) = rows.next()? {
+        let page = cached_page(row)?;
+        if page_is_fresh(&page, now) {
+            return Ok(Some(page));
+        }
+    }
+    Ok(None)
 }
 
 /// Age out cache entries past the freshness window. Returns the pruned count.
@@ -288,9 +340,85 @@ mod tests {
     }
 
     #[test]
+    fn redirecting_requested_urls_hit_without_losing_the_final_url() {
+        let conn = mem_conn();
+        let requested = "https://reuters.com/go?id=7#tracking";
+        let final_url = "https://www.reuters.com/world/widget-final/";
+        put_document(
+            &conn,
+            requested,
+            &page(final_url, "2026-08-20T12:00:00+00:00"),
+        )
+        .unwrap();
+        let now = at("2026-08-23T00:00:00+00:00");
+        let stored_key: String = conn
+            .query_row("SELECT url FROM web_documents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored_key, "https://reuters.com/go?id=7");
+
+        let by_requested = get_fresh_document(&conn, requested, now)
+            .unwrap()
+            .expect("the redirecting seed key hits");
+        assert_eq!(
+            by_requested.final_url,
+            "https://www.reuters.com/world/widget-final"
+        );
+        // A later search result that already carries the destination reuses the
+        // same row through the final-URL fallback.
+        let by_final = get_fresh_document(&conn, final_url, now)
+            .unwrap()
+            .expect("the direct final URL hits too");
+        assert_eq!(by_final, by_requested);
+    }
+
+    #[test]
+    fn the_original_final_url_key_migrates_without_losing_cache_hits() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE web_documents (
+                url TEXT PRIMARY KEY,
+                host TEXT NOT NULL,
+                retrieved_at TEXT NOT NULL,
+                title TEXT NOT NULL,
+                text TEXT NOT NULL,
+                extraction_quality REAL NOT NULL,
+                thin_stub INTEGER NOT NULL
+             );
+             INSERT INTO web_documents
+                (url, host, retrieved_at, title, text, extraction_quality, thin_stub)
+             VALUES
+                ('https://reuters.com/legacy', 'reuters.com',
+                 '2026-08-20T12:00:00+00:00', 'legacy', 'body', 0.9, 0);",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+        let final_url: String = conn
+            .query_row(
+                "SELECT final_url FROM web_documents WHERE url = ?1",
+                params!["https://reuters.com/legacy"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(final_url, "https://reuters.com/legacy");
+        assert!(get_fresh_document(
+            &conn,
+            "https://reuters.com/legacy",
+            at("2026-08-23T00:00:00+00:00")
+        )
+        .unwrap()
+        .is_some());
+    }
+
+    #[test]
     fn cache_serves_only_inside_the_freshness_window() {
         let conn = mem_conn();
-        put_document(&conn, &page("https://reuters.com/a", "2026-08-01T12:00:00+00:00")).unwrap();
+        put_document(
+            &conn,
+            "https://reuters.com/a",
+            &page("https://reuters.com/a", "2026-08-01T12:00:00+00:00"),
+        )
+        .unwrap();
 
         // Fresh inside the window (27 days later).
         let now = at("2026-08-28T12:00:00+00:00");
@@ -315,10 +443,15 @@ mod tests {
     #[test]
     fn a_refetch_replaces_content_and_vintage_together() {
         let conn = mem_conn();
-        put_document(&conn, &page("https://reuters.com/a", "2026-08-01T12:00:00+00:00")).unwrap();
+        put_document(
+            &conn,
+            "https://reuters.com/a",
+            &page("https://reuters.com/a", "2026-08-01T12:00:00+00:00"),
+        )
+        .unwrap();
         let mut fresh = page("https://reuters.com/a", "2026-08-20T12:00:00+00:00");
         fresh.text = "updated body".to_string();
-        put_document(&conn, &fresh).unwrap();
+        put_document(&conn, "https://reuters.com/a", &fresh).unwrap();
         let now = at("2026-08-23T00:00:00+00:00");
         let got = get_fresh_document(&conn, "https://reuters.com/a", now)
             .unwrap()
@@ -330,7 +463,12 @@ mod tests {
     #[test]
     fn an_unparseable_vintage_reads_absent_never_fresh() {
         let conn = mem_conn();
-        put_document(&conn, &page("https://reuters.com/a", "not-a-date")).unwrap();
+        put_document(
+            &conn,
+            "https://reuters.com/a",
+            &page("https://reuters.com/a", "not-a-date"),
+        )
+        .unwrap();
         let now = at("2026-08-23T00:00:00+00:00");
         assert!(get_fresh_document(&conn, "https://reuters.com/a", now)
             .unwrap()

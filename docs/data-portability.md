@@ -34,6 +34,9 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | `portfolio_quick_checks` | The quick check's between-run state (format v2) — attention flags, unexamined evidence events, condition evaluation streaks. Durable analytical state: flags and breach streaks do not regenerate on the next sweep. |
 | `portfolio_outcome_episodes` | Outcome-learning decision episodes (format v3) — calibration state that outlives the 30-run retention; an aged-out anchor run cannot regenerate its episodes. |
 | `price_bars` | The shared price-bar cache (format v3) — public price data, carried so imported pending episodes can mature offline rather than refetching a year of bars. |
+| `web_documents` | The shared web-research document cache (joined in format v4; requested/final URL split in format v5), including each normalized requested-URL key and its separate post-redirect final URL so imported repeat fetches preserve both cache hits and provenance. |
+| `web_source_state` | The shared web-research extraction telemetry (format v4) — learned full/thin counts, extraction profile, and render-first state. |
+| `portfolio_research_seeds` | Portfolio's per-symbol, per-topic distilled research seeds (format v4), which survive run retention and cannot be rebuilt from the document cache alone. |
 
 **Exported — filesystem stores:**
 

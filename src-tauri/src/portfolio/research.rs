@@ -663,6 +663,12 @@ impl ResearchWeb for LiveResearchWeb {
             if let Ok(Some(page)) =
                 crate::web_research::store::get_fresh_document(&conn, url, now)
             {
+                // The key can be a redirecting requested URL. Re-check the
+                // stored destination under the current policy too, matching
+                // the live fetcher's every-hop validation instead of letting
+                // an imported/legacy cache alias bypass a newer deny rule.
+                crate::web_research::fetch::check_url_policy(&page.final_url)
+                    .context("cached redirect destination failed the current URL policy")?;
                 return Ok((page, true));
             }
         }
@@ -671,7 +677,7 @@ impl ResearchWeb for LiveResearchWeb {
         // fetch or a telemetry sample, never the research.
         {
             let conn = self.conn.lock().unwrap();
-            if let Err(e) = crate::web_research::store::put_document(&conn, &page) {
+            if let Err(e) = crate::web_research::store::put_document(&conn, url, &page) {
                 eprintln!("web document cache write failed for {url}: {e}");
             }
             if let Err(e) = crate::web_research::store::record_fetch_outcome(
@@ -1537,6 +1543,43 @@ mod tests {
         chrono::DateTime::parse_from_rfc3339(s)
             .unwrap()
             .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn live_cache_revalidates_a_redirect_destination_before_serving_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("research.sqlite");
+        let web = LiveResearchWeb::new(None, None, &db_path).unwrap();
+        let requested = "https://reuters.com/redirecting-seed";
+        let mut page = FetchedPage {
+            final_url: "http://127.0.0.1/private".into(),
+            host: "127.0.0.1".into(),
+            title: "cached".into(),
+            text: "cached body".into(),
+            extraction_quality: 0.9,
+            thin_stub: false,
+            retrieved_at: chrono::Utc::now().to_rfc3339(),
+        };
+        {
+            let conn = web.conn.lock().unwrap();
+            crate::web_research::store::put_document(&conn, requested, &page).unwrap();
+        }
+        let err = web.fetch(requested).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("cached redirect destination"), "{msg}");
+        assert!(msg.contains("loopback"), "{msg}");
+
+        // Replacing the same requested key with a currently allowed final URL
+        // makes it a normal cache hit; no live fetch is needed.
+        page.final_url = "https://www.reuters.com/world/final".into();
+        page.host = "reuters.com".into();
+        {
+            let conn = web.conn.lock().unwrap();
+            crate::web_research::store::put_document(&conn, requested, &page).unwrap();
+        }
+        let (served, cached) = web.fetch(requested).unwrap();
+        assert!(cached);
+        assert_eq!(served.final_url, page.final_url);
     }
 
     // ---- Seed assembly ----------------------------------------------------
