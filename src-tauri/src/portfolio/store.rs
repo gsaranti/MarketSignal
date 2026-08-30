@@ -207,8 +207,10 @@ pub struct CheckpointHeader {
 /// stamp on the overlay's observation rows inside the row's audit (Codex
 /// I20); `checkpoint-v4` — the required reporting span on each observation
 /// row and derived execution miss (Review 2 N1); `checkpoint-v5` — the
-/// quick-check evaluation stamp on the selective tail sweep (Review 2 N3).
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v5";
+/// quick-check evaluation stamp on the selective tail sweep (Review 2 N3);
+/// `checkpoint-v6` — the raw fiscal-period consensus rows on a completed
+/// holding's quick basis (Review 2 M11).
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v6";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1304,6 +1306,7 @@ mod tests {
             forward_dividends: f64::INFINITY,
             dispersion_floor: 0.05,
             consensus_eps_mid: None,
+            consensus_eps_periods: Vec::new(),
         });
         let err = insert_run(&conn, &poisoned).unwrap_err().to_string();
         assert!(
@@ -1372,11 +1375,12 @@ mod tests {
             forward_dividends,
             dispersion_floor: floor,
             consensus_eps_mid: None,
+            consensus_eps_periods: Vec::new(),
         });
         audit.implied_expectations =
             engine::implied_expectations(1e10, &set, Some(1.0), "eps", true, 0.04);
         audit.narrative =
-            engine::narrative_vs_reality(&fin, 1e300, Some(1e-300), None, Some(30)).ok();
+            engine::narrative_vs_reality(&fin, 1e300, Some(1e-300), &[], Some(30)).ok();
         audit.tech_event_pre_flag =
             engine::tech_event_pre_flag(&closes, &bench, "XLK", "2026-01-02", Some(0.02)).ok();
 
@@ -1465,6 +1469,11 @@ mod tests {
             forward_dividends: 1.0,
             dispersion_floor: 0.05,
             consensus_eps_mid: Some(6.5),
+            consensus_eps_periods: vec![crate::portfolio::engine::ConsensusEpsPeriod {
+                period_end: "2026-12-31".into(),
+                eps_mid: Some(6.5),
+                ntm_weight: 1.0,
+            }],
         });
         run.audit[0].fund_exposure = Some(crate::portfolio::fund::FundExposureBasis {
             class_label: "US equity fund".into(),
@@ -1475,6 +1484,24 @@ mod tests {
         });
         insert_run(&conn, &run).unwrap();
         assert_eq!(latest_run(&conn).unwrap().unwrap(), run);
+    }
+
+    #[test]
+    fn pre_v25_quick_basis_decodes_without_period_rows() {
+        let basis: crate::portfolio::engine::QuickCheckBasis = serde_json::from_value(
+            serde_json::json!({
+                "spot": 195.0,
+                "drivers": [6.0, 6.5, 7.0],
+                "spread_percentiles": null,
+                "raw_percentiles": [25.0, 28.0, 31.0],
+                "forward_dividends": 1.0,
+                "dispersion_floor": 0.05,
+                "consensus_eps_mid": 6.5
+            }),
+        )
+        .unwrap();
+        assert_eq!(basis.consensus_eps_mid, Some(6.5));
+        assert!(basis.consensus_eps_periods.is_empty());
     }
 
 

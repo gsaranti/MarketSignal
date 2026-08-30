@@ -3254,7 +3254,9 @@ mod tests {
     struct StubCompanyData;
     impl CompanyDataSource for StubCompanyData {
         fn financials(&self, symbol: &str) -> CompanyFinancials {
-            use crate::portfolio::engine::{ConsensusEstimate, DatedValue, QuarterlyIncomeRow};
+            use crate::portfolio::engine::{
+                ConsensusEpsPeriod, ConsensusEstimate, DatedValue, QuarterlyIncomeRow,
+            };
             let ends = [
                 "2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30",
                 "2025-03-31", "2024-12-31", "2024-09-30", "2024-06-30", "2024-03-31",
@@ -3308,6 +3310,11 @@ mod tests {
                     revenue_low: Some(420.0e9),
                     revenue_mid: Some(430.0e9),
                     revenue_high: Some(440.0e9),
+                    eps_periods: vec![ConsensusEpsPeriod {
+                        period_end: "2027-06-30".into(),
+                        eps_mid: Some(6.5),
+                        ntm_weight: 1.0,
+                    }],
                     ..ConsensusEstimate::default()
                 }),
                 ttm_dividends_per_share: Some(1.0),
@@ -4952,6 +4959,11 @@ mod tests {
         ) -> Result<Option<crate::portfolio::engine::ConsensusEstimate>> {
             Ok(Some(crate::portfolio::engine::ConsensusEstimate {
                 eps_mid: Some(6.5),
+                eps_periods: vec![crate::portfolio::engine::ConsensusEpsPeriod {
+                    period_end: "2027-06-30".into(),
+                    eps_mid: Some(6.5),
+                    ntm_weight: 1.0,
+                }],
                 ..Default::default()
             }))
         }

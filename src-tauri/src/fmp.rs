@@ -6264,7 +6264,8 @@ fn consensus_from_value(
     // exclude the true following fiscal year while recording `periods_used = 2`.
     forward.dedup_by_key(|(d, _)| *d);
     let (near_date, near): (chrono::NaiveDate, &Value) = *forward.first()?;
-    let far: Option<&Value> = forward.get(1).map(|(_, r)| *r);
+    let far_row: Option<(chrono::NaiveDate, &Value)> = forward.get(1).copied();
+    let far: Option<&Value> = far_row.map(|(_, r)| r);
 
     // The near row's weight = the share of the rolling twelve months its fiscal year
     // still covers (days to its period end / 365, clamped); the far row carries the
@@ -6314,6 +6315,26 @@ fn consensus_from_value(
             (false, false) => 0,
         }
     };
+    let eps_period = |date: chrono::NaiveDate,
+                      row: &Value,
+                      ntm_weight: f64|
+     -> crate::portfolio::engine::ConsensusEpsPeriod {
+        crate::portfolio::engine::ConsensusEpsPeriod {
+            period_end: date.format("%Y-%m-%d").to_string(),
+            eps_mid: field(row, "epsAvg", "estimatedEpsAvg")
+                .filter(|value| value.is_finite()),
+            ntm_weight,
+        }
+    };
+    let mut eps_periods = vec![eps_period(
+        near_date,
+        near,
+        if blended { near_weight } else { 1.0 },
+    )];
+    if let Some((far_date, far)) = far_row.filter(|_| blended) {
+        eps_periods.push(eps_period(far_date, far, 1.0 - near_weight));
+    }
+
     Some(crate::portfolio::engine::ConsensusEstimate {
         period_end: date_of(near),
         eps_low: blend("epsLow", "estimatedEpsLow"),
@@ -6326,6 +6347,7 @@ fn consensus_from_value(
         near_weight,
         eps_mid_rows: rows_carrying("epsAvg", "estimatedEpsAvg"),
         revenue_mid_rows: rows_carrying("revenueAvg", "estimatedRevenueAvg"),
+        eps_periods,
     })
 }
 
@@ -6820,6 +6842,21 @@ mod suite_tests {
         assert!((c.eps_mid.unwrap() - (w * 6.8 + (1.0 - w) * 7.4)).abs() < 1e-9);
         assert!((c.eps_low.unwrap() - (w * 6.5 + (1.0 - w) * 7.0)).abs() < 1e-9);
         assert!((c.revenue_high.unwrap() - (w * 440e9 + (1.0 - w) * 470e9)).abs() < 1.0);
+        assert_eq!(
+            c.eps_periods,
+            vec![
+                crate::portfolio::engine::ConsensusEpsPeriod {
+                    period_end: "2026-09-30".into(),
+                    eps_mid: Some(6.8),
+                    ntm_weight: w,
+                },
+                crate::portfolio::engine::ConsensusEpsPeriod {
+                    period_end: "2027-09-30".into(),
+                    eps_mid: Some(7.4),
+                    ntm_weight: 1.0 - w,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -6841,6 +6878,14 @@ mod suite_tests {
         assert!((c.near_weight - 56.0 / 365.0).abs() < 1e-9, "{}", c.near_weight);
         let expected = c.near_weight * 6.0 + (1.0 - c.near_weight) * 9.0;
         assert!((c.eps_mid.unwrap() - expected).abs() < 1e-9);
+        assert_eq!(
+            c.eps_periods
+                .iter()
+                .map(|period| period.period_end.as_str())
+                .collect::<Vec<_>>(),
+            ["2026-09-30", "2026-12-31"],
+            "revision identities are canonical even when the wire date is not"
+        );
         // An undatable row never enters the forward set.
         let junk: Value = serde_json::from_str(
             r#"[{"date":"soon","epsAvg":9.9},{"date":"2026-09-30","epsAvg":6.0}]"#,
@@ -6863,6 +6908,8 @@ mod suite_tests {
         assert_eq!(c.periods_used, 1);
         assert!((c.near_weight - 1.0).abs() < 1e-12);
         assert_eq!(c.eps_mid, Some(6.8));
+        assert_eq!(c.eps_periods.len(), 1);
+        assert_eq!(c.eps_periods[0].ntm_weight, 1.0);
     }
 
     #[test]

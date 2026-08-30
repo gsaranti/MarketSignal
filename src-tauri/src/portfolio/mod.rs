@@ -1979,7 +1979,14 @@ pub struct HoldingAudit {
 /// span beside their normalized period end. The 6d schema and prompt name the
 /// field, and the app rejects a span that conflicts with an explicit Q / H /
 /// FY / YTD label; an unknown span remains audit context and never pairs.
-pub const PROMPT_VERSION: &str = "portfolio-v24";
+///
+/// `portfolio-v25`: analyst revision is measured only across fiscal-period EPS
+/// rows present in both the prior and current snapshots, using the prior NTM
+/// weights renormalized across those matches. Rolling NTM remains the valuation
+/// driver, but its changing calendar weights can no longer manufacture the
+/// quick-check revision event or distort narrative-vs-reality; no common period
+/// makes revision unavailable and sends narrative to its operating fallback.
+pub const PROMPT_VERSION: &str = "portfolio-v25";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

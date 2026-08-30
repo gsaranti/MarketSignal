@@ -501,15 +501,23 @@ pub fn analyze_holding(
     };
     let prior_ledger = bridged_ledger.as_ref().or(prior_ledger);
     // The prior read's per-share comparators on this run's basis: the spot and
-    // the consensus-EPS mid scale TOGETHER (their ratio — the prior multiple —
-    // is basis-free and must stay so). `None` factor drops both — excluded,
-    // never cross-basis.
-    let (bridged_prior_spot, bridged_prior_mid) = match price_bridge {
-        Some(f) => (
-            dossier.prior_spot.map(|s| s * f),
-            dossier.prior_consensus_eps_mid.map(|m| m * f),
-        ),
-        None => (None, None),
+    // every raw consensus-EPS period scale TOGETHER (their ratio — the prior
+    // matched-period multiple — is basis-free and must stay so). `None` factor
+    // drops both — excluded, never cross-basis.
+    let (bridged_prior_spot, bridged_prior_periods) = match price_bridge {
+        Some(f) => {
+            let periods = dossier
+                .prior_consensus_eps_periods
+                .iter()
+                .cloned()
+                .map(|mut period| {
+                    period.eps_mid = period.eps_mid.map(|mid| mid * f);
+                    period
+                })
+                .collect();
+            (dossier.prior_spot.map(|s| s * f), periods)
+        }
+        None => (None, Vec::new()),
     };
     // The fund exposure comparators for the quick check's fund evidence-event legs
     // — computed from the same fresh metadata the pass analyzed, on either verdict
@@ -1120,7 +1128,7 @@ pub fn analyze_holding(
                 .or(dossier.financials.current_price)
                 .unwrap_or(f64::NAN),
             bridged_prior_spot,
-            bridged_prior_mid,
+            &bridged_prior_periods,
             elapsed,
         ) {
             Ok(read) => (Some(read), None),
@@ -5739,7 +5747,8 @@ impl HoldingAnalyst for LocalAnalyst {
 mod tests {
     use super::*;
     use crate::portfolio::engine::{
-        CompanyFinancials, ConsensusEstimate, DatedValue, QuarterlyIncomeRow,
+        CompanyFinancials, ConsensusEpsPeriod, ConsensusEstimate, DatedValue,
+        QuarterlyIncomeRow,
     };
     use crate::portfolio::fund::{FundContext, FundData, SectorPe};
     use crate::portfolio::{AssetClass, InvestorProfile, OptionsSignal};
@@ -6127,6 +6136,11 @@ mod tests {
                 revenue_low: Some(420.0e9),
                 revenue_mid: Some(430.0e9),
                 revenue_high: Some(440.0e9),
+                eps_periods: vec![ConsensusEpsPeriod {
+                    period_end: "2027-06-30".into(),
+                    eps_mid: Some(6.5),
+                    ntm_weight: 1.0,
+                }],
                 ..ConsensusEstimate::default()
             }),
             ttm_dividends_per_share: Some(1.0),
@@ -6156,7 +6170,7 @@ mod tests {
             prior_verdict: None,
             prior_vintage: None,
             prior_spot: None,
-            prior_consensus_eps_mid: None,
+            prior_consensus_eps_periods: Vec::new(),
             prior_matured_notes: Vec::new(),
             prior_grade_parameter_version: None,
             prior_target_parameter_version: None,
@@ -7169,7 +7183,11 @@ mod tests {
         });
         d.prior_vintage = Some("2026-06-30T20:00:00Z".into());
         d.prior_spot = Some(780.0);
-        d.prior_consensus_eps_mid = Some(26.0);
+        d.prior_consensus_eps_periods = vec![engine::ConsensusEpsPeriod {
+            period_end: "2027-06-30".into(),
+            eps_mid: Some(26.0),
+            ntm_weight: 1.0,
+        }];
         d.prior_authoring_close =
             Some(DatedValue { date: "2026-06-30".into(), value: 760.0 });
 
@@ -8351,8 +8369,9 @@ mod tests {
         // stays pinned. Group 3 (Codex I8 / I10 / I12 renders and the I19
         // period-word guard, ruled 2026-08-29) moved it again, and group 4
         // (the Codex I11 target-boundary NOTE and the I13 equity-source line
-        // in the basis sentence, beside the new evaluation-state stamp) again.
-        assert_eq!(PROMPT_VERSION, "portfolio-v24");
+        // in the basis sentence, beside the new evaluation-state stamp) again;
+        // Review 2 M11's constant-period revision semantics move it to v25.
+        assert_eq!(PROMPT_VERSION, "portfolio-v25");
     }
 
     #[test]

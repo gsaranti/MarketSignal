@@ -542,6 +542,21 @@ impl QuarterlyCashFlowRow {
 }
 
 /// The forward consensus the v2 driver ladder reads (`analyst-estimates`) — the
+/// One raw fiscal-period EPS observation behind a rolling consensus read.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsensusEpsPeriod {
+    /// Fiscal-period end, normalized to ISO by the provider adapter.
+    pub period_end: String,
+    /// The published EPS average for this fiscal period before the rolling NTM
+    /// blend. Missing stays missing; it is never inferred from the blended mid.
+    pub eps_mid: Option<f64>,
+    /// This row's weight in the authoring-time NTM blend. A constant-period
+    /// revision comparison reuses and renormalizes these prior weights across
+    /// the fiscal periods that still exist on both snapshots, so the passage of
+    /// time cannot manufacture a revision.
+    pub ntm_weight: f64,
+}
+
 /// **next-twelve-months (NTM) read**: a time-weighted blend of the two nearest
 /// forward fiscal-year rows by their month-overlap with the rolling twelve-month
 /// window, so a mostly-reported current fiscal year (whose consensus ≈ the trailing
@@ -574,6 +589,11 @@ pub struct ConsensusEstimate {
     /// The revenue rung's counterpart: forward rows contributing to the revenue
     /// mid.
     pub revenue_mid_rows: u8,
+    /// Raw fiscal-period EPS observations behind the blended mid, with their
+    /// authoring-time weights. Valuation reads [`Self::eps_mid`]; revision reads
+    /// match these rows by `period_end` instead of comparing two rolling blends.
+    #[serde(default)]
+    pub eps_periods: Vec<ConsensusEpsPeriod>,
 }
 
 /// The normalized financial inputs the engine reasons over, assembled by the dossier
@@ -1950,9 +1970,13 @@ pub struct QuickCheckBasis {
     /// The volatility-scaled dispersion floor the full pass applied.
     pub dispersion_floor: f64,
     /// The NTM consensus EPS mid the run read (`None` where no consensus existed) —
-    /// the quick check's revision-preflight comparator
-    /// (`docs/portfolio-analysis.md` §Starting parameters, the large-revision-move leg).
+    /// retained as the valuation snapshot, never used as the revision comparator.
     pub consensus_eps_mid: Option<f64>,
+    /// Raw fiscal-period EPS rows behind the NTM valuation read. The quick check
+    /// and narrative-vs-reality path match these to fresh rows by period end,
+    /// preventing calendar roll-forward from masquerading as analyst revision.
+    #[serde(default)]
+    pub consensus_eps_periods: Vec<ConsensusEpsPeriod>,
 }
 
 /// The latest bar in a dated, oldest-first series on or before `date` (ISO dates
@@ -2579,6 +2603,9 @@ pub fn refine_targets_with_assumption(
         near_weight: 1.0,
         eps_mid_rows: 0,
         revenue_mid_rows: 0,
+        // A research supplement is a sourced point, not a provider fiscal-row
+        // snapshot, so it cannot become a constant-period revision comparator.
+        eps_periods: Vec::new(),
     });
     match input.metric {
         AssumptionMetric::ForwardEps => {
@@ -3022,6 +3049,11 @@ pub fn scenario_targets_v2(
         forward_dividends,
         dispersion_floor: floor,
         consensus_eps_mid: fin.consensus.as_ref().and_then(|c| c.eps_mid),
+        consensus_eps_periods: fin
+            .consensus
+            .as_ref()
+            .map(|c| c.eps_periods.clone())
+            .unwrap_or_default(),
     };
 
     let targets = build_price_targets(
@@ -3610,8 +3642,8 @@ pub struct NarrativeRead {
     /// The expansion leg (decimal): the forward-multiple change since the prior
     /// run on the revision form; the annualized price move on the fallback.
     pub expansion: f64,
-    /// The reality leg (decimal): the consensus-mid revision over the same
-    /// interval, or the TTM-revenue year-over-year growth on the fallback.
+    /// The reality leg (decimal): the matched-fiscal-period consensus revision
+    /// over the same interval, or TTM-revenue year-over-year growth on fallback.
     pub reality: f64,
     /// expansion ÷ reality, where reality is positive — `None` on flat or
     /// declining reality (the ratio is unbounded there; classification says
@@ -3649,16 +3681,96 @@ fn ttm_revenue_window(fin: &CompanyFinancials, start: usize) -> Option<f64> {
     rows.iter().map(|r| r.revenue).sum()
 }
 
+/// A consensus change measured on fiscal periods present in both snapshots.
+/// The values use the prior snapshot's NTM weights, renormalized across the
+/// matched rows; therefore a changed calendar weight or newly-forward year
+/// cannot create a change by itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsensusRevisionPair {
+    pub prior: f64,
+    pub current: f64,
+    pub period_ends: Vec<String>,
+}
+
+/// Match two consensus snapshots by fiscal-period end and hold the earlier
+/// snapshot's maturity weights constant. `prior_scale` rebases the stored
+/// per-share values across a split; an invalid bridge makes the comparison
+/// unavailable rather than mixing share bases.
+pub fn consensus_revision_pair(
+    prior: &[ConsensusEpsPeriod],
+    current: &[ConsensusEpsPeriod],
+    prior_scale: f64,
+) -> Option<ConsensusRevisionPair> {
+    if !(prior_scale.is_finite() && prior_scale > 0.0) {
+        return None;
+    }
+
+    let mut matched = Vec::new();
+    for old in prior {
+        if old.period_end.is_empty()
+            || !(old.ntm_weight.is_finite() && old.ntm_weight > 0.0)
+            || matched
+                .iter()
+                .any(|(period, _, _, _)| period == &old.period_end)
+        {
+            continue;
+        }
+        let Some(old_mid) = old.eps_mid.filter(|value| value.is_finite()) else {
+            continue;
+        };
+        let Some(new_mid) = current
+            .iter()
+            .find(|new| new.period_end == old.period_end)
+            .and_then(|new| new.eps_mid)
+            .filter(|value| value.is_finite())
+        else {
+            continue;
+        };
+        matched.push((
+            old.period_end.clone(),
+            old.ntm_weight,
+            old_mid * prior_scale,
+            new_mid,
+        ));
+    }
+
+    let weight_sum: f64 = matched.iter().map(|(_, weight, _, _)| weight).sum();
+    if !(weight_sum.is_finite() && weight_sum > 0.0) {
+        return None;
+    }
+    let prior = matched
+        .iter()
+        .map(|(_, weight, value, _)| weight * value)
+        .sum::<f64>()
+        / weight_sum;
+    let current = matched
+        .iter()
+        .map(|(_, weight, _, value)| weight * value)
+        .sum::<f64>()
+        / weight_sum;
+    if !(prior.is_finite() && current.is_finite()) {
+        return None;
+    }
+    Some(ConsensusRevisionPair {
+        prior,
+        current,
+        period_ends: matched
+            .into_iter()
+            .map(|(period, _, _, _)| period)
+            .collect(),
+    })
+}
+
 /// Compute the narrative-vs-reality read against the prior run's stored
-/// comparator ([`QuickCheckBasis`]'s spot + consensus mid — both persisted, so
-/// the pace pair needs no new history). `Err` is the typed unreadable reason
+/// comparator ([`QuickCheckBasis`]'s spot + raw fiscal-period consensus rows —
+/// both persisted, so the pace pair needs no new history). `Err` is the typed unreadable reason
 /// (a debut, a too-short interval, or neither form's legs resolving) — a gap,
 /// never a fabricated neutral.
 pub fn narrative_vs_reality(
     fin: &CompanyFinancials,
     spot: f64,
     prior_spot: Option<f64>,
-    prior_consensus_eps_mid: Option<f64>,
+    prior_consensus_eps_periods: &[ConsensusEpsPeriod],
     elapsed_days: Option<i64>,
 ) -> std::result::Result<NarrativeRead, String> {
     let prior_spot = prior_spot
@@ -3675,26 +3787,26 @@ pub fn narrative_vs_reality(
         return Err("no positive current price".to_string());
     }
 
-    let mid_now = fin
-        .consensus
-        .as_ref()
-        .and_then(|c| c.eps_mid)
-        .filter(|m| m.is_finite() && *m > 0.0);
-    let prior_mid = prior_consensus_eps_mid.filter(|m| m.is_finite() && *m > 0.0);
+    let revision = fin.consensus.as_ref().and_then(|current| {
+        consensus_revision_pair(prior_consensus_eps_periods, &current.eps_periods, 1.0)
+    });
 
-    let (form, expansion, reality) = match (mid_now, prior_mid) {
-        // The primary form: forward-multiple change vs consensus revision, both
-        // over the same interval — the ratio is interval-invariant.
-        (Some(mid_now), Some(prior_mid)) => {
-            let expansion = (spot / mid_now) / (prior_spot / prior_mid) - 1.0;
-            let reality = mid_now / prior_mid - 1.0;
+    let (form, expansion, reality) = match revision
+        .filter(|pair| pair.prior > 0.0 && pair.current > 0.0)
+    {
+        // The primary form: forward-multiple change vs consensus revision on
+        // matched fiscal periods, both over the same interval. Prior weights
+        // are held constant, so calendar roll-forward cannot move either leg.
+        Some(pair) => {
+            let expansion = (spot / pair.current) / (prior_spot / pair.prior) - 1.0;
+            let reality = pair.current / pair.prior - 1.0;
             (NarrativeForm::RevisionBased, expansion, reality)
         }
         // The thin-coverage fallback (`docs/trade-opportunities.md` §The two
         // non-negotiables): the company's own reported operating momentum (TTM
         // revenue YoY — an annual rate) against the price move annualized onto
         // the same basis.
-        _ => {
+        None => {
             let ttm_now = ttm_revenue_window(fin, 0)
                 .filter(|r| *r > 0.0)
                 .ok_or("thin coverage and no contiguous current TTM revenue window")?;
@@ -4033,6 +4145,11 @@ mod tests {
                 revenue_low: Some(420.0e9),
                 revenue_mid: Some(430.0e9),
                 revenue_high: Some(440.0e9),
+                eps_periods: vec![ConsensusEpsPeriod {
+                    period_end: "2027-06-30".into(),
+                    eps_mid: Some(6.5),
+                    ntm_weight: 1.0,
+                }],
                 ..ConsensusEstimate::default()
             }),
             ttm_dividends_per_share: Some(1.0),
@@ -4648,13 +4765,29 @@ mod tests {
         // vanishing consensus mid beside a huge spot — a gap with its reason.
         let mut fin = strong();
         fin.consensus.as_mut().unwrap().eps_mid = Some(1e-300);
-        let err = narrative_vs_reality(&fin, 1e300, Some(1.0), Some(1.0), Some(30)).unwrap_err();
+        fin.consensus.as_mut().unwrap().eps_periods[0].eps_mid = Some(1e-300);
+        let err = narrative_vs_reality(
+            &fin,
+            1e300,
+            Some(1.0),
+            &eps_periods(1.0),
+            Some(30),
+        )
+        .unwrap_err();
         assert!(err.contains("overflowed"), "{err}");
         // Both legs finite but their quotient not (Codex I16, round 1): a
         // barely-positive revision beside a huge expansion is hype — the cap
         // fires — with the ratio persisted absent, never the justified branch.
         fin.consensus.as_mut().unwrap().eps_mid = Some(1.0 + f64::EPSILON);
-        let read = narrative_vs_reality(&fin, 1e300, Some(1.0), Some(1.0), Some(30)).unwrap();
+        fin.consensus.as_mut().unwrap().eps_periods[0].eps_mid = Some(1.0 + f64::EPSILON);
+        let read = narrative_vs_reality(
+            &fin,
+            1e300,
+            Some(1.0),
+            &eps_periods(1.0),
+            Some(30),
+        )
+        .unwrap();
         assert!(read.expansion.is_finite() && read.reality > 0.0, "{read:?}");
         assert_eq!(read.classification, NarrativeClass::Hype, "{read:?}");
         assert!(read.hype_capped(), "{read:?}");
@@ -7617,7 +7750,71 @@ mod tests {
         assert!(implied_expectations(0.0, &scenario, Some(9.0), "r", true, 0.04).is_none());
     }
 
-    /// A minimal narrative-read fixture: an optional NTM consensus mid and an
+    fn eps_periods(mid: f64) -> Vec<ConsensusEpsPeriod> {
+        vec![ConsensusEpsPeriod {
+            period_end: "2027-06-30".into(),
+            eps_mid: Some(mid),
+            ntm_weight: 1.0,
+        }]
+    }
+
+    fn eps_period(period_end: &str, eps_mid: f64, ntm_weight: f64) -> ConsensusEpsPeriod {
+        ConsensusEpsPeriod {
+            period_end: period_end.into(),
+            eps_mid: Some(eps_mid),
+            ntm_weight,
+        }
+    }
+
+    #[test]
+    fn consensus_revision_holds_prior_period_weights_constant_across_calendar_roll() {
+        let prior = vec![
+            eps_period("2026-12-31", 5.0, 0.4),
+            eps_period("2027-12-31", 6.0, 0.6),
+        ];
+        // Before the boundary, both fiscal periods match. The fresh snapshot's
+        // different rolling weights are deliberately irrelevant.
+        let reweighted = vec![
+            eps_period("2026-12-31", 5.0, 0.1),
+            eps_period("2027-12-31", 6.0, 0.9),
+        ];
+        let pair = consensus_revision_pair(&prior, &reweighted, 1.0).unwrap();
+        assert!((pair.prior - 5.6).abs() < 1e-12, "{pair:?}");
+        assert!((pair.current - 5.6).abs() < 1e-12, "{pair:?}");
+
+        // After the near year rolls out, the surviving far year is compared to
+        // itself and the old weight is renormalized to one.
+        let rolled = vec![
+            eps_period("2027-12-31", 6.0, 0.2),
+            eps_period("2028-12-31", 7.0, 0.8),
+        ];
+        let pair = consensus_revision_pair(&prior, &rolled, 1.0).unwrap();
+        assert_eq!(pair.period_ends, vec!["2027-12-31"]);
+        assert_eq!((pair.prior, pair.current), (6.0, 6.0));
+
+        let disjoint = vec![eps_period("2028-12-31", 7.0, 1.0)];
+        assert_eq!(consensus_revision_pair(&prior, &disjoint, 1.0), None);
+    }
+
+    #[test]
+    fn narrative_revision_uses_the_surviving_fiscal_period_not_the_rolled_ntm_mid() {
+        let prior = vec![
+            eps_period("2026-12-31", 5.0, 0.5),
+            eps_period("2027-12-31", 6.0, 0.5),
+        ];
+        let mut fin = narrative_fin(Some(6.5), None);
+        fin.consensus.as_mut().unwrap().eps_periods = vec![
+            eps_period("2027-12-31", 6.0, 0.5),
+            eps_period("2028-12-31", 7.0, 0.5),
+        ];
+        let read = narrative_vs_reality(&fin, 120.0, Some(100.0), &prior, Some(30)).unwrap();
+        assert_eq!(read.form, NarrativeForm::RevisionBased);
+        assert_eq!(read.reality, 0.0, "{read:?}");
+        assert!((read.expansion - 0.2).abs() < 1e-12, "{read:?}");
+        assert_eq!(read.classification, NarrativeClass::Hype);
+    }
+
+    /// A minimal narrative-read fixture: an optional consensus mid and an
     /// optional 8-quarter contiguous revenue window (newest first).
     fn narrative_fin(mid: Option<f64>, quarterly_revenue: Option<[f64; 8]>) -> CompanyFinancials {
         let mut fin = CompanyFinancials {
@@ -7627,6 +7824,7 @@ mod tests {
         if let Some(mid) = mid {
             fin.consensus = Some(ConsensusEstimate {
                 eps_mid: Some(mid),
+                eps_periods: eps_periods(mid),
                 ..ConsensusEstimate::default()
             });
         }
@@ -7654,24 +7852,28 @@ mod tests {
     fn narrative_revision_form_classifies_hype_justified_and_neutral() {
         // Hype: forward multiple 10 → 13.6 (+36%) on a +10% revision → ratio > 1.5.
         let fin = narrative_fin(Some(11.0), None);
-        let n = narrative_vs_reality(&fin, 150.0, Some(100.0), Some(10.0), Some(30)).unwrap();
+        let n = narrative_vs_reality(&fin, 150.0, Some(100.0), &eps_periods(10.0), Some(30))
+            .unwrap();
         assert_eq!(n.form, NarrativeForm::RevisionBased);
         assert_eq!(n.classification, NarrativeClass::Hype);
         assert!(n.matched_rule.is_some());
         assert!(n.ratio.unwrap() > NARRATIVE_HYPE_RATIO);
         // Justified-expensive: a +20% revision underwrites a +8.3% multiple move.
         let fin = narrative_fin(Some(12.0), None);
-        let n = narrative_vs_reality(&fin, 130.0, Some(100.0), Some(10.0), Some(30)).unwrap();
+        let n = narrative_vs_reality(&fin, 130.0, Some(100.0), &eps_periods(10.0), Some(30))
+            .unwrap();
         assert_eq!(n.classification, NarrativeClass::JustifiedExpensive);
         assert!(n.matched_rule.is_none());
         // Real expansion over FLAT revisions: the unbounded case — hype, ratio None.
         let fin = narrative_fin(Some(10.0), None);
-        let n = narrative_vs_reality(&fin, 150.0, Some(100.0), Some(10.0), Some(30)).unwrap();
+        let n = narrative_vs_reality(&fin, 150.0, Some(100.0), &eps_periods(10.0), Some(30))
+            .unwrap();
         assert_eq!(n.classification, NarrativeClass::Hype);
         assert!(n.ratio.is_none());
         // Sub-floor expansion is neutral even over flat revisions — noise, not a
         // re-rating.
-        let n = narrative_vs_reality(&fin, 102.0, Some(100.0), Some(10.0), Some(30)).unwrap();
+        let n = narrative_vs_reality(&fin, 102.0, Some(100.0), &eps_periods(10.0), Some(30))
+            .unwrap();
         assert_eq!(n.classification, NarrativeClass::Neutral);
         assert!(n.matched_rule.is_none());
     }
@@ -7683,19 +7885,34 @@ mod tests {
         // annualized price move.
         let revs = [110.0, 110.0, 110.0, 110.0, 100.0, 100.0, 100.0, 100.0];
         let fin = narrative_fin(None, Some(revs));
-        let n = narrative_vs_reality(&fin, 140.0, Some(100.0), None, Some(365)).unwrap();
+        let n = narrative_vs_reality(&fin, 140.0, Some(100.0), &[], Some(365)).unwrap();
         assert_eq!(n.form, NarrativeForm::OperatingReality);
         assert!((n.reality - 0.1).abs() < 1e-9, "{n:?}");
         assert_eq!(n.classification, NarrativeClass::Hype, "{n:?}");
         // Price pace ≈ operating pace reads justified.
-        let n = narrative_vs_reality(&fin, 110.0, Some(100.0), None, Some(365)).unwrap();
+        let n = narrative_vs_reality(&fin, 110.0, Some(100.0), &[], Some(365)).unwrap();
         assert_eq!(n.classification, NarrativeClass::JustifiedExpensive, "{n:?}");
+        // Coverage on both snapshots but no shared fiscal-period identity takes
+        // the same operating fallback; two unrelated forward years are never
+        // treated as a revision pair.
+        let mut disjoint = narrative_fin(Some(11.0), Some(revs));
+        disjoint.consensus.as_mut().unwrap().eps_periods[0].period_end =
+            "2028-06-30".into();
+        let n = narrative_vs_reality(
+            &disjoint,
+            110.0,
+            Some(100.0),
+            &eps_periods(10.0),
+            Some(365),
+        )
+        .unwrap();
+        assert_eq!(n.form, NarrativeForm::OperatingReality);
         // Absences are typed errors, never fabricated neutrals: a debut, a
         // too-short interval, and thin coverage with no statement window.
-        assert!(narrative_vs_reality(&fin, 140.0, None, None, Some(365)).is_err());
-        assert!(narrative_vs_reality(&fin, 140.0, Some(100.0), None, Some(3)).is_err());
+        assert!(narrative_vs_reality(&fin, 140.0, None, &[], Some(365)).is_err());
+        assert!(narrative_vs_reality(&fin, 140.0, Some(100.0), &[], Some(3)).is_err());
         let bare = narrative_fin(None, None);
-        assert!(narrative_vs_reality(&bare, 140.0, Some(100.0), None, Some(365)).is_err());
+        assert!(narrative_vs_reality(&bare, 140.0, Some(100.0), &[], Some(365)).is_err());
     }
 
     #[test]
@@ -7717,11 +7934,11 @@ mod tests {
         };
         // Drop 2025-06-30: the newest four stand, the seam spans two quarters.
         let err =
-            narrative_vs_reality(&seam_gapped(4), 140.0, Some(100.0), None, Some(365)).unwrap_err();
+            narrative_vs_reality(&seam_gapped(4), 140.0, Some(100.0), &[], Some(365)).unwrap_err();
         assert!(err.contains("prior-year TTM revenue window"), "{err}");
         // A gap inside the newest four is the current-window absence.
         let err =
-            narrative_vs_reality(&seam_gapped(1), 140.0, Some(100.0), None, Some(365)).unwrap_err();
+            narrative_vs_reality(&seam_gapped(1), 140.0, Some(100.0), &[], Some(365)).unwrap_err();
         assert!(err.contains("current TTM revenue window"), "{err}");
         // A gap past the eighth row is outside both windows and never trips:
         // a ninth row dated two quarters behind the eighth (2024-09-30 →
@@ -7731,7 +7948,7 @@ mod tests {
         let mut ninth = fin.quarterly_income[7].clone();
         ninth.period_end = "2024-03-31".into();
         fin.quarterly_income.push(ninth);
-        let n = narrative_vs_reality(&fin, 140.0, Some(100.0), None, Some(365)).unwrap();
+        let n = narrative_vs_reality(&fin, 140.0, Some(100.0), &[], Some(365)).unwrap();
         assert!((n.reality - 0.1).abs() < 1e-9, "{n:?}");
     }
 

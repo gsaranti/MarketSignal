@@ -363,11 +363,11 @@ pub struct HoldingDossier {
     /// the anchor-close bridge's authoring leg for re-basing the prior authored
     /// targets. `None` on a debut or a prior audit without a quick-check basis.
     pub prior_spot: Option<f64>,
-    /// The prior read's stored NTM consensus-EPS mid (the same quick-check
-    /// basis) — the narrative-vs-reality read's revision comparator
-    /// ([`crate::portfolio::engine::narrative_vs_reality`]). `None` on a debut
-    /// or a basis that carried none.
-    pub prior_consensus_eps_mid: Option<f64>,
+    /// The prior read's raw fiscal-period consensus EPS rows (the same
+    /// quick-check basis) — the narrative-vs-reality read's constant-period
+    /// revision comparator ([`crate::portfolio::engine::narrative_vs_reality`]).
+    /// Empty on a debut or a basis that carried none.
+    pub prior_consensus_eps_periods: Vec<crate::portfolio::engine::ConsensusEpsPeriod>,
     /// The prior run's matured outcome-window lines for this symbol (deterministic,
     /// engine-computed) — the scored ground the retrospective reads against, where
     /// any windows have matured. Empty on a debut or before any window matures.
@@ -496,10 +496,9 @@ pub struct PriorHolding {
     /// the base the retrospective's realized price move computes against. `None`
     /// where the prior audit carried no basis.
     pub spot: Option<f64>,
-    /// The prior run's NTM consensus-EPS mid (the same stored basis) — the
-    /// narrative-vs-reality read's revision comparator. `None` where the prior
-    /// basis carried none.
-    pub consensus_eps_mid: Option<f64>,
+    /// The prior run's raw fiscal-period consensus EPS rows (the same stored
+    /// basis) — the narrative-vs-reality read's constant-period comparator.
+    pub consensus_eps_periods: Vec<crate::portfolio::engine::ConsensusEpsPeriod>,
     /// The prior run's matured outcome-window lines for this symbol.
     pub matured_notes: Vec<String>,
     /// The prior run's stored engine metrics (its audit row's `metrics`) — the
@@ -808,7 +807,7 @@ pub fn assemble(
         prior_pre_profit,
         prior_vintage,
         prior_spot,
-        prior_consensus_eps_mid,
+        prior_consensus_eps_periods,
         prior_matured_notes,
         prior_metrics,
         prior_authoring_close,
@@ -820,12 +819,23 @@ pub fn assemble(
             p.pre_profit,
             Some(p.vintage),
             p.spot,
-            p.consensus_eps_mid,
+            p.consensus_eps_periods,
             p.matured_notes,
             p.metrics,
             p.authoring_close,
         ),
-        None => (None, None, None, None, None, None, None, Vec::new(), None, None),
+        None => (
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        ),
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
@@ -992,7 +1002,7 @@ pub fn assemble(
         prior_verdict,
         prior_vintage,
         prior_spot,
-        prior_consensus_eps_mid,
+        prior_consensus_eps_periods,
         prior_matured_notes,
         prior_metrics,
         prior_grade_parameter_version,
@@ -1187,13 +1197,17 @@ pub fn prior_verdict_for(
         target_parameter_version,
         pre_profit,
         spot,
-        consensus_eps_mid,
+        consensus_eps_periods,
         metrics,
         authoring_close,
     ) = match audit_row {
         Some(a) => {
             let spot = a.quick_basis.as_ref().map(|b| b.spot);
-            let mid = a.quick_basis.as_ref().and_then(|b| b.consensus_eps_mid);
+            let periods = a
+                .quick_basis
+                .as_ref()
+                .map(|b| b.consensus_eps_periods.clone())
+                .unwrap_or_default();
             (
                 Some(a.grade_parameter_version.clone()),
                 // The target stamp rides the typed target record, so a prior with
@@ -1201,12 +1215,12 @@ pub fn prior_verdict_for(
                 a.target_meta.as_ref().map(|t| t.parameter_version.clone()),
                 a.pre_profit.clone(),
                 spot,
-                mid,
+                periods,
                 Some(a.metrics.clone()),
                 a.authoring_close.clone(),
             )
         }
-        None => (None, None, None, None, None, None, None),
+        None => (None, None, None, None, Vec::new(), None, None),
     };
     // The prior run's matured outcome lines for this symbol — the deterministic
     // scored ground the retrospective block renders (empty until windows mature).
@@ -1231,7 +1245,7 @@ pub fn prior_verdict_for(
         pre_profit,
         vintage,
         spot,
-        consensus_eps_mid,
+        consensus_eps_periods,
         matured_notes,
         metrics,
         authoring_close,

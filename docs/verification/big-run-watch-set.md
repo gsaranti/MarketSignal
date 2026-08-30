@@ -6,8 +6,8 @@ It is forward-looking, unlike the dated records beside it — those are written 
 Findings go into a dated record once the run completes; this file is then the index of what that record has to answer.
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
-Records this run persists stamp `portfolio-v24`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, ledger-basis vocabulary, IV-skew convention, observation-excerpt, guidance-vintage, action-target, model-arm-domain, finite-record (Codex I7 / I9 / I16), prompt-render / period-word-guard (Codex I8 / I10 / I12 / I19), continuity-attribution (Codex I11 / I13), and Review 2 period-span slices all landed since the 2026-08-18 revision with no live run between, and the fresh-start-2 compat cut landed with no stamp.
-The observation-admission-stamp slice (Codex I20) moved the checkpoint format stamp to `checkpoint-v3`; the required period span moved it to `checkpoint-v4`; the quick-check carried-tail evaluation stamp now moves it to `checkpoint-v5`.
+Records this run persists stamp `portfolio-v25`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, expense-ratio render, ledger-basis vocabulary, IV-skew convention, observation-excerpt, guidance-vintage, action-target, model-arm-domain, finite-record (Codex I7 / I9 / I16), prompt-render / period-word-guard (Codex I8 / I10 / I12 / I19), continuity-attribution (Codex I11 / I13), Review 2 period-span, and constant-period revision slices all landed since the 2026-08-18 revision with no live run between, and the fresh-start-2 compat cut landed with no stamp.
+The observation-admission-stamp slice (Codex I20) moved the checkpoint format stamp to `checkpoint-v3`; the required period span moved it to `checkpoint-v4`; the quick-check carried-tail evaluation stamp moved it to `checkpoint-v5`; the raw fiscal-period consensus rows now move it to `checkpoint-v6`.
 The dev store is wiped before this run (ruled 2026-08-29), so every holding is a debut: no prior verdict exists, and nothing that reads against one — the retrospective, the input delta, the ledger evaluation and its crossings, the what-changed audit, the parameter-boundary NOTE, the statement-basis and equity-source gates, episode extension — can fire on run 1.
 The quick check is the exception: it runs between runs against run 1's own persisted comparators, so its first sweep is a run-1 watch (the oracle under §Thesis ledger and the quick check).
 The items below that read against a prior are therefore run-2 watches, and a second run follows only on the user's decision after run 1's result.
@@ -115,7 +115,7 @@ Advisory fraud claims: any validated claim's render as labeled attention evidenc
 The first live overlay read at 47-position scale: eligibility rates, financing-state distribution, and unscorable-gap rates.
 
 The producer's first live activation: observation rows entering through the research loop's fetched-page lineage — validated-row volume, the rejection split across the activation legs (the quoted excerpt's presence in the page, the value at its sign inside it, its metric-family language, its one-number shape, ISO period normalization, period-span presence and label consistency, holding identity), and the Step-6e recompute of the observation-dependent legs.
-Every accepted row persists `admitted_under` = `portfolio-v24` (Codex I20 plus Review 2 N1).
+Every accepted row persists `admitted_under` = `portfolio-v25` (Codex I20 plus Review 2 N1; the later revision slice moved the shared prompt stamp).
 The stamp's first attributable read — a carried row telling itself apart under a later contract — is a run-2 watch.
 
 The span-aware guidance-vintage policy's first live read (stamped `pre-profit-v4`): the distribution of quarter / half-year / full-year / year-to-date / point-in-time / unknown rows; how often unknown stays unpaired or an explicit label conflicts; and how often an accepted guidance row is retrospective — dated on or after its same-span period's earliest actual, or after the period end — or a same-vintage conflict drops a period, read off the persisted rows against the execution read's comparable count and each miss's recorded span, bound date, and actual date.
@@ -144,6 +144,7 @@ The first two-arm vintage: the retrospective and model-arm brief's prompt fit un
 
 The narrative-vs-reality comparator debut.
 No prior run exists, so every holding carries no pace read on run 1 — a missing comparator must record as a debut reason, never a fabricated neutral — and run 1 must persist the comparator run 2's read needs.
+On run 2, inspect the persisted fiscal-period matches and confirm that the reality leg uses the prior weights across those matches; a rolled NTM blend alone must neither create a quick-check revision event nor mask the narrative read, and no common period must use the operating fallback.
 
 ## Listing and identity shapes
 

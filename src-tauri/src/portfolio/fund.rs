@@ -1036,6 +1036,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             forward_dividends: distributions,
             dispersion_floor: floor,
             consensus_eps_mid: None,
+            consensus_eps_periods: Vec::new(),
         }),
         // The fund form prices a deliberately flat synthetic driver over the
         // exposure composite (the settled design, ruled 2026-08-21) — no driver

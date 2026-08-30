@@ -79,7 +79,7 @@ A served array with no readable row reads malformed.
 The dividend windower is stricter: it parses every row's date and rejects the whole body on an undatable one.
 It rejects a body whose in-window amounts sum past a finite number the same way, so an overflowed trailing sum lands as the recorded dividends gap and a zero leg rather than as a figure (ruled 2026-08-29 off the 2026-08-24 review's Codex I16).
 The quarterly statement rows' period and filing dates ride this rule, so the TTM basis's newest-first order and the restatement tie-break read calendar order (the 2026-08-24 review's Priority-1 minor).
-The consensus read orders its forward rows on parsed dates and keeps the near row's period as served — a label, never compared.
+The consensus read orders its forward rows on parsed dates; its display-level near-period label stays as served, while the raw fiscal-period EPS rows persisted for revision comparison carry canonical ISO identities.
 The sector-P/E snapshot and history rows share one shaper, so a snapshot row without a datable date drops as well.
 That shaper holds the report adapter's integrity contract as well (ruled 2026-08-29 off the review's Codex I9).
 Every row's exchange must be present and equal to the board the call was pinned to, and a row served under another board — or without one — reads the whole body malformed, the served board named.
@@ -650,7 +650,7 @@ Every other row in this table is **designed**, landing with its consumer (the co
 | `owner-earnings` | per-holding | owner earnings (cash to shareholders) for valuation |
 | `enterprise-values` | per-holding | enterprise value for EV multiples |
 | `discounted-cash-flow` | per-holding | DCF valuation cross-check |
-| `analyst-estimates` | per-holding | forward revenue / EPS consensus → the quick check's **revision preflight**, the **v2 target ladder's driver source**, and the built **narrative-vs-reality revision-pace leg** (the current NTM mid against the prior run's stored comparator — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)) (the NTM read — the two nearest forward annual rows time-weighted by twelve-month overlap, mid / low / high per leg, EPS else forward revenue per share) |
+| `analyst-estimates` | per-holding | forward revenue / EPS consensus → the quick check's **revision preflight**, the **v2 target ladder's driver source**, and the built **narrative-vs-reality revision-pace leg** (raw EPS rows matched to the prior run by fiscal-period end under the prior weights — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)) (the valuation read remains NTM — the two nearest forward annual rows time-weighted by twelve-month overlap, mid / low / high per leg, EPS else forward revenue per share) |
 | `price-target-consensus`, `price-target-summary` | per-holding | street price-target level + trend — *evidence, not an engine input* |
 | `grades`, `grades-historical`, `grades-consensus` | per-holding | `grades-historical` distribution → engine **rating-drift** read; rating actions + current consensus ride as *evidence* |
 | `ratings-snapshot`, `ratings-historical` | per-holding | FMP's own composite rating — opinion cross-check only |

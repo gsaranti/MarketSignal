@@ -65,8 +65,9 @@ pub const QUICK_EOD_LOOKBACK_DAYS: i64 = 180;
 
 /// The semantics of persisted quick-check evaluation state. `v2` keeps the
 /// split-anchor fetch widening isolated from the fixed 180-day trailing-return
-/// and volatility window (Review 2 N3).
-pub const QUICK_CHECK_PARAMETER_VERSION: &str = "quick-check-v2";
+/// and volatility window (Review 2 N3); `v3` retires rolling-NTM revision
+/// events and compares estimates only on matched fiscal periods (Review 2 M11).
+pub const QUICK_CHECK_PARAMETER_VERSION: &str = "quick-check-v3";
 
 pub(crate) fn legacy_quick_check_parameter_version() -> String {
     "quick-check-v1".to_string()
@@ -212,8 +213,9 @@ pub struct QuickCheckState {
 /// Reconcile a persisted state with the current evaluation semantics while
 /// preserving unrelated durable state. The v1→v2 boundary changed only the
 /// trailing-return and return-volatility measurement window, so their streaks
-/// and any flag explicitly sourced from one of those statements are retired;
-/// evidence events, hurdle/band flags, and every unaffected condition survive.
+/// and any flag explicitly sourced from one of those statements are retired.
+/// The v2→v3 boundary retires only revision-move events, because their rolling
+/// NTM comparator could have moved on calendar weights alone.
 pub fn reconcile_parameter_version(
     state: &mut QuickCheckState,
     run: &crate::portfolio::PortfolioRun,
@@ -221,10 +223,14 @@ pub fn reconcile_parameter_version(
     if state.parameter_version == QUICK_CHECK_PARAMETER_VERSION {
         return;
     }
-    let known_legacy = state.parameter_version == "quick-check-v1";
-    if !known_legacy {
+    let legacy_v1 = state.parameter_version == "quick-check-v1";
+    let legacy_v2 = state.parameter_version == "quick-check-v2";
+    if !(legacy_v1 || legacy_v2) {
         for holding in &mut state.holdings {
             holding.condition_states.clear();
+            holding
+                .evidence_events
+                .retain(|event| event.kind != EvidenceEventKind::RevisionMove);
             if holding.flag.as_ref().is_some_and(|f| {
                 matches!(
                     f.trigger,
@@ -237,54 +243,61 @@ pub fn reconcile_parameter_version(
         state.parameter_version = QUICK_CHECK_PARAMETER_VERSION.to_string();
         return;
     }
-    for holding in &mut state.holdings {
-        let Some(verdict) = run
-            .verdicts
-            .iter()
-            .find(|v| v.symbol.eq_ignore_ascii_case(&holding.symbol))
-        else {
-            // A legacy state with no ledger identity cannot be
-            // interpreted safely. Preserve non-condition evidence only.
-            holding.condition_states.clear();
-            if holding.flag.as_ref().is_some_and(|f| {
+    if legacy_v1 {
+        for holding in &mut state.holdings {
+            let Some(verdict) = run
+                .verdicts
+                .iter()
+                .find(|v| v.symbol.eq_ignore_ascii_case(&holding.symbol))
+            else {
+                // A legacy state with no ledger identity cannot be
+                // interpreted safely. Preserve non-condition evidence only.
+                holding.condition_states.clear();
+                if holding.flag.as_ref().is_some_and(|f| {
+                    matches!(
+                        f.trigger,
+                        FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
+                    )
+                }) {
+                    holding.flag = None;
+                }
+                continue;
+            };
+            let affected: Vec<(&str, &str)> = verdict
+                .thesis_ledger
+                .as_ref()
+                .into_iter()
+                .flat_map(|l| &l.conditions)
+                .filter(|c| {
+                    c.quant.as_ref().is_some_and(|q| {
+                        matches!(
+                            q.series,
+                            engine::LedgerSeries::TrailingReturn
+                                | engine::LedgerSeries::ReturnVolatility
+                        )
+                    })
+                })
+                .map(|c| (c.condition_id.as_str(), c.statement.as_str()))
+                .collect();
+            holding
+                .condition_states
+                .retain(|(id, _)| !affected.iter().any(|(affected_id, _)| id == affected_id));
+            if holding.flag.as_ref().is_some_and(|flag| {
                 matches!(
-                    f.trigger,
+                    flag.trigger,
                     FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
-                )
+                ) && affected
+                    .iter()
+                    .any(|(_, statement)| flag.detail.ends_with(statement))
             }) {
                 holding.flag = None;
             }
-            continue;
-        };
-        let affected: Vec<(&str, &str)> = verdict
-            .thesis_ledger
-            .as_ref()
-            .into_iter()
-            .flat_map(|l| &l.conditions)
-            .filter(|c| {
-                c.quant.as_ref().is_some_and(|q| {
-                    matches!(
-                        q.series,
-                        engine::LedgerSeries::TrailingReturn
-                            | engine::LedgerSeries::ReturnVolatility
-                    )
-                })
-            })
-            .map(|c| (c.condition_id.as_str(), c.statement.as_str()))
-            .collect();
-        holding
-            .condition_states
-            .retain(|(id, _)| !affected.iter().any(|(affected_id, _)| id == affected_id));
-        if holding.flag.as_ref().is_some_and(|flag| {
-            matches!(
-                flag.trigger,
-                FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
-            ) && affected
-                .iter()
-                .any(|(_, statement)| flag.detail.ends_with(statement))
-        }) {
-            holding.flag = None;
         }
+    }
+    for holding in &mut state.holdings {
+        holding
+            .evidence_events
+            .retain(|event| event.kind != EvidenceEventKind::RevisionMove);
     }
     state.parameter_version = QUICK_CHECK_PARAMETER_VERSION.to_string();
 }
@@ -1145,7 +1158,9 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             }
         }
 
-        // Revision preflight vs the stored NTM consensus.
+        // Revision preflight on fiscal periods shared with the stored snapshot.
+        // The rolling NTM blend remains the valuation input, but is never a
+        // revision comparator: its calendar weights move even when analysts do not.
         match inp.data.consensus(&symbol) {
             Err(e) => families.push(FamilySweep {
                 family: SweepFamily::Revision,
@@ -1153,26 +1168,39 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 note: Some(format!("revision preflight failed: {e}")),
             }),
             Ok(fresh) => {
-                // The stored per-share comparator converts onto the fresh basis;
-                // an unresolvable bridge excludes the comparison, and the family
-                // must then read `unknown` — a retrieval that succeeded cannot
-                // vouch through a comparison the basis made unrunnable.
-                let stored_raw = basis.and_then(|b| b.consensus_eps_mid);
-                let stored = stored_raw.and_then(|m| bridge.map(|f| m * f));
-                let fresh_mid = fresh.as_ref().and_then(|c| c.eps_mid);
-                if let (Some(stored), Some(fresh_mid)) = (stored, fresh_mid) {
-                    if revision_moved(stored, fresh_mid) {
+                // Stored per-share rows convert onto the fresh basis. The helper
+                // then matches period ids and holds the prior maturity weights
+                // constant, renormalizing them if only a surviving row overlaps.
+                let stored_periods = basis
+                    .map(|b| b.consensus_eps_periods.as_slice())
+                    .unwrap_or_default();
+                let fresh_periods = fresh
+                    .as_ref()
+                    .map(|c| c.eps_periods.as_slice())
+                    .unwrap_or_default();
+                let comparison = bridge.and_then(|factor| {
+                    engine::consensus_revision_pair(stored_periods, fresh_periods, factor)
+                });
+                if let Some(pair) = &comparison {
+                    if revision_moved(pair.prior, pair.current) {
                         events.push(event(
                             EvidenceEventKind::RevisionMove,
                             format!(
-                                "current-consensus EPS moved {stored:.2} → {fresh_mid:.2} \
-                                 since the last full pass"
+                                "same-period consensus EPS moved {:.2} → {:.2} since the \
+                                 last full pass (fiscal period{})",
+                                pair.prior,
+                                pair.current,
+                                if pair.period_ends.len() == 1 {
+                                    format!(" {}", pair.period_ends[0])
+                                } else {
+                                    format!("s {}", pair.period_ends.join(", "))
+                                }
                             ),
                             inp.now,
                         ));
                     }
                 }
-                if stored_raw.is_some() && bridge.is_none() {
+                if !stored_periods.is_empty() && bridge.is_none() {
                     let note = if inp.price.is_some() {
                         "price basis unverifiable (split-bridge anchor unresolvable) — \
                          the revision-move comparison was excluded this sweep"
@@ -1196,20 +1224,32 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                                 .to_string(),
                         ),
                     });
-                } else {
-                    // A successful read that carried no consensus while a stored
-                    // comparator exists: the retrieval vouched (no gate, no
-                    // outage), but the move test couldn't run — noted rather
-                    // than silent.
-                    let note = (stored.is_some() && fresh_mid.is_none()).then(|| {
-                        "fresh read carried no forward consensus — the \
+                } else if comparison.is_none() {
+                    let note = if stored_periods.is_empty() {
+                        "the last full pass carried no fiscal-period consensus \
+                         comparator — revision is unknown until a full pass \
+                         records one"
+                            .to_string()
+                    } else if fresh_periods.is_empty() {
+                        "fresh read carried no fiscal-period consensus — the \
                          revision-move comparison could not run this sweep"
                             .to_string()
+                    } else {
+                        "stored and fresh consensus carried no usable common \
+                         fiscal period — revision is unknown rather than inferred \
+                         from calendar roll-forward"
+                            .to_string()
+                    };
+                    families.push(FamilySweep {
+                        family: SweepFamily::Revision,
+                        state: SweepState::Unknown,
+                        note: Some(note),
                     });
+                } else {
                     families.push(FamilySweep {
                         family: SweepFamily::Revision,
                         state: SweepState::FreshClear,
-                        note,
+                        note: None,
                     });
                 }
             }
@@ -2224,6 +2264,11 @@ mod tests {
             forward_dividends: 1.0,
             dispersion_floor: 0.05,
             consensus_eps_mid: Some(6.5),
+            consensus_eps_periods: vec![engine::ConsensusEpsPeriod {
+                period_end: "2026-12-31".into(),
+                eps_mid: Some(6.5),
+                ntm_weight: 1.0,
+            }],
         }
     }
 
@@ -2323,6 +2368,11 @@ mod tests {
                 statements: CompanyFinancials::default(),
                 consensus: Ok(Some(ConsensusEstimate {
                     eps_mid: Some(6.5),
+                    eps_periods: vec![engine::ConsensusEpsPeriod {
+                        period_end: "2026-12-31".into(),
+                        eps_mid: Some(6.5),
+                        ntm_weight: 1.0,
+                    }],
                     ..Default::default()
                 })),
                 earnings: Ok(vec![]),
@@ -2663,6 +2713,11 @@ mod tests {
         ));
         data.consensus = Ok(Some(ConsensusEstimate {
             eps_mid: Some(1.625),
+            eps_periods: vec![engine::ConsensusEpsPeriod {
+                period_end: "2026-12-31".into(),
+                eps_mid: Some(1.625),
+                ntm_weight: 1.0,
+            }],
             ..Default::default()
         }));
         data
@@ -2917,7 +2972,7 @@ mod tests {
     }
 
     #[test]
-    fn the_v2_boundary_retires_only_window_affected_quick_state() {
+    fn the_v1_to_v3_boundary_retires_only_affected_quick_state() {
         let mut trailing = price_condition("c-tr", ConditionRole::Falsifier, 0.50);
         trailing.statement = "trailing return above 50%".into();
         trailing.quant.as_mut().unwrap().series = LedgerSeries::TrailingReturn;
@@ -2929,6 +2984,11 @@ mod tests {
         let event = EvidenceEvent {
             kind: EvidenceEventKind::EarningsActual,
             detail: "earnings actual posted".into(),
+            observed_at: "2026-08-01T12:00:00Z".into(),
+        };
+        let legacy_revision = EvidenceEvent {
+            kind: EvidenceEventKind::RevisionMove,
+            detail: "rolling NTM moved".into(),
             observed_at: "2026-08-01T12:00:00Z".into(),
         };
         let mut state = QuickCheckState {
@@ -2944,7 +3004,7 @@ mod tests {
                     detail: "confirmed falsifier breach: trailing return above 50%".into(),
                     raised_at: "2026-08-01T12:00:00Z".into(),
                 }),
-                evidence_events: vec![event.clone()],
+                evidence_events: vec![event.clone(), legacy_revision],
                 condition_states: vec![
                     ("c-tr".into(), ConditionEvalState::default()),
                     ("c-price".into(), ConditionEvalState::default()),
@@ -2968,6 +3028,53 @@ mod tests {
         assert!(state.holdings[0].flag.is_none());
         assert_eq!(state.holdings[0].evidence_events, vec![event]);
         assert_eq!(state.holdings[0].last_hurdle_state, Some(HurdleState::Clears));
+    }
+
+    #[test]
+    fn the_v2_to_v3_boundary_retires_only_rolling_revision_events() {
+        let run = sample_run(
+            priced_verdict("AAPL", vec![]),
+            audit_for("AAPL", Some(basis())),
+        );
+        let keep = EvidenceEvent {
+            kind: EvidenceEventKind::EarningsActual,
+            detail: "earnings actual posted".into(),
+            observed_at: "2026-08-01T12:00:00Z".into(),
+        };
+        let mut state = QuickCheckState {
+            parameter_version: "quick-check-v2".into(),
+            swept_run_id: run.run_id.clone(),
+            last_checked_at: "2026-08-01T12:00:00Z".into(),
+            rate_cache: None,
+            holdings: vec![HoldingQuickState {
+                symbol: "AAPL".into(),
+                families: vec![],
+                flag: Some(AttentionFlag {
+                    trigger: FlagTrigger::PriceOutsideBand,
+                    detail: "price crossed the frozen band".into(),
+                    raised_at: "2026-08-01T12:00:00Z".into(),
+                }),
+                evidence_events: vec![
+                    keep.clone(),
+                    EvidenceEvent {
+                        kind: EvidenceEventKind::RevisionMove,
+                        detail: "rolling NTM moved".into(),
+                        observed_at: "2026-08-01T12:00:00Z".into(),
+                    },
+                ],
+                condition_states: vec![("c-price".into(), ConditionEvalState::default())],
+                last_hurdle_state: Some(HurdleState::Clears),
+                notes: vec!["durable note".into()],
+            }],
+        };
+
+        reconcile_parameter_version(&mut state, &run);
+
+        assert_eq!(state.parameter_version, QUICK_CHECK_PARAMETER_VERSION);
+        assert_eq!(state.holdings[0].evidence_events, vec![keep]);
+        assert_eq!(state.holdings[0].condition_states.len(), 1);
+        assert_eq!(state.holdings[0].flag.as_ref().unwrap().trigger, FlagTrigger::PriceOutsideBand);
+        assert_eq!(state.holdings[0].notes, vec!["durable note"]);
     }
 
     #[test]
@@ -3100,6 +3207,11 @@ mod tests {
         ]);
         stub.consensus = Ok(Some(ConsensusEstimate {
             eps_mid: Some(7.2), // vs stored 6.5 → > 5% move
+            eps_periods: vec![engine::ConsensusEpsPeriod {
+                period_end: "2026-12-31".into(),
+                eps_mid: Some(7.2),
+                ntm_weight: 1.0,
+            }],
             ..Default::default()
         }));
         let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
@@ -3113,6 +3225,90 @@ mod tests {
         // A second identical sweep does not duplicate the events.
         let s2 = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
         assert_eq!(s2.holdings[0].evidence_events.len(), h.evidence_events.len());
+    }
+
+    #[test]
+    fn revision_preflight_ignores_calendar_roll_and_compares_the_surviving_period() {
+        let conn = mem();
+        let verdict = priced_verdict("AAPL", vec![]);
+        let mut stored = basis();
+        stored.consensus_eps_mid = Some(5.5);
+        stored.consensus_eps_periods = vec![
+            engine::ConsensusEpsPeriod {
+                period_end: "2026-12-31".into(),
+                eps_mid: Some(5.0),
+                ntm_weight: 0.5,
+            },
+            engine::ConsensusEpsPeriod {
+                period_end: "2027-12-31".into(),
+                eps_mid: Some(6.0),
+                ntm_weight: 0.5,
+            },
+        ];
+        store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(stored)))).unwrap();
+
+        // Rolling NTM rises 5.5 → 6.5 solely because 2026 rolled out and 2028
+        // rolled in. The shared 2027 estimate is unchanged, so no event exists.
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.consensus = Ok(Some(ConsensusEstimate {
+            eps_mid: Some(6.5),
+            eps_periods: vec![
+                engine::ConsensusEpsPeriod {
+                    period_end: "2027-12-31".into(),
+                    eps_mid: Some(6.0),
+                    ntm_weight: 0.5,
+                },
+                engine::ConsensusEpsPeriod {
+                    period_end: "2028-12-31".into(),
+                    eps_mid: Some(7.0),
+                    ntm_weight: 0.5,
+                },
+            ],
+            ..Default::default()
+        }));
+        let state = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        assert!(!state.holdings[0]
+            .evidence_events
+            .iter()
+            .any(|event| event.kind == EvidenceEventKind::RevisionMove));
+        let revision = state.holdings[0]
+            .families
+            .iter()
+            .find(|family| family.family == SweepFamily::Revision)
+            .unwrap();
+        assert_eq!(revision.state, SweepState::FreshClear);
+
+        // A genuine change to the surviving fiscal period still fires.
+        stub.consensus.as_mut().unwrap().as_mut().unwrap().eps_periods[0].eps_mid = Some(6.5);
+        let state = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        assert!(state.holdings[0]
+            .evidence_events
+            .iter()
+            .any(|event| event.kind == EvidenceEventKind::RevisionMove));
+    }
+
+    #[test]
+    fn revision_preflight_with_no_common_fiscal_period_is_unknown_not_clear() {
+        let conn = mem();
+        store::insert_run(
+            &conn,
+            &sample_run(
+                priced_verdict("AAPL", vec![]),
+                audit_for("AAPL", Some(basis())),
+            ),
+        )
+        .unwrap();
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.consensus.as_mut().unwrap().as_mut().unwrap().eps_periods[0].period_end =
+            "2028-12-31".into();
+        let state = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let revision = state.holdings[0]
+            .families
+            .iter()
+            .find(|family| family.family == SweepFamily::Revision)
+            .unwrap();
+        assert_eq!(revision.state, SweepState::Unknown);
+        assert!(revision.note.as_deref().unwrap().contains("no usable common"));
     }
 
     #[test]
