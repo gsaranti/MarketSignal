@@ -341,3 +341,54 @@ For each non-minor finding: (a) does it match a finding from the last review, an
 
 - Two of the five non-minor findings were introduced by the last review's fixes (N2 by C1, N3 by F1), one had its reach widened by a fix (N5 by I9), and two are pre-existing misses in areas the last review recorded as verified (N1 beside I4; N4 under "lead-time signs" and "the episode lifecycle").
 - The common thread on N2 and N3: each fix's review rounds hardened the fix's own new machinery and did not re-test the property the surrounding code had relied on — idle semantics on the stream, window parity on the sweep.
+
+## Implementation closure — appended 2026-08-30
+
+The user approved handling the whole record before the confirmation run.
+This appendix is additive: the blind review, its Phase-2 reconciliation, and the original awaiting-rulings disposition above remain unchanged as historical evidence.
+
+### Non-minor findings
+
+- **N1** closed in `fdb6273`: observations now carry and validate an explicit reporting span, and pairing, backfill, deduplication, prompts, schemas, persistence, and compatibility all distinguish Q / H / FY / YTD durations that share a period end.
+- **N2** closed in `362d35b`: streaming requests retain a true per-read idle timeout without an absolute body deadline, while non-streaming requests keep their total deadline; active-stream and stalled-stream tests pin the distinction.
+- **N3** closed in `ff91c0f`: the quick check keeps the widened dated series for split-bridge lookup but slices the engine's trailing-return and return-volatility inputs back to the production short window.
+- **N4** closed in `17b4a35`: a crossing is assigned against the episode that carried the condition before a changed-action episode opens, and lead-time attribution is pinned by coincident-crossing tests.
+- **N5** closed in `edea770`: a sector-P/E surface is usable only when every required exchange leg succeeds, with the same completeness rule and typed gap propagation on snapshot and history paths.
+
+### Minor findings
+
+- **M1–M2** closed in `0d11faa`: assumption units scale cents, reject named foreign currencies without FX, and carry comments that match the empty-unit rejection.
+- **M3** closed in `1535bfa`: the active docs describe the actual stock floor — usable price, two real sub-scores, resolved identity, and an admissible driver — rather than a separate all-statements presence gate.
+- **M4–M5** closed in `2284c6d`: option-overlay and leveraged/inverse structure render distinctly, and ultra-short fixed-income names no longer false-match the leveraged classifier.
+- **M6** closed in `edea770`: memoized sector-history failures propagate their typed gap to every affected fund, not only the first consumer.
+- **M7–M8** closed in `fdb6273`: large integral corroboration needles remain whole, and en-dash negatives are recognized beside ASCII and mathematical minus signs.
+- **M9–M10** closed in `17b4a35`: an episode's hurdle and DGS2 share the same intrinsic calibration snapshot, and confirmations after the window do not clamp onto its last bar.
+- **M11** closed in `2e1b176`: revision and narrative comparisons hold the prior fiscal-period weights fixed, preventing calendar roll from masquerading as estimate revision.
+- **M12–M13 and M22** closed in `ff91c0f`: the hurdle flag names its deciding bull leg, retrieval failures are not mislabeled as split-bridge failures, and selective sweeps use the run's pinned clock.
+- **M14 and M23** closed in `646199a`: commodity context routes by industry-aware exposure and guard-terminal holdings skip the irrelevant benchmark retrieval.
+- **M15–M16** closed in `cfc130e`: audits preserve issued model order and the actually routed distillation model, while the distillation reservation rationale and overflow behavior match the current wide schema.
+- **M17–M20** closed in `7db908b`: delta renders preserve meaningful precision, the comment attaches to its function, carried rule demotions are not presented as model-authored, and tax language respects the profile posture.
+- **M21** closed in `859a607`: Schwab cash-equivalent rows reconcile against cash and liquidation totals without double counting; ambiguous or irreconcilable shapes fail instead of guessing, raw source rows remain auditable, and checkpoint compatibility moved to v7.
+- **M24–M27** closed in `e644005`: percentage corroboration avoids floating-point text drift, one-word issuers can identify a holding, month-precision indicator dates are accepted, and seed lineage is capped.
+- **M28** closed in `5e95f2e`: matured total-return and price-only lines use the shared signed-zero-safe percent formatter, with component tests for both paths.
+- **M29–M34** closed in `1535bfa`: the logic flow now matches the diff tags, trailing-TTM payout proxy, all-path fund dispersion floor, model-action scoring, holding-wide condition seed, and full observation dedup key.
+
+### Open-question rulings
+
+- **Q1 — possessive issuer names:** closed in `17568e7`; issuer-token normalization treats possessive and unpunctuated names equivalently without weakening the distinctive-token guard.
+- **Q2 — distillation reservation:** closed in `cfc130e`; 8,192 is the normal output reservation, not a prompt reservation or a total-call-token cap.
+  An exact reservation-bound length stop receives one final 32,768-token attempt on the 128 K reasoner; using 32,768 on every call was rejected because it removes the normal runaway / latency guard and cannot always coexist with the rendered prompt on the fast tier's context.
+- **Q3 — statement freshness:** ruled and documented in `1535bfa` as an accepted boundary for the confirmation run.
+  Statement age alone does not abstain until the product persists a typed statement vintage and has a calibrated cadence threshold; the existing concrete sub-score and driver gates remain binding.
+- **Q4 — allocation / multi-asset fallback:** closed in `2284c6d`; explicit allocation and multi-asset labels route to `role_risk_only` instead of being priced as pure equity merely because sector weights served.
+- **Q5 — FINRA class shares:** closed in `b5732ed`; the FINRA lookup key follows its uppercase separator-free issue-symbol convention while the holding's original identity remains unchanged.
+- **Q6 — redirect cache keys:** closed in `4b1f3b2`; requested and final normalized URLs resolve to the same cached document, including migration of the prior final-URL-only rows, without weakening redirect-hop host validation.
+- **Q7 — revision convention:** closed in `2e1b176`; fixed fiscal-period rows are the intended revision basis for both the badge and narrative read, while rolling NTM remains the target-driver basis.
+- **Q8 — quote-to-close bridge:** ruled and documented in `1535bfa` as a decision-session quote-to-close residual.
+  It is intraday on an ordinary after-open pass, can cross the prior close pre-open, and can widen on resume when a fresh quote is compared with the pinned run-session close.
+
+### Superseding disposition
+
+All five non-minor findings, all thirty-four minor findings, and all eight open questions are closed by implementation or an explicit documented ruling.
+Every implementation slice was committed and pushed to `main` only after the project-required Rust tests, warning-free clippy, frontend production build, applicable frontend tests, and `git diff --check` passed.
+No confirmation run was executed as part of these fixes; this record is now ready for that run.
