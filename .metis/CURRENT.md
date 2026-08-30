@@ -2,67 +2,53 @@
 
 ## What happened
 
-**Group 3 (Codex I19 ruled → I8 + I10 + I12) landed** — `2c35dff`, pushed;
-the record's §I8 / §I10 / §I12 / §I19 carry the rulings, resolutions, one
-reviewer round (approve-with-nits, four of five nits folded in) and seven
-Codex rounds. **I19 ruled (2):** the period-word guard — a value that reads
-as a 1900–2099 year printed without a thousands separator, right after
-`for / in / of / by / through / fiscal / fy` (the alphabetic run immediately
-left of the digits), rejects; a guidance range rejects when both endpoints
-read so and the word precedes the left one; a real count in that band after
-such a word is the accepted loss; the negative lexicon **declined**; the
-competing-noun shape stays with the persisted-excerpt audit and the stem
-table's post-run calibration. **I8:** the prompt reads `fund::us_share`
-(now `pub`), the guard's own read. **I10:** the one-month methodology line
-in the prompt and the card's reveal, the spec fixture real. **I12:**
-`fmt_crossing_pair` — both crossing sites, one comparison-safe precision
-whose invariant is *the rendered pair, parsed back, orders as the values
-do*, a round-trip fallback past ten places. Only `PROMPT_VERSION` moved →
-`portfolio-v22`. **New I20** (ruled at its addition off Codex round 1's P1:
-attribute, never re-filter — each accepted observation row records the
-prompt stamp it was admitted under; no serde default) queued as its own
-slice. Codex rounds 2–7 were all that one formatter's invariant being stated
-loosely then tightened — **state a render's invariant as a checkable
-property before the first Codex round.** BUILD's observation bullet and
-§What remains item 1 updated at session-end.
+**Group 4 landed** — `54ce8a5`, pushed: Codex I11 + I13 under
+`portfolio-v23`, the only axis; rounds recorded at
+`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
+§I11 / §I13. I11: `engine::SCENARIO_TARGET_PARAMETER_HISTORY` +
+`target_parameter_change` (per-branch horizons; a single `targets-v5` anchor
+row, so the attribution is dormant until a `targets-v6` row — `targets-v4`
+reads unrecognized by ruling), the prior stamp carried off `target_meta`, a
+delta row + NOTE naming the horizons. I13: `EquitySource` stamped at
+`merge_financials`, `authored_equity_source` on the two instants, one
+`restamp` read for both stamps, the basis line naming the source. One
+reviewer round (approve-with-nits, 3 of 6 folded) and three Codex rounds.
+**Codex found the real gap:** 6g persisted `ConditionEvalState::default()`
+for every new / superseding core, so no stamp existed until run 2's first
+evaluation adopted silently — the pre-existing basis stamp was blind the same
+way. Fixed: `ContinuityStamps` written at 6g authoring per series; and the
+sweep evaluates debt/equity only when stamped `FmpQuarterly`, withholding
+SEC-stamped and unstamped alike (unevaluable, no state, filing family
+`unknown`). **Lessons:** write a new continuity stamp where the value is
+first authored, not at first evaluation; a withhold-on-mismatch filter must
+treat `None` as a mismatch. BUILD (§Standing constraints, §What remains item
+1) and INDEX (two rows) updated at session-end.
 
 ## Current state
 
-Nothing in flight; `main` at the session-end commit atop `2c35dff`, tree
-clean, pushed. Queue ahead of the run (record §Disposition): **(4) I11 +
-I13** — continuity-attribution mirrors of the grade-version and flow-basis
-gates; **(5) I15 ruled at its plan (wire vs retire) + §A4 seed edge**; **I20
-its own slice**, placement and stamp axis at its plan. Carried untouched
-(unchanged): the cloud report job's unguarded `run_job` seam; the negative
-composite yield; `progress.rs`'s poisonable terminal-leg locks; the `ok`
-tracker row's dropped-count detail; `trade-opportunities-logic-flow.md:397`
-"never sized"; `/api/tags` probes on the 600 s backstop; seed passes the
-whole prior ledger per topic; 6g qualitative trips un-trip unless
-re-researched; an IPv6-loopback wire test. Watch set: records stamp
-`portfolio-v22`; the `model arm value off its declared domain` retry class
-is a watched read. Named residuals: FY periods normalize to 12-31 (I4); the
-I5 off-scale tag survives only for a finite positive leg whose move from
-spot overflows; a resume restoring a poisoned audit fails at persist the
-same way (I16); `ScenarioSet.raw_observations` keeps its count beside a
-`None` surface (cosmetic); I19's word list misses `for the year 2025`, `in
-early 2025`, `by year-end 2025`, `for CY2025` (calibration candidates, off
-the run); the crossing render promises order, never distance.
+Nothing in flight; `main` at `54ce8a5` plus this handoff, tree otherwise
+clean. Queue: **(5) I15 + §A4 seed edge** — the research loop's residue;
+I15 is to be ruled at its plan (read §I15 in the record), §A4 unruled — then
+**I20, own slice** (each accepted observation row records the prompt stamp
+it was admitted under; placement and axis at its plan). Carried untouched:
+the cloud `run_job` seam; negative composite yield; `progress.rs` poisonable
+locks; `ok` tracker row's dropped-count; TO logic-flow :397; the 600 s
+`/api/tags` backstop; seed passes the whole prior ledger; 6g qualitative
+trips un-trip; an IPv6-loopback wire test; the audit's sources line not
+naming the equity source (follow-up candidate, unruled). Watch set stamps
+`portfolio-v23`; run 1 is a debut run for all 47 holdings.
 
 ## Open questions
 
-- I20's placement (before group 4, between, or after group 5) and which axis
-  its row-shape change moves — the prompt stamp on I3's `portfolio-v17`
-  precedent, or the checkpoint format stamp on §I18's contract — both at its
-  plan, user-ruled.
+- I20's placement (before/after group 5) and its axis (prompt stamp on I3's
+  precedent vs the checkpoint format stamp) — at its plan, user-ruled.
+- A second run after run 1 — the user decides on run 1's result; the watch
+  set's run-2 lines wait on that.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` **group 4: I11 + I13** —
-read §I11 and §I13 in the record first, plan both under one code locus and
-one stamp axis, and ask of each fix — and again after any review-round
-fold-in — what stamp it moves (prompt `portfolio-v22`, grade `grade-v2.2`,
-targets `targets-v5`, floor `evidence-floor-v4`, format `checkpoint-v2`;
-overlay `pre-profit-v3`). If the user prefers I20 first, its plan settles
-its placement and axis. Keep the loop per group, record every reviewer and
-Codex round, sweep `logic-flow-docs/` mirrors. Do not launch or propose the
-big run — the user names that session.
+`/metis-session-start`, then `/metis-plan-task` **group 5: I15 + §A4 seed
+edge** — present every flag as a decision with a recommendation and get the
+rulings before implement. Keep the loop (reviewer → Codex → commit), record
+every round in the record's §I15 / §A4, sweep `logic-flow-docs/` mirrors.
+Do not launch or propose the big run — the user names that session.

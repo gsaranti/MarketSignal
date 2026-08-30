@@ -514,7 +514,23 @@ Each is easy to break by accident, so a plan should say how it honors them:
   branch, only over a priced prior, silent where nothing changed — and a
   generic "letters can move" row is citable evidence the validator accepts
   (ruled 2026-08-27, off the fund-momentum slice's Codex rounds; canonical at
-  `docs/portfolio-analysis.md §Starting parameters`).
+  `docs/portfolio-analysis.md §Starting parameters`). The scenario-target
+  stamp holds the same rule since `portfolio-v23`:
+  `engine::SCENARIO_TARGET_PARAMETER_VERSION` moves only with a row appended
+  to `engine::SCENARIO_TARGET_PARAMETER_HISTORY` naming the horizons the bump
+  can have moved on each branch — a single `targets-v5` anchor row today, so
+  the attribution is dormant until the next bump (ruled 2026-08-29, Codex
+  I11).
+- **A condition's continuity stamps are written at authoring.** Step 6g
+  writes the prompt's statement basis and, on the two balance-sheet
+  instants, the equity source onto every new or superseding quantitative
+  condition (`ContinuityStamps`), so the first full-pass evaluation after a
+  debut has a stamp to disagree with — "first evaluation adopts" is blind to
+  a flip between authoring and that evaluation — and the between-run sweep,
+  never the authority on either stamp, evaluates debt/equity only when its
+  streak is stamped with the sweep's own FMP-quarterly source, withholding
+  another source or none (ruled off group 4's Codex rounds 1–2, 2026-08-29;
+  canonical at `docs/portfolio-analysis.md` §The position thesis ledger).
 - **A price or NAV is usable only when finite and strictly positive.** The
   evidence floor tests usability, never presence — at the FMP quote parse
   (the one seam every quote consumer rides, the quick check's price refresh
@@ -522,10 +538,9 @@ Each is easy to break by accident, so a plan should say how it honors them:
   2026-08-29) and again at both engine floors, an unusable fund quote
   falling to a usable NAV — and the floor rule is
   stamped (`engine::EVIDENCE_FLOOR_VERSION`) on the checkpoint header and
-  every audit record, so a resume never crosses a floor-rule change and a
-  pre-stamp record reads as the presence floor (ruled 2026-08-28 off the
-  review's Codex I1; canonical at `docs/portfolio-analysis.md §Evidence
-  floor`).
+  every audit record, so a resume never crosses a floor-rule change (ruled
+  2026-08-28 off the review's Codex I1; canonical at
+  `docs/portfolio-analysis.md §Evidence floor`).
 - **A research-fed observation row is admitted on syntax, never on meaning.**
   The pre-profit producer's typed rows — the one model→engine channel that
   feeds a deterministic rule from prose — enter only through a verbatim,
@@ -546,6 +561,13 @@ Each is easy to break by accident, so a plan should say how it honors them:
   excerpt for audit and the stem table's post-run calibration, a negative
   lexicon declined (ruled 2026-08-29 off the review's I19; canonical at
   `docs/portfolio-workflow.md §Step 6e`).
+- **No local-suite data compat pre-release.** The dev store is wiped before
+  a run, so a new persisted field is required and always written — no serde
+  default, no "a record persisted before the field reads as X" branch, no
+  archive rung for a format no shipped build wrote; only model-written and
+  provider-written JSON stays lenient, and only shipped-report compat and the
+  loud-skip stay (ruled 2026-08-29, superseding the 2026-08-17 kept class;
+  canonical at `docs/verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md`).
 
 ### What each built slice left for the next
 
@@ -689,6 +711,12 @@ every stacked runtime confirmation at once.
   deferred to their own slices (gating telemetry landed); the record and
   eight review rounds are
   `docs/verification/2026-08-24-research-loop-rulings.md`.
+- **The fresh-start-2 slice** — the local-suite data-compat layer that had
+  regrown since 2026-08-17 removed whole (148 decode defaults, the pre-stamp
+  branches, portability's pre-release v2/v3 rungs), the persisted contracts
+  tightened to what the producer always writes, no stamp moving; the ruling,
+  the writer test and the review rounds are
+  `docs/verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md`.
 
 ### Remaining, in order
 
@@ -699,12 +727,15 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I11, I13,
-   I15 and I20 (I1–I5 and I14 resolved 2026-08-28, I6–I10, I12 and I16–I19
-   2026-08-29; I20 ruled at its addition) and the §A4 seed edge sit ahead of
-   the run in the remaining two of five groups cut on one code locus and one
-   stamp axis, I20 its own slice (ruled 2026-08-29; the record's
-   §Disposition owns the grouping);
+   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I15 and
+   I20 (I1–I5 and I14 resolved 2026-08-28, I6–I13 and I16–I19 2026-08-29;
+   I20 ruled at its addition) and the §A4 seed edge sit ahead of the run in
+   the last of five groups cut on one code locus and one stamp axis, I20 its
+   own slice (ruled 2026-08-29; the record's §Disposition owns the
+   grouping), the fresh-start-2 compat cut landed ahead of them the same
+   day; the run starts from a wiped store, so every
+   holding is a debut and every read against a prior is a run-2 watch, a
+   second run following only on the user's decision after run 1's result;
    and the user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
