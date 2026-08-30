@@ -2644,6 +2644,14 @@ fn priced_input_delta(
                 engine::GRADE_PARAMETER_VERSION
             ),
         ),
+        Some(engine::GradeParameterChange::FundSectorPeBasis) => push_delta(
+            &mut entries,
+            format!(
+                "fund sector-P/E exchange basis tightened ({prior_stamp} -> {}) — the valuation \
+                 sub-score and letter can move on the same served rows",
+                engine::GRADE_PARAMETER_VERSION
+            ),
+        ),
         None => {}
     }
     // The scenario-target stamp reads its own history on the same rule (Codex
@@ -3841,6 +3849,13 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
                      inputs; the letter did not move for that reason. Attribute such a \
                      momentum move in what_changed to the re-homing — not to market \
                      change or a self-correction.\n",
+                ),
+                Some(engine::GradeParameterChange::FundSectorPeBasis) => p.push_str(
+                    "NOTE: the fund sector-P/E source now requires both exchange legs \
+                     (grade parameter version changed), so the valuation sub-score and \
+                     letter may have moved on the same served rows. Attribute such a move \
+                     in what_changed to the exchange-basis correction — not to fund change \
+                     or a self-correction.\n",
                 ),
                 None => {}
             }
@@ -8666,10 +8681,10 @@ mod tests {
 
     /// A stamp boundary reaches the model as what it changed for THIS holding,
     /// read from the stamp history on the PRIOR record's branch and only over a
-    /// priced prior. A stock across v2.1 → v2.2 gets neither NOTE nor delta row
-    /// (a citable "letters can move" row would be false evidence for a real
-    /// move); a priced fund gets the re-homing NOTE and row across v2.1 and v2
-    /// alike (no fund-letter change exists since); an unrecognized stamp, a
+    /// priced prior. A stock across v2.1 → v2.3 gets neither NOTE nor delta row
+    /// (neither fund-only change touched it); a priced fund across v2.2 gets the
+    /// exchange-basis NOTE and row, and that letter-bearing correction dominates
+    /// the older momentum-only re-homing when the prior is older; an unrecognized stamp, a
     /// missing stamp, and a never-priced prior get nothing; the branch is the
     /// prior's persisted asset
     /// class, so a fund record without the derived label still reads as a fund;
@@ -8709,7 +8724,11 @@ mod tests {
         let boundary_rows = |entries: &[crate::portfolio::DeltaEntry]| -> Vec<String> {
             entries
                 .iter()
-                .filter(|e| e.label.contains("recalibrated") || e.label.contains("re-homed"))
+                .filter(|e| {
+                    e.label.contains("recalibrated")
+                        || e.label.contains("re-homed")
+                        || e.label.contains("exchange basis tightened")
+                })
                 .map(|e| e.label.clone())
                 .collect()
         };
@@ -8733,17 +8752,20 @@ mod tests {
                 "{case}: {rows:?}"
             );
         };
-        let rehomed = |d: &HoldingDossier, case: &str| {
+        let exchange_basis = |d: &HoldingDossier, case: &str| {
             let p = prompt(d);
-            assert!(p.contains("fund momentum read was re-homed"), "{case}: {p}");
-            assert!(!p.contains("recalibrated"), "{case}: {p}");
+            assert!(
+                p.contains("sector-P/E source now requires both exchange legs"),
+                "{case}: {p}"
+            );
+            assert!(!p.contains("re-homed"), "{case}: {p}");
             let rows = boundary_rows(&delta(d));
             assert_eq!(rows.len(), 1, "{case}: {rows:?}");
             assert!(
-                rows[0].starts_with("fund momentum re-homed to the short price window ("),
+                rows[0].starts_with("fund sector-P/E exchange basis tightened ("),
                 "{case}: {rows:?}"
             );
-            assert!(rows[0].contains("the letter cannot"), "{case}: {rows:?}");
+            assert!(rows[0].contains("letter can move"), "{case}: {rows:?}");
         };
 
         // A priced stock prior.
@@ -8758,6 +8780,8 @@ mod tests {
         stock.prior_verdict = Some(stock_prior.clone());
         stock.prior_grade_parameter_version = Some("grade-v2.1".into());
         silent(&stock, "stock across v2.1");
+        stock.prior_grade_parameter_version = Some("grade-v2.2".into());
+        silent(&stock, "stock across v2.2");
         stock.prior_grade_parameter_version = Some("grade-v2".into());
         recalibrated(&stock, "stock across v2 (signed P/E)");
         stock.prior_grade_parameter_version = None;
@@ -8779,12 +8803,14 @@ mod tests {
         ));
         let mut fund = fund_dossier(us_equity_fund());
         fund.prior_verdict = Some(fund_prior.clone());
+        fund.prior_grade_parameter_version = Some("grade-v2.2".into());
+        exchange_basis(&fund, "fund across v2.2");
         fund.prior_grade_parameter_version = Some("grade-v2.1".into());
-        rehomed(&fund, "fund across v2.1");
+        exchange_basis(&fund, "fund across v2.1");
         let rows = boundary_rows(&delta(&fund));
         assert!(rows[0].contains("(grade-v2.1 -> "), "{rows:?}");
         fund.prior_grade_parameter_version = Some("grade-v2".into());
-        rehomed(&fund, "fund across v2 (v2.1 never touched funds)");
+        exchange_basis(&fund, "fund across v2");
         fund.prior_grade_parameter_version = None;
         silent(&fund, "fund with no stamp (no audit row)");
         fund.prior_grade_parameter_version = Some("grade-v9.9".into());
@@ -8798,22 +8824,22 @@ mod tests {
             g.fund_class_label = None;
         }
         fund.prior_verdict = Some(unlabeled);
-        fund.prior_grade_parameter_version = Some("grade-v2.1".into());
-        rehomed(&fund, "fund prior without the derived label");
+        fund.prior_grade_parameter_version = Some("grade-v2.2".into());
+        exchange_basis(&fund, "fund prior without the derived label");
 
         // The branch is the PRIOR record's, not the current dossier's: a fund
-        // prior now scored as a stock still crossed the re-homing, and a stock
-        // prior now scored as a fund crossed nothing.
+        // prior now scored as a stock still crosses the exchange-basis
+        // correction, and a stock prior now scored as a fund crosses nothing.
         let mut now_stock = dossier(AssetClass::Stock, strong_financials());
         now_stock.prior_verdict = Some(fund_prior);
-        now_stock.prior_grade_parameter_version = Some("grade-v2.1".into());
-        rehomed(&now_stock, "fund prior on a stock dossier");
+        now_stock.prior_grade_parameter_version = Some("grade-v2.2".into());
+        exchange_basis(&now_stock, "fund prior on a stock dossier");
         let mut now_fund = fund_dossier(us_equity_fund());
         now_fund.prior_verdict = Some(stock_prior);
-        now_fund.prior_grade_parameter_version = Some("grade-v2.1".into());
+        now_fund.prior_grade_parameter_version = Some("grade-v2.2".into());
         silent(&now_fund, "stock prior on a fund dossier");
 
-        // A fund prior that was never priced had no momentum sub-score to re-home.
+        // A fund prior that was never priced had no letter or target to move.
         fund.prior_verdict = Some(HoldingVerdict {
             symbol: fund.position.symbol.clone(),
             asset_class: AssetClass::Etf,
@@ -8826,25 +8852,18 @@ mod tests {
             action_source: Default::default(),
             side_reversed: false,
         });
-        fund.prior_grade_parameter_version = Some("grade-v2.1".into());
+        fund.prior_grade_parameter_version = Some("grade-v2.2".into());
         silent(&fund, "never-priced fund prior");
         fund.prior_grade_parameter_version = None;
         silent(&fund, "never-priced fund prior with no stamp");
     }
 
     /// Codex I11: the scenario-target stamp carries the same attribution, read
-    /// from the prior audit's `target_meta.parameter_version`. The production
-    /// history is a single anchor row (the store is wiped before the first run
-    /// under `targets-v5`), so every stamp a prior can carry is silent — the
-    /// current one, no target record, `targets-v4` itself, an unrecognized one —
-    /// on both branches, and a never-priced prior is silent whatever it carries;
-    /// the row and the NOTE are pinned on explicit horizons so the next bump's
-    /// row lands on tested text.
-    ///
-    /// When a `targets-v6` row lands, the `targets-v5` stamp stops being
-    /// silent: move its silence cases to v6 and add the positive case here — a
-    /// priced prior stamped v5 rendering exactly one row and one NOTE through
-    /// the wiring, naming v6's horizons on the prior's branch.
+    /// from the prior audit's `target_meta.parameter_version`. The v6
+    /// complete-exchange rule moves both fund horizons but no stock horizon, so
+    /// a priced v5 fund gets exactly one row and NOTE while a v5 stock stays
+    /// silent. The current stamp, no target record, pre-anchor v4, an
+    /// unrecognized stamp, and a never-priced prior stay silent.
     #[test]
     fn the_target_stamp_boundary_is_silent_on_every_reachable_stamp_and_renders_the_horizons() {
         let engine_output = match engine::analyze(&strong_financials(), &rates()) {
@@ -8891,6 +8910,25 @@ mod tests {
                 "{case}: {rows:?}"
             );
         };
+        let moved = |d: &HoldingDossier, case: &str| {
+            let p = prompt(d);
+            assert!(
+                p.contains("one-month and twelve-month targets may have moved"),
+                "{case}: {p}"
+            );
+            let rows = delta(d);
+            let target_rows: Vec<_> = rows
+                .iter()
+                .filter(|entry| entry.label.contains("scenario-target parameters changed"))
+                .collect();
+            assert_eq!(target_rows.len(), 1, "{case}: {rows:?}");
+            assert!(
+                target_rows[0]
+                    .label
+                    .contains("one-month and twelve-month targets can move"),
+                "{case}: {target_rows:?}"
+            );
+        };
 
         let base = dossier(AssetClass::Stock, strong_financials());
         let (stock_prior, _) =
@@ -8904,6 +8942,8 @@ mod tests {
         stock.prior_target_parameter_version =
             Some(engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string());
         silent(&stock, "stock on the current stamp");
+        stock.prior_target_parameter_version = Some("targets-v5".into());
+        silent(&stock, "stock from v5 (v6 touched funds only)");
         stock.prior_target_parameter_version = None;
         silent(&stock, "stock with no target record");
         stock.prior_target_parameter_version = Some("targets-v4".into());
@@ -8924,11 +8964,9 @@ mod tests {
         ));
         let mut fund = fund_dossier(us_equity_fund());
         fund.prior_verdict = Some(fund_prior);
-        for stamp in [
-            Some(engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string()),
-            None,
-            Some("targets-v4".into()),
-        ] {
+        fund.prior_target_parameter_version = Some("targets-v5".into());
+        moved(&fund, "fund prior across the complete-exchange boundary");
+        for stamp in [Some(engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string()), None, Some("targets-v4".into())] {
             fund.prior_target_parameter_version = stamp;
             silent(&fund, "fund prior");
         }

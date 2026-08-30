@@ -361,6 +361,32 @@ impl MarketContextSource for LiveMarketContext {
 /// (`docs/portfolio-analysis.md` §Asset eligibility — the defined exchange blend).
 const SECTOR_PE_EXCHANGES: [&str; 2] = ["NYSE", "NASDAQ"];
 
+/// Join the two exchange legs only when both served at least one row. A
+/// one-board surface is not the exchange blend the fund valuation and its
+/// history are defined on, so it must travel through the caller's typed-gap
+/// channel instead of masquerading as a usable snapshot.
+fn complete_sector_pe_exchange_basis(
+    context: &str,
+    fetched: [Result<Vec<crate::portfolio::fund::SectorPe>>; 2],
+) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+    let mut rows = Vec::new();
+    let mut missing = Vec::new();
+    for (exchange, result) in SECTOR_PE_EXCHANGES.into_iter().zip(fetched) {
+        match result {
+            Ok(mut exchange_rows) if !exchange_rows.is_empty() => {
+                rows.append(&mut exchange_rows)
+            }
+            Ok(_) => missing.push(format!("{exchange} served no rows")),
+            Err(error) => missing.push(format!("{exchange} failed: {error:#}")),
+        }
+    }
+    if missing.is_empty() {
+        Ok(rows)
+    } else {
+        anyhow::bail!("{context} has an incomplete exchange basis ({})", missing.join("; "))
+    }
+}
+
 /// The live company-data source: FMP per-company + SEC EDGAR. SEC is supplementary and
 /// fail-soft — an unresolved ticker or a fetch error degrades to empty facts, and the
 /// FMP half plus the derived multiples still carry the holding — but each such
@@ -493,32 +519,27 @@ impl CompanyDataSource for LiveCompanyData {
         // fund fails `composite_yield` and abstains, attributed to "no P/E-usable
         // sector overlap" rather than to the missing snapshot.
         let today = session;
-        let mut last_err = None;
+        let mut candidate_failures = Vec::new();
         for candidate in sector_pe_candidates(today) {
             let date = candidate.format("%Y-%m-%d").to_string();
-            let mut rows = Vec::new();
-            for exchange in SECTOR_PE_EXCHANGES {
-                match self.fmp.fetch_sector_pe_snapshot(exchange, &date) {
-                    Ok(mut r) => rows.append(&mut r),
-                    Err(e) => last_err = Some(e),
-                }
-            }
-            // A partial read (one exchange served, the other faulted) is still a
-            // usable snapshot — the original single-date behavior, kept.
-            if !rows.is_empty() {
-                return Ok(rows);
+            let fetched = SECTOR_PE_EXCHANGES
+                .map(|exchange| self.fmp.fetch_sector_pe_snapshot(exchange, &date));
+            match complete_sector_pe_exchange_basis(
+                &format!("sector-P/E snapshot for {date}"),
+                fetched,
+            ) {
+                Ok(rows) => return Ok(rows),
+                Err(error) => candidate_failures.push(format!("{error:#}")),
             }
         }
-        if let Some(e) = last_err {
-            return Err(e);
-        }
-        // An exhausted walk with no transport fault is a real absence. Report it as
-        // a gap rather than an empty snapshot: `Err` is this seam's gap channel (the
-        // caller records it on the fund's `gaps`), so the fund's abstention names the
-        // missing snapshot instead of blaming the fund's own sector weights.
+        // An exhausted walk is a real absence of the defined two-exchange
+        // surface, whether one board faulted, served empty, or both did. `Err`
+        // is this seam's gap channel, so every fund names the missing source
+        // instead of pricing on a different basis from its history.
         anyhow::bail!(
-            "no sector-P/E snapshot in the {} weekdays through {today}",
-            crate::fmp::SECTOR_LOOKBACK_WEEKDAYS
+            "no complete sector-P/E snapshot in the {} weekdays through {today}: {}",
+            crate::fmp::SECTOR_LOOKBACK_WEEKDAYS,
+            candidate_failures.join(" | ")
         )
     }
 
@@ -534,23 +555,14 @@ impl CompanyDataSource for LiveCompanyData {
             from.format("%Y-%m-%d").to_string(),
             to.format("%Y-%m-%d").to_string(),
         );
-        let mut rows = Vec::new();
-        let mut last_err = None;
-        for exchange in SECTOR_PE_EXCHANGES {
-            match self
-                .fmp
+        let fetched = SECTOR_PE_EXCHANGES.map(|exchange| {
+            self.fmp
                 .fetch_historical_sector_pe(sector, exchange, &from, &to)
-            {
-                Ok(mut r) => rows.append(&mut r),
-                Err(e) => last_err = Some(e),
-            }
-        }
-        if rows.is_empty() {
-            if let Some(e) = last_err {
-                return Err(e);
-            }
-        }
-        Ok(rows)
+        });
+        complete_sector_pe_exchange_basis(
+            &format!("sector-P/E history for {sector}"),
+            fetched,
+        )
     }
 
     fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
@@ -1386,6 +1398,12 @@ fn run_analysis(
         String,
         Vec<crate::portfolio::fund::SectorPe>,
     > = std::collections::HashMap::new();
+    // A failed history leg is memoized beside the empty rows and replayed to
+    // every fund that depends on that sector. Otherwise only the fund whose
+    // turn issued the request tells the truth while later funds silently read
+    // the same cached absence as clean.
+    let mut sector_history_gap_cache: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     // The entry-stamped sector identities read at this run's fresh passes — one
     // fail-soft profile call per fresh-passed stock (`docs/portfolio-analysis.md`
@@ -1587,20 +1605,27 @@ fn run_analysis(
             if let Some(gap) = &sector_pe_gap {
                 fund.gaps.push(gap.clone());
             }
+            let mut seen_history_sectors = std::collections::HashSet::new();
             for (sector, _) in &fund.sector_weights {
                 let key = sector.to_ascii_lowercase();
-                if let std::collections::hash_map::Entry::Vacant(entry) =
-                    sector_history_cache.entry(key)
-                {
+                if !seen_history_sectors.insert(key.clone()) {
+                    continue;
+                }
+                if !sector_history_cache.contains_key(&key) {
                     let rows = match company_data.sector_pe_history(sector) {
                         Ok(rows) => rows,
                         Err(e) => {
-                            fund.gaps
-                                .push(format!("sector-P/E history unavailable for {sector}: {e}"));
+                            sector_history_gap_cache.insert(
+                                key.clone(),
+                                format!("sector-P/E history unavailable for {sector}: {e}"),
+                            );
                             vec![]
                         }
                     };
-                    entry.insert(rows);
+                    sector_history_cache.insert(key.clone(), rows);
+                }
+                if let Some(gap) = sector_history_gap_cache.get(&key) {
+                    fund.gaps.push(gap.clone());
                 }
             }
             // The underlying-positioning read: map this fund onto one of the
@@ -2892,6 +2917,42 @@ mod tests {
     }
 
     #[test]
+    fn a_sector_pe_surface_requires_both_exchange_legs() {
+        let row = |exchange: &str| crate::portfolio::fund::SectorPe {
+            sector: "Technology".into(),
+            exchange: exchange.into(),
+            date: "2026-08-07".into(),
+            pe: 25.0,
+        };
+        let complete = complete_sector_pe_exchange_basis(
+            "snapshot",
+            [Ok(vec![row("NYSE")]), Ok(vec![row("NASDAQ")])],
+        )
+        .unwrap();
+        assert_eq!(complete.len(), 2);
+
+        let partial = complete_sector_pe_exchange_basis(
+            "snapshot",
+            [
+                Ok(vec![row("NYSE")]),
+                Err(anyhow::anyhow!("rate limited")),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(partial.contains("incomplete exchange basis"), "{partial}");
+        assert!(partial.contains("NASDAQ failed"), "{partial}");
+
+        let empty = complete_sector_pe_exchange_basis(
+            "history",
+            [Ok(vec![row("NYSE")]), Ok(vec![])],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(empty.contains("NASDAQ served no rows"), "{empty}");
+    }
+
+    #[test]
     fn over_age_dates_the_vintage_on_its_et_session() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
         // 2026-07-08 01:30 UTC = 2026-07-07 21:30 EDT: the vintage belongs to
@@ -3929,6 +3990,72 @@ mod tests {
                     .iter()
                     .any(|g| g.contains("sector-P/E snapshot unavailable")),
                 "{} lost the snapshot gap: {:?}",
+                audit.symbol,
+                audit.degraded_inputs
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_sector_pe_history_records_its_gap_on_every_dependent_fund() {
+        struct NoHistory;
+        impl CompanyDataSource for NoHistory {
+            fn financials(&self, symbol: &str) -> CompanyFinancials {
+                FundCompanyData.financials(symbol)
+            }
+            fn facts(&self, symbol: &str) -> SecData {
+                FundCompanyData.facts(symbol)
+            }
+            fn fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
+                FundCompanyData.fund_data(symbol)
+            }
+            fn sector_pe_snapshot(
+                &self,
+                session: chrono::NaiveDate,
+            ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+                FundCompanyData.sector_pe_snapshot(session)
+            }
+            fn sector_pe_history(
+                &self,
+                sector: &str,
+            ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+                anyhow::bail!("history fault for {sector}")
+            }
+        }
+
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let mut first = stock("VTI", 50.0, 9_750.0);
+        first.asset_class = AssetClass::Etf;
+        let mut second = stock("ITOT", 40.0, 7_800.0);
+        second.asset_class = AssetClass::Etf;
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings_of(vec![first, second])),
+            &NoHistory,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &guard,
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert_eq!(run.audit.len(), 2, "both funds analyzed");
+        for audit in &run.audit {
+            assert!(
+                audit
+                    .degraded_inputs
+                    .iter()
+                    .any(|gap| gap.contains("sector-P/E history unavailable for Technology")),
+                "{} lost the memoized history gap: {:?}",
                 audit.symbol,
                 audit.degraded_inputs
             );

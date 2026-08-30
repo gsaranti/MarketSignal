@@ -713,7 +713,7 @@ Bear / base / bull price targets — one-month and twelve-month — priced from 
   - Equation:
     - Twelve-month price = `driver × multiple`, per scenario. [note: crossed bear/base/bull prices are repaired to ascending and logged; a dispersion floor = `clamp(daily vol × 15.87 × 0.5, 0.05, 0.20)` widens — never narrows — the bear/bull spread.]
     - Twelve-month total return = `(price + forward dividends) ÷ spot − 1`.
-    - One-month price = `spot × (1 + twelve-month base price-return ÷ 12)`; the bear/bull legs take a band = `clamp(daily vol × 2 × √21, 0.02, 0.15)` (else 5%) — 2σ √t-scaled to the 21-session month, `targets-v5` — dividends excluded.
+    - One-month price = `spot × (1 + twelve-month base price-return ÷ 12)`; the bear/bull legs take a band = `clamp(daily vol × 2 × √21, 0.02, 0.15)` (else 5%) — 2σ √t-scaled to the 21-session month, introduced at `targets-v5` and carried by current `targets-v6` — dividends excluded.
 
 - **Where these land**
   - Targets → the output price targets (each with its methodology + provenance flags); total returns → the hurdle read; the drivers, spread / raw percentiles, spot, forward-dividend leg, dispersion floor, and consensus EPS mid persist as the quick-check basis the between-run engine re-anchors against. The multiples themselves are not stored — they are recomputed closed-form from the basis.
@@ -781,7 +781,9 @@ The dead-money read — whether the scenario returns clear the required return f
 The alternative branch to the stock spine above; the fund engine makes the final priced-fund vs role-risk-only classification here in Step 6b (the routing rules are at Step 6a §Fund routing). A role-risk-only fund takes no grade, target, or risk tier — only the role-risk readout at the end of this section.
 
 - **Fund valuation** — what the fund’s sector mix costs now vs its own history; the priced fund’s one real valuation input.
-  - Inputs: per-sector P/E snapshots (blended across exchanges), the fund’s current sector weights, ~8–12 quarters of historical sector P/Es — each quarterly sample admitting only prints dated within its own quarter (after the prior quarter end, on or before its own), so one print backs at most one sample; a print whose date does not parse is inadmissible to every sample.
+  - Inputs: per-sector P/E snapshots (blended across exchanges), the fund’s current sector weights, ~8–12 quarters of historical sector P/Es — each snapshot candidate and each sector history entering only when both NYSE and NASDAQ legs served at least one row; each quarterly sample admitting only prints dated within its own quarter (after the prior quarter end, on or before its own), so one print backs at most one sample; a print whose date does not parse is inadmissible to every sample.
+  - An incomplete snapshot candidate walks to the prior weekday; an exhausted walk records one memoized gap on every fund.
+    A failed sector history's memoized gap likewise reaches every later fund whose weightings depend on that sector, never only the fund whose turn issued the request.
   - Equation:
     - Per sector: earnings yield = `1 ÷ P/E`.
     - Composite earnings yield = `Σ(weightᵢ ÷ P/Eᵢ) ÷ Σ weightᵢ` over sectors with a usable P/E — renormalized over the **covered** weight; sectors without a usable P/E are skipped. A usable print is finite, positive, within the plausible-aggregate ceiling, and served under the requested board — the shaper's rule (`docs/data-sources.md` §Financial Modeling Prep).
@@ -1241,7 +1243,8 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Continuity block**
   - Whether a prior verdict exists.
   - A parameter-boundary note when a priced prior verdict's grade-parameter stamp sits across a boundary that changed this holding's record on the prior's own branch — a band recalibration, or (fund only) the momentum re-homing; a stock across the fund-momentum boundary, a never-priced prior, and an unrecognized stamp get none, and neither does the input delta.
-  - A second parameter-boundary note when a priced prior verdict's scenario-target stamp sits across a target-history row touching its branch, naming the union of horizons those rows can have moved; the current stamp, an unrecognized one (`targets-v4` included — the history holds the `targets-v5` anchor row alone, the store wiped before the first run under it), and a prior with no target record get none, and neither does the input delta.
+  - A second parameter-boundary note when a priced prior verdict's scenario-target stamp sits across a target-history row touching its branch, naming the union of horizons those rows can have moved; the current stamp, an unrecognized one (`targets-v4` included — the history starts at the pre-run `targets-v5` anchor), and a prior with no target record get none.
+    Current `targets-v6` appends the complete-exchange fund-input boundary: a v5 fund prior names both horizons while a v5 stock prior stays silent, and the same distinction reaches the input delta.
   - The semantic prior-analysis recall — the Step-6a hits, when any.
   - The rendered input delta with its what-changed-entry rules (the vocabulary is Step 6b §Input delta; the attribution check is Step 6g). With a prior verdict, a firing technology-event pre-flag, narrative read, hard forensic state, or rendered latest-report sections reaches the model twice — as its own section and as a delta row; a debut carries no delta rows, and a house view reduced to the recent-stance list earns none.
 - **Retrospective (when a prior priced verdict exists)**

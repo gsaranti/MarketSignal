@@ -889,8 +889,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     // `engine::momentum_score` over `base_metrics`' 180-day `price_history` leg,
     // one window and one band. Scoring the ~1,600-day `daily_closes` here pinned
     // nearly every fund at 0 / 100: a multi-year cumulative return against a band
-    // tuned to 180 days (the 2026-08-24 review's fund-momentum finding; stamped
-    // `grade-v2.2`).
+    // tuned to 180 days (the 2026-08-24 review's fund-momentum finding;
+    // introduced at `grade-v2.2`, carried by current `grade-v2.3`).
     let mut metrics = base_metrics(fin);
     let momentum = engine::momentum_score(&metrics);
 

@@ -102,9 +102,13 @@ const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 // letter, so no letter moves; the stamp marks that a persisted fund
 // `sub_scores.momentum` means a different read, which the what-changed delta
 // and the frozen `CalibrationSnapshot` consume. Bands, weights, and cutoffs
-// are unchanged from `grade-v2.1`. Consumers read what a boundary changed
-// through [`grade_parameter_change`] — extend it with every bump.
-pub const GRADE_PARAMETER_VERSION: &str = "grade-v2.2";
+// are unchanged from `grade-v2.1`.
+// v2.3 (2026-08-30, Review 2 N5): the fund valuation admits a sector-P/E
+// surface only when both exchange legs served, so a partial board response can
+// no longer move a fund's valuation sub-score or letter without a source gap.
+// Consumers read what a boundary changed through [`grade_parameter_change`] —
+// extend it with every bump.
+pub const GRADE_PARAMETER_VERSION: &str = "grade-v2.3";
 
 /// What a grade-parameter boundary changed for a persisted record — the meaning a
 /// stamp mismatch carries to its consumers (the what-changed delta row and the
@@ -118,6 +122,9 @@ pub(crate) enum GradeParameterChange {
     /// Only the fund branch's momentum window moved: a priced fund's momentum
     /// sub-score can move with no input change; no letter can.
     FundMomentum,
+    /// The fund sector-P/E source now requires both exchange legs. A fund's
+    /// valuation sub-score and letter can move on the same served rows.
+    FundSectorPeBasis,
 }
 
 /// The branch a stamped record was graded on. The fund path carries its own
@@ -150,6 +157,9 @@ const GRADE_PARAMETER_HISTORY: &[(
     // v2.2: fund momentum re-homed to the short price window — the fund branch
     // only; a stock's record means exactly what it did.
     ("grade-v2.2", None, Some(GradeParameterChange::FundMomentum)),
+    // v2.3: a one-board sector-P/E response is a typed gap rather than a fund
+    // valuation input. Stock valuation never reads this source.
+    ("grade-v2.3", None, Some(GradeParameterChange::FundSectorPeBasis)),
 ];
 
 /// The change a prior record's stamp sits across on `branch` — the branch the
@@ -176,11 +186,15 @@ pub(crate) fn grade_parameter_change(
             GradeBranch::Stock => *stock,
             GradeBranch::Fund => *fund,
         })
-        // Letters dominates: a boundary that moved letters is the recalibration
-        // whatever else it moved.
+        // A general letter recalibration dominates; otherwise the more recent
+        // fund source-basis change dominates the older momentum-only re-homing.
         .fold(None, |acc, change| match (acc, change) {
             (Some(GradeParameterChange::Letters), _) | (_, GradeParameterChange::Letters) => {
                 Some(GradeParameterChange::Letters)
+            }
+            (Some(GradeParameterChange::FundSectorPeBasis), _)
+            | (_, GradeParameterChange::FundSectorPeBasis) => {
+                Some(GradeParameterChange::FundSectorPeBasis)
             }
             _ => Some(change),
         })
@@ -282,9 +296,11 @@ const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
 /// 2026-08-27 — a units inconsistency, not a calibration), and the anchor
 /// share-count basis — each historical revenue-per-share print denominated on
 /// an in-window diluted count — cut the same session without its own stamp, so
-/// v5 names both. The stamp moves whenever a stored target's basis changes, by
+/// v5 names both. v6: the fund form requires both exchange legs for its
+/// sector-P/E snapshot and history; a partial board response is a gap, never a
+/// target input. The stamp moves whenever a stored target's basis changes, by
 /// correction as much as by calibration.
-pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v5";
+pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v6";
 
 /// The horizons a scenario-target parameter boundary can have moved on one
 /// branch — the meaning a target-stamp mismatch carries to its consumers (the
@@ -333,15 +349,19 @@ impl TargetHorizons {
 /// holding's branch — so every bump appends a row here (a test pins the last
 /// row to the current stamp). A single anchor row today: the store is wiped
 /// before the first run under `targets-v5` (ruled 2026-08-29), so no prior
-/// stamped earlier can exist and `targets-v4` reads as unrecognized; the
-/// anchor row's own horizons document what v5 changed and are read by no
-/// prior — only the rows after a stamp count.
+/// stamped earlier can exist and `targets-v4` reads as unrecognized. The v6
+/// row makes a v5 fund prior attributable across the exchange-basis boundary;
+/// only the rows after a stamp count.
 const SCENARIO_TARGET_PARAMETER_HISTORY: &[(&str, TargetHorizons, TargetHorizons)] = &[
     // v5: the one-month band √t-scaled (`build_price_targets`, both forms) and the
     // anchor share-count basis — the stock consensus ladder's revenue-per-share
     // rung, so the twelve-month scenario prices and, through `PR_base`, the
     // one-month base. The fund form has no consensus ladder.
     ("targets-v5", TargetHorizons::BOTH, TargetHorizons::ONE_MONTH),
+    // v6: the complete-exchange admission rule can change the fund's
+    // twelve-month scenarios and the one-month base derived from them. Stocks
+    // never read the sector-P/E source.
+    ("targets-v6", TargetHorizons::NONE, TargetHorizons::BOTH),
 ];
 
 /// The horizons a prior record's target stamp sits across on `branch` — the
@@ -5205,7 +5225,10 @@ mod tests {
         let (b, method) = band(Some(0.01));
         assert!((b - 0.02 * 21f64.sqrt()).abs() < 1e-9, "{b}");
         assert!(method.contains("21 sessions"), "{method}");
-        assert!(method.contains("targets-v5"), "{method}");
+        assert!(
+            method.contains(SCENARIO_TARGET_PARAMETER_VERSION),
+            "{method}"
+        );
         // The clamp still binds at both ends: 0.2% daily → the 2% floor,
         // 2% daily → the 15% cap.
         assert!((band(Some(0.002)).0 - 0.02).abs() < 1e-9);
@@ -5277,15 +5300,15 @@ mod tests {
 
     /// A stamp boundary is read cumulatively from the history on the prior
     /// record's branch: the current stamp is no boundary; a stock crossing
-    /// v2.1 → v2.2 sees nothing while a fund sees the momentum re-homing; a
-    /// `grade-v2` fund crosses only that same change (v2.1 never touched funds)
-    /// while a `grade-v2` stock crosses the signed-P/E letter change; a prior
+    /// v2.1 → v2.3 sees nothing while a fund sees the complete-exchange
+    /// correction (which dominates the earlier momentum re-homing); a
+    /// `grade-v2` stock crosses the signed-P/E letter change; a prior
     /// with no stamp and an unrecognized stamp assert no cause. The history's
     /// last row must be the current stamp.
     #[test]
     fn grade_parameter_change_reads_the_history_per_branch() {
         use GradeBranch::{Fund, Stock};
-        use GradeParameterChange::{FundMomentum, Letters};
+        use GradeParameterChange::{FundSectorPeBasis, Letters};
         assert_eq!(
             GRADE_PARAMETER_HISTORY.last().map(|(v, _, _)| *v),
             Some(GRADE_PARAMETER_VERSION),
@@ -5303,9 +5326,15 @@ mod tests {
         assert_eq!(grade_parameter_change(None, Stock), None);
         assert_eq!(grade_parameter_change(None, Fund), None);
         assert_eq!(grade_parameter_change(Some("grade-v2.1"), Stock), None);
+        assert_eq!(grade_parameter_change(Some("grade-v2.2"), Stock), None);
+        assert_eq!(
+            grade_parameter_change(Some("grade-v2.2"), Fund),
+            Some(FundSectorPeBasis)
+        );
         assert_eq!(
             grade_parameter_change(Some("grade-v2.1"), Fund),
-            Some(FundMomentum)
+            Some(FundSectorPeBasis),
+            "the letter-bearing source-basis change dominates the older momentum move"
         );
         assert_eq!(
             grade_parameter_change(Some("grade-v2"), Stock),
@@ -5313,22 +5342,16 @@ mod tests {
         );
         assert_eq!(
             grade_parameter_change(Some("grade-v2"), Fund),
-            Some(FundMomentum)
+            Some(FundSectorPeBasis)
         );
     }
 
     /// The target stamp reads its own history the same way — per branch,
     /// cumulatively over the rows after the prior's stamp. The production
-    /// history is a single anchor row (the store is wiped before the first run
-    /// under `targets-v5`, so no earlier prior can exist), which makes every
-    /// reachable stamp silent: the current one, a missing one, an unrecognized
-    /// one, and `targets-v4` itself. The union rule is pinned over an explicit
-    /// history so the next bump's row lands on a tested path. The history's
-    /// last row must be the current stamp.
-    ///
-    /// When a `targets-v6` row lands, the `targets-v5` stamp stops being
-    /// silent: move its silence assertions to v6 and pin v5 as the first
-    /// firing stamp against the production history here.
+    /// history starts at the pre-run v5 anchor. The v6 complete-exchange rule
+    /// moves both fund horizons and leaves stocks unchanged; current, missing,
+    /// unrecognized, and pre-anchor v4 stamps remain silent. The history's last
+    /// row must be the current stamp.
     #[test]
     fn target_parameter_change_reads_the_history_per_branch() {
         use GradeBranch::{Fund, Stock};
@@ -5360,6 +5383,11 @@ mod tests {
             assert_eq!(target_parameter_change(Some(""), branch), None);
             assert_eq!(target_parameter_change(None, branch), None);
         }
+        assert_eq!(target_parameter_change(Some("targets-v5"), Stock), None);
+        assert_eq!(
+            target_parameter_change(Some("targets-v5"), Fund),
+            Some(BOTH)
+        );
 
         // The union rule over an explicit history: v6 moved the fund twelve-month
         // leg alone, v7 the stock one-month leg alone.

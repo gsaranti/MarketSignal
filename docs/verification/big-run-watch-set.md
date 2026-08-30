@@ -40,18 +40,19 @@ Target provenance rendering against the sell-all cascade.
 Every priced interpretation carries the `TargetMeta` derivation flags — rate-anchored vs current-multiple carry, flat or clamp-flattened driver, dispersion floor — and a floor-widened band inherits its base's signal quality.
 
 The parameter-boundary continuity NOTE and its what-changed attribution.
-No prior exists on run 1, so no holding carries a NOTE or a boundary row, and any row citing a recalibration or a re-homing is a defect; on run 2 every prior is stamped `grade-v2.2`, the current stamp, so the same holds there.
-The scenario-target boundary reads the same way: every run-2 prior is stamped `targets-v5`, the current stamp, so a row or NOTE citing a scenario-target parameter change is a defect on either run.
+No prior exists on run 1, so no holding carries a NOTE or a boundary row, and any row citing a recalibration, re-homing, or sector-P/E exchange-basis correction is a defect; on run 2 every prior is stamped `grade-v2.3`, the current stamp, so the same holds there.
+The scenario-target boundary reads the same way: every run-2 prior is stamped `targets-v6`, the current stamp, so a row or NOTE citing a scenario-target parameter change is a defect on either run.
 
-The one-month band's cap saturation under `targets-v5`.
+The one-month band's cap saturation under current `targets-v6` (the √21 rule introduced at `targets-v5`).
 With the band √t-scaled to the month, the 15% cap binds from a daily σ of ~1.64% (~26% annualized), so the run measures the share of priced names pinned at the cap.
 The ruling kept the clamp; a wider cap waits on this reading.
 
 Conviction and action pairing, and the *fails* → indeterminate action distribution.
 Only a *fails* hurdle read is dead money, and it reaches the model as a weighed exit input rather than an exit instruction.
 
-The sector-P/E walk-back depth — how often the first weekday candidate misses.
-The walk shares the report chain's `sector_candidate_dates`; an exhausted walk returns an error with the gap memoized onto every fund.
+The sector-P/E walk-back depth — how often the first weekday candidate misses or serves only one exchange leg.
+The walk shares the report chain's `sector_candidate_dates`; a candidate enters only with non-empty NYSE and NASDAQ legs, and an exhausted walk returns an error with the gap memoized onto every fund.
+For each sector history, verify that a fault or empty response on either board leaves the history absent and repeats the memoized typed gap on every fund whose weights depend on that sector, including later funds.
 
 The risk-tier distribution now that negative-book issuers take High, read against the stacked conviction and action watches.
 
