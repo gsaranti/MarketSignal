@@ -63,6 +63,15 @@ const EXPENSE_EPS: f64 = 1e-6;
 /// run's 180-day volatility/trailing window so the reads share one basis.
 pub const QUICK_EOD_LOOKBACK_DAYS: i64 = 180;
 
+/// The semantics of persisted quick-check evaluation state. `v2` keeps the
+/// split-anchor fetch widening isolated from the fixed 180-day trailing-return
+/// and volatility window (Review 2 N3).
+pub const QUICK_CHECK_PARAMETER_VERSION: &str = "quick-check-v2";
+
+pub(crate) fn legacy_quick_check_parameter_version() -> String {
+    "quick-check-v1".to_string()
+}
+
 // ---- Typed sweep results -----------------------------------------------------
 
 /// One required signal family of a holding's sweep
@@ -186,6 +195,10 @@ pub struct HoldingQuickState {
 /// superseded (cleared) by the next successful full run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuickCheckState {
+    /// The evaluation semantics under which condition streaks and condition-
+    /// sourced flags were produced.
+    #[serde(default = "legacy_quick_check_parameter_version")]
+    pub parameter_version: String,
     /// The full run these sweeps ran against (`PortfolioRun::run_id`).
     pub swept_run_id: String,
     /// UTC RFC3339 of the latest quick check.
@@ -194,6 +207,86 @@ pub struct QuickCheckState {
     /// checks (and their fail-soft) read alongside the run blob's.
     pub rate_cache: Option<RatePrints>,
     pub holdings: Vec<HoldingQuickState>,
+}
+
+/// Reconcile a persisted state with the current evaluation semantics while
+/// preserving unrelated durable state. The v1→v2 boundary changed only the
+/// trailing-return and return-volatility measurement window, so their streaks
+/// and any flag explicitly sourced from one of those statements are retired;
+/// evidence events, hurdle/band flags, and every unaffected condition survive.
+pub fn reconcile_parameter_version(
+    state: &mut QuickCheckState,
+    run: &crate::portfolio::PortfolioRun,
+) {
+    if state.parameter_version == QUICK_CHECK_PARAMETER_VERSION {
+        return;
+    }
+    let known_legacy = state.parameter_version == "quick-check-v1";
+    if !known_legacy {
+        for holding in &mut state.holdings {
+            holding.condition_states.clear();
+            if holding.flag.as_ref().is_some_and(|f| {
+                matches!(
+                    f.trigger,
+                    FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
+                )
+            }) {
+                holding.flag = None;
+            }
+        }
+        state.parameter_version = QUICK_CHECK_PARAMETER_VERSION.to_string();
+        return;
+    }
+    for holding in &mut state.holdings {
+        let Some(verdict) = run
+            .verdicts
+            .iter()
+            .find(|v| v.symbol.eq_ignore_ascii_case(&holding.symbol))
+        else {
+            // A legacy state with no ledger identity cannot be
+            // interpreted safely. Preserve non-condition evidence only.
+            holding.condition_states.clear();
+            if holding.flag.as_ref().is_some_and(|f| {
+                matches!(
+                    f.trigger,
+                    FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
+                )
+            }) {
+                holding.flag = None;
+            }
+            continue;
+        };
+        let affected: Vec<(&str, &str)> = verdict
+            .thesis_ledger
+            .as_ref()
+            .into_iter()
+            .flat_map(|l| &l.conditions)
+            .filter(|c| {
+                c.quant.as_ref().is_some_and(|q| {
+                    matches!(
+                        q.series,
+                        engine::LedgerSeries::TrailingReturn
+                            | engine::LedgerSeries::ReturnVolatility
+                    )
+                })
+            })
+            .map(|c| (c.condition_id.as_str(), c.statement.as_str()))
+            .collect();
+        holding
+            .condition_states
+            .retain(|(id, _)| !affected.iter().any(|(affected_id, _)| id == affected_id));
+        if holding.flag.as_ref().is_some_and(|flag| {
+            matches!(
+                flag.trigger,
+                FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
+            ) && affected
+                .iter()
+                .any(|(_, statement)| flag.detail.ends_with(statement))
+        }) {
+            holding.flag = None;
+        }
+    }
+    state.parameter_version = QUICK_CHECK_PARAMETER_VERSION.to_string();
 }
 
 // ---- The retrieval seam ------------------------------------------------------
@@ -442,6 +535,15 @@ pub fn run_quick_check(
     conn: &Connection,
     ctx: &RunContext,
 ) -> Result<QuickCheckState> {
+    run_quick_check_at(data, conn, ctx, now_rfc3339())
+}
+
+fn run_quick_check_at(
+    data: &dyn QuickCheckDataSource,
+    conn: &Connection,
+    ctx: &RunContext,
+    now: String,
+) -> Result<QuickCheckState> {
     let run = match store::latest_run(conn)? {
         Some(run) => run,
         // Two distinct refusals — `latest_run` returns `None` for both, and each
@@ -453,13 +555,15 @@ pub fn run_quick_check(
         ),
         None => anyhow::bail!("no Portfolio Analysis run exists yet — nothing to quick-check"),
     };
-    let now = now_rfc3339();
     let today = sweep_session_date(&now);
 
     // The prior quick-check state chains streaks / flags — but only against the
     // same run; a newer full run supersedes it wholesale.
-    let prior_state = store::latest_quick_check(conn)?
+    let mut prior_state = store::latest_quick_check(conn)?
         .filter(|s| s.swept_run_id == run.run_id);
+    if let Some(state) = &mut prior_state {
+        reconcile_parameter_version(state, &run);
+    }
 
     // The run-level rate prints, fail-soft to the freshest cached print within the
     // drafted max age — none eligible reads the rate-dependent families `unknown`
@@ -546,6 +650,7 @@ pub fn run_quick_check(
     )?;
 
     let state = QuickCheckState {
+        parameter_version: QUICK_CHECK_PARAMETER_VERSION.to_string(),
         swept_run_id: run.run_id.clone(),
         last_checked_at: now,
         rate_cache: rates.or_else(|| {
@@ -745,11 +850,14 @@ pub struct TailSweep<'a> {
     pub prior_state: Option<&'a QuickCheckState>,
     /// The run's fresh rate prints (a full run hard-fails without them).
     pub rates: RatePrints,
+    /// The parent run's one pinned UTC instant. The tail sweep is part of that
+    /// run, so every evaluation and badge must use its session rather than a
+    /// second clock read that can cross the ET rollover.
+    pub run_instant: &'a str,
 }
 
 pub fn sweep_tail(input: TailSweep<'_>, ctx: &RunContext) -> Result<Vec<HoldingQuickState>> {
-    let now = now_rfc3339();
-    let today = sweep_session_date(&now);
+    let today = sweep_session_date(input.run_instant);
     let targets: Vec<SweepTarget<'_>> = input
         .current_positions
         .iter()
@@ -779,7 +887,7 @@ pub fn sweep_tail(input: TailSweep<'_>, ctx: &RunContext) -> Result<Vec<HoldingQ
             prior_state: input.prior_state,
             rates: Some(&input.rates),
             rate_note: None,
-            now: &now,
+            now: input.run_instant,
             today: &today,
         },
         ctx,
@@ -799,6 +907,39 @@ fn sweep_session_date(now: &str) -> String {
     crate::market_clock::et_date_of(now)
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| now.chars().take(10).collect())
+}
+
+/// The fixed company-EOD window used by the full pass, carved out of the
+/// sweep's potentially wider dated pull. Older rows exist only so the
+/// split-adjustment bridge can re-read a carried anchor; admitting them into
+/// `price_history` would silently change trailing-return and volatility
+/// conditions for older carried holdings.
+fn condition_price_history(closes: &[DatedValue], now: &str) -> Vec<f64> {
+    use chrono::{DateTime, Duration, NaiveDate};
+
+    let end = DateTime::parse_from_rfc3339(now)
+        .ok()
+        .map(|d| d.naive_utc().date())
+        // Defensive fallback for a malformed persisted instant: anchor the
+        // fixed-width window on the newest readable market row, never admit an
+        // arbitrarily deep series just because the clock string drifted.
+        .or_else(|| {
+            closes
+                .iter()
+                .filter_map(|d| NaiveDate::parse_from_str(&d.date, "%Y-%m-%d").ok())
+                .max()
+        });
+    let Some(end) = end else {
+        return Vec::new();
+    };
+    let start = end - Duration::days(QUICK_EOD_LOOKBACK_DAYS);
+    closes
+        .iter()
+        .filter_map(|d| {
+            let date = NaiveDate::parse_from_str(&d.date, "%Y-%m-%d").ok()?;
+            (date >= start && date <= end).then_some(d.value)
+        })
+        .collect()
 }
 
 fn rate_cache_fresh(cache: &RatePrints, today: &str) -> bool {
@@ -1032,15 +1173,17 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                     }
                 }
                 if stored_raw.is_some() && bridge.is_none() {
+                    let note = if inp.price.is_some() {
+                        "price basis unverifiable (split-bridge anchor unresolvable) — \
+                         the revision-move comparison was excluded this sweep"
+                    } else {
+                        "fresh price unavailable — the split-adjusted revision-move \
+                         comparison was excluded this sweep"
+                    };
                     families.push(FamilySweep {
                         family: SweepFamily::Revision,
                         state: SweepState::Unknown,
-                        note: Some(
-                            "price basis unverifiable (split-bridge anchor \
-                             unresolvable) — the revision-move comparison was \
-                             excluded this sweep"
-                                .to_string(),
-                        ),
+                        note: Some(note.to_string()),
                     });
                 } else if comparators_withheld {
                     families.push(FamilySweep {
@@ -1390,7 +1533,7 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         if let Some((price, closes)) = inp.price {
             eval_fin.current_price = Some(*price);
             eval_fin.daily_closes = closes.clone();
-            eval_fin.price_history = closes.iter().map(|d| d.value).collect();
+            eval_fin.price_history = condition_price_history(closes, inp.now);
         }
         // The sweep is **not** the authority on statement-basis continuity, so it
         // neither fires the gate nor re-stamps: the values it evaluates span two
@@ -1600,7 +1743,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             target(ScenarioKind::Bear).is_some() && target(ScenarioKind::Bull).is_some()
         };
         if comparators_withheld
-            || (bridge.is_none()
+            || (inp.price.is_some()
+                && bridge.is_none()
                 && (band_read_skipped
                     || overlaid
                         .conditions
@@ -1695,8 +1839,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                             trigger: FlagTrigger::HurdleNewlyFails,
                             detail: format!(
                                 "capital-efficiency read newly fails the hurdle \
-                                 (re-anchored TR base {:.1}% vs hurdle {:.1}%)",
-                                scenario.tr_base * 100.0,
+                                 (re-anchored TR bull {:.1}% vs hurdle {:.1}%)",
+                                scenario.tr_bull * 100.0,
                                 hurdle.hurdle_rate.unwrap_or(0.0) * 100.0
                             ),
                             raised_at: inp.now.to_string(),
@@ -2727,6 +2871,139 @@ mod tests {
     }
 
     #[test]
+    fn widened_anchor_rows_stay_out_of_the_condition_price_window() {
+        let conn = mem();
+        let mut condition = price_condition("c-tr", ConditionRole::Falsifier, 0.50);
+        condition.statement = "trailing return above 50%".into();
+        let quant = condition.quant.as_mut().unwrap();
+        quant.series = LedgerSeries::TrailingReturn;
+        quant.comparator = LedgerComparator::Above;
+
+        let verdict = priced_verdict("AAPL", vec![condition]);
+        let mut audit = audit_for("AAPL", Some(basis()));
+        audit.authoring_close =
+            Some(DatedValue { date: "2025-06-01".into(), value: 10.0 });
+        store::insert_run(&conn, &sample_run(verdict, audit)).unwrap();
+
+        let mut data = StubData::quiet(195.0, "2026-08-01");
+        data.price = Ok((
+            195.0,
+            vec![
+                // Needed to recover the carried split anchor, but outside the
+                // full pass's inclusive 180-day EOD range.
+                DatedValue { date: "2025-06-01".into(), value: 10.0 },
+                DatedValue { date: "2026-02-03".into(), value: 195.0 },
+                DatedValue { date: "2026-08-01".into(), value: 195.0 },
+            ],
+        ));
+        let state = run_quick_check_at(
+            &data,
+            &conn,
+            &noop_ctx(),
+            "2026-08-01T12:00:00Z".into(),
+        )
+        .unwrap();
+        let condition = state.holdings[0]
+            .condition_states
+            .iter()
+            .find(|(id, _)| id == "c-tr")
+            .expect("trailing-return condition evaluated");
+        assert_eq!(condition.1.last_value, Some(0.0));
+        assert_eq!(condition.1.breach_streak, 0);
+        assert!(
+            state.holdings[0].flag.is_none(),
+            "the anchor-only 900% return must not enter the condition read"
+        );
+    }
+
+    #[test]
+    fn the_v2_boundary_retires_only_window_affected_quick_state() {
+        let mut trailing = price_condition("c-tr", ConditionRole::Falsifier, 0.50);
+        trailing.statement = "trailing return above 50%".into();
+        trailing.quant.as_mut().unwrap().series = LedgerSeries::TrailingReturn;
+        let price = price_condition("c-price", ConditionRole::Falsifier, 180.0);
+        let run = sample_run(
+            priced_verdict("AAPL", vec![trailing, price]),
+            audit_for("AAPL", Some(basis())),
+        );
+        let event = EvidenceEvent {
+            kind: EvidenceEventKind::EarningsActual,
+            detail: "earnings actual posted".into(),
+            observed_at: "2026-08-01T12:00:00Z".into(),
+        };
+        let mut state = QuickCheckState {
+            parameter_version: "quick-check-v1".into(),
+            swept_run_id: run.run_id.clone(),
+            last_checked_at: "2026-08-01T12:00:00Z".into(),
+            rate_cache: None,
+            holdings: vec![HoldingQuickState {
+                symbol: "AAPL".into(),
+                families: vec![],
+                flag: Some(AttentionFlag {
+                    trigger: FlagTrigger::ConfirmedFalsifierBreach,
+                    detail: "confirmed falsifier breach: trailing return above 50%".into(),
+                    raised_at: "2026-08-01T12:00:00Z".into(),
+                }),
+                evidence_events: vec![event.clone()],
+                condition_states: vec![
+                    ("c-tr".into(), ConditionEvalState::default()),
+                    ("c-price".into(), ConditionEvalState::default()),
+                ],
+                last_hurdle_state: Some(HurdleState::Clears),
+                notes: vec![],
+            }],
+        };
+
+        reconcile_parameter_version(&mut state, &run);
+
+        assert_eq!(state.parameter_version, QUICK_CHECK_PARAMETER_VERSION);
+        assert_eq!(
+            state.holdings[0]
+                .condition_states
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            ["c-price"]
+        );
+        assert!(state.holdings[0].flag.is_none());
+        assert_eq!(state.holdings[0].evidence_events, vec![event]);
+        assert_eq!(state.holdings[0].last_hurdle_state, Some(HurdleState::Clears));
+    }
+
+    #[test]
+    fn a_tail_sweep_uses_the_parent_runs_pinned_session() {
+        let verdict = priced_verdict(
+            "AAPL",
+            vec![price_condition("c-price", ConditionRole::Falsifier, 180.0)],
+        );
+        let run = sample_run(verdict, audit_for("AAPL", Some(basis())));
+        let tail = std::collections::HashSet::from(["AAPL".to_string()]);
+        let data = StubData::quiet(170.0, "2026-08-01");
+        let state = sweep_tail(
+            TailSweep {
+                data: &data,
+                prior_run: &run,
+                current_positions: &run.holdings.positions,
+                tail: &tail,
+                prior_state: None,
+                rates: run.rate_prints.clone(),
+                // 02:59 UTC is still the prior ET session in daylight time.
+                // A separate clock read one minute later could cross 8 PM ET.
+                run_instant: "2026-08-02T02:59:59Z",
+            },
+            &noop_ctx(),
+        )
+        .unwrap();
+        let condition = state[0]
+            .condition_states
+            .iter()
+            .find(|(id, _)| id == "c-price")
+            .expect("price condition evaluated");
+        assert_eq!(condition.1.last_evaluated_at.as_deref(), Some("2026-08-01"));
+        assert_eq!(condition.1.first_breach_at.as_deref(), Some("2026-08-01"));
+    }
+
+    #[test]
     fn hurdle_newly_failing_flags_and_indeterminate_never_does() {
         let conn = mem();
         let verdict = priced_verdict("AAPL", vec![]);
@@ -2741,6 +3018,8 @@ mod tests {
         let s = run_quick_check(&StubData::quiet(240.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
         let flag = s.holdings[0].flag.as_ref().expect("newly-fails flags");
         assert_eq!(flag.trigger, FlagTrigger::HurdleNewlyFails);
+        assert!(flag.detail.contains("TR bull"), "{}", flag.detail);
+        assert!(!flag.detail.contains("TR base"), "{}", flag.detail);
         assert_eq!(s.holdings[0].last_hurdle_state, Some(HurdleState::Fails));
     }
 
@@ -2751,7 +3030,7 @@ mod tests {
             "AAPL",
             vec![price_condition("c1", ConditionRole::Falsifier, 180.0)],
         );
-        store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(basis())))).unwrap();
+        store::insert_run(&conn, &sample_run(verdict, audit_with_anchor("AAPL"))).unwrap();
         let mut stub = StubData::quiet(170.0, "2026-08-01");
         stub.price = Err("quote gate".into());
         stub.filings = FilingSweep::NoCik;
@@ -2765,6 +3044,21 @@ mod tests {
         };
         assert_eq!(state_of(SweepFamily::MarketData), Some(SweepState::Unknown));
         assert_eq!(state_of(SweepFamily::Filing), Some(SweepState::Unknown));
+        assert!(
+            h.families
+                .iter()
+                .filter_map(|f| f.note.as_deref())
+                .all(|n| !n.contains("split-bridge anchor")),
+            "an outage must not be blamed on the anchor: {:?}",
+            h.families
+        );
+        assert!(
+            h.families
+                .iter()
+                .any(|f| f.note.as_deref().is_some_and(|n| n.contains("price refresh failed"))),
+            "the actual quote failure remains visible: {:?}",
+            h.families
+        );
         // No price → the breach condition was not evaluated at all.
         assert!(h.condition_states.is_empty());
         assert!(h.flag.is_none());

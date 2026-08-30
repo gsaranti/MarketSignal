@@ -664,9 +664,9 @@ pub const RESUME_WINDOW_HOURS: i64 = 48;
 /// Whether an interrupted run's checkpoints can resume — `Ok(())` = offerable
 /// (`docs/portfolio-analysis.md` §Failure posture: offered only while the
 /// checkpoints exist and the pinned pull is younger than the resume window).
-/// The stamps are the resume contract (ruled 2026-08-29, Codex I18): the five
-/// version axes stamp what a completed holding's verdict and audit mean, the
-/// format stamp the trail's own shape, the roster the models, and the
+/// The stamps are the resume contract (ruled 2026-08-29, Codex I18): the six
+/// version axes stamp what a completed holding's verdict, audit, and carried
+/// tail mean, the format stamp the trail's own shape, the roster the models, and the
 /// prior-run id the baseline — a mismatch on any refuses rather than mixing
 /// verdicts across contracts. A rebuild that moves none resumes, the restored
 /// holdings carrying the pre-change behaviour: a slice that changes
@@ -702,6 +702,13 @@ pub fn resume_eligibility(
         != crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION
     {
         return Err("the pre-profit parameters changed since the interrupted run".into());
+    }
+    if cp.header.quick_check_parameter_version
+        != crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION
+    {
+        return Err(
+            "the quick-check evaluation parameters changed since the interrupted run".into(),
+        );
     }
     if cp.header.evidence_floor_version != crate::portfolio::engine::EVIDENCE_FLOOR_VERSION {
         return Err("the evidence-floor rule changed since the interrupted run".into());
@@ -1084,8 +1091,11 @@ fn run_analysis(
     // the same prior run applies. Same fail-soft as the prior run: an unreadable
     // (corrupt — loud-skipped in the store) or unreadable-by-error state reads as
     // "no quick check since the last pass", logged.
-    let quick_state = prior_state_read("quick-check-state", store::latest_quick_check(conn))
+    let mut quick_state = prior_state_read("quick-check-state", store::latest_quick_check(conn))
         .filter(|s| Some(&s.swept_run_id) == prior_run_id.as_ref());
+    if let (Some(state), Some(prior)) = (&mut quick_state, &prior_run) {
+        crate::portfolio::quick_check::reconcile_parameter_version(state, prior);
+    }
 
     // The run's one wall-clock instant, minted before any dated decision: the
     // house-view freshness gate, the over-age reads, the label pass, and the
@@ -1279,8 +1289,9 @@ fn run_analysis(
                         dgs10: rates.dgs10,
                         dgs2_as_of: rates.dgs2_date.clone(),
                         dgs10_as_of: rates.dgs10_date.clone(),
-                        fetched_at: now_rfc3339(),
+                        fetched_at: created_at.clone(),
                     },
+                    run_instant: &created_at,
                 },
                 ctx,
             )?;
@@ -1325,6 +1336,8 @@ fn run_analysis(
                 crate::portfolio::engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
             pre_profit_parameter_version:
                 crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION.to_string(),
+            quick_check_parameter_version:
+                crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION.to_string(),
             evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
             checkpoint_format_version: store::CHECKPOINT_FORMAT_VERSION.to_string(),
             model_ids: vec![analyst.reasoner_id(), analyst.fast_id()],
@@ -2380,7 +2393,10 @@ fn run_analysis(
     // lifecycle state. The cost of a swallowed error here is a stale
     // quick-check row the next sweep supersedes.
     let retention: anyhow::Result<()> = (|| {
-        let store_state = store::latest_quick_check(conn)?;
+        let mut store_state = store::latest_quick_check(conn)?;
+        if let (Some(state), Some(prior)) = (&mut store_state, &prior_run) {
+            crate::portfolio::quick_check::reconcile_parameter_version(state, prior);
+        }
         let mut retained_holdings: Vec<crate::portfolio::quick_check::HoldingQuickState> =
             Vec::new();
         for v in &run.verdicts {
@@ -2409,6 +2425,8 @@ fn run_analysis(
             store::clear_quick_check(conn)?;
         } else {
             let state = crate::portfolio::quick_check::QuickCheckState {
+                parameter_version:
+                    crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION.to_string(),
                 swept_run_id: run.run_id.clone(),
                 // The in-run tail sweep is itself a quick-check evaluation; with none
                 // (a full run retaining an abstention) the store's own timestamp holds.
@@ -4629,6 +4647,8 @@ mod tests {
         store::save_quick_check(
             &conn,
             &QuickCheckState {
+                parameter_version:
+                    crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION.into(),
                 swept_run_id: first.run_id.clone(),
                 last_checked_at: "2026-08-03T00:00:00Z".into(),
                 rate_cache: None,
@@ -4734,6 +4754,8 @@ mod tests {
         store::save_quick_check(
             &conn,
             &QuickCheckState {
+                parameter_version:
+                    crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION.into(),
                 swept_run_id: first.run_id.clone(),
                 last_checked_at: "2026-08-03T00:00:00Z".into(),
                 rate_cache: None,
@@ -5405,6 +5427,13 @@ mod tests {
         drifted.header.pre_profit_parameter_version = "pre-profit-v3".into();
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("pre-profit"), "{err}");
+
+        // A quick-check parameter drift refuses too: a selective trail's
+        // carried-tail states cannot cross the 180-day window boundary.
+        let mut drifted = cp.clone();
+        drifted.header.quick_check_parameter_version = "quick-check-v1".into();
+        let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("quick-check evaluation"), "{err}");
 
         // A checkpoint-format drift refuses too: the trail's rows were written
         // under another shape, and the gate refuses with its reason rather than

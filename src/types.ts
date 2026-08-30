@@ -847,6 +847,7 @@ export interface HoldingQuickState {
 }
 
 export interface QuickCheckState {
+  parameter_version: string;
   // The full run the sweep ran against — the overlay applies only while this
   // matches the rendered run.
   swept_run_id: string;

@@ -447,7 +447,7 @@ Each completed holding checkpoints separately as it lands — verdict, audit, it
   - No fresh holdings pull occurs; per-holding retrieval (option chains included) still runs live at each resumed holding’s own Step 6a.
   - Starting resume window: 48 hours.
   - A version, roster, or baseline change since the interrupted run refuses the resume with its reason.
-  - The stamps are the contract: the five version axes stamp completed-holding semantics and the checkpoint format stamp the trail's shape, so a rebuild moving none resumes with the restored holdings' pre-change behaviour, and no build identity is checked (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-29).
+  - The stamps are the contract: the six version axes stamp completed-holding and selective carried-tail semantics and the checkpoint format stamp the trail's shape, so a rebuild moving none resumes with the restored holdings' pre-change behaviour, and no build identity is checked (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-29).
   - Each restored holding row carries its own prompt-usage observations and fired-retry events, so the finished run's data-health read spans both processes and counts no call twice, omitting only the superseded calls of holdings the resumed process re-analyzed — the interrupted holding's abandoned calls reach no row, and a row that never landed or no longer reads takes its calls with it (`docs/portfolio-analysis.md` §Failure posture).
   - Each restored row likewise carries its holding's deep-history and benchmark health, and the finished run rebuilds the data-health counts from the rows — a re-analyzed holding counts once and a benchmark unavailable in both processes once (`docs/portfolio-analysis.md` §Failure posture).
 
@@ -1559,6 +1559,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 
 - **Shared data refreshed**
   - Current holding prices from FMP — the live `quote` plus dated-EOD closes (two FMP calls per holding; the sweep never reads the shared price cache).
+  - The dated-EOD fetch widens beyond 180 days only to recover an older carried split anchor; trailing-return and return-volatility conditions are carved back to the full pass's inclusive 180-day UTC range.
   - `DGS2` and `DGS10` from FRED (one print each).
   - A failed rate pull fails soft to the freshest cached print — a prior quick check's own print first, else the last run's — eligible only within a drafted ~1-week bound (`RATE_CACHE_MAX_AGE_DAYS = 7`).
   - No eligible rate cache → the rate-dependent families read `unknown`.
@@ -1601,13 +1602,14 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 
 - **Warning logic**
   - Confirmed falsifier or trigger → amber attention flag.
-  - Newly failing dead-money read → amber attention flag.
+  - Newly failing dead-money read → amber attention flag that reports the bull-case total return against the hurdle, the same leg that decides `fails`.
   - Band relation changed since authoring (left, re-entered, or crossed the band) → amber attention flag.
   - New earnings, filing, revision, or qualifying news → quiet evidence-event badge.
   - Fund mandate, expense, or major exposure change → quiet evidence-event badge.
 
 - **State updates**
   - Advance a condition streak only on a distinct new observation (a new trading day's print, a new filing).
+  - A selective run's carried-tail sweep reuses the parent run's pinned instant and ET session for every badge and evaluation-state date.
   - Persist first-breach and confirmation state.
   - Keep model-authored thesis and triggers frozen — the sweep evaluates against a clone and writes back only each condition's evaluation state.
   - The **standalone** sweep persists its whole result only to the quick check's **own single-row store — it never creates or updates a run**, so it can't contaminate run history, `latest_run`, or the diff baseline. [note: quick-check eval-state does reach `portfolio_runs`, but only downstream and by design — a later **selective** analysis overlays its in-run carried-tail sweep's eval-state onto the carried verdicts it saves in the new run's blob (the cross-run condition-state chaining); the quick check never writes to `portfolio_runs` itself.]

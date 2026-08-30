@@ -182,6 +182,9 @@ pub struct CheckpointHeader {
     pub grade_parameter_version: String,
     pub target_parameter_version: String,
     pub pre_profit_parameter_version: String,
+    /// The semantics of the selective carried-tail sweep pinned in this header.
+    #[serde(default = "crate::portfolio::quick_check::legacy_quick_check_parameter_version")]
+    pub quick_check_parameter_version: String,
     /// The evidence-floor rule the trail's completed holdings were floored under
     /// ([`crate::portfolio::engine::EVIDENCE_FLOOR_VERSION`]).
     pub evidence_floor_version: String,
@@ -195,16 +198,17 @@ pub struct CheckpointHeader {
 
 /// The checkpoint trail's shape stamp — what the header and each holding row
 /// persist. It moves whenever a slice changes the trail's shape, and only then:
-/// what a completed holding's verdict and audit *mean* is stamped on the five
-/// version axes the header carries, which a slice changing those semantics is
+/// what a completed holding's verdict, audit, and carried tail *mean* is stamped
+/// on the six version axes the header carries, which a slice changing those semantics is
 /// obliged to move (`docs/portfolio-analysis.md` §Failure posture, ruled
 /// 2026-08-29). History: `checkpoint-v1` — telemetry on the row, cumulative
 /// counters on the accumulators; `checkpoint-v2` — the deep-history and
 /// benchmark health on the row (Codex I17); `checkpoint-v3` — the admission
 /// stamp on the overlay's observation rows inside the row's audit (Codex
 /// I20); `checkpoint-v4` — the required reporting span on each observation
-/// row and derived execution miss (Review 2 N1).
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v4";
+/// row and derived execution miss (Review 2 N1); `checkpoint-v5` — the
+/// quick-check evaluation stamp on the selective tail sweep (Review 2 N3).
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v5";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1038,6 +1042,8 @@ mod tests {
                 crate::portfolio::engine::SCENARIO_TARGET_PARAMETER_VERSION.into(),
             pre_profit_parameter_version:
                 crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION.into(),
+            quick_check_parameter_version:
+                crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION.into(),
             evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.into(),
             checkpoint_format_version: CHECKPOINT_FORMAT_VERSION.into(),
             model_ids: vec!["stub-analyst".into()],
@@ -1597,6 +1603,8 @@ mod tests {
         assert!(latest_quick_check(&conn).unwrap().is_none());
         // A readable state still round-trips (the skip is decode-only).
         let state = crate::portfolio::quick_check::QuickCheckState {
+            parameter_version:
+                crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION.into(),
             swept_run_id: "run-1".into(),
             last_checked_at: "2026-08-12T00:00:00Z".into(),
             rate_cache: None,
