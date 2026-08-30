@@ -8380,8 +8380,9 @@ mod tests {
         // in the basis sentence, beside the new evaluation-state stamp) again;
         // Review 2 M11's constant-period revision semantics moved it to v25;
         // M1's forward-assumption currency admission moved it to v26; the M4 /
-        // M5 / Q4 fund-classification contract moves it to v27.
-        assert_eq!(PROMPT_VERSION, "portfolio-v27");
+        // M5 / Q4 fund-classification contract moved it to v27; M14's
+        // industry-routed commodity context moves it to v28.
+        assert_eq!(PROMPT_VERSION, "portfolio-v28");
     }
 
     #[test]

@@ -49,12 +49,13 @@ pub const COMMODITY_WINDOW_DAYS: i64 = 400;
 
 /// Which commodity sleeve a print belongs to — the deterministic key the
 /// per-holding selection reads (`docs/data-sources.md §Portfolio Analysis —
-/// endpoint surface`: energy series for energy-linked holdings, the IMF metals
-/// plus gold for materials-linked ones).
+/// endpoint surface`: oil / gas series for energy-linked holdings, the IMF metals
+/// plus gold for materials-linked ones, and uranium on its own industry override).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CommodityGroup {
     Energy,
     Metals,
+    Uranium,
     Gold,
 }
 
@@ -88,30 +89,33 @@ pub struct CommodityContext {
 }
 
 /// Select the prints that ride one holding's dossier, by the holding's FMP
-/// profile identity: sector Energy → the energy sleeve; sector Basic
-/// Materials → the metals sleeve; and **gold on the industry label alone** (a
-/// gold / precious-metals industry) — never the whole Basic Materials sector,
-/// so a steel or chemicals holding carries no gold evidence. Any other
-/// identity — or none — carries no commodity block; the context is
-/// commodity-linked evidence, not a universal macro feed.
+/// profile identity. Industry overrides the broad sector where the sector is
+/// misleading: uranium receives the uranium sleeve, while coal receives no
+/// oil / gas proxy. Otherwise Energy receives oil / gas and Basic Materials
+/// receives metals; **gold is industry-only** (gold / precious metals), never
+/// the whole Basic Materials sector. Any other identity — or none — carries no
+/// commodity block; the context is linked evidence, not a universal macro feed.
 pub fn commodity_prints_for_holding(
     ctx: &CommodityContext,
     sector: Option<&str>,
     industry: Option<&str>,
 ) -> Vec<CommodityPrint> {
     let mut groups: Vec<CommodityGroup> = Vec::new();
-    match sector {
-        Some("Energy") => groups.push(CommodityGroup::Energy),
-        Some("Basic Materials") => groups.push(CommodityGroup::Metals),
-        _ => {}
+    let industry = industry.map(str::to_ascii_lowercase);
+    let uranium = industry.as_deref().is_some_and(|i| i.contains("uranium"));
+    let coal = industry.as_deref().is_some_and(|i| i.contains("coal"));
+    if uranium {
+        groups.push(CommodityGroup::Uranium);
+    } else if !coal {
+        match sector {
+            Some("Energy") => groups.push(CommodityGroup::Energy),
+            Some("Basic Materials") => groups.push(CommodityGroup::Metals),
+            _ => {}
+        }
     }
-    if industry
-        .map(|i| {
-            let l = i.to_ascii_lowercase();
-            l.contains("gold") || l.contains("precious metals")
-        })
-        .unwrap_or(false)
-    {
+    if industry.as_deref().is_some_and(|i| {
+        i.contains("gold") || i.contains("precious metals")
+    }) {
         groups.push(CommodityGroup::Gold);
     }
     if groups.is_empty() {
@@ -1303,6 +1307,7 @@ mod tests {
             prints: vec![
                 print("WTI Crude Oil", CommodityGroup::Energy),
                 print("Copper (IMF, monthly)", CommodityGroup::Metals),
+                print("Uranium (IMF, monthly)", CommodityGroup::Uranium),
                 print("Gold", CommodityGroup::Gold),
             ],
             gaps: vec![],
@@ -1315,6 +1320,19 @@ mod tests {
         };
         // Energy → the energy sleeve alone.
         assert_eq!(labels(Some("Energy"), None), vec!["WTI Crude Oil".to_string()]);
+        // The industry is more specific than FMP's broad sector: a uranium
+        // producer gets uranium, never WTI / gas; coal gets no fabricated
+        // commodity proxy because the run-level catalog carries no coal print.
+        assert_eq!(
+            labels(Some("Energy"), Some("Uranium")),
+            vec!["Uranium (IMF, monthly)".to_string()]
+        );
+        assert_eq!(
+            labels(Some("Basic Materials"), Some("Uranium Mining")),
+            vec!["Uranium (IMF, monthly)".to_string()]
+        );
+        assert!(labels(Some("Energy"), Some("Thermal Coal")).is_empty());
+        assert!(labels(Some("Energy"), Some("Coking Coal")).is_empty());
         // Basic Materials → the metals sleeve; gold only on a gold-linked
         // industry — a steel or chemicals holding carries no gold evidence
         // (Codex 2026-08-20, finding 4).

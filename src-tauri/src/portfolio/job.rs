@@ -232,7 +232,7 @@ const FRED_COMMODITY_SERIES: &[(&str, &str, &str, crate::portfolio::dossier::Com
     ("PALUMUSDM", "Aluminum (IMF, monthly)", "USD per metric ton", crate::portfolio::dossier::CommodityGroup::Metals),
     ("PNICKUSDM", "Nickel (IMF, monthly)", "USD per metric ton", crate::portfolio::dossier::CommodityGroup::Metals),
     ("PIORECRUSDM", "Iron Ore (IMF, monthly)", "USD per metric ton", crate::portfolio::dossier::CommodityGroup::Metals),
-    ("PURANUSDM", "Uranium (IMF, monthly)", "USD per pound", crate::portfolio::dossier::CommodityGroup::Metals),
+    ("PURANUSDM", "Uranium (IMF, monthly)", "USD per pound", crate::portfolio::dossier::CommodityGroup::Uranium),
 ];
 
 impl MarketContextSource for LiveMarketContext {
@@ -1724,7 +1724,7 @@ fn run_analysis(
         // `Some(bench)` where the memoized fetch degraded, off a fresh fetch or
         // a memo hit alike.
         let mut benchmark_gap: Option<String> = None;
-        let sector_benchmark = if is_stock && prior.is_some() {
+        let sector_benchmark = if is_stock && !guard_terminal && prior.is_some() {
             sector_by_symbol
                 .get(&position.symbol.to_ascii_uppercase())
                 .and_then(|s| s.benchmark.clone())
@@ -3521,6 +3521,10 @@ mod tests {
                 symbol, "NTDOF",
                 "a guard-terminal stock must not pull deep history"
             );
+            assert_ne!(
+                symbol, "XLK",
+                "a guard-terminal stock must not pull its sector benchmark"
+            );
             (vec![], vec![])
         }
         fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
@@ -3637,6 +3641,50 @@ mod tests {
             aapl.disposition,
             crate::portfolio::VerdictDisposition::Priced(_)
         ));
+    }
+
+    #[test]
+    fn a_carried_guard_terminal_stock_skips_its_sector_benchmark() {
+        let (_dir, paths) = paths();
+        let holdings = || {
+            holdings_of(vec![
+                stock("AAPL", 20.0, 3_900.0),
+                stock("NTDOF", 100.0, 1_000.0),
+            ])
+        };
+        let prior = full_run(&paths, holdings());
+        assert!(prior.verdicts.iter().any(|v| v.symbol == "NTDOF"));
+
+        let run = match run_portfolio_job(
+            &ChainTripwire {
+                inner: FixtureHoldingsSource::with_holdings(holdings()),
+                barred: "NTDOF",
+            },
+            &NonUsListingData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        let ntdof = verdict(&run, "NTDOF");
+        assert!(matches!(
+            ntdof.disposition,
+            crate::portfolio::VerdictDisposition::NotRated { .. }
+        ));
+        assert_eq!(
+            run.roll_up.data_health.benchmark_gaps, 0,
+            "a guard-terminal holding cannot create benchmark telemetry"
+        );
     }
 
     #[test]
