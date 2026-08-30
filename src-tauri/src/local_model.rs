@@ -60,8 +60,8 @@ const TAGS_PATH: &str = "/api/tags";
 /// which is why a chat request never rides this constant alone.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// The per-call transport deadline, derived from the request's own reservations
-/// so transport cannot cut a generation that stays inside its reservation while
+/// The per-call transport bound, derived from the request's own reservations so
+/// transport cannot cut a generation that stays inside its reservation while
 /// the daemon holds the drafted floors and its pre-generation overhead — runner
 /// scheduling, a cold model load — fits in the slack the unused reservation
 /// leaves. `num_ctx` over a prompt-evaluation floor covers the prefill that sits
@@ -835,8 +835,10 @@ pub struct LocalModelClient {
 impl LocalModelClient {
     /// Build a client for one daemon endpoint (e.g. `http://localhost:11434`). A
     /// trailing slash is trimmed so a joined path's leading slash doesn't double up.
-    /// The builder-level timeout is the backstop the probes ride; every chat call
-    /// sets its own derived deadline per request ([`DeadlinePolicy`]).
+    /// The builder-level timeout is the backstop the probes ride. Non-streaming
+    /// chat calls set their derived total deadline per request; streaming calls
+    /// build a client whose blocking-side timeout is their derived idle bound
+    /// ([`DeadlinePolicy`]).
     pub fn new(endpoint: impl Into<String>) -> Result<Self> {
         let http = reqwest::blocking::Client::builder()
             .timeout(DEFAULT_TIMEOUT)
@@ -874,6 +876,21 @@ impl LocalModelClient {
 
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
+    }
+
+    /// Build the streaming transport with its derived bound on the blocking side.
+    ///
+    /// `RequestBuilder::timeout` is an async total deadline in reqwest 0.12: it
+    /// remains armed while the whole response body streams. The blocking builder's
+    /// timeout is intentionally different — reqwest waits up to this duration for
+    /// the headers and then afresh for every body read. A request-specific client
+    /// therefore preserves the variable reservation-derived bound without cutting
+    /// off a healthy stream whose cumulative generation time exceeds it.
+    fn streaming_http(deadline: Duration) -> Result<reqwest::blocking::Client> {
+        reqwest::blocking::Client::builder()
+            .timeout(deadline)
+            .build()
+            .context("building the streaming local-model HTTP client")
     }
 
     /// One non-streaming chat call, returning the (schema-valid, when constrained)
@@ -925,10 +942,9 @@ impl LocalModelClient {
     pub fn chat_streaming(&self, req: &ChatRequest, role: StreamRole<'_>) -> Result<ChatResponse> {
         let deadline = self.deadline.request_deadline(req, true);
         let body = build_chat_body(req, true);
-        let resp = self
-            .http
+        let http = Self::streaming_http(deadline)?;
+        let resp = http
             .post(self.url(CHAT_PATH))
-            .timeout(deadline)
             .json(&body)
             .send()
             .context("sending local chat request")
@@ -1679,6 +1695,30 @@ mod tests {
     }
 
     #[test]
+    fn chat_non_streaming_keeps_a_total_deadline_across_an_active_body() {
+        // Non-streaming generation normally precedes the headers, but the wire
+        // contract is still total: unlike the streaming path, active body chunks
+        // must not reset this request-wide deadline.
+        let server = MockHttp::serve(vec![Canned::DripBody {
+            status: 200,
+            chunks: vec![
+                ("{\"message\":{\"role\":\"assistant\",", 125),
+                ("\"content\":\"late\"", 125),
+                ("}}", 0),
+            ],
+        }]);
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_deadline_policy(instant_policy(200));
+        let err = client.chat(&thinking_request()).unwrap_err();
+        assert!(
+            err.to_string().contains("transport deadline"),
+            "total trip must be named, got: {err:#}"
+        );
+        assert_eq!(server.attempts(), 1);
+    }
+
+    #[test]
     fn chat_streaming_trips_the_derived_deadline_before_the_first_chunk() {
         // With `stream: true` nothing arrives before the first token, so prefill
         // sits inside the header wait; a daemon silent past the deadline trips it.
@@ -1697,6 +1737,35 @@ mod tests {
             .chat_streaming(&thinking_request(), StreamRole::Main)
             .unwrap_err();
         assert!(err.to_string().contains("transport deadline"), "{err:#}");
+    }
+
+    #[test]
+    fn chat_streaming_active_chunks_can_outlive_the_idle_deadline() {
+        // Each 125 ms gap stays under the 200 ms idle bound, while the complete
+        // response takes more than 200 ms. A request-level total timeout rejects
+        // this healthy stream; the blocking-side per-read bound must accept it.
+        let server = MockHttp::serve(vec![Canned::DripBody {
+            status: 200,
+            chunks: vec![
+                (
+                    "{\"message\":{\"role\":\"assistant\",\"content\":\"still \"}}\n",
+                    125,
+                ),
+                (
+                    "{\"message\":{\"role\":\"assistant\",\"content\":\"working\"}}\n",
+                    125,
+                ),
+                ("{\"message\":{\"role\":\"assistant\"},\"done\":true}\n", 0),
+            ],
+        }]);
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_deadline_policy(instant_policy(200));
+        let response = client
+            .chat_streaming(&thinking_request(), StreamRole::Main)
+            .unwrap();
+        assert_eq!(response.content, "still working");
+        assert_eq!(server.attempts(), 1);
     }
 
     #[test]

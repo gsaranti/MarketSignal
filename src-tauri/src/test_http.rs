@@ -47,6 +47,14 @@ pub enum Canned {
         partial: &'static str,
         for_ms: u64,
     },
+    /// Writes one close-delimited body chunk at a time, flushing each chunk and
+    /// sleeping for the paired delay before the next one. This distinguishes a
+    /// total request deadline from a per-read idle deadline: every gap can stay
+    /// under the idle bound while the complete response outlives that bound.
+    DripBody {
+        status: u16,
+        chunks: Vec<(&'static str, u64)>,
+    },
 }
 
 /// A throwaway localhost HTTP server that serves a fixed script of replies — one
@@ -215,6 +223,19 @@ fn write_canned(stream: &mut TcpStream, canned: Canned) -> std::io::Result<()> {
             stream.write_all(head.as_bytes())?;
             stream.flush()?;
             std::thread::sleep(Duration::from_millis(for_ms));
+            Ok(())
+        }
+        Canned::DripBody { status, chunks } => {
+            let head = format!("HTTP/1.1 {status} STATUS\r\nConnection: close\r\n\r\n");
+            stream.write_all(head.as_bytes())?;
+            stream.flush()?;
+            for (chunk, delay_after_ms) in chunks {
+                stream.write_all(chunk.as_bytes())?;
+                stream.flush()?;
+                if delay_after_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(delay_after_ms));
+                }
+            }
             Ok(())
         }
     }
