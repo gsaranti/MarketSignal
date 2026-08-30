@@ -830,7 +830,13 @@ Manual CSV/paste import supplements holdings but is not built. The
 **sector-aware grade normalization slice** was retired by ruling (2026-08-13,
 off attempt 2's letters): the no-A distribution is honest — quality and
 valuation sub-scores anticorrelate structurally — so normalization returns
-only on realized-outcome evidence, never on a letter distribution. An
+only on realized-outcome evidence, never on a letter distribution. That
+grade slice — the value-creation quality reads, sector-adjusted bands +
+own-history normalization, sector-appropriate metric selection, and the
+soft-forensic conviction cap (Altman/Piotroski) — is additionally a
+build-order dependent of Trade Opportunities: it inherits TO's Step-5c
+shared engine, so it lands with TO rather than as independent Portfolio
+work (`docs/portfolio-analysis.md` §Starting parameters is canonical). An
 **allocation optimizer** is deferred, not adopted — sizing and the optimizer
 question are the portfolio planner's domain since the tunnel-vision ruling. The FINRA and CBOE evidence legs' deferral was reversed 2026-08-14 — they
 landed with the Portfolio completion block (§Built). Trade Opportunities' blind-first
