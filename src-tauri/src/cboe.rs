@@ -215,9 +215,7 @@ fn date_after_key(html: &str, key: &str) -> Option<(String, QuoteForm)> {
 /// must consume at least the `":"` punctuation between key and value.
 fn label_is_name_value(html: &str, at: usize) -> bool {
     let before = &html[..at];
-    let trimmed = before.trim_end_matches(|c: char| {
-        matches!(c, '"' | '\\' | ':' | ' ' | '\t' | '\n' | '\r')
-    });
+    let trimmed = before.trim_end_matches(['"', '\\', ':', ' ', '\t', '\n', '\r']);
     if trimmed.len() == before.len() {
         return false;
     }

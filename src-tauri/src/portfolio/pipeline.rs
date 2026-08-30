@@ -27,7 +27,7 @@ use anyhow::{Context, Result};
 use crate::local_model::{options, ChatMessage, ChatRequest, LocalModelClient, StreamRole};
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::engine::{self, EngineOutput, EngineVerdict, LedgerEvaluation, RateAnchors};
-use crate::portfolio::fund::{self, FundEngineVerdict, RoleRiskReadout};
+use crate::portfolio::fund::{self, FundEngineVerdict, FundStructuralKind, RoleRiskReadout};
 use crate::portfolio::pre_profit::{self, PreProfitOverlay};
 use crate::portfolio::{
     interpretation_schema, role_risk_interpretation_schema, Action, ActionSource, ClosedCondition,
@@ -965,7 +965,7 @@ pub fn analyze_holding(
                         .collect(),
                     expense_drag: readout.expense_ratio,
                     observable_risk: readout.observable_risk,
-                    structural_flag: readout.structural_flag,
+                    structural_flag: readout.structural_flag(),
                     is_cef: readout.is_cef,
                     nav_premium: readout.nav_premium,
                     evidence_gaps: readout.evidence_gaps.clone(),
@@ -3012,8 +3012,16 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         describe_position_change(&d.position_delta, d.position.quantity, d.position.cost_basis)
     ));
     p.push_str(&format!("\nCLASSIFICATION: {}\n", r.class_label));
-    if r.structural_flag {
-        p.push_str("STRUCTURAL FLAG: structurally path-dependent (leveraged/inverse)\n");
+    if let Some(kind) = r.structural_kind {
+        let description = match kind {
+            FundStructuralKind::LeveragedInverse => {
+                "leveraged/inverse daily-reset path dependency"
+            }
+            FundStructuralKind::OptionOverlay => {
+                "option-overlay path dependency (the options reshape the return path)"
+            }
+        };
+        p.push_str(&format!("STRUCTURAL FLAG: {description}\n"));
     }
     if !r.exposure_tilt.is_empty() {
         p.push_str("EXPOSURE TILT:\n");
@@ -8371,8 +8379,9 @@ mod tests {
         // (the Codex I11 target-boundary NOTE and the I13 equity-source line
         // in the basis sentence, beside the new evaluation-state stamp) again;
         // Review 2 M11's constant-period revision semantics moved it to v25;
-        // M1's forward-assumption currency admission moves it to v26.
-        assert_eq!(PROMPT_VERSION, "portfolio-v26");
+        // M1's forward-assumption currency admission moved it to v26; the M4 /
+        // M5 / Q4 fund-classification contract moves it to v27.
+        assert_eq!(PROMPT_VERSION, "portfolio-v27");
     }
 
     #[test]
@@ -9294,7 +9303,7 @@ mod tests {
 
         let readout = RoleRiskReadout {
             class_label: "equity fund below the US-exposure guard".into(),
-            structural_flag: false,
+            structural_kind: None,
             exposure_tilt: vec![],
             expense_ratio: None,
             observable_risk: None,
@@ -9314,6 +9323,40 @@ mod tests {
     }
 
     #[test]
+    fn role_risk_prompt_names_the_exact_structural_fund_kind() {
+        let d = fund_dossier(us_equity_fund());
+        let prompt_for = |structural_kind| {
+            let readout = RoleRiskReadout {
+                class_label: "equity fund below the US-exposure guard".into(),
+                structural_kind,
+                ..Default::default()
+            };
+            role_risk_user_prompt(&RoleRiskInput {
+                input_delta: &[],
+                dossier: &d,
+                prior_ledger: d.prior_ledger(),
+                readout: &readout,
+                ledger_eval: None,
+                distilled: "No research findings.",
+            })
+        };
+
+        let overlay = prompt_for(Some(FundStructuralKind::OptionOverlay));
+        assert!(
+            overlay.contains("STRUCTURAL FLAG: option-overlay path dependency"),
+            "{overlay}"
+        );
+        assert!(!overlay.contains("leveraged/inverse"), "{overlay}");
+
+        let daily_reset = prompt_for(Some(FundStructuralKind::LeveragedInverse));
+        assert!(
+            daily_reset.contains("STRUCTURAL FLAG: leveraged/inverse daily-reset"),
+            "{daily_reset}"
+        );
+        assert!(!daily_reset.contains("option-overlay"), "{daily_reset}");
+    }
+
+    #[test]
     fn the_price_vs_nav_line_renders_only_on_the_closed_end_form() {
         // The CEF read (ruled 2026-08-21): prompt evidence + card only, rendered
         // where the vehicle makes it meaningful — a present premium on a CEF
@@ -9322,7 +9365,7 @@ mod tests {
         let d = fund_dossier(us_equity_fund());
         let readout = |is_cef: bool, nav_premium: Option<f64>| RoleRiskReadout {
             class_label: "closed-end fund".into(),
-            structural_flag: false,
+            structural_kind: None,
             exposure_tilt: vec![],
             expense_ratio: None,
             observable_risk: None,
@@ -10001,7 +10044,7 @@ mod tests {
             exposure_tilt: vec![("gold".into(), 1.0)],
             expense_ratio: Some(0.4),
             observable_risk: None,
-            structural_flag: false,
+            structural_kind: None,
             is_cef: false,
             nav_premium: None,
             evidence_gaps: vec![],

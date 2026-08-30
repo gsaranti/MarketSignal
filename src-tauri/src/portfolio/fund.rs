@@ -57,7 +57,9 @@ const STRUCTURAL_FLAG_FRAGMENTS: &[&str] = &[
 /// ("treasury", "bond") would also suppress genuine inverse bond funds
 /// ("ProShares Short 20+ Year Treasury"), while an unconditional "ultra"
 /// fragment misread "Ultra Short-Term Bond" duration funds as daily-reset
-/// vehicles. Only a fragment inside a maturity phrase is a duration read.
+/// vehicles. A hyphenated / spaced "ultra short" is also a duration phrase only
+/// when `assetClass` independently says fixed income; that keeps an equity
+/// "Ultra Short S&P 500" directional name from receiving the exemption.
 /// Known cost (ruled 2026-08-05, piece-3 Codex round): "iShares Short Treasury
 /// Bond"-style duration names flag as leveraged/inverse — still
 /// `role_risk_only` either way, a wrong class label only; a big-run watch.
@@ -140,12 +142,21 @@ pub enum FundStrategyClass {
     Unknown,
 }
 
+/// The exact structural-path flag the deterministic name / mandate screen found.
+/// Kept typed inside the engine so an option-overlay vehicle can never be described
+/// to the role-risk model as a leveraged / inverse daily-reset product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FundStructuralKind {
+    LeveragedInverse,
+    OptionOverlay,
+}
+
 /// The classification result: the class, the structural flag, the US share where
 /// readable, and — where the class is unpriceable — the typed role reason.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FundClassification {
     pub class: FundStrategyClass,
-    pub structural_flag: bool,
+    pub structural_kind: Option<FundStructuralKind>,
     pub us_share: Option<f64>,
     /// The card's classification label (e.g. "US equity fund", "bond fund").
     pub class_label: String,
@@ -157,6 +168,12 @@ pub struct FundClassification {
     /// is [`is_closed_end`]; the marker gates the price-vs-NAV read's rendering
     /// (`docs/portfolio-analysis.md` §Asset eligibility).
     pub is_cef: bool,
+}
+
+impl FundClassification {
+    pub fn structural_flag(&self) -> bool {
+        self.structural_kind.is_some()
+    }
 }
 
 /// The closed-end fragments the detection screens the profile description for.
@@ -220,6 +237,10 @@ pub fn classify(fund: &FundData) -> FundClassification {
         fund.asset_class.as_deref().unwrap_or_default()
     )
     .to_ascii_lowercase();
+    let class_str = fund.asset_class.as_deref().unwrap_or("").to_ascii_lowercase();
+    let fixed_income_class = class_str.contains("fixed income") || class_str.contains("bond");
+    let ultra_short_duration = fixed_income_class
+        && (name_blob.contains("ultra-short") || name_blob.contains("ultra short"));
     let leveraged_inverse = STRUCTURAL_FLAG_FRAGMENTS
         .iter()
         .any(|f| name_blob.contains(f))
@@ -228,11 +249,12 @@ pub fn classify(fund: &FundData) -> FundClassification {
         // leverage vs "Ultra Short-Term" duration) — count only outside a
         // duration phrase.
         || ((name_blob.contains("short") || name_blob.contains("ultra"))
-            && !SHORT_DURATION_PHRASES.iter().any(|f| name_blob.contains(f)));
+            && !SHORT_DURATION_PHRASES.iter().any(|f| name_blob.contains(f))
+            && !ultra_short_duration);
     if leveraged_inverse {
         return FundClassification {
             class: FundStrategyClass::LeveragedInverse,
-            structural_flag: true,
+            structural_kind: Some(FundStructuralKind::LeveragedInverse),
             us_share: us_share(fund),
             class_label: cef_suffix("leveraged / inverse vehicle"),
             role_reason: Some(
@@ -250,17 +272,20 @@ pub fn classify(fund: &FundData) -> FundClassification {
     let overlay_flag = OPTION_OVERLAY_FRAGMENTS
         .iter()
         .any(|f| name_blob.contains(f));
+    let structural_kind = overlay_flag.then_some(FundStructuralKind::OptionOverlay);
 
-    let class_str = fund.asset_class.as_deref().unwrap_or("").to_ascii_lowercase();
     let class = if class_str.contains("equity") || class_str.contains("stock") {
         FundStrategyClass::Equity
     } else if class_str.contains("fixed income") || class_str.contains("bond") {
         FundStrategyClass::Bond
     } else if class_str.contains("commodity") {
         FundStrategyClass::Commodity
-    } else if !fund.sector_weights.is_empty() {
-        // No usable class string, but sector weightings exist — the equity path's
-        // fuel; adopted with the assumption recorded by the caller's gap manifest.
+    } else if fund.asset_class.is_none() && !fund.sector_weights.is_empty() {
+        // With no class string at all, sector weightings are the only available
+        // mandate evidence and can supply the last-resort equity inference. An
+        // explicit but unsupported class never reaches this branch: allocation /
+        // multi-asset sector rows describe only one sleeve and cannot establish an
+        // equity-only mandate.
         FundStrategyClass::Equity
     } else {
         FundStrategyClass::Unknown
@@ -270,7 +295,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
     match class {
         FundStrategyClass::Bond => FundClassification {
             class,
-            structural_flag: overlay_flag,
+            structural_kind,
             us_share: us,
             class_label: cef_suffix("bond fund"),
             role_reason: Some(
@@ -282,7 +307,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
         },
         FundStrategyClass::Commodity => FundClassification {
             class,
-            structural_flag: overlay_flag,
+            structural_kind,
             us_share: us,
             class_label: cef_suffix("commodity fund"),
             role_reason: Some(
@@ -298,7 +323,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
         // should say "closed-end fund", not "unresolved strategy class".
         FundStrategyClass::Unknown if is_cef => FundClassification {
             class,
-            structural_flag: overlay_flag,
+            structural_kind,
             us_share: us,
             class_label: "closed-end fund".to_string(),
             role_reason: Some(
@@ -311,21 +336,31 @@ pub fn classify(fund: &FundData) -> FundClassification {
         },
         FundStrategyClass::Unknown => FundClassification {
             class,
-            structural_flag: overlay_flag,
+            structural_kind,
             us_share: us,
-            class_label: "fund with unresolved strategy class".to_string(),
-            role_reason: Some(
+            class_label: if fund.asset_class.is_some() {
+                "fund with unsupported strategy class".to_string()
+            } else {
+                "fund with unresolved strategy class".to_string()
+            },
+            role_reason: Some(if let Some(asset_class) = fund.asset_class.as_deref() {
+                format!(
+                    "strategy class {asset_class:?} is not an equity, bond, or commodity class \
+                     this pipeline can price — any served sector weightings remain exposure \
+                     context only and cannot establish an equity-only mandate"
+                )
+            } else {
                 "strategy class unresolved and no usable sector weightings — the \
                  exposure-priced valuation has no input"
-                    .to_string(),
-            ),
+                    .to_string()
+            }),
             is_cef,
         },
         FundStrategyClass::Equity => {
             if fund.sector_weights.is_empty() {
                 FundClassification {
                     class,
-                    structural_flag: overlay_flag,
+                    structural_kind,
                     us_share: us,
                     class_label: cef_suffix("equity fund without usable weightings"),
                     role_reason: Some(
@@ -338,7 +373,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             } else if us.map(|s| s < US_EXPOSURE_GUARD).unwrap_or(false) {
                 FundClassification {
                     class,
-                    structural_flag: overlay_flag,
+                    structural_kind,
                     us_share: us,
                     // The label describes the measurement, not a nationality claim:
                     // a 67%-US fund is not "ex-US", and attempt 2's model flagged
@@ -357,7 +392,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             } else {
                 FundClassification {
                     class,
-                    structural_flag: overlay_flag,
+                    structural_kind,
                     us_share: us,
                     class_label: cef_suffix("US equity fund"),
                     role_reason: None,
@@ -670,7 +705,7 @@ pub struct RoleRiskReadout {
     pub expense_ratio: Option<f64>,
     /// Annualized realized volatility, where computable.
     pub observable_risk: Option<f64>,
-    pub structural_flag: bool,
+    pub structural_kind: Option<FundStructuralKind>,
     /// The closed-end structure marker ([`is_closed_end`]) — gates the
     /// price-vs-NAV rendering to the closed-end form.
     pub is_cef: bool,
@@ -680,6 +715,12 @@ pub struct RoleRiskReadout {
     /// into `evidence_gaps` rather than rendered as a number.
     pub nav_premium: Option<f64>,
     pub evidence_gaps: Vec<String>,
+}
+
+impl RoleRiskReadout {
+    pub fn structural_flag(&self) -> bool {
+        self.structural_kind.is_some()
+    }
 }
 
 /// What the fund engine resolved to: the priced branch (the shared [`EngineOutput`]),
@@ -805,7 +846,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             exposure_tilt: tilt,
             expense_ratio: fund.expense_ratio,
             observable_risk: annual_vol,
-            structural_flag: classification.structural_flag,
+            structural_kind: classification.structural_kind,
             is_cef: classification.is_cef,
             nav_premium,
             evidence_gaps: gaps,
@@ -954,7 +995,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             (1.0 - composite.covered_share) * 100.0
         ));
     }
-    if classification.structural_flag {
+    if classification.structural_flag() {
         engine_notes.push(
             "option-overlay structural path-dependency flag (name / mandate screen) — \
              the overlay reshapes the return path the exposure composite prices, so \
@@ -990,7 +1031,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         // Leveraged / inverse never reaches the priced path (it routes to
         // `role_risk_only` above); the comparison keeps the High leg honest anyway.
         classification.class == FundStrategyClass::LeveragedInverse,
-        classification.structural_flag,
+        classification.structural_flag(),
         annual_vol,
         drawdown,
     );
@@ -1027,7 +1068,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         // The deterministic classification is shown on the card — the priced branch
         // included, an option-overlay flag riding beside it.
         fund_class_label: Some(classification.class_label),
-        structural_flag: classification.structural_flag,
+        structural_flag: classification.structural_kind.is_some(),
         quick_basis: Some(engine::QuickCheckBasis {
             spot,
             drivers: [implied_eps, implied_eps, implied_eps],
@@ -1086,7 +1127,7 @@ pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
         expense_ratio: fund.expense_ratio,
         us_share: classification.us_share,
         top_sector,
-        structural_flag: classification.structural_flag,
+        structural_flag: classification.structural_kind.is_some(),
     }
 }
 
@@ -1438,7 +1479,7 @@ mod tests {
         let mut sh = fund();
         sh.name = Some("ProShares Short S&P500".to_string());
         assert_eq!(classify(&sh).class, FundStrategyClass::LeveragedInverse);
-        assert!(classify(&sh).structural_flag);
+        assert!(classify(&sh).structural_flag());
         // An inverse BOND fund must flag too — the suppression is phrase-shaped,
         // never a vocabulary veto ("treasury" anywhere must not excuse it).
         let mut tbf = fund();
@@ -1455,10 +1496,19 @@ mod tests {
         assert_eq!(classify(&duration).class, FundStrategyClass::Bond);
         // "ultra" is ambiguous the same way: leverage (UltraPro / UltraShort)
         // flags, a duration phrase ("Ultra Short-Term Bond") suppresses.
-        let mut ultra_duration = fund();
-        ultra_duration.name = Some("iShares Ultra Short-Term Bond ETF".to_string());
-        ultra_duration.asset_class = Some("Fixed Income".to_string());
-        assert_eq!(classify(&ultra_duration).class, FundStrategyClass::Bond);
+        for name in [
+            "iShares Ultra Short-Term Bond ETF",
+            "JPMorgan Ultra-Short Income ETF",
+            "Vanguard Ultra-Short Bond ETF",
+            "Goldman Sachs Access Ultra Short Bond ETF",
+        ] {
+            let mut ultra_duration = fund();
+            ultra_duration.name = Some(name.to_string());
+            ultra_duration.asset_class = Some("Fixed Income".to_string());
+            let classification = classify(&ultra_duration);
+            assert_eq!(classification.class, FundStrategyClass::Bond, "{name}");
+            assert!(!classification.structural_flag(), "{name}");
+        }
         let mut ultrashort = fund();
         ultrashort.name = Some("ProShares UltraShort 20+ Year Treasury".to_string());
         ultrashort.asset_class = Some("Fixed Income".to_string());
@@ -1830,7 +1880,7 @@ mod tests {
         let mut leveraged = fund();
         leveraged.name = Some("Ultra 3x Daily Bull".to_string());
         assert!(classify(&leveraged).role_reason.is_some());
-        assert!(classify(&leveraged).structural_flag);
+        assert!(classify(&leveraged).structural_flag());
 
         let mut bond = fund();
         bond.asset_class = Some("Fixed Income".to_string());
@@ -1850,6 +1900,42 @@ mod tests {
         weightless.asset_class = Some("Equity".to_string());
         weightless.sector_weights = vec![];
         assert!(classify(&weightless).role_reason.is_some(), "the mutual-fund degrade");
+
+        // An explicit allocation / multi-asset class cannot be inferred to pure
+        // equity from sector rows that may describe only its equity sleeve.
+        let mut allocation = fund();
+        allocation.asset_class = Some("Allocation / Multi-Asset".to_string());
+        let c = classify(&allocation);
+        assert_eq!(c.class, FundStrategyClass::Unknown);
+        assert_eq!(c.class_label, "fund with unsupported strategy class");
+        assert!(
+            c.role_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("cannot establish an equity-only mandate")),
+            "{:?}",
+            c.role_reason
+        );
+        let fin = financials(100.0);
+        let inputs = FundEngineInputs {
+            fund: &allocation,
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        match analyze_fund(&inputs) {
+            FundEngineVerdict::RoleRiskOnly(readout) => {
+                assert_eq!(readout.class_label, "fund with unsupported strategy class");
+            }
+            other => panic!("allocation fund must not price as pure equity: {other:?}"),
+        }
+
+        // The old last-resort inference remains limited to a genuinely absent
+        // class, where sector rows are the only mandate evidence available.
+        let mut absent_class = fund();
+        absent_class.asset_class = None;
+        assert_eq!(classify(&absent_class).class, FundStrategyClass::Equity);
 
         assert!(classify(&fund()).role_reason.is_none(), "the priced US equity fund");
     }
@@ -2004,7 +2090,8 @@ mod tests {
         let mut overlay = fund();
         overlay.name = Some("US Equity Covered Call ETF".to_string());
         let c = classify(&overlay);
-        assert!(c.structural_flag);
+        assert!(c.structural_flag());
+        assert_eq!(c.structural_kind, Some(FundStructuralKind::OptionOverlay));
         assert!(c.role_reason.is_none(), "overlay funds still price");
 
         let fin = financials(282.0);
@@ -2095,7 +2182,7 @@ mod tests {
         match analyze_fund(&inputs) {
             FundEngineVerdict::RoleRiskOnly(r) => {
                 assert_eq!(r.class_label, "bond fund");
-                assert!(!r.structural_flag);
+                assert!(!r.structural_flag());
                 assert!(r.observable_risk.is_some(), "vol from price history");
                 assert!(!r.exposure_tilt.is_empty(), "country tilt stands in");
                 assert!(r.evidence_gaps.iter().any(|g| g.contains("duration")));

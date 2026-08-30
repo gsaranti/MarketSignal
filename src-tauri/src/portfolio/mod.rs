@@ -1991,7 +1991,12 @@ pub struct HoldingAudit {
 /// reject named foreign currencies because target refinement has no dated FX
 /// input. The shadow resolution and the interpretation input delta therefore
 /// move together under the corrected unit-admission semantics (Review 2 M1).
-pub const PROMPT_VERSION: &str = "portfolio-v26";
+///
+/// `portfolio-v27`: fund classification keeps explicit allocation / multi-asset
+/// classes out of the pure-equity pricing path, recognizes fixed-income
+/// ultra-short duration names, and renders the exact leveraged/inverse versus
+/// option-overlay structural cause to the role-risk model (Review 2 M4 / M5 / Q4).
+pub const PROMPT_VERSION: &str = "portfolio-v27";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
