@@ -340,13 +340,13 @@
   - Prior analysis run’s normalized snapshot from local storage.
 
 - **Calculations**
-  - Compare signed quantities by ticker.
+  - Compare position size by ticker: absolute quantity on a same-side move, and the signed swing on a long↔short flip.
   - Tag each current holding:
     - New.
     - Increased.
     - Decreased.
     - Unchanged.
-  - A long-to-short or short-to-long move is a reversal.
+  - A long↔short flip still receives Increased or Decreased from that size rule; `side_reversed` is a separate badge on a carried verdict, not a fifth diff tag.
   - A prior ticker now absent is exited.
 
 - **Important rule**
@@ -709,14 +709,14 @@ Bear / base / bull price targets — one-month and twelve-month — priced from 
     - [note: needs ≥ 8 usable observations; below that, fall back to recorded raw-multiple percentiles; with no history, carry the current `spot ÷ base-driver` multiple.]
 
 - **Calculate the scenario prices and returns**
-  - Inputs: the driver cases, the multiples, spot, forward dividends.
+  - Inputs: the driver cases, the multiples, spot, and trailing-TTM dividends per share as the twelve-month payout proxy.
   - Equation:
     - Twelve-month price = `driver × multiple`, per scenario. [note: crossed bear/base/bull prices are repaired to ascending and logged; a dispersion floor = `clamp(daily vol × 15.87 × 0.5, 0.05, 0.20)` widens — never narrows — the bear/bull spread.]
-    - Twelve-month total return = `(price + forward dividends) ÷ spot − 1`.
+    - Twelve-month total return = `(price + trailing-TTM dividends per share) ÷ spot − 1`; the payout leg is a proxy, not a forward estimate.
     - One-month price = `spot × (1 + twelve-month base price-return ÷ 12)`; the bear/bull legs take a band = `clamp(daily vol × 2 × √21, 0.02, 0.15)` (else 5%) — 2σ √t-scaled to the 21-session month, introduced at `targets-v5` and carried by current `targets-v6` — dividends excluded.
 
 - **Where these land**
-  - Targets → the output price targets (each with its methodology + provenance flags); total returns → the hurdle read; the drivers, spread / raw percentiles, spot, forward-dividend leg, dispersion floor, and consensus EPS mid persist as the quick-check basis the between-run engine re-anchors against. The multiples themselves are not stored — they are recomputed closed-form from the basis.
+  - Targets → the output price targets (each with its methodology + provenance flags); total returns → the hurdle read; the drivers, spread / raw percentiles, spot, trailing-TTM dividend proxy, dispersion floor, and consensus EPS mid persist as the quick-check basis the between-run engine re-anchors against. The multiples themselves are not stored — they are recomputed closed-form from the basis.
 
 #### Letter grade (stocks)
 
@@ -806,7 +806,7 @@ The alternative branch to the stock spine above; the fund engine makes the final
   - **Exposure tilt** — the sector and country weights. On the priced path only the US share above reaches the prompt; a top-five tilt (sector weights, else country when sector is absent) is rendered only on the role-risk path. The house-view comparison happens at the interpretation call.
 
 - **Fund scenario target** (settled flat-driver form)
-  - Equation: driver = `spot × composite earnings yield`, held **flat across bear / base / bull**; scenario spread comes only from the multiple axis (and, on the carry path, the volatility-scaled dispersion floor), not the driver.
+  - Equation: driver = `spot × composite earnings yield`, held **flat across bear / base / bull**; scenario spread comes from the multiple axis and the volatility-scaled dispersion floor, which applies after every target path, not only the current-multiple carry.
   - The flat-driver form is the settled design, not a stopgap (ruled 2026-08-21, closing the former open item): a scenario-differentiated priced-fund formula returns only on realized-outcome evidence ([portfolio-analysis.md §Starting parameters](../docs/portfolio-analysis.md) is canonical).
 
 - **Fund risk tier** (priced fund)
@@ -883,10 +883,10 @@ The inline gates referenced above, gathered — with each branch's requirements 
 
 - **Stock requires**
   - A usable current price — finite and strictly positive; a served zero or negative print is a named gap at the FMP parse, never a price (`docs/portfolio-analysis.md` §Evidence floor).
-  - Financial statements.
   - No resolved identity conflict (an unverified cross-check proceeds with a degraded-input flag).
   - At least two real sub-scores.
   - An admissible target driver on the v2 ladder (`no-admissible-driver` is a live floor exit).
+  - Financial statements are not a separate presence or age gate: missing legs can fail the two-real-sub-score or driver requirements above, but a latest-available statement's age alone does not abstain as-built.
 
 - **Exposure-priced fund requires**
   - A usable current quote or NAV — an unusable market quote falls to a usable NAV rather than masking it.
@@ -913,7 +913,9 @@ The inline gates referenced above, gathered — with each branch's requirements 
     - The **risk tier**, and the **hurdle read**: state (clears / fails / indeterminate), rate, the twelve-month scenario **total returns** it tested, and the new-money admission flag.
     - For a pre-profit stock, the complete **pre-profit overlay** (statement inputs, financing / execution states, and the rule consequences binding the arm).
     - For a fund, the **fund grade** and **fund risk tier** (priced); or, for a role-risk-only fund, the engine-computed **role-risk readout** — class label, exposure tilt, expense ratio, numeric observable risk (annualized volatility), structural flag, the closed-end marker with its price-vs-NAV read (or that read's named gap), and evidence gaps (the model authors the role prose on top).
-    - Of these, the two-arm **engine arm** — the fields **carried in both arms** (authored deterministically here and by the model at 6f) — is just the **sub-scores / letter** and the **scenario targets** (plus the outlook / conviction / action stand-ins assembled later); of those, only the **targets and outlook** are scored against realized outcomes today — and only the target bands additionally get an engine-vs-model head-to-head — while sub-scores, conviction, and action are carried but unscored. The risk tier, hurdle read, and overlay are shared deterministic evidence, and a **role-risk-only** fund is a separate, non-two-arm branch.
+    - Of these, the two-arm **engine arm** — the fields **carried in both arms** (authored deterministically here and by the model at 6f) — is just the **sub-scores / letter** and the **scenario targets** (plus the outlook / conviction / action stand-ins assembled later); the **targets and outlook** are scored against realized outcomes today, and only the target bands additionally get an engine-vs-model head-to-head, while sub-scores and conviction remain unscored.
+      The persisted model action is scored through the action-cohort reads; only the engine stand-in's action rung has no reader.
+      The risk tier, hurdle read, and overlay are shared deterministic evidence, and a **role-risk-only** fund is a separate, non-two-arm branch.
   - **Supporting reads emitted as 6f evidence** (none changes the letter):
     - The **computed metrics** — net / gross margin, revenue growth, debt-to-equity, volatility, trailing return, P/E, P/S, P/B.
     - **Momentum / market setup**; for a priced fund, the **expense ratio**, **US share**, and **composite coverage** reach the prompt (the full exposure tilt does not; the computed NAV premium reaches it only on the closed-end form — the premium line, or its explicit gap line).
@@ -923,7 +925,7 @@ The inline gates referenced above, gathered — with each branch's requirements 
     - The **implied-expectations range**, the **narrative-vs-reality read** (with its matched soft rule when tripped), the **FINRA short-interest read**, and the **option overlay** (both 6f prompts).
     - Designed, not yet emitted: the soft forensic flags and the remaining conviction-context signals (rating history, surprises, insider / congressional).
   - **Control result**: the **data-gap manifest** and the **evidence-floor outcome** — pass, or `insufficient-evidence` with named reasons (which short-circuits 6c–6f).
-  - **Persisted working reads (not scratch)**: the engine keeps its intermediates too — the overlay's statement inputs (liquid resources, burn, runway, capex intensity, dilution, margin direction) ride the audit row, and the settled per-share drivers, spread / raw-multiple percentiles, spot, and forward-dividend leg persist as the **quick-check basis** the between-run engine paths re-anchor against.
+  - **Persisted working reads (not scratch)**: the engine keeps its intermediates too — the overlay's statement inputs (liquid resources, burn, runway, capex intensity, dilution, margin direction) ride the audit row, and the settled per-share drivers, spread / raw-multiple percentiles, spot, and trailing-TTM dividend proxy persist as the **quick-check basis** the between-run engine paths re-anchor against.
   - **Assembled later, not here**: the engine arm's mechanical **stand-in outlook / conviction / action** are built at verdict time (after interpretation) from these 6b values — they are not part of the Step-6b output.
 
 ---
@@ -944,12 +946,12 @@ For an analyzed holding the research loop and distillation always run and are ne
 
 - **Seeded when (Layer 2 cache)**
   - Non-expired (< ~4 weeks) cached distilled findings exist for this holding — one **per-topic** object apiece, the layer the prior run persisted.
-  - The orchestrator injects **each topic's own prior object** — its tier-1 distillation, or its topic-keyed group from a single-pass run — plus that topic's ledger conditions into the topic's opening pass, deterministically and with no extra model call, filtered to claims still within their own ~4-week vintage and bounded by a per-topic seed budget.
+  - The orchestrator injects **each topic's own prior object** — its tier-1 distillation, or its topic-keyed group from a single-pass run — plus the holding ledger's **entire standing condition list** into every topic's opening pass, deterministically and with no extra model call, filtered to claims still within their own ~4-week vintage and bounded by a per-topic seed budget.
   - Seeding from the per-topic distillation, not a slice of the cross-topic combined object, starts each loop with richer, un-re-compressed topic detail; the topic is the storage partition, so the seed is a lookup rather than a per-claim re-assignment.
   - The loop then targets what changed rather than rebuilding the baseline; a cached prior never causes it to be skipped.
 
 - **Cold when (no Layer 2 cache)**
-  - If no non-expired cache exists, the loop simply runs cold.
+  - If no non-expired cache exists, the cache decision reads cold; the holding's standing ledger conditions still orient every topic and can produce seed text on their own.
 
 #### Build the agenda (the topics)
 
@@ -1011,7 +1013,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 - **What each topic conversation is given (its inputs)**
   - The shared dossier facts — identical for every topic.
   - That topic's own questions — different per topic.
-  - That topic's own seed, only when a non-expired (< ~4 weeks) cache exists: its own prior distilled object (its tier-1 distillation, or its topic-keyed group from a single-pass run) plus its ledger conditions. The seed is per topic — there is no single shared seed — and a topic with no cached prior starts clean.
+  - A per-topic seed assembled from that topic's non-expired (< ~4 weeks) prior distilled object, where one exists, plus the holding ledger's entire standing condition list, which is rendered into every topic. The cached object is topic-owned, but the condition component is holding-wide; a topic with no cached prior is logged cold even though standing conditions can still orient it.
   - The company-news seeds — the symbol-scoped FMP `news/stock` headlines pulled into the dossier at Step 6a — orient the topics as leads, never as evidence and never as a trigger (the technology-event bullet above): a seed's claim counts only once the model deep-reads its underlying source.
   - No other topic's findings — a later topic gets nothing from an earlier one. The topics meet only downstream, at the Step-6d distillation (a single consolidation call, or a reduce when the research is large).
 
@@ -1169,7 +1171,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - The recompute is **shadow-only**: the engine computes the hypothetical refined targets and records the would-have outcome on the audit, but nothing splices into the baseline — the Step-6b targets and dead-money read always stand, and write-back promotion waits on manually inspected shadow cases.
 
 - **Pre-profit observation validation (built — producer active)**
-  - Each sourced observation a research row supplies is checked **structurally** before it enters the period history — a finite numeric value, units, an ISO reporting-period end, an explicit reporting span, an issuer scope, a source URL, an ISO publication date, a confidence in [0, 1], and a direction (polarity) consistent with the metric kind (the row also carries its actual-versus-guidance role and its publication date — the quoted page's own, never the fetch date — both read later when pairing, the date under the guidance vintage policy). An explicit Q / H / FY / YTD label must agree with the typed span; an ISO-only label carries no inferred duration, and `unknown` remains audit context without pairing. A **malformed** row (any of those legs bad) or a **duplicate** — the same span, source, publication date, and value as a stored observation or an earlier accepted row in the same batch, so a same-source revision, same-page conflict, or same-end fact over another span is never one — is rejected and logged with its reason; every other row is accepted and merged into the period history (append, sort, dedup). A structurally valid but as-yet-**unpaired** row — an actual with no matching guidance, the reverse, or either side with unknown span — is kept, not rejected: pairing into misses happens later in the execution read, and an unpaired row simply waits for a future match.
+  - Each sourced observation a research row supplies is checked **structurally** before it enters the period history — a finite numeric value, units, an ISO reporting-period end, an explicit reporting span, an issuer scope, a source URL, an ISO publication date, a confidence in [0, 1], and a direction (polarity) consistent with the metric kind (the row also carries its actual-versus-guidance role and its publication date — the quoted page's own, never the fetch date — both read later when pairing, the date under the guidance vintage policy). An explicit Q / H / FY / YTD label must agree with the typed span; an ISO-only label carries no inferred duration, and `unknown` remains audit context without pairing. A **malformed** row (any of those legs bad) or a **duplicate** — the same metric identity, actual-versus-guidance role, reporting-period end, reporting span, source, publication date, and value as a stored observation or an earlier accepted row in the same batch, so a same-source revision, same-page conflict, or same-end fact over another span is never one — is rejected and logged with its reason; every other row is accepted and merged into the period history (append, sort, dedup). A structurally valid but as-yet-**unpaired** row — an actual with no matching guidance, the reverse, or either side with unknown span — is kept, not rejected: pairing into misses happens later in the execution read, and an unpaired row simply waits for a future match.
   - The two activation legs the slice owed are **built and binding**: **confirm the correct company** (the holding-identity cross-check — the fetched page must name the holding by symbol or a distinctive issuer-name token, generic corporate suffixes never qualifying) and **confirm the source states the number** (source-text corroboration inside the row's quoted source excerpt, which must itself appear verbatim in the page and is read with the page's own neighbours around it — at number boundaries and at the printed sign, so a value never corroborates off a longer number, a decimal it merely prefixes, or a print of the opposite sign such as `-41` or the accounting `(41)`, even when the quote is trimmed to the digits — and the excerpt must carry the declared metric's own language and state exactly one number, the value, a guidance-low / guidance-high row alone quoting a range's two endpoints, and that number must not read as the period the sentence names — a 1900–2099 year right after a period word such as `for` or `fiscal`, the range form when both endpoints read so; canonical: `docs/portfolio-workflow.md` §Step 6e). Every row's source page must have been fetched by this holding's own loop; an unevidenced call rejects every candidate.
   - Periods normalize to an ISO end plus the explicit span before the dedup key is taken, so spellings compare exactly without collapsing unlike durations that end on the same day.
   - An accepted row persists the prompt stamp it was admitted under (`admitted_under`, app-written at acceptance, outside the dedup key); the history is never re-admitted through a later filter, so a later, stricter contract leaves an older row telling itself apart by its stamp (canonical: `docs/portfolio-workflow.md` §Step 6e).
@@ -1554,7 +1556,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 - **Data retrieved from local storage**
   - Last analysis run’s holdings snapshot.
   - Existing thesis ledgers.
-  - Stored target inputs and rate anchors — the last full pass's drivers, spread / raw-multiple percentiles, spot, and forward-dividend leg (the quick-check basis the between-run engine re-anchors against).
+  - Stored target inputs and rate anchors — the last full pass's drivers, spread / raw-multiple percentiles, spot, and trailing-TTM dividend proxy (the quick-check basis the between-run engine re-anchors against).
   - No fresh Schwab holdings pull.
 
 - **Shared data refreshed**

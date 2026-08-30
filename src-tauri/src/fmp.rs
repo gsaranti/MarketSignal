@@ -5321,9 +5321,9 @@ impl FmpDataSource {
         }
     }
 
-    /// Trailing-twelve-month dividends per share — the forward-dividend estimate the
-    /// twelve-month total return adds. `None` (with no gap) for a non-payer; a failed
-    /// call records the gap.
+    /// Trailing-twelve-month dividends per share — the backward-looking payout
+    /// proxy the twelve-month total return adds, not a forward estimate. `None`
+    /// (with no gap) for a non-payer; a failed call records the gap.
     pub fn fetch_ttm_dividends(&self, symbol: &str, gaps: &mut Vec<String>) -> Option<f64> {
         // The **ET session** date, not the UTC date: the window is bounded on both
         // sides against dividend rows dated by market day, so an evening-ET run

@@ -639,8 +639,9 @@ pub struct CompanyFinancials {
     pub short_term_investments: Option<f64>,
     /// The forward consensus (nearest coming fiscal year) — the v2 driver ladder.
     pub consensus: Option<ConsensusEstimate>,
-    /// Trailing-twelve-month dividends per share — the forward-dividend estimate the
-    /// twelve-month total return adds (a sustainable basis, never a raw special).
+    /// Trailing-twelve-month dividends per share — the backward-looking payout
+    /// proxy the twelve-month total return adds (a sustainable basis, never a
+    /// raw special or a forward estimate).
     pub ttm_dividends_per_share: Option<f64>,
     /// Tagged inputs a source could not resolve, carried into the prompt so the model
     /// reasons over what is absent rather than inferring it.
@@ -797,7 +798,8 @@ pub struct HurdleRead {
     pub state: crate::portfolio::HurdleState,
     /// The tier-scaled hurdle rate tested (decimal ratio): `DGS2 + tier premium`.
     pub hurdle_rate: Option<f64>,
-    /// Twelve-month scenario **total returns** (price + forward dividends), decimal.
+    /// Twelve-month scenario **total returns** (price + trailing-TTM dividend
+    /// proxy), decimal.
     pub tr_bear: Option<f64>,
     pub tr_base: Option<f64>,
     pub tr_bull: Option<f64>,
@@ -1965,7 +1967,8 @@ pub struct QuickCheckBasis {
     pub drivers: [f64; 3],
     pub spread_percentiles: Option<[f64; 3]>,
     pub raw_percentiles: Option<[f64; 3]>,
-    /// The forward-dividend (fund: distribution) leg of the twelve-month total return.
+    /// The trailing-TTM dividend (fund: distribution) proxy in the twelve-month
+    /// total return. The serialized field keeps its historical name.
     pub forward_dividends: f64,
     /// The volatility-scaled dispersion floor the full pass applied.
     pub dispersion_floor: f64,

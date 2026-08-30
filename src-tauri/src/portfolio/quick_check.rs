@@ -1847,7 +1847,7 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             (Some(b), Some(r), Some((price, _)), Some(f)) => {
                 // The payout leg refreshes on filing cadence (`docs/portfolio-analysis.md`
                 // §The quick check): a new filing's dividend re-pull replaces the
-                // stored forward-dividend leg, so a filing-driven payout change can
+                // stored trailing-TTM payout proxy, so a filing-driven change can
                 // reach the hurdle; drivers and percentiles stay the stored basis
                 // (no re-estimation). A gapped dividend read keeps the stored leg.
                 let mut hurdle_basis = b.clone();
