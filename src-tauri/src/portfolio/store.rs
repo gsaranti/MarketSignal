@@ -196,8 +196,9 @@ pub struct CheckpointHeader {
     pub model_ids: Vec<String>,
 }
 
-/// The checkpoint trail's shape stamp — what the header and each holding row
-/// persist. It moves whenever a slice changes the trail's shape, and only then:
+/// The checkpoint trail's shape and pinned-input stamp — what the header and
+/// each holding row persist. It moves whenever a slice changes the trail's
+/// shape or the semantics of a pinned input restored by resume, and only then:
 /// what a completed holding's verdict, audit, and carried tail *mean* is stamped
 /// on the six version axes the header carries, which a slice changing those semantics is
 /// obliged to move (`docs/portfolio-analysis.md` §Failure posture, ruled
@@ -209,8 +210,11 @@ pub struct CheckpointHeader {
 /// row and derived execution miss (Review 2 N1); `checkpoint-v5` — the
 /// quick-check evaluation stamp on the selective tail sweep (Review 2 N3);
 /// `checkpoint-v6` — the raw fiscal-period consensus rows on a completed
-/// holding's quick basis (Review 2 M11).
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v6";
+/// holding's quick basis (Review 2 M11); `checkpoint-v7` — cash-position
+/// reconciliation against each Schwab account's liquidation value (Review 2
+/// M21), so an older pinned holdings snapshot cannot resume under the corrected
+/// denominator semantics.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v7";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header

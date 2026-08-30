@@ -101,12 +101,14 @@ impl HoldingsSource for SchwabApiSource {
             bail!("Schwab returned no accounts for this login");
         }
 
-        // Aggregate every granted account into one holdings snapshot: positions
-        // concatenated, cash summed. account_total is derived (Σ market value + cash),
-        // not read from a balance field, so the fixture invariant the engine relies on
-        // holds regardless of source.
+        // Aggregate every granted account into one holdings snapshot. Each
+        // account is reconciled against Schwab's liquidation value before its
+        // rows join the book, so a bank sweep reported both as CASH_EQUIVALENT
+        // and in cashBalance is counted once rather than inflating every weight.
         let mut positions: Vec<Position> = Vec::new();
+        let mut source_rows: Vec<Position> = Vec::new();
         let mut cash = 0.0;
+        let mut account_total = 0.0;
         for hash in hashes {
             let (status, body) = self.get(
                 &format!("{}/trader/v1/accounts/{hash}?fields=positions", self.base),
@@ -116,18 +118,24 @@ impl HoldingsSource for SchwabApiSource {
             if status != 200 {
                 bail!("Schwab positions request failed (HTTP {status})");
             }
-            let (mut ps, account_cash) = parse_positions(&body)?;
-            positions.append(&mut ps);
-            cash += account_cash;
+            let account = reconcile_account(parse_positions(&body)?)?;
+            positions.extend(account.positions);
+            source_rows.extend(account.source_rows);
+            cash += account.cash;
+            account_total += account.account_total;
         }
 
-        let account_total = positions.iter().map(|p| p.market_value).sum::<f64>() + cash;
-        Ok(Holdings {
+        // Reconcile before the ordinary book-level symbol netting, then restore
+        // every raw wire row (including folded cash rows) as the audit surface.
+        let mut holdings = Holdings {
             positions,
             cash,
             account_total,
             source_rows: vec![],
-        })
+        }
+        .normalized()?;
+        holdings.source_rows = source_rows;
+        Ok(holdings)
     }
 
     fn option_chain(&self, symbol: &str) -> Result<Option<OptionChain>> {
@@ -239,21 +247,41 @@ fn parse_account_hashes(body: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Map one account's positions response to our [`Position`] list plus its cash balance.
+/// One account's wire values before cash-position reconciliation.
+struct ParsedAccount {
+    positions: Vec<Position>,
+    cash_balance: f64,
+    liquidation_value: Option<f64>,
+}
+
+/// One account after explicit cash rows have been folded into its cash bucket.
+#[derive(Debug)]
+struct ReconciledAccount {
+    positions: Vec<Position>,
+    source_rows: Vec<Position>,
+    cash: f64,
+    account_total: f64,
+}
+
+/// Map one account's positions response to its rows and balance fields.
 /// Cost basis and current price follow the account-currency-total convention the DTOs
 /// document: `cost_basis = averagePrice × quantity`, and `current_price` is derived from
 /// market value so it stays consistent with it.
-fn parse_positions(body: &str) -> Result<(Vec<Position>, f64)> {
+fn parse_positions(body: &str) -> Result<ParsedAccount> {
     let json: Value = serde_json::from_str(body).context("parsing Schwab positions")?;
     let account = json
         .get("securitiesAccount")
         .ok_or_else(|| anyhow!("Schwab positions response had no securitiesAccount"))?;
 
-    let cash = account
+    let cash_balance = account
         .get("currentBalances")
         .and_then(|b| b.get("cashBalance"))
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
+    let liquidation_value = account
+        .get("currentBalances")
+        .and_then(|b| b.get("liquidationValue"))
+        .and_then(Value::as_f64);
 
     let mut positions = Vec::new();
     if let Some(rows) = account.get("positions").and_then(Value::as_array) {
@@ -294,7 +322,96 @@ fn parse_positions(body: &str) -> Result<(Vec<Position>, f64)> {
             });
         }
     }
-    Ok((positions, cash))
+    Ok(ParsedAccount {
+        positions,
+        cash_balance,
+        liquidation_value,
+    })
+}
+
+/// Reconcile Schwab cash-position rows against the account's own total.
+///
+/// A `CASH_EQUIVALENT` / `CURRENCY` row may already be included in
+/// `cashBalance`. `liquidationValue` distinguishes that shape from one where
+/// the row is additional cash: after non-cash positions are removed, the
+/// residual must match either `cashBalance` or `cashBalance + cash rows`.
+/// Ambiguous input fails the pull instead of silently choosing a denominator.
+fn reconcile_account(account: ParsedAccount) -> Result<ReconciledAccount> {
+    let source_rows = account.positions;
+    let positions: Vec<Position> = source_rows
+        .iter()
+        .filter(|p| p.asset_class != AssetClass::Cash)
+        .cloned()
+        .collect();
+    let non_cash_value = positions.iter().map(|p| p.market_value).sum::<f64>();
+    let cash_row_value = source_rows
+        .iter()
+        .filter(|p| p.asset_class == AssetClass::Cash)
+        .map(|p| p.market_value)
+        .sum::<f64>();
+    if !(account.cash_balance.is_finite()
+        && non_cash_value.is_finite()
+        && cash_row_value.is_finite())
+    {
+        bail!("Schwab account cash reconciliation overflowed");
+    }
+
+    let has_cash_rows = source_rows
+        .iter()
+        .any(|p| p.asset_class == AssetClass::Cash);
+    let (cash, account_total) = match account.liquidation_value {
+        Some(total) if total.is_finite() => {
+            if !has_cash_rows {
+                (account.cash_balance, total)
+            } else {
+                let residual = total - non_cash_value;
+                let cash_plus_rows = account.cash_balance + cash_row_value;
+                if !(residual.is_finite() && cash_plus_rows.is_finite()) {
+                    bail!("Schwab account cash reconciliation overflowed");
+                }
+                if currency_totals_match(residual, account.cash_balance) {
+                    // The explicit cash row is already represented by cashBalance.
+                    (account.cash_balance, total)
+                } else if currency_totals_match(residual, cash_plus_rows) {
+                    // The explicit row is additional cash exposure.
+                    (cash_plus_rows, total)
+                } else {
+                    bail!(
+                        "Schwab account cash rows could not be reconciled with cashBalance and \
+                         liquidationValue"
+                    );
+                }
+            }
+        }
+        Some(_) => bail!("Schwab account liquidationValue was not finite"),
+        None if has_cash_rows && !currency_totals_match(cash_row_value, 0.0) => {
+            bail!(
+                "Schwab account returned cash-position rows without liquidationValue; overlap \
+                 with cashBalance is ambiguous"
+            );
+        }
+        None => {
+            let total = non_cash_value + account.cash_balance;
+            if !total.is_finite() {
+                bail!("Schwab account total overflowed");
+            }
+            (account.cash_balance, total)
+        }
+    };
+
+    Ok(ReconciledAccount {
+        positions,
+        source_rows,
+        cash,
+        account_total,
+    })
+}
+
+/// Currency totals can differ by a cent of wire rounding; the relative rider
+/// keeps the comparison stable for very large accounts without masking a row.
+fn currency_totals_match(a: f64, b: f64) -> bool {
+    let tolerance = 0.01_f64.max(a.abs().max(b.abs()) * 1e-10);
+    (a - b).abs() <= tolerance
 }
 
 /// Map Schwab's `assetType` string to our [`AssetClass`]. Unknown or absent types are
@@ -457,6 +574,29 @@ mod tests {
       }
     }"#;
 
+    const POSITIONS_WITH_DUPLICATED_SWEEP_JSON: &str = r#"{
+      "securitiesAccount": {
+        "accountNumber": "12345678",
+        "positions": [
+          {
+            "longQuantity": 100,
+            "shortQuantity": 0,
+            "averagePrice": 140.0,
+            "marketValue": 19500.0,
+            "instrument": {"assetType": "EQUITY", "symbol": "AAPL", "description": "APPLE INC"}
+          },
+          {
+            "longQuantity": 10000,
+            "shortQuantity": 0,
+            "averagePrice": 1.0,
+            "marketValue": 10000.0,
+            "instrument": {"assetType": "CASH_EQUIVALENT", "symbol": "SWEEP", "description": "BANK SWEEP"}
+          }
+        ],
+        "currentBalances": {"cashBalance": 10000.0, "liquidationValue": 29500.0}
+      }
+    }"#;
+
     #[test]
     fn parse_account_hashes_takes_hash_not_plaintext() {
         let hashes = parse_account_hashes(ACCOUNT_NUMBERS_JSON).unwrap();
@@ -465,16 +605,59 @@ mod tests {
 
     #[test]
     fn parse_positions_maps_to_dtos_with_currency_totals() {
-        let (positions, cash) = parse_positions(POSITIONS_JSON).unwrap();
-        assert_eq!(cash, 10_000.0);
-        assert_eq!(positions.len(), 1);
-        let p = &positions[0];
+        let account = parse_positions(POSITIONS_JSON).unwrap();
+        assert_eq!(account.cash_balance, 10_000.0);
+        assert_eq!(account.liquidation_value, Some(29_500.0));
+        assert_eq!(account.positions.len(), 1);
+        let p = &account.positions[0];
         assert_eq!(p.symbol, "AAPL");
         assert_eq!(p.asset_class, AssetClass::Stock);
         assert_eq!(p.quantity, 100.0);
         assert_eq!(p.cost_basis, 14_000.0); // averagePrice 140 × 100
         assert_eq!(p.market_value, 19_500.0);
         assert_eq!(p.current_price, Some(195.0)); // 19_500 / 100
+    }
+
+    #[test]
+    fn duplicated_bank_sweep_is_folded_into_cash_once_and_retained_for_audit() {
+        let account =
+            reconcile_account(parse_positions(POSITIONS_WITH_DUPLICATED_SWEEP_JSON).unwrap())
+                .unwrap();
+
+        assert_eq!(account.positions.len(), 1);
+        assert_eq!(account.positions[0].symbol, "AAPL");
+        assert_eq!(account.cash, 10_000.0);
+        assert_eq!(account.account_total, 29_500.0);
+        assert_eq!(account.source_rows.len(), 2);
+        assert_eq!(account.source_rows[1].symbol, "SWEEP");
+    }
+
+    #[test]
+    fn separately_reported_cash_row_is_added_to_cash_once() {
+        let mut account = parse_positions(POSITIONS_WITH_DUPLICATED_SWEEP_JSON).unwrap();
+        account.liquidation_value = Some(39_500.0);
+        let account = reconcile_account(account).unwrap();
+
+        assert_eq!(account.positions.len(), 1);
+        assert_eq!(account.cash, 20_000.0);
+        assert_eq!(account.account_total, 39_500.0);
+        assert_eq!(account.source_rows.len(), 2);
+    }
+
+    #[test]
+    fn irreconcilable_cash_row_fails_instead_of_choosing_the_nearest_total() {
+        let mut account = parse_positions(POSITIONS_WITH_DUPLICATED_SWEEP_JSON).unwrap();
+        account.liquidation_value = Some(30_000.0);
+        let err = reconcile_account(account).unwrap_err().to_string();
+        assert!(err.contains("could not be reconciled"), "{err}");
+    }
+
+    #[test]
+    fn cash_row_without_a_liquidation_total_is_ambiguous_not_double_counted() {
+        let mut account = parse_positions(POSITIONS_WITH_DUPLICATED_SWEEP_JSON).unwrap();
+        account.liquidation_value = None;
+        let err = reconcile_account(account).unwrap_err().to_string();
+        assert!(err.contains("without liquidationValue"), "{err}");
     }
 
     #[test]
@@ -669,7 +852,7 @@ mod tests {
             Canned::Reply {
                 status: 200,
                 headers: vec![("Content-Type", "application/json")],
-                body: POSITIONS_JSON,
+                body: POSITIONS_WITH_DUPLICATED_SWEEP_JSON,
             },
         ]);
         let base = server.base_url.trim_end_matches('/').to_string();
@@ -677,8 +860,10 @@ mod tests {
         let holdings = source.holdings().expect("holdings pull succeeds");
         assert_eq!(holdings.positions.len(), 1);
         assert_eq!(holdings.cash, 10_000.0);
-        // account_total is derived: Σ market value + cash.
+        // account_total is the account's reported liquidation value.
         assert_eq!(holdings.account_total, 29_500.0);
+        assert_eq!(holdings.source_rows.len(), 2);
+        assert_eq!(holdings.source_rows[1].symbol, "SWEEP");
 
         // GET-only: the paths hit are the account-list and the hash's positions — no
         // order/trading path is ever built.

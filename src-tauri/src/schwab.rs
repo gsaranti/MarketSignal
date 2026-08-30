@@ -46,9 +46,12 @@ pub struct Holdings {
     /// contract (the diff, the per-holding loop, the roll-up) consumes only these.
     pub positions: Vec<Position>,
     pub cash: f64,
-    /// Sum of position market values plus cash — the denominator for portfolio weights.
+    /// Sum of Schwab account liquidation values — the denominator for portfolio
+    /// weights. The live adapter derives it only when an account has no explicit
+    /// cash-position row and carries no liquidation value.
     pub account_total: f64,
-    /// The pre-normalization per-source rows, retained for display and audit
+    /// The pre-normalization per-source rows, retained for display and audit,
+    /// including any explicit cash rows the live adapter folded into [`Holdings::cash`]
     /// (`docs/schwab-integration.md` §What is pulled). Empty on a snapshot assembled
     /// before normalization existed (`#[serde(default)]`) and on a not-yet-normalized
     /// pull.
@@ -113,8 +116,8 @@ impl Holdings {
                 );
             }
         }
-        // The book's own sums — cash across accounts and the account total the
-        // live adapter derives from every position plus cash — are as
+        // The book's own sums — reconciled cash across accounts and the account
+        // total the live adapter reads or safely derives — are as
         // unbounded as a lot's, and persist on the run's holdings and the
         // standalone snapshot as required floats (Codex I16, round 1).
         if !(self.cash.is_finite() && self.account_total.is_finite()) {

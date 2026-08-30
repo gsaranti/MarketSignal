@@ -5499,10 +5499,10 @@ mod tests {
         // under another shape, and the gate refuses with its reason rather than
         // loud-skipping every row and offering a resume that restores nothing
         // (Codex I17 / I18, ruled 2026-08-29) — the immediately prior
-        // `checkpoint-v3`, whose overlay rows carry no reporting span (Review
-        // 2 N1), and the `v1` shape alike.
+        // `checkpoint-v6`, whose pinned holdings can carry the old double-counted
+        // cash denominator (Review 2 M21), and the `v1` shape alike.
         let mut drifted = cp.clone();
-        drifted.header.checkpoint_format_version = "checkpoint-v3".into();
+        drifted.header.checkpoint_format_version = "checkpoint-v6".into();
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("checkpoint format"), "{err}");
         let mut drifted = cp.clone();
