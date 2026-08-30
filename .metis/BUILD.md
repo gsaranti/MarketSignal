@@ -560,7 +560,11 @@ Each is easy to break by accident, so a plan should say how it honors them:
   fy`, rejects — while the competing-noun shape stays with the persisted
   excerpt for audit and the stem table's post-run calibration, a negative
   lexicon declined (ruled 2026-08-29 off the review's I19; canonical at
-  `docs/portfolio-workflow.md §Step 6e`).
+  `docs/portfolio-workflow.md §Step 6e`). Each accepted row carries the
+  prompt stamp it was admitted under (`admitted_under`), and the history is
+  never re-admitted through a later filter — a stricter contract reads the
+  stamp to tell old rows apart, never re-filters them (ruled 2026-08-29 off
+  Codex I20; the trail's shape stamp moved to `checkpoint-v3` with the row).
 - **No local-suite data compat pre-release.** The dev store is wiped before
   a run, so a new persisted field is required and always written — no serde
   default, no "a record persisted before the field reads as X" branch, no
@@ -728,12 +732,11 @@ every stacked runtime confirmation at once.
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
    posture), the Priority-1/-2/-3 minors and the §A4 seed edge are
-   resolved; Codex's I20 alone (I1–I5 and I14 resolved 2026-08-28, I6–I13
-   and I15–I19 2026-08-29; I20 ruled at its addition) sits ahead of the run
-   as its own slice — the five groups cut on one code locus and one stamp
-   axis all landed 2026-08-29, the record's §Disposition owning the
-   grouping, the fresh-start-2 compat cut landed ahead of them the same
-   day; the run starts from a wiped store, so every
+   resolved, and Codex's I1–I20 with them (I1–I5 and I14 2026-08-28, the
+   rest 2026-08-29 — the five groups cut on one code locus and one stamp
+   axis, the fresh-start-2 compat cut ahead of them, and I20 last as its
+   own slice, the record's §Disposition owning the grouping), so nothing
+   sits ahead of the run; the run starts from a wiped store, so every
    holding is a debut and every read against a prior is a run-2 watch, a
    second run following only on the user's decision after run 1's result;
    and the user names the launch session at its start. Its checklist is

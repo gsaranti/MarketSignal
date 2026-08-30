@@ -199,6 +199,7 @@ build status lives in `BUILD.md`.*
 - Evidence events — portfolio-analysis.md §Starting parameters
 - Portfolio pre-profit execution / financing overlay — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g; data-sources.md §Portfolio Analysis — endpoint surface; storage.md §Local Analysis Suite Storage
 - Pre-profit observation source excerpt (the §Step 6e statement is canonical) — portfolio-workflow.md §Step 6e, §Step 6d; portfolio-analysis.md §Starting parameters; storage.md §Local Analysis Suite Storage
+- Pre-profit observation admission stamp (the §Step 6e statement is canonical) — portfolio-workflow.md §Step 6e; portfolio-analysis.md §Starting parameters; storage.md §Local Analysis Suite Storage; BUILD.md §Standing constraints
 - Guidance vintage policy (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6d, §Step 6e; storage.md §Local Analysis Suite Storage
 - Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 7; storage.md §Local Analysis Suite Storage
 - Portfolio hard-forensic outcome — portfolio-analysis.md §Portfolio action, §Starting parameters; portfolio-workflow.md §Step 6g; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
