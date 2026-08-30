@@ -54,6 +54,33 @@ pub struct ShortInterestFile {
     pub by_symbol: HashMap<String, ShortInterestRead>,
 }
 
+impl ShortInterestFile {
+    /// Look up an account symbol using FINRA's reporting key convention.
+    ///
+    /// FINRA instructs reporters to remove spaces and special characters from
+    /// issue symbols, so broker spellings such as Schwab's `BRK/B` must resolve
+    /// against the consolidated file's `BRKB` key. The account-owned symbol is
+    /// not rewritten; normalization is confined to this adapter boundary.
+    pub fn lookup(&self, account_symbol: &str) -> Option<&ShortInterestRead> {
+        let key = finra_symbol_key(account_symbol);
+        if key.is_empty() {
+            None
+        } else {
+            self.by_symbol.get(&key)
+        }
+    }
+}
+
+/// FINRA short-interest reporting accepts uppercase issue symbols after all
+/// spaces and special characters have been removed.
+fn finra_symbol_key(symbol: &str) -> String {
+    symbol
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
 /// Live FINRA short-interest adapter. Keyless; no execution-gate presence.
 pub struct FinraDataSource {
     http: reqwest::blocking::Client,
@@ -321,6 +348,27 @@ mod tests {
         assert_eq!(thin.previous_short_interest, None);
         assert_eq!(thin.average_daily_volume, None);
         assert_eq!(thin.days_to_cover, None);
+    }
+
+    #[test]
+    fn lookup_uses_finras_separator_free_symbol_key_without_rewriting_identity() {
+        let read = ShortInterestRead {
+            settlement_date: "2026-07-31".into(),
+            current_short_interest: 10_000.0,
+            previous_short_interest: Some(9_000.0),
+            average_daily_volume: Some(2_000.0),
+            days_to_cover: Some(5.0),
+        };
+        let file = ShortInterestFile {
+            settlement_date: "2026-07-31".into(),
+            by_symbol: HashMap::from([("BRKB".into(), read.clone())]),
+        };
+
+        assert_eq!(file.lookup("BRK/B"), Some(&read));
+        assert_eq!(file.lookup("brk.b"), Some(&read));
+        assert_eq!(file.lookup("BRK B"), Some(&read));
+        assert_eq!(file.lookup("BRK/A"), None);
+        assert_eq!(file.lookup("///"), None);
     }
 
     #[test]

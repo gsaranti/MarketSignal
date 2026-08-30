@@ -1841,7 +1841,7 @@ fn run_analysis(
         let short_interest = if is_stock && !skip_retrieval {
             short_interest_file
                 .as_ref()
-                .and_then(|f| f.by_symbol.get(&position.symbol.to_ascii_uppercase()))
+                .and_then(|f| f.lookup(&position.symbol))
                 .cloned()
         } else {
             None
