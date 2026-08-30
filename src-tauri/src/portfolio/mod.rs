@@ -2005,7 +2005,12 @@ pub struct HoldingAudit {
 /// old/new pair, rule-demoted actions keep their provenance in continuity and
 /// retrospective context, and action tax framing follows the investor profile
 /// (Review 2 M17 / M19 / M20).
-pub const PROMPT_VERSION: &str = "portfolio-v29";
+///
+/// `portfolio-v30`: leading-indicator validation accepts grounded percentage
+/// renders and ISO month precision, forensic issuer fields accept their typed
+/// one-word identity, and research prompts state the four-id seed-lineage cap
+/// (Review 2 M24–M27).
+pub const PROMPT_VERSION: &str = "portfolio-v30";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

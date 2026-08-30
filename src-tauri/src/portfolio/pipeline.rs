@@ -8523,8 +8523,9 @@ mod tests {
         // M5 / Q4 fund-classification contract moved it to v27; M14's
         // industry-routed commodity context moved it to v28; M17 / M19 / M20's
         // comparison-safe delta, action-provenance, and profile-tax contract
-        // moves it to v29.
-        assert_eq!(PROMPT_VERSION, "portfolio-v29");
+        // moved it to v29; M24–M27's typed-channel validation and seed-lineage
+        // contract moves it to v30.
+        assert_eq!(PROMPT_VERSION, "portfolio-v30");
     }
 
     #[test]

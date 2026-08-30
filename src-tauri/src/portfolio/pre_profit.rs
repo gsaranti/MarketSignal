@@ -1107,6 +1107,83 @@ pub(crate) fn value_in_text(value: f64, text: &str) -> bool {
     !value_stated_in(value, &haystack, 0..len).is_empty()
 }
 
+/// Whether a decimal fraction is stated as a percentage in source text. The
+/// page's numeric token is parsed first and divided by 100, avoiding the IEEE
+/// artifact from multiplying the candidate (`0.29 * 100.0` is
+/// `28.999999999999996`). The comparison allows only a small floating-point
+/// roundoff envelope, preserves the printed sign (including accounting
+/// parentheses), and requires the percent marker after the token.
+pub(crate) fn fraction_percent_in_text(value: f64, text: &str) -> bool {
+    if !value.is_finite() {
+        return false;
+    }
+    let haystack = text.replace(',', "");
+    let bytes = haystack.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let starts_digit = bytes[i].is_ascii_digit();
+        let starts_decimal = bytes[i] == b'.'
+            && i + 1 < bytes.len()
+            && bytes[i + 1].is_ascii_digit();
+        if !starts_digit && !starts_decimal {
+            i += 1;
+            continue;
+        }
+        // Do not start inside an existing digit run or after the decimal point
+        // of a number whose integer part the scanner already consumed.
+        if i > 0
+            && (bytes[i - 1].is_ascii_digit()
+                || (bytes[i - 1] == b'.'
+                    && i >= 2
+                    && bytes[i - 2].is_ascii_digit()))
+        {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        if starts_decimal {
+            i += 1;
+        }
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i < bytes.len()
+            && bytes[i] == b'.'
+            && i + 1 < bytes.len()
+            && bytes[i + 1].is_ascii_digit()
+        {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        let number_end = i;
+        let mut marker = number_end;
+        while marker < bytes.len() && bytes[marker].is_ascii_whitespace() {
+            marker += 1;
+        }
+        if marker >= bytes.len() || bytes[marker] != b'%' {
+            continue;
+        }
+        let Ok(magnitude) = haystack[start..number_end].parse::<f64>() else {
+            i = marker + 1;
+            continue;
+        };
+        let accounting_negative = start > 0
+            && bytes[start - 1] == b'('
+            && haystack[marker + 1..].starts_with(')');
+        let negative = printed_negative(&haystack, start, number_end) || accounting_negative;
+        let printed = if negative { -magnitude } else { magnitude } / 100.0;
+        let scale = printed.abs().max(value.abs());
+        let tolerance = f64::EPSILON * scale * 4.0;
+        if printed == value || (printed - value).abs() <= tolerance {
+            return true;
+        }
+        i = marker + 1;
+    }
+    false
+}
+
 /// The occurrence search behind [`value_in_text`]: `haystack` is already
 /// comma-stripped, and only an occurrence whose digits lie inside `span`
 /// counts — while the boundary and the sign are still read from the
@@ -3136,6 +3213,27 @@ mod tests {
         // Zero is unsigned.
         assert!(value_in_text(0.0, "backlog of (0)"));
         assert!(value_in_text(0.0, "backlog of 0"));
+    }
+
+    #[test]
+    fn fraction_percent_corroboration_reads_the_printed_token_not_an_ieee_product() {
+        // Ordinary decimal fractions round-trip through the page's percent
+        // token, including the 0.29 case whose direct ×100 product is
+        // 28.999999999999996 in binary floating point.
+        assert!(fraction_percent_in_text(0.29, "bookings rose 29%"));
+        assert!(fraction_percent_in_text(0.29, "bookings rose 29.00 %"));
+        assert!(fraction_percent_in_text(0.293, "bookings rose 29.3%"));
+        assert!(fraction_percent_in_text(0.005, "bookings rose .5%"));
+        assert!(!fraction_percent_in_text(0.29, "bookings rose 29.1%"));
+        assert!(!fraction_percent_in_text(0.29, "bookings rose 29 units"));
+
+        // The shared sign posture holds for a percent token too, including
+        // accounting parentheses and a range separator.
+        assert!(!fraction_percent_in_text(0.29, "bookings fell -29%"));
+        assert!(fraction_percent_in_text(-0.29, "bookings fell -29%"));
+        assert!(fraction_percent_in_text(-0.29, "bookings fell (29%)"));
+        assert!(fraction_percent_in_text(0.29, "the range was 20%-29%"));
+        assert!(!fraction_percent_in_text(-0.29, "the range was 20%-29%"));
     }
 
     #[test]

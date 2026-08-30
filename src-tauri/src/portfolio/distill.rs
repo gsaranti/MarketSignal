@@ -1366,7 +1366,8 @@ fn assumption_rejection(
 
 /// The leading indicator's app-side validation before its presence may
 /// suppress the narrative-hype ceiling: a known URL, a finite value, in-range
-/// confidence, an ISO as-of date, **third-party independence** as far as it is
+/// confidence, an ISO day- or month-precision as-of date, **third-party
+/// independence** as far as it is
 /// deterministically checkable — a host the registry classes as the issuer's
 /// own IR site is first-party by construction and rejects
 /// (`docs/portfolio-workflow.md §Step 6d` — "countable, dated, third-party") —
@@ -1392,8 +1393,15 @@ fn indicator_rejection(
     if !(0.0..=1.0).contains(&l.confidence) {
         return Some("confidence outside [0, 1]".to_string());
     }
-    if chrono::NaiveDate::parse_from_str(l.as_of.trim(), "%Y-%m-%d").is_err() {
-        return Some(format!("non-ISO as-of date {:?}", l.as_of));
+    let as_of = l.as_of.trim();
+    let day_precision = chrono::NaiveDate::parse_from_str(as_of, "%Y-%m-%d").is_ok();
+    let month_precision = as_of.len() == 7
+        && chrono::NaiveDate::parse_from_str(&format!("{as_of}-01"), "%Y-%m-%d").is_ok();
+    if !day_precision && !month_precision {
+        return Some(format!(
+            "as-of date {:?} is not ISO day or month precision (YYYY-MM-DD / YYYY-MM)",
+            l.as_of
+        ));
     }
     let host = reqwest::Url::parse(l.source_url.trim())
         .ok()
@@ -1457,11 +1465,38 @@ fn indicator_rejection(
     };
     let stated = crate::portfolio::pre_profit::value_in_text(l.value, page)
         || (l.value.abs() < 1.0
-            && crate::portfolio::pre_profit::value_in_text(l.value * 100.0, page));
+            && crate::portfolio::pre_profit::fraction_percent_in_text(l.value, page));
     if !stated {
         return Some("the cited page never states the metric's value".to_string());
     }
     None
+}
+
+/// Whether the dedicated forensic `issuer` field identifies this holding. A
+/// bare ticker is safe in this typed field (unlike arbitrary page prose), and
+/// a claimed issuer name must reduce to distinctive tokens from the resolved
+/// company name. The cited page still passes the stricter prose matcher below.
+fn issuer_field_names_holding(
+    issuer: &str,
+    symbol: &str,
+    company_name: Option<&str>,
+) -> bool {
+    let claimed_words: Vec<&str> = issuer
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    if claimed_words
+        .iter()
+        .any(|word| word.eq_ignore_ascii_case(symbol.trim()))
+    {
+        return true;
+    }
+    let known = crate::portfolio::distinctive_name_tokens(company_name);
+    let claimed = crate::portfolio::distinctive_name_tokens(Some(issuer));
+    !claimed.is_empty()
+        && claimed
+            .iter()
+            .all(|token| known.iter().any(|known| known == token))
 }
 
 /// The event-class language a fraud citation's page must contain (drafted) —
@@ -1559,7 +1594,7 @@ fn forensic_claim_rejection(
     if !(0.0..=1.0).contains(&e.confidence) {
         return Some("confidence outside [0, 1]".to_string());
     }
-    if !crate::portfolio::text_names_holding(&e.issuer, inputs.symbol, inputs.company_name) {
+    if !issuer_field_names_holding(&e.issuer, inputs.symbol, inputs.company_name) {
         return Some(format!(
             "issuer {:?} does not identify the holding",
             e.issuer
@@ -1760,7 +1795,8 @@ fn reduce_prompt(
              a feed value) — the app validates the declaration; it never selects the rule.\n\
              - leading_indicator: a countable, dated, THIRD-PARTY leading indicator research \
              validated that the structured feeds did not carry — cite the fetched page that \
-             states the metric's value, never the issuer's own site, and set \
+             states the metric's value, never the issuer's own site; set as_of to an ISO day \
+             or month (YYYY-MM-DD / YYYY-MM), preserving the source's available precision, and set \
              confirms_driver_id to the [id] of the ledger key driver it confirms from the \
              LEDGER KEY DRIVERS list (an unknown id keeps the indicator as evidence only).\n\
              - forensic_event: a FRAUD event research surfaced, cited to a tier-0 primary \
@@ -2764,6 +2800,20 @@ mod tests {
         )]);
         let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
         assert!(out.forensic_event.is_some(), "{:?}", out.gaps);
+
+        // The typed issuer field can state the one distinctive name word or
+        // the bare ticker. Those are unambiguous here even though the stricter
+        // prose matcher still requires context on the cited page.
+        for issuer in ["Widget", "WID"] {
+            let model = ScriptDistill::new(vec![claim(
+                "fraud",
+                "https://www.sec.gov/litigation/widget",
+                issuer,
+                0.9,
+            )]);
+            let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+            assert!(out.forensic_event.is_some(), "{issuer}: {:?}", out.gaps);
+        }
     }
 
     #[test]
@@ -3022,6 +3072,46 @@ mod tests {
         let model = ScriptDistill::new(vec![indicator(-0.25)]);
         let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
         assert!(out.leading_indicator.is_some(), "{:?}", out.gaps);
+    }
+
+    #[test]
+    fn indicator_accepts_an_ordinary_fraction_percent_and_iso_month_precision() {
+        let mut research = research_one_topic();
+        research.page_texts.insert(
+            "https://reuters.com/widget".to_string(),
+            "Industry bookings rose 29% in June 2026.".to_string(),
+        );
+        let indicator = |as_of: &str| {
+            combined_body(json!({
+                "leading_indicator": {
+                    "metric_name": "industry bookings", "value": 0.29,
+                    "direction": "inflecting-up", "as_of": as_of,
+                    "source_url": "https://reuters.com/widget", "confidence": 0.8,
+                    "confirms_driver": "demand"
+                }
+            }))
+        };
+
+        let model = ScriptDistill::new(vec![indicator("2026-06")]);
+        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        assert!(out.leading_indicator.is_some(), "{:?}", out.gaps);
+        assert_eq!(out.leading_indicator.as_ref().unwrap().as_of, "2026-06");
+        assert!(
+            model.prompts()[0].contains("ISO day or month (YYYY-MM-DD / YYYY-MM)"),
+            "{}",
+            model.prompts()[0]
+        );
+
+        for invalid in ["2026-6", "June 2026", "2026"] {
+            let model = ScriptDistill::new(vec![indicator(invalid)]);
+            let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+            assert!(out.leading_indicator.is_none(), "{invalid}");
+            assert!(
+                out.gaps.iter().any(|gap| gap.contains("ISO day or month precision")),
+                "{invalid}: {:?}",
+                out.gaps
+            );
+        }
     }
 
     #[test]
