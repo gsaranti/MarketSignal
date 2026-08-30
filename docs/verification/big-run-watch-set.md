@@ -127,6 +127,10 @@ The STI-absent-reads-zero liquid-resources convention, and the YoY share-change 
 
 The first live pass: episode-debut volume at 47-position scale.
 
+On any later run where a confirmed falsifier and recommendation change coincide, the event must remain on the episode active at run start; the successor's event list stays empty for that crossing.
+A carried rule-demotion episode's calibration snapshot must show one intrinsic hurdle / DGS2 pair, never the consuming run's rate beside the carried hurdle.
+A lead-time event dated after its episode's twelve-month window must persist as post-maturity context and stay out of the derived lead-time read, never clamp to the final bar.
+
 Sector-resolution rates through the fail-soft profile read.
 
 The below-bar eligibility note — proposal statistics stay deferred behind the ≥ 30 unique holdings with matured windows bar (`outcome::PROPOSAL_ELIGIBILITY_BAR`).

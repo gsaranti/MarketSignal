@@ -236,10 +236,10 @@ pub struct FalsifierEvent {
     pub confirmed_at: String,
     /// The distinct observation the confirmation keyed on.
     pub confirmation_observation_id: String,
-    /// True when the confirmation arrived after the holding's episode had matured —
-    /// recorded onto the latest matured episode as context for the next episode,
-    /// feeding no lead-time read (that read is bounded to the matured episode's own
-    /// window).
+    /// True when the confirmation arrived after the holding's episode had
+    /// matured, or its date lies beyond that episode's twelve-month measurement
+    /// window — recorded as context for the next episode, feeding no lead-time
+    /// read (that read is bounded to the episode's own window).
     pub post_maturity: bool,
     /// Signed trading-day distance from `confirmed_at` to the first within-window
     /// close below the recorded twelve-month bear-case line: positive = the
@@ -1328,7 +1328,8 @@ fn drawdown_over(closes: &[DatedValue], entry_date: &str, w_end: NaiveDate) -> f
 /// (`anchor_close × bear ⁄ authoring_spot` — the caller's split-bridge), so the
 /// comparison is the documented absolute one: the first close below the line.
 /// Positive = confirmed before the breach; explicit `no-material-drawdown` when no
-/// such close occurs by maturity.
+/// such close occurs by maturity. A confirmation outside the window is typed
+/// post-maturity and excluded, never clamped onto the last bar.
 fn stamp_lead_times(
     events: &mut [FalsifierEvent],
     closes: &[DatedValue],
@@ -1347,15 +1348,31 @@ fn stamp_lead_times(
         {
             continue;
         }
+        let Ok(confirmed) = NaiveDate::parse_from_str(&ev.confirmed_at, "%Y-%m-%d") else {
+            // A fresh crossing is canonical ISO by construction. An old or
+            // corrupt row must not be clamped onto a real bar and turned into a
+            // fabricated lead-time observation.
+            continue;
+        };
+        if confirmed > w_end {
+            // The confirmation lies outside this episode's measurement window.
+            // Type it post-maturity so the derived read excludes it; never
+            // clamp it onto the window's last bar.
+            ev.post_maturity = true;
+            continue;
+        }
         match breach_idx {
             None => ev.no_material_drawdown = Some(true),
             Some(bi) => {
                 // The confirmation's position: the first bar at or after the
-                // confirmation date (clamped into the window).
-                let ci = window
+                // confirmation date. If the bounded series has no such bar,
+                // the distance is unobservable — never substitute its last bar.
+                let Some(ci) = window
                     .iter()
                     .position(|b| b.date.as_str() >= ev.confirmed_at.as_str())
-                    .unwrap_or(window.len().saturating_sub(1));
+                else {
+                    continue;
+                };
                 ev.lead_time_trading_days = Some(bi as i64 - ci as i64);
                 ev.no_material_drawdown = Some(false);
             }
@@ -1712,14 +1729,27 @@ pub struct PlanSummary {
 /// with no episode at all (the unseeded seam) — extend the **latest** active
 /// episode on a re-affirmation / carry / abstention, record nothing
 /// post-maturity, and attach this run's confirmed falsifier crossings to the
-/// latest active episode (the latest matured episode, typed post-maturity, when
-/// none is active).
+/// active episode that stood at run start and carried the evaluated condition
+/// (the debut episode when no predecessor existed; the latest matured episode,
+/// typed post-maturity, when none is active).
 pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>) -> PlanSummary {
     let mut summary = PlanSummary {
         opened: Vec::new(),
         extended: Vec::new(),
         changed: HashSet::new(),
     };
+    // Freeze the condition carrier before this run opens any successors. A
+    // confirmed crossing is produced by evaluating the standing ledger; when
+    // that same crossing moves the action and opens a new episode, selecting
+    // the latest active row after the open would attach the old condition's
+    // event to the new thesis that never carried it. Push-only planning keeps
+    // these indices stable for the attach pass below.
+    let mut crossing_carrier_at_start: HashMap<String, usize> = HashMap::new();
+    for (index, episode) in episodes.iter().enumerate() {
+        if episode.state == EpisodeState::Active {
+            crossing_carrier_at_start.insert(episode.symbol.to_ascii_uppercase(), index);
+        }
+    }
     for verdict in input.verdicts {
         let key = verdict.symbol.to_ascii_uppercase();
         let prior_v = input
@@ -1831,62 +1861,89 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                     continue;
                 };
                 let body = match &verdict.disposition {
-                    VerdictDisposition::Priced(g) => EpisodeBody::Priced(Box::new(PricedEpisode {
-                        action: g.action,
-                        snapshot: CalibrationSnapshot {
-                            sub_scores: g.sub_scores,
-                            grade: g.grade,
-                            conviction: g.conviction,
-                            risk_tier: g.risk_tier,
-                            price_targets: g.price_targets.clone(),
-                            dead_money: g.dead_money,
-                            hurdle: audit.and_then(|a| a.hurdle.clone()),
-                            dgs2: input.dgs2,
-                            authoring_spot: audit
-                                .and_then(|a| a.quick_basis.as_ref())
-                                .map(|b| b.spot),
-                            // The cap signals in force: the pre-profit overlay's
-                            // matched rules, a tripped hard-forensic rule, and a
-                            // tripped narrative-vs-reality soft rule — each an
-                            // engine-arm annotation the counterfactual re-test
-                            // needs (`docs/portfolio-analysis.md` §Outcome
-                            // learning).
-                            cap_signals: audit
-                                .and_then(|a| a.pre_profit.as_ref())
-                                .filter(|pp| pp.is_eligible())
-                                .map(|pp| pp.consequences.matched_rules.clone())
-                                .unwrap_or_default()
-                                .into_iter()
-                                .chain(
-                                    audit
-                                        .and_then(|a| a.forensic.as_ref())
-                                        .and_then(|f| f.matched_rule.clone()),
+                    VerdictDisposition::Priced(g) => {
+                        let hurdle = audit.and_then(|a| a.hurdle.clone());
+                        // Freeze the short-rate print from the SAME intrinsic
+                        // hurdle read. On a carried rule-demotion open,
+                        // `input.dgs2` is the consuming run's print while the
+                        // verdict and audit are older; pairing those vintages
+                        // makes the snapshot internally impossible. The hurdle
+                        // is defined as DGS2 + the stamped risk-tier premium, so
+                        // recover its own anchor (preserving the live print
+                        // exactly when it reproduces the stored hurdle).
+                        let hurdle_dgs2 = hurdle
+                            .as_ref()
+                            .and_then(|read| read.hurdle_rate)
+                            .and_then(|rate| {
+                                let premium = crate::portfolio::engine::tier_premium(g.risk_tier);
+                                let recovered = rate - premium;
+                                if !recovered.is_finite() {
+                                    return None;
+                                }
+                                Some(
+                                    input
+                                        .dgs2
+                                        .filter(|live| (*live + premium).to_bits() == rate.to_bits())
+                                        .unwrap_or(recovered),
                                 )
-                                .chain(
-                                    audit
-                                        .and_then(|a| a.narrative.as_ref())
-                                        .and_then(|n| n.matched_rule.clone()),
-                                )
-                                .collect(),
-                            grade_parameter_version: audit
-                                .map(|a| a.grade_parameter_version.clone()),
-                            target_parameter_version: audit
-                                .and_then(|a| a.target_meta.as_ref())
-                                .map(|t| t.parameter_version.clone()),
-                            degraded_inputs: audit
-                                .map(|a| a.degraded_inputs.clone())
-                                .unwrap_or_default(),
-                            // The two-arm freeze (v7): both arms' authored values
-                            // ride the episode so the scoreboard can score them
-                            // long after the run ages out.
-                            model_price_targets: g.model_view.price_targets.clone(),
-                            model_sub_scores: g.model_view.sub_scores,
-                            model_outlook: g.horizon_outlook,
-                            engine_outlook: g.engine_view.outlook,
-                            engine_conviction: g.engine_view.conviction,
-                            engine_action: g.engine_view.action,
-                        },
-                    })),
+                            });
+                        EpisodeBody::Priced(Box::new(PricedEpisode {
+                            action: g.action,
+                            snapshot: CalibrationSnapshot {
+                                sub_scores: g.sub_scores,
+                                grade: g.grade,
+                                conviction: g.conviction,
+                                risk_tier: g.risk_tier,
+                                price_targets: g.price_targets.clone(),
+                                dead_money: g.dead_money,
+                                hurdle,
+                                dgs2: hurdle_dgs2,
+                                authoring_spot: audit
+                                    .and_then(|a| a.quick_basis.as_ref())
+                                    .map(|b| b.spot),
+                                // The cap signals in force: the pre-profit overlay's
+                                // matched rules, a tripped hard-forensic rule, and a
+                                // tripped narrative-vs-reality soft rule — each an
+                                // engine-arm annotation the counterfactual re-test
+                                // needs (`docs/portfolio-analysis.md` §Outcome
+                                // learning).
+                                cap_signals: audit
+                                    .and_then(|a| a.pre_profit.as_ref())
+                                    .filter(|pp| pp.is_eligible())
+                                    .map(|pp| pp.consequences.matched_rules.clone())
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .chain(
+                                        audit
+                                            .and_then(|a| a.forensic.as_ref())
+                                            .and_then(|f| f.matched_rule.clone()),
+                                    )
+                                    .chain(
+                                        audit
+                                            .and_then(|a| a.narrative.as_ref())
+                                            .and_then(|n| n.matched_rule.clone()),
+                                    )
+                                    .collect(),
+                                grade_parameter_version: audit
+                                    .map(|a| a.grade_parameter_version.clone()),
+                                target_parameter_version: audit
+                                    .and_then(|a| a.target_meta.as_ref())
+                                    .map(|t| t.parameter_version.clone()),
+                                degraded_inputs: audit
+                                    .map(|a| a.degraded_inputs.clone())
+                                    .unwrap_or_default(),
+                                // The two-arm freeze (v7): both arms' authored values
+                                // ride the episode so the scoreboard can score them
+                                // long after the run ages out.
+                                model_price_targets: g.model_view.price_targets.clone(),
+                                model_sub_scores: g.model_view.sub_scores,
+                                model_outlook: g.horizon_outlook,
+                                engine_outlook: g.engine_view.outlook,
+                                engine_conviction: g.engine_view.conviction,
+                                engine_action: g.engine_view.action,
+                            },
+                        }))
+                    }
                     VerdictDisposition::RoleRiskOnly(r) => {
                         EpisodeBody::RoleRiskOnly(RoleRiskEpisode {
                             action: r.action,
@@ -1961,32 +2018,45 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
             let Some(confirmed_at) = crossing.confirmed_at.clone() else {
                 continue;
             };
-            let (target, post_maturity) = {
-                // The latest active episode carries the current ledger's
-                // conditions; older still-maturing episodes' forecasts predate
-                // them. "Latest" is insertion order, like the extend target above.
-                let active = episodes
+            let key = audit.symbol.to_ascii_uppercase();
+            if input.unreadable_active_symbols.contains(&key) {
+                // The actual condition carrier is the unreadable active row.
+                // A readable predecessor and the recovery debut both carried a
+                // different ledger, so either attachment would fabricate
+                // provenance. Keep the run audit's crossing and omit only the
+                // episode-owned event whose carrier cannot be named.
+                continue;
+            }
+            let (target, post_maturity) = match crossing_carrier_at_start.get(&key).copied() {
+                // The standing active episode at run start carried the ledger
+                // whose condition was evaluated, even if this run just opened
+                // a successor because the crossing moved the recommendation.
+                Some(index) => (Some(index), false),
+                // A debut has no earlier carrier. Its normally-empty crossing
+                // set may still attach to the episode just opened; otherwise a
+                // matured-only symbol keeps the existing post-maturity form.
+                None => match episodes
                     .iter()
                     .enumerate()
-                    .rfind(|(_, e)| {
-                        e.state == EpisodeState::Active
-                            && e.symbol.eq_ignore_ascii_case(&audit.symbol)
+                    .rfind(|(_, episode)| {
+                        episode.state == EpisodeState::Active
+                            && episode.symbol.eq_ignore_ascii_case(&audit.symbol)
                     })
-                    .map(|(i, _)| i);
-                match active {
-                    Some(i) => (Some(i), false),
+                    .map(|(index, _)| index)
+                {
+                    Some(index) => (Some(index), false),
                     None => (
                         episodes
                             .iter()
                             .enumerate()
-                            .rfind(|(_, e)| {
-                                e.state == EpisodeState::Matured
-                                    && e.symbol.eq_ignore_ascii_case(&audit.symbol)
+                            .rfind(|(_, episode)| {
+                                episode.state == EpisodeState::Matured
+                                    && episode.symbol.eq_ignore_ascii_case(&audit.symbol)
                             })
-                            .map(|(i, _)| i),
+                            .map(|(index, _)| index),
                         true,
                     ),
-                }
+                },
             };
             let Some(i) = target else { continue };
             let ep = &mut episodes[i];
@@ -3001,10 +3071,21 @@ mod tests {
         let mut demoted = verdict("AAPL", Action::Hold, (0.03, 0.06));
         demoted.analyzed_at = Some(c1.to_string());
         demoted.action_source = ActionSource::RuleDemoted;
-        let s = plan_episodes(
-            &plan_input("run-2", c2, &[demoted], Some(&prior), &sector),
-            &mut episodes,
-        );
+        let demoted = vec![demoted];
+        let mut audit = audit_with_wc("AAPL", false, 0);
+        audit.hurdle = Some(HurdleRead {
+            state: HurdleState::Indeterminate,
+            hurdle_rate: Some(0.09),
+            tr_bear: Some(0.08),
+            tr_base: Some(0.10),
+            tr_bull: Some(0.12),
+            admits_new_money: true,
+        });
+        let audits = vec![audit];
+        let mut input = plan_input("run-2", c2, &demoted, Some(&prior), &sector);
+        input.audits = &audits;
+        input.dgs2 = Some(0.07);
+        let s = plan_episodes(&input, &mut episodes);
         assert_eq!(s.opened.len(), 1);
         assert!(s.opened[0].reasons.contains(&OpenReason::RuleDemotion));
         let ep = episodes.last().unwrap();
@@ -3012,6 +3093,14 @@ mod tests {
         assert_eq!(ep.action_source, ActionSource::RuleDemoted);
         // It inherited the debut episode's sector identity (no fresh profile read).
         assert_eq!(ep.sector, episodes[0].sector);
+        let EpisodeBody::Priced(priced) = &ep.body else {
+            panic!("rule-demoted priced verdict must keep a priced episode")
+        };
+        assert_eq!(priced.snapshot.hurdle, audits[0].hurdle);
+        assert!(
+            (priced.snapshot.dgs2.unwrap() - 0.04).abs() < 1e-12,
+            "the snapshot's DGS2 must be the intrinsic hurdle's 4% anchor, not the consuming run's 7% print"
+        );
     }
 
     #[test]
@@ -3218,6 +3307,57 @@ mod tests {
         assert_eq!(episodes[1].falsifier_events.len(), 1);
         // Noon UTC = the same ET day: the confirmation stamps the run's session.
         assert_eq!(episodes[1].falsifier_events[0].confirmed_at, "2026-08-18");
+    }
+
+    #[test]
+    fn a_crossing_that_opens_a_successor_stays_on_the_episode_that_carried_it() {
+        let c1 = "2026-08-04T12:00:00+00:00";
+        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let sector = HashMap::new();
+        let mut episodes = Vec::new();
+        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
+
+        // The standing Hold episode carries c-1. Its confirmation moves the
+        // recommendation to Trim in the same run, which opens the successor.
+        let c2 = "2026-08-11T12:00:00+00:00";
+        let current = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c2)];
+        let audits = vec![confirmed_crossing("obs-2", "2026-08-11")];
+        let mut input = plan_input("run-2", c2, &current, Some(&prior), &sector);
+        input.audits = &audits;
+        let summary = plan_episodes(&input, &mut episodes);
+
+        assert_eq!(summary.opened.len(), 1);
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(episodes[0].falsifier_events.len(), 1);
+        assert!(
+            episodes[1].falsifier_events.is_empty(),
+            "the successor never carried the crossed condition"
+        );
+        assert_eq!(episodes[0].falsifier_events[0].condition_id, "c-1");
+    }
+
+    #[test]
+    fn a_crossing_with_an_unreadable_carrier_is_not_grafted_onto_recovery() {
+        let c1 = "2026-08-04T12:00:00+00:00";
+        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let sector = HashMap::new();
+        let mut episodes = Vec::new();
+        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
+
+        let c2 = "2026-08-11T12:00:00+00:00";
+        let current = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
+        let audits = vec![confirmed_crossing("obs-2", "2026-08-11")];
+        let mut input = plan_input("run-2", c2, &current, Some(&prior), &sector);
+        input.audits = &audits;
+        input.unreadable_active_symbols.insert("AAPL".into());
+        let summary = plan_episodes(&input, &mut episodes);
+
+        assert_eq!(summary.opened.len(), 1, "the recovery episode still opens");
+        assert_eq!(episodes.len(), 2);
+        assert!(
+            episodes.iter().all(|episode| episode.falsifier_events.is_empty()),
+            "neither the readable predecessor nor recovery debut carried the unreadable row's condition"
+        );
     }
 
     #[test]
@@ -4649,6 +4789,49 @@ mod tests {
         let reads = derive_reads(&episodes);
         assert_eq!(reads.falsifier_lead_times.len(), 1);
         assert!(reads.falsifier_lead_times[0].no_material_drawdown);
+    }
+
+    #[test]
+    fn a_confirmation_after_the_episode_window_is_never_clamped_to_its_last_bar() {
+        let mut events = vec![FalsifierEvent {
+            condition_id: "c-1".into(),
+            confirmed_at: "2026-06-03".into(),
+            confirmation_observation_id: "obs-late".into(),
+            post_maturity: false,
+            lead_time_trading_days: None,
+            no_material_drawdown: None,
+        }];
+        let closes = bars(&[
+            ("2025-06-03", 100.0),
+            ("2026-01-15", 55.0),
+            ("2026-06-01", 70.0),
+        ]);
+        stamp_lead_times(
+            &mut events,
+            &closes,
+            "2025-06-03",
+            NaiveDate::from_ymd_opt(2026, 6, 2).unwrap(),
+            60.0,
+        );
+        let event = &events[0];
+        assert!(event.post_maturity);
+        assert!(event.lead_time_trading_days.is_none());
+        assert!(event.no_material_drawdown.is_none());
+
+        // A malformed old row is excluded too, but is not falsely typed as a
+        // known post-window date.
+        events[0].confirmed_at = "later".into();
+        events[0].post_maturity = false;
+        stamp_lead_times(
+            &mut events,
+            &closes,
+            "2025-06-03",
+            NaiveDate::from_ymd_opt(2026, 6, 2).unwrap(),
+            60.0,
+        );
+        assert!(!events[0].post_maturity);
+        assert!(events[0].lead_time_trading_days.is_none());
+        assert!(events[0].no_material_drawdown.is_none());
     }
 
     #[test]

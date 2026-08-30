@@ -1415,7 +1415,8 @@ Outcome learning has two halves that share one unit, the **decision episode** �
 - **Logic**
   - Tag net alignment from the holdings diff — only for still-untagged episodes anchored to the immediately-prior run (that diff observed only that move); nothing is tagged on a first run.
   - Mature any window labels whose dates have arrived, including for symbols no longer held.
-  - Each matured (scored) label measures, from split-adjusted daily closes: the price-only return (the always-present cross-entry common basis) and the maximum drawdown, plus — each recorded with a typed gap when its source is missing — the dividend-inclusive total return (the primary basis) and the price-only spreads vs the market (`^GSPC`) and the entry-stamped sector; on the 12-month window a confirmed ledger falsifier attached to its still-active episode (not one that landed post-maturity), whose bear-line basis resolves, additionally carries its signed trading-day lead time to the first close below that line, or `no-material-drawdown`.
+  - Each matured (scored) label measures, from split-adjusted daily closes: the price-only return (the always-present cross-entry common basis) and the maximum drawdown, plus — each recorded with a typed gap when its source is missing — the dividend-inclusive total return (the primary basis) and the price-only spreads vs the market (`^GSPC`) and the entry-stamped sector; on the 12-month window a confirmed ledger falsifier attached to the episode that carried its condition at run start (not one that landed post-maturity), whose bear-line basis resolves, additionally carries its signed trading-day lead time to the first close below that line, or `no-material-drawdown`.
+    A same-run successor never steals its predecessor's crossing, and a confirmation dated after the episode window is typed post-maturity and excluded rather than clamped onto the final bar.
   - A failed price refresh leaves the label pending while inside the coverage grace; past the grace it closes as a typed unscorable label rather than staying pending. A failed dividend pull instead degrades to a price-only label, never blocking maturation. The series admits usable closes only; a covered window whose price arithmetic does not finish finite takes the same pending-then-typed-close path, and a benchmark leg that does not finish finite reads unavailable with its gap (`docs/portfolio-analysis.md` §Outcome learning).
   - Append or extend this run's decision episodes — the run's episode-creation step: open a new episode when a holding's recommendation state changed since the prior run (a verdict-branch flip or an action change), otherwise extend the still-active episode.
   - A holding's first analysis opens a debut episode; an abstention extends the standing episode without opening one; a reaffirmation after the episode has matured records nothing.
@@ -1460,7 +1461,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - Anchor date.
   - Intrinsic-analysis vintage.
   - The action.
-  - Decision-time calibration snapshot (priced branch only): both arms' targets, sub-scores, outlook, and conviction, plus the engine arm's grade, hurdle, dead-money, and cap signals.
+  - Decision-time calibration snapshot (priced branch only): both arms' targets, sub-scores, outlook, and conviction, plus the engine arm's grade, hurdle, dead-money, and cap signals; its DGS2 print is recovered from that same intrinsic hurdle and risk-tier premium on a carried rule-demotion open, never borrowed from the consuming run.
   - Sector identity for later benchmark comparison.
   - Grade and target parameter versions.
   - `model-chosen` or `rule-demoted` action source.
