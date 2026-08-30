@@ -15,7 +15,7 @@
 //! producer after discharging both recorded obligations: the holding-identity
 //! cross-check and source-text corroboration run per row over the loop's
 //! fetched-page lineage ([`validate_against_source`]), and reported periods
-//! normalize to one ISO-period-end convention before the dedup key is taken
+//! normalize to an ISO end plus an explicit span before the dedup key is taken
 //! ([`normalize_period`]). Distillation emits typed observation rows for an
 //! overlay-eligible stock; an unevidenced call still rejects every candidate.
 
@@ -70,8 +70,11 @@ const ECONOMICS_MARGIN_DROP_PP: f64 = 0.05;
 /// same-vintage conflict on either side drops the period; a v2 read could
 /// pair a results release's restated guidance against its own actual and
 /// selected among revisions by persistence order, so a v2 record's
-/// execution read does not mean what a v3 read means.
-pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v3";
+/// execution read does not mean what a v3 read means. `pre-profit-v4`: the
+/// reporting span is part of the comparison identity, so a full-year or
+/// half-year bound can never attain against a quarter ending on the same day,
+/// nor can unlike spans discharge one another's backfill depth.
+pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v4";
 
 /// The cap on a row's quoted source excerpt (drafted): the excerpt is a
 /// locator — the page's own sentence that states the value — never a page,
@@ -195,6 +198,23 @@ pub enum ObservationPolarity {
     TargetBand,
 }
 
+/// The duration or instant one observation covers. The period end alone is
+/// not a period: a quarter, half, and full year can all end on the same date.
+/// `Unknown` remains admissible as sourced audit context but never enters a
+/// guidance-vs-actual comparison.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum PeriodSpan {
+    Quarter,
+    HalfYear,
+    FullYear,
+    YearToDate,
+    PointInTime,
+    Unknown,
+}
+
 /// One operating observation as the model offers it — the 6d wire row and the
 /// pre-admission candidate (`docs/portfolio-workflow.md` §Step 6d). The model
 /// may extract a row only from source text that states the value; validation
@@ -213,6 +233,9 @@ pub struct ObservationCandidate {
     /// producer row to one convention per issuer (ISO period end preferred)
     /// before validation takes the dedup key.
     pub period: String,
+    /// The duration represented by [`Self::period`]. Guidance and actuals pair
+    /// only inside one exact, non-unknown span.
+    pub period_span: PeriodSpan,
     pub issuer_scope: String,
     pub source_url: String,
     /// The page's own sentence that states the value, quoted verbatim — the
@@ -227,7 +250,7 @@ pub struct ObservationCandidate {
     pub confidence: f64,
 }
 
-/// One app-validated operating observation in the overlay's period-keyed
+/// One app-validated operating observation in the overlay's period-end-and-span-keyed
 /// history — the research leg's only entry into the overlay: a candidate the
 /// admission contract accepted, carrying the prompt stamp it was admitted
 /// under. The fields mirror [`ObservationCandidate`] one for one; only the
@@ -241,6 +264,8 @@ pub struct PreProfitObservation {
     pub units: String,
     /// See [`ObservationCandidate::period`].
     pub period: String,
+    /// See [`ObservationCandidate::period_span`].
+    pub period_span: PeriodSpan,
     pub issuer_scope: String,
     pub source_url: String,
     /// See [`ObservationCandidate::source_excerpt`].
@@ -260,23 +285,42 @@ pub struct PreProfitObservation {
     pub admitted_under: String,
 }
 
-/// The normalized metric identity misses group under: kind + units + issuer
-/// scope (`docs/portfolio-analysis.md` §Starting parameters — "the same
-/// normalized metric identity, issuer scope / perimeter, and units").
-fn identity_of(metric_kind: MetricKind, units: &str, issuer_scope: &str) -> (String, String, String) {
+/// The normalized comparison identity misses group under: kind + units +
+/// issuer scope + reporting span (`docs/portfolio-analysis.md` §Starting
+/// parameters). Keeping span in the identity prevents annual and quarterly
+/// rows sharing one end date from combining anywhere downstream.
+type ObservationIdentity = (String, String, String, PeriodSpan);
+
+fn identity_of(
+    metric_kind: MetricKind,
+    units: &str,
+    issuer_scope: &str,
+    period_span: PeriodSpan,
+) -> ObservationIdentity {
     (
         metric_kind.as_str().to_string(),
         units.trim().to_ascii_lowercase(),
         issuer_scope.trim().to_ascii_lowercase(),
+        period_span,
     )
 }
 
-/// The dedup key's shape: the identity, the role, the period, the source URL,
-/// the publication date, and the value's bit pattern.
-type DedupKey = (String, String, String, ObservationRole, String, String, String, u64);
+/// The dedup key's shape: the identity (including span), the role, the period
+/// end, the source URL, the publication date, and the value's bit pattern.
+type DedupKey = (
+    String,
+    String,
+    String,
+    PeriodSpan,
+    ObservationRole,
+    String,
+    String,
+    String,
+    u64,
+);
 
 /// The dedup key (`docs/storage.md` — "deduplicated by issuer + normalized
-/// metric identity + role + period + source URL + publication date +
+/// metric identity + span + role + period end + source URL + publication date +
 /// value"). A duplicate is the same fact re-offered — the same source
 /// stating the same value on the same date; a same-source revision (a new
 /// date and value) or a same-page conflict (one date, two values) is a
@@ -293,13 +337,15 @@ fn dedup_key_of(
     metric_kind: MetricKind,
     units: &str,
     issuer_scope: &str,
+    period_span: PeriodSpan,
     observation_role: ObservationRole,
     period: &str,
     source_url: &str,
     published_at: &str,
     numeric_value: f64,
 ) -> DedupKey {
-    let (kind, units, scope) = identity_of(metric_kind, units, issuer_scope);
+    let (kind, units, scope, span) =
+        identity_of(metric_kind, units, issuer_scope, period_span);
     let published = published_date(published_at)
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| published_at.trim().to_string());
@@ -307,6 +353,7 @@ fn dedup_key_of(
         kind,
         units,
         scope,
+        span,
         observation_role,
         period.trim().to_string(),
         source_url.trim().to_string(),
@@ -327,6 +374,7 @@ impl ObservationCandidate {
             numeric_value: self.numeric_value,
             units: self.units,
             period: self.period,
+            period_span: self.period_span,
             issuer_scope: self.issuer_scope,
             source_url: self.source_url,
             source_excerpt: self.source_excerpt,
@@ -341,6 +389,7 @@ impl ObservationCandidate {
             self.metric_kind,
             &self.units,
             &self.issuer_scope,
+            self.period_span,
             self.observation_role,
             &self.period,
             &self.source_url,
@@ -352,8 +401,13 @@ impl ObservationCandidate {
 
 impl PreProfitObservation {
     /// See [`identity_of`].
-    pub(crate) fn identity(&self) -> (String, String, String) {
-        identity_of(self.metric_kind, &self.units, &self.issuer_scope)
+    pub(crate) fn identity(&self) -> ObservationIdentity {
+        identity_of(
+            self.metric_kind,
+            &self.units,
+            &self.issuer_scope,
+            self.period_span,
+        )
     }
 
     fn dedup_key(&self) -> DedupKey {
@@ -361,6 +415,7 @@ impl PreProfitObservation {
             self.metric_kind,
             &self.units,
             &self.issuer_scope,
+            self.period_span,
             self.observation_role,
             &self.period,
             &self.source_url,
@@ -387,7 +442,7 @@ pub fn backfill_required(current: &PreProfitOverlay, prior: Option<&PreProfitOve
         return true;
     }
     use std::collections::{HashMap, HashSet};
-    type Identity = (String, String, String);
+    type Identity = ObservationIdentity;
     let mut guided: HashSet<Identity> = HashSet::new();
     let mut bounds: HashMap<Identity, HashSet<&str>> = HashMap::new();
     let mut actuals: HashMap<Identity, HashSet<&str>> = HashMap::new();
@@ -440,6 +495,8 @@ pub struct BackfillAttempt {
     pub metric_kind: MetricKind,
     pub units: String,
     pub issuer_scope: String,
+    /// The exact reporting span this attempt tried to fill.
+    pub period_span: PeriodSpan,
     pub checked_periods: Vec<String>,
     pub sources: Vec<String>,
     pub coverage: BackfillCoverage,
@@ -478,6 +535,7 @@ pub struct ExecutionMiss {
     pub units: String,
     pub issuer_scope: String,
     pub period: String,
+    pub period_span: PeriodSpan,
     /// `(bound − actual) ÷ bound`.
     pub miss_ratio: f64,
     /// The ISO date the binding guidance was published — the vintage the
@@ -538,7 +596,7 @@ pub struct OverlayConsequences {
 
 /// The complete persisted overlay record — computed for **every priced stock** (the
 /// eligibility result persists even when the stock does not enter), carried on the
-/// holding's audit row so the period-keyed observation history survives run
+/// holding's audit row so the period-end-and-span-keyed observation history survives run
 /// retention and the selective-carry path (`docs/storage.md §Local Analysis Suite
 /// Storage`). States and consequences are meaningful only under
 /// `eligibility == Eligible`.
@@ -556,7 +614,7 @@ pub struct PreProfitOverlay {
     /// economics deterioration, material dilution}, at least one an execution-miss
     /// or economics leg — financing plus dilution alone cannot manufacture it.
     pub severe_deterioration: bool,
-    /// The period-keyed validated observation history (merged, deduplicated).
+    /// The period-end-and-span-keyed validated observation history.
     pub observations: Vec<PreProfitObservation>,
     pub rejected: Vec<RejectedObservation>,
     pub backfill_attempts: Vec<BackfillAttempt>,
@@ -578,7 +636,7 @@ impl PreProfitOverlay {
 /// rule consequences. This unevidenced form rejects every candidate row (the
 /// Step-6b pass runs it over the carried history alone; live research rows
 /// enter through [`compute_overlay_with_sources`]). `prior` carries the
-/// previous run's overlay so the period-keyed observation history accumulates
+/// previous run's overlay so the period-end-and-span-keyed history accumulates
 /// across runs (`docs/storage.md` — "continuity evidence for the holding").
 pub fn compute_overlay(
     fin: &CompanyFinancials,
@@ -983,6 +1041,46 @@ pub fn normalize_period(period: &str) -> String {
     p.to_string()
 }
 
+/// Where a period label itself declares a span, require the typed span to say
+/// the same thing. ISO-only labels deliberately carry no inference: fiscal
+/// calendars and point-in-time facts need the producer's explicit field.
+fn validate_period_span_label(period: &str, span: PeriodSpan) -> Result<(), String> {
+    let up = period.trim().to_ascii_uppercase();
+    let tokens: Vec<&str> = up
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let declared = if tokens.contains(&"YTD") {
+        Some(PeriodSpan::YearToDate)
+    } else if tokens
+        .iter()
+        .any(|t| matches!(*t, "Q1" | "Q2" | "Q3" | "Q4"))
+    {
+        Some(PeriodSpan::Quarter)
+    } else if tokens.iter().any(|t| matches!(*t, "H1" | "H2")) {
+        Some(PeriodSpan::HalfYear)
+    } else if tokens.contains(&"FY")
+        || tokens.iter().any(|t| {
+            t.len() == 6
+                && t.starts_with("FY")
+                && t[2..].chars().all(|c| c.is_ascii_digit())
+        })
+        || (tokens.len() == 1
+            && tokens[0].len() == 4
+            && tokens[0].chars().all(|c| c.is_ascii_digit()))
+    {
+        Some(PeriodSpan::FullYear)
+    } else {
+        None
+    };
+    match declared {
+        Some(declared) if declared != span => Err(format!(
+            "period {period:?} declares span {declared:?}, not {span:?}"
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn month_end(year: i32, month: u32) -> Option<String> {
     let first = chrono::NaiveDate::from_ymd_opt(year, month, 1)?;
     let next = if month == 12 {
@@ -1024,11 +1122,11 @@ fn value_stated_in(
     let magnitude = value.abs();
     // An integer value matches either render ("41" or "41.0") — the boundary
     // rules below would otherwise reject "41" against a printed "41.0".
-    let needles: Vec<String> = if magnitude.fract() == 0.0 && magnitude < 1e15 {
-        vec![format!("{}", magnitude as i64), format!("{}.0", magnitude as i64)]
+    let rendered = format!("{magnitude}");
+    let needles: Vec<String> = if magnitude.fract() == 0.0 {
+        vec![rendered.clone(), format!("{rendered}.0")]
     } else {
-        let s = format!("{magnitude}");
-        vec![s.trim_end_matches('0').trim_end_matches('.').to_string()]
+        vec![rendered]
     };
     let wants_negative = value < 0.0;
     let unsigned = value == 0.0;
@@ -1159,13 +1257,14 @@ fn value_stated_in_excerpt(value: f64, page: &str, excerpt: &str) -> ExcerptRead
 }
 
 /// Whether the number occupying `haystack[start..end]` is printed negative: a
-/// minus sign (ASCII hyphen-minus or U+2212) hugging the digits whose own left
+/// minus sign (ASCII hyphen-minus, U+2212, or U+2013 en dash) hugging the
+/// digits whose own left
 /// neighbour is neither a digit nor a percent sign nor a closing parenthesis
 /// (`of -41` is a sign; `40-45`, `40%-45%`, and a date's `-30` are
 /// separators), optionally through one currency symbol (`-$41`), or an
 /// accounting parenthesis pair wrapping exactly the number (`(41)`, never
-/// `(41 units)`). A spaced hyphen (`40 - 45`) and an en dash never read as a
-/// sign, so a range's upper endpoint stays a positive statement.
+/// `(41 units)`). A spaced sign (`40 - 45`) never reads as a sign, and the
+/// left-neighbour guard keeps a hugging en-dash range (`40–45`) positive.
 fn printed_negative(haystack: &str, start: usize, end: usize) -> bool {
     let mut before = haystack[..start].chars().rev();
     let mut prev = before.next();
@@ -1173,7 +1272,7 @@ fn printed_negative(haystack: &str, start: usize, end: usize) -> bool {
         prev = before.next();
     }
     match prev {
-        Some('-' | '−') => !before
+        Some('-' | '−' | '–') => !before
             .next()
             .is_some_and(|c| c.is_ascii_digit() || matches!(c, '%' | ')')),
         Some('(') => haystack[end..].starts_with(')'),
@@ -1524,8 +1623,9 @@ fn validate_against_source(
 
 /// Validate candidate rows against the typed contract, rejecting with a reason;
 /// duplicates of stored history (or of an earlier candidate in the same batch) are
-/// rejected rather than silently dropped. Periods normalize to the one-per-issuer
-/// convention before the dedup key is taken. With `evidence` present the two
+/// rejected rather than silently dropped. Period labels are checked against
+/// their typed span, then normalize to the ISO-end-plus-span convention before
+/// the dedup key is taken. With `evidence` present the two
 /// activation legs run per row; **without it every candidate is rejected** —
 /// the producer's rows can only enter through the research loop's lineage.
 /// An accepted row is stamped at acceptance with the prompt version whose
@@ -1541,6 +1641,10 @@ pub fn validate_observations(
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
     for mut candidate in candidates {
+        if let Err(reason) = validate_period_span_label(&candidate.period, candidate.period_span) {
+            rejected.push(RejectedObservation { observation: candidate, reason });
+            continue;
+        }
         candidate.period = normalize_period(&candidate.period);
         if let Err(reason) = validate_observation(&candidate) {
             rejected.push(RejectedObservation { observation: candidate, reason });
@@ -1567,8 +1671,8 @@ pub fn validate_observations(
         if seen.contains(&key) {
             rejected.push(RejectedObservation {
                 observation: candidate,
-                reason: "duplicate of a stored observation (issuer + metric identity + role + \
-                         period + source + publication date + value)"
+                reason: "duplicate of a stored observation (issuer + metric identity + span + \
+                         role + period end + source + publication date + value)"
                     .to_string(),
             });
             continue;
@@ -1580,8 +1684,8 @@ pub fn validate_observations(
 }
 
 /// One row's **structural** validation — the legs checkable from the typed row
-/// alone: metric kind, polarity, numeric value, units, period, issuer scope,
-/// source URL, publication date, confidence.
+/// alone: metric kind, polarity, numeric value, units, period end, reporting
+/// span, issuer scope, source URL, publication date, confidence.
 ///
 /// The two once-promised activation legs — the **holding-identity cross-check**
 /// and **source-text corroboration** — are live in
@@ -1597,10 +1701,10 @@ fn validate_observation(o: &ObservationCandidate) -> Result<(), String> {
     if o.units.trim().is_empty() {
         return Err("missing units".to_string());
     }
-    // Validation sees the row AFTER `normalize_period` ran on it — the
-    // documented one-ISO-period-end-per-issuer convention has teeth only if a
-    // period that did not normalize rejects, else two rows sharing a fabricated
-    // prose period could pair into an execution miss.
+    // Validation sees the row AFTER the raw label's span consistency check and
+    // `normalize_period` — the documented ISO-end-plus-span convention has
+    // teeth only if a period that did not normalize rejects, else two rows
+    // sharing fabricated prose could pair into an execution miss.
     if chrono::NaiveDate::parse_from_str(o.period.trim(), "%Y-%m-%d").is_err() {
         return Err(format!(
             "period {:?} did not normalize to an ISO period-end",
@@ -1648,8 +1752,8 @@ fn validate_observation(o: &ObservationCandidate) -> Result<(), String> {
     Ok(())
 }
 
-/// Merge accepted rows into the period-keyed history, sorted for stable persistence
-/// (identity, then period descending, then role).
+/// Merge accepted rows into the period-end-and-span-keyed history, sorted for stable persistence
+/// (comparison identity including span, then period descending, then role).
 pub fn merge_observations(
     mut history: Vec<PreProfitObservation>,
     accepted: Vec<PreProfitObservation>,
@@ -1752,23 +1856,26 @@ fn select_actual(rows: &[ActualRow]) -> Option<ActualRow> {
 }
 
 /// The guidance-attainment read: pair actuals against guidance lower bounds per
-/// metric identity and period under the guidance vintage policy
+/// metric-and-span identity and period end under the guidance vintage policy
 /// ([`select_bound`], [`select_actual`]), compute miss ratios, and derive the
 /// repeated / material states over each identity's latest four comparable
 /// periods.
 pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
     use std::collections::BTreeMap;
 
-    // identity → period → every candidate row: deterministic iteration via
-    // BTreeMap, the selection per period a pure function of the candidates.
+    // identity (including span) → period end → every candidate row:
+    // deterministic iteration via BTreeMap, the selection per period a pure
+    // function of the candidates.
     // Only higher-is-better rows enter (the rule's polarity guard); the bound
     // is the stated low for a range, the stated value for point guidance.
-    type Key = (String, String, String);
+    type Key = ObservationIdentity;
     let mut bounds: BTreeMap<Key, BTreeMap<String, Vec<GuidanceRow>>> = BTreeMap::new();
     let mut actuals: BTreeMap<Key, BTreeMap<String, Vec<ActualRow>>> = BTreeMap::new();
 
     for o in observations {
-        if o.polarity != ObservationPolarity::HigherIsBetter {
+        if o.polarity != ObservationPolarity::HigherIsBetter
+            || o.period_span == PeriodSpan::Unknown
+        {
             continue;
         }
         // An undatable row cannot take a vintage, so it never pairs.
@@ -1853,6 +1960,7 @@ pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
                     units: key.1.clone(),
                     issuer_scope: key.2.clone(),
                     period: (*period).clone(),
+                    period_span: key.3,
                     miss_ratio,
                     bound_published_at: bound.published.format("%Y-%m-%d").to_string(),
                     actual_published_at: actual.published.format("%Y-%m-%d").to_string(),
@@ -2058,6 +2166,7 @@ mod tests {
             numeric_value: value,
             units: "units".into(),
             period,
+            period_span: PeriodSpan::Quarter,
             issuer_scope: "company".into(),
             source_url: "https://example.com/report".into(),
             source_excerpt: format!("reported {} of {value} units", kind.as_str()),
@@ -2979,32 +3088,42 @@ mod tests {
         assert!(value_in_text(41.5, "guided to 41.5 units"));
         assert!(value_in_text(41.0, "delivered 41.0 units"));
         assert!(!value_in_text(41.0, "delivered 41.05 units"));
+        // A large integral render keeps every trailing zero. It must never
+        // collapse to the bare leading digit while building the search needle.
+        assert!(value_in_text(
+            2e15,
+            "backlog reached 2000000000000000 units"
+        ));
+        assert!(!value_in_text(2e15, "backlog reached 2 units"));
     }
 
     #[test]
     fn corroboration_reads_the_printed_sign() {
         // A positive candidate never corroborates off a negative print — a
-        // hugging minus (ASCII or U+2212), through a currency symbol, or the
+        // hugging minus (ASCII, U+2212, or U+2013), through a currency symbol, or the
         // accounting parenthesis pair — and a negative candidate never off a
         // bare or `+` print.
         assert!(!value_in_text(41.0, "(41)"));
         assert!(!value_in_text(41.0, "a loss of -41 million"));
         assert!(!value_in_text(41.0, "a loss of −41 million"));
+        assert!(!value_in_text(41.0, "a loss of –41 million"));
         assert!(!value_in_text(41.0, "a loss of -$41 million"));
         assert!(value_in_text(-41.0, "(41)"));
         assert!(value_in_text(-41.0, "(41.0)"));
         assert!(value_in_text(-41.0, "a loss of -41 million"));
         assert!(value_in_text(-41.0, "a loss of −41 million"));
+        assert!(value_in_text(-41.0, "a loss of –41 million"));
         assert!(value_in_text(-41.0, "a loss of -$41 million"));
         assert!(!value_in_text(-41.0, "delivered 41 units"));
         assert!(!value_in_text(-41.0, "delivered +41 units"));
         assert!(value_in_text(41.0, "delivered +41 units"));
-        // A hyphen between digits is a range or date separator, never a sign;
-        // a spaced hyphen and an en dash never read as signs either.
+        // A hyphen or en dash between digits is a range or date separator,
+        // never a sign; a spaced sign does not hug the upper endpoint either.
         assert!(value_in_text(45.0, "guided to 40-45 units"));
         assert!(!value_in_text(-45.0, "guided to 40-45 units"));
         assert!(value_in_text(45.0, "guided to 40 - 45 units"));
         assert!(value_in_text(45.0, "guided to 40–45 units"));
+        assert!(!value_in_text(-45.0, "guided to 40–45 units"));
         assert!(value_in_text(30.0, "the quarter ended 2026-06-30"));
         // A minus after a percent sign or a closing parenthesis is a range
         // separator too, never a sign on the upper endpoint.
@@ -3118,7 +3237,7 @@ mod tests {
     #[test]
     fn a_period_that_does_not_normalize_to_iso_rejects_the_row() {
         // Two model-authored rows sharing a fabricated prose period must never
-        // pair into an execution miss — the one-ISO-convention rule has teeth.
+        // pair into an execution miss — the ISO-end-plus-span rule has teeth.
         // The fixture pre-normalizes, so the raw spelling is put back to prove
         // validation's own normalization end to end.
         let mut good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
@@ -3150,6 +3269,45 @@ mod tests {
     }
 
     #[test]
+    fn observation_admission_rejects_a_span_label_conflict_and_dedups_with_span() {
+        let mut texts = std::collections::HashMap::new();
+        texts.insert(
+            "https://example.com/report".to_string(),
+            "$ACME reported deliveries of 100 units this period.".to_string(),
+        );
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let mut conflict =
+            observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q4");
+        conflict.period = "Q4 2026".into();
+        conflict.period_span = PeriodSpan::FullYear;
+        let (accepted, rejected) =
+            validate_observations(vec![conflict], &[], Some(&evidence));
+        assert!(accepted.is_empty());
+        assert!(rejected[0].reason.contains("declares span Quarter"));
+
+        // An ISO end does not imply a duration. Two otherwise identical rows
+        // with different declared spans are distinct facts in the history.
+        let quarter = observation(
+            MetricKind::Deliveries,
+            ObservationRole::Actual,
+            100.0,
+            "2026-12-31",
+        );
+        let annual = ObservationCandidate {
+            period_span: PeriodSpan::FullYear,
+            ..quarter.clone()
+        };
+        let (accepted, rejected) =
+            validate_observations(vec![quarter, annual], &[], Some(&evidence));
+        assert_eq!(accepted.len(), 2);
+        assert!(rejected.is_empty());
+    }
+
+    #[test]
     fn periods_normalize_to_one_iso_convention() {
         assert_eq!(normalize_period("2026-06-30"), "2026-06-30");
         assert_eq!(normalize_period("2026-06"), "2026-06-30");
@@ -3164,6 +3322,68 @@ mod tests {
         // An unrecognized form trims and stands here — structural validation
         // then rejects the non-ISO result, so it can never enter the history.
         assert_eq!(normalize_period(" thirteen weeks ended "), "thirteen weeks ended");
+    }
+
+    #[test]
+    fn explicit_period_labels_must_agree_with_the_typed_span() {
+        assert!(validate_period_span_label("Q2 2026", PeriodSpan::Quarter).is_ok());
+        assert!(validate_period_span_label("H1 2026", PeriodSpan::HalfYear).is_ok());
+        assert!(validate_period_span_label("FY2026", PeriodSpan::FullYear).is_ok());
+        assert!(validate_period_span_label("YTD Q2 2026", PeriodSpan::YearToDate).is_ok());
+        assert!(validate_period_span_label("2026-06-30", PeriodSpan::PointInTime).is_ok());
+        let err = validate_period_span_label("Q4 2026", PeriodSpan::FullYear).unwrap_err();
+        assert!(err.contains("declares span Quarter"), "{err}");
+        assert!(validate_period_span_label("FY2026", PeriodSpan::Unknown).is_err());
+    }
+
+    #[test]
+    fn unlike_period_spans_never_pair_even_when_the_end_date_matches() {
+        let annual_guide = PreProfitObservation {
+            period_span: PeriodSpan::FullYear,
+            ..admitted(observation(
+                MetricKind::Deliveries,
+                ObservationRole::GuidanceLow,
+                500_000.0,
+                "2026-Q4",
+            ))
+        };
+        let q4_actual = admitted(observation(
+            MetricKind::Deliveries,
+            ObservationRole::Actual,
+            140_000.0,
+            "2026-Q4",
+        ));
+        let read = execution_read(&[annual_guide.clone(), q4_actual.clone()]);
+        assert_eq!(read.comparable_periods, 0);
+        assert!(read.misses.is_empty());
+
+        let half_guide = PreProfitObservation {
+            period_span: PeriodSpan::HalfYear,
+            ..annual_guide.clone()
+        };
+        assert_eq!(
+            execution_read(&[half_guide, q4_actual.clone()]).comparable_periods,
+            0
+        );
+
+        let annual_actual = PreProfitObservation {
+            period_span: PeriodSpan::FullYear,
+            ..q4_actual.clone()
+        };
+        let read = execution_read(&[annual_guide.clone(), annual_actual]);
+        assert_eq!(read.comparable_periods, 1);
+        assert_eq!(read.misses.len(), 1);
+        assert_eq!(read.misses[0].period_span, PeriodSpan::FullYear);
+
+        let unknown_actual = PreProfitObservation {
+            period_span: PeriodSpan::Unknown,
+            ..q4_actual
+        };
+        assert_eq!(
+            execution_read(&[annual_guide, unknown_actual]).comparable_periods,
+            0,
+            "an unknown span stays audit context rather than pairing"
+        );
     }
 
     /// Guidance/actual pairs across four periods for one identity.
@@ -3454,12 +3674,12 @@ mod tests {
     }
 
     #[test]
-    fn the_overlay_stamp_is_pre_profit_v3() {
-        // The vintage policy changes what a persisted execution read means, so
-        // the stamp moves and the resume gate refuses a v2 trail.
-        assert_eq!(PRE_PROFIT_PARAMETER_VERSION, "pre-profit-v3");
+    fn the_overlay_stamp_is_pre_profit_v4() {
+        // Span-aware comparison changes what a persisted execution read means,
+        // so the stamp moves and the resume gate refuses a v3 trail.
+        assert_eq!(PRE_PROFIT_PARAMETER_VERSION, "pre-profit-v4");
         let overlay = compute_overlay(&burning_stock(), None, vec![]);
-        assert_eq!(overlay.parameter_version, "pre-profit-v3");
+        assert_eq!(overlay.parameter_version, "pre-profit-v4");
     }
 
     #[test]
@@ -3626,6 +3846,29 @@ mod tests {
         let mut high = rows(ObservationRole::GuidanceHigh, &periods);
         high.extend(actuals.clone());
         assert!(backfill_required(&with(high), Some(&base)));
+        // Four annual bounds cannot be discharged by four quarterly actuals
+        // ending on the same dates: span is part of the comparison identity.
+        let annual_bounds: Vec<_> = rows(ObservationRole::GuidanceLow, &periods)
+            .into_iter()
+            .map(|o| PreProfitObservation {
+                period_span: PeriodSpan::FullYear,
+                ..o
+            })
+            .collect();
+        let mut unlike_spans = annual_bounds.clone();
+        unlike_spans.extend(actuals.clone());
+        assert!(backfill_required(&with(unlike_spans), Some(&base)));
+        let annual_actuals: Vec<_> = actuals
+            .clone()
+            .into_iter()
+            .map(|o| PreProfitObservation {
+                period_span: PeriodSpan::FullYear,
+                ..o
+            })
+            .collect();
+        let mut annual_pairs = annual_bounds;
+        annual_pairs.extend(annual_actuals);
+        assert!(!backfill_required(&with(annual_pairs), Some(&base)));
         // A never-guided metric carries no obligation.
         assert!(!backfill_required(&with(actuals), Some(&base)));
         // A covered identity never discharges a thin one.
@@ -3747,6 +3990,27 @@ mod tests {
     // ---- Serde stability ----
 
     #[test]
+    fn a_backfill_attempt_requires_its_reporting_span_on_the_wire() {
+        let mut value = serde_json::json!({
+            "metric_kind": "deliveries",
+            "units": "vehicles",
+            "issuer_scope": "company",
+            "period_span": "full-year",
+            "checked_periods": ["2025-12-31", "2024-12-31"],
+            "sources": ["https://example.com/report"],
+            "coverage": "partial"
+        });
+        let decoded: BackfillAttempt = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded.period_span, PeriodSpan::FullYear);
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("period_span")
+            .unwrap();
+        assert!(serde_json::from_value::<BackfillAttempt>(value).is_err());
+    }
+
+    #[test]
     fn overlay_round_trips_through_json() {
         let overlay = compute_overlay(&burning_stock(), None, vec![]);
         let json = serde_json::to_string(&overlay).expect("serialize");
@@ -3792,6 +4056,15 @@ mod tests {
             .expect("row object")
             .remove("admitted_under")
             .expect("the stamp was written");
+        assert!(serde_json::from_value::<PreProfitOverlay>(value).is_err());
+        // The span is equally required: silently reading an old row as an
+        // arbitrary duration would recreate the cross-span pairing bug.
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("json");
+        value["observations"][0]
+            .as_object_mut()
+            .expect("row object")
+            .remove("period_span")
+            .expect("the span was written");
         assert!(serde_json::from_value::<PreProfitOverlay>(value).is_err());
     }
 

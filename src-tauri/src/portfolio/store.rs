@@ -202,8 +202,9 @@ pub struct CheckpointHeader {
 /// counters on the accumulators; `checkpoint-v2` — the deep-history and
 /// benchmark health on the row (Codex I17); `checkpoint-v3` — the admission
 /// stamp on the overlay's observation rows inside the row's audit (Codex
-/// I20).
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v3";
+/// I20); `checkpoint-v4` — the required reporting span on each observation
+/// row and derived execution miss (Review 2 N1).
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v4";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1099,7 +1100,7 @@ mod tests {
         let conn = mem();
         let run = sample_run("run-1", "2026-08-28T12:00:00+00:00");
         let mut header = checkpoint_header(&run);
-        header.checkpoint_format_version = "checkpoint-v1".into();
+        header.checkpoint_format_version = "checkpoint-v3".into();
         save_checkpoint_header(&conn, &header).unwrap();
         let acc = CheckpointAccumulators {
             sector_by_symbol: [(
@@ -1119,7 +1120,7 @@ mod tests {
         };
         save_checkpoint_progress(&conn, &run.run_id, "AAPL", &row, &acc).unwrap();
         let cp = load_checkpoint(&conn).unwrap().expect("the header loads");
-        assert_eq!(cp.header.checkpoint_format_version, "checkpoint-v1");
+        assert_eq!(cp.header.checkpoint_format_version, "checkpoint-v3");
         assert!(cp.holdings.is_empty(), "rows under another format are not read");
         assert_eq!(cp.accumulators, CheckpointAccumulators::default());
     }
@@ -1393,7 +1394,7 @@ mod tests {
         // rides with it — whatever stamp it was admitted under (Codex I20).
         use crate::portfolio::pre_profit::{
             compute_overlay, MetricKind, ObservationCandidate, ObservationPolarity,
-            ObservationRole, RejectedObservation,
+            ObservationRole, PeriodSpan, RejectedObservation,
         };
         let row = |value: f64, excerpt: &str| ObservationCandidate {
             metric_kind: MetricKind::Deliveries,
@@ -1402,6 +1403,7 @@ mod tests {
             numeric_value: value,
             units: "units".into(),
             period: "2026-06-30".into(),
+            period_span: PeriodSpan::Quarter,
             issuer_scope: "company".into(),
             source_url: "https://example.com/report".into(),
             source_excerpt: excerpt.into(),

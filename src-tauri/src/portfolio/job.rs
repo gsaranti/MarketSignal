@@ -5273,9 +5273,9 @@ mod tests {
         assert!(err.contains("evidence-floor"), "{err}");
 
         // A pre-profit parameter drift refuses too: the trail's completed
-        // holdings paired guidance under another vintage rule (Codex I4).
+        // holdings compared periods without the current span identity.
         let mut drifted = cp.clone();
-        drifted.header.pre_profit_parameter_version = "pre-profit-v2".into();
+        drifted.header.pre_profit_parameter_version = "pre-profit-v3".into();
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("pre-profit"), "{err}");
 
@@ -5283,10 +5283,10 @@ mod tests {
         // under another shape, and the gate refuses with its reason rather than
         // loud-skipping every row and offering a resume that restores nothing
         // (Codex I17 / I18, ruled 2026-08-29) — the immediately prior
-        // `checkpoint-v2`, whose overlay rows carry no admission stamp (Codex
-        // I20), and the `v1` shape alike.
+        // `checkpoint-v3`, whose overlay rows carry no reporting span (Review
+        // 2 N1), and the `v1` shape alike.
         let mut drifted = cp.clone();
-        drifted.header.checkpoint_format_version = "checkpoint-v2".into();
+        drifted.header.checkpoint_format_version = "checkpoint-v3".into();
         let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
         assert!(err.contains("checkpoint format"), "{err}");
         let mut drifted = cp.clone();

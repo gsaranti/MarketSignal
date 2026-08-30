@@ -1130,9 +1130,9 @@ pub fn analyze_holding(
         tech_ledger_falsifier: research::ledger_has_technology_falsifier(prior_ledger),
         overlay_eligible: pre_profit_overlay.as_ref().is_some_and(|o| o.is_eligible()),
         // The backfill obligation binds on the first overlay-eligible full
-        // pass, or while a previously used guidance metric has fewer than four
-        // comparable stored periods (`docs/portfolio-analysis.md` §Starting
-        // parameters).
+        // pass, or while a previously used guidance metric-and-span identity
+        // has fewer than four comparable stored periods
+        // (`docs/portfolio-analysis.md` §Starting parameters).
         pre_profit_backfill: pre_profit_overlay
             .as_ref()
             .filter(|o| o.is_eligible())
@@ -1153,7 +1153,7 @@ pub fn analyze_holding(
     // (`docs/portfolio-workflow.md` §Step 6e): the research-fed typed rows are
     // validated with the two activation legs over the loop's fetched pages
     // (holding identity + source-text corroboration — the discharged
-    // obligation), merged into the period-keyed history, and the overlay
+    // obligation), merged into the period-end-and-span-keyed history, and the overlay
     // recomputed whole; the backfill attempt's record joins where the agenda
     // required one.
     if pre_profit_overlay.as_ref().is_some_and(pre_profit::PreProfitOverlay::is_eligible)
@@ -6037,6 +6037,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_pre_profit_backfill_agenda_keeps_reporting_spans_separate() {
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let agenda = research::build_agenda(
+            &d,
+            &research::AgendaTriggers {
+                overlay_eligible: true,
+                pre_profit_backfill: true,
+                ..Default::default()
+            },
+        );
+        let topic = agenda
+            .iter()
+            .find(|t| t.key == "pre-profit-execution")
+            .expect("the eligible stock gets the pre-profit topic");
+        let backfill = topic
+            .questions
+            .iter()
+            .find(|q| q.starts_with("Backfill obligation:"))
+            .expect("the binding obligation reaches the agenda");
+        assert!(backfill.contains("exact reporting span"), "{backfill}");
+        assert!(backfill.contains("never substitute quarterly"), "{backfill}");
+    }
+
     /// A priced-fund dossier: a US equity ETF with a full sector-P/E surface.
     fn fund_dossier(fund: FundData) -> HoldingDossier {
         let mut pos = position(AssetClass::Etf);
@@ -8086,7 +8110,7 @@ mod tests {
         // period-word guard, ruled 2026-08-29) moved it again, and group 4
         // (the Codex I11 target-boundary NOTE and the I13 equity-source line
         // in the basis sentence, beside the new evaluation-state stamp) again.
-        assert_eq!(PROMPT_VERSION, "portfolio-v23");
+        assert_eq!(PROMPT_VERSION, "portfolio-v24");
     }
 
     #[test]
@@ -11678,6 +11702,7 @@ mod tests {
             numeric_value: value,
             units: "units".into(),
             period,
+            period_span: crate::portfolio::pre_profit::PeriodSpan::Quarter,
             issuer_scope: "company".into(),
             source_url: "https://example.com/ir".into(),
             source_excerpt: format!("reported deliveries of {value} units"),

@@ -1688,7 +1688,7 @@ pub struct HoldingAudit {
     /// The pre-profit execution / financing overlay record
     /// (`docs/portfolio-analysis.md` §Starting parameters) — present on every priced
     /// stock (the eligibility result persists even when the stock does not enter; the
-    /// period-keyed observation history rides here so it survives run retention and
+    /// period-end-and-span-keyed observation history rides here so it survives run retention and
     /// the selective carry). `None` on funds, `role_risk_only` holdings.
     pub pre_profit: Option<pre_profit::PreProfitOverlay>,
     /// The full hurdle read behind the verdict's three-state `dead_money` field — the
@@ -1975,7 +1975,12 @@ pub struct HoldingAudit {
 /// Step 6g writes the prompt's basis and source onto every new or superseding
 /// quantitative condition) and the sweep's withhold of a debt/equity condition
 /// stamped off its own FMP-quarterly source.
-pub const PROMPT_VERSION: &str = "portfolio-v23";
+///
+/// `portfolio-v24`: pre-profit observation rows carry a required reporting
+/// span beside their normalized period end. The 6d schema and prompt name the
+/// field, and the app rejects a span that conflicts with an explicit Q / H /
+/// FY / YTD label; an unknown span remains audit context and never pairs.
+pub const PROMPT_VERSION: &str = "portfolio-v24";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

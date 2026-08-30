@@ -169,8 +169,8 @@ pub struct AgendaTriggers {
     /// The stock entered the pre-profit overlay (eligible read).
     pub overlay_eligible: bool,
     /// The pre-profit backfill obligation binds this pass (first
-    /// overlay-eligible full pass, or a used guidance metric under four
-    /// comparable stored periods).
+    /// overlay-eligible full pass, or a used guidance metric-and-span identity
+    /// under four comparable stored periods).
     pub pre_profit_backfill: bool,
 }
 
@@ -282,7 +282,7 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
         );
         if triggers.pre_profit_backfill {
             t.questions.push(
-                "Backfill obligation: search the issuer's latest four reported periods for its principal guided operating metric(s); record which periods and sources were checked and whether coverage is complete, partial, or unscorable."
+                "Backfill obligation: search the issuer's latest four reported periods for its principal guided operating metric(s) at the exact reporting span used by that guidance; never substitute quarterly history for a half-year or full-year obligation, and record the span, periods, sources, and whether coverage is complete, partial, or unscorable."
                     .to_string(),
             );
         }

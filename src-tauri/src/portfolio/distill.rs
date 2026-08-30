@@ -449,6 +449,9 @@ fn combined_schema(role_risk: bool, overlay_eligible: bool) -> Value {
                         "numeric_value": { "type": "number" },
                         "units": { "type": "string" },
                         "period": { "type": "string" },
+                        "period_span": { "type": "string",
+                            "enum": ["quarter", "half-year", "full-year",
+                                     "year-to-date", "point-in-time", "unknown"] },
                         "issuer_scope": { "type": "string" },
                         "source_url": { "type": "string" },
                         "source_excerpt": { "type": "string" },
@@ -456,7 +459,7 @@ fn combined_schema(role_risk: bool, overlay_eligible: bool) -> Value {
                         "confidence": { "type": "number" }
                     },
                     "required": ["metric_kind", "observation_role", "polarity", "numeric_value",
-                                  "units", "period", "issuer_scope", "source_url",
+                                  "units", "period", "period_span", "issuer_scope", "source_url",
                                   "source_excerpt", "published_at", "confidence"]
                 }
             });
@@ -468,12 +471,15 @@ fn combined_schema(role_risk: bool, overlay_eligible: bool) -> Value {
                                  "reservations", "unit-economics"] },
                     "units": { "type": "string" },
                     "issuer_scope": { "type": "string" },
+                    "period_span": { "type": "string",
+                        "enum": ["quarter", "half-year", "full-year",
+                                 "year-to-date", "point-in-time", "unknown"] },
                     "checked_periods": { "type": "array", "items": { "type": "string" } },
                     "sources": { "type": "array", "items": { "type": "string" } },
                     "coverage": { "type": "string", "enum": ["complete", "partial", "unscorable"] }
                 },
-                "required": ["metric_kind", "units", "issuer_scope", "checked_periods",
-                              "sources", "coverage"]
+                "required": ["metric_kind", "units", "issuer_scope", "period_span",
+                              "checked_periods", "sources", "coverage"]
             });
             required.extend(["pre_profit_observations", "backfill"]);
         }
@@ -1778,11 +1784,17 @@ fn reduce_prompt(
                  quote a range's two endpoints joined by 'to', '-', or 'and' (the app verifies \
                  the quote against the page and the value inside it — a paraphrase, a quote \
                  trimmed to the digits, or a clause about another metric rejects the row); \
-                 published_at is the ISO date the quoted page was published — a guidance \
+                 period is the observation's ISO period end and period_span is its exact \
+                 duration (quarter / half-year / full-year / year-to-date / point-in-time, \
+                 or unknown only when the source does not establish it); never equate rows \
+                 that end on the same date but cover different spans, and an unknown span \
+                 will remain audit context rather than pair; published_at is the ISO date \
+                 the quoted page was published — a guidance \
                  row's own issue date, never the fetch date — since the app pairs guidance \
                  to actuals by vintage; the app computes every comparison.\n\
-                 - backfill: the required backfill attempt's checked periods, sources, and \
-                 coverage state, where the agenda required one.\n",
+                 - backfill: the required backfill attempt's metric, exact period_span, checked \
+                 periods, sources, and coverage state, where the agenda required one; never \
+                 answer one span's obligation with another span's history.\n",
                 crate::portfolio::pre_profit::SOURCE_EXCERPT_CAP_CHARS
             ));
         }
@@ -3154,6 +3166,7 @@ mod tests {
                 "metric_kind": "deliveries", "observation_role": "actual",
                 "polarity": "higher-is-better", "numeric_value": 12000.0,
                 "units": "vehicles", "period": "2026-06-30",
+                "period_span": "quarter",
                 "issuer_scope": "consolidated",
                 "source_url": "https://reuters.com/widget",
                 "source_excerpt": "reported deliveries of 12,000 vehicles",
@@ -3175,25 +3188,37 @@ mod tests {
     }
 
     #[test]
-    fn the_observation_row_schema_requires_the_source_excerpt() {
+    fn the_observation_row_schema_requires_the_excerpt_and_period_span() {
         // The Step-6e excerpt leg has teeth only if the schema makes the model
         // quote the sentence: a required string field on the row, and the
         // prompt line asking for it verbatim.
         let schema = combined_schema(false, true);
         let row = &schema["properties"]["pre_profit_observations"]["items"];
         assert_eq!(row["properties"]["source_excerpt"]["type"], "string");
+        assert_eq!(row["properties"]["period_span"]["type"], "string");
         let required = row["required"].as_array().expect("required list");
         assert!(required.iter().any(|f| f == "source_excerpt"));
+        assert!(required.iter().any(|f| f == "period_span"));
         // The admission stamp is app-written at acceptance (Codex I20): the
         // model's row neither carries nor requires it.
         assert!(row["properties"].get("admitted_under").is_none());
         assert!(!required.iter().any(|f| f == "admitted_under"));
+        let backfill = &schema["properties"]["backfill"];
+        assert_eq!(backfill["properties"]["period_span"]["type"], "string");
+        assert!(backfill["required"]
+            .as_array()
+            .expect("backfill required list")
+            .iter()
+            .any(|f| f == "period_span"));
         let research = research_one_topic();
         let mut ins = inputs(&research, &[], &[]);
         ins.overlay_eligible = true;
         let prompt = reduce_prompt(&ins, None, &HashMap::new(), &[]);
         assert!(prompt.contains("source_excerpt"), "{prompt}");
         assert!(prompt.contains("VERBATIM"), "{prompt}");
+        assert!(prompt.contains("period_span"), "{prompt}");
+        assert!(prompt.contains("different spans"), "{prompt}");
+        assert!(prompt.contains("never answer one span"), "{prompt}");
     }
 
     #[test]
