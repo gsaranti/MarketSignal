@@ -155,7 +155,7 @@ On run 2, inspect the persisted fiscal-period matches and confirm that the reali
 
 ## Listing and identity shapes
 
-The listing guard against real Schwab identity shapes.
+The listing guard against real Schwab identity shapes, including possessive issuers whose account description omits the apostrophe (`MCD`, `KSS`, `MCO`, `WEN`).
 Slash-notation class-share symbols read unsupported under the verbatim FMP lookup, and ticker-noise descriptions carry a false-conflict risk.
 
 Exchange codes, including B3, and OCC slash notation.

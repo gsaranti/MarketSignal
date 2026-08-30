@@ -104,10 +104,19 @@ const NAME_STOPWORDS: [&str; 34] = [
     "NV",
 ];
 
-/// Uppercased identity-bearing tokens of an issuer name: split on
-/// non-alphanumerics, corporate-form stopwords and single-character tokens dropped.
+/// Uppercased identity-bearing tokens of an issuer name: apostrophes first
+/// collapse inside the word (`McDonald's` → `MCDONALDS`), then the name splits
+/// on remaining non-alphanumerics and drops corporate-form stopwords and
+/// single-character tokens. Joining the apostrophe is both more faithful to
+/// account descriptions that omit it and more conservative across unrelated
+/// names (`O'Reilly` no longer contributes a loose `REILLY` token).
 fn significant_tokens(name: &str) -> Vec<String> {
-    name.to_ascii_uppercase()
+    let normalized: String = name
+        .to_ascii_uppercase()
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '’' | '‘' | 'ʼ'))
+        .collect();
+    normalized
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|t| t.len() > 1 && !NAME_STOPWORDS.contains(t))
         .map(String::from)
@@ -372,6 +381,39 @@ mod tests {
             ),
             ListingResolution::SupportedUs
         );
+    }
+
+    #[test]
+    fn possessive_issuer_names_match_the_account_form_without_an_apostrophe() {
+        for (symbol, schwab, canonical) in [
+            ("MCD", "MCDONALDS CORP", "McDonald's Corporation"),
+            ("KSS", "KOHLS CORP", "Kohl’s Corporation"),
+            ("MCO", "MOODYS CORP", "Moody's Corporation"),
+            ("WEN", "WENDYS CO", "Wendy’s Company"),
+        ] {
+            assert_eq!(
+                resolve_listing(symbol, schwab, &profile(canonical, "NYSE")),
+                ListingResolution::SupportedUs,
+                "{symbol}: {schwab} vs {canonical}"
+            );
+            // The comparison is symmetric with respect to which source keeps
+            // the punctuation.
+            assert!(
+                matches!(compare_names(canonical, schwab), NameComparison::Match),
+                "{symbol}: reverse comparison"
+            );
+        }
+
+        // Joining cannot create the loose suffix token the old split did:
+        // O'Reilly and an unrelated Reilly issuer remain a zero-token conflict.
+        assert!(matches!(
+            compare_names("O'Reilly Automotive", "Reilly Financial"),
+            NameComparison::Conflict
+        ));
+        assert!(matches!(
+            compare_names("Dick's Sporting Goods", "Dick Corporation"),
+            NameComparison::Conflict
+        ));
     }
 
     #[test]
