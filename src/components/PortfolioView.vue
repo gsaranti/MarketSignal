@@ -806,9 +806,9 @@ function maturedLinesFor(symbol: string): string[] {
     .map((m) => {
       const detail =
         m.total_return !== null
-          ? `total return ${(m.total_return * 100).toFixed(1)}%`
+          ? `total return ${fmtPct(m.total_return)}`
           : m.price_return !== null
-            ? `price-only ${(m.price_return * 100).toFixed(1)}%`
+            ? `price-only ${fmtPct(m.price_return)}`
             : m.outcome;
       return `${m.window_months}-mo window ${m.outcome} (${detail})`;
     });

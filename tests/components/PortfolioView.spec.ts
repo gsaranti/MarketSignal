@@ -1757,6 +1757,40 @@ describe("PortfolioView two-arm verdict", () => {
       "1-mo window scored (total return 4.2%)"
     );
   });
+
+  test("matured returns that round to zero never render signed zero", () => {
+    const wrapper = mountView({
+      run: {
+        ...run,
+        outcome: {
+          ...run.outcome,
+          matured: [
+            {
+              symbol: "AAPL",
+              episode_id: "ep-total",
+              window_months: 1,
+              outcome: "scored",
+              total_return: -0.0004,
+              price_return: -0.0003,
+            },
+            {
+              symbol: "AAPL",
+              episode_id: "ep-price",
+              window_months: 3,
+              outcome: "scored",
+              total_return: null,
+              price_return: -0.0004,
+            },
+          ],
+        },
+      },
+    });
+
+    const line = wrapper.find(".hc-scoreboard-line").text();
+    expect(line).toContain("total return 0.0%");
+    expect(line).toContain("price-only 0.0%");
+    expect(line).not.toContain("-0.0%");
+  });
 });
 
 // The 2026-08-16 badge ruling: a selective run analyzes strictly the selection.
