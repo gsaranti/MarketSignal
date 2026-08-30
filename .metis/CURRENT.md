@@ -2,54 +2,61 @@
 
 ## What happened
 
-**I20 landed** — `0fe8ee0`, pushed: the admission stamp on accepted
-pre-profit observation rows, the review record's last open finding. Ruled at
-its plan (every recommendation adopted): the axis is the trail's shape —
-`store::CHECKPOINT_FORMAT_VERSION` → `checkpoint-v3` — with `portfolio-v23`
-and `pre-profit-v3` staying (no schema, prompt or computation change; the
-stamp is app-written). Two types: `ObservationCandidate` (the eleven model
-fields; the 6d wire row and the pre-admission candidate) and
-`PreProfitObservation` (+ `admitted_under`, no serde default), built only by
-`ObservationCandidate::admit` at acceptance as `PROMPT_VERSION`;
-`RejectedObservation` holds the candidate. The stamp sits outside the dedup
-key (a re-offer is a duplicate, the first admission stands), renders
-nowhere, and is canonical at `portfolio-workflow.md` §Step 6e. One reviewer
-round (approve-with-nits, five folded, the `dedup_key_of` eight-argument
-note declined) and three Codex rounds — round 1's low ("rebuilt each run and
-never carried" overclaimed: a selective run's unselected holding carries its
-prior audit whole, rejected list included) closed as wording, rounds 2–3
-approving. **The 2026-08-24 review's finding count is zero.** This
-session-end rewrote BUILD §What remains item 1 (nothing ahead of the run),
-added the never-re-filter sentence to §Standing constraints' observation
-bullet, and gave INDEX the admission-stamp row.
+**Review 2 of the Portfolio Analysis job ran** — the blind sweep after the
+2026-08-24 review's fixes — and its record landed at
+`docs/verification/2026-08-30-portfolio-analysis-review-2.md`. Sixteen
+scoped reviewers under an independence rule (nothing under
+`docs/verification/`, `.metis/`, or git history), every finding re-verified
+against the code. **Not clean: 5 non-minor, 34 minor.** Non-minor: N1 the
+pre-profit period-span collision (`FY` / `H2` / `Q4` all normalize to
+`12-31`, so annual guidance pairs against a quarterly actual → a fabricated
+material miss and, with one more leg, severe deterioration; reachable on
+run 1); N2 the streaming transport deadline is an absolute ~22-minute total
+cap, not the idle bound the design assumes (reqwest's per-request
+`.timeout` → `TotalTimeoutBody`), so a healthy long interpretation call
+kills the run (reachable on run 1); N3 the sweep's widened EOD window feeds
+the trailing-return / volatility conditions (long carries only); N4 a
+confirmed falsifier crossing attaches to the same-run-opened episode; N5 a
+one-exchange sector-P/E snapshot accepted with no gap. Phase 2: **N2 was
+introduced by the C1 fix and N3 by the F1 fix** (not converging), N5's
+reach widened by I9, N1 and N4 pre-existing misses. INDEX gained the
+record's row. No code or other doc changed.
 
 ## Current state
 
-Nothing in flight; `main` at `0fe8ee0` plus this handoff, tree otherwise
-clean. **The queue ahead of the big confirmation run is empty** — the run
-waits only on the user naming its session at its start; never propose it.
-It starts from a wiped store: every holding is a debut, every read against
-a prior is a run-2 watch, a second run only on the user's decision after
-run 1's result. The watch set (`docs/verification/big-run-watch-set.md`)
-stamps `portfolio-v23` / `checkpoint-v3`; read `data-health` early. Carried
-untouched: the cloud `run_job` seam; negative composite yield; `progress.rs`
-poisonable locks; `ok` tracker row's dropped-count; TO logic-flow :397; the
-600 s `/api/tags` backstop; seed passes the whole prior ledger; 6g
-qualitative trips un-trip; an IPv6-loopback wire test; the audit's sources
-line not naming the equity source; the unreconciled-delete fail-soft
-sentence homed in §Starting parameters rather than §Failure posture.
+Nothing in flight; `main` at `bf58dfc` plus this session's commit. The
+record's §Disposition awaits the user's rulings on all 39 findings and its
+eight open questions (possessive issuer names → possible
+`insufficient-evidence` on MCD / KSS / MCO / WEN; `NUM_PREDICT_DISTILL`
+adequacy; statement staleness; allocation funds; FINRA class shares;
+redirect cache misses; the NTM-roll convention; the pre-open residual);
+nothing is planned or fixed. The 2026-08-27 ruling tied the big run to the
+2026-08-24 record, now at zero; whether it also waits on this record is the
+user's call — never propose the run. `BUILD.md` §What remains item 1 still
+reads "nothing sits ahead of the run" and was not updated (flagged at
+session-end). Carried untouched from before: the cloud `run_job` seam;
+negative composite yield; `progress.rs` poisonable locks; the `ok` tracker
+row's dropped-count; TO logic-flow :397; the 600 s `/api/tags` backstop;
+seed passes the whole prior ledger; 6g qualitative trips un-trip; an
+IPv6-loopback wire test; the audit's sources line; the unreconciled-delete
+fail-soft sentence's home.
 
 ## Open questions
 
-- A second run after run 1 — the user decides on run 1's result; the watch
-  set's run-2 lines (the admission stamp's first attributable read among
-  them) wait on that.
+- Does the big run wait on review 2's whole record on the 2026-08-27
+  ruling's terms, on N1 and N2 alone (the two reachable on the debut run),
+  or on nothing? The user's ruling.
+- Fix grouping — one finding per slice, or groups cut on one code locus and
+  one stamp axis as ruled 2026-08-29 — decided at planning.
+- A second run after run 1 — the user decides on run 1's result.
 
 ## Where to start
 
-`/metis-session-start`, then take the user's direction: the big run is
-launched only in a session the user opens by naming it — do not propose or
-prepare it unprompted. If named, the checklist is
-`docs/verification/big-run-watch-set.md` and the run's dated record follows
-under `docs/verification/`. Otherwise the next build work is Trade
-Opportunities (BUILD §What remains item 2), which waits behind the run.
+`/metis-session-start`, then take the user's rulings on
+`docs/verification/2026-08-30-portfolio-analysis-review-2.md` (§Non-minor,
+§Minor, §Open questions) before any plan. If fixes are ruled, N2
+(`local_model.rs` `chat_streaming`: an idle read bound, never a total cap —
+C1's premise was wrong for the per-request timeout) and N1 (a span on the
+observation row's period, or a same-span pairing rule) come first; both are
+reachable on run 1. The big run is launched only in a session the user
+opens by naming it.
