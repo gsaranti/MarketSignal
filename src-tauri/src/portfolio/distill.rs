@@ -718,24 +718,25 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
         .iter()
         .map(|p| (p.topic_key.as_str(), p))
         .collect();
-    // Fresh prior objects whose topics were NOT analyzed this run — dormant
-    // conditional topics. They join the reduce so the cross-topic
-    // reconciliation still updates any claim they share (a dormant object must
-    // never re-seed a value another topic superseded —
-    // `docs/portfolio-analysis.md` §Starting parameters), and they re-emit
-    // with their OWN vintage preserved (dormancy never re-stamps the object).
-    let analyzed_keys: HashSet<&str> = inputs
+    // "Analyzed this run" is defined once, here: a topic whose research
+    // reaches the reduce — every topic with a pass, narrowed on the
+    // hierarchical path by any topic the sub-distillation cap drops whole
+    // (below). The routing, the reduce and the reconciliation all read this
+    // one set.
+    let mut analyzed_keys: HashSet<&str> = inputs
         .research
         .topics
         .iter()
         .filter(|t| !t.passes.is_empty())
         .map(|t| t.topic_key.as_str())
         .collect();
-    let dormant_priors: Vec<&TopicDistillate> = inputs
-        .priors
-        .iter()
-        .filter(|p| !analyzed_keys.contains(p.topic_key.as_str()))
-        .collect();
+    // Fresh prior objects whose topics were NOT analyzed this run — dormant
+    // conditional topics. They join the reduce so the cross-topic
+    // reconciliation still updates any claim they share (a dormant object must
+    // never re-seed a value another topic superseded —
+    // `docs/portfolio-analysis.md` §Starting parameters), and they re-emit
+    // with their OWN vintage preserved (dormancy never re-stamps the object).
+    let dormant_priors = dormant_priors_of(inputs.priors, &analyzed_keys);
 
     // The full consolidation input's size — every topic's findings + claims,
     // plus its merged prior and the dormant priors riding the reconciliation
@@ -839,7 +840,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                 // The within-topic fallback: sub-distill along the pass seam
                 // (each pass carrying its findings AND its ledger claims),
                 // then a tree-level reduce with the bounded prior retained.
-                subdistilled_topics += 1;
                 let mut passes: Vec<&crate::portfolio::research::PassFindings> =
                     topic.passes.iter().collect();
                 // The cap fail-softs the lowest-priority whole passes (the
@@ -879,12 +879,33 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                     pass_summaries.push(body);
                 }
                 if pass_summaries.is_empty() {
+                    // The exhausted-budget edge: none of this topic's research
+                    // reaches the reduce, so for the reconciliation it was not
+                    // analyzed this run. Its prior object, where one stands,
+                    // rides the reduce as a dormant object on its own vintage
+                    // — the drop itself never names it unreconciled (a reduce
+                    // that fails to re-emit it still does, like any dormant
+                    // prior), so the seed survives the overflow; with no prior
+                    // object in the freshness window there is nothing to
+                    // retain, and a stored row past the window, if one stands,
+                    // stays inert behind the seed gate as for any dormant
+                    // topic — `pipeline` filters expired objects before
+                    // distillation sees them (ruled 2026-08-29, the 2026-08-24
+                    // review's §A4 edge; Codex round 1). The topic issued no
+                    // call, so it is not counted sub-distilled.
+                    let tail = if prior.is_some() {
+                        "its prior object rides the reduce retained on its own vintage"
+                    } else {
+                        "no prior to retain; the topic yields no object this run"
+                    };
                     gaps.push(format!(
-                        "topic {}: every pass dropped at the sub-distillation cap",
+                        "topic {}: every pass dropped at the sub-distillation cap — {tail}",
                         topic.topic_key
                     ));
+                    analyzed_keys.remove(topic.topic_key.as_str());
                     continue;
                 }
+                subdistilled_topics += 1;
                 tier1_calls += 1;
                 let prompt = tree_reduce_prompt(
                     inputs.symbol,
@@ -905,6 +926,9 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
             harvest_ties(&wire, &known, &mut ties);
             tier1_outputs.push((topic.topic_key.clone(), wire));
         }
+        // Re-read after the loop: a topic the cap dropped whole has left the
+        // analyzed set, and its prior now rides the reduce retained.
+        let dormant_priors = dormant_priors_of(inputs.priors, &analyzed_keys);
         let prompt = reduce_prompt(inputs, Some(&tier1_outputs), &prior_by_key, &dormant_priors);
         let wire: CombinedWire = call_parsed_with_retry(
             model,
@@ -925,7 +949,14 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
         )
     };
 
-    Ok(validate_combined(wire, inputs, shape, gaps, tier1_ties))
+    Ok(validate_combined(
+        wire,
+        inputs,
+        shape,
+        gaps,
+        tier1_ties,
+        &analyzed_keys,
+    ))
 }
 
 /// Record the **known** ledger ties one intermediate output's claims cited,
@@ -950,6 +981,19 @@ fn harvest_ties(
             .insert(id.to_string());
         }
     }
+}
+
+/// The prior objects riding the reduce as dormant: every stored prior whose
+/// topic is not in the analyzed set — a conditional topic that did not
+/// activate this run, or a topic the sub-distillation cap dropped whole.
+fn dormant_priors_of<'a>(
+    priors: &'a [TopicDistillate],
+    analyzed: &HashSet<&str>,
+) -> Vec<&'a TopicDistillate> {
+    priors
+        .iter()
+        .filter(|p| !analyzed.contains(p.topic_key.as_str()))
+        .collect()
 }
 
 /// A dormant prior object's contribution to the consolidation input's size.
@@ -992,7 +1036,8 @@ fn topic_input_chars(
 }
 
 /// App-side validation + reconciliation of the combined wire: topic keys must
-/// be analyzed topics, claim vintages resolve by URL (fresh wins, cached
+/// be analyzed topics (`analyzed` — the one set [`distill`] routes and reduces
+/// on) or dormant priors, claim vintages resolve by URL (fresh wins, cached
 /// expires by its own vintage), `related_condition_id` must be a known ledger
 /// condition, and every typed field must cite a known source URL. The typed
 /// fields are dropped whole on the `role_risk` branch.
@@ -1002,6 +1047,7 @@ fn validate_combined(
     shape: DistillShape,
     mut gaps: Vec<String>,
     tier1_ties: HashMap<(String, String), HashSet<String>>,
+    analyzed: &HashSet<&str>,
 ) -> DistilledResearch {
     let known_conditions: HashSet<&str> = inputs
         .ledger_conditions
@@ -1010,13 +1056,6 @@ fn validate_combined(
         .collect();
     let provenance =
         Provenance::build(inputs.research, inputs.priors, tier1_ties, &known_conditions);
-    let analyzed: HashSet<&str> = inputs
-        .research
-        .topics
-        .iter()
-        .filter(|t| !t.passes.is_empty())
-        .map(|t| t.topic_key.as_str())
-        .collect();
     // A dormant prior topic re-emits reconciled — accepted like an analyzed
     // one, but its object keeps its OWN vintage (dormancy neither
     // re-researches nor re-stamps; the object still expires on its original
@@ -1854,17 +1893,18 @@ mod tests {
         TopicResearch {
             topic_key: key.to_string(),
             title: key.to_string(),
-            conditional_reason: None,
             seeded_vintage: None,
             passes,
             skipped: None,
         }
     }
 
-    /// Scripted model: records stages, returns canned bodies in order.
+    /// Scripted model: records stages and the prompts issued to them, returns
+    /// canned bodies in order.
     struct ScriptDistill {
         bodies: Mutex<RefCell<Vec<String>>>,
         stages: Mutex<RefCell<Vec<String>>>,
+        prompts: Mutex<RefCell<Vec<String>>>,
     }
 
     impl ScriptDistill {
@@ -1874,20 +1914,26 @@ mod tests {
                     bodies.into_iter().map(|b| b.to_string()).collect(),
                 )),
                 stages: Mutex::new(RefCell::new(Vec::new())),
+                prompts: Mutex::new(RefCell::new(Vec::new())),
             }
         }
         fn stages(&self) -> Vec<String> {
             self.stages.lock().unwrap().borrow().clone()
         }
+        /// The prompts issued, in stage order.
+        fn prompts(&self) -> Vec<String> {
+            self.prompts.lock().unwrap().borrow().clone()
+        }
     }
 
     impl DistillModel for ScriptDistill {
-        fn distill_call(&self, stage: &str, _prompt: String, _schema: &Value) -> Result<String> {
+        fn distill_call(&self, stage: &str, prompt: String, _schema: &Value) -> Result<String> {
             self.stages
                 .lock()
                 .unwrap()
                 .borrow_mut()
                 .push(stage.to_string());
+            self.prompts.lock().unwrap().borrow_mut().push(prompt);
             let guard = self.bodies.lock().unwrap();
             let mut bodies = guard.borrow_mut();
             if bodies.is_empty() {
@@ -3513,5 +3559,188 @@ mod tests {
             .gaps
             .iter()
             .any(|g| g.contains("sub-distillation cap")));
+    }
+
+    /// Two overflowing topics under a budget that sub-distills both: the first
+    /// spends the whole cap (four passes, no drop), the second finds nothing
+    /// left and drops every pass. The four-pass topic is a cap-spending device
+    /// for the fixture, not the contract — the loop caps a topic at
+    /// `MAX_PASSES_PER_TOPIC` (three), so live the edge needs a third
+    /// overflowing topic to reach.
+    fn research_two_topics_second_dropped_whole() -> HoldingResearch {
+        let passes = |n: usize, url: &str| -> Vec<PassFindings> {
+            (0..n)
+                .map(|i| {
+                    pass(
+                        &format!("pass {i} findings"),
+                        vec![evidence(
+                            &format!("claim {i}"),
+                            url,
+                            "2026-08-22T10:00:00+00:00",
+                        )],
+                    )
+                })
+                .collect()
+        };
+        HoldingResearch {
+            topics: vec![
+                topic(
+                    "competitive-position",
+                    passes(SUB_DISTILLATION_CAP, "https://reuters.com/widget"),
+                ),
+                topic("catalysts-risks", passes(2, "https://reuters.com/catalyst")),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_topic_the_cap_drops_whole_rides_the_reduce_as_a_retained_prior() {
+        // The exhausted-budget edge (the 2026-08-24 review's §A4): a topic
+        // whose every pass drops at the cap yields no tier-1 object, so its
+        // stored prior rides the reduce the way a dormant prior does — under
+        // the same render, re-emitted on its OWN vintage — and the drop never
+        // names it unreconciled, so the seed survives the overflow (ruled
+        // 2026-08-29; no prompt text moves). Having issued no call, the topic
+        // is not counted sub-distilled.
+        let research = research_two_topics_second_dropped_whole();
+        let priors = vec![TopicDistillate {
+            topic_key: "catalysts-risks".into(),
+            vintage: "2026-08-10T00:00:00+00:00".into(),
+            summary: "FDA decision pending".into(),
+            claims: vec![DistilledClaim {
+                claim: "FDA decision due in Q4".into(),
+                source_url: "https://ft.com/catalyst-prior".into(),
+                vintage: "2026-08-10T00:00:00+00:00".into(),
+                cached: true,
+                related_condition_id: None,
+            }],
+        }];
+        let tier1 = json!({"summary": "s", "claims": []});
+        let final_body = combined_body(json!({
+            "topics": [
+                {"topic_key": "competitive-position", "summary": "s",
+                 "claims": [{"claim": "claim 0", "source_url": "https://reuters.com/widget"}]},
+                {"topic_key": "catalysts-risks", "summary": "FDA decision pending, reconciled",
+                 "claims": [{"claim": "FDA decision due in Q4", "source_url": "https://ft.com/catalyst-prior"}]}
+            ]
+        }));
+        let model = ScriptDistill::new(vec![
+            tier1.clone(),
+            tier1.clone(),
+            tier1.clone(),
+            tier1.clone(),
+            tier1, // the first topic's tree reduce
+            final_body,
+        ]);
+        let mut ins = inputs(&research, &priors, &[]);
+        ins.input_budget_chars = 10;
+        let out = distill(&model, &ins).unwrap();
+
+        // The dropped topic issued no call of its own, and the reduce carried
+        // its prior under the dormant render.
+        let stages = model.stages();
+        assert!(
+            stages.iter().all(|s| !s.contains("catalysts-risks")),
+            "{stages:?}"
+        );
+        let reduce_prompt = model.prompts().last().cloned().unwrap();
+        assert!(
+            reduce_prompt.contains("DORMANT PRIOR TOPIC catalysts-risks"),
+            "the retained prior rides the reduce as a dormant object:\n{reduce_prompt}"
+        );
+        assert!(reduce_prompt.contains("FDA decision due in Q4"));
+        assert_eq!(
+            out.shape,
+            DistillShape::Hierarchical {
+                tier1_calls: 1,
+                subdistilled_topics: 1,
+                dropped_passes: 2,
+            }
+        );
+        assert!(
+            out.gaps.iter().any(|g| g
+                == "topic catalysts-risks: every pass dropped at the sub-distillation cap — \
+                    its prior object rides the reduce retained on its own vintage"),
+            "{:?}",
+            out.gaps
+        );
+        // Never unreconciled: the seed row survives.
+        assert!(out.unreconciled_topics.is_empty(), "{:?}", out.unreconciled_topics);
+        let retained = out
+            .topic_layer
+            .iter()
+            .find(|t| t.topic_key == "catalysts-risks")
+            .expect("the retained topic re-emits");
+        assert_eq!(
+            retained.vintage, "2026-08-10T00:00:00+00:00",
+            "a retained prior keeps its own vintage, never this run's"
+        );
+        assert!(retained.claims[0].cached);
+        assert_eq!(retained.claims[0].vintage, "2026-08-10T00:00:00+00:00");
+        // The topic that did reach the reduce stamps this run's vintage.
+        let analyzed = out
+            .topic_layer
+            .iter()
+            .find(|t| t.topic_key == "competitive-position")
+            .unwrap();
+        assert_eq!(analyzed.vintage, "2026-08-23T00:00:00+00:00");
+    }
+
+    #[test]
+    fn a_topic_the_cap_drops_whole_with_no_prior_is_not_named_unreconciled() {
+        // The same edge with nothing to retain: the topic is absent from the
+        // reduce, absent from the layer, and NOT named unreconciled, so the
+        // every-pass-dropped gap stands alone. A stored row past the freshness
+        // window is filtered before `distill` sees it (`pipeline.rs`,
+        // `topic_object_fresh`) and is this same case — it stays inert behind
+        // the seed gate, as for any dormant topic whose object expired. An
+        // object the model emits for it anyway is an unknown topic (ruled
+        // 2026-08-29; Codex round 1 narrowed the wording).
+        let research = research_two_topics_second_dropped_whole();
+        let tier1 = json!({"summary": "s", "claims": []});
+        let final_body = combined_body(json!({
+            "topics": [
+                {"topic_key": "competitive-position", "summary": "s",
+                 "claims": [{"claim": "claim 0", "source_url": "https://reuters.com/widget"}]},
+                {"topic_key": "catalysts-risks", "summary": "invented", "claims": []}
+            ]
+        }));
+        let model = ScriptDistill::new(vec![
+            tier1.clone(),
+            tier1.clone(),
+            tier1.clone(),
+            tier1.clone(),
+            tier1,
+            final_body,
+        ]);
+        let mut ins = inputs(&research, &[], &[]);
+        ins.input_budget_chars = 10;
+        let out = distill(&model, &ins).unwrap();
+        let reduce_prompt = model.prompts().last().cloned().unwrap();
+        assert!(
+            !reduce_prompt.contains("catalysts-risks"),
+            "nothing of the dropped topic reaches the reduce:\n{reduce_prompt}"
+        );
+        assert!(
+            out.gaps.iter().any(|g| g
+                == "topic catalysts-risks: every pass dropped at the sub-distillation cap — \
+                    no prior to retain; the topic yields no object this run"),
+            "{:?}",
+            out.gaps
+        );
+        assert!(out.unreconciled_topics.is_empty(), "{:?}", out.unreconciled_topics);
+        assert!(
+            out.topic_layer.iter().all(|t| t.topic_key != "catalysts-risks"),
+            "{:?}",
+            out.topic_layer
+        );
+        assert!(
+            out.gaps
+                .iter()
+                .any(|g| g.contains("unknown topic \"catalysts-risks\"")),
+            "{:?}",
+            out.gaps
+        );
     }
 }

@@ -1120,14 +1120,14 @@ pub fn analyze_holding(
     commodity_consulted.set(!dossier.commodity_context.is_empty());
     short_interest_consulted.set(dossier.short_interest.is_some());
     // The conditional topics' deterministic triggers (`docs/portfolio-workflow.md`
-    // §Step 6c). The news-seed leg reuses the quick check's high-recall
-    // conjunction — fresh symbol news beside a standing technology falsifier —
-    // so it never out-guesses the deterministic rule.
+    // §Step 6c). The symbol-scoped news seeds are no trigger here: a
+    // qualifying seed is fresh news beside a standing technology falsifier,
+    // and the falsifier fires the topic on its own — the seeds reach the loop
+    // as leads in the pass brief (retired 2026-08-29, Codex I15; the quick
+    // check's news leg is distinct and reads the conjunction as its badge).
     let triggers = research::AgendaTriggers {
         tech_pre_flag_fired: tech_pre_flag.as_ref().is_some_and(|f| f.fired),
         tech_ledger_falsifier: research::ledger_has_technology_falsifier(prior_ledger),
-        tech_news_seed: !dossier.news_seeds.is_empty()
-            && research::ledger_has_technology_falsifier(prior_ledger),
         overlay_eligible: pre_profit_overlay.as_ref().is_some_and(|o| o.is_eligible()),
         // The backfill obligation binds on the first overlay-eligible full
         // pass, or while a previously used guidance metric has fewer than four
@@ -5991,6 +5991,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_technology_topic_fires_from_the_pre_flag_or_a_standing_falsifier_and_only_once() {
+        // A fresh news seed beside a standing falsifier fires the topic from
+        // the falsifier line alone — the seed is a lead in the pass brief,
+        // never a trigger of its own (retired 2026-08-29, Codex I15) — and no
+        // combination of the triggers adds the topic twice.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.news_seeds = vec![research::ResearchSeed {
+            id: "seed-1".into(),
+            headline: "Rival unveils a competing chip".into(),
+            url: "https://reuters.com/rival-chip".into(),
+            source: "reuters.com".into(),
+            published: Some("2026-08-22".into()),
+        }];
+        let tech_topics = |triggers: research::AgendaTriggers| {
+            research::build_agenda(&d, &triggers)
+                .iter()
+                .filter(|t| t.key == "technology-event")
+                .count()
+        };
+        // A seed with nothing standing behind it fires nothing.
+        assert_eq!(tech_topics(research::AgendaTriggers::default()), 0);
+        assert_eq!(
+            tech_topics(research::AgendaTriggers {
+                tech_ledger_falsifier: true,
+                ..Default::default()
+            }),
+            1
+        );
+        assert_eq!(
+            tech_topics(research::AgendaTriggers {
+                tech_pre_flag_fired: true,
+                ..Default::default()
+            }),
+            1
+        );
+        assert_eq!(
+            tech_topics(research::AgendaTriggers {
+                tech_pre_flag_fired: true,
+                tech_ledger_falsifier: true,
+                ..Default::default()
+            }),
+            1
+        );
+    }
+
     /// A priced-fund dossier: a US equity ETF with a full sector-P/E surface.
     fn fund_dossier(fund: FundData) -> HoldingDossier {
         let mut pos = position(AssetClass::Etf);
@@ -9862,7 +9908,6 @@ mod tests {
             topics: vec![research::TopicResearch {
                 topic_key: "competitive-position".into(),
                 title: "Competitive position".into(),
-                conditional_reason: None,
                 seeded_vintage: None,
                 passes: vec![research::PassFindings {
                     findings: "x".repeat(over),

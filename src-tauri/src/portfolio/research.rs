@@ -134,9 +134,6 @@ pub struct AgendaTopic {
     pub key: String,
     pub title: String,
     pub questions: Vec<String>,
-    /// Why a conditional topic activated (`None` on a fixed topic) — logged to
-    /// the audit so dormancy stays legible.
-    pub conditional_reason: Option<String>,
 }
 
 fn topic(key: &str, title: &str, questions: &[&str]) -> AgendaTopic {
@@ -144,7 +141,6 @@ fn topic(key: &str, title: &str, questions: &[&str]) -> AgendaTopic {
         key: key.to_string(),
         title: title.to_string(),
         questions: questions.iter().map(|q| q.to_string()).collect(),
-        conditional_reason: None,
     }
 }
 
@@ -164,10 +160,12 @@ pub fn ledger_has_technology_falsifier(ledger: Option<&ThesisLedger>) -> bool {
 pub struct AgendaTriggers {
     /// The engine's Step-6b technology-event pre-flag fired.
     pub tech_pre_flag_fired: bool,
-    /// A standing technology-class ledger falsifier exists.
+    /// A standing technology-class ledger falsifier exists. The symbol-scoped
+    /// `news/stock` seeds are no trigger of their own: a qualifying seed is
+    /// defined as fresh news beside this standing falsifier, which fires the
+    /// topic by itself, and the seeds ride the pass brief as leads
+    /// (retired 2026-08-29, Codex I15).
     pub tech_ledger_falsifier: bool,
-    /// A qualifying symbol-scoped `news/stock` seed arrived.
-    pub tech_news_seed: bool,
     /// The stock entered the pre-profit overlay (eligible read).
     pub overlay_eligible: bool,
     /// The pre-profit backfill obligation binds this pass (first
@@ -288,39 +286,31 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
                     .to_string(),
             );
         }
-        t.conditional_reason = Some("overlay-eligible stock".to_string());
         agenda.push(t);
     }
 
-    let tech_reason = if triggers.tech_pre_flag_fired {
-        Some("engine technology-event pre-flag fired")
-    } else if triggers.tech_ledger_falsifier {
-        Some("standing technology-class ledger falsifier")
-    } else if triggers.tech_news_seed {
-        Some("qualifying news-feed seed")
-    } else {
-        None
-    };
-    if let Some(reason) = tech_reason {
-        agenda.push(technology_topic(reason));
+    // Why the topic activated is not carried: the pre-flag persists on the
+    // audit, the standing falsifier in the ledger, and a mid-loop escalation
+    // is the topic present with neither, so the audit reconstructs every
+    // reason from what it already stores.
+    if triggers.tech_pre_flag_fired || triggers.tech_ledger_falsifier {
+        agenda.push(technology_topic());
     }
     agenda
 }
 
 /// The conditional technology-event topic — also appended mid-loop when an
 /// approved follow-up proposal escalates it (`docs/portfolio-workflow.md`
-/// §Step 6c, the fourth trigger).
-pub fn technology_topic(reason: &str) -> AgendaTopic {
-    let mut t = topic(
+/// §Step 6c, the third trigger).
+pub fn technology_topic() -> AgendaTopic {
+    topic(
         "technology-event",
         "Technology-event impact assessment",
         &[
             "What exactly is the technology or announcement that repriced (or could reprice) this name?",
             "Sizing the holding's real exposure: does this genuinely impair (or benefit) its economics, on what mechanism and timescale?",
         ],
-    );
-    t.conditional_reason = Some(reason.to_string());
-    t
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +482,6 @@ pub struct PassFindings {
 pub struct TopicResearch {
     pub topic_key: String,
     pub title: String,
-    pub conditional_reason: Option<String>,
     /// The seeding object's vintage when this topic seeded; `None` = cold.
     pub seeded_vintage: Option<String>,
     pub passes: Vec<PassFindings>,
@@ -551,7 +540,6 @@ pub fn offline_stub(plan: &ResearchPlan) -> HoldingResearch {
         .map(|(i, t)| TopicResearch {
             topic_key: t.key.clone(),
             title: t.title.clone(),
-            conditional_reason: t.conditional_reason.clone(),
             seeded_vintage: None,
             passes: if i == 0 {
                 vec![PassFindings {
@@ -921,7 +909,6 @@ impl ResearchRunner<'_> {
                 worked.push(TopicResearch {
                     topic_key: topic.key.clone(),
                     title: topic.title.clone(),
-                    conditional_reason: topic.conditional_reason.clone(),
                     seeded_vintage: None,
                     passes: Vec::new(),
                     skipped: Some("budget-exhausted".to_string()),
@@ -984,7 +971,7 @@ impl ResearchRunner<'_> {
                 if let Some(f) = &followup {
                     if f.technology_event && !tech_escalated {
                         tech_escalated = true;
-                        pending.push(technology_topic("mid-loop follow-up escalation"));
+                        pending.push(technology_topic());
                     }
                 }
                 passes.push(pass);
@@ -992,7 +979,6 @@ impl ResearchRunner<'_> {
             worked.push(TopicResearch {
                 topic_key: topic.key.clone(),
                 title: topic.title.clone(),
-                conditional_reason: topic.conditional_reason.clone(),
                 seeded_vintage,
                 passes,
                 skipped: None,
@@ -2259,10 +2245,6 @@ mod tests {
             "root + two follow-ups"
         );
         assert_eq!(out.topics[1].topic_key, "technology-event");
-        assert_eq!(
-            out.topics[1].conditional_reason.as_deref(),
-            Some("mid-loop follow-up escalation")
-        );
     }
 
     /// A web stub whose fetch lands on a redirected final URL.

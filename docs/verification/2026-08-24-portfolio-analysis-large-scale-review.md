@@ -432,6 +432,20 @@ Under the 2026-08-27 run ruling (§Disposition) the fix moves ahead of the run w
 A Codex round then disambiguated what the cap counts in the canonical siblings: `web-research.md` §The research loop and context management and `configuration.md` §Local Analysis Suite Configuration now say only the per-unit map calls count, never the reduce or an ordinary tier-1 call.
 A second round noted the unreconciled-row delete is itself fail-soft and logged only (`job.rs:1889`), so the canonical doc now states the cold re-seed as the rule rather than a guarantee.
 A third round moved the logic-flow mirror to pointer form — the rule plus a pointer to that posture — rather than restating the mechanics; the watch-set line keeps the rule, since a failed delete is a database anomaly outside what that watch reads.
+Ruled 2026-08-29 (group 5): the seed-edge fix moves no stamp — the reduce-prompt template is unchanged, a fully-dropped topic's retained prior riding the existing dormant-prior render, and the store is wiped before the run so no trail can straddle the change.
+Ruled 2026-08-29: a fully-dropped topic with no prior object in the freshness window is not named unreconciled — nothing of it was in the reduce and there is no object to retain, so its every-pass-dropped gap line stands alone.
+A stored row past the window, if one stands, stays inert behind the seed gate, as for any dormant topic whose object expired (the wording narrowed off Codex round 1 below).
+Ruled 2026-08-29: provenance stays as built — a retained prior claim whose URL a dropped pass re-fetched resolves fresh at this run's retrieval date (the page was fetched; only its distillation dropped), and an omitted tie decays unless the model re-cites the id the render shows, as for any fresh claim.
+Resolved 2026-08-29: "analyzed this run" is defined once in `distill` as a topic whose research reaches the reduce — every topic with a pass, narrowed on the hierarchical path by a topic the cap drops whole — and the routing, the reduce and the reconciliation read that one set (`validate_combined` receives it).
+A topic dropped whole leaves the set, so its prior rides the reduce through `dormant_priors_of` on its own vintage, and the drop itself never names it unreconciled — a reduce that fails to re-emit it still does, like any dormant prior.
+The gap line keeps the `dropped at the sub-distillation cap` substring the watch set greps, with a tail naming which case applied.
+Two tests pin the edge: a retained prior under the dormant render re-emitting on its own vintage with `unreconciled_topics` empty, and the no-prior twin absent from the reduce, the layer and the unreconciled list, an object the model invents for it dropped as an unknown topic.
+`portfolio-analysis.md` §Starting parameters, the logic-flow's budget-exhausted bullet and the watch set's cap line now state the edge as closed.
+One reviewer round (approve-with-nits) covered the group, its four nits folded in by ruling: the trigger paragraph's semicolon-joined pair split to sentence-per-line, the "never named unreconciled" wording narrowed to the drop itself at every site, the four-pass fixture commented as a cap-spending device beyond the three-pass ceiling, and `subdistilled_topics` no longer counting a topic dropped whole, since it issued no call (pre-existing, folded here); the fail-soft sentence's §Starting parameters home was noted and left.
+Codex round 1 (2026-08-29) approved with one low finding: "no prior object" had been written as "no stored row" at the drop-arm comment, the no-prior test's comment and the ruling line above, while the pipeline filters expired objects before distillation (`pipeline.rs`, `topic_object_fresh`) over a store that loads every row, so `prior.is_none()` can coincide with an expired row.
+Closed as wording: the row is inert behind the seed gate — the existing posture for a dormant topic whose object expired — and the three sites now say so.
+A boundary test is declined, since the row is filtered before `distill` sees it and the dormant-expired path already carries the posture; the gates were re-run clean.
+Codex round 2 (2026-08-29) approved the wording fold on static re-review, no findings.
 
 ### Priority-3 minor findings
 
@@ -546,6 +560,7 @@ I19 is ruled and I8, I10 and I12 resolved with it (2026-08-29; the rulings and r
 I20, added 2026-08-29 off group 3's Codex round 1 — a carried observation row carries no admission stamp — joins the queue on the same terms, ruled at its addition (attribute, never re-filter; recorded under §I20), leaving Codex I11, I13, I15, I20 and the §A4 seed edge.
 Ruled 2026-08-29, off group 4's plan: the dev store is wiped before the run and no local-suite data compat is required pre-release, so the fresh-start-2 compat cut lands ahead of group 4 as its own slice with its own record ([2026-08-29-fresh-start-2-local-suite-compat-removal.md](2026-08-29-fresh-start-2-local-suite-compat-removal.md)); every holding on the run is therefore a debut, and a second run follows only on the user's decision after the first run's result.
 I11 and I13 are resolved (2026-08-29, group 4; the rulings and resolutions are recorded under §I11 and §I13, the prompt stamp moved to `portfolio-v23`), leaving Codex I15, I20 and the §A4 seed edge.
+I15 is ruled and resolved and the §A4 seed edge closed together (2026-08-29, group 5; the rulings and resolutions are recorded under §I15 and §A4, no stamp moving), leaving Codex I20.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
@@ -983,6 +998,15 @@ The retire shape also sweeps the full-run trigger-leg claims that would then rea
 The quick check's news leg is distinct and stays as built — the pull under a standing falsifier, its evidence-event badge, and the §Starting parameters definition it reads.
 Either shape pins a test holding a fresh seed beside a standing falsifier; no stamp moves on the retire shape.
 Surfaced by the Priority-3 doc batch's implementation and confirmed by its review rounds; a second Codex round found the label has no consumer, reframing the finding from a reachability fix to this, a third named the retire shape's contract sweep, and a fourth the wire shape's doc legs; ruled its own slice 2026-08-28.
+Ruled 2026-08-29 (group 5): retire.
+`conditional_reason` leaves `AgendaTopic` and `TopicResearch`, `tech_news_seed` leaves `AgendaTriggers`, and `technology_topic()` takes no reason.
+Every reason stays reconstructible from what the audit already persists — the pre-flag on `tech_event_pre_flag`, the standing falsifier in the ledger, overlay eligibility on the overlay record, and a mid-loop escalation being the topic present with neither.
+`TopicResearch` is transient and no doc promised the reason on the audit, so no stamp moves.
+The wire shape — every fired trigger persisted beside `seed_decisions`, moving `checkpoint-v3` with a `storage.md` inventory row for a field nothing renders — is declined.
+Resolved 2026-08-29: the agenda adds the technology topic on the pre-flag or the standing falsifier alone, and `AgendaTriggers` has exactly one literal site (`pipeline.rs`, its tests riding `Default`).
+A pinned `build_agenda` test holds a fresh seed beside a standing falsifier — the topic once, a seed alone nothing, no trigger combination twice — and the mid-loop escalation test re-pins on the topic key.
+The full-run trigger claims are swept — `portfolio-analysis.md` §The per-holding pipeline's trigger list, `portfolio-workflow.md` §Step 6c, the `news/stock` row of `data-sources.md` §Portfolio Analysis — endpoint surface (the full-run trigger-surface clause alone; the quick-check leg clause stands), both logic-flow sites, and the trigger comment in `pipeline.rs` — while the quick check's news leg and the §Starting parameters conjunction it reads stay as built.
+The group's one reviewer round (approve-with-nits) is recorded under §A4, where its nits fell.
 
 ### I16 — minor but whole-run kill radius: required persisted floats are finiteness-gated only at the targets
 

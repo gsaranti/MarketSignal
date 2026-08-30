@@ -97,7 +97,8 @@ Seed-and-merge cache behavior at scale: hit rates, and the distillation-reconcil
 The sub-distillation cap's first live reading: how often a holding's distillation goes hierarchical, and whether any topic drops passes at the cap (`dropped at the sub-distillation cap` in the run's gaps).
 Zero drops is the healthy read.
 Any drop is the first evidence the shared per-holding budget binds at real sizes.
-A topic whose every pass dropped also loses its seed — the exhausted-budget edge recorded under the 2026-08-24 review's §A4 — and one such hit promotes the queued fix that routes that topic's prior through the reduce.
+A topic whose every pass dropped keeps its seed: its prior rides the reduce retained on its own vintage (the 2026-08-24 review's §A4 edge, closed 2026-08-29).
+Read that gap line's tail — `its prior object rides the reduce retained on its own vintage` or `no prior to retain` — and confirm the topic is absent from `unreconciled_topics`.
 
 Extraction telemetry — the deferred rendered-retrieval tier's scheduling evidence.
 Per-domain thin-stub and `extraction_quality` rates decide whether and where a render tier earns its slice, so the run record's disposition reads them deliberately, not incidentally.
