@@ -1134,8 +1134,16 @@ impl ResearchRunner<'_> {
         // and the findings grammar — no tool-call history — so the grammar
         // engages cleanly, the way the interpretation call (which never fails
         // its parse) does.
-        let wire = self.synthesize_findings(ctx, &fetched, page_texts, gaps)?;
-        Ok(self.validate_findings(wire, ctx, &fetched, &url_aliases, gaps))
+        let (wire, shown) = self.synthesize_findings(ctx, &fetched, page_texts, gaps)?;
+        // Validate only against the sources the synthesis was actually shown — a
+        // page dropped for budget leaves the allow-set, so a claim citing
+        // evidence the synthesis never saw is rejected, not accepted (round-8).
+        let shown_fetched: Vec<(String, String, Option<SourceAnnotation>)> = fetched
+            .iter()
+            .filter(|(url, _, _)| shown.contains(url))
+            .cloned()
+            .collect();
+        Ok(self.validate_findings(wire, ctx, &shown_fetched, &url_aliases, gaps))
     }
 
     /// Write up one pass's findings from a fresh conversation — the gathered
@@ -1154,11 +1162,12 @@ impl ResearchRunner<'_> {
         fetched: &[(String, String, Option<SourceAnnotation>)],
         page_texts: &std::collections::HashMap<String, String>,
         gaps: &mut Vec<String>,
-    ) -> Result<FindingsWire> {
+    ) -> Result<(FindingsWire, std::collections::HashSet<String>)> {
         let schema = findings_schema();
+        let mut shown = std::collections::HashSet::new();
         let messages = vec![
             ChatMessage::system(synthesis_system_prompt()),
-            ChatMessage::user(synthesis_brief(ctx, fetched, page_texts, gaps)),
+            ChatMessage::user(synthesis_brief(ctx, fetched, page_texts, gaps, &mut shown)),
         ];
         // The parse leg of the bounded retry-once fires at most once; the
         // call leg is gated per issued call below.
@@ -1188,7 +1197,7 @@ impl ResearchRunner<'_> {
                     ))
             });
             match parsed {
-                Ok(wire) => return Ok(wire),
+                Ok(wire) => return Ok((wire, shown)),
                 Err(err) => {
                     if !findings_retry_used && self.model.retry_permitted(&self.step_label, &err) {
                         findings_retry_used = true;
@@ -1466,6 +1475,10 @@ fn synthesis_brief(
     fetched: &[(String, String, Option<SourceAnnotation>)],
     page_texts: &std::collections::HashMap<String, String>,
     gaps: &mut Vec<String>,
+    // The URLs actually rendered into the brief — a dropped page is excluded, so
+    // its URL leaves the claim validator's allow-set and a claim citing evidence
+    // the synthesis never saw is rejected, not accepted (round-8).
+    shown: &mut std::collections::HashSet<String>,
 ) -> String {
     let mut out = pass_brief(ctx);
     out.push_str(
@@ -1565,6 +1578,7 @@ fn synthesis_brief(
             dropped += 1;
             continue;
         }
+        shown.insert(unique[i].0.clone());
         out.push_str(&headers[i]);
         out.push_str(&texts[i].chars().take(plans[i].text).collect::<String>());
         // The fetch cap is detected from the stored length (a page exactly at the
@@ -2469,6 +2483,42 @@ mod tests {
     }
 
     #[test]
+    fn dropped_pages_are_excluded_from_the_shown_allow_set() {
+        // A packet whose headers alone exceed the input budget forces every page
+        // to drop; a dropped page's URL must not enter the shown-set, so claim
+        // validation later rejects a claim citing evidence the synthesis never
+        // saw (round-8).
+        let mut fetched = Vec::new();
+        let mut page_texts = std::collections::HashMap::new();
+        for i in 0..3000 {
+            let url = format!("https://example.com/{i}");
+            fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
+            page_texts.insert(url, "x".repeat(50));
+        }
+        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &t,
+            seed_text: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashSet::new();
+        let _ = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps, &mut shown);
+        assert!(
+            shown.is_empty(),
+            "every over-budget page dropped → none enter the validator's allow-set"
+        );
+        assert!(
+            gaps.iter().any(|g| g.contains("omitted")),
+            "the drop is recorded as a gap: {gaps:?}"
+        );
+    }
+
+    #[test]
     fn synthesis_brief_stays_within_the_input_budget_on_overflow() {
         // Enough oversized pages to overflow the input budget: the rendered
         // brief (framing + allocated text + every truncation marker) must not
@@ -2495,7 +2545,8 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps);
+        let mut shown = std::collections::HashSet::new();
+        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps, &mut shown);
         assert!(
             brief.chars().count() <= budget,
             "rendered {} exceeds budget {budget}",
@@ -2531,7 +2582,8 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps);
+        let mut shown = std::collections::HashSet::new();
+        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps, &mut shown);
         assert!(
             !gaps.iter().any(|g| g.contains("truncated to fit")),
             "a fitting packet records no truncation gap: {gaps:?}"
@@ -2575,7 +2627,8 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps);
+        let mut shown = std::collections::HashSet::new();
+        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps, &mut shown);
         assert!(
             brief.chars().count() <= budget,
             "rendered {} exceeds budget {budget}",

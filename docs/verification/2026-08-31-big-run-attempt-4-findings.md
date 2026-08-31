@@ -286,9 +286,10 @@ gathered pages as the only citable evidence, carrying the full source annotation
 (tier, evidence kinds, extraction quality, recency, thin-stub) and sized against
 the shared input-budget guard with a water-fill allocator (short pages whole,
 long pages truncated with an inline marker; a page too small to carry a marker is
-dropped entirely — its URL never listed, so never citable — and summarized, so no
-source is rendered as a deceptively-empty page; every truncation or drop is
-recorded as a gap).
+dropped entirely — its URL never listed *and* excluded from claim validation, so a
+claim citing it is rejected rather than accepted against evidence the synthesis
+never saw — and summarized, so no source is rendered as a deceptively-empty page;
+every truncation or drop is recorded as a gap).
 `PROMPT_VERSION` moved to **`portfolio-v33`** so an interrupted pre-fix run cannot
 resume into the new synthesis contract — the debut stamp the next launch confirms.
 
