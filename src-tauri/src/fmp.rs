@@ -4244,7 +4244,7 @@ mod tests {
     /// the highest *plausible* in-band aggregate but below the artifact cluster. Hits the
     /// live API (≤2 calls per board, trivial against the 250/day free cap); run once per
     /// change:
-    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml tuning_industry_pe_distribution_probe -- --ignored --nocapture
     #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY. Calibration aid, not a gate — \
@@ -4344,7 +4344,7 @@ mod tests {
     /// set the ceiling above the highest plausible in-band sector aggregate, below any artifact
     /// cluster. Hits the live API (≤2 calls per board, trivial against the 250/day free cap);
     /// run once per change:
-    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml tuning_sector_pe_distribution_probe -- --ignored --nocapture
     #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY. Calibration aid, not a gate — \
@@ -4437,7 +4437,7 @@ mod tests {
     /// an HTTP 429 (the retry ladder covers it as-is) or a 200 `Error Message`
     /// body (needs a narrowly-matched body classification). Burns ~1 minute of the
     /// 200/min paid budget, once, per the live-smoke discipline; run:
-    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml fmp_minute_limit_probe -- --ignored --nocapture
     #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY. Bursts past 200/min to observe the limiter's shape."]
@@ -4539,7 +4539,7 @@ mod tests {
     /// Prints the HTTP status (200 ≈ free, 402 = premium) plus a sample of the body so
     /// a maintainer can read the real field names before any adapter is written. Hits
     /// the live API (~15 one-shot calls, trivial against the 250/day free cap); run:
-    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml fmp_freetier_probe -- --ignored --nocapture
     #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY. Probes candidate endpoints' free tier."]
@@ -4693,7 +4693,7 @@ mod tests {
     /// site / date / content / tickers) and pagination behavior can be read off the
     /// wire. Hits the live API (~5 one-shot calls, trivial against the 250/day cap);
     /// run once:
-    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml fmp_news_probe -- --ignored --nocapture
     #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY. Probes news endpoints' free tier."]
@@ -4768,7 +4768,7 @@ mod tests {
     /// (PDI bond CEF, GAB / BST equity CEFs) plus SPY as the open-end control.
     /// Same conventions as `fmp_freetier_probe`. Hits the live API (8 one-shot
     /// calls); run once:
-    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml fmp_cef_probe -- --ignored --nocapture
     #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY. Probes CEF profile/etf-info shapes."]

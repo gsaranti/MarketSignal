@@ -26,3 +26,8 @@ dist-ssr
 .claude
 *iris-*
 references
+
+# Local SearXNG rendered runtime config — carries the Serper key at bring-up;
+# never commit it.
+searxng/settings.runtime.yml
+searxng/docker-compose.override.yml
