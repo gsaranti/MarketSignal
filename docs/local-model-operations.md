@@ -134,6 +134,14 @@ Default-on MLX doesn't help a model with no MLX build: our 122B runs on Ollama's
 - **`OLLAMA_FLASH_ATTENTION=1`** cuts KV-cache memory **30–50 %** — set it.
   If you hit cache instability, `--cache-type-k bf16 --cache-type-v bf16` is the fallback.
   **[community]**
+- **`OLLAMA_NUM_PARALLEL=1`** — pin a single inference slot.
+  The suite is strictly single-stream: the global run slot serializes jobs, holdings run in sequence, and the per-holding calls (research → distillation → interpretation → action) are sequential, so extra slots buy no throughput.
+  Left unset, Ollama auto-picks **1 or 4** from detected memory.
+  A 4-slot pick multiplies the KV cache the memory budget above plans at one slot.
+  It also round-robins requests across slots, so a call can miss the slot holding the previous prompt's cached prefix — defeating the within-pass research-turn prefix reuse.
+  One slot costs no per-call context, since `num_ctx` is per-request either way, and pinning it holds the memory fit steady across an Ollama version bump that would otherwise move the auto-default.
+- **Daemon launch** (both flags are daemon-side, set at `serve` start): `OLLAMA_FLASH_ATTENTION=1 OLLAMA_NUM_PARALLEL=1 ~/ollama/v0.32.5/ollama serve`.
+  Confirm the effective slot count in the serve log's runner line (`--parallel N`) and the working context via the `CONTEXT` column of `ollama ps`.
 
 ### The `num_ctx` trap (critical)
 
