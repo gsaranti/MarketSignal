@@ -351,7 +351,6 @@ fn run_research_and_distill(
         shape: distilled.shape.clone(),
         fetches_spent: research_out.fetches_spent,
         elapsed_secs: research_out.elapsed_secs,
-        tavily_fallback_used: research_out.tavily_fallback_used,
         seed_decisions: research_out.seed_decisions.clone(),
         sources,
         gaps,

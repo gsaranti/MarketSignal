@@ -46,7 +46,7 @@ use crate::progress::RunContext;
 use crate::research_executor::Clock;
 use crate::web_research::fetch::FetchedPage;
 use crate::web_research::registry::SourceAnnotation;
-use crate::web_research::search::{SearchHit, SearchRoute};
+use crate::web_research::search::SearchHit;
 
 // ---------------------------------------------------------------------------
 // Constants (drafted, calibratable — `docs/web-research.md`: the fetch-count,
@@ -508,9 +508,6 @@ pub struct HoldingResearch {
     /// Recorded degraded-input gaps (skipped topics, an unspent disconfirming
     /// pass, dropped claims/seeds).
     pub gaps: Vec<String>,
-    /// Any search served by the Tavily fallback (degraded mode, for the
-    /// audit).
-    pub tavily_fallback_used: bool,
     /// The seeds fed to this loop (leads, never evidence).
     pub seeds: Vec<ResearchSeed>,
     /// Per-topic seeded-vs-cold decisions, logged for the audit record.
@@ -598,51 +595,40 @@ pub trait ResearchModel {
     }
 }
 
-/// The web seam: search (SearXNG-primary with route reporting) and fetch
-/// (document-cache first, then the live SSRF-guarded fetch, telemetry
-/// recorded). `fetch` reports whether the document was served from cache — a
-/// cache hit spends no budget.
+/// The web seam: search (SearXNG, dedup-cached) and fetch (document-cache
+/// first, then the live SSRF-guarded fetch, telemetry recorded). `fetch`
+/// reports whether the document was served from cache — a cache hit spends no
+/// budget.
 pub trait ResearchWeb {
-    fn search(&self, query: &str) -> Result<(Vec<SearchHit>, SearchRoute)>;
+    fn search(&self, query: &str) -> Result<Vec<SearchHit>>;
     fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)>;
 }
 
-/// The live web seam (`docs/web-research.md`): SearXNG-primary search with the
-/// Tavily fallback, the SSRF-guarded fetch behind the shared document cache,
-/// and per-domain extraction telemetry — wired to the app stores over its own
-/// DB connection (SQLite serves concurrent connections; the store writes are
-/// tiny and the per-holding loop is sequential).
+/// The live web seam (`docs/web-research.md`): SearXNG-only search (Tavily is
+/// reserved for the report job), the SSRF-guarded fetch behind the shared
+/// document cache, and per-domain extraction telemetry — wired to the app
+/// stores over its own DB connection (SQLite serves concurrent connections; the
+/// store writes are tiny and the per-holding loop is sequential).
 pub struct LiveResearchWeb {
-    search: crate::web_research::search::FallbackSearch,
+    search: crate::web_research::search::SearchTool,
     fetcher: crate::web_research::fetch::HttpPageFetcher,
     conn: std::sync::Mutex<rusqlite::Connection>,
 }
 
 impl LiveResearchWeb {
-    /// Build the stack from configuration. `None` endpoints degrade rather
-    /// than error — an unconfigured SearXNG with a Tavily key is the
-    /// documented fallback mode; neither configured still constructs (every
-    /// search then fail-softs inside the loop).
-    pub fn new(
-        searxng_endpoint: Option<&str>,
-        tavily_key: Option<&str>,
-        db_path: &std::path::Path,
-    ) -> Result<Self> {
+    /// Build the stack from configuration. A `None` or unreachable SearXNG
+    /// endpoint degrades rather than errors — every search then fail-softs
+    /// inside the loop. The local suite is SearXNG-only; there is no Tavily
+    /// fallback.
+    pub fn new(searxng_endpoint: Option<&str>, db_path: &std::path::Path) -> Result<Self> {
         let searxng = searxng_endpoint
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .and_then(|e| crate::web_research::search::SearxngClient::new(e).ok());
-        let tavily: Option<
-            Box<dyn crate::research_executor::SearchBackend + Send + Sync>,
-        > = tavily_key
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
-            .and_then(|k| crate::tavily::TavilyNewsSource::new(k.to_string()).ok())
-            .map(|t| Box::new(t) as _);
         let conn = crate::storage::open(db_path).context("opening the web-research store")?;
         crate::storage::init_schema(&conn)?;
         Ok(Self {
-            search: crate::web_research::search::FallbackSearch::new(searxng, tavily),
+            search: crate::web_research::search::SearchTool::new(searxng),
             fetcher: crate::web_research::fetch::HttpPageFetcher::new(),
             conn: std::sync::Mutex::new(conn),
         })
@@ -650,8 +636,8 @@ impl LiveResearchWeb {
 }
 
 impl ResearchWeb for LiveResearchWeb {
-    fn search(&self, query: &str) -> Result<(Vec<SearchHit>, SearchRoute)> {
-        self.search.search_routed(query)
+    fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
+        self.search.search(query)
     }
 
     fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
@@ -903,7 +889,6 @@ impl ResearchRunner<'_> {
         };
         let mut page_texts = std::collections::HashMap::new();
         let mut fetches_spent = 0u32;
-        let mut tavily_used = false;
         let mut pending: Vec<AgendaTopic> = agenda.to_vec();
         let mut worked: Vec<TopicResearch> = Vec::new();
         let mut tech_escalated = agenda.iter().any(|t| t.key == "technology-event");
@@ -970,7 +955,6 @@ impl ResearchRunner<'_> {
                 let pass = self.run_pass(
                     &ctx,
                     &mut fetches_spent,
-                    &mut tavily_used,
                     &mut out.gaps,
                     &mut page_texts,
                 )?;
@@ -1029,7 +1013,6 @@ impl ResearchRunner<'_> {
                 let pass = self.run_pass(
                     &ctx,
                     &mut fetches_spent,
-                    &mut tavily_used,
                     &mut out.gaps,
                     &mut page_texts,
                 )?;
@@ -1041,7 +1024,6 @@ impl ResearchRunner<'_> {
         out.page_texts = page_texts;
         out.fetches_spent = fetches_spent;
         out.elapsed_secs = self.budget.clock.elapsed().as_secs();
-        out.tavily_fallback_used = tavily_used;
         Ok(out)
     }
 
@@ -1056,7 +1038,6 @@ impl ResearchRunner<'_> {
         &self,
         ctx: &PassContext<'_>,
         fetches_spent: &mut u32,
-        tavily_used: &mut bool,
         gaps: &mut Vec<String>,
         page_texts: &mut std::collections::HashMap<String, String>,
     ) -> Result<PassFindings> {
@@ -1170,7 +1151,7 @@ impl ResearchRunner<'_> {
                     break;
                 }
                 let result = match call {
-                    ToolCall::Search { query } => self.exec_search(&query, ctx, tavily_used),
+                    ToolCall::Search { query } => self.exec_search(&query, ctx),
                     ToolCall::Fetch { url } => self.exec_fetch(
                         &url,
                         ctx,
@@ -1189,30 +1170,19 @@ impl ResearchRunner<'_> {
     }
 
     /// Execute one search call, with its tracker row.
-    fn exec_search(&self, query: &str, ctx: &PassContext<'_>, tavily_used: &mut bool) -> String {
+    fn exec_search(&self, query: &str, ctx: &PassContext<'_>) -> String {
         let series = format!("search: {query}");
         self.progress
             .request_started("web", "research", &series, &ctx.topic.key);
         match self.web.search(query) {
-            Ok((hits, route)) => {
-                if route == SearchRoute::TavilyFallback {
-                    *tavily_used = true;
-                }
+            Ok(hits) => {
                 self.progress.request_finished(
                     "web",
                     "research",
                     &series,
                     &ctx.topic.key,
                     "ok",
-                    Some(format!(
-                        "{} hits{}",
-                        hits.len(),
-                        if route == SearchRoute::TavilyFallback {
-                            " (Tavily fallback)"
-                        } else {
-                            ""
-                        }
-                    )),
+                    Some(format!("{} hits", hits.len())),
                 );
                 render_hits(&hits)
             }
@@ -1580,7 +1550,7 @@ mod tests {
     fn live_cache_revalidates_a_redirect_destination_before_serving_it() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("research.sqlite");
-        let web = LiveResearchWeb::new(None, None, &db_path).unwrap();
+        let web = LiveResearchWeb::new(None, &db_path).unwrap();
         let requested = "https://reuters.com/redirecting-seed";
         let mut page = FetchedPage {
             final_url: "http://127.0.0.1/private".into(),
@@ -1805,14 +1775,12 @@ mod tests {
     /// pages and counts calls.
     struct ScriptWeb {
         fetches: Mutex<RefCell<u32>>,
-        route: SearchRoute,
     }
 
     impl ScriptWeb {
-        fn new(route: SearchRoute) -> Self {
+        fn new() -> Self {
             Self {
                 fetches: Mutex::new(RefCell::new(0)),
-                route,
             }
         }
         fn fetch_count(&self) -> u32 {
@@ -1821,18 +1789,15 @@ mod tests {
     }
 
     impl ResearchWeb for ScriptWeb {
-        fn search(&self, query: &str) -> Result<(Vec<SearchHit>, SearchRoute)> {
-            Ok((
-                vec![SearchHit {
-                    title: format!("Result for {query}"),
-                    url: "https://reuters.com/widget".into(),
-                    host: "reuters.com".into(),
-                    snippet: Some("snippet".into()),
-                    published: Some("2026-08-20".into()),
-                    tier: 2,
-                }],
-                self.route,
-            ))
+        fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
+            Ok(vec![SearchHit {
+                title: format!("Result for {query}"),
+                url: "https://reuters.com/widget".into(),
+                host: "reuters.com".into(),
+                snippet: Some("snippet".into()),
+                published: Some("2026-08-20".into()),
+                tier: 2,
+            }])
         }
         fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
             let guard = self.fetches.lock().unwrap();
@@ -1932,7 +1897,7 @@ mod tests {
             })),
             disconfirm_findings(),
         ]);
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let runner = runner(&model, &web, &clock, &ctx, 10);
@@ -1979,7 +1944,7 @@ mod tests {
                 "topic_answered": true
             })),
         ]);
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);
@@ -2004,7 +1969,6 @@ mod tests {
         assert!(out.disconfirming.is_some());
         assert_eq!(out.fetches_spent, 1);
         assert_eq!(web.fetch_count(), 1);
-        assert!(!out.tavily_fallback_used);
         assert_eq!(out.seed_decisions, vec!["competitive-position: cold"]);
     }
 
@@ -2015,8 +1979,8 @@ mod tests {
         /// clock alone).
         struct FailingWeb;
         impl ResearchWeb for FailingWeb {
-            fn search(&self, _query: &str) -> Result<(Vec<SearchHit>, SearchRoute)> {
-                Ok((Vec::new(), SearchRoute::Searxng))
+            fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
+                Ok(Vec::new())
             }
             fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
                 bail!("fetch of {url} returned HTTP 404")
@@ -2098,7 +2062,7 @@ mod tests {
                 disconfirm_findings(),
             ]),
         };
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = ResearchRunner {
@@ -2156,7 +2120,7 @@ mod tests {
             ]),
             fail_first: Mutex::new(RefCell::new(true)),
         };
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = ResearchRunner {
@@ -2212,7 +2176,7 @@ mod tests {
     }
 
     fn flaky_runner_out(model: &FlakyModel) -> Result<HoldingResearch> {
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = ResearchRunner {
@@ -2279,7 +2243,7 @@ mod tests {
     #[test]
     fn the_default_gate_keeps_a_findings_parse_failure_hard() {
         let model = ScriptModel::new(vec![findings_turn(json!("not a findings object"))]);
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);
@@ -2302,7 +2266,7 @@ mod tests {
             ])),
             findings_turn(simple_findings("https://reuters.com/widget")),
         ]);
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 1);
@@ -2358,7 +2322,7 @@ mod tests {
             // The disconfirming pass.
             done(),
         ]);
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(1));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);
@@ -2377,8 +2341,8 @@ mod tests {
     /// A web stub whose fetch lands on a redirected final URL.
     struct RedirectWeb;
     impl ResearchWeb for RedirectWeb {
-        fn search(&self, _q: &str) -> Result<(Vec<SearchHit>, SearchRoute)> {
-            Ok((vec![], SearchRoute::Searxng))
+        fn search(&self, _q: &str) -> Result<Vec<SearchHit>> {
+            Ok(vec![])
         }
         fn fetch(&self, _url: &str) -> Result<(FetchedPage, bool)> {
             Ok((
@@ -2435,28 +2399,9 @@ mod tests {
     }
 
     #[test]
-    fn a_tavily_served_search_marks_the_run_degraded() {
-        let model = ScriptModel::new(vec![
-            turn_with_tools(json!([
-                {"function": {"name": "web_search", "arguments": {"query": "widget"}}}
-            ])),
-            findings_turn(json!({"findings": "x", "claims": [], "topic_answered": true})),
-            findings_turn(json!({"findings": "d", "claims": [], "topic_answered": true})),
-        ]);
-        let web = ScriptWeb::new(SearchRoute::TavilyFallback);
-        let clock = FrozenClock(Duration::from_secs(1));
-        let ctx = RunContext::noop();
-        let r = runner(&model, &web, &clock, &ctx, 10);
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
-        assert!(out.tavily_fallback_used);
-    }
-
-    #[test]
     fn a_model_failure_propagates_hard() {
         let model = ScriptModel::new(vec![]);
-        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(1));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);

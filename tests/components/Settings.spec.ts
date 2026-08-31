@@ -352,22 +352,38 @@ test("the searxng row distinguishes untested / ok / unreachable, and gates on a 
   // Untested reads untested — never probed at startup.
   expect(statusOf(null).text()).toContain("Untested");
 
-  const ok = statusOf({ status: "ok", detail: null, tavily_fallback: false, degraded: false });
+  const ok = statusOf({ status: "ok", detail: null, degraded: false });
   expect(ok.text()).toContain("serving search results");
   expect(ok.classes()).toContain("cred-status--ok");
 
-  // Unreachable names the diagnosis, the setup command, and the fallback
-  // consequence (metered Tavily vs research skipped).
+  // Unreachable names the diagnosis, the setup command, and the SearXNG-only
+  // degraded consequence (research skipped until it serves).
   const down = statusOf({
     status: "unreachable",
     detail: "SearXNG rejected the JSON request (HTTP 403)",
-    tavily_fallback: false,
     degraded: true,
   });
   expect(down.text()).toContain("HTTP 403");
   expect(down.text()).toContain("docker compose up -d");
-  expect(down.text()).toContain("No Tavily credential");
+  expect(down.text()).toContain("SearXNG-only");
   expect(down.classes()).toContain("cred-status--err");
+});
+
+test("the web-research section note describes SearXNG-only degradation, not a Tavily fallback", () => {
+  // The visible section note is user-facing consent context: it must not
+  // promise a fallback the local suite no longer wires (docs/web-research.md
+  // §Tavily fallback — the suite is SearXNG-only). Previously untested, which
+  // let stale "fall back to Tavily" copy survive the disconnect.
+  const saved = {
+    ...settingsView,
+    web_research: { searxng_endpoint: "http://127.0.0.1:8888" },
+  };
+  const note = makeWrapper({ settings: saved }).find(
+    '[aria-labelledby="sec-web-research"] .section-note'
+  );
+  expect(note.exists()).toBe(true);
+  expect(note.text()).toContain("without web research");
+  expect(note.text()).not.toMatch(/fall back to.*tavily/i);
 });
 
 test("the appearance toggle (in the toolbar) emits set-dark with the flipped value", async () => {

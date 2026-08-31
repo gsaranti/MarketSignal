@@ -213,8 +213,12 @@ pub struct CheckpointHeader {
 /// holding's quick basis (Review 2 M11); `checkpoint-v7` — cash-position
 /// reconciliation against each Schwab account's liquidation value (Review 2
 /// M21), so an older pinned holdings snapshot cannot resume under the corrected
-/// denominator semantics.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v7";
+/// denominator semantics; `checkpoint-v8` — the Tavily-fallback route witness
+/// (`tavily_fallback_used`) removed from a completed holding's research audit
+/// with the local suite's move to SearXNG-only, so a v7 trail (which could carry
+/// a Tavily-researched holding) is refused at the resume gate rather than
+/// restoring a Tavily-researched holding under the SearXNG-only contract.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v8";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header

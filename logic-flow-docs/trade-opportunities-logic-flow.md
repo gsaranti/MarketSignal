@@ -281,8 +281,7 @@
   - Keyless local web search for discovery and per-candidate research.
 
 - **Tavily**
-  - Backup search for per-candidate research only when SearXNG cannot serve.
-  - Never used for discovery.
+  - Not used by the local suite: the suite's web search is SearXNG-only, and Tavily is reserved for the report job.
 
 - **Local storage**
   - The prior run’s matrix, the opportunity graph, the coverage ledger, the archive, the shadow ledger, and the picked-episode store (the six persisted structures).
@@ -299,7 +298,7 @@ Four stages reach the open web, and all of them run the **same bounded loop** �
 
 - **Step 3b — discovery** — the unit of work is a **route**, worked as one or more topics (`route ⊃ topic ⊃ pass ⊃ fetch`). One **per-run discovery** fetch + wall-clock ceiling is shared across every route, spent in route-priority order. Search is **keyless SearXNG only** — no Tavily; a down SearXNG means fewer candidates, never a keyed fallback. Seeds are the FMP `news/general-latest`, `news/stock-latest`, and `fmp-articles` feeds plus the macro-release calendar. The route’s findings are consolidated by its **card-formation call** into hypothesis cards (Step 3b), not by Step 5e.
 - **Step 3c — the refresh lane** — one selected watchlist node, one isolated bounded conversation, spent from the same discovery ceiling, SearXNG only. It is given only the node’s stored hypothesis, named metric, falsifiers, relevant milestone, latest gap, and this run’s matching structured-event seeds, and returns one typed `watchlist_research_refresh` object.
-- **Step 5d — per-candidate (and Deep Audit)** — the unit is the candidate’s agenda (the topic list at Step 5d). A **per-candidate** fetch + wall-clock budget, spent in topic-priority order (leading metric and bear case first). Search is **SearXNG first, Tavily as fallback**. Seeds are the candidate’s `news/stock` headlines. Every worked topic’s full findings flow to Step 5e distillation.
+- **Step 5d — per-candidate (and Deep Audit)** — the unit is the candidate’s agenda (the topic list at Step 5d). A **per-candidate** fetch + wall-clock budget, spent in topic-priority order (leading metric and bear case first). Search is **SearXNG only**. Seeds are the candidate’s `news/stock` headlines. Every worked topic’s full findings flow to Step 5e distillation.
 - **No cross-run findings seed.** The cross-run research cache is **document-level only** (below): no step receives a prior run’s distilled object as a seed — Portfolio’s seed-and-merge layer does not exist in this job; every loop starts from its framing inputs and works the open web.
 
 ### Build the agenda
@@ -324,7 +323,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Live web-page text — the pages the model deep-reads, fetched by a plain HTTP GET with a browser-like header set and readability-extracted in Rust to the article body (navigation, ads, and boilerplate stripped). This is what "current web sources" means.
   - Cached pages — a URL under about four weeks old comes from the **document cache** instead of the network, keyed by normalized URL and carrying its original retrieval timestamp (the vintage is never rewritten on reuse); new URLs are fetched live, and **searches always run live** — the cache satisfies only the re-fetch of an unchanged URL a current search re-surfaces. Each pass records its reused-vs-freshly-fetched split in the run audit.
   - A thin result (a paywall or a JavaScript-rendered page) escalates to a **rendered fetch** in the app's embedded webview — only the pages the extraction telemetry flags, never blanket — and an optional Connected Source (the user's own subscription session, from the Keychain) may carry the fetch past a paywall; both hold the same safety posture as the plain GET.
-  - Search is a backend, not a separate data source: SearXNG-first (Tavily fallback at Step 5d only; SearXNG-only at Steps 3b and 3c).
+  - Search is a backend, not a separate data source: SearXNG-only at every step.
 
 - **Who owns the context, and what persists**
   - The orchestrator owns the prompt: on every turn it appends the tool results and the model's non-thinking output (a tool request, or the pass's findings), threading the growing context forward — the model only requests tools, it never touches the network. Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
@@ -418,7 +417,7 @@ Consolidation is one reusable primitive — *distill one complete research topic
     - That availability probe — a local-only daemon call, no investment-data API — is the suite's one check before the run slot is claimed; every external fetch happens inside the slot.
   - Schwab is connected and its seven-day refresh token is still valid — needed only for the per-candidate option chains and the Step-8 holdings label, but a hard precondition all the same.
   - FMP and FRED credentials exist (presence only; Tavily deliberately does not gate the local suite).
-  - SearXNG is **not** on the gate: an unreachable instance raises a pre-run notice (model-led discovery can't run; per-candidate validation falls back to metered Tavily; flagged *not recommended* when Tavily is absent too) and the run proceeds degraded, never blocked.
+  - SearXNG is **not** on the gate: an unreachable instance raises a pre-run notice (model-led discovery can't run and per-candidate validation researches blind — the local suite is SearXNG-only, so a degraded run is always flagged *not recommended*) and the run proceeds degraded, never blocked.
 
 - **Failure logic**
   - Missing configuration (daemon endpoint or roster id unset, Schwab not connected or token lapsed, FMP / FRED credential missing) locks the Run buttons and shows a persistent warning *before* this step — one per category.
@@ -894,7 +893,7 @@ The shared research loop (*The research loop*, above), aimed at one candidate. T
 - **What differs here**
   - Unit: the candidate's agenda below; one isolated conversation per topic.
   - Budget: a **per-candidate** fetch + wall-clock budget, spent in topic-priority order — **leading metric and bear case first** — fail-soft on exhaustion (the lowest-priority topics drop to a recorded gap).
-  - Search: **SearXNG first, Tavily fallback** (a name's research should complete).
+  - Search: **SearXNG only** (a name's research should complete on SearXNG alone).
   - Seeds: the candidate's `news/stock` headlines from the dossier, as leads; the Step-3b hypothesis set as run-level worldview context.
   - Terminal consolidation: Step 5e.
 
@@ -1324,7 +1323,7 @@ The user-directed maintenance job. No discovery: the user selects one or more **
 
 - **Gate**
   - Presence is uniform — local models configured, Schwab connected (a presence precondition even though Quick Audit's analytical pass reads no Schwab data — its one Schwab touch is the fail-soft, display-only Step-8 cross-reference), FMP / FRED present.
-  - **Deep Audit** clears the full Step-1 gate (daemon reachable + roster pulled — it makes model calls) and triggers the SearXNG pre-run notice when the instance is down (its selected names get thinner evidence; *not recommended* without Tavily).
+  - **Deep Audit** clears the full Step-1 gate (daemon reachable + roster pulled — it makes model calls) and triggers the SearXNG pre-run notice when the instance is down (its selected names get thinner evidence; always *not recommended*, since the local suite is SearXNG-only).
   - **Quick Audit** is engine-only, so it **skips the daemon-connectivity check** and runs with the daemon configured-but-down; no web research, so no pre-run notice.
 
 - **Load**
@@ -1364,7 +1363,7 @@ The user-directed maintenance job. No discovery: the user selects one or more **
 `Selected names → Full Step-5 loop → Reconcile → Save → Display`
 
 - **Data retrieved**
-  - Everything a Step-5 candidate gets — the full per-symbol surface and fresh web research (the shared loop, SearXNG first, Tavily fallback).
+  - Everything a Step-5 candidate gets — the full per-symbol surface and fresh web research (the shared loop, SearXNG only).
 
 - **Logic**
   - Each selected name runs the Step-5 per-candidate loop as a **carried-forward candidate**: 5a affirm-or-overturn on the prior archetype → 5b dossier with the prior record, its `continuity_weight` (from the age of `last_deep_researched_at`), and the own-lifecycle retrospective → 5c engine → 5d research → 5e distillation → 5f refinement → 5g scoring (with the since-flagged read, cap-only) → 5h validation.

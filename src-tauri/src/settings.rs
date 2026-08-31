@@ -77,8 +77,8 @@ pub struct LocalModelSettings {
 
 /// The web-research settings (`docs/configuration.md §Web Research`): the
 /// local SearXNG endpoint. Not a secret (a loopback service address), so it
-/// round-trips in full like the local-model values. The Tavily fallback reuses
-/// the provider credential above — no second field.
+/// round-trips in full like the local-model values. The local suite is
+/// SearXNG-only, so there is no local-suite fallback credential here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebResearchSettings {
     pub searxng_endpoint: String,

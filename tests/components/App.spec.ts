@@ -1395,7 +1395,6 @@ describe("App.vue portfolio wiring", () => {
         test_searxng: () => ({
           status: "unreachable",
           detail: "SearXNG rejected the JSON request (HTTP 403)",
-          tavily_fallback: true,
           degraded: true,
         }),
         generate_portfolio_manual: () => samplePortfolioRun,
@@ -1409,11 +1408,11 @@ describe("App.vue portfolio wiring", () => {
     wrapper.findComponent(PortfolioView).vm.$emit("run", ["AAPL"]);
     await flushPromises();
     // The run has NOT launched; the notice dialog (the second ConfirmDialog —
-    // the first is the import dialog) is open with the Tavily-fallback copy.
+    // the first is the import dialog) is open with the SearXNG-only degraded copy.
     expect(invokedCommands()).not.toContain("generate_portfolio_manual");
     const notice = wrapper.findAllComponents(ConfirmDialog)[1];
     expect(notice.props("open")).toBe(true);
-    expect(notice.props("body")).toContain("Tavily");
+    expect(notice.props("body")).toContain("SearXNG-only");
     expect(notice.props("detail")).toContain("HTTP 403");
 
     // Confirm relaunches exactly the run that was asked for — the selection
@@ -1427,13 +1426,12 @@ describe("App.vue portfolio wiring", () => {
     wrapper.unmount();
   });
 
-  test("a cancelled notice never launches, and the not-recommended copy names the missing fallback", async () => {
+  test("a cancelled notice never launches, and the SearXNG-only copy flags not-recommended", async () => {
     tauri.invoke.mockImplementation(
       makeInvokeRouter({
         test_searxng: () => ({
           status: "not_configured",
           detail: null,
-          tavily_fallback: false,
           degraded: true,
         }),
       })
@@ -1447,7 +1445,8 @@ describe("App.vue portfolio wiring", () => {
     await flushPromises();
     const notice = wrapper.findAllComponents(ConfirmDialog)[1];
     expect(notice.props("open")).toBe(true);
-    // No Tavily either: the copy flags not-recommended per the docs' wording.
+    // SearXNG-only, so a degraded run researches blind: the copy flags
+    // not-recommended per the docs' wording.
     expect(notice.props("body")).toContain("not recommended");
 
     notice.vm.$emit("cancel");
@@ -1478,7 +1477,6 @@ describe("App.vue portfolio wiring", () => {
     const preflight = {
       status: "unreachable",
       detail: "SearXNG rejected the JSON request (HTTP 403)",
-      tavily_fallback: true,
       degraded: true,
     };
     // Stateful settings: the saved endpoint changes when save-web-research
@@ -1534,13 +1532,11 @@ describe("App.vue portfolio wiring", () => {
     const stale = {
       status: "ok",
       detail: null,
-      tavily_fallback: true,
       degraded: false,
     };
     const fresh = {
       status: "unreachable",
       detail: "new endpoint down",
-      tavily_fallback: true,
       degraded: true,
     };
     const resolvers: Array<(v: unknown) => void> = [];
@@ -1592,7 +1588,6 @@ describe("App.vue portfolio wiring", () => {
     const ambiguous = {
       status: "ok",
       detail: null,
-      tavily_fallback: true,
       degraded: false,
     };
     const probeResolvers: Array<(v: unknown) => void> = [];

@@ -785,13 +785,15 @@ async fn generate_portfolio_manual(
             roster.reasoner.clone(),
             roster.fast.clone(),
         );
-        // The live web tool for the 6c research loop (SearXNG-primary, Tavily
-        // fallback, document cache + telemetry). Fail-soft: a stack that can't
-        // construct runs research offline (a recorded gap), never a blocked run
-        // — SearXNG sits off the execution gate (`docs/web-research.md`).
+        // The live web tool for the 6c research loop (SearXNG-only, document
+        // cache + telemetry). Tavily is reserved for the market-report job, so a
+        // local job never spends that quota — a blocked or empty SearXNG returns
+        // a failed/empty search the loop fail-softs on, never a Tavily call
+        // (`docs/web-research.md §Tavily fallback`). Fail-soft otherwise too: a
+        // stack that can't construct runs research offline (a recorded gap),
+        // never a blocked run — SearXNG sits off the execution gate.
         let analyst = match portfolio::research::LiveResearchWeb::new(
             cfg.searxng_endpoint.as_deref(),
-            cfg.tavily_api_key.as_deref(),
             &paths.db_path,
         ) {
             Ok(web) => analyst.with_research(portfolio::pipeline::LiveResearchCtx {
@@ -1586,25 +1588,27 @@ fn save_web_research_settings(
 /// and the pre-run web-research notice share this one read
 /// (`docs/web-research.md §Tavily fallback`; `docs/interface.md §Pre-run
 /// web-research notice`). Never a gate: the result carries a degraded flag the
-/// frontend renders as a confirm-and-proceed notice, *not recommended* when no
-/// Tavily fallback is configured either. The blocking probe goes through
-/// `spawn_blocking`, the same seam as the other connection tests.
+/// frontend renders as a confirm-and-proceed notice. The local suite is
+/// **SearXNG-only**, so the preflight reports **no fallback** unconditionally,
+/// and a degraded local run is always flagged *not recommended* (it researches
+/// blind). The blocking probe goes
+/// through `spawn_blocking`, the same seam as the other connection tests.
 #[tauri::command]
 async fn test_searxng(
     app: tauri::AppHandle,
 ) -> Result<web_research::search::WebResearchPreflight, String> {
     // Read the saved config on a short-lived connection dropped before the
     // await — a `rusqlite::Connection` is not `Send`.
-    let (endpoint, tavily) = {
+    let endpoint = {
         let conn = open_app_db(&app)?;
         let cfg = AppConfig::load(&conn);
-        (
-            cfg.searxng_endpoint.clone(),
-            config::present(&cfg.tavily_api_key).is_some(),
-        )
+        cfg.searxng_endpoint.clone()
     };
     tauri::async_runtime::spawn_blocking(move || {
-        web_research::search::preflight(endpoint.as_deref(), tavily)
+        // The local suite is SearXNG-only (Tavily is reserved for the report
+        // job), so a degraded local run researches blind — the preflight carries
+        // no fallback flag, and the notice always reads not-recommended.
+        web_research::search::preflight(endpoint.as_deref())
     })
     .await
     .map_err(|e| format!("SearXNG probe task failed: {e}"))

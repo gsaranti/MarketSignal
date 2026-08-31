@@ -25,7 +25,7 @@ This matrix maps which job draws on which source; [The data sources](#the-data-s
 | [FRED](#fred-federal-reserve-economic-data) | macro, rates, credit, dollar, oil / gas + release calendar | run-level risk-free + commodity context | run-level risk-free + commodity-cyclical sleeve |
 | [BLS](#bls-bureau-of-labor-statistics) | CPI / payrolls / wages | — | — |
 | [CFTC](#cftc-commitments-of-traders) | bellwether speculator positioning | fund-underlying positioning | commodity-cyclical positioning |
-| [Tavily](#tavily) | **primary** news / research sweep | web-loop fallback | per-candidate web-loop fallback only (never discovery) |
+| [Tavily](#tavily) | **primary** news / research sweep | — | — |
 | [FMP Articles](#fmp-articles) | Step-7 news funnel (free) | — | discovery theme / event scan |
 | [GDELT](#gdelt) | geopolitical sweep | — | — *(dropped from the suite)* |
 | [Charles Schwab](#charles-schwab-trader-api) | — | holdings + option chains **(required)** | owned / not-owned cross-ref + option chains |
@@ -37,7 +37,7 @@ This matrix maps which job draws on which source; [The data sources](#the-data-s
 | Local models *(Ollama — [local-models.md](local-models.md))* | — | all reasoning roles | all reasoning roles |
 
 A cell names the job's use; **—** means the job doesn't use that source.
-"Primary" vs "fallback" is called out where a source plays different roles across jobs (Tavily, SearXNG).
+Tavily is **report-only** and SearXNG is **local-suite-only** — neither serves as the other's fallback, since the local suite never spends the report's reserved Tavily quota.
 The report column spans **two distinct assemblies** — the deterministic **Step-3 baseline scan** and the **Step-7 news funnel** — named per cell, never blended.
 Rows mirror the catalog sections below, plus two intentional breakouts listed separately because they map to jobs differently — FMP's free **FMP Articles** news sub-feed, and the **model runtimes** (cloud agents for the report vs on-device local models for the suite).
 Plan-tier constraints on the shared FMP key are audited once for all jobs in [FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit).
@@ -244,7 +244,7 @@ Responsibilities:
 - identifying important developing stories
 - supplying contextual research material to the agents
 
-The application uses Tavily as the **Market Signal Report's** primary research and news-ingestion system; for the local suite it is only the keyless [SearXNG](#searxng-local-web-search) web tool's fallback, never the primary.
+The application uses Tavily as the **Market Signal Report's** primary research and news-ingestion system; the local suite does **not** use Tavily — its web tool is [SearXNG](#searxng-local-web-search)-only.
 
 **Endpoint** — `https://api.tavily.com/search` (the Search API; `/usage` backs the connection test).
 
@@ -296,11 +296,11 @@ This changes only the window width, not the request count: it stays a single bou
 ### SearXNG (local web search)
 Docs - https://docs.searxng.org/
 
-**Used by:** Portfolio Analysis · Trade Opportunities (local suite only) — the suite's **primary** web search; [Tavily](#tavily) above is its fallback.
+**Used by:** Portfolio Analysis · Trade Opportunities (local suite only) — the suite's **only** web search.
 Not the report.
 
 SearXNG is the local suite's **web-search backend** — a self-hosted, keyless metasearch instance queried over its JSON API on the loopback interface, fanning queries out to general engines.
-It is the primary search source for the suite's research loop, with the existing Tavily integration as a fallback.
+It is the **only** search source for the suite's research loop.
 The search / fetch / extract tool built on it is described in [web-research.md](web-research.md).
 
 ### Charles Schwab (Trader API)
@@ -714,7 +714,7 @@ A fund whose underlying isn't among these contracts fail-softs to no positioning
 | SEC EDGAR · N-PORT filings | per-fund (optional enrichment) | fund constituent holdings for concentration / single-name look-through (heavy, ~60-day lag); without it, ETFs retain the on-plan `etf/info` + sector / country exposure path, while mutual funds retain whatever information / allocation surface resolves and route to `role_risk_only` when the weighting set cannot support exposure pricing ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
 | FINRA · consolidated short-interest file | per-holding lookup (file fetched once / run) — **built** (stocks only; the adapter applies FINRA's uppercase, separator-free reporting key so account class-share spelling such as `BRK/B` resolves to `BRKB`; a symbol absent after that normalization carries no read — a market fact, not a gap) — + **conditional quick-check lookup** (the same once-per-run file, fetched only when a holding carries a short-interest-fed validated quantitative condition — as-built dormant, since no short-interest series exists in the closed engine surface — [portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) | short-interest level / trend / days-to-cover → risk / squeeze context (positioning evidence in the interpretation prompt, held out of every sub-score); the conditional leg would keep a short-interest ledger condition machine-evaluable between runs, once such a series joins the engine surface |
 | CBOE · daily put/call statistics | run-level | venue-level options-sentiment backdrop (broad-market context, not a per-name signal) |
-| Web tool — keyless SearXNG | per-holding (research lane) — **built** with the research-loop slice | management commentary from earnings-call transcripts (IR / aggregator sites) + the per-holding research lane for signals with no structured feed, including typed pre-profit production / delivery / bookings / backlog / reservation / guidance / unit-economics observations and the bounded latest-four-period cold-start / gap-fill backfill; Tavily remains the ordinary fail-soft fallback ([web-research.md](web-research.md), [portfolio-workflow.md §Step 6](portfolio-workflow.md#step-6-per-holding-analysis-loop)) |
+| Web tool — keyless SearXNG | per-holding (research lane) — **built** with the research-loop slice | management commentary from earnings-call transcripts (IR / aggregator sites) + the per-holding research lane for signals with no structured feed, including typed pre-profit production / delivery / bookings / backlog / reservation / guidance / unit-economics observations and the bounded latest-four-period cold-start / gap-fill backfill; a down SearXNG fail-softs to thinner research ([web-research.md](web-research.md), [portfolio-workflow.md §Step 6](portfolio-workflow.md#step-6-per-holding-analysis-loop)) |
 
 ### Trade Opportunities — endpoint surface
 
@@ -854,4 +854,4 @@ The same keyless pull the report and Portfolio Analysis make; Trade Opportunitie
 | FINRA · consolidated short-interest file | discovery (file fetched once / run) + per-candidate lookup + **conditional maintenance lookup** (per swept or ATO-selected name carrying a short-interest-fed `structured` condition — the same once-per-run file, in DTO reused from the discovery fetch, in ATO fetched by the Quick Audit's Step-2 conditional subset; never a second download) | short-interest extremes screen — a **bearish-by-default** factor, a *conditional* squeeze candidate only with an inflecting metric + catalyst + breaking bear case (discovery); level / trend / days-to-cover per candidate; the maintenance leg keeps a short-interest `structured` condition refreshable on the cheap paths ([trade-opportunities-workflow.md §Step 3c](trade-opportunities-workflow.md#step-3c-carried-forward-watchlist-re-check)) |
 | CBOE · daily put/call statistics | run-level | venue-level options-sentiment backdrop (broad-market context, not a per-name signal) |
 | FMP · `fmp-articles` | discovery | free-tier in-house, ticker-tagged commentary feeding the top-down theme & event scan (ignition points → exposed industries) — reuses the report's FMP Articles adapter, authenticated on the shared FMP key ([§FMP Articles](#fmp-articles)); no new credential. **GDELT is dropped** — its escalating rate-limit / IP-lockout makes it unreliable (the same reason the report job doesn't trust it) |
-| Web tool — **keyless SearXNG** | discovery (theme→names research loop + capped research-watchlist refresh) + per-candidate (validation loop) | the keyless local search / fetch / extract loop the orchestrator runs on a model's behalf — the theme/news search that lets the model **reason its way to names**, the targeted `research`-class watchlist refresh (drafted one node per DTO run), and the per-candidate research lane (signals with no structured feed: DRAM/NAND ASPs, supply discipline, moat/management scuttlebutt, and management commentary from earnings-call transcripts). **Discovery runs on SearXNG only — no Tavily, no GDELT** (a discovery feeder or targeted refresh that's down fail-softs to fewer candidates / an unchanged node); Tavily remains only the *per-candidate* web loop's degraded fallback when SearXNG is down ([web-research.md](web-research.md)), never a discovery dependency |
+| Web tool — **keyless SearXNG** | discovery (theme→names research loop + capped research-watchlist refresh) + per-candidate (validation loop) | the keyless local search / fetch / extract loop the orchestrator runs on a model's behalf — the theme/news search that lets the model **reason its way to names**, the targeted `research`-class watchlist refresh (drafted one node per DTO run), and the per-candidate research lane (signals with no structured feed: DRAM/NAND ASPs, supply discipline, moat/management scuttlebutt, and management commentary from earnings-call transcripts). **The whole local lane runs on SearXNG only — no Tavily, no GDELT** (a discovery feeder or targeted refresh that's down fail-softs to fewer candidates / an unchanged node; per-candidate validation with SearXNG down researches blind — [web-research.md](web-research.md)) |

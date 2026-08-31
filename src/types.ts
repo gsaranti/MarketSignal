@@ -204,7 +204,8 @@ export interface LocalModelSettings {
 // The web-research settings (docs/configuration.md §Web Research): the local
 // SearXNG endpoint. Not a secret (a loopback service address), so it
 // round-trips in full ("" when unset) to `save_web_research_settings`. The
-// Tavily fallback reuses the provider credential above — no second field.
+// local suite is SearXNG-only — Tavily is reserved for the report job — so
+// there is no local-suite fallback credential here.
 export interface WebResearchSettings {
   searxng_endpoint: string;
 }
@@ -212,12 +213,11 @@ export interface WebResearchSettings {
 // Returned by `test_searxng` — the Settings connection row and the pre-run
 // web-research notice share this one read (docs/web-research.md §Tavily
 // fallback; docs/interface.md §Pre-run web-research notice). Never a gate:
-// `degraded` is the notice trigger, `tavily_fallback` decides the
-// "not recommended" wording when no fallback exists either.
+// `degraded` is the notice trigger, and because the local suite is SearXNG-only
+// (no Tavily fallback) a degraded run is always flagged "not recommended".
 export interface WebResearchPreflight {
   status: "ok" | "unreachable" | "not_configured";
   detail: string | null;
-  tavily_fallback: boolean;
   degraded: boolean;
 }
 

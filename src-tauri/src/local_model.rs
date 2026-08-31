@@ -1246,7 +1246,7 @@ pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
     // a missing key blocks at the gate rather than failing hours into a run.
     // Presence-only (no live probe), surfaced through the **existing**
     // missing-provider-credentials category — no new category — while Tavily
-    // deliberately does not gate the local suite (an optional research fallback).
+    // deliberately does not gate the local suite (which does not use it — SearXNG-only).
     let mut missing_creds: Vec<&str> = Vec::new();
     if config::present(&cfg.fmp_api_key).is_none() {
         missing_creds.push("Financial Modeling Prep");

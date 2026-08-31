@@ -270,7 +270,6 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     test_searxng: () => ({
       status: "ok",
       detail: null,
-      tavily_fallback: false,
       degraded: false,
     }),
     get_portfolio_run: () => null,

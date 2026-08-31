@@ -207,7 +207,6 @@ pub struct ResearchAuditRecord {
     pub shape: DistillShape,
     pub fetches_spent: u32,
     pub elapsed_secs: u64,
-    pub tavily_fallback_used: bool,
     pub seed_decisions: Vec<String>,
     /// "url (retrieved_at)" lines from the evidence ledger.
     pub sources: Vec<String>,

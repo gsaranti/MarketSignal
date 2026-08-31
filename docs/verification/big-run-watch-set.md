@@ -93,7 +93,8 @@ The authoring-time-outside design question was settled in code — a standing ou
 
 ## The research loop
 
-The first live per-holding research loop at 47-position scale: SearXNG search availability against the Tavily fallback rate, and the per-topic pass loop's depth against real pages.
+The first live per-holding research loop at 47-position scale: the SearXNG serve rate against real query volume, and the per-topic pass loop's depth against real pages.
+The suite is now **SearXNG-only** — the local web tool has no Tavily backend ([web-research.md §Tavily fallback](../web-research.md#tavily-fallback)), so the old Tavily-fallback-rate watch is retired (zero spillover onto the report's quota is now structural, not a measured rate); a blocked or empty SearXNG instead degrades a holding's research to a thinner packet, so the watch is the SearXNG serve rate and the resulting degraded-research rate.
 
 The per-holding budgets, calibrating on this evidence: the 40-attempt fetch ceiling (`MAX_FETCHES_PER_HOLDING`; failed live attempts spend it), the 30-minute wall clock (`MAX_WALL_PER_HOLDING`), the 4,000-char per-topic seed budget (`SEED_BUDGET_CHARS`), and the pass-shape constants (`MAX_TURNS_PER_PASS`, `MAX_PASSES_PER_TOPIC`, `PAGE_TEXT_CAP_CHARS`, `MAX_CLAIMS_PER_PASS`, `MAX_SEEDED_BY_PER_PASS` = 4 distinct known ids) — all kept as drafted until this run reads them (ruled 2026-08-27).
 What the run measures is how often each binds, and what the seed's fixed drop order actually drops when it does.

@@ -163,7 +163,7 @@ All three reuse the same `vector_memory` module and `Embedder` trait; they diffe
 ## Web access
 
 When a local stage needs the open web, it requests a tool call; the Rust orchestrator executes the search and fetch and returns the result — the agent never performs network I/O itself, holding the same pure-stage boundary as the report pipeline.
-The web tool (SearXNG-primary, with a Tavily fallback, plus readability extraction) is documented in [web-research.md](web-research.md).
+The web tool (SearXNG-only, plus readability extraction) is documented in [web-research.md](web-research.md).
 
 ## Failure posture
 

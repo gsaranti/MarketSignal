@@ -1,6 +1,6 @@
-//! The web tool's search backend: self-hosted SearXNG primary, Tavily
-//! fallback (`docs/web-research.md §Search backend: SearXNG`, §Tavily
-//! fallback).
+//! The web tool's search backend: self-hosted SearXNG, SearXNG-only — Tavily is
+//! reserved for the report job, so there is no fallback here
+//! (`docs/web-research.md §Search backend: SearXNG`, §Tavily fallback).
 //!
 //! SearXNG is queried over its JSON API on the configured (loopback)
 //! endpoint — the one deliberate loopback target in the web tool, an
@@ -8,15 +8,17 @@
 //! exempt from the fetch guard's loopback block. It sits **off the execution
 //! gate**: unreachable means a degraded run behind a pre-run notice, never a
 //! block. When SearXNG can't serve (unreachable, misconfigured — an HTTP 403
-//! is the JSON-output-disabled signature — or empty), the tool falls back to
-//! the metered Tavily key where one is configured.
+//! is the JSON-output-disabled signature — or empty), the search fails; there
+//! is no Tavily fallback (SearXNG-only), so the run researches without that
+//! evidence.
 //!
 //! Rank-time policy lives here too: denied hosts are dropped at the search
 //! filter, and near-duplicate / same-origin hits collapse so syndication
 //! can't inflate apparent corroboration (five outlets reprinting one wire
 //! story are one source, not five).
 
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -32,6 +34,24 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// deeper tail only burns context.
 const MAX_HITS: usize = 12;
 
+/// Minimum spacing between consecutive SearXNG queries. The upstream public
+/// engines rate-limit / CAPTCHA on burst rate from a single egress IP, and the
+/// blocks are upstream, not the local limiter — so client-side pacing is the
+/// keyless lever (`docs/web-research.md §Search backend: SearXNG`). Calibratable
+/// and generous against the thinking-dominated ~25 min/holding cost: only
+/// back-to-back queries within a model turn actually wait, since a full 122B
+/// turn already spaces queries far past this between turns.
+const MIN_SEARCH_INTERVAL: Duration = Duration::from_secs(4);
+
+/// Jitter ceiling added on top of the interval so a run's bursts don't
+/// re-synchronize into a fresh burst; applied only after the first query.
+const SEARCH_JITTER: Duration = Duration::from_millis(1_500);
+
+/// Cap on the run-scoped query cache — distinct queries in a run are naturally
+/// bounded (order-of dozens per holding), so this only guards a pathological
+/// run from unbounded growth; past it, results still compute, just uncached.
+const MAX_QUERY_CACHE: usize = 4_096;
+
 /// One search hit, provider-agnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
@@ -45,19 +65,6 @@ pub struct SearchHit {
     pub tier: u8,
 }
 
-/// The injectable search seam the research runner drives; implementations are
-/// the live [`FallbackSearch`] and test scripts.
-pub trait WebSearch: Send + Sync {
-    fn search(&self, query: &str) -> Result<Vec<SearchHit>>;
-}
-
-/// How a `FallbackSearch` answered — recorded by the runner so a degraded
-/// (Tavily) or failed search stays visible in the audit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchRoute {
-    Searxng,
-    TavilyFallback,
-}
 
 // ---------------------------------------------------------------------------
 // SearXNG
@@ -101,10 +108,76 @@ fn interpret_searxng(status: u16, body: &str) -> Result<SearxngResponse> {
     }
 }
 
+/// Run-scoped pacer that spaces outbound SearXNG queries. One instance
+/// throttles every holding's searches, because the burst that trips the
+/// upstream engines originates from the one shared egress IP across the whole
+/// run — so pacing is a property of the client, not of any single holding.
+struct SearchPacer {
+    /// Minimum spacing between consecutive queries.
+    min_interval: Duration,
+    /// Jitter ceiling added on top (0 disables).
+    jitter: Duration,
+    /// The instant the last query was released (its scheduled release, so a
+    /// reservation paces from when the prior query actually went out, not from
+    /// now). `None` before the first query.
+    last: Mutex<Option<Instant>>,
+}
+
+impl SearchPacer {
+    fn new(min_interval: Duration, jitter: Duration) -> Self {
+        Self {
+            min_interval,
+            jitter,
+            last: Mutex::new(None),
+        }
+    }
+
+    /// Reserve the next release slot and return how long to wait before it.
+    /// The caller sleeps for the returned duration — kept sleep-free so the
+    /// pacing math is deterministically testable. Only a query still inside the
+    /// interval since the last one waits: the first query, and any query already
+    /// spaced past the interval (a full model turn elapsed), waits nothing.
+    /// Jitter rides only on a query that is actually being paced.
+    fn reserve(&self, now: Instant) -> Duration {
+        let mut last = self.last.lock().unwrap();
+        let wait = match *last {
+            Some(prev) => {
+                let base = self.min_interval.saturating_sub(now.saturating_duration_since(prev));
+                // A query already spaced past the interval needs no jitter —
+                // jitter desynchronizes bursts, and this one isn't one.
+                if base.is_zero() {
+                    Duration::ZERO
+                } else {
+                    base + self.next_jitter()
+                }
+            }
+            None => Duration::ZERO,
+        };
+        *last = Some(now + wait);
+        wait
+    }
+
+    /// A cheap, dependency-free jitter in `[0, self.jitter)`. Not cryptographic
+    /// — desynchronization, not unpredictability, is the goal — so the subsec
+    /// nanos of the wall clock are a fine entropy source.
+    fn next_jitter(&self) -> Duration {
+        if self.jitter.is_zero() {
+            return Duration::ZERO;
+        }
+        let span = self.jitter.as_millis().max(1) as u64;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0);
+        Duration::from_millis(nanos % span)
+    }
+}
+
 /// The local SearXNG instance over its JSON API.
 pub struct SearxngClient {
     base_url: String,
     http: reqwest::blocking::Client,
+    pacer: SearchPacer,
 }
 
 impl SearxngClient {
@@ -116,6 +189,7 @@ impl SearxngClient {
         Ok(Self {
             base_url: endpoint.trim().trim_end_matches('/').to_string(),
             http,
+            pacer: SearchPacer::new(MIN_SEARCH_INTERVAL, SEARCH_JITTER),
         })
     }
 
@@ -123,6 +197,14 @@ impl SearxngClient {
     /// status makes one legible.
     pub fn search_raw(&self, query: &str) -> Result<Vec<SearchHit>> {
         let url = format!("{}/search", self.base_url);
+        // Pace the outbound query: the upstream engines block on burst rate
+        // from one egress IP, so hold a minimum spacing between consecutive
+        // SearXNG queries. Polled here at the request boundary; the first query
+        // of a run never waits.
+        let wait = self.pacer.reserve(Instant::now());
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
+        }
         let resp = self
             .http
             .get(&url)
@@ -164,16 +246,16 @@ impl SearxngClient {
     /// own definition — the same rank-time filter runs before the judgment, so
     /// a probe answered only by denied hosts or malformed entries reads
     /// degraded exactly as the run would treat it: an instance that responds
-    /// but serves nothing usable routes every actual search to the metered
-    /// Tavily fallback, and the probe must surface that rather than silently
-    /// consenting to the spend.
+    /// but serves nothing usable leaves every actual search empty, and the
+    /// local suite is SearXNG-only (no Tavily fallback), so the probe must
+    /// surface that rather than silently consenting to a blind run.
     pub fn health_check(&self) -> Result<()> {
         let hits = filter_and_collapse(self.search_raw("financial market news")?);
         if hits.is_empty() {
             bail!(
                 "SearXNG responded but returned no usable results for the probe query — its \
-                 engines may be failing or disabled, so searches would silently fall back to \
-                 Tavily"
+                 engines may be failing or disabled, so a run would research blind (the local \
+                 suite is SearXNG-only, with no Tavily fallback)"
             );
         }
         Ok(())
@@ -260,77 +342,75 @@ pub fn filter_and_collapse(hits: Vec<SearchHit>) -> Vec<SearchHit> {
 }
 
 // ---------------------------------------------------------------------------
-// The fallback composite
+// The search tool
 // ---------------------------------------------------------------------------
 
-/// SearXNG-primary search with the Tavily fallback
-/// (`docs/web-research.md §Tavily fallback`): the fallback engages when the
-/// local instance can't serve — unreachable, misconfigured, or returning
-/// nothing. Both providers' hits pass the same rank-time filter.
-pub struct FallbackSearch {
+/// The local suite's web search: self-hosted SearXNG with a run-scoped dedup
+/// cache. **SearXNG-only** — there is no fallback, because Tavily is reserved
+/// for the report job (`docs/web-research.md §Tavily fallback`). A SearXNG that
+/// can't serve — unreachable, misconfigured, or returning nothing usable —
+/// fails the search, and the research loop fail-softs to a thinner packet.
+pub struct SearchTool {
     searxng: Option<SearxngClient>,
-    /// The report pipeline's Tavily adapter behind its `SearchBackend` trait —
-    /// reused rather than re-implemented; `None` when no Tavily key is
-    /// configured (SearXNG-only, fail-soft).
-    tavily: Option<Box<dyn crate::research_executor::SearchBackend + Send + Sync>>,
+    /// Run-scoped cache of results by normalized query, so a repeated query
+    /// across a topic's passes returns without re-hitting SearXNG (and its
+    /// pacing).
+    cache: Mutex<std::collections::HashMap<String, Vec<SearchHit>>>,
 }
 
-impl FallbackSearch {
-    pub fn new(
-        searxng: Option<SearxngClient>,
-        tavily: Option<Box<dyn crate::research_executor::SearchBackend + Send + Sync>>,
-    ) -> Self {
-        Self { searxng, tavily }
-    }
+/// Normalize a query for the dedup cache: lowercased with whitespace runs
+/// collapsed — nothing more. Punctuation is deliberately preserved, because
+/// SearXNG treats some of it as operators (`!engine` / `!category`,
+/// `:language`), so folding it away would let a distinct query collect an
+/// earlier query's cached results. The cache is conservative on purpose: a
+/// false hit would feed the model the wrong results, while a false miss costs
+/// only one (paced) SearXNG query — so it dedups only queries that are textually
+/// identical bar case and spacing.
+fn normalize_query(query: &str) -> String {
+    query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
 
-    /// Search with the route taken, so the runner can record degraded mode.
-    /// "Returning nothing" is judged **after** the rank-time filter: a result
-    /// set that survives only as denied or malformed entries is no more
-    /// servable than a raw empty one, so it falls back the same way.
-    pub fn search_routed(&self, query: &str) -> Result<(Vec<SearchHit>, SearchRoute)> {
-        let primary_err = match &self.searxng {
-            Some(client) => match client.search_raw(query) {
-                Ok(hits) => {
-                    let filtered = filter_and_collapse(hits);
-                    if !filtered.is_empty() {
-                        return Ok((filtered, SearchRoute::Searxng));
-                    }
-                    anyhow::anyhow!("SearXNG returned no usable results")
-                }
-                Err(e) => e,
-            },
-            None => anyhow::anyhow!("no SearXNG endpoint configured"),
-        };
-        match &self.tavily {
-            Some(backend) => {
-                let headlines = backend
-                    .search(query)
-                    .with_context(|| format!("Tavily fallback after: {primary_err}"))?;
-                let hits = headlines
-                    .into_iter()
-                    .map(|h| {
-                        let host = registry::normalize_host(&h.source);
-                        let tier = tier_of(&host);
-                        SearchHit {
-                            title: h.title,
-                            url: h.url,
-                            host,
-                            snippet: h.snippet,
-                            published: h.published,
-                            tier,
-                        }
-                    })
-                    .collect();
-                Ok((filter_and_collapse(hits), SearchRoute::TavilyFallback))
-            }
-            None => Err(primary_err.context("search degraded: SearXNG failed and no Tavily fallback is configured")),
+impl SearchTool {
+    pub fn new(searxng: Option<SearxngClient>) -> Self {
+        Self {
+            searxng,
+            cache: Mutex::new(std::collections::HashMap::new()),
         }
     }
-}
 
-impl WebSearch for FallbackSearch {
-    fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        self.search_routed(query).map(|(hits, _)| hits)
+    /// One search, dedup-cached. The run-scoped cache short-circuits a repeated
+    /// query before any network call; only successful results are cached (a
+    /// failure stays retryable). "Returning nothing" is judged **after** the
+    /// rank-time filter: a result set surviving only as denied or malformed
+    /// entries is no more servable than a raw empty one, so it fails the same
+    /// way — and with no fallback, that failure reaches the loop as a degraded
+    /// search.
+    pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
+        let key = normalize_query(query);
+        if let Some(cached) = self.cache.lock().unwrap().get(&key).cloned() {
+            return Ok(cached);
+        }
+        let result = self.search_uncached(query);
+        if let Ok(hits) = &result {
+            let mut cache = self.cache.lock().unwrap();
+            if cache.len() < MAX_QUERY_CACHE {
+                cache.insert(key, hits.clone());
+            }
+        }
+        result
+    }
+
+    fn search_uncached(&self, query: &str) -> Result<Vec<SearchHit>> {
+        match &self.searxng {
+            Some(client) => {
+                let filtered = filter_and_collapse(client.search_raw(query)?);
+                if filtered.is_empty() {
+                    bail!("SearXNG returned no usable results");
+                }
+                Ok(filtered)
+            }
+            None => bail!("no SearXNG endpoint configured"),
+        }
     }
 }
 
@@ -341,23 +421,23 @@ impl WebSearch for FallbackSearch {
 /// The pre-run web-research read (`docs/web-research.md §Tavily fallback` —
 /// the pre-run notice; `docs/interface.md §Pre-run web-research notice`).
 /// Never a gate: the frontend shows a confirm-and-proceed notice on a
-/// degraded state, flagged *not recommended* when no Tavily fallback exists
-/// either, and the engine-only paths never ask.
+/// degraded state, always flagged *not recommended* — the local suite is
+/// SearXNG-only, so a degraded run researches blind — and the engine-only
+/// paths never ask. There is no Tavily-fallback field because there is no
+/// local-suite fallback: Tavily is reserved for the report job.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WebResearchPreflight {
     /// `ok` | `unreachable` | `not_configured`.
     pub status: String,
     /// The failure diagnosis when unreachable (e.g. the JSON-disabled 403).
     pub detail: Option<String>,
-    /// Whether the metered Tavily fallback is configured.
-    pub tavily_fallback: bool,
     /// True whenever SearXNG cannot serve — the notice trigger.
     pub degraded: bool,
 }
 
 /// Probe the configured SearXNG endpoint for the pre-run notice and the
 /// Settings connection row. One bounded JSON query; no state change.
-pub fn preflight(endpoint: Option<&str>, tavily_configured: bool) -> WebResearchPreflight {
+pub fn preflight(endpoint: Option<&str>) -> WebResearchPreflight {
     let (status, detail) = match endpoint.map(str::trim).filter(|s| !s.is_empty()) {
         None => ("not_configured", None),
         Some(endpoint) => match SearxngClient::new(endpoint).and_then(|c| c.health_check()) {
@@ -369,7 +449,6 @@ pub fn preflight(endpoint: Option<&str>, tavily_configured: bool) -> WebResearch
         degraded: status != "ok",
         status: status.to_string(),
         detail,
-        tavily_fallback: tavily_configured,
     }
 }
 
@@ -455,64 +534,30 @@ mod tests {
         assert_eq!(kept[0].host, "reuters.com", "higher tier wins from behind");
     }
 
-    struct ScriptedBackend(Vec<crate::news::RawHeadline>);
-    impl crate::research_executor::SearchBackend for ScriptedBackend {
-        fn search(&self, _query: &str) -> anyhow::Result<Vec<crate::news::RawHeadline>> {
-            Ok(self.0.clone())
-        }
-    }
-
     #[test]
-    fn fallback_engages_when_searxng_is_absent_or_failing() {
-        let tavily = ScriptedBackend(vec![crate::news::RawHeadline {
-            title: "Widget Co beats".into(),
-            url: "https://reuters.com/a".into(),
-            source: "reuters.com".into(),
-            published: None,
-            snippet: None,
-        }]);
-        // No SearXNG configured at all -> straight to Tavily, route recorded.
-        let search = FallbackSearch::new(None, Some(Box::new(tavily)));
-        let (hits, route) = search.search_routed("widget co").unwrap();
-        assert_eq!(route, SearchRoute::TavilyFallback);
-        assert_eq!(hits.len(), 1);
-    }
-
-    #[test]
-    fn fallback_engages_when_every_searxng_hit_is_filtered() {
-        // SearXNG responds, but every hit dies at the rank-time filter (a
-        // denied host) — as unservable as a raw empty set, so Tavily engages.
+    fn searxng_filtered_to_empty_is_a_degraded_error() {
+        // SearXNG responds, but every hit dies at the rank-time filter (a denied
+        // host) — as unservable as a raw empty set. SearXNG-only, so that
+        // reaches the loop as a degraded (failed) search, never a fallback.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![("Content-Type", "application/json")],
             body: r#"{"results":[{"title":"Buy signal!","url":"https://stockinvest.us/x","content":""}]}"#,
         }]);
-        let tavily = ScriptedBackend(vec![crate::news::RawHeadline {
-            title: "Widget Co beats".into(),
-            url: "https://reuters.com/a".into(),
-            source: "reuters.com".into(),
-            published: None,
-            snippet: None,
-        }]);
-        let search = FallbackSearch::new(
-            Some(SearxngClient::new(&server.base_url).unwrap()),
-            Some(Box::new(tavily)),
-        );
-        let (hits, route) = search.search_routed("widget co").unwrap();
-        assert_eq!(route, SearchRoute::TavilyFallback);
-        assert_eq!(hits.len(), 1);
+        let search = SearchTool::new(Some(SearxngClient::new(&server.base_url).unwrap()));
+        let err = search.search("widget co").unwrap_err().to_string();
+        assert!(err.contains("no usable results"), "{err}");
     }
 
     #[test]
     fn preflight_reads_ok_unreachable_and_not_configured() {
         // Not configured: no probe at all.
-        let p = preflight(None, true);
+        let p = preflight(None);
         assert_eq!(p.status, "not_configured");
         assert!(p.degraded);
-        assert!(p.tavily_fallback);
-        let p = preflight(Some("   "), false);
+        let p = preflight(Some("   "));
         assert_eq!(p.status, "not_configured");
-        assert!(!p.tavily_fallback);
+        assert!(p.degraded);
 
         // A serving instance — one that returns results — reads ok.
         let server = MockHttp::serve(vec![Canned::Reply {
@@ -520,33 +565,32 @@ mod tests {
             headers: vec![("Content-Type", "application/json")],
             body: r#"{"results":[{"title":"Markets today","url":"https://reuters.com/a","content":""}]}"#,
         }]);
-        let p = preflight(Some(&server.base_url), false);
+        let p = preflight(Some(&server.base_url));
         assert_eq!(p.status, "ok");
         assert!(!p.degraded);
 
         // An instance that responds but returns NOTHING reads degraded — the
-        // search path treats zero results as fallback-triggering, so a probe
-        // that called this healthy would silently consent to metered Tavily
-        // spend on every actual search.
+        // search path treats zero usable results the same as an empty one, so a
+        // probe that called this healthy would silently consent to a blind run.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![("Content-Type", "application/json")],
             body: r#"{"results":[]}"#,
         }]);
-        let p = preflight(Some(&server.base_url), false);
+        let p = preflight(Some(&server.base_url));
         assert_eq!(p.status, "unreachable");
         assert!(p.degraded);
         assert!(p.detail.unwrap().contains("no usable results"));
 
         // Same for a result set the rank-time filter empties (denied hosts
         // only) — the probe judges through the SAME filter the run uses, so
-        // preflight and fallback can never disagree on this result class.
+        // preflight and the search path can never disagree on this result class.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![("Content-Type", "application/json")],
             body: r#"{"results":[{"title":"Buy signal!","url":"https://stockinvest.us/x","content":""}]}"#,
         }]);
-        let p = preflight(Some(&server.base_url), false);
+        let p = preflight(Some(&server.base_url));
         assert_eq!(p.status, "unreachable");
         assert!(p.degraded);
 
@@ -556,16 +600,71 @@ mod tests {
             headers: vec![],
             body: "",
         }]);
-        let p = preflight(Some(&server.base_url), true);
+        let p = preflight(Some(&server.base_url));
         assert_eq!(p.status, "unreachable");
         assert!(p.degraded);
         assert!(p.detail.unwrap().contains("JSON output"));
     }
 
     #[test]
-    fn no_backend_at_all_is_an_error_the_loop_fail_softs() {
-        let search = FallbackSearch::new(None, None);
-        let err = search.search_routed("widget co").unwrap_err().to_string();
-        assert!(err.contains("no Tavily fallback"), "{err}");
+    fn no_searxng_configured_is_an_error_the_loop_fail_softs() {
+        let search = SearchTool::new(None);
+        let err = search.search("widget co").unwrap_err().to_string();
+        assert!(err.contains("no SearXNG endpoint configured"), "{err}");
+    }
+
+    #[test]
+    fn pacer_spaces_consecutive_queries() {
+        let pacer = SearchPacer::new(Duration::from_secs(4), Duration::ZERO);
+        let base = Instant::now();
+        // The first query of a run releases immediately.
+        assert_eq!(pacer.reserve(base), Duration::ZERO);
+        // A second query issued back-to-back waits the full interval.
+        assert_eq!(pacer.reserve(base), Duration::from_secs(4));
+        // Well past the interval since the reserved release: no wait.
+        assert_eq!(pacer.reserve(base + Duration::from_secs(20)), Duration::ZERO);
+    }
+
+    #[test]
+    fn pacer_jitter_rides_on_top_of_the_interval_after_the_first_query() {
+        let pacer = SearchPacer::new(Duration::from_secs(4), Duration::from_millis(1_500));
+        let base = Instant::now();
+        // First query: immediate and jitter-free.
+        assert_eq!(pacer.reserve(base), Duration::ZERO);
+        // Second: the interval plus a jitter strictly under the ceiling.
+        let wait = pacer.reserve(base);
+        assert!(
+            wait >= Duration::from_secs(4) && wait < Duration::from_millis(5_500),
+            "jitter out of band: {wait:?}"
+        );
+    }
+
+    #[test]
+    fn query_cache_dedups_repeat_and_case_varied_searches() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![("Content-Type", "application/json")],
+            body: r#"{"results":[{"title":"Widget Co beats","url":"https://www.reuters.com/business/widget","content":"beat"}]}"#,
+        }]);
+        let search = SearchTool::new(Some(SearxngClient::new(&server.base_url).unwrap()));
+        let first = search.search("Widget Co earnings").unwrap();
+        assert_eq!(first.len(), 1);
+        // A repeat — and a case/whitespace-varied repeat — both serve from the
+        // run-scoped cache, so SearXNG is hit exactly once.
+        let again = search.search("Widget Co earnings").unwrap();
+        let varied = search.search("  widget   co   EARNINGS ").unwrap();
+        assert_eq!(again, first);
+        assert_eq!(varied, first);
+        assert_eq!(server.attempts(), 1, "repeat queries must not re-hit SearXNG");
+    }
+
+    #[test]
+    fn normalize_query_folds_case_and_whitespace_but_keeps_punctuation() {
+        assert_eq!(normalize_query("  Widget   Co  Earnings "), "widget co earnings");
+        assert_eq!(normalize_query("widget co earnings"), "widget co earnings");
+        // Punctuation is preserved: SearXNG operators must stay distinct, so a
+        // `!engine` / `:lang` query never collides with the plain one.
+        assert_eq!(normalize_query("!images   AAPL"), "!images aapl");
+        assert_ne!(normalize_query("!images AAPL"), normalize_query("images AAPL"));
     }
 }

@@ -21,7 +21,7 @@ For job states, the global run slot, cancellation, and error handling, see [sche
 Every step below is tagged with a **Type** so it is obvious what the step actually does:
 
 - **Computed (app layer)** — deterministic Rust logic, with no model and no external network: local SQLite and filesystem reads, the holdings diff, and the **financial-analysis engine** (every sub-score, target, and derived read).
-- **API retrieval** — fetches from external sources: holdings and option chains from **Charles Schwab** (account-scoped, via OAuth — see [schwab-integration.md](schwab-integration.md)); company data from **FMP / SEC EDGAR**; run-level macro and positioning from **FRED / CFTC**; and the **web tool** (SearXNG-primary, Tavily fallback) the orchestrator runs *on a model's behalf*.
+- **API retrieval** — fetches from external sources: holdings and option chains from **Charles Schwab** (account-scoped, via OAuth — see [schwab-integration.md](schwab-integration.md)); company data from **FMP / SEC EDGAR**; run-level macro and positioning from **FRED / CFTC**; and the **web tool** (SearXNG-only) the orchestrator runs *on a model's behalf*.
   The full per-source endpoint surface, with each call's per-holding / per-fund / run-level cardinality, is in [data-sources.md §Portfolio Analysis — endpoint surface](data-sources.md#portfolio-analysis--endpoint-surface).
 - **Local-model call** — invokes a model on the app-supervised **Ollama** daemon ([local-models.md §Serving runtime](local-models.md#serving-runtime)): the primary reasoner **`Qwen3.5-122B-A10B`** in **thinking** mode (multi-step research and interpretation) or **non-thinking** mode (firm, directed consolidation), or the fixed **`Qwen3-Embedding-4B`** embedder (vectorization only).
   Every generative call is **schema-constrained** via Ollama's native `format` parameter — the model picks values, never structure (the Step-6c research turns carry the tools *and* the findings grammar on the same call, per the verified pinned-version behavior below).
@@ -60,7 +60,7 @@ The job will not start unless four preconditions hold:
 - the **single global run slot** is free (no report or other local job is running — see [scheduling.md §Concurrent Job Protection](scheduling.md#concurrent-job-protection));
 - the **local-model daemon is reachable and the configured roster is present** (the 122B reasoner + the embedder) — health-checked at the Ollama endpoint ([local-models.md §Serving runtime](local-models.md#serving-runtime));
 - a **connected Schwab account** with a valid (≤7-day) refresh token ([schwab-integration.md §A connected Schwab account is required](schwab-integration.md#a-connected-schwab-account-is-required));
-- the **shared FMP and FRED credentials are present** ([configuration.md §External Data Provider Credentials](configuration.md#external-data-provider-credentials)) — the per-holding fundamentals surface (FMP) and the run-level rate anchors (FRED `DGS10` / `DGS2`) are load-bearing engine inputs, so a missing key blocks at the gate rather than failing hours into a run; the check is presence-only (no live probe), surfaced through the **existing missing-provider-credentials warning category** — no new category — while **Tavily deliberately does not gate** the local suite (there it is an optional research fallback — [web-research.md §Tavily fallback](web-research.md#tavily-fallback)).
+- the **shared FMP and FRED credentials are present** ([configuration.md §External Data Provider Credentials](configuration.md#external-data-provider-credentials)) — the per-holding fundamentals surface (FMP) and the run-level rate anchors (FRED `DGS10` / `DGS2`) are load-bearing engine inputs, so a missing key blocks at the gate rather than failing hours into a run; the check is presence-only (no live probe), surfaced through the **existing missing-provider-credentials warning category** — no new category — while **Tavily deliberately does not gate** the local suite — its web tool is SearXNG-only ([web-research.md §Tavily fallback](web-research.md#tavily-fallback)).
   (As-built with the fund slice: the shipped gate (`check_local_configuration`) carries the FMP / FRED presence check through the shared missing-provider-credentials category.)
 
 This gate is **independent of the cloud-report gate** — a machine with no OpenAI/Anthropic keys can still run the local suite.
@@ -211,7 +211,7 @@ This stage ends with the **evidence-floor check** — deterministic, over the fl
 
 **Type:** Local-model call (122B, thinking) + API retrieval (the web tool), **looped**.
 This is the only **per-holding** stage that loops.
-**Built** with the research-loop slice: the orchestrator-assembled agenda, the per-topic pass loop over the SearXNG-primary web tool, and the budget machinery below all run live; a construction without a web stack (the demo, offline tests) degrades to the recorded research-unavailable gap, never a failed run.
+**Built** with the research-loop slice: the orchestrator-assembled agenda, the per-topic pass loop over the SearXNG-only web tool, and the budget machinery below all run live; a construction without a web stack (the demo, offline tests) degrades to the recorded research-unavailable gap, never a failed run.
 
 The orchestrator assembles the holding's **agenda** deterministically — the reasoner works it, never authors it ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
 The agenda is competitive position, recent results/estimate revisions, catalysts/risks, **management quality & capital allocation**, market narrative & sentiment, and forward opportunity & thematic fit.
@@ -230,7 +230,7 @@ Grounded by the deterministic financials so research fills the gaps the numbers 
 #### Local-model call — Per-holding research (Qwen3.5-122B, thinking)
 
 **Model.**
-The resident 122B reasoner in thinking mode, requesting `web_search` / `web_fetch` tool calls the orchestrator executes (SearXNG-primary, Tavily fallback; SSRF-guarded; untrusted page text inserted as quoted evidence, never as instructions — see [web-research.md §Safety and provenance](web-research.md#safety-and-provenance)).
+The resident 122B reasoner in thinking mode, requesting `web_search` / `web_fetch` tool calls the orchestrator executes (SearXNG-only; SSRF-guarded; untrusted page text inserted as quoted evidence, never as instructions — see [web-research.md §Safety and provenance](web-research.md#safety-and-provenance)).
 **One isolated conversation per agenda topic** (a bounded multi-turn pass loop — [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)) — topics do not share a context.
 
 **Prompt — input.**

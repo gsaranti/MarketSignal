@@ -452,15 +452,12 @@ const searxngStatusLine = computed<{ tone: LocalStatusTone; text: string }>(() =
   if (p.status === "not_configured") {
     return {
       tone: "pending",
-      text: "Not configured — runs fall back to Tavily where a credential is saved.",
+      text: "Not configured — a web-research run would research blind (the local suite is SearXNG-only).",
     };
   }
-  const fallback = p.tavily_fallback
-    ? "Runs fall back to metered Tavily search until it serves."
-    : "No Tavily credential is saved either — research would be skipped.";
   return {
     tone: "err",
-    text: `${p.detail ?? "SearXNG unreachable"} — start it with "docker compose up -d" from the app's searxng/ folder (OrbStack recommended on Apple Silicon), then re-test. ${fallback}`,
+    text: `${p.detail ?? "SearXNG unreachable"} — start it with "docker compose up -d" from the app's searxng/ folder (OrbStack recommended on Apple Silicon), then re-test. The local suite is SearXNG-only, so research is skipped until it serves.`,
   };
 });
 
@@ -1088,8 +1085,8 @@ const importDataLabel = computed(() =>
              docs/web-research.md §Search backend). Off every gate: an
              unreachable SearXNG degrades a run behind a pre-run notice, never
              a lock or a warning category — so this section saves ungated and
-             its connection row carries no warning semantics. The Tavily
-             fallback reuses the provider credential above. -->
+             its connection row carries no warning semantics. The local suite is
+             SearXNG-only — there is no Tavily fallback here. -->
         <form v-if="settings" class="settings-form" @submit.prevent="onSaveWebResearch">
           <section class="settings-section" aria-labelledby="sec-web-research">
             <h3 id="sec-web-research" class="section-eyebrow">Web research</h3>
@@ -1098,8 +1095,9 @@ const importDataLabel = computed(() =>
               instance — keyless and cost-free. Start it once with
               <span class="mono">docker compose up -d</span> from the app's
               <span class="mono">searxng/</span> folder (OrbStack is the
-              recommended runtime on Apple Silicon). When it can't serve, runs
-              fall back to the metered Tavily credential above.
+              recommended runtime on Apple Silicon). When it can't serve, a run
+              proceeds without web research — evidence is thinner and conviction
+              lower.
             </p>
 
             <div class="field">

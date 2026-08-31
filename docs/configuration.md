@@ -87,7 +87,7 @@ BLS, GDELT, and CFTC are also accessed through public APIs but need no Settings 
 If a required external provider credential (the Financial Modeling Prep, FRED, or Tavily credential) is missing:
 - report generation is disabled
 - the application displays a validation warning explaining which credential is missing
-- the **local-suite jobs are blocked too when FMP or FRED is missing** — their execution gate shares those two credentials as presence preconditions, through this same warning category ([portfolio-workflow.md §Step 1](portfolio-workflow.md#step-1-job-start-and-gate)); Tavily does not gate the local suite, where it is an optional research fallback ([web-research.md §Tavily fallback](web-research.md#tavily-fallback))
+- the **local-suite jobs are blocked too when FMP or FRED is missing** — their execution gate shares those two credentials as presence preconditions, through this same warning category ([portfolio-workflow.md §Step 1](portfolio-workflow.md#step-1-job-start-and-gate)); Tavily does not gate the local suite, and the local suite does not use it — its web tool is SearXNG-only ([web-research.md §Tavily fallback](web-research.md#tavily-fallback))
 
 For the data providers themselves and what each is used for, see [data-sources.md](data-sources.md).
 
@@ -110,8 +110,8 @@ When a connectivity check finds the daemon or a rostered model missing, it offer
 
 ### Web Research
 
-The suite's web-research tool uses a local SearXNG instance, with the existing Tavily credential as a fallback (see [web-research.md](web-research.md)).
-Settings hold the **SearXNG endpoint**; no key is required for the local instance, and the Tavily fallback reuses the credential already configured above.
+The suite's web-research tool uses a local SearXNG instance and is **SearXNG-only** (see [web-research.md](web-research.md)).
+Settings hold the **SearXNG endpoint**; no key is required for the local instance, and the local suite makes no Tavily call — the Tavily credential configured above serves only the report job.
 The user self-hosts the instance from a **pinned `docker-compose.yml` the app ships** — the load-bearing JSON-output / bot-limiter config baked in — so setup is one command; when the instance is unreachable or misconfigured the **Settings connection row** deep-links to that setup and to a Docker / **OrbStack** install, and the pre-run notice flags the degraded run (SearXNG is never a warning-area category — see [web-research.md §Search backend](web-research.md#search-backend-searxng), [interface.md §Pre-run web-research notice](interface.md#pre-run-web-research-notice-local-suite)).
 The suite ships a **default source registry** — per-domain evidence tiers over a heuristic floor ([data-sources.md §Source registry and evidence tiers](data-sources.md#source-registry-and-evidence-tiers)).
 A **user-facing override surface** (pinning a domain's tier or adding it to the deny list) is **deferred**: the registry is a thin override most domains need no entry in, so hand-tuning — and the settings-store schema it would need — waits until a real need appears.

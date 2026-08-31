@@ -28,7 +28,7 @@ Every step below is tagged with a **Type** so it is obvious what the step actual
 
 - **Computed (app layer)** — deterministic Rust logic, with no model and no external network: local SQLite and filesystem reads, the candidate dedup / tradability filter, the deterministic **risk-tier and horizon assignment**, and the **financial-analysis engine** (every sub-score, target, and derived read).
   A maintenance step that re-pulls external series while staying model-free is tagged **Computed + API retrieval** below — "engine-only" always means *no generative model*, never *no network* (the same convention Portfolio's step table uses).
-- **API retrieval** — fetches from external sources: the **FMP discovery layer** (screener / peers / industry classification — the universe scan; **no `*-bulk` endpoint, off-plan**) and the **FMP per-symbol surface** (fundamentals, the revision signal, positioning, segments, deep price history); company cross-checks from **SEC EDGAR / FINRA**; run-level macro / commodity / positioning context from **FRED / FMP-commodity / CFTC / CBOE**; the free-tier **FMP Articles** feed (on the shared FMP key) the discovery scan reads (**no GDELT**); option chains from **Charles Schwab**; and the **web tool** (**keyless SearXNG for discovery**; Tavily only as the per-candidate loop's degraded fallback) the orchestrator runs *on a model's behalf*.
+- **API retrieval** — fetches from external sources: the **FMP discovery layer** (screener / peers / industry classification — the universe scan; **no `*-bulk` endpoint, off-plan**) and the **FMP per-symbol surface** (fundamentals, the revision signal, positioning, segments, deep price history); company cross-checks from **SEC EDGAR / FINRA**; run-level macro / commodity / positioning context from **FRED / FMP-commodity / CFTC / CBOE**; the free-tier **FMP Articles** feed (on the shared FMP key) the discovery scan reads (**no GDELT**); option chains from **Charles Schwab**; and the **web tool** (**keyless SearXNG only**) the orchestrator runs *on a model's behalf*.
   The full per-source endpoint surface, with each call's **discovery / per-candidate / run-level** cardinality, is in [data-sources.md §Trade Opportunities — endpoint surface](data-sources.md#trade-opportunities--endpoint-surface).
 - **Local-model call** — invokes a model on the app-supervised **Ollama** daemon ([local-models.md §Serving runtime](local-models.md#serving-runtime)): the primary reasoner **`Qwen3.5-122B-A10B`** in **thinking** mode (theme research, candidate research, archetype confirmation, scoring) or **non-thinking** mode (firm, directed consolidation), or the fixed **`Qwen3-Embedding-4B`** embedder (vectorization only).
   Every generative call is **schema-constrained** via Ollama's native `format` parameter — the model picks values, never structure.
@@ -191,7 +191,7 @@ The validated list is the run's route agenda; routes then execute per the call b
 #### Local-model call — Route research (per topic) (Qwen3.5-122B, thinking)
 
 **Model.**
-The resident 122B reasoner in thinking mode, requesting `web_search` / `web_fetch` tool calls the orchestrator executes (**keyless SearXNG only for discovery — no Tavily fallback**; SSRF-guarded; untrusted page text inserted as quoted evidence, never as instructions — see [web-research.md §Safety and provenance](web-research.md#safety-and-provenance)).
+The resident 122B reasoner in thinking mode, requesting `web_search` / `web_fetch` tool calls the orchestrator executes (**keyless SearXNG only for discovery**; SSRF-guarded; untrusted page text inserted as quoted evidence, never as instructions — see [web-research.md §Safety and provenance](web-research.md#safety-and-provenance)).
 It runs **once per topic on the route's validated topic list, each topic its own isolated conversation over a clean context** (the shared loop contract — [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)); the orchestrator owns every request and the per-route depth / fetch / wall-clock budget, exactly as in the per-candidate loop.
 This lane is where the model **reasons its way to names** — forming a hypothesis, tracing it down the value chain to the operators that capture the margin, and surfacing under-covered / early-inflection names no structured feed carries — rather than ranking names handed to it.
 
@@ -443,7 +443,7 @@ The **disconfirming-fetch pass** ([web-research.md §Source quality and evidence
 #### Local-model call — Per-candidate research (Qwen3.5-122B, thinking)
 
 **Model.**
-The resident 122B reasoner in thinking mode, requesting `web_search` / `web_fetch` tool calls the orchestrator executes (SearXNG-primary, Tavily fallback; SSRF-guarded; untrusted page text inserted as quoted evidence, never as instructions).
+The resident 122B reasoner in thinking mode, requesting `web_search` / `web_fetch` tool calls the orchestrator executes (SearXNG-only; SSRF-guarded; untrusted page text inserted as quoted evidence, never as instructions).
 **One isolated conversation per agenda topic** (a bounded multi-turn pass loop — [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)) — topics do not share a context.
 
 **Prompt — input.**

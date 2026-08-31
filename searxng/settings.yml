@@ -19,15 +19,34 @@ search:
     - json
 
 engines:
-  # Pin the general engines that don't aggressively CAPTCHA automated queries.
-  - name: brave
+  # Engine set re-tuned against the 2026-08-30 big-run observations
+  # (docs/verification/2026-08-30-big-run-findings.md, Finding 1): under the
+  # research loop's sustained burst, most general engines block upstream by IP
+  # reputation. Keep the ones that returned usable results at least
+  # intermittently; disable the ones that CAPTCHA / 429 on effectively every
+  # automated call, so they only add latency and log noise. Client-side pacing
+  # (the search layer) is the actual rate defense — this list is cleanup, not
+  # the fix. `use_default_settings: true` still supplies breadth beyond this
+  # list. NOTE: engine names are validated only when the instance runs — confirm
+  # with the health-check probe at the next bring-up.
+  #
+  # Carried almost every query in the 2026-08-30 run (keyless scraped sources):
+  - name: google cse
     disabled: false
+  - name: reuters
+    disabled: false
+  # Returned usably enough to keep, though not CAPTCHA-free under volume:
   - name: duckduckgo
-    disabled: false
-  - name: qwant
     disabled: false
   - name: mojeek
     disabled: false
-  # Google CAPTCHA-walls hardest against automated queries: deprioritized.
+  # CAPTCHA / rate-limit on effectively every automated call — disabled:
+  - name: qwant
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: brave
+    disabled: true
+  # Google's HTML endpoint CAPTCHA-walls hardest against automated queries:
   - name: google
     disabled: true

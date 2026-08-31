@@ -933,7 +933,7 @@ The inline gates referenced above, gathered — with each branch's requirements 
 ### Step 6c — Research the holding
 
 - **As-built: live** (the research-loop slice)
-  - The loop below runs live over the SearXNG-primary web tool (Tavily fallback); a construction without a web stack (the demo, offline tests) degrades to a recorded research-unavailable gap, never a failed run.
+  - The loop below runs live over the SearXNG-only web tool; a construction without a web stack (the demo, offline tests) degrades to a recorded research-unavailable gap, never a failed run.
   - Runs before the slice graded on the deterministic financials and the house view alone.
 
 #### How the stage runs
@@ -1020,7 +1020,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 - **What is retrieved during a pass (the data)**
   - Live web-page text — the pages the model deep-reads, fetched and readability-extracted from the open web. This is what "current web sources" means.
   - Cached pages — previously-fetched pages under about four weeks old come from the document cache (Layer 1) instead of the network, carrying their original retrieval timestamp; new URLs are fetched live.
-  - Search backend, not a separate data source: the orchestrator runs search SearXNG-first, falling back to Tavily only when SearXNG can't serve.
+  - Search backend, not a separate data source: the orchestrator runs search on SearXNG only (the local suite wires no Tavily fallback).
 
 - **Who owns the context, and what persists**
   - Within a pass the orchestrator owns the prompt: on every turn it appends the tool results and the model's non-thinking output (a tool request, or the pass's findings), threading the growing context forward — the model only requests tools, it never touches the network. Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).

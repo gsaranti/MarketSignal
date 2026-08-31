@@ -1226,7 +1226,6 @@ async function probeSearxngForLaunch(): Promise<WebResearchPreflight> {
       preflight = {
         status: "unreachable",
         detail: String(e),
-        tavily_fallback: false,
         degraded: true,
       };
     }
@@ -1243,7 +1242,6 @@ async function probeSearxngForLaunch(): Promise<WebResearchPreflight> {
   return {
     status: "unreachable",
     detail: "settings changed while probing",
-    tavily_fallback: false,
     degraded: true,
   };
 }
@@ -1253,10 +1251,10 @@ async function generatePortfolio(selected?: string[], resume = false) {
   // The pre-run web-research notice (docs/web-research.md §Tavily fallback;
   // docs/interface.md §Pre-run web-research notice): probe SearXNG before
   // spending the run. Degraded → a confirm-and-proceed dialog with the
-  // Portfolio-specific consequence, flagged not-recommended when no Tavily
-  // fallback exists either — never a block. The engine-only quick check does
-  // no web research and never asks. A failed probe reads degraded-unknown
-  // rather than silently ok.
+  // Portfolio-specific consequence, always flagged not-recommended because the
+  // local suite is SearXNG-only (no Tavily fallback) — never a block. The
+  // engine-only quick check does no web research and never asks. A failed probe
+  // reads degraded-unknown rather than silently ok.
   const preflight = await probeSearxngForLaunch();
   if (preflight.degraded) {
     portfolioNotice.value = { preflight, selected, resume };
@@ -1276,9 +1274,9 @@ function cancelPortfolioNotice() {
   portfolioNotice.value = null;
 }
 
-// The notice dialog's copy — job-specific consequences per
-// docs/web-research.md §Tavily fallback (Portfolio loses validation depth;
-// with no Tavily either, the run grades on structured evidence alone).
+// The notice dialog's copy (docs/web-research.md §Tavily fallback). The local
+// suite is SearXNG-only, so a degraded run researches blind and grades on
+// structured evidence alone.
 const portfolioNoticeBody = computed(() => {
   const p = portfolioNotice.value?.preflight;
   if (!p) return "";
@@ -1286,9 +1284,7 @@ const portfolioNoticeBody = computed(() => {
     p.status === "not_configured"
       ? "No SearXNG endpoint is configured"
       : "The SearXNG instance can't serve search";
-  return p.tavily_fallback
-    ? `${cause}, so this run's per-holding research falls back to the metered Tavily credential for every search.`
-    : `${cause} and no Tavily credential is saved, so holdings will be analyzed without web research — evidence will be thinner and conviction lower. Running now is not recommended.`;
+  return `${cause}, so holdings will be analyzed without web research — the local suite is SearXNG-only, so evidence will be thinner and conviction lower. Running now is not recommended.`;
 });
 
 async function launchPortfolio(selected?: string[], resume = false) {
@@ -1550,7 +1546,6 @@ async function testSearxng() {
     searxngStatus.value = {
       status: "unreachable",
       detail: String(e),
-      tavily_fallback: false,
       degraded: true,
     };
   } finally {

@@ -305,8 +305,10 @@ this section carries only the decisions a plan must not work against.
   Market Signal Report stays a read-only shared input, loaded deterministically
   (not vector-searched), additionally isolated by embedder dimensionality.
 - **A cost-free web tool.** Self-hosted, keyless SearXNG for search plus a Rust
-  fetch/readability-extract layer, Tavily as fallback; the orchestrator runs the
-  tool, the model only requests it — holding the pure-stage boundary. SearXNG
+  fetch/readability-extract layer — **SearXNG-only** (Tavily is reserved for the
+  report job, so a local job never spends that quota; a blocked SearXNG degrades
+  to thinner research, never a fallback call); the orchestrator runs the tool,
+  the model only requests it — holding the pure-stage boundary. SearXNG
   isn't bundled: the app *ships configuration, not the server*. Thin extraction
   trips a **selective rendered-retrieval tier reusing the already-embedded Tauri
   webview** — not a bundled browser or Python sidecar — gated on telemetry so
@@ -704,8 +706,8 @@ every stacked runtime confirmation at once.
   `docs/verification/2026-08-21-fund-depth-rulings.md`, the contract
   canonical at `portfolio-analysis.md §Asset eligibility`.
 - **The research-loop slice** (`portfolio-v12`) — the live per-holding web
-  research: the SSRF-guarded web tool (SearXNG-primary, Tavily fallback,
-  source registry + tiers), the 6c per-topic pass loop with always-run
+  research: the SSRF-guarded web tool (SearXNG-only — Tavily reserved for the
+  report job — source registry + tiers), the 6c per-topic pass loop with always-run
   seed-and-merge caching, schema-constrained 6d with the typed side-channels,
   the 6e overlay finalization (the pre-profit producer activated), Settings
   §Web Research + the pre-run notice, and portability format v4. The
@@ -752,12 +754,13 @@ every stacked runtime confirmation at once.
    `docs/verification/`); attempt 3, the first v9-shape full run, launched
    from a wiped store on 2026-08-30 and was user-cancelled at 2 of 47
    holdings when the keyless `google cse` engine rate-limited under the
-   research loop's volume and drove SearXNG-to-Tavily spillover (Tavily is
-   reserved for the report job). Its six-finding record is
-   `docs/verification/2026-08-30-big-run-findings.md`, and a re-attempt is
-   now gated on that record's Finding 1 SearXNG mitigations (client pacing +
-   engine pruning, or a paid SERP overflow) landing first — not on the
-   2026-08-24 review, whose finding count is zero.
+   research loop's volume and drove SearXNG-to-Tavily spillover. Its
+   six-finding record is `docs/verification/2026-08-30-big-run-findings.md`.
+   Finding 1's mitigations have since landed — search pacing, a run-scoped
+   query-dedup cache, the `settings.yml` engine re-tune, and the local suite
+   made **SearXNG-only** (the Tavily-fallback machinery removed whole), so the
+   Tavily spillover that stopped attempt 3 can no longer occur; a re-attempt is
+   the user's call, from a wiped store per the watch set.
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire

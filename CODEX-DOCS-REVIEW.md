@@ -132,8 +132,8 @@ deliberately unresolved. Use it as the triage step for every candidate finding:
 
 - The #14645 thinking-mode caveat in the local workflows' Mode legends.
 - Analyst skills are forcing-function-only (verdicts never parsed/persisted).
-- GDELT dropped from the suite; TO discovery is SearXNG-only (no Tavily);
-  Tavily is per-candidate fallback only.
+- GDELT dropped from the suite; the local suite is SearXNG-only (no Tavily) —
+  Tavily is reserved for the report job, never a local-suite fallback.
 - Off-plan FMP endpoints (`*-bulk`, transcripts, 13F, fund-holdings,
   press-releases) with recorded fallbacks — the audit is live-verified.
 - True index breadth ruled out for the report (movers stay the proxy).
