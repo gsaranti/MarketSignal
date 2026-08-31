@@ -2056,8 +2056,15 @@ pub struct HoldingAudit {
 /// contracts the docs already state (`docs/portfolio-analysis.md` §Portfolio
 /// action: the departure is app-stamped; indeterminate neither tilts the decision
 /// nor creates dead money); prompt-prose only, no schema or other axis moves
-/// (`docs/verification/2026-08-30-big-run-findings.md` §Finding 3).
-pub const PROMPT_VERSION: &str = "portfolio-v32";
+/// (`docs/verification/2026-08-30-big-run-findings.md` §Finding 3). Attempt 4's
+/// Finding 4 fix B splits the Step-6c research turn — the gathering turns carry
+/// the tools with no grammar, and a separate synthesis call authors the findings
+/// from a fresh, tool-history-free conversation carrying the grammar and no tools
+/// (the tools-plus-`format` interleaving had left the terminal turn emitting empty
+/// or fenced bodies) — rewording both the gathering and synthesis prompts, so it
+/// moves to v33 so an interrupted pre-fix run cannot resume into the new synthesis
+/// contract (`docs/verification/2026-08-31-big-run-attempt-4-findings.md` §Finding 4).
+pub const PROMPT_VERSION: &str = "portfolio-v33";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

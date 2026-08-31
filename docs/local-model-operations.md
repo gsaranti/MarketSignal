@@ -92,8 +92,9 @@ The mechanic is asymmetric: Ollama applies the `format` GBNF grammar mask **only
   2. **Reasoning-field-first (light stages).**
      For a stage wanting a little reasoning *and* structure in one call, put a `reasoning` string field **first** in the schema (`{"reasoning": "...", ...}`) so the model reasons into that field before the structured fields — naturally a thinking-on call.
 
-  One additional repro was flagged before trusting `format` on the agentic path: a single uncorroborated report (v0.20.2) of `format` being ignored even with `think: true` **when `tools` are passed in the same call** — exactly the shape of a research-loop call.
-  **[verified clean on M5 2026-07-28, v0.32.5: 8/8 `think:true` + `tools` + `format` calls schema-valid — the report does not reproduce]**
+  One additional repro was flagged before trusting `format` on the agentic path: a single uncorroborated report (v0.20.2) of `format` being ignored even with `think: true` **when `tools` are passed in the same call** — the shape the research loop *used to* issue.
+  **[verified clean on M5 2026-07-28, v0.32.5: 8/8 `think:true` + `tools` + `format` calls schema-valid — the report does not reproduce at that sample]**
+  At 47-holding scale, though, that combined shape did misbehave — the terminal turn returned empty or fenced bodies at ~70% (attempt-4 Finding 4) — so **fix B retired it**: the research gathering turns now carry `tools` with no `format`, and a separate synthesis call carries `format` with no `tools`, so the research path no longer relies on the two co-existing (`docs/verification/2026-08-31-big-run-attempt-4-findings.md` §Finding 4).
 
 ## Sampling settings [vendor]
 

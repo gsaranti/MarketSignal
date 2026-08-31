@@ -5394,7 +5394,7 @@ const NUM_CTX_DISTILL: u32 = 32_768;
 /// Interpretation: the vendor advises ≥ 128 K context to preserve thinking
 /// capability (chains run tens of thousands of tokens); hybrid attention keeps
 /// the KV cost of this a few GB (`docs/local-model-operations.md §Context window`).
-const NUM_CTX_INTERPRET: u32 = 131_072;
+pub(crate) const NUM_CTX_INTERPRET: u32 = 131_072;
 /// Ollama `keep_alive: -1` — never idle-unload. The roster's documented posture:
 /// the reasoner (and embedder) stay resident between calls and runs
 /// (`docs/local-models.md §The model roster and per-task routing`).
@@ -5508,10 +5508,11 @@ fn hit_normal_distill_reservation(
         && resp.eval_count == Some(u64::from(NUM_PREDICT_DISTILL))
 }
 
-/// Build one research-loop turn's request: thinking on, the web tools and the
-/// findings grammar riding the same call (verified clean together on the
-/// pinned Ollama — `docs/local-model-operations.md` §Structured output ×
-/// thinking), the shared interpret context (one `num_ctx` per model).
+/// Build one research-loop turn's request: thinking on, the shared interpret
+/// context (one `num_ctx` per model). Tools and the findings grammar are passed
+/// per phase and never together — the gathering turns carry `tools` with no
+/// `format`, the synthesis call carries `format` with no `tools` (attempt-4
+/// Finding 4, fix B).
 fn research_turn_request(
     reasoner_model: &str,
     messages: Vec<ChatMessage>,
@@ -5596,8 +5597,10 @@ impl HoldingAnalyst for LocalAnalyst {
             // recorded gap on the audit (never a failed run).
             return Ok(research::offline_stub(plan));
         };
-        // The model seam: one thinking turn, tools + the findings grammar on
-        // the same call.
+        // The model seam: a thinking gathering turn carries the tools (no
+        // grammar); the pass's findings ride a separate synthesis call with the
+        // grammar (no tools), so the two never share a request (attempt-4
+        // Finding 4, fix B).
         struct TurnAdapter<'a> {
             analyst: &'a LocalAnalyst,
             stage: &'a str,
@@ -8592,8 +8595,12 @@ mod tests {
         // row's named fields) move it to v31; the same run's Finding 3 action-call
         // prompt clarity (the app-stamps-the-departure statement and the
         // non-`fails` capital-efficiency neutrality clause, both prompts) moves it
-        // to v32.
-        assert_eq!(PROMPT_VERSION, "portfolio-v32");
+        // to v32; attempt 4's Finding 4 fix B — splitting the research gathering
+        // turn (tools, no grammar) from a fresh, tool-history-free synthesis call
+        // (grammar, no tools) — reworded both the gathering and synthesis prompts,
+        // moving it to v33 (so an interrupted pre-fix run cannot resume into the
+        // new synthesis contract).
+        assert_eq!(PROMPT_VERSION, "portfolio-v33");
     }
 
     #[test]
@@ -10292,9 +10299,11 @@ mod tests {
         // explicitly non-thinking (F3 — an omitted flag rides the thinking-on
         // default) and grammar-constrained since the research slice retired the
         // stub-era free-prose exception; interpretation thinks; the research
-        // turn thinks with tools + the findings grammar on the same call; every
-        // stage pins an explicit `num_ctx` (never the daemon auto-size), its
-        // mode's sampling row, and stay-resident `keep_alive`.
+        // gathering turn thinks with tools and no grammar, while the separate
+        // synthesis call thinks with the findings grammar and no tools (fix B —
+        // never both on one call); every stage pins an explicit `num_ctx` (never
+        // the daemon auto-size), its mode's sampling row, and stay-resident
+        // `keep_alive`.
         let d = dossier(AssetClass::Stock, strong_financials());
 
         let schema = serde_json::json!({"type": "object"});
@@ -10316,20 +10325,44 @@ mod tests {
             "distill is grammar-constrained (the stub-era exception is retired)"
         );
 
+        // Fix B: gathering and synthesis are separate calls — tools and the
+        // findings grammar never ride one request.
         let tools = crate::portfolio::research::research_tools();
-        let turn = research_turn_request(
+        let gather = research_turn_request(
             "reasoner-model",
             vec![ChatMessage::user("brief")],
             Some(&tools),
-            Some(&schema),
+            None,
         );
-        assert_eq!(turn.think, Some(true));
-        assert_eq!(turn.keep_alive, Some(-1));
-        assert!(turn.tools.is_some(), "the web tools ride the turn");
-        assert!(turn.format_schema.is_some(), "findings grammar rides the same call");
-        let opts = turn.options.as_ref().unwrap();
+        assert_eq!(gather.think, Some(true));
+        assert_eq!(gather.keep_alive, Some(-1));
+        assert!(gather.tools.is_some(), "gathering carries the web tools");
+        assert!(
+            gather.format_schema.is_none(),
+            "gathering carries no grammar (it is not the findings call)"
+        );
+        let opts = gather.options.as_ref().unwrap();
         assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET, "one num_ctx per model");
         assert_eq!(opts["temperature"], 1.0, "thinking-general row");
+
+        let synth = research_turn_request(
+            "reasoner-model",
+            vec![ChatMessage::user("evidence")],
+            None,
+            Some(&schema),
+        );
+        assert_eq!(synth.think, Some(true));
+        assert_eq!(synth.keep_alive, Some(-1));
+        assert!(synth.tools.is_none(), "synthesis carries no tools");
+        assert!(
+            synth.format_schema.is_some(),
+            "the findings grammar rides the separate synthesis call"
+        );
+        assert_eq!(
+            synth.options.as_ref().unwrap()["num_ctx"],
+            NUM_CTX_INTERPRET,
+            "one num_ctx per model"
+        );
 
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,

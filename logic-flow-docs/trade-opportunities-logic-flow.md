@@ -307,11 +307,11 @@ The orchestrator assembles the topic list from the stage’s documented list; th
 
 ### Work each topic — the loop
 
-The orchestrator works the agenda **one topic at a time**. Each topic is its own isolated conversation over a clean context, and the orchestrator — never the model — owns every search and fetch, stopping at the stage’s budget.
+The orchestrator works the agenda **one topic at a time**. Each topic is worked in isolation over a clean context — a gathering loop plus that pass's separate synthesis call, sharing no context with other topics — and the orchestrator — never the model — owns every search and fetch, stopping at the stage’s budget.
 
 - **Two nested levels**
-  - **Topic** — one isolated conversation per agenda topic; topics never share a context.
-  - **Pass** — each topic's conversation is a bounded multi-turn tool loop: one root pass plus up to two follow-up passes, so three passes per topic at most. The cap counts passes (branches), not model calls — a single pass is itself many turns, each turn one model call: the tool-requesting turns ask for a search or fetch the orchestrator runs, and the pass's terminal turn emits its findings.
+  - **Topic** — worked in isolation per agenda topic (its gathering loop plus that pass's separate synthesis call); topics never share a context.
+  - **Pass** — each topic's conversation is a bounded multi-turn tool loop: one root pass plus up to two follow-up passes, so three passes per topic at most. The cap counts passes (branches), not model calls — a single pass runs a bounded gathering loop of tool turns (each one model call requesting a search or fetch the orchestrator runs), then a **separate synthesis call** authors the pass's findings from the gathered evidence over a fresh, tool-history-free conversation (the shared research loop's fix B — the gathering turns and the findings grammar never share a request; `research.rs`, `synthesize_findings`).
 
 - **What each topic conversation is given (its inputs)**
   - The stage's framing facts — identical for every topic of the item: at Step 5d the candidate's dossier facts, archetype, and computed leading-metric reads; at Step 3b the house view, the carried-forward opportunity graph (withheld from the outside-view route), and the route's source strategy.
@@ -326,7 +326,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Search is a backend, not a separate data source: SearXNG-only at every step.
 
 - **Who owns the context, and what persists**
-  - The orchestrator owns the prompt: on every turn it appends the tool results and the model's non-thinking output (a tool request, or the pass's findings), threading the growing context forward — the model only requests tools, it never touches the network. Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
+  - The orchestrator owns the prompt: on every gathering turn it appends the tool results and the model's tool request, threading the growing context forward — the model only requests tools, it never touches the network; the pass's findings are not part of this growing context — they are authored by a separate synthesis call over a fresh conversation (the shared research loop's attempt-4 Finding 4, fix B). Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
   - Carried across the topic's passes: the append-only **evidence ledger** (each extracted claim + its source URL + retrieval timestamp; a claim deep-read from a seed's URL additionally carries a `surfaced_by` back-pointer to that seed) and the accumulated per-pass findings, which the orchestrator assembles for the consolidating call. The framing inputs anchor the conversation from its start.
   - Raw fetched page text is the bulky working material: it may roll off the context as a pass proceeds, and the durable record of what a page yielded is its claims in the ledger, not the page text itself.
 
@@ -336,7 +336,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - It never relies on the model server's own truncation, which silently front-drops the prompt's head and leaves the model to hallucinate over the gap.
 
 - **What each model call returns**
-  - Inside a pass, a turn either requests `web_search` / `web_fetch` calls — the orchestrator executes them and returns the results for the next turn — or, once the topic is answered or the budget is spent, emits that pass's findings.
+  - Inside a pass, each gathering turn requests `web_search` / `web_fetch` calls — the orchestrator executes them and returns the results for the next turn — until the topic is answered or the budget is spent; then a separate synthesis call authors that pass's findings from the gathered evidence (the shared research loop's fix B).
   - The model authors each pass's findings write-up; the orchestrator only accumulates them — there is **no topic-close model synthesis**, so the first model consolidation of the findings is the stage's downstream call (Step 5e distillation, or Step 3b's card formation).
   - Each ledger entry is a hybrid: the model supplies the claim, the orchestrator stamps its provenance (the source URL / timestamp, and any seed back-pointer).
 
@@ -913,7 +913,7 @@ The shared research loop (*The research loop*, above), aimed at one candidate. T
   - No other topic's findings.
 
 - **What each model call returns**
-  - Per turn: `web_search` / `web_fetch` requests, or the pass's findings. Per topic: its **full findings response**, preserved whole with its evidence-ledger entries (each claim + source URL + retrieval timestamp + any `surfaced_by`), plus any **follow-up proposal** (the orchestrator decides) and any **material forward fact** flagged for the Step-5f refinement. There is no in-loop re-distillation — every worked topic's full response flows intact to Step 5e.
+  - Per gathering turn: `web_search` / `web_fetch` requests; the pass's findings are then authored by a separate synthesis call (fix B). Per topic: its **full findings response**, preserved whole with its evidence-ledger entries (each claim + source URL + retrieval timestamp + any `surfaced_by`), plus any **follow-up proposal** (the orchestrator decides) and any **material forward fact** flagged for the Step-5f refinement. There is no in-loop re-distillation — every worked topic's full response flows intact to Step 5e.
 
 - **Model**
   - The 122B reasoner in thinking mode, requesting tools the orchestrator executes (SSRF-guarded; page text inserted as quoted evidence, never as instructions).

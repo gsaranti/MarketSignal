@@ -1004,11 +1004,11 @@ The orchestrator assembles the topic list deterministically; the reasoner works 
 
 #### Work each topic — the research loop
 
-The orchestrator works the agenda **one topic at a time**. Each topic is its own isolated conversation over a clean context, and the orchestrator — never the model — owns every search and fetch, stopping at the holding's budget.
+The orchestrator works the agenda **one topic at a time**. Each topic is worked in isolation over a clean context — a gathering loop plus that pass's separate synthesis call, sharing no context with other topics — and the orchestrator — never the model — owns every search and fetch, stopping at the holding's budget.
 
 - **Two nested levels**
-  - **Topic** — the unit of isolation: one per-topic research loop (the "isolated conversation" as `docs/web-research.md` §Terminology defines it), and topics never share a context.
-  - **Pass** — each topic's loop is a bounded multi-turn tool loop: one root pass plus up to two follow-up passes, so three passes per topic at most. The cap counts passes (branches), not model calls — a single pass is itself many turns, each turn one model call: the tool-requesting turns ask for a search or fetch the orchestrator runs, and the pass's terminal turn emits its findings. As-built each pass opens a **fresh conversation** — a new message history of the system prompt plus a pass brief (the dossier facts, the topic's questions, its seed, the structured seeds, the approved follow-up question on a follow-up pass, and the topic's own claims gathered so far, capped at 40; only the holding's closing disconfirming-fetch pass reads claims drawn from every topic, under the same 40 cap) — so only the evidence ledger and the accumulated per-pass findings carry across a topic's passes (`research.rs`, `run_pass` / `pass_brief`); no message history does.
+  - **Topic** — the unit of isolation: its own per-topic research loop and synthesis call (the topic isolation `docs/web-research.md` §Terminology defines), and topics never share a context.
+  - **Pass** — each topic's loop is a bounded multi-turn tool loop: one root pass plus up to two follow-up passes, so three passes per topic at most. The cap counts passes (branches), not model calls — a single pass runs a bounded gathering loop of tool turns (each one model call requesting a search or fetch the orchestrator runs), then a **separate synthesis call** authors the pass's findings from the gathered evidence over a fresh, tool-history-free conversation, so the gathering turns and the findings grammar never share a request (attempt-4 Finding 4, fix B). As-built the gathering loop opens a **fresh conversation** per pass — a new message history of the system prompt plus a pass brief (the dossier facts, the topic's questions, its seed, the structured seeds, the approved follow-up question on a follow-up pass, and the topic's own claims gathered so far, capped at 40; only the holding's closing disconfirming-fetch pass reads claims drawn from every topic, under the same 40 cap) — and the synthesis call opens its own fresh conversation from the evidence, so only the evidence ledger and the accumulated per-pass findings carry across a topic's passes (`research.rs`, `run_pass` / `synthesize_findings` / `pass_brief`); no message history does.
 
 - **What each topic conversation is given (its inputs)**
   - The shared dossier facts — identical for every topic.
@@ -1023,7 +1023,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Search backend, not a separate data source: the orchestrator runs search on SearXNG only (the local suite wires no Tavily fallback).
 
 - **Who owns the context, and what persists**
-  - Within a pass the orchestrator owns the prompt: on every turn it appends the tool results and the model's non-thinking output (a tool request, or the pass's findings), threading the growing context forward — the model only requests tools, it never touches the network. Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
+  - Within a pass the orchestrator owns the prompt: on every gathering turn it appends the tool results and the model's tool request, threading the growing context forward — the model only requests tools, it never touches the network; the pass's findings are not part of this growing context — they are authored by a separate synthesis call over a fresh conversation (attempt-4 Finding 4, fix B). Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
   - Carried across the topic's passes (canonical): the append-only evidence ledger and the accumulated per-pass findings, which the orchestrator assembles for the Step-6d distillation. The framing inputs (dossier facts, questions, seed) anchor each pass's conversation from its start.
   - Raw fetched page text is the bulky working material, and the durable record of what a page yielded is its claims in the ledger, not the page text itself. As-built the capped tool results stay in the pass's message history (see the context-fitting note below); how much raw page text survives across a pass boundary is not pinned by the contract.
 
@@ -1033,7 +1033,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - It never relies on the model server's own truncation, which silently front-drops the prompt's head and leaves the model to hallucinate over the gap.
 
 - **What each model call returns**
-  - Inside a pass, a turn either requests `web_search` / `web_fetch` calls — the orchestrator executes them and returns the results for the next turn — or, once the topic is answered or the budget is spent, emits that pass's findings.
+  - Inside a pass, each gathering turn requests `web_search` / `web_fetch` calls — the orchestrator executes them and returns the results for the next turn — until the topic is answered or the budget is spent; then a separate synthesis call authors that pass's findings from the gathered evidence (attempt-4 Finding 4, fix B).
   - The model authors each pass's findings write-up; the orchestrator only accumulates them — there is **no topic-close model synthesis**, so the first model consolidation of the findings is the Step-6d distillation.
   - Each ledger entry is a hybrid: the model supplies the claim, the orchestrator stamps its provenance (the source URL / timestamp).
 

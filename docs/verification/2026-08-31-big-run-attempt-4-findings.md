@@ -265,3 +265,37 @@ A future full run should recompute these as real rates and add the attempt-3
 open items — the serve-rate-under-full-volume for Finding 1 and the
 `SchemaParse`-versus-truncation correlation for Finding 4 — that only the
 completed run can close.
+
+## Finding 4 — fix B (landed 2026-08-31)
+
+Fix B splits the Step-6c research turn so tools and the findings grammar never
+share a request: the gathering loop carries the tools with no `format`, and a
+separate synthesis call authors the pass's findings from a fresh, tool-history-
+free conversation carrying the grammar and no tools — mirroring the interpretation
+call, which uses the same clean shape and never fails its parse.
+The user ruled the five build decisions (always-synthesize-fresh, reuse the
+distillation input-budget guard for evidence sizing, a new tailored synthesis
+prompt dropping the "as JSON" phrasing, keep the bounded retry-once, capture the
+failing body on a residual parse failure), all recorded via the selector UI on
+2026-08-31.
+
+The mechanics: gathering turns pass `tools` only, the synthesis call passes the
+findings `format` only, and `synthesize_findings` keeps the same two retry legs
+and four-call bound the tool loop carried; the synthesis brief renders the
+gathered pages as the only citable evidence, carrying the full source annotation
+(tier, evidence kinds, extraction quality, recency, thin-stub) and sized against
+the shared input-budget guard with a water-fill allocator (short pages whole,
+long pages truncated, every page represented, a recorded gap and an inline marker
+on any truncation).
+`PROMPT_VERSION` moved to **`portfolio-v33`** so an interrupted pre-fix run cannot
+resume into the new synthesis contract — the debut stamp the next launch confirms.
+
+Verification: `cargo test` (1411) and `cargo clippy --all-targets --all-features`
+both green; new tests pin the synthesis call's fresh-two-message / tools-XOR-grammar
+shape and the allocator's fit / overflow / mixed / boundary behavior.
+Six Codex review rounds hardened it (source-quality fidelity, the water-fill
+allocator, marker accounting, and the doc-contract sweep); the record and the
+`stage_requests_carry_the_per_stage_mode_options_and_residency` /
+`prompt_version_is_stamped_for_the_model_arm_domain_gate` tests carry the details.
+The one thing static review cannot close — whether B eliminates the ~70%
+empty-body rate on the live 122B — is attempt 5's to confirm.
