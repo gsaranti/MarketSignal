@@ -1543,52 +1543,63 @@ fn synthesis_brief(
     // page, the worst case) only in that branch — where truncation is happening
     // anyway, so the extra reservation only tightens an already-overflowing
     // packet, never cuts one that fit.
+    // A drop summary is reserved only when the packet overflows, so a fitting
+    // packet is rendered whole and the reservation never induces truncation.
+    const DROP_SUMMARY_RESERVE: usize = 200;
+    let marker_len = BUDGET_TRUNC_MARKER.chars().count();
     let fetch_reserve = lengths.iter().filter(|&&l| l >= PAGE_TEXT_CAP_CHARS).count()
         * FETCH_CAP_MARKER.chars().count();
     let base_available = budget.saturating_sub(framing).saturating_sub(fetch_reserve);
-    let mut alloc = allocate_page_budget(&lengths, base_available);
-    // Each budget-truncated page carries its own marker *inside* its allocation
-    // — fold the marker's length out of that page's text — so a budget marker is
-    // reserved only where it actually renders and no budget is left unused on a
-    // preserved page (round-5 F1). A preserved page (`alloc == full length`) is
-    // untouched, so a packet that fits is still rendered whole.
-    for i in 0..alloc.len() {
-        if alloc[i] < lengths[i] {
-            alloc[i] = alloc[i].saturating_sub(BUDGET_TRUNC_MARKER.chars().count());
-        }
-    }
+    let available = if lengths.iter().sum::<usize>() <= base_available {
+        base_available
+    } else {
+        base_available.saturating_sub(DROP_SUMMARY_RESERVE)
+    };
+    let plans = plan_evidence(&lengths, available, marker_len);
     let mut truncated = 0usize;
+    let mut dropped = 0usize;
     for i in 0..unique.len() {
-        out.push_str(&headers[i]);
-        let text = texts[i];
-        let clipped: String = text.chars().take(alloc[i]).collect();
-        let budget_cut = clipped.chars().count() < lengths[i];
-        if budget_cut {
-            truncated += 1;
+        if plans[i].dropped {
+            // Omit the source entirely — never render its header or URL — so the
+            // model cannot cite evidence it did not see (round-7).
+            dropped += 1;
+            continue;
         }
-        out.push_str(&clipped);
+        out.push_str(&headers[i]);
+        out.push_str(&texts[i].chars().take(plans[i].text).collect::<String>());
         // The fetch cap is detected from the stored length (a page exactly at the
-        // cap is the negligible false positive); the budget cut is what the
-        // allocator just did to this page.
+        // cap is the negligible false positive).
         if lengths[i] >= PAGE_TEXT_CAP_CHARS {
             out.push_str(FETCH_CAP_MARKER);
         }
-        // Only mark a page that still shows text: the marker's length was folded
-        // out of the allocation, so a page whose allocation is smaller than the
-        // marker renders empty with no marker rather than overflowing its share
-        // — keeping the budget guarantee unconditional. That case needs a
-        // sub-78-char water-fill share, unreachable under the 40-fetch ceiling
-        // (it takes thousands of pages); the gap still counts it (round-6).
-        if budget_cut && alloc[i] > 0 {
+        if plans[i].marker {
             out.push_str(BUDGET_TRUNC_MARKER);
+            truncated += 1;
         }
         out.push('\n');
     }
-    if truncated > 0 {
-        gaps.push(format!(
-            "topic {}: {truncated} of {} evidence page(s) truncated to fit the model's input budget",
-            ctx.topic.key,
-            unique.len()
+    if truncated > 0 || dropped > 0 {
+        let mut msg = format!("topic {}: ", ctx.topic.key);
+        if truncated > 0 {
+            msg.push_str(&format!(
+                "{truncated} of {} evidence page(s) truncated to fit the model's input budget",
+                unique.len()
+            ));
+        }
+        if dropped > 0 {
+            if truncated > 0 {
+                msg.push_str("; ");
+            }
+            msg.push_str(&format!(
+                "{dropped} evidence page(s) omitted entirely to fit the model's input budget"
+            ));
+        }
+        gaps.push(msg);
+    }
+    if dropped > 0 {
+        out.push_str(&format!(
+            "\n[{dropped} further gathered source(s) omitted to fit the model's input budget \
+             — their evidence and URLs are not shown; do not cite them]\n"
         ));
     }
     out
@@ -1627,6 +1638,42 @@ fn allocate_page_budget(lengths: &[usize], available: usize) -> Vec<usize> {
         pending = next;
     }
     alloc
+}
+
+/// How one gathered page renders under the input budget.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PagePlan {
+    /// Chars of the page's text to render.
+    text: usize,
+    /// Render the budget-truncation marker after the text.
+    marker: bool,
+    /// Omit the page entirely — header and URL included — so it is never
+    /// presented as a citable source.
+    dropped: bool,
+}
+
+/// Plan how each page renders under `available` chars: whole when it fits; cut
+/// with an inline marker when its allocation still holds the marker plus some
+/// text; or **dropped** (omitted entirely) when the allocation is too small even
+/// for the marker — so a source is never rendered as a deceptively-empty page
+/// whose URL the model might still cite (round-7). A dropped page is counted and
+/// summarized instead. Pure, so the sub-marker boundary is unit-testable without
+/// a live model or a multi-thousand-page fixture.
+fn plan_evidence(lengths: &[usize], available: usize, marker_len: usize) -> Vec<PagePlan> {
+    allocate_page_budget(lengths, available)
+        .into_iter()
+        .zip(lengths)
+        .map(|(a, &len)| {
+            if a >= len {
+                PagePlan { text: len, marker: false, dropped: false }
+            } else if a > marker_len {
+                // Fold the marker's length out of the text so text + marker == a.
+                PagePlan { text: a - marker_len, marker: true, dropped: false }
+            } else {
+                PagePlan { text: 0, marker: false, dropped: true }
+            }
+        })
+        .collect()
 }
 
 /// A capped head of a model completion body for a diagnostic error message —
@@ -2395,6 +2442,30 @@ mod tests {
         assert_eq!(allocate_page_budget(&[5, 30], 20), vec![5, 15]);
         // Degenerate: no pages.
         assert_eq!(allocate_page_budget(&[], 100), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn plan_evidence_marks_cuts_and_drops_sub_marker_pages() {
+        let m = 78;
+        // Fits: every page whole, no marker, no drop.
+        let p = plan_evidence(&[5, 10, 3], 100, m);
+        assert_eq!(
+            p,
+            vec![
+                PagePlan { text: 5, marker: false, dropped: false },
+                PagePlan { text: 10, marker: false, dropped: false },
+                PagePlan { text: 3, marker: false, dropped: false },
+            ]
+        );
+        // Overflow with room for the marker: cut + marked (the text folds the
+        // marker out of the share), never dropped.
+        let p = plan_evidence(&[1000, 1000], 400, m);
+        assert!(p.iter().all(|pl| pl.marker && !pl.dropped && pl.text == 200 - m));
+        // Sub-marker shares: pages too small for even the marker are dropped
+        // entirely, not rendered marker-less as a deceptively-empty source
+        // (round-7). A 20-page packet in a 1000-char budget → 50-char shares.
+        let p = plan_evidence(&[1000; 20], 1000, m);
+        assert!(p.iter().all(|pl| pl.dropped && !pl.marker && pl.text == 0));
     }
 
     #[test]

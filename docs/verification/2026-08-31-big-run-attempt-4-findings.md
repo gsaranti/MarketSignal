@@ -285,14 +285,17 @@ and four-call bound the tool loop carried; the synthesis brief renders the
 gathered pages as the only citable evidence, carrying the full source annotation
 (tier, evidence kinds, extraction quality, recency, thin-stub) and sized against
 the shared input-budget guard with a water-fill allocator (short pages whole,
-long pages truncated, every page represented, a recorded gap and an inline marker
-on any truncation).
+long pages truncated with an inline marker; a page too small to carry a marker is
+dropped entirely — its URL never listed, so never citable — and summarized, so no
+source is rendered as a deceptively-empty page; every truncation or drop is
+recorded as a gap).
 `PROMPT_VERSION` moved to **`portfolio-v33`** so an interrupted pre-fix run cannot
 resume into the new synthesis contract — the debut stamp the next launch confirms.
 
-Verification: `cargo test` (1411) and `cargo clippy --all-targets --all-features`
-both green; new tests pin the synthesis call's fresh-two-message / tools-XOR-grammar
-shape and the allocator's fit / overflow / mixed / boundary behavior.
+Verification: `cargo test` and `cargo clippy --all-targets --all-features` both
+green; new tests pin the synthesis call's fresh-two-message / tools-XOR-grammar
+shape, the allocator's fit / overflow / mixed / rendered-length behavior, and the
+evidence planner's cut-marker and sub-marker-drop boundaries.
 Six Codex review rounds hardened it (source-quality fidelity, the water-fill
 allocator, marker accounting, and the doc-contract sweep); the record and the
 `stage_requests_carry_the_per_stage_mode_options_and_residency` /
