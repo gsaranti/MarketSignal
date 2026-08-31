@@ -2033,7 +2033,24 @@ pub struct HoldingAudit {
 /// distillation reduce / single-pass prompt, stamped so a pre-fix checkpoint
 /// cannot resume into them; no schema or other axis moves
 /// (`docs/verification/2026-08-30-big-run-findings.md` §Finding 2).
-pub const PROMPT_VERSION: &str = "portfolio-v31";
+///
+/// `portfolio-v32`: action-call prompt clarity, from the 2026-08-30 big-run
+/// Finding 3 investigation. The ENGINE SET prose (both the system prompt and the
+/// user prompt's set line) now says the app stamps a departure from the set onto
+/// the holding's audit for the model, so the model emits only the rung and the
+/// one-sentence rationale — the schema carries no annotation field — where the
+/// passive "with the departure annotated" had left the model re-deriving whether
+/// an in-set pick owes an annotation of its own (Signal 1). The capital-efficiency
+/// prose (both prompts) now states that a `clears` or `indeterminate` read is
+/// neutral — neither dead money nor an exit input — so it must not tilt the rung
+/// toward selling, where the prompt had said only that `fails` is dead money and
+/// left the non-`fails` states' neutrality unstated, and an `indeterminate` read
+/// leaked in as a soft sell-lean (Signal 2). Both were the action prompt lagging
+/// contracts the docs already state (`docs/portfolio-analysis.md` §Portfolio
+/// action: the departure is app-stamped; indeterminate neither tilts the decision
+/// nor creates dead money); prompt-prose only, no schema or other axis moves
+/// (`docs/verification/2026-08-30-big-run-findings.md` §Finding 3).
+pub const PROMPT_VERSION: &str = "portfolio-v32";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

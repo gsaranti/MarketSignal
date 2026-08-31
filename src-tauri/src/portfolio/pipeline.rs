@@ -4202,7 +4202,9 @@ pub fn action_system_prompt() -> String {
      capital-efficiency read — \
      only a `fails` hurdle is dead money, and a fails read leans toward \
      realizing some or all of the position once the forward prospects are \
-     independently judged poor. Follow the INVESTOR PROFILE's tax posture: for a \
+     independently judged poor; a `clears` or `indeterminate` read is neutral — \
+     neither dead money nor an exit input — so do not let it tilt the rung toward \
+     selling. Follow the INVESTOR PROFILE's tax posture: for a \
      tax-aware profile, a possible benefit from booking a loss or cost from \
      realizing a gain is a user consideration to FLAG in the rationale, never \
      the mover of the rung; for a tax-exempt profile, apply no tax consideration. \
@@ -4212,7 +4214,9 @@ pub fn action_system_prompt() -> String {
      there must be earned by the vehicle's own merits, stated in the rationale. \
      The ENGINE SET shown is the engine arm's own restriction — evidence, never \
      a bound on you: the full ladder is open, and an outside-the-set choice \
-     persists exactly as authored with the departure annotated beside it. The \
+     persists exactly as authored — the app stamps the departure onto the \
+     holding's audit for you, so emit only the rung and the one-sentence \
+     rationale, never a departure note of your own. The \
      INVESTOR PROFILE frames the decision — an aggressive risk tolerance can \
      justify the aggressive rung where the evidence supports it; the profile \
      never changes the verdict's facts. The rationale is exactly ONE sentence, \
@@ -4274,7 +4278,8 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 "\nTHE VERDICT (already authored — the evidence you act on):\n\
                  ENGINE ARM: grade {}{}; sub-scores quality {:.0} / valuation {:.0} / \
                  risk {:.0} (momentum {:.0} outside the letter); risk tier {}; \
-                 capital-efficiency read {} (only `fails` is dead money).\n",
+                 capital-efficiency read {} (only `fails` is dead money; a `clears` \
+                 or `indeterminate` read is neutral, never an exit input).\n",
                 graded.grade.as_str(),
                 if graded.low_confidence_grade {
                     " (low-confidence — an imputed sub-score underlies it)"
@@ -4383,8 +4388,10 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
 
     p.push_str(
         "\nENGINE SET (the engine arm's own restriction — evidence, not a bound; \
-         your choice is open on the full ladder, an outside-the-set rung persists \
-         as authored with the departure annotated): ",
+         your choice is open on the full ladder, and an outside-the-set rung \
+         persists as authored — the app stamps the departure for you, so emit only \
+         the rung and its one-sentence rationale, never a departure note of your \
+         own): ",
     );
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&set.join(", "));
@@ -8198,6 +8205,41 @@ mod tests {
         assert!(system.contains("ONE rung"), "{system}");
         assert!(system.contains("never a bound"), "{system}");
         assert!(system.contains("exactly ONE sentence"), "{system}");
+        // Finding-3 semantic clauses, pinned as COMPLETE clauses in both prompts
+        // so a partial revert fails here, not only a stamp shift. Signal 1: the
+        // whole "app stamps the departure … emit only the rung AND its rationale,
+        // never a departure note" clause — pinning it entire catches a revert to
+        // "only the rung" (the original P2 contradiction) that would slip past a
+        // bare "never a departure note" substring. Signal 2: the whole clause
+        // naming BOTH non-`fails` states — pinning `clears` or `indeterminate`
+        // catches dropping `indeterminate` (the state whose leak drove the finding)
+        // that a bare "never an exit input" substring would miss.
+        assert!(
+            system.contains(
+                "the app stamps the departure onto the holding's audit for you, so emit \
+                 only the rung and the one-sentence rationale, never a departure note of \
+                 your own"
+            ),
+            "{system}"
+        );
+        assert!(
+            system.contains(
+                "a `clears` or `indeterminate` read is neutral — neither dead money nor an \
+                 exit input"
+            ),
+            "{system}"
+        );
+        assert!(
+            user.contains(
+                "the app stamps the departure for you, so emit only the rung and its \
+                 one-sentence rationale, never a departure note of your own"
+            ),
+            "{user}"
+        );
+        assert!(
+            user.contains("a `clears` or `indeterminate` read is neutral, never an exit input"),
+            "{user}"
+        );
         // No whole-book vocabulary leaks into the user prompt — the cash row
         // included: the system prompt promises no book-level capital input is
         // given, so the profile renders without it (Codex 2026-08-14, finding 3).
@@ -8547,8 +8589,11 @@ mod tests {
         // schema-carrying prompt-clarity touches (the ledger `quant` object and
         // its prose-only anti-pattern with `technology_class` explained, the same
         // anti-pattern on the distillation typed fields, and the what-changed
-        // row's named fields) move it to v31.
-        assert_eq!(PROMPT_VERSION, "portfolio-v31");
+        // row's named fields) move it to v31; the same run's Finding 3 action-call
+        // prompt clarity (the app-stamps-the-departure statement and the
+        // non-`fails` capital-efficiency neutrality clause, both prompts) moves it
+        // to v32.
+        assert_eq!(PROMPT_VERSION, "portfolio-v32");
     }
 
     #[test]
