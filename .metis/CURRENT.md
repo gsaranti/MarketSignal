@@ -17,8 +17,8 @@ The run environment was fully torn down afterward.
 Nothing in flight; Ollama, the SearXNG container, the OrbStack engine, and the tauri-dev app are all down.
 The debut run is banked only as a 2-holding partial, so every finding is candidate-not-rate — a full run recomputes them.
 A re-attempt is **gated on applying Finding 1's SearXNG mitigations first** — client-side pacing + pruning the dead engines from `searxng/settings.yml`, or a paid SERP overflow — or it burns the report job's Tavily quota again.
-Uncommitted working-tree changes on top of `e9d5cd8`: the new findings doc, its `.metis/INDEX.md` row, and this handoff — not yet committed.
-`BUILD.md §What remains` item 1 still describes the run as pending/unattempted; it wants a line noting the 2026-08-30 partial attempt and the mitigation gate (see Pending decisions).
+`BUILD.md §What remains` item 1 now records the 2026-08-30 partial attempt (cancelled at 2/47) and the SearXNG-mitigation gate for a re-attempt.
+This session's work — the findings doc, its `.metis/INDEX.md` row, the BUILD item-1 update, and this handoff — is committed and pushed to `origin/main`.
 The prior unrelated carried follow-ups remain untouched — the cloud `run_job` seam, negative composite yield, `progress.rs` poisonable locks, the tracker `ok` row's dropped count, TO logic-flow line 397, the 600 s `/api/tags` backstop, whole-ledger seed injection, qualitative 6g un-trip semantics, an IPv6-loopback wire test, the audit sources line, and the unreconciled-delete fail-soft sentence's home.
 
 ## Open questions

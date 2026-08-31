@@ -749,7 +749,15 @@ every stacked runtime confirmation at once.
    watch; read `data-health` early, since several items resolve off that
    surface alone. Attempts 1 and 2 failed in the
    since-removed construction stage (their dated records live under
-   `docs/verification/`); attempt 3 exercises the v9 shape as a full run.
+   `docs/verification/`); attempt 3, the first v9-shape full run, launched
+   from a wiped store on 2026-08-30 and was user-cancelled at 2 of 47
+   holdings when the keyless `google cse` engine rate-limited under the
+   research loop's volume and drove SearXNG-to-Tavily spillover (Tavily is
+   reserved for the report job). Its six-finding record is
+   `docs/verification/2026-08-30-big-run-findings.md`, and a re-attempt is
+   now gated on that record's Finding 1 SearXNG mitigations (client pacing +
+   engine pruning, or a paid SERP overflow) landing first — not on the
+   2026-08-24 review, whose finding count is zero.
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire
