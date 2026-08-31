@@ -2842,8 +2842,10 @@ fn input_delta_prompt_section(entries: &[crate::portfolio::DeltaEntry]) -> Strin
         s.push_str(&format!("[{}] {}\n", e.id, e.label));
     }
     s.push_str(
-        "WHAT_CHANGED_ENTRIES: author one typed row per moved intrinsic value \
-         (old -> new). Every external attribution (market-data / \
+        "WHAT_CHANGED_ENTRIES: author one typed row per moved intrinsic value — each row \
+         carries kind (which kind of value moved, from the schema's enum), detail (which \
+         specific one — e.g. the named sub-score or target horizon), old and new (the value \
+         before -> after), attribution, and evidence. Every external attribution (market-data / \
          company-information / research-narrative) must cite one id above (e.g. \
          \"D2\") — or the entry's label verbatim — in `evidence`; a row whose \
          evidence resolves to no entry is downgraded to self-correction with a \
@@ -4708,12 +4710,24 @@ pub fn ledger_prompt_section(
          conditions with rough probability leans (percent, roughly summing to 100); \
          what must improve to migrate toward the bull case and what must not break to \
          stay in the base case; the key falsifiers; and the action triggers. \
-         State every quantitative falsifier or trigger machine-evaluably: the engine \
-         series (exactly one label from the list above), below/above, a numeric \
-         threshold in the series' units, and a materiality margin in the same units \
-         (moves inside the margin don't count — the noise guard). A condition no \
-         engine series fits is qualitative (quant: null) — state it precisely enough \
-         to be researched. \
+         Every falsifier and trigger carries a `quant` object — {series, comparator, \
+         threshold, margin}; a falsifier additionally carries a `technology_class` flag, \
+         and a trigger a `family` (the add / trim / sell family it pre-commits — the \
+         final action rung is the later action call's, not the trigger's). \
+         Whenever the condition \
+         rests on a numeric level of an engine series, populate `quant`: the series \
+         (exactly one label from the list above), below/above, the threshold as a \
+         number in that series' own units — a `(decimal)` series is a fraction, so \
+         gross margin below 16% is threshold 0.16, not 16 — and a materiality margin \
+         in those same units (moves inside the margin don't count — the noise guard). \
+         Put the number in `quant`, not only in the statement text: a statement that \
+         asserts a numeric threshold on an engine series while leaving `quant` null \
+         cannot be machine-evaluated and silently degrades to a prose-only condition. \
+         Set `quant` to null ONLY when no engine series fits the condition — then it \
+         is qualitative; state it precisely enough to be researched. On a falsifier, set \
+         `technology_class` true only for a third-party technology-event falsifier — a \
+         competitor's or supplier's product or standard announcement that threatens \
+         the thesis — and false for every ordinary financial-metric condition. \
          Mark tripped/fired ONLY where the ENGINE CONDITION CROSSINGS show a CONFIRMED \
          crossing for that same condition, or — for a qualitative condition — where the \
          ledger above marks it RESEARCH-SUPPORTED THIS RUN and the cited finding actually \
@@ -5984,6 +5998,12 @@ mod tests {
         let s = input_delta_prompt_section(&delta_fixture());
         assert!(s.contains("[D1] spot: 100.00 -> 92.00"), "{s}");
         assert!(s.contains("[D2] metric gross margin"), "{s}");
+        // The authoring section names the row's six fields, not only the schema
+        // grammar and the response-contract sentence (`portfolio-v31`).
+        assert!(
+            s.contains("kind (which kind of value moved") && s.contains("detail (which"),
+            "{s}"
+        );
         assert!(s.contains("downgraded to self-correction"), "{s}");
         assert!(s.contains("never for a rephrasing"), "{s}");
         assert_eq!(input_delta_prompt_section(&[]), "");
@@ -8523,8 +8543,12 @@ mod tests {
         // industry-routed commodity context moved it to v28; M17 / M19 / M20's
         // comparison-safe delta, action-provenance, and profile-tax contract
         // moved it to v29; M24–M27's typed-channel validation and seed-lineage
-        // contract moves it to v30.
-        assert_eq!(PROMPT_VERSION, "portfolio-v30");
+        // contract moved it to v30; the 2026-08-30 big-run Finding 2
+        // schema-carrying prompt-clarity touches (the ledger `quant` object and
+        // its prose-only anti-pattern with `technology_class` explained, the same
+        // anti-pattern on the distillation typed fields, and the what-changed
+        // row's named fields) move it to v31.
+        assert_eq!(PROMPT_VERSION, "portfolio-v31");
     }
 
     #[test]
@@ -11747,6 +11771,29 @@ mod tests {
         assert!(s.contains("net-margin"), "{s}");
         assert!(s.contains("debut"), "{s}");
         assert!(s.contains("REWRITE THE THESIS LEDGER"), "{s}");
+        // The `quant`-authoring instruction names the object and the anti-pattern
+        // (a numeric threshold left only in prose), and describes `technology_class`
+        // — the prose gaps behind the 2026-08-30 big-run ledger under-population
+        // finding (`portfolio-v31`).
+        assert!(s.contains("`quant` object"), "{s}");
+        assert!(
+            s.contains("Put the number in `quant`, not only in the statement text"),
+            "{s}"
+        );
+        assert!(s.contains("threshold 0.16, not 16"), "{s}");
+        assert!(s.contains("third-party technology-event falsifier"), "{s}");
+        // `technology_class` is a falsifier-only schema field — the prose must not
+        // attribute it to triggers (the mismatch Codex caught on the first cut).
+        assert!(
+            s.contains("a falsifier additionally carries a `technology_class`"),
+            "{s}"
+        );
+        // `family` is a trigger-only field and is the add/trim/sell family, not an
+        // action-ladder rung — the later action call sets the rung (Codex round 2).
+        assert!(
+            s.contains("the final action rung is the later action call's"),
+            "{s}"
+        );
 
         // A prior ledger renders whole — the first prior-run content in the prompt —
         // with the engine's crossings and typed unevaluable notes beside it.

@@ -2010,7 +2010,30 @@ pub struct HoldingAudit {
 /// renders and ISO month precision, forensic issuer fields accept their typed
 /// one-word identity, and research prompts state the four-id seed-lineage cap
 /// (Review 2 M24–M27).
-pub const PROMPT_VERSION: &str = "portfolio-v30";
+///
+/// `portfolio-v31`: schema-carrying prompt clarity, from the 2026-08-30 big-run
+/// Finding 2 investigation. The ledger-authoring prose names the `quant` object
+/// and its four fields, states the anti-pattern that produced the finding — a
+/// numeric threshold on an engine series left in the statement text with `quant`
+/// null, which cannot be machine-evaluated and silently degrades to a prose-only
+/// condition — gives the decimal-scale example (gross margin below 16% is
+/// threshold 0.16, not 16), and describes the falsifier-only `technology_class`
+/// (true only for a third-party technology-event falsifier, false for an ordinary
+/// financial-metric condition) where the prompt had left that required flag
+/// unexplained — the falsifier/trigger field split named exactly, so the prose
+/// mirrors the schema (`quant` on both, `technology_class` on falsifiers, `family`
+/// on triggers). The same
+/// anti-pattern is stated once more where the shape recurs: the distillation
+/// typed-field header says a value one of those machine-read fields captures
+/// (forward_assumption / leading_indicator / forensic_event / pre-profit rows)
+/// belongs in the typed field, not only in the free-text `combined_findings`
+/// prose; and the what-changed authoring section names the row's six fields
+/// rather than leaving them to the grammar and the response-contract sentence
+/// alone. Prompt-prose changes across the interpretation (both branches) and the
+/// distillation reduce / single-pass prompt, stamped so a pre-fix checkpoint
+/// cannot resume into them; no schema or other axis moves
+/// (`docs/verification/2026-08-30-big-run-findings.md` §Finding 2).
+pub const PROMPT_VERSION: &str = "portfolio-v31";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

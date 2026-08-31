@@ -1784,7 +1784,10 @@ fn reduce_prompt(
     );
     if !inputs.role_risk {
         out.push_str(
-            "\nTyped fields (emit only where a sourced finding genuinely supports one, else null):\n\
+            "\nTyped fields — emit only where a sourced finding genuinely supports one, else null; \
+             a value one of these fields captures goes in that typed field, not only in the \
+             combined_findings prose, since the app machine-reads the typed field and a number \
+             left in prose alone reaches no engine:\n\
              - forward_assumption: ONE sourced forward numeric fact the structured feeds lack \
              (guidance, signed contract, commodity/ASP turn), extracted ONLY from a fetched page \
              that names the company and states the number; a stated range goes in stated_low / \
@@ -3308,6 +3311,18 @@ mod tests {
         assert!(prompt.contains("period_span"), "{prompt}");
         assert!(prompt.contains("different spans"), "{prompt}");
         assert!(prompt.contains("never answer one span"), "{prompt}");
+    }
+
+    #[test]
+    fn the_typed_fields_prompt_states_the_prose_only_anti_pattern() {
+        // The typed-field header states the Finding-2-class anti-pattern: a value
+        // one of these machine-read fields captures must land in the typed field,
+        // not only in the free-text combined_findings prose (`portfolio-v31`).
+        let research = research_one_topic();
+        let prompt = reduce_prompt(&inputs(&research, &[], &[]), None, &HashMap::new(), &[]);
+        assert!(prompt.contains("not only in the"), "{prompt}");
+        assert!(prompt.contains("combined_findings prose"), "{prompt}");
+        assert!(prompt.contains("reaches no engine"), "{prompt}");
     }
 
     #[test]
