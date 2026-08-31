@@ -19,34 +19,72 @@ search:
     - json
 
 engines:
-  # Engine set re-tuned against the 2026-08-30 big-run observations
-  # (docs/verification/2026-08-30-big-run-findings.md, Finding 1): under the
-  # research loop's sustained burst, most general engines block upstream by IP
-  # reputation. Keep the ones that returned usable results at least
-  # intermittently; disable the ones that CAPTCHA / 429 on effectively every
-  # automated call, so they only add latency and log noise. Client-side pacing
-  # (the search layer) is the actual rate defense — this list is cleanup, not
-  # the fix. `use_default_settings: true` still supplies breadth beyond this
-  # list. NOTE: engine names are validated only when the instance runs — confirm
-  # with the health-check probe at the next bring-up.
+  # Engine set re-tuned against the 2026-08-31 re-attempt bring-up probe
+  # (docs/verification/2026-08-30-big-run-findings.md, Finding 1). The upstream
+  # IP-reputation blocks are VOLATILE: the 2026-08-30 pruning kept `google cse` +
+  # `duckduckgo` (which carried that run) and disabled `google` / `bing` /
+  # `qwant`, but by 2026-08-31 it had flipped — `google cse` + `duckduckgo` were
+  # both IP-blocked from the first query while `google` / `bing` / `qwant` each
+  # served ~10 results. The lesson: redundancy across many general engines, not a
+  # curated few, is what keeps the aggregate serving as engines rotate through
+  # blocks; client-side pacing (the search layer) is the actual rate defense. So
+  # the enabled set is WIDENED to every general engine that served at bring-up,
+  # leaving disabled only those blocked at probe time. This is a run-scoped
+  # bring-up recalibration; the permanent set is a post-run call informed by the
+  # run's measured serve rates. `use_default_settings: true` supplies breadth
+  # beyond this list. NOTE: engine names + serve state validate only when the
+  # instance runs — re-run the health-check probe at EVERY bring-up; the live
+  # set shifts day to day.
   #
-  # Carried almost every query in the 2026-08-30 run (keyless scraped sources):
+  # ── Serper (paid Google SERP API) — the reliable floor ───────────────────
+  # Hits Google from Serper's own infra, so it is immune to the IP-reputation
+  # blocks the keyless scraped engines below suffer. Fires on every query
+  # alongside the free engines (kept as zero-cost bonus redundancy when
+  # un-blocked). Serper's `organic[]` maps directly onto json_engine's result
+  # fields. Free tier 2,500 queries; ~$0.30–1 per 1,000 after.
+  # The API key is NOT stored here — ${SERPER_API_KEY} is rendered from an
+  # out-of-repo secrets file at bring-up (see the X-API-KEY line below).
+  - name: serper
+    engine: json_engine
+    shortcut: srp
+    categories: [general]
+    search_url: https://google.serper.dev/search
+    method: POST
+    request_body: >-
+      {{"q": "{query}"}}
+    headers:
+      # Rendered at bring-up: ${SERPER_API_KEY} is substituted from an
+      # out-of-repo secrets file into settings.runtime.yml (gitignored) — the
+      # tracked template never holds the secret.
+      X-API-KEY: '${SERPER_API_KEY}'
+      Content-Type: application/json
+    results_query: organic
+    url_query: link
+    title_query: title
+    content_query: snippet
+    disabled: false
+    timeout: 12.0
+  #
+  # Served ~10 results each at the 2026-08-31 bring-up probe:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: qwant
+    disabled: false
+  # Carried the 2026-08-30 run; IP-blocked at the 2026-08-31 probe but kept
+  # enabled to serve again as the blocks rotate off:
   - name: google cse
     disabled: false
-  - name: reuters
-    disabled: false
-  # Returned usably enough to keep, though not CAPTCHA-free under volume:
   - name: duckduckgo
+    disabled: false
+  # News + niche general — low volume, additive:
+  - name: reuters
     disabled: false
   - name: mojeek
     disabled: false
-  # CAPTCHA / rate-limit on effectively every automated call — disabled:
-  - name: qwant
-    disabled: true
+  # Blocked (CAPTCHA / 429) at the 2026-08-31 probe — disabled:
   - name: startpage
     disabled: true
   - name: brave
-    disabled: true
-  # Google's HTML endpoint CAPTCHA-walls hardest against automated queries:
-  - name: google
     disabled: true
