@@ -160,7 +160,8 @@ fn is_transport_timeout(err: &anyhow::Error) -> bool {
 }
 
 /// Wrap a chat-call error so a deadline trip carries [`deadline_reached`] as its
-/// outermost message — the one the tracker row and the run's failure detail show.
+/// outermost message — the one the tracker row and the failure detail show (the
+/// report run's, or an isolated Portfolio holding's failed step).
 fn name_deadline_trip(err: anyhow::Error, deadline: Duration) -> anyhow::Error {
     if is_transport_timeout(&err) {
         err.context(deadline_reached(deadline))
@@ -216,7 +217,9 @@ impl std::error::Error for RetryClass {}
 /// One fired retry, recorded for the run's data-health read
 /// (`build_data_health`): which stage re-attempted and for which
 /// [`RetryClass`]. In a persisted run every recorded event's re-attempt
-/// succeeded — a second failure fails the run before any row persists.
+/// succeeded — a second failure is not recorded here: the report run fails
+/// before any row persists, and the Portfolio job drops a failed holding's
+/// retry events as it isolates the holding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetryEvent {
     pub stage: String,
@@ -349,7 +352,8 @@ impl RetryOnce {
 
     /// Run `attempt`, re-running it once when [`Self::permit`] allows. The
     /// second failure is the hard posture, annotated with the first attempt's
-    /// class so the run's failure detail stays attributable.
+    /// class so the failure detail stays attributable (the seam is job-agnostic —
+    /// what a hard failure fails is each job's posture).
     pub(crate) fn run<T>(
         &self,
         progress: &RunContext,

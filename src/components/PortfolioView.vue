@@ -5,6 +5,7 @@ import { localDate, localDateTime } from "../format";
 import type {
   FlagTrigger,
   GradedVerdict,
+  HoldingFailure,
   HoldingQuickState,
   HoldingsPull,
   HoldingVerdict,
@@ -112,6 +113,29 @@ const notAnalyzed = computed<Position[]>(() => {
     (p) => !graded.has(p.symbol.toUpperCase())
   );
 });
+// This run's isolated per-holding failures, keyed by uppercase symbol
+// (docs/portfolio-analysis.md §Failure posture). A symbol here renders a failed
+// badge; its carried prior verdict shows beside it when present, else its
+// placeholder renders as a debut-failure card rather than "run to grade".
+const failedBySymbol = computed<Map<string, HoldingFailure>>(() => {
+  const m = new Map<string, HoldingFailure>();
+  for (const f of props.run?.failed_holdings ?? []) {
+    m.set(f.symbol.toUpperCase(), f);
+  }
+  return m;
+});
+function failureFor(symbol: string): HoldingFailure | null {
+  return failedBySymbol.value.get(symbol.toUpperCase()) ?? null;
+}
+// The failed badge's tooltip: the concise cause, plus a note that the card shows
+// the last successful analysis when a prior verdict was carried.
+function failedBadgeTitle(symbol: string): string {
+  const f = failureFor(symbol);
+  if (!f) return "";
+  return f.carried_prior
+    ? `Analysis failed this run — ${f.cause}. Showing the last successful analysis; re-run this holding to refresh.`
+    : `Analysis failed this run — ${f.cause}. Re-run this holding to analyze it.`;
+}
 // Every current holding a selective run can target — graded/carried verdicts
 // plus the not-analyzed holdings above.
 const selectableSymbols = computed<string[]>(() => [
@@ -958,6 +982,12 @@ const keyFigures = computed(() => {
       value: String(run.roll_up.insufficient_evidence_count),
     });
   }
+  if (run.roll_up.failed_count > 0) {
+    items.push({
+      label: "Failed",
+      value: String(run.roll_up.failed_count),
+    });
+  }
   items.push(
     { label: "Cash", value: fmtPct(run.roll_up.cash_weight) },
     { label: "Top position", value: fmtPct(run.roll_up.top_position_weight) }
@@ -1339,6 +1369,16 @@ const keyFigures = computed(() => {
               v-if="v"
               class="ana-card holding-card"
             >
+              <!-- Isolated analysis failure with a carried prior verdict: a visible,
+                   accessible note above the (stale) card content — the cause and
+                   re-run guidance the badge's tooltip alone would hide from keyboard,
+                   touch, and screen-reader users. -->
+              <p v-if="failureFor(v.symbol)" class="hc-fail-note" role="note">
+                <strong>Analysis failed this run</strong> — {{
+                  failureFor(v.symbol)!.cause
+                }}. Showing the last successful analysis; select it and re-run to
+                refresh.
+              </p>
               <!-- Not-rated / insufficient-evidence: a legitimately reduced card. -->
               <div
                 v-if="
@@ -1371,6 +1411,12 @@ const keyFigures = computed(() => {
                       class="ana-tag"
                       :title="carriedStamp(v)!.title"
                       >{{ carriedStamp(v)!.text }}</span
+                    >
+                    <span
+                      v-if="failureFor(v.symbol)"
+                      class="ana-tag ana-tag-failed"
+                      :title="failedBadgeTitle(v.symbol)"
+                      >Analysis failed</span
                     >
                     <span
                       v-if="v.side_reversed"
@@ -1445,6 +1491,12 @@ const keyFigures = computed(() => {
                           class="ana-tag"
                           :title="carriedStamp(v)!.title"
                           >{{ carriedStamp(v)!.text }}</span
+                        >
+                        <span
+                          v-if="failureFor(v.symbol)"
+                          class="ana-tag ana-tag-failed"
+                          :title="failedBadgeTitle(v.symbol)"
+                          >Analysis failed</span
                         >
                         <span
                           v-if="v.side_reversed"
@@ -1739,6 +1791,12 @@ const keyFigures = computed(() => {
                           class="ana-tag"
                           :title="carriedStamp(v)!.title"
                           >{{ carriedStamp(v)!.text }}</span
+                        >
+                        <span
+                          v-if="failureFor(v.symbol)"
+                          class="ana-tag ana-tag-failed"
+                          :title="failedBadgeTitle(v.symbol)"
+                          >Analysis failed</span
                         >
                         <span
                           v-if="v.side_reversed"
@@ -2327,11 +2385,25 @@ const keyFigures = computed(() => {
                       <span class="hc-select-box" aria-hidden="true"></span>
                     </label>
                     <span class="ana-ticker">{{ p.symbol }}</span>
-                    <span class="hc-class">Not analyzed</span>
+                    <span v-if="!failureFor(p.symbol)" class="hc-class"
+                      >Not analyzed</span
+                    >
+                    <span
+                      v-else
+                      class="ana-tag ana-tag-failed"
+                      :title="failedBadgeTitle(p.symbol)"
+                      >Analysis failed</span
+                    >
                   </div>
                   <p class="hc-reason">
-                    Not analyzed in this run — select it and re-run, or run a full
-                    analysis, to grade it.
+                    <template v-if="failureFor(p.symbol)"
+                      >Analysis failed this run — {{
+                        failureFor(p.symbol)!.cause
+                      }}. Select it and re-run to analyze it.</template
+                    ><template v-else
+                      >Not analyzed in this run — select it and re-run, or run a
+                      full analysis, to grade it.</template
+                    >
                   </p>
                 </div>
                 <div class="hc-reduced-side">
@@ -3376,6 +3448,25 @@ const keyFigures = computed(() => {
   background: var(--grade-d-bg);
   border-color: var(--grade-d-bg);
   margin-right: var(--s-2);
+}
+
+/* `.ana-tag-failed` — the failure badge — lives in the design package
+   (colors_and_type.css, beside the status-tag contract), not here. */
+
+/* The accessible failure disclosure on a carried card: a visible note (not the
+   badge's hover-only tooltip) so keyboard, touch, and screen-reader users reach the
+   cause and re-run guidance — the debut placeholder shows its cause the same way.
+   Neutral ink (the badge carries the oxblood); the words carry the meaning. */
+.hc-fail-note {
+  margin: 0 0 var(--s-3);
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.hc-fail-note strong {
+  color: var(--ink-1);
+  font-weight: 600;
 }
 
 .rollup-exited .hc-kicker {

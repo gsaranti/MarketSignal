@@ -91,7 +91,7 @@ Distillation has one narrower output-sizing exception outside that general retry
 A length stop below the normal reservation is context-bound or unattributable and fails without that re-attempt; any length stop on the expanded call also fails hard.
 The expanded attempt is final for that stage: the outer schema/transport gate cannot layer another request after it.
 The action call's blank-rationale guard keeps its fail-hard ruling outside the retry (ruled 2026-08-18).
-A second failure fails hard as before, annotated with the first attempt's class, so the run's failure detail stays attributable.
+A second failure fails hard as before, annotated with the first attempt's class, so the failure detail stays attributable — the seam is job-agnostic; what a hard failure fails (the report run, or one Portfolio holding isolated) is each job's §Failure posture.
 Every fired retry emits its own tracker row and lands on the run's data-health read as a summary line plus structured events — the big confirmation run's transient-rate measurement.
 A resumed run's read covers the calls behind the finished run's verdicts — every restored row's and every call of the resumed process — and omits only the superseded calls of holdings the resumed process re-analyzed ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)).
 
@@ -101,7 +101,7 @@ The budget is the same threshold-and-chars-per-token budget the single-vs-hierar
 A prompt within the fast tier's budget issues there.
 One over it but within the reasoner's issues on the resident reasoner at its interpretation context — a model choice, never a `num_ctx` change, so no runner reloads and the one-`num_ctx`-per-model rule stands.
 The fast tier co-resides by the roster's own precondition ([§The model roster and per-task routing](#the-model-roster-and-per-task-routing)), so a route-up costs no swap.
-A prompt over the widest budget is refused before issue as an unclassified failure — never retried, since the outcome is deterministic — and fails the run under the job's hard model-call posture.
+A prompt over the widest budget is refused before issue as an unclassified failure — never retried, since the outcome is deterministic — and fails hard under the job's hard model-call posture (the report run, or one Portfolio holding isolated — each job's §Failure posture).
 The guard covers every 6d call — the final reduce, the tree-level reduce, the pass calls, and the tier-1 calls — closing the daemon's silent front-truncation off from distillation as far as a chars-per-token estimate can close it.
 The budget is that estimate — the chars-per-token constant is rough and the guard counts characters — so token-dense input can fit the threshold and still overflow the context.
 The data-health likely-front-truncation read therefore stays the runtime witness for every stage, distillation included.

@@ -679,8 +679,9 @@ export interface DataHealth {
 }
 
 // One fired bounded-retry: which stage re-attempted and for which failure
-// class. In a persisted run the re-attempt succeeded (a second failure fails
-// the run), so entries measure the absorbed transient rate.
+// class. In a persisted run the re-attempt succeeded (a second failure is not
+// listed — the Portfolio job drops a failed holding's retry events as it
+// isolates it), so entries measure the absorbed transient rate.
 export interface RetryEvent {
   stage: string;
   cause: string;
@@ -707,6 +708,10 @@ export interface PortfolioRollUp {
   // Analyzed holdings on the role_risk_only branch — counted beside the priced
   // holdings, never pooled with them.
   role_risk_only_count: number;
+  // Holdings whose fresh analysis failed this run and was isolated
+  // (docs/portfolio-analysis.md §Failure posture) — the length of
+  // PortfolioRun.failed_holdings, counted apart from the analyzed counts above.
+  failed_count: number;
   top_position_weight: number;
   cash_weight: number;
   exited: ExitedPosition[];
@@ -782,6 +787,25 @@ export interface PortfolioRun {
   audit: unknown[];
   // This run's outcome-learning records (scoreboard subset).
   outcome: OutcomeRecordsView;
+  // Per-holding analysis failures the run isolated rather than aborting on
+  // (docs/portfolio-analysis.md §Failure posture). A symbol here renders a failed
+  // card — its prior verdict carried into `verdicts` when `carried_prior` (the
+  // card shows that stale data beside a failed badge), or an empty debut-failure
+  // card otherwise. Empty on a clean run.
+  failed_holdings: HoldingFailure[];
+}
+
+// A per-holding analysis failure the run isolated (docs/portfolio-analysis.md
+// §Failure posture). The model/grade half is fail-hard per holding, not per run.
+export interface HoldingFailure {
+  symbol: string;
+  // The concise, user-legible failure read — the failing operation plus its root
+  // cause; the full chain rides the run tracker + logs.
+  cause: string;
+  // Whether a prior successful verdict was carried forward — the card shows that
+  // vintage-stamped data beside the failed badge (true), or is an empty
+  // debut-failure card (false).
+  carried_prior: boolean;
 }
 
 // --- Portfolio quick check ---------------------------------------------------

@@ -1327,9 +1327,10 @@ pub struct DataHealth {
     pub benchmark_gaps: usize,
     /// Model calls the bounded retry-once recovered — each fired retry's stage and
     /// failure class (`docs/local-models.md §The local-model adapter seam`). In a
-    /// persisted run every listed re-attempt succeeded (a second failure fails the
-    /// run), so entries measure the absorbed transient rate — the big-run retry
-    /// watch's read.
+    /// persisted run every listed re-attempt succeeded (a second failure is not
+    /// listed — the Portfolio job drops a failed holding's retry events as it
+    /// isolates it), so entries measure the absorbed transient rate — the big-run
+    /// retry watch's read.
     pub model_retries: Vec<crate::local_model::RetryEvent>,
     /// Infrastructure degradation worth surfacing prominently: deep-history
     /// failures, any current-multiple carry, a run-wide DGS10 history gap,
@@ -1374,6 +1375,12 @@ pub struct PortfolioRollUp {
     /// §Intrinsic verdict) — counted beside the priced (graded) holdings, never
     /// pooled with them.
     pub role_risk_only_count: usize,
+    /// Holdings whose fresh analysis **failed** this run and was isolated
+    /// (`docs/portfolio-analysis.md` §Failure posture) — the length of
+    /// [`PortfolioRun::failed_holdings`]. A failed holding produced no fresh verdict
+    /// (its prior may be carried), so it is counted here, never among the analyzed
+    /// counts above.
+    pub failed_count: usize,
     /// The largest single-position weight (0.0–1.0) — the concentration read.
     pub top_position_weight: f64,
     /// Cash as a fraction of the account total.
@@ -2073,6 +2080,35 @@ pub struct PortfolioRun {
     /// (`docs/portfolio-analysis.md` §Outcome learning; `docs/portfolio-workflow.md`
     /// §Step 7a, §Step 8).
     pub outcome: outcome::OutcomeRecords,
+    /// Per-holding analysis failures the run **isolated** rather than aborting on
+    /// (`docs/portfolio-analysis.md` §Failure posture): the model/grade half
+    /// hard-fails **per holding**, and the run records the failure here and moves
+    /// on. A symbol present here renders a failed card — its prior verdict carried
+    /// into `verdicts` where one exists (the data shows vintage-stamped beside the
+    /// failed badge), or an empty debut-failure card where none does. Empty on a
+    /// clean run.
+    pub failed_holdings: Vec<HoldingFailure>,
+}
+
+/// A per-holding analysis failure the run isolated (`docs/portfolio-analysis.md`
+/// §Failure posture). The model/grade half is fail-hard **per holding, not per
+/// run**: a hard failure in one holding's interpretation / action / persistence is
+/// recorded here and the run continues to the next holding, rather than failing the
+/// whole run — the run only fails outright when **every** attempted holding fails
+/// (a systemic cause) or a run-level infrastructure step fails.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HoldingFailure {
+    pub symbol: String,
+    /// The concise failure read — the failing operation **plus its root cause**
+    /// (e.g. "distilling research findings: <root>", or a single-level
+    /// "action decision for TSLA returned an empty rationale"). The full error chain
+    /// rides the run tracker's failed step detail and stderr; this is the
+    /// user-legible card line.
+    pub cause: String,
+    /// Whether a prior successful verdict was carried forward for this holding: the
+    /// card shows that vintage-stamped data beside the failed badge (`true`), or is
+    /// an empty debut-failure card with no data to show (`false`).
+    pub carried_prior: bool,
 }
 
 /// The action a carried verdict would stand on — `None` where the disposition

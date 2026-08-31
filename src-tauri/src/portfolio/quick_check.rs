@@ -2323,6 +2323,7 @@ mod tests {
                 not_rated_count: 0,
                 insufficient_evidence_count: 0,
                 role_risk_only_count: 0,
+                failed_count: 0,
                 top_position_weight: 0.66,
                 cash_weight: 0.34,
                 exited: vec![],
@@ -2338,6 +2339,7 @@ mod tests {
                 fetched_at: "2026-07-20T00:00:00Z".into(),
             },
             outcome: Default::default(),
+            failed_holdings: Vec::new(),
         }
     }
 
@@ -2447,6 +2449,7 @@ mod tests {
                 not_rated_count: 0,
                 insufficient_evidence_count: 0,
                 role_risk_only_count: 0,
+                failed_count: 0,
                 top_position_weight: 0.4,
                 cash_weight: 0.2,
                 exited: vec![],
@@ -2459,6 +2462,7 @@ mod tests {
             ],
             rate_prints: Default::default(),
             outcome: Default::default(),
+            failed_holdings: Vec::new(),
         };
         store::insert_run(&conn, &run).unwrap();
         let mut data = StubData::quiet(195.0, "2026-08-02");

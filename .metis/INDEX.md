@@ -228,6 +228,7 @@ build status lives in `BUILD.md`.*
 - New-money admission test — portfolio-analysis.md §Starting parameters
 - Portfolio per-holding/per-fund endpoint surface — data-sources.md §Portfolio Analysis — endpoint surface
 - Investor profile default preset — configuration.md §Investor Profile; interface.md §Main Layout (Settings tree)
+- Per-holding failure isolation (failed card, carried prior, all-failed run) — portfolio-analysis.md §Failure posture; portfolio-workflow.md §Step 6; interface.md §Main Layout
 
 ### Trade Opportunities
 - Trade Opportunities job — trade-opportunities.md
@@ -347,3 +348,4 @@ the run's own dated record follows it.*
 - Portfolio Analysis review 2 — the blind sweep after the 2026-08-24 fixes, the five non-minor and thirty-four minor findings, the open questions, and the cross-check against the 2026-08-24 record — verification/2026-08-30-portfolio-analysis-review-2.md; BUILD.md §What remains
 - Portfolio Analysis review 3 — the third blind sweep after the Review 2 remediation, financial correctness / run-killing bugs / doc-code alignment all clean (no findings, so the Phase 2 cross-check did not apply) — verification/2026-08-30-portfolio-analysis-review-3.md; BUILD.md §What remains
 - Big confirmation run — findings — the attempt-3 debut record (cancelled early at 2/47 on `google cse` rate-limit → Tavily spillover): SearXNG engine blocking + apply-later mitigations, ledger `quant` under-population, action-call prompt friction, the bounded-retry rate, throughput (~25 min/holding → ~20 h full run), extraction telemetry for the deferred render tier, and the thinking-is-a-side-channel note — verification/2026-08-30-big-run-findings.md; big-run-watch-set.md; BUILD.md §What remains
+- Portfolio per-holding failure isolation — the ruling and user decisions (run-level `failed_holdings` list not a disposition variant, all-attempted-failed → Failed with no snapshot, concise stage+root cause, carried-prior not emptied), the shared carry helper, the accessible failed card, the design-package failed-tag (fifth accent relaxation), and the cancellation-based resume-test conversion — verification/2026-08-31-portfolio-failure-isolation.md; portfolio-analysis.md §Failure posture; BUILD.md §What remains (Built)

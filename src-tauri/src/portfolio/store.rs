@@ -1230,6 +1230,7 @@ mod tests {
             }],
             roll_up: PortfolioRollUp {
                 role_risk_only_count: 0,
+                failed_count: 0,
                 graded_count: 0,
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
@@ -1267,6 +1268,7 @@ mod tests {
             }],
             rate_prints: Default::default(),
             outcome: Default::default(),
+            failed_holdings: Vec::new(),
         }
     }
 

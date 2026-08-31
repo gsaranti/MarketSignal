@@ -177,6 +177,7 @@ const run: PortfolioRun = {
     not_rated_count: 1,
     insufficient_evidence_count: 1,
     role_risk_only_count: 0,
+    failed_count: 0,
     top_position_weight: 0.5,
     cash_weight: 0.078,
     exited: [
@@ -220,6 +221,7 @@ const run: PortfolioRun = {
       outlook_direction: [],
     },
   },
+  failed_holdings: [],
   // The persist-seam marker the backend ships (always concrete on the wire).
 };
 
@@ -1899,5 +1901,78 @@ describe("PortfolioView badge ruling", () => {
     };
     const wrapper = mountView({ run: runReversed });
     expect(wrapper.text()).toContain("Side reversed");
+  });
+});
+
+describe("PortfolioView isolated failures", () => {
+  function cardFor(
+    wrapper: ReturnType<typeof mountView>,
+    symbol: string
+  ) {
+    return wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === symbol);
+  }
+
+  test("a carried failure badges the holding's card and adds a Failed key figure", () => {
+    // MSFT keeps its (carried) verdict data AND is recorded as failed this run.
+    const failed: PortfolioRun = {
+      ...run,
+      failed_holdings: [
+        {
+          symbol: "MSFT",
+          cause: "interpretation call failed: length stop after one retry",
+          carried_prior: true,
+        },
+      ],
+      roll_up: { ...run.roll_up, failed_count: 1 },
+    };
+    const wrapper = mountView({ run: failed });
+    const msft = cardFor(wrapper, "MSFT")!;
+    const badge = msft.find(".ana-tag-failed");
+    expect(badge.exists()).toBe(true);
+    expect(badge.text()).toBe("Analysis failed");
+    // The cause is also visible on the card (an accessible note, not only the
+    // badge tooltip), and the card still shows the carried data.
+    expect(msft.find(".hc-fail-note").exists()).toBe(true);
+    expect(msft.text()).toContain("length stop after one retry");
+    expect(badge.attributes("title")).toContain("last successful analysis");
+    // The roll-up key-figure strip reports the failed count.
+    expect(wrapper.text()).toContain("Failed");
+    // A holding with no failure carries no failed badge.
+    expect(cardFor(wrapper, "AAPL")!.find(".ana-tag-failed").exists()).toBe(false);
+  });
+
+  test("a debut failure renders a failed placeholder with the visible cause", () => {
+    // ZZZ is in the book with no verdict, recorded as a debut failure (no carry).
+    const withDebut: PortfolioRun = {
+      ...run,
+      holdings: {
+        ...run.holdings,
+        positions: [...run.holdings.positions, position("ZZZ")],
+      },
+      failed_holdings: [
+        {
+          symbol: "ZZZ",
+          cause: "action decision returned an empty rationale",
+          carried_prior: false,
+        },
+      ],
+      roll_up: { ...run.roll_up, failed_count: 1 },
+    };
+    const wrapper = mountView({ run: withDebut });
+    const zzz = cardFor(wrapper, "ZZZ")!;
+    expect(zzz.find(".ana-tag-failed").exists()).toBe(true);
+    // The cause is visible on the card, not only in a tooltip (it is the only
+    // content a debut failure has).
+    expect(zzz.text()).toContain("action decision returned an empty rationale");
+    // It is the failed placeholder, not the plain "not analyzed" one.
+    expect(zzz.text()).not.toContain("Not analyzed in this run");
+  });
+
+  test("a clean run shows no failed badge or Failed key figure", () => {
+    const wrapper = mountView({ run: { ...run, failed_holdings: [] } });
+    expect(wrapper.find(".ana-tag-failed").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Failed");
   });
 });

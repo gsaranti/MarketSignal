@@ -282,11 +282,11 @@ never a glossy badge.
 > existing `--accent-dk`** and meets AA at the bold/large sizes the
 > register uses for grades and deltas.
 
-### Four deliberate relaxations (decisions, not drift)
+### Five deliberate relaxations (decisions, not drift)
 
-The analytical register required four scoped extensions to the original
+The analytical register required five scoped extensions to the original
 "strictly monochrome + one oxblood accent" rules. Recorded here so they
-read as decisions. All four are **analytical-register only**; the report
+read as decisions. All five are **analytical-register only**; the report
 and generic chrome are unchanged, and the anti-references below remain
 fully binding.
 
@@ -302,6 +302,14 @@ fully binding.
    no pill, no radius > 2px.
 4. **Grade scale as a desaturated tonal scale** — A–F and conviction map
    across the unified palette as discrete, AA-validated hairline chips.
+5. **A failed-status tag in oxblood text** — `.ana-tag-failed` marks an
+   isolated analysis failure (Portfolio §Failure posture). It is the one
+   tag that departs from the status tag's "ink tokens only, never the
+   accent" rule, using `--accent-text` (oxblood *as text*, AA in both
+   themes — the grade-F fill pair is not AA at a 10px label): a failure is
+   both the worst outcome and an actionable one (re-run), which is exactly
+   what the accent is reserved for. Otherwise the base flat hairline chip;
+   the visible "Analysis failed" words carry the meaning.
 
 ### Analytical-register controls (Portfolio & Trade Opportunities only)
 
@@ -329,7 +337,10 @@ reuse existing tokens and glyphs, and restyle in place (no new nav model).
   in last analysis* / *no longer held*; the neutral base the TO lifecycle
   badges will extend). The words are the alert: ink tokens only, hairline
   border, radius ≤ 2px, never a pill, and **never the accent** (reserved
-  for actionable states).
+  for actionable states) — the single exception being `.ana-tag-failed`
+  (relaxation 5 above), whose isolated-failure state is both worst-outcome
+  and actionable and so earns oxblood as text (`--accent-text`, AA in both
+  themes).
 
 ### Spacing & baseline
 
@@ -401,7 +412,7 @@ not to entertain.**
   large number, a sparkline, and a percent‑change pill. In the **report and
   generic chrome**, numerical context lives inside the prose and its embedded
   figures. *(Narrowly reopened for the **analytical register only** — see the
-  controlled‑rich data card, relaxation #3 under "Four deliberate
+  controlled‑rich data card, relaxation #3 under "Five deliberate
   relaxations.")*
 
 ### Transparency & blur

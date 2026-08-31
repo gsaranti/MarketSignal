@@ -17,7 +17,9 @@ available files (`colors_and_type.css`, the `preview/` cards, the
 3. The non-negotiables, on every artifact:
    - **Monochrome** warm ink on warm paper. The accent is **oxblood**
      and appears only on interactive states, the current sidebar item,
-     focused inputs, and at most one emphasized chart series.
+     focused inputs, and at most one emphasized chart series — plus the
+     single analytical-register exception of the failed-status tag
+     (relaxation 5 below), where a failure earns oxblood as text.
    - **Flat with hairlines.** No shadows, no glass/blur, no gradients,
      no rounded-everything (1–2px radii only, pill capsules prohibited).
    - **Serif body, sans UI.** Source Serif 4 (body + display) and Public
@@ -103,11 +105,11 @@ that exercise the system in the right register.
 
 If a design starts drifting toward any of these, revert.
 
-### Four deliberate relaxations (decisions, not drift)
+### Five deliberate relaxations (decisions, not drift)
 
-The analytical register required four scoped extensions to the original
+The analytical register required five scoped extensions to the original
 "strictly monochrome + one oxblood accent" rules. Each was a deliberate
-decision, recorded here so it never reads as drift. **All four are
+decision, recorded here so it never reads as drift. **All five are
 confined to the analytical register; the report and generic chrome are
 unchanged. The anti-references above remain fully binding** — the green
 is desaturated precisely so it never crosses into the Robinhood gestalt.
@@ -125,3 +127,10 @@ is desaturated precisely so it never crosses into the Robinhood gestalt.
 4. **Grade scale as a desaturated tonal scale.** A–F and conviction map
    across the unified palette as discrete, AA-validated hairline chips —
    never glossy badges.
+5. **A failed-status tag in oxblood text.** `.ana-tag-failed` marks an
+   isolated analysis failure (Portfolio §Failure posture) — the one status
+   tag that departs from "ink tokens only, never the accent," using
+   `--accent-text` (oxblood as text, AA in both themes; the grade-F fill
+   pair is not AA at a 10px label). A failure is both the worst outcome and
+   an actionable one (re-run), exactly what the accent is reserved for. The
+   words carry the meaning; the color reinforces.

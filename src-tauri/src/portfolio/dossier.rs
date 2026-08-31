@@ -2386,6 +2386,7 @@ Sources and footnotes.
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
                 role_risk_only_count: 0,
+                failed_count: 0,
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
                 exited: vec![],
@@ -2395,6 +2396,7 @@ Sources and footnotes.
             audit: vec![],
             rate_prints: Default::default(),
             outcome: Default::default(),
+            failed_holdings: Vec::new(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
@@ -2436,6 +2438,7 @@ Sources and footnotes.
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
                 role_risk_only_count: 0,
+                failed_count: 0,
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
                 exited: vec![],
@@ -2474,6 +2477,7 @@ Sources and footnotes.
             }],
             rate_prints: Default::default(),
             outcome: Default::default(),
+            failed_holdings: Vec::new(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
@@ -2520,6 +2524,7 @@ Sources and footnotes.
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
                 role_risk_only_count: 0,
+                failed_count: 0,
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
                 exited: vec![],
@@ -2529,6 +2534,7 @@ Sources and footnotes.
             audit: vec![],
             rate_prints: Default::default(),
             outcome: Default::default(),
+            failed_holdings: Vec::new(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();

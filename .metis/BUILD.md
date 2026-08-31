@@ -723,6 +723,19 @@ every stacked runtime confirmation at once.
   tightened to what the producer always writes, no stamp moving; the ruling,
   the writer test and the review rounds are
   `docs/verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md`.
+- **The failure-isolation slice** — a hard per-holding model / grade failure
+  no longer fails the Portfolio run: it is isolated into a run-level
+  `failed_holdings` list rendering a failed card (the prior verdict carried
+  vintage-stamped where one exists, an empty debut card where none does), the
+  run continuing; the run fails outright only run-level (persistence, the rate
+  anchors) or when every attempted holding fails (no snapshot, the prior run
+  stays latest). The posture change flips a documented contract — the cloud
+  report's analyst layer stays fail-hard; only the Portfolio job's per-holding
+  half changed. The ruling, the user decisions (list-not-variant, all-failed →
+  Failed, concise stage+root cause, carry-not-empty), the accessible failed
+  card, and the design-package failed-tag are
+  `docs/verification/2026-08-31-portfolio-failure-isolation.md`, the contract
+  canonical at `docs/portfolio-analysis.md §Failure posture`. No stamp moved.
 
 ### Remaining, in order
 

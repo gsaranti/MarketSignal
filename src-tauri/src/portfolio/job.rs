@@ -655,6 +655,73 @@ fn over_age(vintage: &str, today: chrono::NaiveDate) -> bool {
     }
 }
 
+/// Build the carried-forward verdict for a holding whose fresh analysis did **not**
+/// produce a verdict this pass — an unselected selective carry, or a per-holding
+/// analysis failure the run isolated (`docs/portfolio-analysis.md` §Triggering,
+/// §Failure posture). Clones the prior verdict, stamps its effective vintage,
+/// refreshes the deterministic position delta and the side-reversal badge, overlays
+/// any swept-tail condition states, and applies the one deterministic carry rule (the
+/// over-age add-family demotion to *hold*, stamped `rule-demoted`). Returns the
+/// carried verdict and whether it is over-age; the caller records the carry
+/// (`over_age_carried`, `carried_symbols`) and carries the prior audit, which is not
+/// available at every call site.
+fn carry_prior_verdict(
+    position: &crate::schwab::Position,
+    prior_verdict: &HoldingVerdict,
+    prior_created_at: &str,
+    holdings_diff: &diff::HoldingsDiff,
+    swept_tail: &std::collections::HashMap<
+        String,
+        crate::portfolio::quick_check::HoldingQuickState,
+    >,
+    today: chrono::NaiveDate,
+) -> (HoldingVerdict, bool) {
+    let mut carried = prior_verdict.clone();
+    let vintage =
+        crate::portfolio::effective_vintage(prior_verdict, prior_created_at).to_string();
+    carried.analyzed_at = Some(vintage.clone());
+    carried.position_change = holdings_diff.delta_for(&position.symbol).change;
+    // A carried directional verdict (priced or role/risk) is "side-reversed" when it
+    // now describes the opposite position — marked for the card badge
+    // (`docs/portfolio-analysis.md` §Triggering); no longer force-included. A
+    // directional verdict is only ever authored for a **long** position — a net-short
+    // or net-zero holding takes the not-rated treatment at the eligibility gate
+    // (`pipeline.rs`) — so its authoring side is invariantly long, and it is reversed
+    // exactly when the position it now sits on is **net-short**, whatever path it took
+    // there. A fresh pass re-authors for the current side (or returns not-rated) and
+    // leaves the field `false`.
+    carried.side_reversed = position.quantity < 0.0
+        && matches!(
+            carried.disposition,
+            crate::portfolio::VerdictDisposition::Priced(_)
+                | crate::portfolio::VerdictDisposition::RoleRiskOnly(_)
+        );
+    if let Some(h) = swept_tail.get(&position.symbol.to_ascii_uppercase()) {
+        crate::portfolio::quick_check::overlay_condition_states(&mut carried, h);
+    }
+    // The intrinsic *action* carries as-is (rung-only since `portfolio-v9` — no sizing
+    // to recompute). The over-age add-family demotion is the one deterministic carry
+    // rule.
+    let stale = over_age(&vintage, today);
+    if stale {
+        match &mut carried.disposition {
+            crate::portfolio::VerdictDisposition::Priced(g) if g.action.is_add_family() => {
+                g.action = crate::portfolio::Action::Hold;
+                carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
+            }
+            // A role-risk verdict can carry an add-family action (the action call's
+            // choice is structurally open), so the stale-strong-action rule is
+            // branch-unscoped (`docs/portfolio-analysis.md` §Triggering).
+            crate::portfolio::VerdictDisposition::RoleRiskOnly(r) if r.action.is_add_family() => {
+                r.action = crate::portfolio::Action::Hold;
+                carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
+            }
+            _ => {}
+        }
+    }
+    (carried, stale)
+}
+
 /// The resume window (`docs/portfolio-analysis.md` §Starting parameters,
 /// drafted ~48 hours): an interrupted run offers resume only while its pinned
 /// holdings pull is younger than this — past it the checkpoints are stale
@@ -742,8 +809,10 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// Run one Portfolio Analysis job end to end with the lifecycle contract. Returns
 /// `Err` only on an infrastructure failure (the database); a failed analysis is a
-/// normal `Ok(Failed)`. The model/persistence half is **fail-hard** (a model error
-/// fails the run); the research half is fail-soft (stubbed this slice, so moot).
+/// normal `Ok(Failed)`. A per-holding model failure is **isolated** (recorded in
+/// `failed_holdings`, the run continuing — `docs/portfolio-analysis.md` §Failure
+/// posture); the run fails only run-level — a persistence write, or every attempted
+/// holding failing. The research half is fail-soft.
 ///
 /// **Slot ordering:** the global run slot is claimed here (`try_begin`), then the
 /// cancel flag is cleared and `run_started` emitted, and only then does any
@@ -1351,6 +1420,11 @@ fn run_analysis(
 
     let mut verdicts: Vec<HoldingVerdict> = Vec::with_capacity(holdings.positions.len());
     let mut audits: Vec<HoldingAudit> = Vec::with_capacity(holdings.positions.len());
+    // Per-holding analysis failures the run isolated (`docs/portfolio-analysis.md`
+    // §Failure posture): a hard model/grade failure records here and the run
+    // continues; the prior verdict (if any) is carried after the loop so the failed
+    // card shows the last good data.
+    let mut failed_holdings: Vec<crate::portfolio::HoldingFailure> = Vec::new();
     // The completed holdings a resume restores — their symbols skip the loop.
     let mut checkpointed: std::collections::HashSet<String> = std::collections::HashSet::new();
     // The context-fit observations and fired-retry events of every completed
@@ -1954,8 +2028,12 @@ fn run_analysis(
             anyhow::bail!("run cancelled");
         }
 
-        // The model/grade half is fail-hard: an interpretation or persistence error
-        // fails the whole run (`docs/local-models.md §Failure posture`).
+        // The model/grade half is fail-hard **per holding, not per run**
+        // (`docs/portfolio-analysis.md` §Failure posture): a hard interpretation /
+        // action / persistence failure is isolated in the `Err` arm below — recorded
+        // in `failed_holdings`, the prior verdict carried after the loop, the run
+        // continuing — rather than failing the whole run. The run fails outright only
+        // when every attempted holding fails (the post-loop guard).
         // The run date keys the ledger evaluation's observation identities and
         // timestamps (deterministic under test — injected, never re-derived inside
         // the engine). It is the run's **ET session date**, taken from the run's
@@ -1965,8 +2043,62 @@ fn run_analysis(
         // quantities, and re-deriving per holding let a midnight-crossing run
         // stamp one book across two days.
         let run_date = run_session_date.clone();
-        let (mut verdict, audit) =
-            analyze_holding(analyst, &dossier, &rates, &run_date)?;
+        let (mut verdict, audit) = match analyze_holding(analyst, &dossier, &rates, &run_date) {
+            Ok(pair) => pair,
+            Err(e) => {
+                // A cancel requested mid-holding surfaces as an error but is NOT a
+                // holding failure: re-check the flag and re-propagate so the run
+                // records Cancelled (the outer handler tells a user stop from a
+                // genuine failure), never a failed card.
+                if ctx.is_cancelled() {
+                    return Err(e.context("run cancelled"));
+                }
+                // Per-holding fail-hard, isolated: record the failure, mark the step
+                // failed, and move on. The prior verdict — if any — is carried after
+                // the fresh-pass vintage stamp below, so the card shows the last good
+                // data beside the failed badge; a debut failure carries nothing and
+                // renders an empty failed card.
+                // `cause` is the concise card line: the failing operation AND its
+                // root cause. The outer context alone is a generic stage ("distilling
+                // research findings"), so append the root where it adds detail — the
+                // "stage + cause class" the ruling asked for. The full chain (every
+                // intermediate context, with the retry annotation) reaches the
+                // tracker's failed step and stderr, so an isolated failure inside a
+                // *successful* run is still fully diagnosable (the run-level handler's
+                // `{e:#}` rationale, applied here).
+                let outer = e.to_string();
+                let root = e.root_cause().to_string();
+                let cause = if root == outer {
+                    outer
+                } else {
+                    format!("{outer}: {root}")
+                };
+                let chain = format!("{e:#}");
+                eprintln!("portfolio: {} analysis failed — {chain}", position.symbol);
+                // Drain the analyst so a partial usage / retry cannot bleed into the
+                // next holding's row. Keep the prompt-fit usage (a real measurement —
+                // the prompt was issued, no success contract), but **drop the retry
+                // events**: `model_retries` carries the "every listed retry succeeded"
+                // contract (the roll-up's absorbed-transient line), and a failed
+                // holding's terminal retry did not succeed. A retry that succeeded
+                // earlier in the same failed holding is under-counted rather than
+                // mislisted — the safe side of that contract.
+                prompt_usage.extend(analyst.take_prompt_usage());
+                let _dropped_failed_retries = analyst.take_retry_events();
+                let carried_prior = prior_run.as_ref().is_some_and(|p| {
+                    p.verdicts
+                        .iter()
+                        .any(|v| v.symbol.eq_ignore_ascii_case(&position.symbol))
+                });
+                ctx.step_finished(step_key, "failed", Some(chain));
+                failed_holdings.push(crate::portfolio::HoldingFailure {
+                    symbol: position.symbol.clone(),
+                    cause,
+                    carried_prior,
+                });
+                continue;
+            }
+        };
         if matches!(
             verdict.disposition,
             crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
@@ -2010,7 +2142,7 @@ fn run_analysis(
 
         // Mid-run checkpoint (`docs/portfolio-analysis.md` §Failure posture):
         // the completed holding — an insufficient-evidence exit included —
-        // persists so a cancellation or a single model failure resumes the
+        // persists so a cancellation or a crash resumes the
         // unfinished holdings rather than restarting the run. Fail-soft: losing
         // a checkpoint must never fail a run that can succeed.
         // Drain the holding just completed: its calls ride its own row, and
@@ -2050,6 +2182,25 @@ fn run_analysis(
                 position.symbol
             );
         }
+    }
+
+    // Every holding attempted this run failed (a systemic cause — daemon down, bad
+    // config, a wedged model), so the run accomplished no fresh analysis. It fails
+    // outright rather than persisting an all-stale / all-failed snapshot that would
+    // demote the prior good run: the prior run stays the latest view and the
+    // failed-job warning surfaces the cause (ruled 2026-08-30,
+    // `docs/portfolio-analysis.md` §Failure posture). At this point `verdicts` holds
+    // only fresh passes (a resume's restored rows included) — carried verdicts are
+    // appended below — so an empty `verdicts` with recorded failures is exactly
+    // "nothing fresh landed."
+    if verdicts.is_empty() && !failed_holdings.is_empty() {
+        let first = &failed_holdings[0];
+        anyhow::bail!(
+            "every attempted holding failed ({}); first: {} — {}",
+            failed_holdings.len(),
+            first.symbol,
+            first.cause
+        );
     }
 
     // Stamp each fresh pass's analysis vintage with the run's own `created_at`
@@ -2097,63 +2248,71 @@ fn run_analysis(
                 // explicit selection grades it.
                 continue;
             };
-            let mut carried = prior_verdict.clone();
-            let vintage =
-                crate::portfolio::effective_vintage(prior_verdict, &prior.created_at).to_string();
-            carried.analyzed_at = Some(vintage.clone());
-            let carried_delta = holdings_diff.delta_for(&position.symbol);
-            carried.position_change = carried_delta.change;
-            // A carried directional verdict (priced or role/risk) is "side-reversed"
-            // when it now describes the opposite position — marked for the card badge
-            // (`docs/portfolio-analysis.md` §Triggering); no longer force-included. A
-            // directional verdict is only ever authored for a **long** position — a
-            // net-short or net-zero holding takes the not-rated treatment at the
-            // eligibility gate (`pipeline.rs`) — so its authoring side is invariantly
-            // long, and it is reversed exactly when the position it now sits on is
-            // **net-short**, whatever path it took there. Comparing that invariant
-            // authoring side against the current side is robust where a per-run flip
-            // read is not: a flip *through* an exactly-zero net (kept by netting) is
-            // invisible to the diff's sign compare. A fresh pass re-authors for the
-            // current side (or returns not-rated) and leaves the field `false`.
-            carried.side_reversed = position.quantity < 0.0
-                && matches!(
-                    carried.disposition,
-                    crate::portfolio::VerdictDisposition::Priced(_)
-                        | crate::portfolio::VerdictDisposition::RoleRiskOnly(_)
-                );
-            if let Some(h) = swept_tail.get(&key) {
-                crate::portfolio::quick_check::overlay_condition_states(&mut carried, h);
-            }
-            // The intrinsic *action* carries as-is (rung-only since
-            // `portfolio-v9` — no sizing to recompute). The over-age
-            // add-family demotion is the one deterministic carry rule.
-            let stale = over_age(&vintage, today);
+            let (carried, stale) = carry_prior_verdict(
+                position,
+                prior_verdict,
+                &prior.created_at,
+                &holdings_diff,
+                &swept_tail,
+                today,
+            );
             if stale {
                 over_age_carried.insert(key.clone());
-            }
-            match &mut carried.disposition {
-                crate::portfolio::VerdictDisposition::Priced(g)
-                    if stale && g.action.is_add_family() =>
-                {
-                    g.action = crate::portfolio::Action::Hold;
-                    carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
-                }
-                // A role-risk verdict can carry an add-family action (the action
-                // call's choice is structurally open), so the stale-strong-action
-                // rule is branch-unscoped (`docs/portfolio-analysis.md`
-                // §Triggering).
-                crate::portfolio::VerdictDisposition::RoleRiskOnly(r)
-                    if stale && r.action.is_add_family() =>
-                {
-                    r.action = crate::portfolio::Action::Hold;
-                    carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
-                }
-                _ => {}
             }
             if let Some(prior_audit) = prior
                 .audit
                 .iter()
                 .find(|a| a.symbol.eq_ignore_ascii_case(&position.symbol))
+            {
+                audits.push(prior_audit.clone());
+            }
+            carried_symbols.insert(key);
+            verdicts.push(carried);
+        }
+    }
+
+    // ---- Carried verdicts for isolated per-holding failures -------------------
+    // A holding whose fresh analysis failed this run carries its prior verdict
+    // forward vintage-stamped — the same treatment as an unselected carry (the shared
+    // [`carry_prior_verdict`]) — so the failed card shows the last successful data
+    // beside its failed badge rather than emptying (`docs/portfolio-analysis.md`
+    // §Failure posture). A debut failure (no prior verdict) carries nothing and
+    // renders an empty failed card. Runs after the fresh-pass vintage stamp so the
+    // carried vintage is preserved, and is disjoint from the selective tail above (a
+    // failed holding was attempted, so it is never in the unselected tail).
+    if let Some(prior) = &prior_run {
+        for failure in &failed_holdings {
+            if !failure.carried_prior {
+                continue;
+            }
+            let key = failure.symbol.to_ascii_uppercase();
+            let (Some(position), Some(prior_verdict)) = (
+                holdings
+                    .positions
+                    .iter()
+                    .find(|p| p.symbol.eq_ignore_ascii_case(&failure.symbol)),
+                prior
+                    .verdicts
+                    .iter()
+                    .find(|v| v.symbol.eq_ignore_ascii_case(&failure.symbol)),
+            ) else {
+                continue;
+            };
+            let (carried, stale) = carry_prior_verdict(
+                position,
+                prior_verdict,
+                &prior.created_at,
+                &holdings_diff,
+                &swept_tail,
+                today,
+            );
+            if stale {
+                over_age_carried.insert(key.clone());
+            }
+            if let Some(prior_audit) = prior
+                .audit
+                .iter()
+                .find(|a| a.symbol.eq_ignore_ascii_case(&failure.symbol))
             {
                 audits.push(prior_audit.clone());
             }
@@ -2215,6 +2374,7 @@ fn run_analysis(
         },
         prompt_usage,
         model_retries,
+        failed_holdings.len(),
     );
     // The deterministic outcome half: tag active episodes' net alignment from this
     // run's diff, refresh label-time price series through the shared bar cache and
@@ -2285,6 +2445,7 @@ fn run_analysis(
             fetched_at: created_at.clone(),
         },
         outcome: outcome_records,
+        failed_holdings,
     };
 
     ctx.step_started("persist", "Persist run");
@@ -2516,6 +2677,7 @@ fn build_roll_up(
     feed_gaps: FeedGaps,
     prompt_usage: Vec<crate::local_model::PromptUsage>,
     model_retries: Vec<crate::local_model::RetryEvent>,
+    failed_count: usize,
 ) -> PortfolioRollUp {
     use crate::portfolio::VerdictDisposition;
     let mut graded = 0;
@@ -2568,6 +2730,7 @@ fn build_roll_up(
         not_rated_count: not_rated,
         insufficient_evidence_count: insufficient,
         role_risk_only_count: role_risk,
+        failed_count,
         top_position_weight,
         cash_weight,
         exited: exited.to_vec(),
@@ -2759,7 +2922,8 @@ fn build_data_health(
     }
     // The bounded retry-once's fired events (`docs/local-models.md §The
     // local-model adapter seam`): in a persisted run every listed re-attempt
-    // succeeded (a second failure fails the run), so the line measures the
+    // succeeded (a second failure is not listed — the Portfolio job drops a
+    // failed holding's retry events as it isolates it), so the line measures the
     // absorbed transient rate — the big-run retry watch's read.
     if let Some(first) = model_retries.first() {
         parts.push(format!(
@@ -2898,6 +3062,7 @@ mod tests {
             FeedGaps::default(),
             vec![],
             vec![],
+            0,
         );
         assert_eq!(roll_up.top_position_weight, 0.0);
         assert_eq!(roll_up.cash_weight, 0.0);
@@ -3471,6 +3636,41 @@ mod tests {
 
     fn ctx() -> std::sync::Arc<RunContext> {
         RunContext::noop()
+    }
+
+    /// A reporter that flips a shared cancel flag the moment a step whose label
+    /// contains `trigger` starts. Since a per-holding model failure now **isolates**
+    /// rather than failing the run (`docs/portfolio-analysis.md` §Failure posture),
+    /// the realistic mid-run interrupt that leaves a resumable checkpoint trail is a
+    /// user cancel — this drives it deterministically at a named holding's step.
+    struct CancelOnStep {
+        trigger: &'static str,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl crate::progress::ProgressReporter for CancelOnStep {
+        fn report(&self, message: &crate::progress::ProgressMessage) {
+            if let crate::progress::ProgressEvent::StepStarted { label, .. } = &message.event {
+                if label.contains(self.trigger) {
+                    self.cancel
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    /// A run context that cancels itself when the step labelled `trigger` starts —
+    /// the interrupt the resume tests use to leave a partial trail (the holdings
+    /// before `trigger` complete and checkpoint; the run then reads `Cancelled`).
+    fn cancel_ctx(trigger: &'static str) -> std::sync::Arc<RunContext> {
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        RunContext::new(
+            "cancel-on-step",
+            std::sync::Arc::new(CancelOnStep {
+                trigger,
+                cancel: cancel.clone(),
+            }),
+            cancel,
+        )
     }
 
     /// A gradeable equity position at a given quantity (cost basis derived so the
@@ -5292,7 +5492,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mid_run_model_failure_checkpoints_and_resume_completes_without_a_pull() {
+    fn a_mid_run_cancel_checkpoints_and_resume_completes_without_a_pull() {
         let (_dir, paths) = paths();
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(two_stocks()),
@@ -5305,18 +5505,21 @@ mod tests {
             None,
             &paths,
             &RunGuard::default(),
-            &ctx(),
+            // Cancel at MSFT's step (a per-holding model failure no longer
+            // interrupts the run — it isolates): AAPL/GOOG complete and checkpoint,
+            // MSFT is cancelled before its model call, leaving the resumable trail.
+            &cancel_ctx("Analyze MSFT"),
         )
         .unwrap();
-        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        assert!(matches!(outcome, PortfolioJobOutcome::Cancelled(_)), "{outcome:?}");
         let conn = storage::open(&paths.db_path).unwrap();
         assert!(store::latest_run(&conn).unwrap().is_none(), "no partial run persists");
 
-        // The completed holding checkpointed; the failing one did not.
+        // The completed holding checkpointed; the cancelled one did not.
         let cp = store::load_checkpoint(&conn)
             .unwrap()
-            .expect("checkpoints survive the failure");
-        assert_eq!(cp.holdings.len(), 1, "AAPL completed before the MSFT failure");
+            .expect("checkpoints survive the cancel");
+        assert_eq!(cp.holdings.len(), 1, "AAPL completed before the MSFT cancel");
         assert_eq!(cp.holdings[0].verdict.symbol, "AAPL");
         assert!(cp.header.work_list.is_none(), "a whole-book run pins no selection");
         assert!(
@@ -5324,8 +5527,9 @@ mod tests {
             "the accumulators carry the completed holding's sector identity"
         );
         // The completed holding's context-fit rows and fired retry ride its
-        // own row; the interrupted holding's abandoned distill call reaches no
-        // row (ruled 2026-08-28: telemetry membership is row membership).
+        // own row; the cancelled holding runs no model call (cancelled before its
+        // distill) and so reaches no row (ruled 2026-08-28: telemetry membership is
+        // row membership).
         let stages: Vec<&str> = cp.holdings[0]
             .prompt_usage
             .iter()
@@ -5409,7 +5613,10 @@ mod tests {
             None,
             &paths,
             &RunGuard::default(),
-            &ctx(),
+            // Cancel at MSFT's step (a per-holding model failure no longer
+            // interrupts the run — it isolates): AAPL/GOOG complete and checkpoint,
+            // MSFT is cancelled before its model call, leaving the resumable trail.
+            &cancel_ctx("Analyze MSFT"),
         )
         .unwrap();
         let conn = storage::open(&paths.db_path).unwrap();
@@ -5442,7 +5649,10 @@ mod tests {
             None,
             &paths,
             &RunGuard::default(),
-            &ctx(),
+            // Cancel at MSFT's step (a per-holding model failure no longer
+            // interrupts the run — it isolates): AAPL/GOOG complete and checkpoint,
+            // MSFT is cancelled before its model call, leaving the resumable trail.
+            &cancel_ctx("Analyze MSFT"),
         )
         .unwrap();
         let conn = storage::open(&paths.db_path).unwrap();
@@ -5551,13 +5761,16 @@ mod tests {
             None,
             &paths,
             &RunGuard::default(),
-            &ctx(),
+            // Cancel at MSFT's step (a per-holding model failure no longer
+            // interrupts the run — it isolates): AAPL/GOOG complete and checkpoint,
+            // MSFT is cancelled before its model call, leaving the resumable trail.
+            &cancel_ctx("Analyze MSFT"),
         )
         .unwrap();
-        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        assert!(matches!(outcome, PortfolioJobOutcome::Cancelled(_)), "{outcome:?}");
         let conn = storage::open(&paths.db_path).unwrap();
         let cp = store::load_checkpoint(&conn).unwrap().expect("trail exists");
-        assert_eq!(cp.holdings.len(), 2, "AAPL and GOOG completed before MSFT failed");
+        assert_eq!(cp.holdings.len(), 2, "AAPL and GOOG completed before MSFT was cancelled");
         assert!(
             cp.holdings.iter().all(|h| h.health.deep_history_failed),
             "each completed holding's row carries its own degraded fetch"
@@ -5646,7 +5859,7 @@ mod tests {
         assert_eq!(prior.verdicts.len(), 2);
 
         // The interrupted run: AAPL reads XLK off a fresh failed fetch, MSFT
-        // fails before its own read.
+        // is cancelled before its own read.
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(two_stocks()),
             &TechSectorDegradedData,
@@ -5658,10 +5871,13 @@ mod tests {
             None,
             &paths,
             &RunGuard::default(),
-            &ctx(),
+            // Cancel at MSFT's step (a per-holding model failure no longer
+            // interrupts the run — it isolates): AAPL/GOOG complete and checkpoint,
+            // MSFT is cancelled before its model call, leaving the resumable trail.
+            &cancel_ctx("Analyze MSFT"),
         )
         .unwrap();
-        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        assert!(matches!(outcome, PortfolioJobOutcome::Cancelled(_)), "{outcome:?}");
         let conn = storage::open(&paths.db_path).unwrap();
         let cp = store::load_checkpoint(&conn).unwrap().expect("trail exists");
         assert_eq!(cp.holdings.len(), 1);
@@ -5723,6 +5939,141 @@ mod tests {
             PortfolioJobOutcome::Successful(run) => *run,
             other => panic!("expected success, got {other:?}"),
         }
+    }
+
+    /// A per-holding model failure with a prior verdict isolates: the run completes,
+    /// records the failure, and carries the prior verdict forward vintage-stamped so
+    /// the failed card shows the last good data (`docs/portfolio-analysis.md`
+    /// §Failure posture).
+    #[test]
+    fn a_per_holding_failure_isolates_and_carries_the_prior_verdict() {
+        let (_dir, paths) = paths();
+        let prior = full_run(&paths, two_stocks());
+        let prior_vintage = prior
+            .verdicts
+            .iter()
+            .find(|v| v.symbol == "MSFT")
+            .expect("prior MSFT verdict")
+            .analyzed_at
+            .clone();
+
+        let run = match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &FailOn::on("MSFT"),
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("a single per-holding failure must not fail the run: {other:?}"),
+        };
+
+        assert_eq!(run.failed_holdings.len(), 1, "{:?}", run.failed_holdings);
+        assert_eq!(run.failed_holdings[0].symbol, "MSFT");
+        assert!(
+            run.failed_holdings[0].carried_prior,
+            "MSFT had a prior verdict to carry"
+        );
+        // The card cause names the failing operation AND carries the root cause —
+        // not just the generic outer stage (the `{e}`-only regression).
+        assert!(
+            run.failed_holdings[0].cause.contains("injected model failure"),
+            "the root cause reaches the card, not only the outer stage: {}",
+            run.failed_holdings[0].cause
+        );
+        assert_eq!(run.roll_up.failed_count, 1);
+
+        // AAPL is fresh (this run's vintage); MSFT shows the carried prior data.
+        let aapl = run
+            .verdicts
+            .iter()
+            .find(|v| v.symbol == "AAPL")
+            .expect("AAPL fresh verdict");
+        assert_eq!(aapl.analyzed_at.as_deref(), Some(run.created_at.as_str()));
+        let msft = run
+            .verdicts
+            .iter()
+            .find(|v| v.symbol == "MSFT")
+            .expect("MSFT carried verdict shown, not emptied");
+        assert_eq!(
+            msft.analyzed_at, prior_vintage,
+            "MSFT keeps its prior vintage — the card shows stale data, not this run's"
+        );
+    }
+
+    /// A debut (no prior) per-holding failure isolates with nothing to carry: the run
+    /// completes, records the failure, and emits no verdict for it — an empty failed
+    /// card (`docs/portfolio-analysis.md` §Failure posture).
+    #[test]
+    fn a_debut_holding_failure_isolates_with_no_carry() {
+        let (_dir, paths) = paths();
+        let run = match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &FailOn::on("MSFT"),
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("a debut failure must not fail the run: {other:?}"),
+        };
+
+        assert_eq!(run.failed_holdings.len(), 1);
+        assert_eq!(run.failed_holdings[0].symbol, "MSFT");
+        assert!(!run.failed_holdings[0].carried_prior, "no prior to carry");
+        assert_eq!(run.roll_up.failed_count, 1);
+        assert!(run.verdicts.iter().any(|v| v.symbol == "AAPL"), "AAPL analyzed");
+        assert!(
+            !run.verdicts.iter().any(|v| v.symbol == "MSFT"),
+            "a debut failure carries no verdict"
+        );
+    }
+
+    /// When every attempted holding fails (a systemic cause), the run fails outright
+    /// and persists no snapshot — the prior good run stays the latest view rather than
+    /// being demoted by an all-failed snapshot (ruled 2026-08-30,
+    /// `docs/portfolio-analysis.md` §Failure posture).
+    #[test]
+    fn every_attempted_holding_failing_fails_the_run() {
+        let (_dir, paths) = paths();
+        // A single-holding book whose one holding fails: nothing fresh lands.
+        let one = holdings_of(vec![stock("MSFT", 20.0, 3_900.0)]);
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(one),
+            &StubCompanyData,
+            &StubMarket,
+            &FailOn::on("MSFT"),
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        let conn = storage::open(&paths.db_path).unwrap();
+        assert!(
+            store::latest_run(&conn).unwrap().is_none(),
+            "an all-failed run persists no snapshot"
+        );
     }
 
     /// [`full_run`] against a caller-supplied company source, for the tests that

@@ -1115,6 +1115,21 @@ button, input, textarea, select { font: inherit; color: inherit; }
   white-space: nowrap;
 }
 
+/* Failed status tag — the one deliberate exception to "tags never use the accent"
+   above (a fifth scoped relaxation of the monochrome rule). A failed analysis is
+   both the *worst* outcome and an *actionable* one (re-run it) — actionability being
+   what the accent is reserved for — so it earns oxblood. It uses `--accent-text`
+   (oxblood **as text**, the token tuned to clear WCAG AA at body size in *both*
+   themes: it lifts on dark, where the grade-F *fill* pair is only 3.36:1 and legal
+   only at large grade-chip size, not a 10px label). Otherwise it stays the base flat
+   hairline chip — transparent ground, hairline border — set apart from the amber
+   attention tag (grade-D) by its oxblood words. The visible "Analysis failed" words
+   carry the meaning; the color is reinforcement, not the sole signal. Analytical
+   register only, Portfolio Analysis §Failure posture. */
+.ana-tag-failed {
+  color: var(--accent-text);
+}
+
 /* ---- Matrix / list view toggle — for Trade Opportunities. A minimal
    two-option switch flipping a surface between a card matrix and a flat list.
    Ghost-text built on the .btn-ghost posture, tracked-caps options, the active
