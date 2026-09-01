@@ -5,7 +5,8 @@
 A post-closure review of the finite Fix-B matrix found C5 was incomplete: the per-page 12,000-character fetch-cap truncation persisted no research gap — only budget-forced truncations did — so a holding truncated solely by the fetch cap read clean in Data Health.
 The fix records the truncation once at the fetch site (from the original extracted length, cache hits included) through the existing `PassDegradation` → gap → `build_data_health` path into the typed research counts, completing C5 for every evidence-truncation event.
 A user ruling then made the synthesis author's gathering-degradation note purely factual for every degradation type — "GATHERING WAS PARTIAL: <losses> — treat coverage as incomplete" — dropping "temper conviction" and "do not mark the topic fully answered" from both the model note and the persisted gap.
-That ruling was generalized into a recorded design principle — **model prompts inform, never prescribe the conclusion** — canonical at `docs/local-models.md §Prompt posture`, an invariant in `BUILD.md`, with the overloaded per-holding action prompt (Finding 3) named as the known unbuilt violation.
+That ruling was generalized into a recorded design principle — **model prompts inform, never prescribe the conclusion** — canonical at `docs/local-models.md §Prompt posture`, an invariant in `BUILD.md`.
+This session then built Finding 3: the per-holding action-call prompt was restructured to data framing plus ordered factual gates, and the full Portfolio prompt surface (interpretation, role/risk, action, research + their evidence sections) was swept to the same bar — architecture narration and how-to-weigh nudges cut, load-bearing contracts kept, the F6 target-provenance weighing trimmed to facts by user ruling (attempt-4 record §Finding 3 fix and §Full portfolio-prompt posture sweep).
 
 ## Current state
 
@@ -15,15 +16,16 @@ The debut stamp stays **`portfolio-v34`** — v34 has never run, so every pre-de
 Gates green: **1,463** Rust tests with 31 live smokes ignored, warning-free clippy, frontend untouched.
 No live run was launched.
 
+This session's Finding 3 fix and full-surface prompt sweep are in the working tree, **uncommitted**; no stamp moved (`portfolio-v34`, never run), and the gate is green — **1,431** library tests (31 live smokes ignored) plus the integration suites, warning-free clippy, frontend untouched.
+
 ## Open questions
 
 - **When to launch attempt 5** — user's call, from a wiped store; don't propose it unprompted.
-- **Handle Finding 3 before attempt 5?** — the action-prompt restructure is diagnosed (record §Finding 3) but **unbuilt**; the remaining pre-run prompt candidate, and the known violation of the new prompt-posture invariant (it still prescribes how to weigh).
 - Does Fix B plus the finite closure actually kill the roughly 70% empty-body rate on the live 122B?
   Only Attempt 5 confirms that; watch the 6d research-findings retry rate, the typed Data Health research counts (now including fetch-cap truncations), and gathering-bound gaps early.
 - The **permanent** SearXNG engine set — a post-run call.
 
 ## Where to start
 
-On the user's go, either build Finding 3 from the attempt record (which also discharges the prompt-posture violation) or launch Attempt 5 from a newly wiped dev store.
-For Attempt 5, bring up the required infrastructure, confirm debut stamps `portfolio-v34` / `checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3`, and inspect the 6d findings retry rate plus typed Data Health research counts early.
+First commit this session's uncommitted prompt work (Finding 3 fix + full-surface sweep).
+Then, on the user's go, launch Attempt 5 from a newly wiped dev store: bring up the required infrastructure, confirm debut stamps `portfolio-v34` / `checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3`, and inspect the 6d findings retry rate plus typed Data Health research counts early — plus, per Finding 3, whether the action trace still oscillates across rungs before settling.

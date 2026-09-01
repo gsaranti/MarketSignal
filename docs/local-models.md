@@ -123,7 +123,7 @@ Grammar constrains an output's *structure*; the prompt supplies the model's *inp
 It does not prescribe how the model should weigh those inputs or what to conclude from them.
 A frontier reasoner draws the inference from a fact once it is told the fact; a prompt that also dictates the inference ("temper conviction", "do not mark this answered") only invites the model to re-audit itself against the instruction rather than reason once (attempt-4 Finding 3).
 The research pass's gathering-degradation note holds this line: it states what coverage was lost and stops, leaving the conviction and topic-answered calls to the model ([web-research.md §The research loop](web-research.md#the-research-loop-and-context-management)).
-The per-holding action prompt's overloaded prescriptions are the known outstanding violation — diagnosed, unbuilt (attempt-4 Finding 3).
+The full Portfolio Analysis prompt surface — the interpretation, role/risk, action, and research prompts with their evidence sections — holds the same bar, its contracts stated as facts the model infers from, with pipeline-architecture narration and how-to-weigh nudges cut (attempt-4 Finding 3 and its follow-up).
 This is the same "informs, never dictates" stance the suite takes with values (§Context-memory discipline) and with source quality ([web-research.md §Source quality and evidence weighting](web-research.md#source-quality-and-evidence-weighting)): the app surfaces the fact and the model judges.
 
 ## Context-memory discipline

@@ -388,9 +388,10 @@ this section carries only the decisions a plan must not work against.
     to weigh them or what to conclude; a frontier reasoner told a fact draws the
     inference itself, and a dictated inference only makes it re-audit against the
     instruction (attempt-4 Finding 3). The research pass's gathering-degradation
-    note holds this — it states the loss and stops — while the per-holding action
-    prompt's prescriptions are the known outstanding violation, diagnosed but
-    unbuilt. Canonical at `docs/local-models.md §Prompt posture`.
+    note holds this — it states the loss and stops — and the full Portfolio prompt
+    surface, the per-holding action prompt included, holds it too, its contracts
+    stated as facts the model infers from. Canonical at `docs/local-models.md
+    §Prompt posture`.
   - **Only a deep re-evaluation can archive an opportunity; the cheap
     re-derivation never does** — it refreshes the quant read and raises a
     non-destructive attention warning. This one is Trade Opportunities' framing
@@ -810,12 +811,14 @@ every stacked runtime confirmation at once.
    `quant` under-population did not reproduce (Finding 2), but the 6d
    research-findings terminal turn returned empty or fenced bodies at ~70% and
    failed a holding (Finding 4), while the action call's prompt friction was
-   diagnosed to an overloaded, unordered prompt (Finding 3, unbuilt).
+   diagnosed to an overloaded, unordered prompt (Finding 3).
    Finding 4's fix landed as **fix B** — the Step-6c research turn split so a
    tools-only gathering loop and a separate grammar-only synthesis call never
-   share a request (`portfolio::PROMPT_VERSION` bumped to bar a pre-fix resume) —
-   leaving Finding 3 the remaining pre-run prompt candidate; attempt 5 is again
-   the user's call, from a wiped store.
+   share a request (`portfolio::PROMPT_VERSION` bumped to bar a pre-fix resume).
+   Finding 3's fix then restructured the action-call prompt to data-plus-ordered
+   gates and swept the full Portfolio prompt surface to the prompt-posture bar
+   (no stamp moved — `portfolio-v34`, never run); attempt 5 is again the user's
+   call, from a wiped store.
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire

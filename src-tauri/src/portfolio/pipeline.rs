@@ -2966,12 +2966,10 @@ pub fn interpretation_system_prompt() -> String {
      quality/valuation/risk through the same cutoffs), your OWN one-month and \
      twelve-month price target bands (base, bear, bull — your numbers, free to \
      depart the engine's as far as the evidence takes you), your conviction, and the \
-     three horizon reads. Do NOT choose a portfolio action here — a dedicated \
-     decision stage sets it afterward from this verdict; your job is the read \
-     itself. Both arms are scored against realized outcomes by a deterministic \
-     scoreboard; where a RETROSPECTIVE block appears, assess your prior read against \
-     the engine baseline and what actually happened — honestly, in self_assessment — \
-     and let it discipline this run's numbers. Conviction means your confidence in \
+     three horizon reads. Do NOT choose a portfolio action here — your job is the \
+     read itself. Where a RETROSPECTIVE block appears, assess your prior read \
+     against the engine baseline and what actually happened, honestly, in \
+     self_assessment. Conviction means your confidence in \
      the overall read — your scores and outlook together — is exactly one of \
      'low' / 'medium' / 'high' (no numbers or percentages). On every sub-score axis \
      a HIGHER number is BETTER — a \
@@ -2979,7 +2977,7 @@ pub fn interpretation_system_prompt() -> String {
      Use the Market Signal house view for the horizon reads and market-setup context \
      only — it is a market-level thesis, never by itself a reason to exit a specific \
      holding. The read is profile-independent — no investor profile is given at this \
-     stage; it enters at the action decision only. \
+     stage. \
      You also maintain the position's THESIS LEDGER — the persisted standing thesis \
      with monitorable falsifiers and pre-committed action triggers: test the prior \
      ledger against this run's evidence and the engine's deterministic condition \
@@ -2998,10 +2996,7 @@ pub fn role_risk_system_prompt() -> String {
      an equity fund below the US-exposure guard, a leveraged/inverse vehicle, or a \
      fund without usable weightings). \
      Do NOT produce a grade, price target, conviction, or action — none exists for \
-     this branch here (its action is set afterward by a dedicated decision stage; \
-     the engine arm's set for this branch is sell-all / trim / hold, rendered there \
-     as its own read — the decision is structurally open, an outside-the-set rung \
-     recorded as an annotation). Your job: \
+     this branch here. Your job: \
      describe the vehicle's role — the mandate and the exposure it exists to supply, \
      read in isolation — and write the continuity note. Read the engine's exposure, \
      expense, and risk figures; never invent one. \
@@ -3126,12 +3121,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
              only, never by itself a reason to exit this holding):\n{sections}\n"
         ));
     }
-    p.push_str(
-        "\nACTION: none here — this branch's action is decided afterward by the \
-         dedicated per-holding action call. The engine arm's set for this branch: \
-         sell-all / trim / hold (no add family); the decision is structurally \
-         open, a departure recorded as an audit annotation.\n",
-    );
+    p.push_str("\nACTION: author none here — this branch's read carries no action.\n");
     match &d.prior_verdict {
         Some(_) => {
             p.push_str(
@@ -3312,8 +3302,7 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
                     }
                 }
                 p.push_str(&format!(
-                    "- price now {:.2}: {} (split-safe via the anchor-close bridge; \
-                     the scored comparison is the deterministic scoreboard's)\n",
+                    "- price now {:.2}: {} (split-safe via the anchor-close bridge)\n",
                     spot,
                     vs.join("; ")
                 ));
@@ -3321,7 +3310,7 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
             None => p.push_str(&format!(
                 "- price now {:.2}: prior-read price comparison unavailable — no \
                  anchor-session close at the prior vintage (excluded rather than \
-                 guessed; the deterministic scoreboard stays the scored ground)\n",
+                 guessed)\n",
                 spot
             )),
         }
@@ -3340,8 +3329,7 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
     }
     p.push_str(
         "Write self_assessment against this: was your prior read right, was it better \
-         than the engine baseline, and why — then let it discipline this run's model \
-         arm.\n",
+         than the engine baseline, and why.\n",
     );
     p
 }
@@ -3438,9 +3426,7 @@ fn implied_expectations_prompt_section(e: &engine::EngineOutput) -> String {
     format!(
         "\nIMPLIED EXPECTATIONS (the engine's scenario math inverted at the live \
          price — what the current price ALREADY assumes, a range under stated \
-         assumptions, never a gate): {growth}. Assumptions: {} multiples{}{}. Read \
-         your forward outlook against this priced-in anchor — \"strong outlook, \
-         already paid for\" is a computed contrast here, not a vibe.\n",
+         assumptions, never a gate): {growth}. Assumptions: {} multiples{}{}.\n",
         if ie.rate_anchored { "rate-anchored (spread-percentile)" } else { "raw-percentile" },
         if ie.rate_anchored {
             format!(", DGS10 {:.2}%", ie.dgs10 * 100.0)
@@ -3472,8 +3458,8 @@ fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
         OverlayClass::Other => "other (unrecognized or multi-leg)",
     };
     let mut s = format!(
-        "\nSAME-UNDERLYING OPTION OVERLAY (held option positions on this name — \
-         this changes what the right action is): classified {class}"
+        "\nSAME-UNDERLYING OPTION OVERLAY (held option positions on this name): \
+         classified {class}"
     );
     if let Some(cr) = o.coverage_ratio {
         s.push_str(&format!(", covering {:.0}% of the held shares", cr * 100.0));
@@ -3657,7 +3643,7 @@ fn forensic_prompt_section(d: &HoldingDossier) -> String {
         }
         Some(ForensicFilingState::Unknown { reason, .. }) => format!(
             "\nFORENSIC FILINGS (item-classified 8-K sweep): UNKNOWN — {reason}. \
-             Not a clean check; weigh accordingly.\n"
+             Not a clean check.\n"
         ),
         Some(ForensicFilingState::Events { events }) => {
             let mut s = String::from(
@@ -3676,9 +3662,8 @@ fn forensic_prompt_section(d: &HoldingDossier) -> String {
             s.push_str(
                 "Engine-matched hard rule (binds the ENGINE arm; your own values stay \
                  yours, departures annotated): engine conviction capped Low; the add \
-                 family is barred from the engine action set. Weigh the event's \
-                 severity and recency in your own conviction and risk read; the \
-                 letter grade is untouched by rule.\n",
+                 family is barred from the engine action set; the letter grade is \
+                 untouched by rule.\n",
             );
             s
         }
@@ -3713,9 +3698,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     ));
     p.push_str(&format!(
         "RISK TIER: {} (deterministic). CAPITAL-EFFICIENCY READ: {} (hurdle {}; only \
-         `fails` is dead money. A `fails` read is one input to weigh — set it against \
-         the TARGET PROVENANCE below and the data quality: a fails verdict built on \
-         low-signal targets is weak evidence for an exit, not an instruction.)\n",
+         `fails` is dead money).\n",
         e.risk_tier.as_str(),
         format!("{:?}", e.hurdle.state).to_lowercase(),
         e.hurdle
@@ -3826,18 +3809,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     if t.dispersion_floor_applied {
         p.push_str("; band widened to the volatility dispersion floor");
     }
-    p.push_str(
-        ".\n  Weigh the targets by this provenance: spread-anchored multiples carry \
-         real signal even with a flat driver (the scenario spread then rides the \
-         anchored multiple range — structural on the fund form). The low-signal \
-         shape is the current-multiple carry with a flat or clamp-flattened driver \
-         — targets that simply hug the current price. A floor-widened band inherits \
-         its base's signal quality: over an anchored base, discount the band's \
-         width, not its level — a `fails` that survives even the widened bull leg \
-         is robust exit evidence; over the low-signal carry shape, the floor only \
-         manufactures width around the current price, and a `fails` there stays \
-         weak exit evidence.\n",
-    );
+    p.push_str(".\n");
 
     p.push_str(&implied_expectations_prompt_section(e));
     p.push_str(&narrative_prompt_section(input.narrative));
@@ -3847,8 +3819,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     }
 
     p.push_str(
-        "\nYOUR MODEL ARM (authored by you, unrestricted, scored against realized \
-         outcomes beside the engine baseline): model_sub_scores — your own \
+        "\nYOUR MODEL ARM (authored by you, unrestricted): model_sub_scores — your own \
          quality/valuation/momentum/risk on the 0-100 higher-is-better scale (higher \
          risk score = lower risk; your letter derives from your \
          quality/valuation/risk through the same cutoffs; the scale is enforced — \
@@ -3920,8 +3891,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
              since the prior read ({:+.1}% vs {} over {} sessions) exceeds the \
              ±{:.1}% threshold (2× interval-scaled realized volatility). This \
              flags a POSSIBLE third-party repricing event; it asserts nothing \
-             about the cause — weigh whether a real technology event explains \
-             the move before treating it as impairment or opportunity.\n",
+             about the cause.\n",
             f.relative_move * 100.0,
             f.benchmark,
             f.sessions,
@@ -4179,49 +4149,48 @@ fn implied_moves_section(spot: f64, graded: &GradedVerdict) -> String {
 
 /// The system prompt for the **per-holding action call** — the profile's one
 /// entry point into the job (`docs/portfolio-analysis.md` §Portfolio action).
-/// Tunnel vision is stated as the contract: the decision weighs this holding
-/// and the profile alone; the whole-book reconciliation belongs to the future
-/// portfolio-planner job and none of its inputs are given.
+/// The decision weighs this holding and the profile alone; tunnel vision is
+/// enforced by input isolation — the whole-book inputs are simply never rendered
+/// — so the prompt scopes the task in a clause rather than narrating the app's
+/// planning architecture to the model.
 pub fn action_system_prompt() -> String {
     format!(
-        "You are deciding the portfolio action for ONE holding, in isolation. The \
-     holding's verdict has already been authored; your job is the rung alone. \
-     TUNNEL VISION IS THE CONTRACT: judge this holding on its own merits and the \
-     investor profile alone — the rest of the portfolio (available cash, sector \
-     weights, concentration, correlation, every other holding) is deliberately \
-     out of scope and none of it is given to you; a separate planning stage \
-     reconciles actions across the whole book later, so do not hedge this call \
-     against unseen portfolio context. Choose exactly ONE rung from the fixed \
-     ladder — sell-all, trim, hold, add, add-aggressively — the rung only: no \
-     share counts, dollar amounts, or portfolio weights. Weigh the verdict's own \
-     evidence: both arms' grades and scores, the conviction, the horizon \
-     outlook, the implied upside/downside of BOTH arms' targets against the \
-     current price (the engine's discounted by their stated provenance; the \
-     model's are the verdict's own forward call, gated to its declared domain but \
-     never validated against the engine, with no provenance to discount), and the \
-     capital-efficiency read — \
-     only a `fails` hurdle is dead money, and a fails read leans toward \
-     realizing some or all of the position once the forward prospects are \
-     independently judged poor; a `clears` or `indeterminate` read is neutral — \
-     neither dead money nor an exit input — so do not let it tilt the rung toward \
-     selling. Follow the INVESTOR PROFILE's tax posture: for a \
-     tax-aware profile, a possible benefit from booking a loss or cost from \
-     realizing a gain is a user consideration to FLAG in the rationale, never \
-     the mover of the rung; for a tax-exempt profile, apply no tax consideration. \
-     For a role/risk-only vehicle (a \
-     class this pipeline cannot price) decide from its role read, expense drag, \
-     observable risk, structural flags, and evidence gaps — an add-side rung \
-     there must be earned by the vehicle's own merits, stated in the rationale. \
-     The ENGINE SET shown is the engine arm's own restriction — evidence, never \
-     a bound on you: the full ladder is open, and an outside-the-set choice \
-     persists exactly as authored — the app stamps the departure onto the \
-     holding's audit for you, so emit only the rung and the one-sentence \
-     rationale, never a departure note of your own. The \
-     INVESTOR PROFILE frames the decision — an aggressive risk tolerance can \
-     justify the aggressive rung where the evidence supports it; the profile \
-     never changes the verdict's facts. The rationale is exactly ONE sentence, \
-     never empty — the single reason the rung was chosen. Keep the action firm \
-     run to run: move it only when the verdict's evidence has materially moved. {}",
+        "You are deciding the portfolio action for ONE holding, from its verdict \
+     (given below as the evidence you act on) and the investor profile alone.\n\
+     \n\
+     OUTPUT: exactly ONE rung from the fixed ladder — sell-all, trim, hold, add, \
+     add-aggressively — the rung only, no share counts, dollar amounts, or portfolio \
+     weights; and a rationale of exactly ONE sentence, never empty, giving the single \
+     reason for the rung. Keep the action firm run to run — it moves only when the \
+     verdict's evidence has materially moved.\n\
+     \n\
+     WHAT THE INPUTS ARE, in the order they bear on the rung (the values are below; \
+     these state what each input is, and the reasoning over them is yours):\n\
+     - The grade and both arms' implied target moves against the current price are the \
+     primary basis. The engine's moves carry a stated provenance; the model arm's band \
+     is the verdict's own forward call, gated to its declared domain and carrying no \
+     provenance to discount.\n\
+     - The risk tier and the horizon outlook refine that read.\n\
+     - The investor profile breaks ties: an aggressive risk tolerance admits the \
+     aggressive rung where the evidence supports it, and it never changes the \
+     verdict's facts.\n\
+     - Tax: account type, lots, and rates are unmodeled, so a possible benefit from \
+     booking a loss or a cost from realizing a gain is a user-facing flag for the \
+     rationale, not an input the rung turns on; a tax-exempt profile carries no tax \
+     consideration.\n\
+     - Capital efficiency is an exit input only on a `fails` hurdle — where even the \
+     bull case misses over the holding's horizon and the forward prospects are \
+     independently poor. A `clears` or `indeterminate` read carries no exit signal.\n\
+     - The ENGINE SET shown is the engine arm's own restriction, given as evidence, \
+     not a bound on you: the full ladder is open, and a rung outside the set persists \
+     exactly as authored — the app stamps the departure onto the holding's audit, so \
+     emit only the rung and its one-sentence rationale, never a departure note of your \
+     own.\n\
+     - For a role/risk-only vehicle (a class this pipeline cannot price) the rung \
+     follows from the vehicle's own attributes — role read, expense drag, observable \
+     risk, structural flags, evidence gaps; an add-side rung is earned by those merits \
+     in the rationale, and no price is fabricated.\n\
+     {}",
         crate::portfolio::action_response_contract()
     )
 }
@@ -4239,11 +4208,9 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     let tax_read = if !input.profile.tax_sensitive {
         "tax-exempt profile — no tax consideration applied"
     } else if pl < 0.0 {
-        "an unrealized loss — booking it may carry a tax benefit; flag as a user \
-         consideration, never the mover"
+        "an unrealized loss — booking it may carry a tax benefit"
     } else if pl > 0.0 {
-        "an unrealized gain — realizing it may carry a tax cost; flag as a user \
-         consideration, never the mover"
+        "an unrealized gain — realizing it may carry a tax cost"
     } else {
         "at break-even — no unrealized gain or loss to flag for tax"
     };
@@ -4278,8 +4245,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 "\nTHE VERDICT (already authored — the evidence you act on):\n\
                  ENGINE ARM: grade {}{}; sub-scores quality {:.0} / valuation {:.0} / \
                  risk {:.0} (momentum {:.0} outside the letter); risk tier {}; \
-                 capital-efficiency read {} (only `fails` is dead money; a `clears` \
-                 or `indeterminate` read is neutral, never an exit input).\n",
+                 capital-efficiency read {}.\n",
                 graded.grade.as_str(),
                 if graded.low_confidence_grade {
                     " (low-confidence — an imputed sub-score underlies it)"
@@ -4328,8 +4294,8 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
             }
             let t = &engine.target_meta;
             p.push_str(&format!(
-                "TARGET PROVENANCE (engine targets): {} — weigh the engine's implied \
-                 moves by it; the model's bands carry no provenance to discount.\n",
+                "TARGET PROVENANCE (engine targets): {} — the model's bands carry no \
+                 provenance to discount.\n",
                 if t.rate_anchored {
                     "rate-anchored (real forward signal)"
                 } else if t.current_multiple_carry {
@@ -4386,25 +4352,19 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     p.push_str(&commodity_prompt_section(input.dossier));
     p.push_str(&option_overlay_prompt_section(input.dossier));
 
-    p.push_str(
-        "\nENGINE SET (the engine arm's own restriction — evidence, not a bound; \
-         your choice is open on the full ladder, and an outside-the-set rung \
-         persists as authored — the app stamps the departure for you, so emit only \
-         the rung and its one-sentence rationale, never a departure note of your \
-         own): ",
-    );
+    p.push_str("\nENGINE SET (the engine arm's own restriction, shown as evidence): ");
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&set.join(", "));
     p.push_str(
-        "\nWhich rung the engine arm itself picked is deliberately not shown: form \
-         your own decision and let the scoreboard compare the two arms.\n",
+        "\nThe rung the engine arm itself picked is deliberately not shown — form your \
+         own decision so the scoreboard can compare the two arms.\n",
     );
 
     p.push_str("\nINVESTOR PROFILE (frames the decision; the verdict's facts are fixed):\n");
     let profile = input.profile.display();
     // The cash row is deliberately not rendered: available capital is
-    // whole-book context — the planner's domain — and the system prompt
-    // promises none of it is given (Codex 2026-08-14, finding 3).
+    // whole-book context — the planner's domain — kept out of this
+    // tunnel-vision call by input isolation (Codex 2026-08-14, finding 3).
     p.push_str(&format!(
         "- objective: {}\n- risk tolerance: {}\n- horizon: {}\n- tax: {}\n",
         profile.objective, profile.risk_tolerance, profile.horizon, profile.tax,
@@ -4509,8 +4469,7 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
                 "CONVICTION CEILING (engine rule): the engine arm holds its own conviction \
                  at or beneath {ceiling} — matched rule(s): {rules}. Your conviction is \
                  UNRESTRICTED: exceeding the ceiling persists as authored, with the \
-                 departure recorded beside the rule — so weigh the execution evidence \
-                 honestly rather than deferring to the ceiling.\n",
+                 departure recorded beside the rule.\n",
             )),
             // The action call authors no conviction: the ceiling is context.
             PromptStage::Action => p.push_str(&format!(
@@ -4528,29 +4487,27 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
             PromptStage::Interpretation => p.push_str(
                 "SEVERE DETERIORATION (engine rule): the engine's own action set narrows to \
                  the exit family {trim, sell-all} and its stand-in action follows it; the \
-                 action decision stage that follows weighs this — here, weigh the \
-                 validated deterioration evidence in your conviction and risk read.\n",
+                 action decision stage that follows weighs this. This stage authors \
+                 conviction and no action.\n",
             ),
             PromptStage::Action => p.push_str(
                 "SEVERE DETERIORATION (engine rule): the engine's own action set narrows to \
                  the exit family {trim, sell-all} and its stand-in action follows it. Your \
                  rung is UNRESTRICTED — a rung outside the exit family persists as authored \
-                 with the departure recorded; weigh the validated deterioration evidence \
-                 before departing.\n",
+                 with the departure recorded.\n",
             ),
         }
     } else if o.consequences.bar_add_family {
         match stage {
             PromptStage::Interpretation => p.push_str(
                 "Note: the engine's own action set drops the add family on the overlay's \
-                 financing rule; the action decision stage that follows weighs this — \
-                 here, weigh the financing evidence in your conviction and risk read.\n",
+                 financing rule; the action decision stage that follows weighs this. This \
+                 stage authors conviction and no action.\n",
             ),
             PromptStage::Action => p.push_str(
                 "Note: the engine's own action set drops the add family on the overlay's \
                  financing rule; your rung is UNRESTRICTED — an add-family rung persists as \
-                 authored with the departure recorded; weigh the financing evidence before \
-                 departing.\n",
+                 authored with the departure recorded.\n",
             ),
         }
     }
@@ -7751,11 +7708,16 @@ mod tests {
         assert!(system.contains("MODEL ARM"), "{system}");
         assert!(!system.contains("never outside them"), "{system}");
 
-        // The prompt-adjustments slice (portfolio-v3): target provenance always
-        // renders, the dead-money read is a weighed input (not an instruction), and
-        // the system prompt defines conviction and scopes the house view.
+        // Prompt-posture audit: target provenance always renders (the provenance
+        // facts, so the model infers signal quality), and the capital-efficiency
+        // read states only the fact — "only `fails` is dead money". The F6
+        // how-to-weigh cross-check ("one input to weigh … weak evidence for an
+        // exit") and the TARGET PROVENANCE weighing narrative were cut; the model
+        // draws the inference from the facts rendered beside them.
         assert!(user.contains("TARGET PROVENANCE"), "{user}");
-        assert!(user.contains("one input to weigh"), "{user}");
+        assert!(user.contains("only `fails` is dead money"), "{user}");
+        assert!(!user.contains("one input to weigh"), "{user}");
+        assert!(!user.contains("Weigh the targets by this provenance"), "{user}");
         let system = interpretation_system_prompt();
         assert!(system.contains("Conviction means"), "{system}");
         assert!(system.contains("horizon reads and market-setup context"), "{system}");
@@ -8229,50 +8191,54 @@ mod tests {
         assert_eq!(user.matches("IMPLIED 1-MONTH MOVES vs spot").count(), 2, "{user}");
         assert_eq!(user.matches("IMPLIED 12-MONTH MOVES vs spot").count(), 2, "{user}");
         assert!(user.contains("TARGET PROVENANCE (engine targets):"), "{user}");
-        assert!(user.contains("weigh the engine's implied moves by it"), "{user}");
+        assert!(user.contains("the model's bands carry no provenance to discount"), "{user}");
         assert!(!user.contains("off-scale as authored"), "{user}");
         assert!(!user.contains("band inverted as authored"), "{user}");
         let system = action_system_prompt();
-        assert!(system.contains("BOTH arms' targets"), "{system}");
-        assert!(system.contains("TUNNEL VISION IS THE CONTRACT"), "{system}");
-        assert!(system.contains("ONE rung"), "{system}");
-        assert!(system.contains("never a bound"), "{system}");
+        assert!(system.contains("both arms' implied target moves"), "{system}");
+        assert!(system.contains("the investor profile alone"), "{system}");
+        assert!(system.contains("exactly ONE rung"), "{system}");
+        assert!(system.contains("not a bound on you"), "{system}");
         assert!(system.contains("exactly ONE sentence"), "{system}");
-        // Finding-3 semantic clauses, pinned as COMPLETE clauses in both prompts
-        // so a partial revert fails here, not only a stamp shift. Signal 1: the
-        // whole "app stamps the departure … emit only the rung AND its rationale,
-        // never a departure note" clause — pinning it entire catches a revert to
-        // "only the rung" (the original P2 contradiction) that would slip past a
-        // bare "never a departure note" substring. Signal 2: the whole clause
-        // naming BOTH non-`fails` states — pinning `clears` or `indeterminate`
-        // catches dropping `indeterminate` (the state whose leak drove the finding)
-        // that a bare "never an exit input" substring would miss.
+        // Finding-3 (user follow-up): the prompt scopes the task in a clause and does
+        // not narrate the app's whole-book architecture to the model — no tunnel-vision
+        // label, no planning-stage or portfolio-context exposition the model can
+        // neither see nor use. Input isolation (the user prompt omits every whole-book
+        // field, asserted below) is the enforcement, not prompt prose.
+        assert!(!system.contains("TUNNEL VISION"), "{system}");
+        assert!(!system.contains("planning stage"), "{system}");
+        assert!(!system.contains("concentration"), "{system}");
+        // Finding-3 (attempt 4): the behavioral contracts the schema cannot carry
+        // are stated ONCE, in the system prompt, as facts the model infers from —
+        // never duplicated into the user prompt (the duplication that amplified the
+        // re-checking) and never phrased as a how-to-weigh prohibition (the
+        // prompt-posture violation). Two are pinned as COMPLETE clauses so a partial
+        // revert fails here, not only a stamp shift. Signal 1: the whole "app stamps
+        // the departure … emit only the rung AND its rationale, never a departure
+        // note" clause — pinning it entire catches a revert to "only the rung" (the
+        // original P2 contradiction) that a bare "never a departure note" substring
+        // would miss. Signal 2: the capital-efficiency clause naming BOTH non-`fails`
+        // states — pinning `clears` or `indeterminate` catches dropping
+        // `indeterminate` (the state whose leak drove the finding).
         assert!(
             system.contains(
-                "the app stamps the departure onto the holding's audit for you, so emit \
-                 only the rung and the one-sentence rationale, never a departure note of \
-                 your own"
+                "the app stamps the departure onto the holding's audit, so emit only the \
+                 rung and its one-sentence rationale, never a departure note of your own"
             ),
             "{system}"
         );
         assert!(
             system.contains(
-                "a `clears` or `indeterminate` read is neutral — neither dead money nor an \
-                 exit input"
-            ),
+                "Capital efficiency is an exit input only on a `fails` hurdle"
+            ) && system.contains("A `clears` or `indeterminate` read carries no exit signal"),
             "{system}"
         );
-        assert!(
-            user.contains(
-                "the app stamps the departure for you, so emit only the rung and its \
-                 one-sentence rationale, never a departure note of your own"
-            ),
-            "{user}"
-        );
-        assert!(
-            user.contains("a `clears` or `indeterminate` read is neutral, never an exit input"),
-            "{user}"
-        );
+        // Dedup: the user prompt carries the capital-efficiency read VALUE but not
+        // its rule, and the departure rule lives only in the system prompt.
+        assert!(user.contains("capital-efficiency read"), "{user}");
+        assert!(!user.contains("carries no exit signal"), "{user}");
+        assert!(!user.contains("never an exit input"), "{user}");
+        assert!(!user.contains("never a departure note"), "{user}");
         // No whole-book vocabulary leaks into the user prompt — the cash row
         // included: the system prompt promises no book-level capital input is
         // given, so the profile renders without it (Codex 2026-08-14, finding 3).
@@ -8338,8 +8304,8 @@ mod tests {
         let taxable = render(&d);
         assert!(taxable.contains("may carry a tax cost"), "{taxable}");
         let system = action_system_prompt();
-        assert!(system.contains("Follow the INVESTOR PROFILE's tax posture"), "{system}");
-        assert!(system.contains("for a tax-exempt profile, apply no tax consideration"), "{system}");
+        assert!(system.contains("account type, lots, and rates are unmodeled"), "{system}");
+        assert!(system.contains("a tax-exempt profile carries no tax consideration"), "{system}");
     }
 
     #[test]
@@ -9112,23 +9078,15 @@ mod tests {
             narrative: None,
         });
         assert!(anchored.contains("spread-anchored on 40 rate observations"), "{anchored}");
-        // The weighing sentence's signal grammar (two Codex rounds): flat_driver is
-        // hardcoded true on every priced fund and must not read as low-signal; the
-        // low-signal shape is the carry + flat/clamped driver combination; and the
-        // dispersion floor's evidence is conditional — it inherits the base's
-        // provenance (robust over an anchored base, still weak over a carried one,
-        // where the floor merely manufactures width around spot).
-        assert!(anchored.contains("even with a flat driver"), "{anchored}");
-        assert!(
-            anchored.contains("carry with a flat or clamp-flattened driver"),
-            "{anchored}"
-        );
-        assert!(
-            anchored.contains("inherits its base's signal quality"),
-            "{anchored}"
-        );
-        assert!(anchored.contains("discount the band's width, not its level"), "{anchored}");
-        assert!(anchored.contains("stays weak exit evidence"), "{anchored}");
+        // Prompt-posture audit (F6 trim): the provenance TYPE renders as a fact,
+        // but the how-to-weigh narrative that spelled out how a `fails` interacts
+        // with target signal quality was cut — the model infers it from the
+        // provenance facts rendered beside it. Attempt 5 re-checks the regression
+        // risk the F6 lesson guarded against.
+        assert!(!anchored.contains("Weigh the targets by this provenance"), "{anchored}");
+        assert!(!anchored.contains("robust exit evidence"), "{anchored}");
+        assert!(!anchored.contains("discount the band's width, not its level"), "{anchored}");
+        assert!(!anchored.contains("stays weak exit evidence"), "{anchored}");
 
         engine_output.target_meta.rate_anchored = false;
         engine_output.target_meta.current_multiple_carry = true;
@@ -9146,6 +9104,9 @@ mod tests {
             narrative: None,
         });
         assert!(carried.contains("current multiple was carried"), "{carried}");
+        // The signal-quality FACT survives the trim — the carry branch still names
+        // it, so the model has the fact without the weighing narrative.
+        assert!(carried.contains("carry little forward signal"), "{carried}");
         assert!(carried.contains("driver held FLAT"), "{carried}");
         assert!(carried.contains("volatility dispersion floor"), "{carried}");
 
