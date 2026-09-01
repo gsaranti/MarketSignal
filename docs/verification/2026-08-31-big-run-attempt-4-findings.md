@@ -366,3 +366,19 @@ The closure also corrects the causal claim around Fix B.
 Attempt 4 proves a failure of the combined production condition—growing tool-call history, a terminal switch to structured synthesis, the grammar constraint, and the contemporaneous model/server state—but the clean 8/8 short pre-flight does not isolate one of those ingredients or establish a universal Ollama tools-plus-`format` defect.
 Fix B is justified independently of that unresolved mechanism because gathering and synthesis have different responsibilities, input lifecycles, and output protocols; separating them removes the observed joint condition, makes each request finitely sizeable, and gives the structured boundary its own bounded parse-and-validation policy.
 The next wiped-store Attempt 5 may confirm or falsify the operational prediction that this eliminates the live empty-body rate, but it cannot reopen C1-C7 without a newly identified defect outside this matrix.
+
+### Post-closure C5 completion and degradation-note posture (2026-09-01)
+
+A review after the closure result found C5's "every evidence-truncation event" claim held for budget-forced truncations but not for the per-page fetch cap.
+A fetched page over the 12,000-character `PAGE_TEXT_CAP_CHARS` was truncated on store and surfaced only as an inline model marker, and neither synthesis render path — the fits-whole path nor the water-fill allocator — recorded a research gap for it.
+So a completed holding whose sole degradation was one truncated long page persisted zero research gaps and read clean in Data Health, which the C5 result row above did not cover.
+
+The fix records the event once at the fetch site from the original extracted length — strictly greater than the cap, cache hits included — as a `fetch_cap_truncations` degradation.
+It folds through the existing `PassDegradation` summary and `build_data_health` into the required typed `research_degraded_holdings` and `research_gap_count` fields, so C5 now holds for every evidence-truncation event rather than only the budget-forced ones.
+
+A user ruling on 2026-09-01 then made the synthesis author's degradation note purely factual for every degradation type: it states "GATHERING WAS PARTIAL: <losses> — treat coverage as incomplete" and no longer tells the model to "temper conviction" or to "not mark the topic fully answered".
+The persisted gap drops the same prescription, so the audit records the coverage fact rather than a posture.
+This revisits the Finding-2 note that had prescribed the tempering: the degradation still records to Data Health, but the model is handed the fact and weighs it itself, consistent with Finding 3's reading that prescriptive prompt language makes the model re-audit itself.
+
+`PROMPT_VERSION` stays `portfolio-v34`, since v34 has never run and every pre-debut change folds into the debut stamp.
+Verification: `cargo test` 1,463 passed with 31 live smokes ignored, warning-free clippy, frontend untouched; landed `eea56b2`.
