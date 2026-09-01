@@ -502,6 +502,19 @@ Each is easy to break by accident, so a plan should say how it honors them:
   data-health's likely-front-truncation read stays the runtime witness.
   Canonical at `docs/local-models.md §The local-model adapter seam` (ruled
   2026-08-28 off the 2026-08-24 review's reduce-prompt minor).
+- **The research gathering loop is bounded before every request, never by the
+  server's own truncation.** The 6c gathering conversation grows across tool
+  turns, so it is sized against the shared interpret input guard before every
+  model call and before each retained assistant/tool message — with a per-turn
+  tool-call cap and untrusted-metadata caps — and a bound ends gathering as a
+  recorded degradation that still takes the separate clean synthesis call;
+  that call's evidence packet in turn jointly selects headers and bodies
+  within the same guard, reclaiming omitted-header space rather than starving
+  every page. This extends the never-rely-on-front-truncation posture from the
+  distillation/synthesis prefix to the gathering half — a future edit adding a
+  content source to the loop must size it the same way (attempt-4 Finding 4,
+  fix B and its post-landing sweeps; canonical at `docs/web-research.md §The
+  research loop and context management`).
 - **Stored price-denominated values never compare against fresh prices
   without the split-adjustment bridge.** FMP dated EOD re-bases
   retroactively, so a slice that stores a price (a threshold, target, entry,

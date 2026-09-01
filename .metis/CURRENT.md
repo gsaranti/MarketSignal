@@ -21,13 +21,16 @@ closed in release + a persisted data-health gap + a direct regression test.
 ## Current state
 
 All committed + pushed to `main` (**`42a974a`** "Harden portfolio research Fix
-B"), working tree clean, HEAD == origin/main. Gates green: **1458** backend
-tests, clippy 0, `npm run build`, 46 + 254 frontend. Record current at
-`docs/verification/2026-08-31-big-run-attempt-4-findings.md` §Final full-sweep
-corrections. BUILD.md unchanged (it cites the `PROMPT_VERSION` constant, not the
-value). **Debut stamp is `portfolio-v34`.** Nothing in flight. Attempt 5 remains
-cancelled-store state; **attempt 5 must re-wipe to a clean debut** and confirm
-v34.
+B"; the handoff rides on top), working tree clean, HEAD == origin/main. Gates
+green: **1458** backend tests, clippy 0, `npm run build`, 46 + 254 frontend.
+Record current at `docs/verification/2026-08-31-big-run-attempt-4-findings.md`
+§Final full-sweep corrections. **BUILD §Standing constraints gained a
+gathering-loop-bound line** this session (the "never rely on front-truncation"
+posture now named for the 6c loop too); BUILD still cites the `PROMPT_VERSION`
+constant for the value. Memory (`big-run-waits-on-review-record` + MEMORY.md
+index) brought current with `42a974a`. **Debut stamp is `portfolio-v34`.**
+Nothing in flight. Attempt 5 remains cancelled-store state; **attempt 5 must
+re-wipe to a clean debut** and confirm v34.
 
 ## Open questions
 
@@ -40,9 +43,6 @@ v34.
   122B — only attempt 5 confirms (watch the 6d research-findings retry rate and
   the new gathering-input-bound / per-turn-cap partial-coverage gaps early).
 - The **permanent** SearXNG engine set — a post-run call.
-- **Memory drift (still unaddressed):** `big-run-waits-on-review-record` +
-  MEMORY.md index still say the debut stamp is `portfolio-v32` → now **v34**
-  (`searxng-orbstack-bringup` already updated).
 
 ## Where to start
 
