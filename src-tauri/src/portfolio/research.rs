@@ -123,16 +123,18 @@ const MAX_CLAIMS_PER_PASS: usize = 20;
 /// Management).
 const MAX_SEEDED_BY_PER_PASS: usize = 4;
 
-/// Gathering-phase degradation for one pass — search/fetch failures, malformed
-/// or capped calls, and budget-bound omissions that live only in the tool-call
-/// history the fresh synthesis conversation discards (fix B). Surfaced so the
-/// sole findings author can temper conviction rather than read partial coverage
-/// as complete, and recorded as a data-health gap (attempt-4 review, Finding 2).
+/// Gathering-phase degradation for one pass — search/fetch failures, fetch-cap
+/// truncation, malformed or capped calls, and budget-bound omissions that live
+/// only in the tool-call history the fresh synthesis conversation discards (fix
+/// B). Surfaced to the sole findings author as a plain fact — partial coverage,
+/// stated, not a prescribed conclusion — so the model weighs it itself, and
+/// recorded as a data-health gap (attempt-4 review, Finding 2).
 #[derive(Debug, Default, Clone, Copy)]
 struct PassDegradation {
     searches_failed: usize,
     searches_empty: usize,
     fetches_failed: usize,
+    fetch_cap_truncations: usize,
     budget_skipped: usize,
     malformed_calls: usize,
     tool_call_cap_skipped: usize,
@@ -148,6 +150,7 @@ impl PassDegradation {
         self.searches_failed
             + self.searches_empty
             + self.fetches_failed
+            + self.fetch_cap_truncations
             + self.budget_skipped
             + self.malformed_calls
             + self.tool_call_cap_skipped
@@ -178,6 +181,12 @@ impl PassDegradation {
         }
         if self.fetches_failed > 0 {
             parts.push(format!("{} fetch(es) failed", self.fetches_failed));
+        }
+        if self.fetch_cap_truncations > 0 {
+            parts.push(format!(
+                "{} fetched page(s) truncated at the {PAGE_TEXT_CAP_CHARS}-character fetch cap",
+                self.fetch_cap_truncations
+            ));
         }
         if self.budget_skipped > 0 {
             parts.push(format!(
@@ -1405,7 +1414,7 @@ impl ResearchRunner<'_> {
         let degradation_note = degradation.summary();
         if let Some(summary) = &degradation_note {
             gaps.push(format!(
-                "topic {}: gathering degraded — {summary}; coverage partial, conviction tempered",
+                "topic {}: gathering degraded — {summary}; coverage partial",
                 ctx.topic.key
             ));
         }
@@ -1509,7 +1518,7 @@ impl ResearchRunner<'_> {
 
     /// Execute one search call, with its tracker row. Degradation (a failed
     /// call or an empty result set) is tallied so the synthesis call, which
-    /// never sees this tool result, can still temper conviction (Finding 2).
+    /// never sees this tool result, still learns coverage was partial (Finding 2).
     fn exec_search(
         &self,
         query: &str,
@@ -1589,6 +1598,13 @@ impl ResearchRunner<'_> {
                 if requested != normalized {
                     url_aliases.insert(normalized.clone(), requested);
                 }
+                // Preserve the original extracted length before storing the bounded
+                // synthesis body: an evidence-truncation event must survive as a
+                // persisted degradation gap, not only as an inline model marker.
+                let page_text_chars = page.text.chars().count();
+                if page_text_chars > PAGE_TEXT_CAP_CHARS {
+                    degradation.fetch_cap_truncations += 1;
+                }
                 page_texts.insert(
                     normalized.clone(),
                     page.text.chars().take(PAGE_TEXT_CAP_CHARS).collect(),
@@ -1606,7 +1622,7 @@ impl ResearchRunner<'_> {
                     Some(if from_cache {
                         "served from document cache".to_string()
                     } else {
-                        format!("{} chars extracted", page.text.chars().count())
+                        format!("{page_text_chars} chars extracted")
                     }),
                 );
                 render_page(&page, annotation.as_ref())
@@ -1796,12 +1812,13 @@ fn synthesis_brief(
 ) -> String {
     let mut out = pass_brief(ctx);
     if let Some(note) = degradation_note {
+        // State the coverage fact and stop: the findings author weighs what
+        // partial coverage means for its own conviction and topic-answered call.
+        // Naming the loss informs the model; prescribing the conclusion ("temper
+        // conviction", "do not mark the topic answered") is not ours to do.
         out.push_str("\n\nGATHERING WAS PARTIAL: ");
         out.push_str(note);
-        out.push_str(
-            " — treat coverage as incomplete: temper conviction and do not mark the topic fully \
-             answered on this evidence alone.\n",
-        );
+        out.push_str(" — treat coverage as incomplete.\n");
     }
     out.push_str(
         "\n\n--- EVIDENCE GATHERED THIS PASS (the ONLY sources your claims may cite) ---\n",
@@ -3646,8 +3663,10 @@ mod tests {
     #[test]
     fn synthesis_brief_surfaces_the_gathering_degradation_note() {
         // A partial-gathering note (the failures the discarded tool-call history
-        // carried) is rendered into the synthesis brief so the sole findings
-        // author tempers conviction (attempt-4 review, Finding 2).
+        // carried) is rendered into the synthesis brief as a plain fact so the
+        // sole findings author can weigh partial coverage itself — the brief
+        // states the loss, it never prescribes the conclusion (attempt-4 review,
+        // Finding 2).
         let mut fetched = Vec::new();
         let mut page_texts = std::collections::HashMap::new();
         let url = "https://example.com/only".to_string();
@@ -3679,8 +3698,12 @@ mod tests {
             "the degradation note leads the brief: {brief}"
         );
         assert!(
-            brief.contains("temper conviction"),
-            "the note tells the author to lower conviction"
+            brief.contains("treat coverage as incomplete"),
+            "the note states the coverage fact: {brief}"
+        );
+        assert!(
+            !brief.contains("temper conviction") && !brief.contains("do not mark the topic"),
+            "the note never prescribes how the model should weigh the evidence: {brief}"
         );
     }
 
@@ -3708,6 +3731,77 @@ mod tests {
             b.summary().unwrap().contains("budget was exhausted"),
             "a budget-exhausted stop summarizes (Finding 2)"
         );
+    }
+
+    #[test]
+    fn fetch_cap_truncation_crosses_the_persisted_gap_boundary() {
+        struct SizedPageWeb {
+            body_chars: usize,
+        }
+        impl ResearchWeb for SizedPageWeb {
+            fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
+                Ok(Vec::new())
+            }
+            fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
+                Ok((
+                    FetchedPage {
+                        final_url: url.to_string(),
+                        host: "reuters.com".into(),
+                        title: "Sized page".into(),
+                        text: "e".repeat(self.body_chars),
+                        extraction_quality: 0.9,
+                        thin_stub: false,
+                        retrieved_at: "2026-08-22T10:00:00+00:00".into(),
+                    },
+                    false,
+                ))
+            }
+        }
+
+        for (body_chars, expect_gap) in [
+            (PAGE_TEXT_CAP_CHARS, false),
+            (PAGE_TEXT_CAP_CHARS + 1, true),
+        ] {
+            let model = ScriptModel::new(vec![
+                turn_with_tools(json!([
+                    {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/sized"}}}
+                ])),
+                gather_done(),
+                findings_turn(json!({
+                    "findings": "The bounded page was reviewed.",
+                    "claims": [],
+                    "topic_answered": true
+                })),
+                gather_done(),
+                disconfirm_findings(),
+            ]);
+            let web = SizedPageWeb { body_chars };
+            let clock = FrozenClock(Duration::from_secs(10));
+            let ctx = RunContext::noop();
+            let runner = ResearchRunner {
+                model: &model,
+                web: &web,
+                budget: ResearchBudget {
+                    max_fetches: 10,
+                    max_wall: Duration::from_secs(3600),
+                    clock: &clock,
+                },
+                progress: &ctx,
+                step_label: "research TEST".into(),
+            };
+            let out = runner
+                .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+                .unwrap();
+            let has_fetch_cap_gap = out.gaps.iter().any(|gap| {
+                gap.contains("gathering degraded")
+                    && gap.contains("1 fetched page(s) truncated at the 12000-character fetch cap")
+            });
+            assert_eq!(
+                has_fetch_cap_gap, expect_gap,
+                "body length {body_chars} produced unexpected gaps: {:?}",
+                out.gaps
+            );
+        }
     }
 
     #[test]

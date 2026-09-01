@@ -3272,7 +3272,14 @@ mod tests {
         let audits = vec![
             audit("DEG1", vec!["gathering partial".into(), "page omitted".into()]),
             audit("CLEAN", vec![]),
-            audit("DEG2", vec!["page truncated".into()]),
+            audit(
+                "DEG2",
+                vec![
+                    "topic competitive-position: gathering degraded — 1 fetched page(s) \
+                     truncated at the 12000-character fetch cap; coverage partial"
+                        .into(),
+                ],
+            ),
         ];
         let dh = build_data_health(
             &audits,
