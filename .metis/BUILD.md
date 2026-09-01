@@ -772,8 +772,21 @@ every stacked runtime confirmation at once.
    Finding 1's mitigations have since landed — search pacing, a run-scoped
    query-dedup cache, the `settings.yml` engine re-tune, and the local suite
    made **SearXNG-only** (the Tavily-fallback machinery removed whole), so the
-   Tavily spillover that stopped attempt 3 can no longer occur; a re-attempt is
-   the user's call, from a wiped store per the watch set.
+   Tavily spillover that stopped attempt 3 can no longer occur.
+   Attempt 4 launched from a wiped store on 2026-08-31 with the Serper.dev paid
+   SERP added as the reliable search floor, and was user-cancelled at 7 of 47
+   once the round's findings were in
+   (`docs/verification/2026-08-31-big-run-attempt-4-findings.md`).
+   The search backend served cleanly (Finding 1's gate met) and the ledger
+   `quant` under-population did not reproduce (Finding 2), but the 6d
+   research-findings terminal turn returned empty or fenced bodies at ~70% and
+   failed a holding (Finding 4), while the action call's prompt friction was
+   diagnosed to an overloaded, unordered prompt (Finding 3, unbuilt).
+   Finding 4's fix landed as **fix B** — the Step-6c research turn split so a
+   tools-only gathering loop and a separate grammar-only synthesis call never
+   share a request (`portfolio::PROMPT_VERSION` bumped to bar a pre-fix resume) —
+   leaving Finding 3 the remaining pre-run prompt candidate; attempt 5 is again
+   the user's call, from a wiped store.
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire
