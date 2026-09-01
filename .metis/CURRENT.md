@@ -2,52 +2,63 @@
 
 ## What happened
 
-The big-run **launch session** — but mid-bring-up the user judged the
-keyless-SearXNG strategy too fragile against Google's IP blocking (at bring-up
-`google cse` + `duckduckgo` were dead from the first query, residual from the
-2026-08-30 attempt) and chose to add a **Serper.dev paid SERP** as the reliable
-floor (Finding 1's ranked mitigation #3). Serper is wired as pure SearXNG
-`json_engine` config — app unchanged, suite stays SearXNG-only; it queries Google
-from Serper's own infra (immune to the egress-IP blocks) and fires every query,
-with the keyless engines kept as zero-cost bonus redundancy. The keyless set was
-also **widened** (google/bing/qwant re-enabled) — the block set flips day to day,
-so re-probe at every bring-up. Secret hygiene: `settings.yml` holds only a
-`${SERPER_API_KEY}` placeholder; the key lives in the out-of-repo secrets file and
-renders into a gitignored `settings.runtime.yml` at bring-up (via a gitignored
-compose override). Committed + pushed: `64b202d` (scrub the secrets-file path from
-`fmp.rs` doc-comments + gitignore the runtime files; full cargo gate green) and
-`8790812` (Serper engine + widened set + `web-research.md §Search backend` note).
+Launched **attempt 4** of the big confirmation run (`job_runs` id 5,
+`portfolio-v32`, 47-holding debut): infra up (OrbStack + SearXNG with the
+**Serper paid floor** + Ollama `NUM_PARALLEL=1`), engines re-probed (Serper +
+google/bing/qwant/reuters served; google cse / duckduckgo / mojeek blocked but
+fail-soft), clean debut confirmed, dev app run, user triggered. The search
+backend served cleanly in-run (Finding 1's gate met, spillover closed) and the
+ledger `quant` under-population did **not** reproduce (Finding 2) — but the **6d
+research-findings terminal turn returned empty/fenced bodies at ~70%**, failing a
+holding (PGNY): **Finding 4**. The action-call prompt friction was diagnosed to
+an overloaded, unordered prompt: **Finding 3**. User cancelled at 7/47 once the
+findings were in.
+
+Then implemented **Fix B** for Finding 4 — the Step-6c research turn split so a
+tools-only gathering loop and a separate grammar-only **synthesis call** never
+share a request (the interleaving caused the empty bodies; mirrors the clean
+interpretation call). User ruled the five build decisions via selector;
+`portfolio::PROMPT_VERSION` → **`portfolio-v33`**. Eight Codex review rounds
+hardened the evidence-sizing (source-quality fidelity, water-fill allocator,
+drop-and-summarize, claim-validator provenance), all fixed.
 
 ## Current state
 
-**The big run is fully prepped but NOT launched** — the user decided to start it
-in a **new session**. Done this session: dev portfolio store **wiped to a clean
-debut** (continuity 30 reports / 67 vectors / 14 baselines preserved; `job_runs`
-history kept → next run = **id 5**; pre-wipe backup in the session scratch), Serper
-key added by the user, infra brought up and then **torn down** (Ollama, OrbStack,
-SearXNG all stopped). The re-attempt gate stays met; the engine list is
-**provisional** pending the run's measured serve rates. Findings 4–6 still ride the
-full run (unchanged). Full bring-up mechanics + the next-session sequence live in
-the `searxng-orbstack-bringup` memory; the carried unrelated follow-ups are
-unchanged from the prior handoff.
+**Fix B landed — Codex-clean, user-approved** — 4 commits pushed (`6c27a22` core,
+`c46d331` round-7, `3fd45f2` round-8, `1113317` BUILD.md); gate green (1413 tests,
+clippy 0). Findings record: `docs/verification/2026-08-31-big-run-attempt-4-findings.md`
+(+ INDEX pointer, `b238532`).
+
+Attempt 4 is **cancelled** (`job_runs` id 5, no `portfolio_runs`, 5 holdings
+checkpointed). **Infra torn down** (Ollama, SearXNG, OrbStack all stopped). The
+dev store still carries the 5 cancelled-run checkpoints, so **attempt 5 must
+re-wipe to a clean debut** per the watch set. The **debut stamp is now
+`portfolio-v33`** (was v32).
+
+Backlog: **Finding 3** — the action-prompt restructure (cut the reasoning-guidance
+bloat to data+values+schema, keep the ~4–5 behavioral contracts as an ordered gate
+list stated once) — diagnosed in the record's §Finding 3, **unbuilt**; the
+remaining pre-run prompt candidate. Findings 5–6 (throughput, extraction) + the
+attempt-3 open items want the run's telemetry first.
 
 ## Open questions
 
-- When to launch — the user said "we will start the big run in a new session"; do
-  it on their go, don't propose it unprompted.
-- The **permanent** SearXNG engine set (and Serper SearXNG-side vs app-side
-  long-term) — a post-run call informed by measured serve rates; the committed
-  `settings.yml` set is provisional.
-- Whether a second full pass runs — the user's call after run 1.
-- Findings 4–6 all want the run's telemetry first; no code candidate left.
+- **When to launch attempt 5** — user's call, from a wiped store; don't propose
+  it unprompted.
+- **Handle Finding 3 before attempt 5?** — the restructure is diagnosed but
+  unbuilt; a pre-run prompt candidate.
+- Does Fix B actually kill the ~70% empty-body rate on the live 122B — only
+  attempt 5 confirms (watch the 6d research-findings retry rate early).
+- The **permanent** SearXNG engine set — a post-run call; `settings.yml` set is
+  provisional.
+- **Memory drift:** `searxng-orbstack-bringup` + `big-run-waits-on-review-record`
+  still say the debut stamp is `portfolio-v32` → now `portfolio-v33`.
 
 ## Where to start
 
-**This is the launch session.** On the user's go: bring up OrbStack → render
-`settings.runtime.yml` (Serper key from the out-of-repo secrets file) +
-`docker-compose up -d` → Ollama (`NUM_PARALLEL=1`) → **re-probe engines + confirm
-Serper serves** (block set shifts daily) → confirm the store is still a clean debut
-→ `cargo run` → confirm debut stamps
-(`portfolio-v32` / `checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3`) → trigger →
-read `data-health` early. Sequence + mechanics: the `searxng-orbstack-bringup`
-memory.
+Fix B is done. On the user's go, either **build Finding 3** (action-prompt
+restructure — diagnosis in the attempt-4 record §Finding 3) or **launch attempt
+5**: re-wipe the dev store to a clean debut → bring up infra
+(`searxng-orbstack-bringup` memory) → confirm debut stamps **`portfolio-v33`** /
+`checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3` → trigger → read
+`data-health` early and watch the 6d research-findings retry rate to confirm Fix B.
