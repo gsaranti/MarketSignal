@@ -13,6 +13,7 @@ The rule for new slices is the I17 posture, never the I18 one: a new field is re
 **The keep-vs-cut test is the writer of the JSON.**
 App-written (a run, verdict, audit, ledger, episode, checkpoint header or row, quick-check state, research cache row) decodes strictly.
 Model-written (the interpretation, the ledger drafts, the distillation and findings wire types, the typed side-channels decoded straight from the model's JSON) and provider-written (FMP, FRED, BLS, Schwab, Ollama, OpenAI responses) keep their lenience — that is schema tolerance for a JSON the app does not author, not data compat.
+The 2026-08-31 attempt-4 Finding-4 closure narrows that historical rule for the research findings boundary: optional model-authored fields remain lenient, but keys the findings grammar declares required no longer default, and blank findings/claim fields classify as a retryable schema violation because silently accepting them recreated the live failure as an apparently completed pass.
 Also kept: shipped-report compat (`storage.rs`'s migrations, the baseline-snapshot group defaults, the summary title default, the portability v1 archive), and the corrupt-blob loud-skip robustness.
 
 Two facts made the cut cheaper than the inventory suggested.

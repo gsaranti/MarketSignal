@@ -2,53 +2,30 @@
 
 ## What happened
 
-Codex ran a **fifth full sweep of Fix B** and found + fixed a P1 and two P2s,
-all folding into the **never-run `portfolio-v34` debut (no new stamp)**: the
-**gathering conversation is now aggregate-bounded** (≤8 tool calls accepted per
-turn — `MAX_TOOL_CALLS_PER_TURN`; the whole serialized message history + tool
-schema checked against the shared input guard before every model call and every
-retained result, a bound ending gathering as recorded degradation then still
-synthesizing; untrusted search/fetch metadata capped) — closing the last
-"relies on daemon-side truncation" hole Fix B's synthesis-only bounding had
-left; the **synthesis allocator now jointly selects headers + bodies**,
-reclaiming omitted-header space so a cache-hit burst can't collapse to
-all-header/no-evidence (the no-drop invariant proven). Reviewed it all, verified
-the gates independently, and flagged one **defense-in-depth gap** — the render
-loop trusted a debug-only assert, so a future allocator regression could admit a
-body-less URL in release. Codex fixed that too: `admit_planned_source` fails
-closed in release + a persisted data-health gap + a direct regression test.
+Codex replaced the repeated open-ended Fix-B reviews with the finite C1-C8 closure matrix in `docs/verification/2026-08-31-big-run-attempt-4-findings.md` and completed its static side.
+The exercise starts at Attempt 4's production failure rather than the latest diff: the evidence establishes a failure under the joint condition of growing tool history, the terminal protocol switch, `format`, and contemporaneous serving state, but the clean short pre-flight does not isolate one ingredient or prove a universal Ollama incompatibility.
+The resulting fixes require the findings wire's three grammar-required keys and nonblank prose/claim fields, make source admission fail closed for zero rendered body, roll persisted research gaps into required typed Data Health counts and the visible Portfolio summary, and share one serialized message/tool projection between gathering bounds and prompt telemetry.
+Active documentation and code comments now describe grammar as a generation constraint followed by application parsing and validation.
 
 ## Current state
 
-All committed + pushed to `main` (**`42a974a`** "Harden portfolio research Fix
-B"; the handoff rides on top), working tree clean, HEAD == origin/main. Gates
-green: **1458** backend tests, clippy 0, `npm run build`, 46 + 254 frontend.
-Record current at `docs/verification/2026-08-31-big-run-attempt-4-findings.md`
-§Final full-sweep corrections. **BUILD §Standing constraints gained a
-gathering-loop-bound line** this session (the "never rely on front-truncation"
-posture now named for the 6c loop too); BUILD still cites the `PROMPT_VERSION`
-constant for the value. Memory (`big-run-waits-on-review-record` + MEMORY.md
-index) brought current with `42a974a`. **Debut stamp is `portfolio-v34`.**
-Nothing in flight. Attempt 5 remains cancelled-store state; **attempt 5 must
-re-wipe to a clean debut** and confirm v34.
+The finite static closure is complete: C1-C7 are closed, and C8's static gates are closed while its live operational confirmation remains explicitly open.
+The working tree contains the uncommitted closure exercise on top of `main`; no commit or push was requested.
+Independent gates are green: **1,462** Rust tests with 31 live smokes ignored, warning-free clippy, `npm run build`, 46 pure-module tests, 255 component tests, and diff hygiene.
+The debut stamp remains **`portfolio-v34`** because these corrections harden validation, telemetry, and app-written Data Health under the wiped-store pre-release posture without changing valid model-facing prompt semantics.
+No live run was launched.
 
 ## Open questions
 
-- **When to launch attempt 5** — user's call, from a wiped store; don't propose
-  it unprompted.
+- **When to launch attempt 5** — user's call, from a wiped store; don't propose it unprompted.
 - **Handle Finding 3 before attempt 5?** — the action-prompt restructure is
   diagnosed (record §Finding 3) but **unbuilt**; the remaining pre-run prompt
   candidate.
-- Does Fix B + this hardening actually kill the ~70% empty-body rate on the live
-  122B — only attempt 5 confirms (watch the 6d research-findings retry rate and
-  the new gathering-input-bound / per-turn-cap partial-coverage gaps early).
+- Does Fix B plus the finite closure actually kill the roughly 70% empty-body rate on the live 122B?
+  Only Attempt 5 confirms that operational prediction; watch the 6d research-findings retry rate, typed Data Health research counts, and gathering-bound gaps early.
 - The **permanent** SearXNG engine set — a post-run call.
 
 ## Where to start
 
-On the user's go, either **build Finding 3** (diagnosis in the attempt-4 record
-§Finding 3) or **launch attempt 5**: re-wipe the dev store to a clean debut →
-bring up infra (`searxng-orbstack-bringup` memory) → confirm debut stamps
-**`portfolio-v34`** / `checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3` →
-trigger → read `data-health` early, watching the 6d research-findings retry rate
-and the new gathering-bound gaps to confirm Fix B.
+On the user's go, either build Finding 3 from the attempt record or launch Attempt 5 from a newly wiped dev store.
+For Attempt 5, bring up the required infrastructure, confirm debut stamps `portfolio-v34` / `checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3`, and inspect the 6d findings retry rate plus typed Data Health research counts early.

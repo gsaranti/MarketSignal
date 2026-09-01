@@ -113,7 +113,8 @@ On the default roster (a blank fast tier) the two rungs are one budget, and only
 ## Schema-constrained output
 
 Every structured hand-off between stages is a **schema-validated JSON object**, produced with grammar-constrained decoding (Ollama's native `format` schema).
-The model picks values; it cannot emit invalid structure.
+The grammar is the generation constraint, not the application's only validator: attempt 4 demonstrated that a served call can still return an empty or otherwise non-decodable body, so the app parses every response and classifies a structural violation at the stage boundary.
+For the research findings stage, grammar-required keys are required again by the Rust wire type and prose/claim fields that the local grammar cannot constrain to nonblank are checked explicitly; a violation is the same bounded-retry `SchemaParse` class as malformed JSON.
 For a financial pipeline whose downstream stages and persisted records depend on well-formed grades, targets, and actions, deterministic structure is load-bearing — a free-form-JSON parse-and-pray path is not acceptable here.
 
 ## Context-memory discipline

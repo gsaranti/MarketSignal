@@ -1325,6 +1325,14 @@ pub struct DataHealth {
     /// posture; rebuilt from the holdings' rows, so a resumed run counts a benchmark
     /// once (Codex I17).
     pub benchmark_gaps: usize,
+    /// Completed holdings whose persisted research audit carries at least one gap —
+    /// partial gathering, evidence omission/truncation, or downstream distillation.
+    /// Counted and named in the run-level summary, never an attention trigger: web
+    /// research is additive and fail-soft, but its degraded coverage must be visible.
+    pub research_degraded_holdings: usize,
+    /// Total persisted research-gap entries across those holdings. This is folded
+    /// from the typed `ResearchAuditRecord::gaps` field without matching gap prose.
+    pub research_gap_count: usize,
     /// Model calls the bounded retry-once recovered — each fired retry's stage and
     /// failure class (`docs/local-models.md §The local-model adapter seam`). In a
     /// persisted run every listed re-attempt succeeded (a second failure is not
@@ -1337,7 +1345,7 @@ pub struct DataHealth {
     /// context pressure on any local call, a length-stopped generation, or a
     /// fired model-call retry — a raw-percentile fallback from genuinely thin
     /// issuer history is counted but not flagged (as are the enriching-feed
-    /// gaps above).
+    /// gaps above, including research coverage gaps).
     pub attention: bool,
     /// The one-line deterministic summary the roll-up card renders.
     pub summary: String,
@@ -2385,9 +2393,9 @@ fn what_changed_entries_schema(role_risk: bool) -> Value {
 /// (conviction, horizon reads), the prose, the retrospective self-assessment, and
 /// the rewritten thesis ledger. Since `portfolio-v9` it carries **no action** —
 /// the per-holding action call authors that afterward ([`ActionDecision`]), so
-/// this stage stays profile-blind. A schema-valid object is guaranteed by
-/// grammar-constrained decoding, so there is no parse-and-pray path
-/// (`docs/local-models.md §Schema-constrained output`).
+/// this stage stays profile-blind. Grammar-constrained decoding requests the
+/// schema shape; the pipeline still parses and validates the returned body at
+/// this stage boundary (`docs/local-models.md §Schema-constrained output`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Interpretation {
     pub conviction: Conviction,

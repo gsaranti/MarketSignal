@@ -178,6 +178,8 @@ export const samplePortfolioRun: PortfolioRun = {
       cboe_gap: false,
       finra_gap: false,
       benchmark_gaps: 0,
+      research_degraded_holdings: 0,
+      research_gap_count: 0,
       context_pressure: [],
       peak_prompt: null,
       model_retries: [],

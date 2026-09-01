@@ -5249,13 +5249,16 @@ impl LocalAnalyst {
         req: &ChatRequest,
         resp: &crate::local_model::ChatResponse,
     ) {
-        // The sent size in chars — the ground truth a post-truncation
-        // `prompt_eval_count` is checked against (`build_data_health`).
-        let prompt_chars = req
-            .messages
-            .iter()
-            .map(|m| m.content.chars().count() as u64)
-            .sum();
+        // The variable prompt material in chars — serialized messages (roles,
+        // content, and assistant tool calls) plus the tool schema. This is the
+        // same projection the gathering input guard sizes and the ground truth
+        // a post-truncation `prompt_eval_count` is checked against
+        // (`build_data_health`).
+        let prompt_chars = u64::try_from(crate::local_model::prompt_material_chars(
+            &req.messages,
+            req.tools.as_ref(),
+        ))
+        .unwrap_or(u64::MAX);
         self.prompt_usage
             .lock()
             .expect("prompt-usage lock is never poisoned")
@@ -6081,6 +6084,16 @@ mod tests {
             String::new(),
         );
         let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        req.messages.push(ChatMessage::assistant_with_tool_calls(
+            "",
+            serde_json::json!([{
+                "function": {"name": "web_search", "arguments": {"query": "widget"}}
+            }]),
+        ));
+        req.tools = Some(serde_json::json!([{
+            "type": "function",
+            "function": {"name": "web_search", "parameters": {"type": "object"}}
+        }]));
         req.options = Some(options::thinking_general(131_072, NUM_PREDICT_THINKING));
         let counted = crate::local_model::ChatResponse {
             content: String::new(),
@@ -6105,7 +6118,24 @@ mod tests {
         assert_eq!(drained[0].stage, "construction");
         assert_eq!(drained[0].prompt_tokens, Some(120_000));
         assert_eq!(drained[0].num_ctx, 131_072);
-        assert_eq!(drained[0].prompt_chars, 1, "the one-char user message");
+        assert_eq!(
+            drained[0].prompt_chars,
+            u64::try_from(crate::local_model::prompt_material_chars(
+                &req.messages,
+                req.tools.as_ref()
+            ))
+            .unwrap(),
+            "usage records the shared serialized prompt-material projection"
+        );
+        let visible_content: u64 = req
+            .messages
+            .iter()
+            .map(|m| m.content.chars().count() as u64)
+            .sum();
+        assert!(
+            drained[0].prompt_chars > visible_content,
+            "assistant tool calls and the tool schema cannot disappear from telemetry"
+        );
         // The output-side half rides the same observation.
         assert_eq!(drained[0].completion_tokens, Some(NUM_PREDICT_THINKING as u64));
         assert_eq!(drained[0].num_predict, Some(NUM_PREDICT_THINKING));

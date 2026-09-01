@@ -204,6 +204,8 @@ const run: PortfolioRun = {
       cboe_gap: false,
       finra_gap: false,
       benchmark_gaps: 0,
+      research_degraded_holdings: 0,
+      research_gap_count: 0,
       context_pressure: [],
       peak_prompt: null,
       model_retries: [],
@@ -332,6 +334,27 @@ describe("PortfolioView states", () => {
   test("a load error with nothing cached surfaces as an alert", () => {
     const wrapper = mountView({ loadError: "db locked" });
     expect(wrapper.find('[role="alert"]').text()).toContain("db locked");
+  });
+
+  test("the roll-up renders persisted research degradation in Data health", () => {
+    const degraded: PortfolioRun = {
+      ...run,
+      roll_up: {
+        ...run.roll_up,
+        data_health: {
+          ...run.roll_up.data_health,
+          research_degraded_holdings: 2,
+          research_gap_count: 3,
+          summary: "Research coverage degraded on 2 holdings (3 recorded gaps).",
+        },
+      },
+    };
+    const wrapper = mountView({ run: degraded });
+    const health = wrapper.find(".rollup-datahealth");
+    expect(health.text()).toContain(
+      "Research coverage degraded on 2 holdings (3 recorded gaps).",
+    );
+    expect(health.find(".dh-attention-tag").exists()).toBe(false);
   });
 
   test("pulled-not-analyzed: the compact holdings view is the page body", () => {

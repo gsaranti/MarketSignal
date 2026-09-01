@@ -662,6 +662,11 @@ export interface DataHealth {
   cboe_gap: boolean;
   finra_gap: boolean;
   benchmark_gaps: number;
+  // Persisted research coverage gaps, folded from per-holding research audits
+  // without matching their human-readable gap strings. Counted and named in
+  // the roll-up summary, never an attention trigger (research is fail-soft).
+  research_degraded_holdings: number;
+  research_gap_count: number;
   // Local chat calls under context pressure (the digest-compression covenant's
   // detection leg) — near-full (≥ 90% of num_ctx) or likely front-truncated (a
   // reported count too small to cover the chars actually sent; Ollama's count
@@ -689,7 +694,8 @@ export interface RetryEvent {
 
 // One local chat call's prompt-size observation: Ollama's reported prompt token
 // count (post-truncation) against the num_ctx the request declared and the
-// prompt size the app actually sent.
+// serialized prompt material the app actually presented (message roles/content,
+// assistant tool calls, and the tool schema).
 export interface PromptUsage {
   stage: string;
   // Ollama's reported prompt count; null when the daemon omitted it (the row

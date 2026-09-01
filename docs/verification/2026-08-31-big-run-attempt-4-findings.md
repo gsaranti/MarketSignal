@@ -323,3 +323,46 @@ Focused Rust regressions pin the oversized-batch cutoff, the multi-turn cached-p
 Claude Code's follow-up review raised one worthwhile defense-in-depth observation: the selected-page render loop relied on a debug-only assertion that no selected plan was dropped, so a future allocator regression could admit a body-less URL in release mode despite the current proof.
 The render boundary now also fails closed in release: an unexpectedly dropped plan is rejected before its URL enters the claim-validator allow-set, counted in a persisted internal-allocation gap, and omitted without adding unreserved text to the synthesis packet; a direct regression pins both the dropped and usable admission cases, and this unreachable-under-current-math safeguard does not change the `portfolio-v34` prompt contract.
 Final verification after the corrections: `cargo test` passed 1,458 tests across the library and integration suites with 31 live smokes ignored; `cargo clippy --all-targets --all-features` completed warning-free; `npm run build` passed; and `npm test` passed 46 pure-module tests plus 254 component tests.
+
+### Finite closure matrix after the sixth review (2026-08-31)
+
+The sixth full review withdrew the earlier static approval and replaced the open-ended correction loop with the finite acceptance matrix below.
+Its scope starts at the original live failure, not at Fix B's latest diff: attempt 4 combined a growing tool-call conversation with the findings grammar on one terminal request, and five of the first seven holdings returned an empty or otherwise non-JSON findings body on that turn.
+The short M5 pre-flight's 8/8 clean result means the repository does **not** prove that tools and `format` are universally incompatible; the production evidence isolates the joint condition of the long-lived tool history, the terminal protocol switch, the model/server serving state, and the grammar constraint, but does not identify which component caused the empty body.
+Fix B is therefore a protocol-isolation repair: gathering and structured synthesis are different responsibilities with different output protocols, so each gets its own bounded request shape.
+Static closure can prove that the risky joint condition is absent and that every failure or degradation around the new boundary is handled honestly; only the next live 122B run can measure whether the observed empty-body rate actually disappears.
+
+| ID | Acceptance condition | Required proof |
+| --- | --- | --- |
+| C1 | A gathering request carries tools and no findings grammar; a findings request carries the grammar and no tools or tool-call history. | A production-seam request-shape test plus a pass-loop test over a fresh two-message synthesis conversation. |
+| C2 | No gathering or synthesis request relies on daemon-side front truncation. | Aggregate serialized message-and-tool sizing before every gathering issue and retained turn/result; synthesis prefix, headers, markers, and bodies fit the shared input guard. |
+| C3 | Empty, non-JSON, structurally incomplete, or semantically blank findings output cannot become a completed pass. | Missing required keys, wrong types, a blank `findings`, and blank claim fields classify `SchemaParse`, exercise the same bounded re-issue, and fail hard only after that bound. |
+| C4 | A source is citable if and only if usable body text was actually rendered for it. | The release admission boundary independently rejects `dropped` and zero-text plans; tests construct those states directly rather than relying on current allocator output. |
+| C5 | Every partial-gathering, evidence-omission, evidence-truncation, and internal-allocation event on a completed holding survives beyond the model prompt. | The event remains in the persisted per-holding research audit and contributes typed counts to the run-level `DataHealth` summary the Portfolio roll-up renders; no gap-string matching. |
+| C6 | Runtime context telemetry measures the variable material presented to the model, including the tool protocol. | One shared serializer counts message roles/content/tool calls plus the tool schema for both the gathering guard and `PromptUsage`; a tool-heavy regression proves it exceeds visible message content alone. |
+| C7 | The repaired semantics cannot mix with an interrupted pre-fix holding. | `portfolio-v34` remains the never-run debut stamp and the resume gate refuses a differing prompt version; the Data Health schema is written strictly under the wiped-store pre-release posture. |
+| C8 | Static closure and operational confirmation are reported separately. | Full Rust tests, warning-free clippy, frontend build/tests, and diff hygiene close C1-C7; attempt 5 from a wiped store alone closes the live empty-body-rate question. |
+
+No later review may add an unstated acceptance condition and still call itself this closure pass.
+A newly discovered issue outside C1-C8 must be recorded separately rather than silently restarting Fix B's approval loop.
+
+### Finite closure result (2026-09-01)
+
+The finite static closure is complete: C1-C7 are closed against production paths, persisted state, the rendered Portfolio surface, and direct boundary regressions rather than review assertions.
+C8 remains split by design: its static side is closed, while its live operational side is the one explicitly open Attempt-5 question and was not exercised in this closure.
+
+| ID | Result | Evidence |
+| --- | --- | --- |
+| C1 | Closed | `pipeline::research_turn_request` is pinned at the production request seam, and `research::the_synthesis_call_is_a_fresh_two_message_conversation_with_the_grammar_and_no_tools` proves every pass uses tools XOR grammar and a fresh two-message synthesis conversation. |
+| C2 | Closed | The gathering loop and `PromptUsage` share `local_model::prompt_material_chars`, including roles, content, assistant tool calls, and the tool schema; the existing aggregate-history, per-turn-cap, synthesis-prefix, header-reclamation, omission, and truncation regressions keep every issued packet under the input guard. |
+| C3 | Closed | The Rust findings wire requires `findings`, `claims`, and `topic_answered`; `parse_findings_wire` also rejects blank findings and blank claim text/URLs as `SchemaParse`; direct missing-key/type/blank tests, the parse-leg re-issue test, and the four-call hard-ceiling test pin bounded recovery and terminal failure. |
+| C4 | Closed | Empty extracted bodies are excluded before allocation, and the release `admit_planned_source` boundary independently rejects both `dropped` and zero-text plans before URL admission; direct tests construct all three states. |
+| C5 | Closed | Completed holdings persist the research audit's typed `gaps`; `build_data_health` folds those rows into required `research_degraded_holdings` and `research_gap_count` fields without gap-string matching, adds the visible summary, and the mounted Portfolio regression renders it without misclassifying fail-soft research as an attention alert. |
+| C6 | Closed | Gathering guards and runtime telemetry use the same serialized prompt-material projection, and tool-heavy regressions prove roles, tool calls, and the tool schema cannot disappear behind visible-content-only counting. |
+| C7 | Closed | `portfolio-v34` remains the pinned debut stamp; the real resume gate's version-drift regression refuses a differing prompt/schema version; the new app-written Data Health fields are required under the wiped-store pre-release posture. |
+| C8 | Static side closed; live side open | Independent gates passed: 1,462 Rust tests with 31 live smokes ignored, warning-free `cargo clippy --all-targets --all-features`, `npm run build`, 46 pure-module tests, 255 component tests, and `git diff --check`; no live Portfolio run was launched. |
+
+The closure also corrects the causal claim around Fix B.
+Attempt 4 proves a failure of the combined production condition—growing tool-call history, a terminal switch to structured synthesis, the grammar constraint, and the contemporaneous model/server state—but the clean 8/8 short pre-flight does not isolate one of those ingredients or establish a universal Ollama tools-plus-`format` defect.
+Fix B is justified independently of that unresolved mechanism because gathering and synthesis have different responsibilities, input lifecycles, and output protocols; separating them removes the observed joint condition, makes each request finitely sizeable, and gives the structured boundary its own bounded parse-and-validation policy.
+The next wiped-store Attempt 5 may confirm or falsify the operational prediction that this eliminates the live empty-body rate, but it cannot reopen C1-C7 without a newly identified defect outside this matrix.

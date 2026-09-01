@@ -510,7 +510,14 @@ Each is easy to break by accident, so a plan should say how it honors them:
   recorded degradation that still takes the separate clean synthesis call;
   that call's evidence packet in turn jointly selects headers and bodies
   within the same guard, reclaiming omitted-header space rather than starving
-  every page. This extends the never-rely-on-front-truncation posture from the
+  every page. The two phases also keep one output protocol per request — tools
+  and no grammar while gathering, grammar and no tools/history while
+  synthesizing — and the app re-validates the grammar-required fields and
+  nonblank prose/claim semantics before a pass can complete. Every research gap
+  persists on the holding audit and contributes typed counts to the run-level
+  data-health summary; the runtime prompt-size read shares the gathering
+  message-and-tool serializer.
+  This extends the never-rely-on-front-truncation posture from the
   distillation/synthesis prefix to the gathering half — a future edit adding a
   content source to the loop must size it the same way (attempt-4 Finding 4,
   fix B and its post-landing sweeps; canonical at `docs/web-research.md §The

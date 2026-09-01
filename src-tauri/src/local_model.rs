@@ -454,8 +454,9 @@ pub struct ChatRequest {
     /// The roster model id to address (e.g. `qwen3.5:122b`).
     pub model_id: String,
     pub messages: Vec<ChatMessage>,
-    /// Grammar-constraining JSON schema (Ollama native `format`) for schema-valid
-    /// structured output. `None` leaves the model unconstrained (free prose).
+    /// Grammar-constraining JSON schema (Ollama native `format`) requesting
+    /// structured output. Callers still parse and validate the returned body;
+    /// `None` leaves the model unconstrained (free prose).
     pub format_schema: Option<Value>,
     /// Tool definitions (Ollama native `tools`). The orchestrator executes tools and
     /// feeds results back; the model only requests them.
@@ -489,6 +490,28 @@ impl ChatRequest {
             keep_alive: None,
         }
     }
+}
+
+/// Character count of the variable chat material presented to the model: the
+/// serialized messages (including roles and assistant `tool_calls`) plus the
+/// optional tool schema. This deliberately excludes transport/model options and
+/// the output-only `format` grammar, which are request controls rather than
+/// prompt material. The research gathering guard and runtime `PromptUsage`
+/// telemetry share this exact projection so their size claims cannot drift.
+pub(crate) fn prompt_material_chars(
+    messages: &[ChatMessage],
+    tools: Option<&Value>,
+) -> usize {
+    #[derive(Serialize)]
+    struct PromptMaterial<'a> {
+        messages: &'a [ChatMessage],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tools: Option<&'a Value>,
+    }
+
+    serde_json::to_string(&PromptMaterial { messages, tools })
+        .map(|wire| wire.chars().count())
+        .unwrap_or(usize::MAX)
 }
 
 /// Generation-option profiles for the roster reasoner, straight from the vendor
@@ -587,9 +610,9 @@ pub struct PromptUsage {
     /// none. Every context-fit consumer gates on `num_ctx > 0`, so a
     /// count-less row can never fake a fill or truncation read.
     pub num_ctx: u32,
-    /// The size of the prompt the app actually sent (chars across all message
-    /// contents) — the app-side ground truth a post-truncation `prompt_tokens`
-    /// is checked against.
+    /// The serialized prompt material the app presented — message roles/content,
+    /// assistant tool calls, and the tool schema — the app-side ground truth a
+    /// post-truncation `prompt_tokens` is checked against.
     #[serde(default)]
     pub prompt_chars: u64,
     /// Ollama's generated-token count for the call (`eval_count` — thinking and
@@ -897,8 +920,9 @@ impl LocalModelClient {
             .context("building the streaming local-model HTTP client")
     }
 
-    /// One non-streaming chat call, returning the (schema-valid, when constrained)
-    /// content and any reasoning. Emits one tracker row per call.
+    /// One non-streaming chat call, returning content and any reasoning. A
+    /// constrained caller still validates the returned body. Emits one tracker
+    /// row per call.
     pub fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         self.progress
             .request_started("Local", "local", req.model_id.as_str(), "Local model");
@@ -1403,6 +1427,32 @@ mod tests {
         let body = build_chat_body(&req, false);
         assert_eq!(body["think"], false);
         assert_eq!(body["keep_alive"], -1);
+    }
+
+    #[test]
+    fn prompt_material_size_counts_tool_calls_and_the_tool_schema() {
+        let tool_calls = serde_json::json!([{
+            "function": {"name": "web_search", "arguments": {"query": "widget earnings"}}
+        }]);
+        let messages = vec![
+            ChatMessage::system("research"),
+            ChatMessage::assistant_with_tool_calls("", tool_calls),
+            ChatMessage::tool("results"),
+        ];
+        let tools = serde_json::json!([{
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web",
+                "parameters": {"type": "object"}
+            }
+        }]);
+        let visible_content: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+        let messages_only = prompt_material_chars(&messages, None);
+        let with_tools = prompt_material_chars(&messages, Some(&tools));
+
+        assert!(messages_only > visible_content, "roles and tool calls are prompt material");
+        assert!(with_tools > messages_only, "the tool schema is prompt material too");
     }
 
     #[test]

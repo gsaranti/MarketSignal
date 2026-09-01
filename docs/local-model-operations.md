@@ -68,12 +68,12 @@ The official-library GLM-5/5.1 models ship first-party templates and are the nam
 
 ## Structured output × thinking — the one incompatibility that bites us
 
-This is the single most load-bearing operational fact for our pipeline, because the suite's entire stage-to-stage contract is grammar-constrained schema-valid JSON via Ollama's `format` ([local-models.md §Schema-constrained output](local-models.md#schema-constrained-output)), and the model defaults to thinking-on.
+This is the single most load-bearing generation-side fact for our pipeline, because the suite requests every structured stage-to-stage contract through Ollama's grammar-constrained `format` and then app-validates the returned body ([local-models.md §Schema-constrained output](local-models.md#schema-constrained-output)), while the model defaults to thinking-on.
 The mechanic is asymmetric: Ollama applies the `format` GBNF grammar mask **only after the end-of-thinking token**, so the two flags behave very differently together.
 
 - **`think: true` + `format` *composes* — this is the safe path.**
-  The model produces its reasoning, closes the thinking block, and the grammar then constrains the final answer to schema-valid JSON.
-  Reasoning lands in the separate `message.thinking` field, the schema-valid object in `content` — you get *both* reasoning and a constrained schema in one call.
+  The model produces its reasoning, closes the thinking block, and the grammar then constrains the final answer; the app still parses and validates `content` before accepting it.
+  Reasoning lands in the separate `message.thinking` field and the constrained object in `content` — you get both in one call when the grammar engages.
   **[community]**
 - **`think: false` + `format` is BROKEN in every release through v0.31.2** — bug #14645, *"format is ignored when think is disabled for qwen3.5 series."*
   Root cause (maintainer-confirmed): Ollama defers the `format` grammar mask until a thinking→content transition that never fires when `think: false` (the qwen3-family template pre-closes the `<think>` block), so `format` never engages and the model returns **free-form text where you asked for schema-valid JSON** — the exact "parse-and-pray" failure the suite forbids, and *silent*.
@@ -95,6 +95,7 @@ The mechanic is asymmetric: Ollama applies the `format` GBNF grammar mask **only
   One additional repro was flagged before trusting `format` on the agentic path: a single uncorroborated report (v0.20.2) of `format` being ignored even with `think: true` **when `tools` are passed in the same call** — the shape the research loop *used to* issue.
   **[verified clean on M5 2026-07-28, v0.32.5: 8/8 `think:true` + `tools` + `format` calls schema-valid — the report does not reproduce at that sample]**
   At 47-holding scale, though, that combined shape did misbehave — the terminal turn returned empty or fenced bodies at ~70% (attempt-4 Finding 4) — so **fix B retired it**: the research gathering turns now carry `tools` with no `format`, and a separate synthesis call carries `format` with no `tools`, so the research path no longer relies on the two co-existing (`docs/verification/2026-08-31-big-run-attempt-4-findings.md` §Finding 4).
+  The contrast between the clean short probe and the failed production shape means this is protocol isolation around the observed joint condition, not proof of a universal tools-plus-`format` incompatibility; the synthesis parser independently rejects missing grammar-required keys and blank findings/claim fields under the bounded schema retry.
   The growing gathering conversation is independently bounded: one response contributes at most 8 accepted tool calls, and the complete serialized messages plus tool schema are checked against the shared input budget before every issued call and retained result; a bound ends gathering as a recorded degradation and still takes the fresh synthesis call.
 
 ## Sampling settings [vendor]

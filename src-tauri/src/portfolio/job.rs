@@ -2753,11 +2753,11 @@ fn build_roll_up(
 }
 
 /// Aggregate the run-level data-health read from the per-holding audits' typed
-/// `target_meta` plus the run-scoped deep-history counters — no string matching on
-/// gap notes. `attention` marks *infrastructure* degradation (a failed deep-history
-/// source, a target on the current-multiple carry, a failed DGS10 history request);
-/// a raw-percentile fallback from genuinely thin issuer history is counted in the
-/// line but is an honest state, not an attention trigger.
+/// `target_meta` and research-gap fields plus the run-scoped deep-history counters —
+/// no string matching on gap notes. `attention` marks *infrastructure* degradation
+/// (a failed deep-history source, a target on the current-multiple carry, a failed
+/// DGS10 history request); raw-percentile fallback and additive research degradation
+/// are counted in the line but are honest fail-soft states, not attention triggers.
 fn build_data_health(
     audits: &[HoldingAudit],
     deep_history_failures: usize,
@@ -2774,6 +2774,16 @@ fn build_data_health(
     let carry = metas.iter().filter(|m| m.current_multiple_carry).count();
     let raw_fallback = targets_total - rate_anchored - carry;
     let floored = metas.iter().filter(|m| m.dispersion_floor_applied).count();
+    let (research_degraded_holdings, research_gap_count) = audits
+        .iter()
+        .filter_map(|audit| audit.research.as_ref())
+        .map(|research| research.gaps.len())
+        .fold((0usize, 0usize), |(holdings, gaps), count| {
+            (
+                holdings.saturating_add(usize::from(count > 0)),
+                gaps.saturating_add(count),
+            )
+        });
 
     let mut parts: Vec<String> = Vec::new();
     if targets_total > 0 {
@@ -2813,6 +2823,14 @@ fn build_data_health(
     }
     if feed_gaps.finra {
         parts.push("FINRA short interest unavailable".to_string());
+    }
+    if research_gap_count > 0 {
+        parts.push(format!(
+            "research coverage degraded on {research_degraded_holdings} holding{} \
+             ({research_gap_count} recorded gap{})",
+            if research_degraded_holdings == 1 { "" } else { "s" },
+            if research_gap_count == 1 { "" } else { "s" }
+        ));
     }
     if feed_gaps.benchmark > 0 {
         parts.push(format!(
@@ -2980,6 +2998,8 @@ fn build_data_health(
         cboe_gap: feed_gaps.cboe,
         finra_gap: feed_gaps.finra,
         benchmark_gaps: feed_gaps.benchmark,
+        research_degraded_holdings,
+        research_gap_count,
         context_pressure,
         peak_prompt,
         model_retries,
@@ -3205,6 +3225,85 @@ mod tests {
         // Clean feeds leave the line untouched.
         let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], vec![]);
         assert!(!dh.summary.contains("commodity"), "{}", dh.summary);
+    }
+
+    #[test]
+    fn data_health_rolls_persisted_research_gaps_to_the_visible_summary() {
+        let audit = |symbol: &str, gaps: Vec<String>| HoldingAudit {
+            symbol: symbol.into(),
+            metrics: Default::default(),
+            sources: vec![],
+            model_ids: vec![],
+            prompt_version: crate::portfolio::PROMPT_VERSION.into(),
+            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.into(),
+            degraded_inputs: vec![],
+            action_annotations: vec![],
+            target_meta: None,
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.into(),
+            ledger_audit: None,
+            quick_basis: None,
+            authoring_close: None,
+            fund_exposure: None,
+            pre_profit: None,
+            hurdle: None,
+            forensic: None,
+            tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
+            what_changed_audit: None,
+            research: Some(crate::portfolio::distill::ResearchAuditRecord {
+                combined: "research".into(),
+                seed_layer: vec![],
+                shape: crate::portfolio::distill::DistillShape::SinglePass,
+                fetches_spent: 0,
+                elapsed_secs: 0,
+                seed_decisions: vec![],
+                sources: vec![],
+                gaps,
+                unreconciled_topics: vec![],
+                forward_assumption: None,
+                leading_indicator: None,
+                forensic_event: None,
+                forward_assumption_resolution: None,
+            }),
+        };
+        let audits = vec![
+            audit("DEG1", vec!["gathering partial".into(), "page omitted".into()]),
+            audit("CLEAN", vec![]),
+            audit("DEG2", vec!["page truncated".into()]),
+        ];
+        let dh = build_data_health(
+            &audits,
+            0,
+            false,
+            false,
+            FeedGaps::default(),
+            vec![],
+            vec![],
+        );
+
+        assert_eq!(dh.research_degraded_holdings, 2);
+        assert_eq!(dh.research_gap_count, 3);
+        assert!(
+            dh.summary
+                .contains("research coverage degraded on 2 holdings (3 recorded gaps)"),
+            "{}",
+            dh.summary
+        );
+        assert!(!dh.attention, "research remains additive and fail-soft");
+    }
+
+    #[test]
+    fn data_health_research_counts_are_required_on_app_written_runs() {
+        let mut value = serde_json::to_value(crate::portfolio::DataHealth::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        assert!(object.remove("research_gap_count").is_some());
+        assert!(
+            serde_json::from_value::<crate::portfolio::DataHealth>(value).is_err(),
+            "the wiped-store pre-release posture writes the new run field strictly"
+        );
     }
 
     /// The bounded retry-once's data-health read: an absorbed transient is

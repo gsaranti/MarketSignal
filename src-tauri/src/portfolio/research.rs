@@ -234,9 +234,7 @@ impl PassDegradation {
 /// than summing visible message text alone. Serialization failure is treated as
 /// over-budget and forces synthesis rather than issuing an unbounded request.
 fn gathering_packet_chars(messages: &[ChatMessage], tools: &Value) -> usize {
-    serde_json::to_string(&json!({ "messages": messages, "tools": tools }))
-        .map(|wire| wire.chars().count())
-        .unwrap_or(usize::MAX)
+    crate::local_model::prompt_material_chars(messages, Some(tools))
 }
 
 fn gathering_packet_fits(messages: &[ChatMessage], tools: &Value) -> bool {
@@ -922,14 +920,14 @@ fn findings_schema() -> Value {
     })
 }
 
-/// The findings turn's wire shape.
+/// The findings turn's wire shape. The grammar-required fields stay required at
+/// the Rust boundary too: model-wire lenience is appropriate for optional
+/// fields, but defaulting one of these would turn a grammar miss into a blank,
+/// apparently completed pass (attempt-4 Finding 4 closure C3).
 #[derive(Debug, Deserialize)]
 struct FindingsWire {
-    #[serde(default)]
     findings: String,
-    #[serde(default)]
     claims: Vec<ClaimWire>,
-    #[serde(default)]
     topic_answered: bool,
     #[serde(default)]
     material_forward_fact: bool,
@@ -945,10 +943,36 @@ struct FindingsWire {
 
 #[derive(Debug, Deserialize)]
 struct ClaimWire {
-    #[serde(default)]
     claim: String,
-    #[serde(default)]
     source_url: String,
+}
+
+/// Decode and semantically validate the grammar-constrained findings object.
+/// Serde enforces the required keys and types; the explicit nonblank checks
+/// cover constraints the local grammar subset cannot express. Every failure is
+/// the same retryable `SchemaParse` class as malformed JSON, so an incomplete
+/// object cannot silently bypass the bounded synthesis re-issue.
+fn parse_findings_wire(content: &str) -> Result<FindingsWire> {
+    let wire = serde_json::from_str::<FindingsWire>(content).map_err(|e| {
+        anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
+    })?;
+    if wire.findings.trim().is_empty() {
+        return Err(anyhow::Error::new(crate::local_model::RetryClass::SchemaParse)
+            .context("research findings response carried a blank `findings` field"));
+    }
+    for (index, claim) in wire.claims.iter().enumerate() {
+        if claim.claim.trim().is_empty() {
+            return Err(anyhow::Error::new(crate::local_model::RetryClass::SchemaParse).context(
+                format!("research findings claim {index} carried blank claim text"),
+            ));
+        }
+        if claim.source_url.trim().is_empty() {
+            return Err(anyhow::Error::new(crate::local_model::RetryClass::SchemaParse).context(
+                format!("research findings claim {index} carried a blank source URL"),
+            ));
+        }
+    }
+    Ok(wire)
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,13 +1480,11 @@ impl ResearchRunner<'_> {
             if let Some(thinking) = &resp.thinking {
                 self.progress.step_thinking(&self.step_label, thinking);
             }
-            let parsed = serde_json::from_str::<FindingsWire>(&resp.content).map_err(|e| {
-                anyhow::Error::new(e)
-                    .context(crate::local_model::RetryClass::SchemaParse)
-                    .context(format!(
-                        "research findings response failed its schema parse (body: {})",
-                        body_snippet(&resp.content)
-                    ))
+            let parsed = parse_findings_wire(&resp.content).map_err(|e| {
+                e.context(format!(
+                    "research findings response failed its schema parse (body: {})",
+                    body_snippet(&resp.content)
+                ))
             });
             match parsed {
                 Ok(wire) => return Ok((wire, shown)),
@@ -2092,7 +2114,7 @@ fn admit_planned_source(
     source_url: &str,
     shown: &mut std::collections::HashSet<String>,
 ) -> bool {
-    if plan.dropped {
+    if plan.dropped || plan.text == 0 {
         return false;
     }
     shown.insert(source_url.to_string());
@@ -2519,6 +2541,48 @@ mod tests {
         );
         assert!(matches!(&calls[2], ToolCall::Unknown { name } if name == "sql_query"));
         assert!(matches!(&calls[3], ToolCall::Unknown { name } if name.contains("missing query")));
+    }
+
+    #[test]
+    fn findings_wire_rejects_missing_required_and_semantically_blank_fields() {
+        let invalid = [
+            json!({}),
+            json!({"claims": [], "topic_answered": true}),
+            json!({"findings": "usable", "topic_answered": true}),
+            json!({"findings": "usable", "claims": []}),
+            json!({"findings": [], "claims": [], "topic_answered": true}),
+            json!({"findings": "   ", "claims": [], "topic_answered": true}),
+            json!({
+                "findings": "usable",
+                "claims": [{"claim": "claim without a source"}],
+                "topic_answered": true
+            }),
+            json!({
+                "findings": "usable",
+                "claims": [{"claim": " ", "source_url": "https://example.com/a"}],
+                "topic_answered": true
+            }),
+            json!({
+                "findings": "usable",
+                "claims": [{"claim": "claim", "source_url": " "}],
+                "topic_answered": true
+            }),
+        ];
+        for body in invalid {
+            let err = parse_findings_wire(&body.to_string()).unwrap_err();
+            assert_eq!(
+                crate::local_model::retry_class(&err),
+                Some(crate::local_model::RetryClass::SchemaParse),
+                "{body}: {err:#}"
+            );
+        }
+
+        let valid = parse_findings_wire(
+            &json!({"findings": "usable", "claims": [], "topic_answered": false}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(valid.findings, "usable");
+        assert!(!valid.topic_answered);
     }
 
     // ---- The pass loop (scripted model + web) -----------------------------
@@ -3164,6 +3228,11 @@ mod tests {
             marker: false,
             dropped: true,
         };
+        let bodyless_but_not_flagged = PagePlan {
+            text: 0,
+            marker: false,
+            dropped: false,
+        };
         let usable = PagePlan {
             text: 1,
             marker: true,
@@ -3176,6 +3245,15 @@ mod tests {
             &mut shown
         ));
         assert!(shown.is_empty(), "a dropped URL never becomes citable");
+        assert!(!admit_planned_source(
+            bodyless_but_not_flagged,
+            "https://example.com/bodyless",
+            &mut shown
+        ));
+        assert!(
+            shown.is_empty(),
+            "zero rendered body is independently fail-closed even if allocator flags regress"
+        );
         assert!(admit_planned_source(
             usable,
             "https://example.com/usable",
@@ -3830,7 +3908,9 @@ mod tests {
         let model = RetryingModel {
             inner: ScriptModel::new(vec![
                 gather_done(),
-                findings_turn(json!("not a findings object")),
+                // A syntactically valid object that omits the grammar-required
+                // keys must take the same parse-leg re-issue as malformed JSON.
+                findings_turn(json!({})),
                 findings_turn(simple_findings("https://reuters.com/widget")),
                 gather_done(),
                 disconfirm_findings(),
