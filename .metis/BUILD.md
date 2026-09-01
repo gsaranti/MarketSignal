@@ -382,16 +382,16 @@ this section carries only the decisions a plan must not work against.
     re-entry is a fresh start, and the archive never promotes itself.
   - **Source quality informs conviction, never gates discovery** — tiers grade;
     only the explicit deny list drops.
-  - **Model prompts inform, never prescribe the conclusion** — a prompt supplies
-    the model its facts (evidence, engine reads, the deterministic numbers, and
-    any degradation in them) and the task's constraints, but never dictates how
-    to weigh them or what to conclude; a frontier reasoner told a fact draws the
-    inference itself, and a dictated inference only makes it re-audit against the
-    instruction (attempt-4 Finding 3). The research pass's gathering-degradation
-    note holds this — it states the loss and stops — and the full Portfolio prompt
-    surface, the per-holding action prompt included, holds it too, its contracts
-    stated as facts the model infers from. Canonical at `docs/local-models.md
-    §Prompt posture`.
+  - **Model prompts inform within governed contracts, never add an ungoverned
+    conclusion** — governed content is traceable to a canonical project contract:
+    field meanings, output requirements, source-provenance policy, continuity
+    rules, and explicitly ruled decision frameworks such as Portfolio action
+    precedence. App or downstream-consumer architecture, meta-reasoning,
+    author-added financial preferences, and weighting or conclusion nudges with
+    no canonical contract stay out. The research pass's gathering-degradation
+    note therefore states the loss and stops; the reviewed Portfolio prompt
+    surface keeps its governed contracts while applying the same exclusion.
+    Canonical at `docs/local-models.md §Prompt posture`.
   - **Only a deep re-evaluation can archive an opportunity; the cheap
     re-derivation never does** — it refreshes the quant read and raises a
     non-destructive attention warning. This one is Trade Opportunities' framing

@@ -2537,11 +2537,6 @@ pub const ROLE_RISK_KEYS: [&str; 4] =
 /// The priced branch's response-contract sentence, generated from
 /// [`INTERPRETATION_KEYS`]. The nested shapes are stated after the key list because
 /// they are structure the model benefits from, not part of the top-level set.
-///
-/// The enforcement clause claims only what the decode path guarantees: the schema
-/// grammar enforces the `required` keys and each value's shape, and an extra key is
-/// **dropped** on decode (the schema sets no `additionalProperties: false`, and the
-/// struct denies no unknown fields) — never rejected.
 pub fn interpretation_response_contract() -> String {
     format!(
         "Respond with a single JSON object carrying exactly these keys: {}. \
@@ -2549,22 +2544,15 @@ pub fn interpretation_response_contract() -> String {
          quality / valuation / momentum / risk; model_price_targets is one_month and \
          twelve_month, each base / bear / bull; what_changed_entries is a list of \
          typed rows (kind, detail, old, new, attribution, evidence), empty on a new \
-         holding. The decoder's grammar enforces the \
-         required keys and value shapes, and any key outside this set is dropped on \
-         decode — so spend no reasoning on shape; put it into the read.",
+         holding.",
         INTERPRETATION_KEYS.join(", ")
     )
 }
 
-/// The `role_risk_only` branch's contract, generated from [`ROLE_RISK_KEYS`] — the
-/// same enforcement clause as [`interpretation_response_contract`], for the same
-/// reason.
+/// The `role_risk_only` branch's contract, generated from [`ROLE_RISK_KEYS`].
 pub fn role_risk_response_contract() -> String {
     format!(
-        "Respond with a single JSON object carrying exactly these keys: {}. The \
-         decoder's grammar enforces the required keys and value shapes, and any key \
-         outside this set is dropped on decode — so spend no reasoning on shape; put \
-         it into the read.",
+        "Respond with a single JSON object carrying exactly these keys: {}.",
         ROLE_RISK_KEYS.join(", ")
     )
 }
@@ -2764,15 +2752,10 @@ pub struct ActionDecision {
 /// cannot diverge.
 pub const ACTION_KEYS: [&str; 2] = ["action", "rationale"];
 
-/// The action call's response-contract sentence, generated from [`ACTION_KEYS`] —
-/// the same enforcement clause as [`interpretation_response_contract`], for the same
-/// reason.
+/// The action call's response-contract sentence, generated from [`ACTION_KEYS`].
 pub fn action_response_contract() -> String {
     format!(
-        "Respond with a single JSON object carrying exactly these keys: {}. The \
-         decoder's grammar enforces the required keys and value shapes, and any key \
-         outside this set is dropped on decode — so spend no reasoning on shape; put \
-         it into the decision.",
+        "Respond with a single JSON object carrying exactly these keys: {}.",
         ACTION_KEYS.join(", ")
     )
 }

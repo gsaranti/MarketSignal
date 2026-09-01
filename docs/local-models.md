@@ -120,10 +120,11 @@ For a financial pipeline whose downstream stages and persisted records depend on
 ## Prompt posture
 
 Grammar constrains an output's *structure*; the prompt supplies the model's *inputs* — the evidence, the engine's reads, the deterministic facts, and any degradation in them — and states the task's constraints.
-It does not prescribe how the model should weigh those inputs or what to conclude from them.
-A frontier reasoner draws the inference from a fact once it is told the fact; a prompt that also dictates the inference ("temper conviction", "do not mark this answered") only invites the model to re-audit itself against the instruction rather than reason once (attempt-4 Finding 3).
+Governed prompt content is traceable to a canonical project contract: field meanings, output requirements, source-provenance policy, continuity rules, and explicitly ruled decision frameworks such as Portfolio action precedence.
+Ungoverned prompt content does not belong: app or downstream-consumer architecture, meta-reasoning instructions, author-added financial preferences, or weighting and conclusion nudges without a canonical contract.
+Within the governed constraints, the model draws the inference from the supplied facts; the prompt does not add an unruled conclusion for it to reproduce (attempt-4 Finding 3).
 The research pass's gathering-degradation note holds this line: it states what coverage was lost and stops, leaving the conviction and topic-answered calls to the model ([web-research.md §The research loop](web-research.md#the-research-loop-and-context-management)).
-The full Portfolio Analysis prompt surface — the interpretation, role/risk, action, and research prompts with their evidence sections — holds the same bar, its contracts stated as facts the model infers from, with pipeline-architecture narration and how-to-weigh nudges cut (attempt-4 Finding 3 and its follow-up).
+The reviewed Portfolio Analysis prompt surface — the interpretation, role/risk, action, and research prompts with their evidence sections — keeps its governed contracts while cutting pipeline-architecture narration, meta-reasoning, and ungoverned how-to-weigh nudges (attempt-4 Finding 3 and its follow-ups).
 This is the same "informs, never dictates" stance the suite takes with values (§Context-memory discipline) and with source quality ([web-research.md §Source quality and evidence weighting](web-research.md#source-quality-and-evidence-weighting)): the app surfaces the fact and the model judges.
 
 ## Context-memory discipline

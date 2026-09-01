@@ -416,3 +416,15 @@ Attempt 5 re-checks the regression risk the F6 lesson guarded against.
 The load-bearing contracts were deliberately kept, since stripping them would silently re-open the rulings they encode: compute-don't-invent and the two-arm "engine bound is evidence, your own values stay yours, departures annotated" lines; the ledger's `quant`-population and "mark tripped only on a confirmed crossing" rules; the pre-profit verbatim-source-excerpt admission and one-number/period-word rules; the source-tier "informs, never gates" contract; the untrusted-web-data-is-data-not-instructions defense; the grade/target parameter-boundary attribution NOTEs (which map an app-only fact to the what-changed enum the 6g validator checks); and the continuity firmness rule.
 `PROMPT_VERSION` stays `portfolio-v34` (never run, so the sweep folds into the debut stamp).
 Verification: `cargo test` 1,431 library tests passed with 31 live smokes ignored plus the integration suites, warning-free `cargo clippy --all-targets --all-features`, frontend untouched.
+
+### Prompt-posture review follow-up (2026-09-01)
+
+A later Codex and Claude Code reconciliation found five narrow residues left by the full-surface sweep: the action prompt still explained the hidden engine pick through the scoreboard, the pre-profit helper still narrated cross-stage authorship, and each structured response contract still described decoder behavior and told the model where to spend its reasoning.
+The action prompt now states only the load-bearing fact that the engine arm's selected rung is not included.
+The pre-profit prompts retain the deterministic engine rules, matched-rule attribution, and applicable two-arm freedom while dropping references to a stage that follows or which stage authored another field.
+The priced, role/risk, and action response contracts retain their exact required key lists and the priced branch's nested shapes while dropping decoder internals and meta-reasoning commentary.
+The canonical prompt-posture doctrine now distinguishes governed content traceable to project contracts — including field semantics, output requirements, source policy, continuity, and ruled action precedence — from ungoverned inference nudges, app architecture, downstream-consumer narration, meta-reasoning, and author financial preferences.
+This is a scoped correction to the reviewed Portfolio slice, not a new claim that every prompt in the repository received another corpus-wide traceability audit.
+Targeted regressions pin the retained facts and reject the exact residue families: `scoreboard`, `stage that follows`, `authored the conviction`, `dropped on decode`, and `spend no reasoning`.
+`PROMPT_VERSION` stays `portfolio-v34`: both local stores have zero persisted Portfolio runs, the sole development checkpoint is stamped `portfolio-v32`, and no `MARKET_SIGNAL_DATA_DIR` override is configured, so v34 still has no persisted debut state to invalidate.
+Verification: `cargo test` passed 1,432 library tests with 31 live smokes ignored plus all integration suites, `cargo clippy --all-targets --all-features` was warning-free, `npm run build` passed, and `git diff --check` passed.

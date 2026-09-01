@@ -7,6 +7,8 @@ The fix records the truncation once at the fetch site (from the original extract
 A user ruling then made the synthesis author's gathering-degradation note purely factual for every degradation type — "GATHERING WAS PARTIAL: <losses> — treat coverage as incomplete" — dropping "temper conviction" and "do not mark the topic fully answered" from both the model note and the persisted gap.
 That ruling was generalized into a recorded design principle — **model prompts inform, never prescribe the conclusion** — canonical at `docs/local-models.md §Prompt posture`, an invariant in `BUILD.md`.
 This session then built Finding 3: the per-holding action-call prompt was restructured to data framing plus ordered factual gates, and the full Portfolio prompt surface (interpretation, role/risk, action, research + their evidence sections) was swept to the same bar — architecture narration and how-to-weigh nudges cut, load-bearing contracts kept, the F6 target-provenance weighing trimmed to facts by user ruling (attempt-4 record §Finding 3 fix and §Full portfolio-prompt posture sweep).
+A later Codex and Claude Code reconciliation identified a small residual slice in that sweep: scoreboard rationale in the action prompt, cross-stage authorship narration in the pre-profit helper, and decoder plus meta-reasoning narration in the three structured response contracts.
+The follow-up removes those residues while retaining the engine-rule facts, two-arm freedom, ordered action gates, exact output keys, and priced nested shapes; it also clarifies the canonical governed-versus-ungoverned prompt-posture boundary without claiming a new repository-wide traceability audit.
 
 ## Current state
 
@@ -16,7 +18,9 @@ The debut stamp stays **`portfolio-v34`** — v34 has never run, so every pre-de
 Gates green: **1,463** Rust tests with 31 live smokes ignored, warning-free clippy, frontend untouched.
 No live run was launched.
 
-This session's Finding 3 fix and full-surface prompt sweep are in the working tree, **uncommitted**; no stamp moved (`portfolio-v34`, never run), and the gate is green — **1,431** library tests (31 live smokes ignored) plus the integration suites, warning-free clippy, frontend untouched.
+The Finding 3 fix and full-surface prompt sweep are committed on `main` at `53f007f`.
+The narrow prompt-posture follow-up is in the working tree, **uncommitted**; no stamp moved because both local stores have zero persisted Portfolio runs, the sole development checkpoint is `portfolio-v32`, and no data-directory override is configured.
+Its gates are green: **1,432** library tests passed with 31 live smokes ignored plus all integration suites, clippy was warning-free, `npm run build` passed, and `git diff --check` passed.
 
 ## Open questions
 
@@ -27,5 +31,5 @@ This session's Finding 3 fix and full-surface prompt sweep are in the working tr
 
 ## Where to start
 
-First commit this session's uncommitted prompt work (Finding 3 fix + full-surface sweep).
+First review and commit the uncommitted narrow prompt-posture follow-up.
 Then, on the user's go, launch Attempt 5 from a newly wiped dev store: bring up the required infrastructure, confirm debut stamps `portfolio-v34` / `checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3`, and inspect the 6d findings retry rate plus typed Data Health research counts early — plus, per Finding 3, whether the action trace still oscillates across rungs before settling.

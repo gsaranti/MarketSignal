@@ -4196,9 +4196,8 @@ pub fn action_system_prompt() -> String {
 }
 
 /// The user prompt for the action call: the finished verdict digest, the
-/// position's own economics, the engine's per-holding action set (the engine
-/// arm's own pick deliberately withheld — the scoreboard needs the arms
-/// independent, the same ruling as the 6f render), and the investor profile.
+/// position's own economics, the engine's per-holding action set (with the
+/// engine arm's own pick withheld), and the investor profile.
 pub fn action_user_prompt(input: &ActionInput) -> String {
     let d = input.dossier;
     let mut p = String::new();
@@ -4355,10 +4354,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     p.push_str("\nENGINE SET (the engine arm's own restriction, shown as evidence): ");
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&set.join(", "));
-    p.push_str(
-        "\nThe rung the engine arm itself picked is deliberately not shown — form your \
-         own decision so the scoreboard can compare the two arms.\n",
-    );
+    p.push_str("\nThe rung the engine arm itself picked is not included.\n");
 
     p.push_str("\nINVESTOR PROFILE (frames the decision; the verdict's facts are fixed):\n");
     let profile = input.profile.display();
@@ -4374,10 +4370,8 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
 }
 
 /// Which prompt the pre-profit overlay section is rendered into. The deterministic
-/// facts block is the same on both; the consequence lines address what THAT stage
-/// authors — conviction at interpretation (which chooses no action), the rung at
-/// the per-holding action call (which authors no conviction) — and state the other
-/// stage's consequence as context only.
+/// facts block is the same on both; the consequence lines state the engine rule and
+/// the model arm's freedom where the current response carries that field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptStage {
     /// The intrinsic interpretation prompt (Step 6f): authors conviction, no action.
@@ -4456,8 +4450,8 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
         "- severe deterioration (conjunctive): {}\n",
         if o.severe_deterioration { "YES" } else { "no" }
     ));
-    // The consequence lines are stage-aware: each stage gets the model-arm guidance
-    // for what it authors, and the other stage's consequence as context only.
+    // The consequence lines render the deterministic engine rule and, where the
+    // current response has the corresponding model field, its two-arm freedom.
     if let Some(ceiling) = o.consequences.conviction_ceiling {
         let ceiling = match ceiling {
             ConvictionCeiling::Medium => "medium",
@@ -4471,24 +4465,17 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
                  UNRESTRICTED: exceeding the ceiling persists as authored, with the \
                  departure recorded beside the rule.\n",
             )),
-            // The action call authors no conviction: the ceiling is context.
             PromptStage::Action => p.push_str(&format!(
                 "CONVICTION CEILING (engine rule, context): the engine arm holds its own \
-                 conviction at or beneath {ceiling} — matched rule(s): {rules}. The \
-                 interpretation stage authored the conviction; this call authors no \
-                 conviction.\n",
+                 conviction at or beneath {ceiling} — matched rule(s): {rules}.\n",
             )),
         }
     }
     if o.consequences.exit_family_only {
         match stage {
-            // Interpretation chooses no action: the narrowing is context; the
-            // evidence behind it belongs in the conviction and risk read.
             PromptStage::Interpretation => p.push_str(
                 "SEVERE DETERIORATION (engine rule): the engine's own action set narrows to \
-                 the exit family {trim, sell-all} and its stand-in action follows it; the \
-                 action decision stage that follows weighs this. This stage authors \
-                 conviction and no action.\n",
+                 the exit family {trim, sell-all} and its stand-in action follows it.\n",
             ),
             PromptStage::Action => p.push_str(
                 "SEVERE DETERIORATION (engine rule): the engine's own action set narrows to \
@@ -4501,8 +4488,7 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
         match stage {
             PromptStage::Interpretation => p.push_str(
                 "Note: the engine's own action set drops the add family on the overlay's \
-                 financing rule; the action decision stage that follows weighs this. This \
-                 stage authors conviction and no action.\n",
+                 financing rule.\n",
             ),
             PromptStage::Action => p.push_str(
                 "Note: the engine's own action set drops the add family on the overlay's \
@@ -8155,7 +8141,8 @@ mod tests {
         let user = action_user_prompt(&input);
         assert!(user.contains("INVESTOR PROFILE"), "{user}");
         assert!(user.contains("ENGINE SET"), "{user}");
-        assert!(user.contains("deliberately not shown"), "{user}");
+        assert!(user.contains("engine arm itself picked is not included"), "{user}");
+        assert!(!user.contains("scoreboard"), "{user}");
         assert!(user.contains("THE VERDICT"), "{user}");
         assert!(user.contains("Unrealized P/L"), "{user}");
         // Both arms' targets reach the rung, both horizons (Codex I5): the
@@ -12263,6 +12250,14 @@ mod tests {
                 "{}: prompt does not carry the contract",
                 c.what
             );
+            for residue in ["decoder", "dropped on decode", "spend no reasoning"] {
+                assert!(
+                    !c.contract.contains(residue),
+                    "{}: response contract leaked `{residue}`: {}",
+                    c.what,
+                    c.contract
+                );
+            }
         }
 
         // The branch carries no action of its own — declaring one would invite it.
@@ -12577,6 +12572,25 @@ mod tests {
     }
 
     #[test]
+    fn financing_bar_renders_the_engine_rule_without_stage_narration() {
+        let mut fin = pre_profit_financials();
+        fin.cash_and_equivalents = Some(1.0e9);
+        fin.short_term_investments = None;
+        let overlay = pre_profit::compute_overlay(&fin, None, vec![]);
+        assert!(overlay.consequences.bar_add_family);
+        assert!(!overlay.consequences.exit_family_only);
+
+        let interp = pre_profit_prompt_section(&overlay, PromptStage::Interpretation);
+        let action = pre_profit_prompt_section(&overlay, PromptStage::Action);
+        for prompt in [&interp, &action] {
+            assert!(prompt.contains("engine's own action set drops the add family"), "{prompt}");
+            assert!(!prompt.contains("stage that follows"), "{prompt}");
+        }
+        assert!(!interp.contains("This stage authors"), "{interp}");
+        assert!(action.contains("your rung is UNRESTRICTED"), "{action}");
+    }
+
+    #[test]
     fn severe_overlay_binds_the_engine_arm_never_the_model() {
         // Repeated miss + constrained runway (tiny cash against the burn) → the
         // severe conjunction. Under v7 a defiant model lean and conviction persist
@@ -12640,10 +12654,8 @@ mod tests {
             "the severe overlay's Low ceiling binds the engine arm's conviction"
         );
 
-        // The overlay section is stage-aware: each prompt carries the model-arm
-        // guidance for what THAT stage authors, and the other stage's consequence
-        // as context only. Interpretation authors conviction and no action; the
-        // action call authors the rung and no conviction.
+        // The overlay section keeps the engine rule factual in both prompts and
+        // states the model arm's freedom only where that prompt returns the field.
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -12664,7 +12676,6 @@ mod tests {
             interp.contains("the engine's own action set narrows to the exit family"),
             "{interp}"
         );
-        assert!(interp.contains("the action decision stage that follows weighs this"), "{interp}");
         assert!(!interp.contains("Your rung is UNRESTRICTED"), "{interp}");
 
         let engine_set = engine::feasible_actions(
@@ -12685,9 +12696,17 @@ mod tests {
         });
         assert!(action.contains("Your rung is UNRESTRICTED"), "{action}");
         assert!(action.contains("CONVICTION CEILING (engine rule, context)"), "{action}");
-        assert!(action.contains("this call authors no conviction"), "{action}");
         assert!(!action.contains("Your conviction is UNRESTRICTED"), "{action}");
-        assert!(!action.contains("the action decision stage that follows"), "{action}");
+        for prompt in [&interp, &action] {
+            for residue in [
+                "stage that follows",
+                "authored the conviction",
+                "this call authors no conviction",
+                "This stage authors",
+            ] {
+                assert!(!prompt.contains(residue), "prompt leaked `{residue}`: {prompt}");
+            }
+        }
 
         // The retired "lean" vocabulary is gone from both renders.
         for prompt in [&interp, &action] {
