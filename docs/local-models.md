@@ -117,6 +117,15 @@ The grammar is the generation constraint, not the application's only validator: 
 For the research findings stage, grammar-required keys are required again by the Rust wire type and prose/claim fields that the local grammar cannot constrain to nonblank are checked explicitly; a violation is the same bounded-retry `SchemaParse` class as malformed JSON.
 For a financial pipeline whose downstream stages and persisted records depend on well-formed grades, targets, and actions, deterministic structure is load-bearing — a free-form-JSON parse-and-pray path is not acceptable here.
 
+## Prompt posture
+
+Grammar constrains an output's *structure*; the prompt supplies the model's *inputs* — the evidence, the engine's reads, the deterministic facts, and any degradation in them — and states the task's constraints.
+It does not prescribe how the model should weigh those inputs or what to conclude from them.
+A frontier reasoner draws the inference from a fact once it is told the fact; a prompt that also dictates the inference ("temper conviction", "do not mark this answered") only invites the model to re-audit itself against the instruction rather than reason once (attempt-4 Finding 3).
+The research pass's gathering-degradation note holds this line: it states what coverage was lost and stops, leaving the conviction and topic-answered calls to the model ([web-research.md §The research loop](web-research.md#the-research-loop-and-context-management)).
+The per-holding action prompt's overloaded prescriptions are the known outstanding violation — diagnosed, unbuilt (attempt-4 Finding 3).
+This is the same "informs, never dictates" stance the suite takes with values (§Context-memory discipline) and with source quality ([web-research.md §Source quality and evidence weighting](web-research.md#source-quality-and-evidence-weighting)): the app surfaces the fact and the model judges.
+
 ## Context-memory discipline
 
 The suite's stages chain through **distilled, schema-shaped hand-offs**, never raw transcripts.

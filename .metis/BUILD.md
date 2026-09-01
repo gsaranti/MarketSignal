@@ -382,6 +382,15 @@ this section carries only the decisions a plan must not work against.
     re-entry is a fresh start, and the archive never promotes itself.
   - **Source quality informs conviction, never gates discovery** — tiers grade;
     only the explicit deny list drops.
+  - **Model prompts inform, never prescribe the conclusion** — a prompt supplies
+    the model its facts (evidence, engine reads, the deterministic numbers, and
+    any degradation in them) and the task's constraints, but never dictates how
+    to weigh them or what to conclude; a frontier reasoner told a fact draws the
+    inference itself, and a dictated inference only makes it re-audit against the
+    instruction (attempt-4 Finding 3). The research pass's gathering-degradation
+    note holds this — it states the loss and stops — while the per-holding action
+    prompt's prescriptions are the known outstanding violation, diagnosed but
+    unbuilt. Canonical at `docs/local-models.md §Prompt posture`.
   - **Only a deep re-evaluation can archive an opportunity; the cheap
     re-derivation never does** — it refreshes the quant read and raises a
     non-destructive attention warning. This one is Trade Opportunities' framing
