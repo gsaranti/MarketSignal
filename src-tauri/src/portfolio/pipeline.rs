@@ -8599,8 +8599,11 @@ mod tests {
         // turn (tools, no grammar) from a fresh, tool-history-free synthesis call
         // (grammar, no tools) — reworded both the gathering and synthesis prompts,
         // moving it to v33 (so an interrupted pre-fix run cannot resume into the
-        // new synthesis contract).
-        assert_eq!(PROMPT_VERSION, "portfolio-v33");
+        // new synthesis contract); fix B's post-landing review reworded the
+        // synthesis brief again (drop empty-body pages, lead each source with its
+        // title, prepend a gathering-degradation note), changing the synthesis
+        // input and so a completed holding's analysis, moving it to v34.
+        assert_eq!(PROMPT_VERSION, "portfolio-v34");
     }
 
     #[test]

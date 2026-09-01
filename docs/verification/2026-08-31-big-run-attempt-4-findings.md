@@ -268,38 +268,37 @@ completed run can close.
 
 ## Finding 4 — fix B (landed 2026-08-31)
 
-Fix B splits the Step-6c research turn so tools and the findings grammar never
-share a request: the gathering loop carries the tools with no `format`, and a
-separate synthesis call authors the pass's findings from a fresh, tool-history-
-free conversation carrying the grammar and no tools — mirroring the interpretation
-call, which uses the same clean shape and never fails its parse.
-The user ruled the five build decisions (always-synthesize-fresh, reuse the
-distillation input-budget guard for evidence sizing, a new tailored synthesis
-prompt dropping the "as JSON" phrasing, keep the bounded retry-once, capture the
-failing body on a residual parse failure), all recorded via the selector UI on
-2026-08-31.
+Fix B splits the Step-6c research turn so tools and the findings grammar never share a request: the gathering loop carries the tools with no `format`, and a separate synthesis call authors the pass's findings from a fresh, tool-history-free conversation carrying the grammar and no tools — mirroring the interpretation call, which uses the same clean shape and never fails its parse.
+The user ruled the five build decisions (always-synthesize-fresh, reuse the distillation input-budget guard for evidence sizing, a new tailored synthesis prompt dropping the "as JSON" phrasing, keep the bounded retry-once, capture the failing body on a residual parse failure), all recorded via the selector UI on 2026-08-31.
 
-The mechanics: gathering turns pass `tools` only, the synthesis call passes the
-findings `format` only, and `synthesize_findings` keeps the same two retry legs
-and four-call bound the tool loop carried; the synthesis brief renders the
-gathered pages as the only citable evidence, carrying the full source annotation
-(tier, evidence kinds, extraction quality, recency, thin-stub) and sized against
-the shared input-budget guard with a water-fill allocator (short pages whole,
-long pages truncated with an inline marker; a page too small to carry a marker is
-dropped entirely — its URL never listed *and* excluded from claim validation, so a
-claim citing it is rejected rather than accepted against evidence the synthesis
-never saw — and summarized, so no source is rendered as a deceptively-empty page;
-every truncation or drop is recorded as a gap).
-`PROMPT_VERSION` moved to **`portfolio-v33`** so an interrupted pre-fix run cannot
-resume into the new synthesis contract — the debut stamp the next launch confirms.
+The mechanics: gathering turns pass `tools` only, the synthesis call passes the findings `format` only, and `synthesize_findings` keeps the same two retry legs and four-call bound the tool loop carried; the synthesis brief renders the gathered pages as the only citable evidence, carrying the full source annotation (tier, evidence kinds, extraction quality, recency, thin-stub) and sized against the shared input-budget guard with a water-fill allocator (short pages whole, long pages truncated with an inline marker; a page too small to carry a marker is dropped entirely — its URL never listed *and* excluded from claim validation, so a claim citing it is rejected rather than accepted against evidence the synthesis never saw — and summarized, so no source is rendered as a deceptively-empty page; every truncation or drop is recorded as a gap).
+`PROMPT_VERSION` moved to **`portfolio-v33`** so an interrupted pre-fix run cannot resume into the new synthesis contract — the debut stamp the next launch confirms.
 
-Verification: `cargo test` and `cargo clippy --all-targets --all-features` both
-green; new tests pin the synthesis call's fresh-two-message / tools-XOR-grammar
-shape, the allocator's fit / overflow / mixed / rendered-length behavior, and the
-evidence planner's cut-marker and sub-marker-drop boundaries.
-Six Codex review rounds hardened it (source-quality fidelity, the water-fill
-allocator, marker accounting, and the doc-contract sweep); the record and the
-`stage_requests_carry_the_per_stage_mode_options_and_residency` /
-`prompt_version_is_stamped_for_the_model_arm_domain_gate` tests carry the details.
-The one thing static review cannot close — whether B eliminates the ~70%
-empty-body rate on the live 122B — is attempt 5's to confirm.
+Verification: `cargo test` and `cargo clippy --all-targets --all-features` both green; new tests pin the synthesis call's fresh-two-message / tools-XOR-grammar shape, the allocator's fit / overflow / mixed / rendered-length behavior, and the evidence planner's cut-marker and sub-marker-drop boundaries.
+Eight Codex review rounds hardened it (source-quality fidelity, the water-fill allocator, marker accounting, and the doc-contract sweep); the record and the `stage_requests_carry_the_per_stage_mode_options_and_residency` / `prompt_version_is_stamped_for_the_model_arm_domain_gate` tests carry the details.
+The one thing static review cannot close — whether B eliminates the ~70% empty-body rate on the live 122B — is attempt 5's to confirm.
+
+### Post-landing review (2026-08-31)
+
+A ninth Codex pass over the landed Fix B raised four findings, all verified against the code.
+The first fixes closed three boundary-hygiene gaps the tools/grammar split introduced (rather than reworking the split): a fetch that extracted no body is dropped from evidence (gap-recorded, never entering the allow-set); the extracted page title, which the discarded gathering transcript used to carry, now leads each synthesis header; and the gathering phase's degradation (failed or empty searches, failed fetches, budget-skips) is surfaced to the sole findings author as an explicit "GATHERING WAS PARTIAL" note and persisted as a data-health gap, so a partial pass tempers conviction rather than reading as complete.
+
+A tenth pass then found that the first round of fixes was incomplete, and one of its claims here was wrong.
+The empty-page fix had kept *title-only* pages (a headline, no body) citable, which reopened the same hole: a page title is untrusted and unbounded, and cache hits spend no fetch budget (`exec_fetch` increments the ceiling only on a live fetch), so the per-pass page count is not bounded by `MAX_FETCHES_PER_HOLDING`, and a burst of title-only cache hits — or one oversized title — could inflate the header framing past the input guard while every body allocated to zero.
+The earlier claim in this record that the breach was unreachable was therefore false and has been removed.
+The fix requires a non-empty *body* for a page to be citable (a headline alone never makes a URL citable, and the title still leads a kept page's header), caps the title to a headline length, and adds a header-fit trim that drops the trailing overflow entirely so the rendered brief is provably within the guard whatever the page count.
+The degradation coverage was also completed — the turn-cap cut-off and malformed/unknown tool calls now feed the same note and gap — while a proposal to hard-override `topic_answered` on a degraded pass was declined: the flag has no control-flow or downstream-digest consumer (it is a persisted annotation only), so forcing it false adds no behavioural value and would wrongly demote a topic genuinely answered despite a single failure; the note tempers the model's own conviction, which is what flows downstream.
+
+Because the synthesis brief's changes alter the synthesis input and so a completed holding's analysis, `PROMPT_VERSION` moves to **`portfolio-v34`** — the resume contract (`job::resume_eligibility`) refuses a resume across the changed synthesis semantics rather than mixing them, and this is now the debut stamp the next launch confirms (superseding the `portfolio-v33` the earlier §Finding 4 named).
+
+A third pass found the input guard still had one hole and the degradation coverage one exit.
+The evidence sizing bounded only the headers and bodies, not the pass *prefix* (`pass_brief`) — which is the gathering request's whole user message and the synthesis prefix, and carries the accumulated prior-claims ledger (up to every claim from every prior pass on the disconfirming pass) and the follow-up text, both unbounded model output with no schema length cap — so a large ledger could exceed the guard before any page was sized.
+The fix bounds the prefix: each prior claim and the follow-up are capped, the ledger block stops at a total budget with an omitted count, and `pass_brief` takes a final head-cap (preserving the essential framing that leads it) so neither request can exceed the guard whatever the ledger's size.
+The degradation coverage was completed for the last exit — a fetch/wall-clock budget exhausted exactly at a turn boundary (where no later in-turn call triggers the mid-turn skip) now sets its own signal, so a forcibly-stopped gathering pass always reaches the synthesis and data-health.
+These prefix and degradation changes fold into the same `portfolio-v34` bump (never run, so no separate stamp).
+
+A fourth pass found the last malformed-call path still silent: the decoder accepts arbitrary JSON for `tool_calls`, and `parse_tool_calls` returns an empty vector for any non-array value, so a present-but-non-array `tool_calls` (an object, a stringified array, a scalar — the decoder having already collapsed empty arrays and null to None) was dropped without incrementing `malformed_calls`, warning the synthesis, or recording a gap.
+The gathering loop now guards for a non-array `tool_calls` before it echoes the assistant turn: it counts the malformed call and ends gathering, so the malformed turn reaches the synthesis and data-health without pushing an off-protocol assistant message back onto the wire (the reason for the guard rather than the reviewer's suggested inline `Unknown`, which would echo the malformed value).
+A recovered stringified-array `tool_calls` is treated as malformed here rather than parsed — the local Ollama path emits native arrays, and the stringified quirk belongs to the cloud tool-use path — which is a bounded, honest degradation, not a silent drop.
+This folds into the same `portfolio-v34` work.
+New tests pin the body-required drop and title render, the title cap and header-fit guard under a page burst, the prefix bound under a huge ledger, the turn-cap / malformed / budget-exhausted degradation summaries, the degradation note in the brief, and the degradation gap end-to-end (search/fetch failure, exact-ceiling exit, and a malformed non-array `tool_calls`).

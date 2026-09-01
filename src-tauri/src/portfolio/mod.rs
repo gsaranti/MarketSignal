@@ -2064,7 +2064,15 @@ pub struct HoldingAudit {
 /// or fenced bodies) — rewording both the gathering and synthesis prompts, so it
 /// moves to v33 so an interrupted pre-fix run cannot resume into the new synthesis
 /// contract (`docs/verification/2026-08-31-big-run-attempt-4-findings.md` §Finding 4).
-pub const PROMPT_VERSION: &str = "portfolio-v33";
+/// The post-landing review of fix B (2026-08-31 §Post-landing review) reworded the
+/// synthesis brief again — dropping empty-body pages from the evidence, leading each
+/// source with its extracted title, prepending a gathering-degradation note, and
+/// bounding the pass prefix (per-claim, ledger-block, follow-up, and a head-cap so
+/// neither the gathering request nor the synthesis prefix can exceed the input
+/// guard) — which changes the synthesis input and so a completed holding's analysis,
+/// so it moves to v34 (the resume contract, `job::resume_eligibility`, refuses a
+/// resume across the changed synthesis semantics rather than mixing them).
+pub const PROMPT_VERSION: &str = "portfolio-v34";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

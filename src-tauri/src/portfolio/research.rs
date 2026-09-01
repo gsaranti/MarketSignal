@@ -80,6 +80,22 @@ const HITS_PER_SEARCH_RESULT: usize = 8;
 /// this bounds a very long article's context cost.
 const PAGE_TEXT_CAP_CHARS: usize = 12_000;
 
+/// Headline cap for a source's extracted title in the synthesis header. A page
+/// title is untrusted and unbounded; capping it keeps each header bounded so a
+/// degenerate title cannot inflate the framing past the input guard.
+const TITLE_CAP_CHARS: usize = 300;
+
+/// Bounds on the model-derived sections of the pass prefix (`pass_brief`) — the
+/// prior-claims ledger and the follow-up text are accumulated model output with
+/// no schema length bound, so without these the prefix (the gathering request's
+/// whole user message, and the synthesis prefix) could exceed the input guard
+/// before any evidence is sized (attempt-4 review, Finding 1). A per-claim cap,
+/// a total ledger-block cap, and a follow-up cap keep the prefix bounded, with a
+/// final head-cap in `pass_brief` as the hard backstop.
+const PRIOR_CLAIM_CAP_CHARS: usize = 400;
+const PRIOR_CLAIMS_BLOCK_CHARS: usize = 8_000;
+const FOLLOWUP_CAP_CHARS: usize = 1_000;
+
 /// Claims accepted per pass — bounds ledger growth against a runaway
 /// findings turn. Excess drops with a log line.
 const MAX_CLAIMS_PER_PASS: usize = 20;
@@ -89,6 +105,80 @@ const MAX_CLAIMS_PER_PASS: usize = 20;
 /// optional `seeded_by` claims (`docs/configuration.md` §Research Context
 /// Management).
 const MAX_SEEDED_BY_PER_PASS: usize = 4;
+
+/// Gathering-phase degradation for one pass — the search/fetch failures and
+/// budget-skips that live only in the tool-call history the fresh synthesis
+/// conversation discards (fix B). Surfaced so the sole findings author can
+/// temper conviction rather than read partial coverage as complete, and
+/// recorded as a data-health gap (attempt-4 review, Finding 2).
+#[derive(Debug, Default, Clone, Copy)]
+struct PassDegradation {
+    searches_failed: usize,
+    searches_empty: usize,
+    fetches_failed: usize,
+    budget_skipped: usize,
+    malformed_calls: usize,
+    turn_cap_hit: bool,
+    budget_exhausted: bool,
+}
+
+impl PassDegradation {
+    fn any(&self) -> bool {
+        self.searches_failed
+            + self.searches_empty
+            + self.fetches_failed
+            + self.budget_skipped
+            + self.malformed_calls
+            > 0
+            || self.turn_cap_hit
+            || self.budget_exhausted
+    }
+
+    /// A one-line factual summary of what gathering lost — `None` when the pass
+    /// gathered cleanly. Used both as the synthesis brief's degradation note and
+    /// as the persisted gap, so the model and data-health read the same fact.
+    fn summary(&self) -> Option<String> {
+        if !self.any() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.searches_failed > 0 {
+            parts.push(format!("{} search(es) failed", self.searches_failed));
+        }
+        if self.searches_empty > 0 {
+            parts.push(format!(
+                "{} search(es) returned no results",
+                self.searches_empty
+            ));
+        }
+        if self.fetches_failed > 0 {
+            parts.push(format!("{} fetch(es) failed", self.fetches_failed));
+        }
+        if self.budget_skipped > 0 {
+            parts.push(format!(
+                "{} tool call(s) skipped (budget exhausted)",
+                self.budget_skipped
+            ));
+        }
+        if self.malformed_calls > 0 {
+            parts.push(format!(
+                "{} malformed/unknown tool call(s)",
+                self.malformed_calls
+            ));
+        }
+        if self.turn_cap_hit {
+            parts.push(format!(
+                "gathering hit the {MAX_TURNS_PER_PASS}-turn cap before the model stopped"
+            ));
+        }
+        if self.budget_exhausted {
+            parts.push(
+                "gathering stopped early: the fetch/wall-clock budget was exhausted".to_string(),
+            );
+        }
+        Some(parts.join(", "))
+    }
+}
 
 /// The per-topic seed's hard character budget — over the WHOLE seed (ledger
 /// conditions and prior claims together), deterministic priority truncation
@@ -891,6 +981,10 @@ impl ResearchRunner<'_> {
             ..Default::default()
         };
         let mut page_texts = std::collections::HashMap::new();
+        // Titles ride a parallel per-holding map (like `page_texts`) so the
+        // fresh synthesis conversation can render the headline the discarded
+        // gathering transcript used to carry (attempt-4 review, Finding 3).
+        let mut page_titles = std::collections::HashMap::new();
         let mut fetches_spent = 0u32;
         let mut pending: Vec<AgendaTopic> = agenda.to_vec();
         let mut worked: Vec<TopicResearch> = Vec::new();
@@ -960,6 +1054,7 @@ impl ResearchRunner<'_> {
                     &mut fetches_spent,
                     &mut out.gaps,
                     &mut page_texts,
+                    &mut page_titles,
                 )?;
                 topic_claims.extend(pass.claims.iter().cloned());
                 // The follow-up is the model's proposal; the orchestrator
@@ -1018,6 +1113,7 @@ impl ResearchRunner<'_> {
                     &mut fetches_spent,
                     &mut out.gaps,
                     &mut page_texts,
+                    &mut page_titles,
                 )?;
                 out.disconfirming = Some(pass);
             }
@@ -1043,6 +1139,7 @@ impl ResearchRunner<'_> {
         fetches_spent: &mut u32,
         gaps: &mut Vec<String>,
         page_texts: &mut std::collections::HashMap<String, String>,
+        page_titles: &mut std::collections::HashMap<String, String>,
     ) -> Result<PassFindings> {
         let tools = research_tools();
         let mut messages = vec![
@@ -1056,6 +1153,10 @@ impl ResearchRunner<'_> {
         let mut fetched: Vec<(String, String, Option<SourceAnnotation>)> = Vec::new();
         let mut url_aliases: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // The gathering phase's degradation, accumulated across turns — the
+        // synthesis call reads it (as a brief note) since the tool-call history
+        // that carried these failures is discarded (attempt-4 review, Finding 2).
+        let mut degradation = PassDegradation::default();
 
         // ── Gathering ──────────────────────────────────────────────────────
         // The tool loop only searches and fetches — tools on, no `format`
@@ -1071,7 +1172,21 @@ impl ResearchRunner<'_> {
             if self.progress.is_cancelled() {
                 bail!("research cancelled");
             }
-            if turns >= MAX_TURNS_PER_PASS || self.budget.exhausted(*fetches_spent) {
+            if turns >= MAX_TURNS_PER_PASS {
+                // The model was still requesting tools when the turn cap cut it
+                // off — gathering was truncated, not voluntarily finished, so the
+                // synthesis should read it as partial (Finding 3).
+                degradation.turn_cap_hit = true;
+                break;
+            }
+            if self.budget.exhausted(*fetches_spent) {
+                // The fetch or wall-clock budget ran out at a turn boundary — the
+                // model did not voluntarily finish, so the synthesis should read
+                // gathering as forcibly stopped (Finding 2). The mid-turn skip
+                // (`budget_skipped`) only fires when a later call in the same
+                // response is cut; an exact-ceiling or between-turns exit needs
+                // this signal.
+                degradation.budget_exhausted = true;
                 break;
             }
             turns += 1;
@@ -1095,6 +1210,17 @@ impl ResearchRunner<'_> {
                 // topic — hand off to synthesis rather than parsing this turn.
                 break;
             };
+            if !raw_calls.is_array() {
+                // A present-but-non-array `tool_calls` (an object, a stringified
+                // array, a scalar) is malformed model output — the decoder
+                // already collapsed empty arrays and null to None, so this is
+                // never a legitimate empty. Record it as degradation and end
+                // gathering rather than echoing an off-protocol assistant message
+                // back onto the wire or spinning silently to the turn cap
+                // (attempt-4 review P2). Synthesis works from what already landed.
+                degradation.malformed_calls += 1;
+                break;
+            }
             messages.push(ChatMessage::assistant_with_tool_calls(
                 resp.content,
                 raw_calls.clone(),
@@ -1106,13 +1232,16 @@ impl ResearchRunner<'_> {
                 // A spent budget stops further tool execution (the in-flight
                 // call above already ran to completion).
                 if self.budget.exhausted(*fetches_spent) {
+                    degradation.budget_skipped += 1;
                     messages.push(ChatMessage::tool(
                         "BUDGET EXHAUSTED: no further searches or fetches.".to_string(),
                     ));
                     break;
                 }
                 let result = match call {
-                    ToolCall::Search { query } => self.exec_search(&query, ctx),
+                    ToolCall::Search { query } => {
+                        self.exec_search(&query, ctx, &mut degradation)
+                    }
                     ToolCall::Fetch { url } => self.exec_fetch(
                         &url,
                         ctx,
@@ -1120,8 +1249,11 @@ impl ResearchRunner<'_> {
                         &mut fetched,
                         &mut url_aliases,
                         page_texts,
+                        page_titles,
+                        &mut degradation,
                     ),
                     ToolCall::Unknown { name } => {
+                        degradation.malformed_calls += 1;
                         format!("ERROR: unknown or malformed tool call {name:?}.")
                     }
                 };
@@ -1133,8 +1265,25 @@ impl ResearchRunner<'_> {
         // A fresh two-message conversation carrying only the gathered evidence
         // and the findings grammar — no tool-call history — so the grammar
         // engages cleanly, the way the interpretation call (which never fails
-        // its parse) does.
-        let (wire, shown) = self.synthesize_findings(ctx, &fetched, page_texts, gaps)?;
+        // its parse) does. The gathering degradation the discarded history
+        // carried is passed through explicitly (as a brief note) and recorded
+        // as a data-health gap, so a partial pass lowers conviction rather than
+        // reading as complete (attempt-4 review, Finding 2).
+        let degradation_note = degradation.summary();
+        if let Some(summary) = &degradation_note {
+            gaps.push(format!(
+                "topic {}: gathering degraded — {summary}; coverage partial, conviction tempered",
+                ctx.topic.key
+            ));
+        }
+        let (wire, shown) = self.synthesize_findings(
+            ctx,
+            &fetched,
+            page_texts,
+            page_titles,
+            degradation_note.as_deref(),
+            gaps,
+        )?;
         // Validate only against the sources the synthesis was actually shown — a
         // page dropped for budget leaves the allow-set, so a claim citing
         // evidence the synthesis never saw is rejected, not accepted (round-8).
@@ -1161,13 +1310,23 @@ impl ResearchRunner<'_> {
         ctx: &PassContext<'_>,
         fetched: &[(String, String, Option<SourceAnnotation>)],
         page_texts: &std::collections::HashMap<String, String>,
+        page_titles: &std::collections::HashMap<String, String>,
+        degradation_note: Option<&str>,
         gaps: &mut Vec<String>,
     ) -> Result<(FindingsWire, std::collections::HashSet<String>)> {
         let schema = findings_schema();
         let mut shown = std::collections::HashSet::new();
         let messages = vec![
             ChatMessage::system(synthesis_system_prompt()),
-            ChatMessage::user(synthesis_brief(ctx, fetched, page_texts, gaps, &mut shown)),
+            ChatMessage::user(synthesis_brief(
+                ctx,
+                fetched,
+                page_texts,
+                page_titles,
+                degradation_note,
+                gaps,
+                &mut shown,
+            )),
         ];
         // The parse leg of the bounded retry-once fires at most once; the
         // call leg is gated per issued call below.
@@ -1217,13 +1376,23 @@ impl ResearchRunner<'_> {
         }
     }
 
-    /// Execute one search call, with its tracker row.
-    fn exec_search(&self, query: &str, ctx: &PassContext<'_>) -> String {
+    /// Execute one search call, with its tracker row. Degradation (a failed
+    /// call or an empty result set) is tallied so the synthesis call, which
+    /// never sees this tool result, can still temper conviction (Finding 2).
+    fn exec_search(
+        &self,
+        query: &str,
+        ctx: &PassContext<'_>,
+        degradation: &mut PassDegradation,
+    ) -> String {
         let series = format!("search: {query}");
         self.progress
             .request_started("web", "research", &series, &ctx.topic.key);
         match self.web.search(query) {
             Ok(hits) => {
+                if hits.is_empty() {
+                    degradation.searches_empty += 1;
+                }
                 self.progress.request_finished(
                     "web",
                     "research",
@@ -1235,6 +1404,7 @@ impl ResearchRunner<'_> {
                 render_hits(&hits)
             }
             Err(e) => {
+                degradation.searches_failed += 1;
                 self.progress.request_finished(
                     "web",
                     "research",
@@ -1250,6 +1420,7 @@ impl ResearchRunner<'_> {
 
     /// Execute one fetch call, with its tracker row, cache accounting, and the
     /// quoted-evidence framing.
+    #[allow(clippy::too_many_arguments)] // each is one distinct per-pass accumulator or per-holding store, documented at the call site
     fn exec_fetch(
         &self,
         url: &str,
@@ -1258,6 +1429,8 @@ impl ResearchRunner<'_> {
         fetched: &mut Vec<(String, String, Option<SourceAnnotation>)>,
         url_aliases: &mut std::collections::HashMap<String, String>,
         page_texts: &mut std::collections::HashMap<String, String>,
+        page_titles: &mut std::collections::HashMap<String, String>,
+        degradation: &mut PassDegradation,
     ) -> String {
         let series = format!("fetch: {url}");
         self.progress
@@ -1289,6 +1462,9 @@ impl ResearchRunner<'_> {
                     normalized.clone(),
                     page.text.chars().take(PAGE_TEXT_CAP_CHARS).collect(),
                 );
+                // The extracted headline rides its own map so the fresh
+                // synthesis header can carry it (Finding 3).
+                page_titles.insert(normalized.clone(), page.title.clone());
                 fetched.push((normalized, page.retrieved_at.clone(), annotation.clone()));
                 self.progress.request_finished(
                     "web",
@@ -1309,6 +1485,7 @@ impl ResearchRunner<'_> {
                 // 40-attempt ceiling bounds *work*, so a storm of failing
                 // fetches can't ride for free under the wall clock alone.
                 *fetches_spent += 1;
+                degradation.fetches_failed += 1;
                 self.progress.request_finished(
                     "web",
                     "research",
@@ -1474,6 +1651,12 @@ fn synthesis_brief(
     ctx: &PassContext<'_>,
     fetched: &[(String, String, Option<SourceAnnotation>)],
     page_texts: &std::collections::HashMap<String, String>,
+    page_titles: &std::collections::HashMap<String, String>,
+    // The gathering degradation (failed/empty searches, failed fetches,
+    // budget-skips) the discarded tool-call history carried — rendered as an
+    // explicit note so the sole findings author reads partial coverage as
+    // partial (attempt-4 review, Finding 2). `None` when gathering was clean.
+    degradation_note: Option<&str>,
     gaps: &mut Vec<String>,
     // The URLs actually rendered into the brief — a dropped page is excluded, so
     // its URL leaves the claim validator's allow-set and a claim citing evidence
@@ -1481,6 +1664,14 @@ fn synthesis_brief(
     shown: &mut std::collections::HashSet<String>,
 ) -> String {
     let mut out = pass_brief(ctx);
+    if let Some(note) = degradation_note {
+        out.push_str("\n\nGATHERING WAS PARTIAL: ");
+        out.push_str(note);
+        out.push_str(
+            " — treat coverage as incomplete: temper conviction and do not mark the topic fully \
+             answered on this evidence alone.\n",
+        );
+    }
     out.push_str(
         "\n\n--- EVIDENCE GATHERED THIS PASS (the ONLY sources your claims may cite) ---\n",
     );
@@ -1498,11 +1689,49 @@ fn synthesis_brief(
         );
         return out;
     }
+    // A fetch that extracted no body text carries no citable article evidence —
+    // drop it so its URL never renders header-only and never enters the
+    // validator's allow-set (attempt-4 review, Finding 1; fix B's water-fill only
+    // ever dropped on budget, and a body-less page whose length is 0 slipped
+    // through as "whole"). The extracted title still leads a kept page's header
+    // (Finding 3) but is never itself a page's whole evidence, so an empty-body
+    // page's URL is not made citable on a headline alone.
+    let title_of = |url: &str| page_titles.get(url).map(String::as_str).unwrap_or("");
+    let text_of = |url: &str| page_texts.get(url).map(String::as_str).unwrap_or("");
+    let mut empty_dropped = 0usize;
+    let kept: Vec<&(String, String, Option<SourceAnnotation>)> = unique
+        .iter()
+        .copied()
+        .filter(|(url, _, _)| {
+            let keep = !text_of(url).is_empty();
+            if !keep {
+                empty_dropped += 1;
+            }
+            keep
+        })
+        .collect();
+    if empty_dropped > 0 {
+        gaps.push(format!(
+            "topic {}: {empty_dropped} fetched page(s) extracted no body text and were \
+             omitted as evidence",
+            ctx.topic.key
+        ));
+    }
+    if kept.is_empty() {
+        out.push_str(
+            "(the pages fetched this pass extracted no usable body text — report what the \
+             topic framing and any seeds support, or mark the topic unanswered; emit no claim \
+             that cites an unfetched URL)\n",
+        );
+        return out;
+    }
     // The full source annotation, matching `render_page` so the synthesis call
     // — now the sole author of findings — can apply the source-quality weighting
     // contract (`docs/web-research.md §Source quality`): tier, evidence kinds,
-    // extraction quality, recency, thin-stub.
-    let headers: Vec<String> = unique
+    // extraction quality, recency, thin-stub. The extracted title leads the body
+    // so the sole findings author sees the headline the gathering transcript
+    // used to carry (attempt-4 review, Finding 3).
+    let headers: Vec<String> = kept
         .iter()
         .map(|(url, retrieved_at, annotation)| {
             let mut h = format!("\n=== SOURCE: {url} (retrieved {retrieved_at}");
@@ -1519,9 +1748,64 @@ fn synthesis_brief(
                 ));
             }
             h.push_str(") ===\n");
+            // The extracted title is untrusted, page-derived, and unbounded, so
+            // cap it to a headline length — an oversized title must not inflate
+            // the header framing past the input guard (attempt-4 review, Finding 1).
+            let title = title_of(url).trim();
+            if !title.is_empty() {
+                h.push_str("TITLE: ");
+                let (capped, cut) = crate::data_sources::cap_chars(title, TITLE_CAP_CHARS);
+                h.push_str(&capped);
+                if cut {
+                    h.push('…');
+                }
+                h.push('\n');
+            }
             h
         })
         .collect();
+    let budget = crate::portfolio::distill::input_budget_chars(
+        crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+    );
+    // Header-fit trim: the body water-fill sizes only the page *bodies*, so a
+    // burst of pages (cache hits spend no fetch budget, so the per-pass page
+    // count is not bounded by the fetch ceiling) could sum their headers past
+    // the input guard while every body allocates to zero. Keep pages in order
+    // only while the fixed prefix plus their headers fit the budget, dropping the
+    // trailing overflow entirely — so the rendered brief is provably within the
+    // guard whatever the page count (attempt-4 review, Finding 1).
+    let prefix_len = out.chars().count();
+    let mut header_room = budget.saturating_sub(prefix_len);
+    let mut fit = 0usize;
+    for h in &headers {
+        let cost = h.chars().count() + 1; // + the trailing newline each page renders
+        if cost > header_room {
+            break;
+        }
+        header_room -= cost;
+        fit += 1;
+    }
+    let header_overflow = kept.len() - fit;
+    let mut kept = kept;
+    let mut headers = headers;
+    kept.truncate(fit);
+    headers.truncate(fit);
+    if kept.is_empty() {
+        // Even the first header does not fit beside the framing — record the
+        // overflow and hand synthesis the no-evidence note rather than an
+        // over-budget brief.
+        gaps.push(format!(
+            "topic {}: {header_overflow} evidence page(s) omitted entirely to fit the model's \
+             input budget",
+            ctx.topic.key
+        ));
+        out.push_str(
+            "(the fetched evidence did not fit the model's input budget — report what the topic \
+             framing and any seeds support, or mark the topic unanswered; emit no claim that \
+             cites an unfetched URL)\n",
+        );
+        return out;
+    }
     // Size against the model's input budget with the shared chars-per-token
     // guard, allocating with `allocate_page_budget`: when the packet fits, every
     // page is rendered whole; on overflow, short pages keep their full text and
@@ -1538,16 +1822,10 @@ fn synthesis_brief(
         "\n[source truncated at the fetch cap — only its first portion is shown]";
     const BUDGET_TRUNC_MARKER: &str =
         "\n[truncated to fit the model's input budget — only its first portion is shown]";
-    let budget = crate::portfolio::distill::input_budget_chars(
-        crate::portfolio::pipeline::NUM_CTX_INTERPRET,
-    );
     let framing = out.chars().count()
         + headers.iter().map(|h| h.chars().count()).sum::<usize>()
-        + unique.len(); // one trailing newline per page
-    let texts: Vec<&str> = unique
-        .iter()
-        .map(|(url, _, _)| page_texts.get(url.as_str()).map(String::as_str).unwrap_or(""))
-        .collect();
+        + kept.len(); // one trailing newline per page
+    let texts: Vec<&str> = kept.iter().map(|(url, _, _)| text_of(url)).collect();
     let lengths: Vec<usize> = texts.iter().map(|t| t.chars().count()).collect();
     // Reserve only the markers that will actually render, so the reservation
     // never induces false truncation of a packet that fits (round-4 F1). The
@@ -1563,7 +1841,11 @@ fn synthesis_brief(
     let fetch_reserve = lengths.iter().filter(|&&l| l >= PAGE_TEXT_CAP_CHARS).count()
         * FETCH_CAP_MARKER.chars().count();
     let base_available = budget.saturating_sub(framing).saturating_sub(fetch_reserve);
-    let available = if lengths.iter().sum::<usize>() <= base_available {
+    // The drop-summary line renders whenever a page is omitted — for body budget
+    // (below) *or* for header overflow (trimmed above) — so reserve its space in
+    // either case, else a header-trimmed-but-body-fitting packet would render the
+    // summary past the guard.
+    let available = if lengths.iter().sum::<usize>() <= base_available && header_overflow == 0 {
         base_available
     } else {
         base_available.saturating_sub(DROP_SUMMARY_RESERVE)
@@ -1571,14 +1853,14 @@ fn synthesis_brief(
     let plans = plan_evidence(&lengths, available, marker_len);
     let mut truncated = 0usize;
     let mut dropped = 0usize;
-    for i in 0..unique.len() {
+    for i in 0..kept.len() {
         if plans[i].dropped {
             // Omit the source entirely — never render its header or URL — so the
             // model cannot cite evidence it did not see (round-7).
             dropped += 1;
             continue;
         }
-        shown.insert(unique[i].0.clone());
+        shown.insert(kept[i].0.clone());
         out.push_str(&headers[i]);
         out.push_str(&texts[i].chars().take(plans[i].text).collect::<String>());
         // The fetch cap is detected from the stored length (a page exactly at the
@@ -1592,27 +1874,31 @@ fn synthesis_brief(
         }
         out.push('\n');
     }
-    if truncated > 0 || dropped > 0 {
+    // Pages dropped for budget: those the water-fill could not fit even a marker
+    // for, plus any trimmed off entirely because their header overflowed the
+    // guard (Finding 1). Both are omitted evidence and reported together.
+    let total_dropped = dropped + header_overflow;
+    if truncated > 0 || total_dropped > 0 {
         let mut msg = format!("topic {}: ", ctx.topic.key);
         if truncated > 0 {
             msg.push_str(&format!(
                 "{truncated} of {} evidence page(s) truncated to fit the model's input budget",
-                unique.len()
+                kept.len()
             ));
         }
-        if dropped > 0 {
+        if total_dropped > 0 {
             if truncated > 0 {
                 msg.push_str("; ");
             }
             msg.push_str(&format!(
-                "{dropped} evidence page(s) omitted entirely to fit the model's input budget"
+                "{total_dropped} evidence page(s) omitted entirely to fit the model's input budget"
             ));
         }
         gaps.push(msg);
     }
-    if dropped > 0 {
+    if total_dropped > 0 {
         out.push_str(&format!(
-            "\n[{dropped} further gathered source(s) omitted to fit the model's input budget \
+            "\n[{total_dropped} further gathered source(s) omitted to fit the model's input budget \
              — their evidence and URLs are not shown; do not cite them]\n"
         ));
     }
@@ -1726,11 +2012,22 @@ fn pass_brief(ctx: &PassContext<'_>) -> String {
         );
     }
     if let Some(f) = ctx.followup {
+        // The follow-up question and rationale are unbounded model output; cap
+        // each so the prefix stays bounded (Finding 1).
         out.push_str("\nFOLLOW-UP (approved by the orchestrator): ");
-        out.push_str(&f.question);
+        let (question, q_cut) = crate::data_sources::cap_chars(&f.question, FOLLOWUP_CAP_CHARS);
+        out.push_str(&question);
+        if q_cut {
+            out.push('…');
+        }
         if !f.rationale.is_empty() {
             out.push_str("\nRationale: ");
-            out.push_str(&f.rationale);
+            let (rationale, r_cut) =
+                crate::data_sources::cap_chars(&f.rationale, FOLLOWUP_CAP_CHARS);
+            out.push_str(&rationale);
+            if r_cut {
+                out.push('…');
+            }
         }
         out.push('\n');
     }
@@ -1762,9 +2059,39 @@ fn pass_brief(ctx: &PassContext<'_>) -> String {
     }
     if !ctx.prior_claims.is_empty() {
         out.push_str("\nEVIDENCE LEDGER SO FAR (claims already gathered this run):\n");
+        // The ledger is accumulated model output (up to all claims from every
+        // prior pass on the disconfirming pass), each claim string unbounded.
+        // Cap each claim and stop the block at a total budget so the prefix
+        // stays bounded, with a count of what was omitted (Finding 1).
+        let mut block = 0usize;
+        let mut shown = 0usize;
         for c in ctx.prior_claims.iter().take(40) {
-            out.push_str(&format!("- {} [{}]\n", c.claim, c.source_url));
+            let (claim, cut) = crate::data_sources::cap_chars(&c.claim, PRIOR_CLAIM_CAP_CHARS);
+            let line = format!("- {}{} [{}]\n", claim, if cut { "…" } else { "" }, c.source_url);
+            if shown > 0 && block + line.chars().count() > PRIOR_CLAIMS_BLOCK_CHARS {
+                break;
+            }
+            block += line.chars().count();
+            out.push_str(&line);
+            shown += 1;
         }
+        let omitted = ctx.prior_claims.len() - shown;
+        if omitted > 0 {
+            out.push_str(&format!("(+{omitted} more prior claim(s) omitted)\n"));
+        }
+    }
+    // Hard backstop: bound the whole prefix so neither the gathering request
+    // (whose user message IS this brief) nor the synthesis prefix can exceed the
+    // input guard before evidence is even sized (Finding 1). The head-cap
+    // preserves the essential framing that leads the brief (holding, topic,
+    // questions); the trailing ledger and seeds truncate first.
+    let prefix_cap = crate::portfolio::distill::input_budget_chars(
+        crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+    ) / 3;
+    let (mut capped, cut) = crate::data_sources::cap_chars(&out, prefix_cap);
+    if cut {
+        capped.push_str("\n[prefix truncated to fit the model's input budget]\n");
+        return capped;
     }
     out
 }
@@ -2507,7 +2834,15 @@ mod tests {
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashSet::new();
-        let _ = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps, &mut shown);
+        let _ = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &std::collections::HashMap::new(),
+            None,
+            &mut gaps,
+            &mut shown,
+        );
         assert!(
             shown.is_empty(),
             "every over-budget page dropped → none enter the validator's allow-set"
@@ -2546,7 +2881,15 @@ mod tests {
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashSet::new();
-        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps, &mut shown);
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &std::collections::HashMap::new(),
+            None,
+            &mut gaps,
+            &mut shown,
+        );
         assert!(
             brief.chars().count() <= budget,
             "rendered {} exceeds budget {budget}",
@@ -2583,7 +2926,15 @@ mod tests {
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashSet::new();
-        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps, &mut shown);
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &std::collections::HashMap::new(),
+            None,
+            &mut gaps,
+            &mut shown,
+        );
         assert!(
             !gaps.iter().any(|g| g.contains("truncated to fit")),
             "a fitting packet records no truncation gap: {gaps:?}"
@@ -2628,7 +2979,15 @@ mod tests {
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashSet::new();
-        let brief = synthesis_brief(&ctx, &fetched, &page_texts, &mut gaps, &mut shown);
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &std::collections::HashMap::new(),
+            None,
+            &mut gaps,
+            &mut shown,
+        );
         assert!(
             brief.chars().count() <= budget,
             "rendered {} exceeds budget {budget}",
@@ -2645,6 +3004,386 @@ mod tests {
         assert!(
             gaps.iter().any(|g| g.contains("truncated to fit")),
             "the overflow records a truncation gap: {gaps:?}"
+        );
+    }
+
+    #[test]
+    fn synthesis_brief_renders_the_title_and_drops_every_body_less_page() {
+        // Three fetched pages: one with title + body, one title-only (a headline
+        // but no body), one wholly empty. Only the body-bearing page is citable
+        // and renders its title; both body-less pages are dropped, their URLs
+        // never entering the allow-set, with the drop recorded as a gap — a
+        // headline alone never makes a URL citable (attempt-4 review, Findings 1
+        // and 3).
+        let mut fetched = Vec::new();
+        let mut page_texts = std::collections::HashMap::new();
+        let mut page_titles = std::collections::HashMap::new();
+        let rich = "https://example.com/rich".to_string();
+        let title_only = "https://example.com/title-only".to_string();
+        let empty = "https://example.com/empty".to_string();
+        for url in [&rich, &title_only, &empty] {
+            fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
+        }
+        page_texts.insert(rich.clone(), "the article body".to_string());
+        page_texts.insert(title_only.clone(), String::new());
+        page_texts.insert(empty.clone(), String::new());
+        page_titles.insert(rich.clone(), "Rich Headline".to_string());
+        page_titles.insert(title_only.clone(), "Headline Only".to_string());
+        page_titles.insert(empty.clone(), String::new());
+        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &t,
+            seed_text: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashSet::new();
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &page_titles,
+            None,
+            &mut gaps,
+            &mut shown,
+        );
+        assert!(
+            brief.contains("TITLE: Rich Headline"),
+            "the body-bearing page renders its extracted title: {brief}"
+        );
+        assert!(
+            shown.contains(&rich),
+            "the body-bearing page is citable"
+        );
+        assert!(
+            !shown.contains(&title_only) && !shown.contains(&empty),
+            "neither body-less page enters the validator's allow-set"
+        );
+        assert!(
+            !brief.contains("example.com/title-only") && !brief.contains("example.com/empty"),
+            "no body-less page's URL or headline is rendered"
+        );
+        assert!(
+            gaps.iter().any(|g| g.contains("no body text") && g.contains('2')),
+            "both body-less drops are recorded as a gap: {gaps:?}"
+        );
+    }
+
+    #[test]
+    fn synthesis_brief_bounds_titles_and_holds_the_guard_under_a_page_burst() {
+        // Finding 1: an oversized title is capped in the header, and a burst of
+        // pages (cache hits spend no fetch budget, so the count is not bounded by
+        // the fetch ceiling) can never sum their headers past the input guard —
+        // the header-fit trim drops the overflow entirely and the rendered brief
+        // stays within budget.
+        let budget = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        );
+        let mut fetched = Vec::new();
+        let mut page_texts = std::collections::HashMap::new();
+        let mut page_titles = std::collections::HashMap::new();
+        // 2,000 body-bearing pages, each carrying a 5,000-char title — uncapped,
+        // the headers alone would be ~10M chars, far past the ~236k guard.
+        for i in 0..2000 {
+            let url = format!("https://example.com/{i}");
+            fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
+            page_texts.insert(url.clone(), "b".to_string());
+            page_titles.insert(url, "T".repeat(5000));
+        }
+        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &t,
+            seed_text: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashSet::new();
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &page_titles,
+            None,
+            &mut gaps,
+            &mut shown,
+        );
+        assert!(
+            brief.chars().count() <= budget,
+            "the rendered brief {} stays within the input guard {budget}",
+            brief.chars().count()
+        );
+        assert!(
+            !brief.contains(&"T".repeat(TITLE_CAP_CHARS + 1)),
+            "no title renders past the headline cap"
+        );
+        assert!(
+            gaps.iter().any(|g| g.contains("omitted entirely")),
+            "the trimmed overflow is recorded as a gap: {gaps:?}"
+        );
+    }
+
+    #[test]
+    fn synthesis_brief_surfaces_the_gathering_degradation_note() {
+        // A partial-gathering note (the failures the discarded tool-call history
+        // carried) is rendered into the synthesis brief so the sole findings
+        // author tempers conviction (attempt-4 review, Finding 2).
+        let mut fetched = Vec::new();
+        let mut page_texts = std::collections::HashMap::new();
+        let url = "https://example.com/only".to_string();
+        fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
+        page_texts.insert(url, "some body".to_string());
+        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &t,
+            seed_text: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashSet::new();
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &std::collections::HashMap::new(),
+            Some("2 search(es) failed, 1 fetch(es) failed"),
+            &mut gaps,
+            &mut shown,
+        );
+        assert!(
+            brief.contains("GATHERING WAS PARTIAL: 2 search(es) failed, 1 fetch(es) failed"),
+            "the degradation note leads the brief: {brief}"
+        );
+        assert!(
+            brief.contains("temper conviction"),
+            "the note tells the author to lower conviction"
+        );
+    }
+
+    #[test]
+    fn degradation_summary_covers_the_turn_cap_and_malformed_calls() {
+        // Finding 3(a)/(b): the turn-cap cut-off and malformed tool calls — which
+        // live only in the discarded gathering history — reach the summary the
+        // synthesis and data-health read; a clean pass yields no summary.
+        assert_eq!(PassDegradation::default().summary(), None);
+        let d = PassDegradation {
+            malformed_calls: 2,
+            turn_cap_hit: true,
+            ..Default::default()
+        };
+        let s = d.summary().expect("degradation present");
+        assert!(
+            s.contains("2 malformed/unknown tool call(s)") && s.contains("turn cap"),
+            "the summary names both signals: {s}"
+        );
+        let b = PassDegradation {
+            budget_exhausted: true,
+            ..Default::default()
+        };
+        assert!(
+            b.summary().unwrap().contains("budget was exhausted"),
+            "a budget-exhausted stop summarizes (Finding 2)"
+        );
+    }
+
+    #[test]
+    fn pass_brief_bounds_a_huge_prior_claims_ledger() {
+        // Finding 1: the prefix — prior claims and follow-up — is accumulated,
+        // unbounded model output, so a huge ledger must not push pass_brief (the
+        // gathering request's whole user message, and the synthesis prefix) past
+        // the input guard before any evidence is sized.
+        let budget = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        );
+        let claims: Vec<EvidenceClaim> = (0..40)
+            .map(|i| EvidenceClaim {
+                claim: "x".repeat(20_000),
+                source_url: format!("https://example.com/{i}"),
+                retrieved_at: "2026-08-22T10:00:00+00:00".to_string(),
+                surfaced_by: None,
+                annotation: None,
+            })
+            .collect();
+        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &t,
+            seed_text: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &claims,
+            disconfirming: true,
+        };
+        let brief = pass_brief(&ctx);
+        assert!(
+            brief.chars().count() <= budget,
+            "pass_brief {} stays within the input guard {budget}",
+            brief.chars().count()
+        );
+        assert!(
+            brief.contains("prior claim(s) omitted"),
+            "the ledger block is capped with an omitted count"
+        );
+        // The synthesis prefix built on the same ctx, plus evidence, still fits.
+        let mut fetched = Vec::new();
+        let mut page_texts = std::collections::HashMap::new();
+        let url = "https://example.com/evidence".to_string();
+        fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
+        page_texts.insert(url, "b".repeat(5000));
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashSet::new();
+        let synth = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &std::collections::HashMap::new(),
+            None,
+            &mut gaps,
+            &mut shown,
+        );
+        assert!(
+            synth.chars().count() <= budget,
+            "the synthesis prefix + evidence stays within the guard: {} > {budget}",
+            synth.chars().count()
+        );
+    }
+
+    #[test]
+    fn a_budget_exhausted_gathering_pass_records_the_stop() {
+        // Finding 2: the fetch budget is exhausted exactly at a turn boundary (one
+        // fetch, ceiling of one), with no later in-turn call to trigger the
+        // mid-turn skip — the synthesis and data-health still learn gathering was
+        // forcibly stopped.
+        let model = ScriptModel::new(vec![
+            turn_with_tools(json!([
+                {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/a"}}}
+            ])),
+            findings_turn(json!({
+                "findings": "Partial coverage.",
+                "claims": [],
+                "topic_answered": true
+            })),
+        ]);
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = runner(&model, &web, &clock, &ctx, 1);
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+        assert!(
+            out.gaps.iter().any(|g| g.contains("gathering degraded")
+                && g.contains("budget was exhausted")),
+            "the exact-ceiling stop is a persisted degradation gap: {:?}",
+            out.gaps
+        );
+    }
+
+    #[test]
+    fn a_malformed_non_array_tool_calls_reaches_the_degradation_gap() {
+        // Finding (fourth review): a present-but-non-array `tool_calls` (an object
+        // here) is malformed model output — the decoder already collapsed empty
+        // arrays and null to None — so it must be counted as degradation and reach
+        // the synthesis and data-health, not vanish silently.
+        let model = ScriptModel::new(vec![
+            turn_with_tools(json!({ "not": "an array" })),
+            // Gathering ends on the malformed turn; synthesis writes up nothing.
+            findings_turn(json!({
+                "findings": "No usable gathering.",
+                "claims": [],
+                "topic_answered": true
+            })),
+            // The disconfirming pass then gathers cleanly and stops.
+            gather_done(),
+            findings_turn(json!({
+                "findings": "No disconfirming evidence.",
+                "claims": [],
+                "topic_answered": true
+            })),
+        ]);
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = runner(&model, &web, &clock, &ctx, 10);
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+        assert!(
+            out.gaps.iter().any(|g| g.contains("gathering degraded")
+                && g.contains("malformed/unknown tool call")),
+            "the malformed non-array tool_calls is a persisted degradation gap: {:?}",
+            out.gaps
+        );
+    }
+
+    #[test]
+    fn a_degraded_gathering_pass_records_a_gap() {
+        // End-to-end through run_holding: a pass whose search and fetch both fail
+        // must record the degradation as a persisted gap, so data-health and the
+        // synthesis (via run_pass's note) both see the partial coverage the
+        // discarded gathering transcript carried (attempt-4 review, Finding 2).
+        struct DegradedWeb;
+        impl ResearchWeb for DegradedWeb {
+            fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
+                bail!("searxng unreachable")
+            }
+            fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
+                bail!("fetch of {url} returned HTTP 404")
+            }
+        }
+        let empty_findings = || {
+            findings_turn(json!({
+                "findings": "Nothing retrievable.",
+                "claims": [],
+                "topic_answered": true
+            }))
+        };
+        let model = ScriptModel::new(vec![
+            turn_with_tools(json!([
+                {"function": {"name": "web_search", "arguments": {"query": "collapse risk"}}},
+                {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/a"}}}
+            ])),
+            gather_done(),
+            empty_findings(),
+            gather_done(),
+            empty_findings(),
+        ]);
+        let web = DegradedWeb;
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        // The `runner` helper is typed to `ScriptWeb`, so build the runner inline
+        // for the custom web (as `a_failed_fetch_attempt_still_spends_budget` does).
+        let r = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 10,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &ctx,
+            step_label: "research TEST".into(),
+        };
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+        assert!(
+            out.gaps.iter().any(|g| g.contains("gathering degraded")
+                && g.contains("search(es) failed")
+                && g.contains("fetch(es) failed")),
+            "the failed search and fetch surface as one degradation gap: {:?}",
+            out.gaps
         );
     }
 
