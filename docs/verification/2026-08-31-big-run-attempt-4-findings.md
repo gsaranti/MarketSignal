@@ -302,3 +302,24 @@ The gathering loop now guards for a non-array `tool_calls` before it echoes the 
 A recovered stringified-array `tool_calls` is treated as malformed here rather than parsed — the local Ollama path emits native arrays, and the stringified quirk belongs to the cloud tool-use path — which is a bounded, honest degradation, not a silent drop.
 This folds into the same `portfolio-v34` work.
 New tests pin the body-required drop and title render, the title cap and header-fit guard under a page burst, the prefix bound under a huge ledger, the turn-cap / malformed / budget-exhausted degradation summaries, the degradation note in the brief, and the degradation gap end-to-end (search/fetch failure, exact-ceiling exit, and a malformed non-array `tool_calls`).
+
+### Final full-sweep corrections before the v34 debut (2026-08-31)
+
+A fifth full sweep found two remaining production boundaries and one stale living-doc contract; all three were fixed before any `portfolio-v34` run, so they fold into the same debut stamp rather than creating another version.
+First, the gathering conversation was still aggregate-unbounded: the 12,000-character cap applied to each fetched page, but every assistant tool request and result accumulated across up to eight turns, cache hits did not spend the live-fetch ceiling, and one model response could contain an arbitrary number of calls.
+The loop now accepts at most eight tool calls from one turn, executes the deterministic head, records the omitted tail, and moves directly to synthesis.
+It also serializes the complete growing message history plus tool schema before every gathering request and before retaining each assistant/tool message, keeping a fixed envelope reserve under the shared interpretation input budget; the first addition that would cross the bound ends gathering, records any executed-but-unretained result and unexecuted calls, and still synthesizes from every fetched page that landed.
+Untrusted search and fetch metadata fields are capped or omitted in the gathering render so one title, snippet, date, or redirect URL cannot independently consume the packet.
+
+Second, the synthesis allocator reserved headers for every body-bearing page before it decided which bodies could survive.
+Under a sufficiently large cache-hit burst, those soon-to-be-dropped headers could leave every page with less than a truncation marker, drop every source, and return a nearly empty packet despite substantial unused capacity once the dropped headers disappeared.
+Selection and water-filling are now one plan: a source is selected only when its header, fixed markers, and at least one usable body character fit; headers for omitted pages are reclaimed first; later compact sources may survive an individually oversized earlier source; and the remaining body budget is water-filled only across the selected set.
+The validator allow-set still contains exactly the rendered URLs, and all omissions and truncations remain inline and gap-recorded.
+
+Third, the forward-looking big-run watch set still named `portfolio-v32` for the run and observation admission even though production and resume compatibility were already pinned to `portfolio-v34`.
+The watch set now names `portfolio-v34`, distinguishes the Finding-3 rule's v32 introduction from the current attempt stamp, and adds the new per-turn, aggregate-history, and body-bearing evidence watches.
+
+Focused Rust regressions pin the oversized-batch cutoff, the multi-turn cached-page history boundary with every issued packet below the guard, bounded untrusted metadata, the individually unrenderable-source allow-set exclusion, and the 600-page header-reclamation case retaining substantial usable evidence within budget.
+Claude Code's follow-up review raised one worthwhile defense-in-depth observation: the selected-page render loop relied on a debug-only assertion that no selected plan was dropped, so a future allocator regression could admit a body-less URL in release mode despite the current proof.
+The render boundary now also fails closed in release: an unexpectedly dropped plan is rejected before its URL enters the claim-validator allow-set, counted in a persisted internal-allocation gap, and omitted without adding unreserved text to the synthesis packet; a direct regression pins both the dropped and usable admission cases, and this unreachable-under-current-math safeguard does not change the `portfolio-v34` prompt contract.
+Final verification after the corrections: `cargo test` passed 1,458 tests across the library and integration suites with 31 live smokes ignored; `cargo clippy --all-targets --all-features` completed warning-free; `npm run build` passed; and `npm test` passed 46 pure-module tests plus 254 component tests.

@@ -8602,7 +8602,10 @@ mod tests {
         // new synthesis contract); fix B's post-landing review reworded the
         // synthesis brief again (drop empty-body pages, lead each source with its
         // title, prepend a gathering-degradation note), changing the synthesis
-        // input and so a completed holding's analysis, moving it to v34.
+        // input and so a completed holding's analysis, moving it to v34. The
+        // final pre-debut sweep's aggregate gather-packet / tool-batch bounds and
+        // joint header-plus-body evidence selector fold into that same never-run
+        // v34 contract.
         assert_eq!(PROMPT_VERSION, "portfolio-v34");
     }
 

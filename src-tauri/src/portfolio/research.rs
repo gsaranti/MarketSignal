@@ -11,14 +11,14 @@
 //! and the results return as tool messages; the pass's findings are then
 //! authored by a **separate synthesis call** over a fresh, tool-history-free
 //! conversation, so the gathering turns and the findings grammar never share a
-//! request (attempt-4 Finding 4, fix B). Two ceilings work
-//! together: per-topic depth ≤ 2 follow-ups (≤ 3 passes per topic, each
-//! follow-up an orchestrator-approved *proposal*) and a per-item fetch +
-//! wall-clock budget that binds first, spent across topics in priority order
-//! and polled at request boundaries — a spent budget stops further fetches
-//! and topics but never suppresses the current pass's one terminal findings
-//! turn, and the lowest-priority remaining topics skip fail-soft as recorded
-//! gaps.
+//! request (attempt-4 Finding 4, fix B). Per-pass turn, tool-batch, and aggregate
+//! history bounds work beside per-topic depth ≤ 2 follow-ups (≤ 3 passes per
+//! topic, each follow-up an orchestrator-approved *proposal*) and a per-item
+//! fetch + wall-clock budget that binds first, spent across topics in priority
+//! order and polled at request boundaries — a spent budget stops further
+//! fetches and topics but never suppresses the current pass's one terminal
+//! findings turn, and the lowest-priority remaining topics skip fail-soft as
+//! recorded gaps.
 //!
 //! Context stays bounded by extraction and an evidence ledger, never by
 //! re-distilling findings mid-loop: each pass ends with a schema-constrained
@@ -69,6 +69,16 @@ pub const MAX_WALL_PER_HOLDING: Duration = Duration::from_secs(30 * 60);
 /// never converges, distinct from the budget (which binds first).
 pub const MAX_TURNS_PER_PASS: u32 = 8;
 
+/// Tool calls accepted from one model turn. A single response is model output,
+/// so its array length is not otherwise bounded; process a deterministic head
+/// and synthesize immediately when the tail is omitted.
+pub const MAX_TOOL_CALLS_PER_TURN: usize = 8;
+
+/// Fixed room for the request envelope around the gathering messages and tool
+/// schema. The packet guard serializes those two variable inputs exactly, then
+/// keeps this reserve rather than issuing a request right at the context edge.
+const GATHERING_PACKET_RESERVE_CHARS: usize = 2_048;
+
 /// Depth cap: a topic's root pass plus at most two follow-ups (≤3 passes).
 pub const MAX_PASSES_PER_TOPIC: usize = 3;
 
@@ -84,6 +94,13 @@ const PAGE_TEXT_CAP_CHARS: usize = 12_000;
 /// title is untrusted and unbounded; capping it keeps each header bounded so a
 /// degenerate title cannot inflate the framing past the input guard.
 const TITLE_CAP_CHARS: usize = 300;
+
+/// Untrusted search/fetch metadata also rides the gathering history. Bound the
+/// display-only fields so one hostile result cannot consume the whole packet;
+/// exact fetched URLs remain in the synthesis evidence store and validator.
+const SEARCH_SNIPPET_CAP_CHARS: usize = 1_000;
+const PUBLISHED_CAP_CHARS: usize = 100;
+const TOOL_URL_CAP_CHARS: usize = 2_048;
 
 /// Bounds on the model-derived sections of the pass prefix (`pass_brief`) — the
 /// prior-claims ledger and the follow-up text are accumulated model output with
@@ -106,11 +123,11 @@ const MAX_CLAIMS_PER_PASS: usize = 20;
 /// Management).
 const MAX_SEEDED_BY_PER_PASS: usize = 4;
 
-/// Gathering-phase degradation for one pass — the search/fetch failures and
-/// budget-skips that live only in the tool-call history the fresh synthesis
-/// conversation discards (fix B). Surfaced so the sole findings author can
-/// temper conviction rather than read partial coverage as complete, and
-/// recorded as a data-health gap (attempt-4 review, Finding 2).
+/// Gathering-phase degradation for one pass — search/fetch failures, malformed
+/// or capped calls, and budget-bound omissions that live only in the tool-call
+/// history the fresh synthesis conversation discards (fix B). Surfaced so the
+/// sole findings author can temper conviction rather than read partial coverage
+/// as complete, and recorded as a data-health gap (attempt-4 review, Finding 2).
 #[derive(Debug, Default, Clone, Copy)]
 struct PassDegradation {
     searches_failed: usize,
@@ -118,8 +135,12 @@ struct PassDegradation {
     fetches_failed: usize,
     budget_skipped: usize,
     malformed_calls: usize,
+    tool_call_cap_skipped: usize,
+    history_calls_skipped: usize,
+    history_results_omitted: usize,
     turn_cap_hit: bool,
     budget_exhausted: bool,
+    history_budget_exhausted: bool,
 }
 
 impl PassDegradation {
@@ -129,9 +150,13 @@ impl PassDegradation {
             + self.fetches_failed
             + self.budget_skipped
             + self.malformed_calls
+            + self.tool_call_cap_skipped
+            + self.history_calls_skipped
+            + self.history_results_omitted
             > 0
             || self.turn_cap_hit
             || self.budget_exhausted
+            || self.history_budget_exhausted
     }
 
     /// A one-line factual summary of what gathering lost — `None` when the pass
@@ -166,6 +191,24 @@ impl PassDegradation {
                 self.malformed_calls
             ));
         }
+        if self.tool_call_cap_skipped > 0 {
+            parts.push(format!(
+                "{} tool call(s) omitted above the per-turn cap of {MAX_TOOL_CALLS_PER_TURN}",
+                self.tool_call_cap_skipped
+            ));
+        }
+        if self.history_calls_skipped > 0 {
+            parts.push(format!(
+                "{} tool call(s) not executed after the gathering input budget bound",
+                self.history_calls_skipped
+            ));
+        }
+        if self.history_results_omitted > 0 {
+            parts.push(format!(
+                "{} executed tool result(s) omitted from gathering history at the input budget bound",
+                self.history_results_omitted
+            ));
+        }
         if self.turn_cap_hit {
             parts.push(format!(
                 "gathering hit the {MAX_TURNS_PER_PASS}-turn cap before the model stopped"
@@ -176,8 +219,32 @@ impl PassDegradation {
                 "gathering stopped early: the fetch/wall-clock budget was exhausted".to_string(),
             );
         }
+        if self.history_budget_exhausted {
+            parts.push(
+                "gathering stopped before its conversation could exceed the model input budget"
+                    .to_string(),
+            );
+        }
         Some(parts.join(", "))
     }
+}
+
+/// Conservative wire-size proxy for one gathering request. JSON serialization
+/// counts escaped message content and the complete tool schema, so it is safer
+/// than summing visible message text alone. Serialization failure is treated as
+/// over-budget and forces synthesis rather than issuing an unbounded request.
+fn gathering_packet_chars(messages: &[ChatMessage], tools: &Value) -> usize {
+    serde_json::to_string(&json!({ "messages": messages, "tools": tools }))
+        .map(|wire| wire.chars().count())
+        .unwrap_or(usize::MAX)
+}
+
+fn gathering_packet_fits(messages: &[ChatMessage], tools: &Value) -> bool {
+    let budget = crate::portfolio::distill::input_budget_chars(
+        crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+    );
+    gathering_packet_chars(messages, tools)
+        <= budget.saturating_sub(GATHERING_PACKET_RESERVE_CHARS)
 }
 
 /// The per-topic seed's hard character budget — over the WHOLE seed (ledger
@@ -1128,7 +1195,8 @@ impl ResearchRunner<'_> {
 
     /// One bounded multi-turn pass, in two phases. The gathering loop carries
     /// the tools and no grammar — a turn that requests tools continues the loop,
-    /// a turn that requests none (or a spent budget / turn cap) ends gathering.
+    /// a turn that requests none (or a spent fetch, turn, tool-batch, or aggregate
+    /// history budget) ends gathering.
     /// Then `synthesize_findings` authors the pass's findings from a separate,
     /// tool-history-free conversation carrying the grammar and no tools, so the
     /// two never share a request (attempt-4 Finding 4, fix B) — a
@@ -1165,10 +1233,11 @@ impl ResearchRunner<'_> {
         // interleaving them on a turn carrying the whole tool-call history is
         // what left the terminal turn emitting empty/fenced bodies at ~70%
         // (Finding 4, `docs/verification/2026-08-31-big-run-attempt-4-findings.md`).
-        // Gathering ends when the model stops requesting tools, or the pass's
-        // turn/fetch budget is spent — then synthesis writes up whatever landed.
+        // Gathering ends when the model stops requesting tools, or a turn, batch,
+        // history, fetch, or wall-clock bound is reached — then synthesis writes
+        // up whatever landed.
         let mut turns = 0u32;
-        loop {
+        'gather: loop {
             if self.progress.is_cancelled() {
                 bail!("research cancelled");
             }
@@ -1187,6 +1256,14 @@ impl ResearchRunner<'_> {
                 // response is cut; an exact-ceiling or between-turns exit needs
                 // this signal.
                 degradation.budget_exhausted = true;
+                break;
+            }
+            // Guard the complete variable gathering packet before every model
+            // call. Unlike the fresh synthesis request, this conversation grows
+            // across turns; no cache-hit or search-result path may let it cross
+            // the shared portfolio input ceiling.
+            if !gathering_packet_fits(&messages, &tools) {
+                degradation.history_budget_exhausted = true;
                 break;
             }
             turns += 1;
@@ -1210,7 +1287,7 @@ impl ResearchRunner<'_> {
                 // topic — hand off to synthesis rather than parsing this turn.
                 break;
             };
-            if !raw_calls.is_array() {
+            let Some(raw_array) = raw_calls.as_array() else {
                 // A present-but-non-array `tool_calls` (an object, a stringified
                 // array, a scalar) is malformed model output — the decoder
                 // already collapsed empty arrays and null to None, so this is
@@ -1220,30 +1297,44 @@ impl ResearchRunner<'_> {
                 // (attempt-4 review P2). Synthesis works from what already landed.
                 degradation.malformed_calls += 1;
                 break;
+            };
+            let accepted_len = raw_array.len().min(MAX_TOOL_CALLS_PER_TURN);
+            let capped = raw_array.len().saturating_sub(accepted_len);
+            degradation.tool_call_cap_skipped += capped;
+            let accepted_raw = Value::Array(raw_array[..accepted_len].to_vec());
+
+            // The assistant tool-call turn is part of the next request. Refuse
+            // the accepted batch before executing it when even that echo would
+            // cross the aggregate history bound.
+            let assistant =
+                ChatMessage::assistant_with_tool_calls(resp.content, accepted_raw.clone());
+            let mut candidate = messages.clone();
+            candidate.push(assistant.clone());
+            if !gathering_packet_fits(&candidate, &tools) {
+                degradation.history_budget_exhausted = true;
+                degradation.history_calls_skipped += accepted_len;
+                break;
             }
-            messages.push(ChatMessage::assistant_with_tool_calls(
-                resp.content,
-                raw_calls.clone(),
-            ));
-            for call in parse_tool_calls(&raw_calls) {
+            messages.push(assistant);
+
+            let calls = parse_tool_calls(&accepted_raw);
+            for (index, call) in calls.iter().enumerate() {
                 if self.progress.is_cancelled() {
                     bail!("research cancelled");
                 }
                 // A spent budget stops further tool execution (the in-flight
                 // call above already ran to completion).
                 if self.budget.exhausted(*fetches_spent) {
-                    degradation.budget_skipped += 1;
-                    messages.push(ChatMessage::tool(
-                        "BUDGET EXHAUSTED: no further searches or fetches.".to_string(),
-                    ));
-                    break;
+                    degradation.budget_skipped += calls.len() - index;
+                    degradation.budget_exhausted = true;
+                    break 'gather;
                 }
                 let result = match call {
                     ToolCall::Search { query } => {
-                        self.exec_search(&query, ctx, &mut degradation)
+                        self.exec_search(query, ctx, &mut degradation)
                     }
                     ToolCall::Fetch { url } => self.exec_fetch(
-                        &url,
+                        url,
                         ctx,
                         fetches_spent,
                         &mut fetched,
@@ -1257,7 +1348,25 @@ impl ResearchRunner<'_> {
                         format!("ERROR: unknown or malformed tool call {name:?}.")
                     }
                 };
-                messages.push(ChatMessage::tool(result));
+                let result = ChatMessage::tool(result);
+                let mut candidate = messages.clone();
+                candidate.push(result.clone());
+                if !gathering_packet_fits(&candidate, &tools) {
+                    // The call already completed, so keep any fetched page in the
+                    // fresh synthesis evidence store, but never issue another
+                    // gather request with this over-bound result in its history.
+                    degradation.history_budget_exhausted = true;
+                    degradation.history_results_omitted += 1;
+                    degradation.history_calls_skipped += calls.len() - index - 1;
+                    break 'gather;
+                }
+                messages.push(result);
+            }
+            if capped > 0 {
+                // The tail was intentionally not executed. Synthesize the
+                // bounded head now instead of asking for another tool batch and
+                // silently losing continuity with the omitted calls.
+                break;
             }
         }
 
@@ -1767,36 +1876,81 @@ fn synthesis_brief(
     let budget = crate::portfolio::distill::input_budget_chars(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
     );
-    // Header-fit trim: the body water-fill sizes only the page *bodies*, so a
-    // burst of pages (cache hits spend no fetch budget, so the per-pass page
-    // count is not bounded by the fetch ceiling) could sum their headers past
-    // the input guard while every body allocates to zero. Keep pages in order
-    // only while the fixed prefix plus their headers fit the budget, dropping the
-    // trailing overflow entirely — so the rendered brief is provably within the
-    // guard whatever the page count (attempt-4 review, Finding 1).
+    // Size against the model's input budget with the shared chars-per-token
+    // guard. Page selection and body allocation are one plan: a source is kept
+    // only when its header, fixed markers, and at least one usable body character
+    // can fit. Headers for omitted pages are therefore reclaimed before the
+    // surviving bodies are water-filled, avoiding an all-header/no-evidence
+    // collapse under a large cache-hit burst.
+    const FETCH_CAP_MARKER: &str =
+        "\n[source truncated at the fetch cap — only its first portion is shown]";
+    const BUDGET_TRUNC_MARKER: &str =
+        "\n[truncated to fit the model's input budget — only its first portion is shown]";
+    const DROP_SUMMARY_RESERVE: usize = 200;
     let prefix_len = out.chars().count();
-    let mut header_room = budget.saturating_sub(prefix_len);
-    let mut fit = 0usize;
-    for h in &headers {
-        let cost = h.chars().count() + 1; // + the trailing newline each page renders
-        if cost > header_room {
-            break;
+    let marker_len = BUDGET_TRUNC_MARKER.chars().count();
+    let fetch_marker_len = FETCH_CAP_MARKER.chars().count();
+    let texts: Vec<&str> = kept.iter().map(|(url, _, _)| text_of(url)).collect();
+    let lengths: Vec<usize> = texts.iter().map(|text| text.chars().count()).collect();
+
+    let rendered_cost = |index: usize, body_cost: usize| {
+        headers[index]
+            .chars()
+            .count()
+            .saturating_add(1) // trailing newline after this source
+            .saturating_add(body_cost)
+            .saturating_add(if lengths[index] >= PAGE_TEXT_CAP_CHARS {
+                fetch_marker_len
+            } else {
+                0
+            })
+    };
+    let full_total = (0..kept.len()).fold(prefix_len, |total, index| {
+        total.saturating_add(rendered_cost(index, lengths[index]))
+    });
+    if full_total <= budget {
+        for index in 0..kept.len() {
+            shown.insert(kept[index].0.clone());
+            out.push_str(&headers[index]);
+            out.push_str(texts[index]);
+            if lengths[index] >= PAGE_TEXT_CAP_CHARS {
+                out.push_str(FETCH_CAP_MARKER);
+            }
+            out.push('\n');
         }
-        header_room -= cost;
-        fit += 1;
+        return out;
     }
-    let header_overflow = kept.len() - fit;
-    let mut kept = kept;
-    let mut headers = headers;
-    kept.truncate(fit);
-    headers.truncate(fit);
-    if kept.is_empty() {
-        // Even the first header does not fit beside the framing — record the
-        // overflow and hand synthesis the no-evidence note rather than an
-        // over-budget brief.
+
+    // A long truncated page needs the marker plus at least one body character;
+    // a shorter page is cheaper (and clearer) to keep whole.
+    let minimum_body_cost = |length: usize| length.min(marker_len.saturating_add(1));
+    let all_minimum_total = (0..kept.len()).fold(prefix_len, |total, index| {
+        total.saturating_add(rendered_cost(index, minimum_body_cost(lengths[index])))
+    });
+    let selected: Vec<usize> = if all_minimum_total <= budget {
+        (0..kept.len()).collect()
+    } else {
+        // Reserve the factual omission summary first, then keep a deterministic
+        // in-order subset. Continue after an oversized source so a later compact
+        // source can still contribute evidence.
+        let mut room = budget
+            .saturating_sub(prefix_len)
+            .saturating_sub(DROP_SUMMARY_RESERVE);
+        let mut selected = Vec::new();
+        for (index, &length) in lengths.iter().enumerate() {
+            let cost = rendered_cost(index, minimum_body_cost(length));
+            if cost <= room {
+                room -= cost;
+                selected.push(index);
+            }
+        }
+        selected
+    };
+
+    let omitted = kept.len().saturating_sub(selected.len());
+    if selected.is_empty() {
         gaps.push(format!(
-            "topic {}: {header_overflow} evidence page(s) omitted entirely to fit the model's \
-             input budget",
+            "topic {}: {omitted} evidence page(s) omitted entirely to fit the model's input budget",
             ctx.topic.key
         ));
         out.push_str(
@@ -1806,102 +1960,80 @@ fn synthesis_brief(
         );
         return out;
     }
-    // Size against the model's input budget with the shared chars-per-token
-    // guard, allocating with `allocate_page_budget`: when the packet fits, every
-    // page is rendered whole; on overflow, short pages keep their full text and
-    // the remainder is water-filled across the longer ones — the sanctioned
-    // per-page-truncation lever, never raising num_ctx (BUILD §Standing
-    // constraints), and never cutting a page while budget sits unused. Any
-    // truncation records a gap so the run's data-health reflects unseen evidence.
-    // Both truncation states are re-surfaced inline (the gathering transcript
-    // that carried `render_page`'s marker is gone, so the sole findings author
-    // would otherwise read a partial page as complete — attempt-4 Finding 4). A
-    // page can carry both, so both markers' lengths are reserved from the budget
-    // before allocation, keeping the rendered brief within it.
-    const FETCH_CAP_MARKER: &str =
-        "\n[source truncated at the fetch cap — only its first portion is shown]";
-    const BUDGET_TRUNC_MARKER: &str =
-        "\n[truncated to fit the model's input budget — only its first portion is shown]";
-    let framing = out.chars().count()
-        + headers.iter().map(|h| h.chars().count()).sum::<usize>()
-        + kept.len(); // one trailing newline per page
-    let texts: Vec<&str> = kept.iter().map(|(url, _, _)| text_of(url)).collect();
-    let lengths: Vec<usize> = texts.iter().map(|t| t.chars().count()).collect();
-    // Reserve only the markers that will actually render, so the reservation
-    // never induces false truncation of a packet that fits (round-4 F1). The
-    // fetch-cap markers are deterministic from the stored lengths; a budget
-    // marker appears only when the packet overflows, so reserve those (one per
-    // page, the worst case) only in that branch — where truncation is happening
-    // anyway, so the extra reservation only tightens an already-overflowing
-    // packet, never cuts one that fit.
-    // A drop summary is reserved only when the packet overflows, so a fitting
-    // packet is rendered whole and the reservation never induces truncation.
-    const DROP_SUMMARY_RESERVE: usize = 200;
-    let marker_len = BUDGET_TRUNC_MARKER.chars().count();
-    let fetch_reserve = lengths.iter().filter(|&&l| l >= PAGE_TEXT_CAP_CHARS).count()
-        * FETCH_CAP_MARKER.chars().count();
-    let base_available = budget.saturating_sub(framing).saturating_sub(fetch_reserve);
-    // The drop-summary line renders whenever a page is omitted — for body budget
-    // (below) *or* for header overflow (trimmed above) — so reserve its space in
-    // either case, else a header-trimmed-but-body-fitting packet would render the
-    // summary past the guard.
-    let available = if lengths.iter().sum::<usize>() <= base_available && header_overflow == 0 {
-        base_available
-    } else {
-        base_available.saturating_sub(DROP_SUMMARY_RESERVE)
-    };
-    let plans = plan_evidence(&lengths, available, marker_len);
+
+    let selected_lengths: Vec<usize> = selected.iter().map(|&i| lengths[i]).collect();
+    let fixed = selected.iter().fold(prefix_len, |total, &index| {
+        total.saturating_add(rendered_cost(index, 0))
+    });
+    let available = budget
+        .saturating_sub(fixed)
+        .saturating_sub(if omitted > 0 { DROP_SUMMARY_RESERVE } else { 0 });
+    let plans = plan_evidence(&selected_lengths, available, marker_len);
+    debug_assert!(plans.iter().all(|plan| !plan.dropped));
     let mut truncated = 0usize;
-    let mut dropped = 0usize;
-    for i in 0..kept.len() {
-        if plans[i].dropped {
-            // Omit the source entirely — never render its header or URL — so the
-            // model cannot cite evidence it did not see (round-7).
-            dropped += 1;
+    let mut defensive_dropped = 0usize;
+    for (plan_index, &source_index) in selected.iter().enumerate() {
+        let plan = plans[plan_index];
+        // Selection guarantees a usable body allocation today, but retain the
+        // allow-set boundary in release builds too: if later allocator changes
+        // violate that invariant, omit the source before its URL becomes citable.
+        if !admit_planned_source(plan, &kept[source_index].0, shown) {
+            defensive_dropped += 1;
             continue;
         }
-        shown.insert(kept[i].0.clone());
-        out.push_str(&headers[i]);
-        out.push_str(&texts[i].chars().take(plans[i].text).collect::<String>());
+        out.push_str(&headers[source_index]);
+        out.push_str(
+            &texts[source_index]
+                .chars()
+                .take(plan.text)
+                .collect::<String>(),
+        );
         // The fetch cap is detected from the stored length (a page exactly at the
         // cap is the negligible false positive).
-        if lengths[i] >= PAGE_TEXT_CAP_CHARS {
+        if lengths[source_index] >= PAGE_TEXT_CAP_CHARS {
             out.push_str(FETCH_CAP_MARKER);
         }
-        if plans[i].marker {
+        if plan.marker {
             out.push_str(BUDGET_TRUNC_MARKER);
             truncated += 1;
         }
         out.push('\n');
     }
-    // Pages dropped for budget: those the water-fill could not fit even a marker
-    // for, plus any trimmed off entirely because their header overflowed the
-    // guard (Finding 1). Both are omitted evidence and reported together.
-    let total_dropped = dropped + header_overflow;
-    if truncated > 0 || total_dropped > 0 {
+    if defensive_dropped > 0 {
+        // Do not add an inline summary here: this impossible-under-current-math
+        // branch has no reserved synthesis-message space. Persist the internal
+        // degradation while keeping both the input guard and allow-set safe.
+        gaps.push(format!(
+            "topic {}: {defensive_dropped} selected evidence page(s) omitted by the defensive \
+             allocator guard because no usable body allocation remained",
+            ctx.topic.key
+        ));
+    }
+    if truncated > 0 || omitted > 0 {
         let mut msg = format!("topic {}: ", ctx.topic.key);
         if truncated > 0 {
             msg.push_str(&format!(
                 "{truncated} of {} evidence page(s) truncated to fit the model's input budget",
-                kept.len()
+                selected.len()
             ));
         }
-        if total_dropped > 0 {
+        if omitted > 0 {
             if truncated > 0 {
                 msg.push_str("; ");
             }
             msg.push_str(&format!(
-                "{total_dropped} evidence page(s) omitted entirely to fit the model's input budget"
+                "{omitted} evidence page(s) omitted entirely to fit the model's input budget"
             ));
         }
         gaps.push(msg);
     }
-    if total_dropped > 0 {
+    if omitted > 0 {
         out.push_str(&format!(
-            "\n[{total_dropped} further gathered source(s) omitted to fit the model's input budget \
+            "\n[{omitted} further gathered source(s) omitted to fit the model's input budget \
              — their evidence and URLs are not shown; do not cite them]\n"
         ));
     }
+    debug_assert!(out.chars().count() <= budget);
     out
 }
 
@@ -1950,6 +2082,21 @@ struct PagePlan {
     /// Omit the page entirely — header and URL included — so it is never
     /// presented as a citable source.
     dropped: bool,
+}
+
+/// Admit a planned source to the synthesis claim-validator allow-set only when
+/// the plan carries usable evidence. This duplicates the allocator invariant at
+/// the security boundary so a future math regression fails closed in release.
+fn admit_planned_source(
+    plan: PagePlan,
+    source_url: &str,
+    shown: &mut std::collections::HashSet<String>,
+) -> bool {
+    if plan.dropped {
+        return false;
+    }
+    shown.insert(source_url.to_string());
+    true
 }
 
 /// Plan how each page renders under `available` chars: whole when it fits; cut
@@ -2103,20 +2250,38 @@ fn render_hits(hits: &[SearchHit]) -> String {
     }
     let mut out = String::from("SEARCH RESULTS:\n");
     for h in hits.iter().take(HITS_PER_SEARCH_RESULT) {
-        out.push_str(&format!(
-            "- {} | {} | tier {}{}{}\n",
-            h.title,
-            h.url,
-            h.tier,
-            h.published
-                .as_deref()
-                .map(|p| format!(" | {p}"))
-                .unwrap_or_default(),
-            h.snippet
-                .as_deref()
-                .map(|s| format!(" | {s}"))
-                .unwrap_or_default(),
-        ));
+        if h.url.chars().count() > TOOL_URL_CAP_CHARS {
+            out.push_str("- [result omitted: URL exceeded the tool-result display cap]\n");
+            continue;
+        }
+        let (title, title_cut) = crate::data_sources::cap_chars(&h.title, TITLE_CAP_CHARS);
+        out.push_str("- ");
+        out.push_str(&title);
+        if title_cut {
+            out.push('…');
+        }
+        out.push_str(" | ");
+        out.push_str(&h.url);
+        out.push_str(&format!(" | tier {}", h.tier));
+        if let Some(published) = h.published.as_deref() {
+            let (published, cut) =
+                crate::data_sources::cap_chars(published, PUBLISHED_CAP_CHARS);
+            out.push_str(" | ");
+            out.push_str(&published);
+            if cut {
+                out.push('…');
+            }
+        }
+        if let Some(snippet) = h.snippet.as_deref() {
+            let (snippet, cut) =
+                crate::data_sources::cap_chars(snippet, SEARCH_SNIPPET_CAP_CHARS);
+            out.push_str(" | ");
+            out.push_str(&snippet);
+            if cut {
+                out.push('…');
+            }
+        }
+        out.push('\n');
     }
     out
 }
@@ -2124,10 +2289,26 @@ fn render_hits(hits: &[SearchHit]) -> String {
 /// Render a fetched page as a quoted-evidence tool result, annotation first.
 fn render_page(page: &FetchedPage, annotation: Option<&SourceAnnotation>) -> String {
     let mut out = String::new();
-    out.push_str(&format!(
-        "FETCHED: {} ({})\nretrieved_at: {}\n",
-        page.final_url, page.title, page.retrieved_at
-    ));
+    out.push_str("FETCHED: ");
+    if page.final_url.chars().count() <= TOOL_URL_CAP_CHARS {
+        out.push_str(&page.final_url);
+    } else {
+        out.push_str("[final URL omitted: exceeded the tool-result display cap]");
+    }
+    out.push_str(" (");
+    let (title, title_cut) = crate::data_sources::cap_chars(&page.title, TITLE_CAP_CHARS);
+    out.push_str(&title);
+    if title_cut {
+        out.push('…');
+    }
+    out.push_str(")\nretrieved_at: ");
+    let (retrieved_at, retrieved_at_cut) =
+        crate::data_sources::cap_chars(&page.retrieved_at, PUBLISHED_CAP_CHARS);
+    out.push_str(&retrieved_at);
+    if retrieved_at_cut {
+        out.push('…');
+    }
+    out.push('\n');
     if let Some(a) = annotation {
         out.push_str(&format!(
             "source annotation: tier {} | kinds {:?} | extraction quality {:.2}{}{}\n",
@@ -2773,6 +2954,173 @@ mod tests {
     }
 
     #[test]
+    fn a_large_tool_batch_is_capped_then_synthesized_as_partial() {
+        let calls: Vec<Value> = (0..MAX_TOOL_CALLS_PER_TURN + 3)
+            .map(|i| {
+                json!({
+                    "function": {
+                        "name": "web_fetch",
+                        "arguments": {"url": format!("https://reuters.com/{i}")}
+                    }
+                })
+            })
+            .collect();
+        let model = ScriptModel::new(vec![
+            turn_with_tools(Value::Array(calls)),
+            findings_turn(json!({
+                "findings": "Bounded batch reviewed.",
+                "claims": [],
+                "topic_answered": false
+            })),
+            gather_done(),
+            disconfirm_findings(),
+        ]);
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = runner(&model, &web, &clock, &ctx, 20);
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+
+        assert_eq!(
+            web.fetch_count() as usize,
+            MAX_TOOL_CALLS_PER_TURN,
+            "only the deterministic head executes"
+        );
+        assert!(
+            out.gaps.iter().any(|gap| {
+                gap.contains("per-turn cap")
+                    && gap.contains(&format!("{} tool call(s)", 3))
+            }),
+            "the omitted tail is a typed partial-coverage gap: {:?}",
+            out.gaps
+        );
+    }
+
+    #[test]
+    fn gathering_history_stops_before_the_aggregate_input_guard() {
+        struct CachedLargeWeb {
+            fetches: Mutex<RefCell<usize>>,
+        }
+        impl ResearchWeb for CachedLargeWeb {
+            fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
+                Ok(Vec::new())
+            }
+            fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
+                *self.fetches.lock().unwrap().borrow_mut() += 1;
+                Ok((
+                    FetchedPage {
+                        final_url: url.to_string(),
+                        host: "reuters.com".into(),
+                        title: "Large cached page".into(),
+                        text: "e".repeat(PAGE_TEXT_CAP_CHARS),
+                        extraction_quality: 0.9,
+                        thin_stub: false,
+                        retrieved_at: "2026-08-22T10:00:00+00:00".into(),
+                    },
+                    true,
+                ))
+            }
+        }
+        struct PacketRecordingModel {
+            inner: ScriptModel,
+            gathering_sizes: Mutex<RefCell<Vec<usize>>>,
+        }
+        impl ResearchModel for PacketRecordingModel {
+            fn research_turn(
+                &self,
+                messages: &[ChatMessage],
+                tools: Option<&Value>,
+                format: Option<&Value>,
+            ) -> Result<ChatResponse> {
+                if let Some(tools) = tools {
+                    self.gathering_sizes
+                        .lock()
+                        .unwrap()
+                        .borrow_mut()
+                        .push(gathering_packet_chars(messages, tools));
+                }
+                self.inner.research_turn(messages, tools, format)
+            }
+        }
+        let batch = |offset: usize| {
+            Value::Array(
+                (offset..offset + MAX_TOOL_CALLS_PER_TURN)
+                    .map(|i| {
+                        json!({
+                            "function": {
+                                "name": "web_fetch",
+                                "arguments": {"url": format!("https://reuters.com/large-{i}")}
+                            }
+                        })
+                    })
+                    .collect(),
+            )
+        };
+        let model = PacketRecordingModel {
+            inner: ScriptModel::new(vec![
+                turn_with_tools(batch(0)),
+                turn_with_tools(batch(MAX_TOOL_CALLS_PER_TURN)),
+                turn_with_tools(batch(MAX_TOOL_CALLS_PER_TURN * 2)),
+                findings_turn(json!({
+                    "findings": "The bounded evidence was synthesized.",
+                    "claims": [],
+                    "topic_answered": false
+                })),
+                gather_done(),
+                disconfirm_findings(),
+            ]),
+            gathering_sizes: Mutex::new(RefCell::new(Vec::new())),
+        };
+        let web = CachedLargeWeb {
+            fetches: Mutex::new(RefCell::new(0)),
+        };
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 40,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &ctx,
+            step_label: "research TEST".into(),
+        };
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+
+        let fetches = *web.fetches.lock().unwrap().borrow();
+        assert!(
+            fetches > MAX_TOOL_CALLS_PER_TURN * 2
+                && fetches < MAX_TOOL_CALLS_PER_TURN * 3,
+            "the third batch stops at the history boundary: {fetches}"
+        );
+        let budget = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        );
+        let sizes = model.gathering_sizes.lock().unwrap();
+        assert!(
+            sizes
+                .borrow()
+                .iter()
+                .all(|size| *size <= budget - GATHERING_PACKET_RESERVE_CHARS),
+            "every issued gathering request stays below the guard: {:?}",
+            sizes.borrow()
+        );
+        assert!(
+            out.gaps
+                .iter()
+                .any(|gap| gap.contains("conversation could exceed the model input budget")),
+            "the forced stop reaches synthesis and persisted data health: {:?}",
+            out.gaps
+        );
+    }
+
+    #[test]
     fn the_page_budget_allocator_preserves_all_when_it_fits_and_water_fills_on_overflow() {
         // Fits: every page rendered whole, budget to spare.
         assert_eq!(allocate_page_budget(&[5, 10, 3], 100), vec![5, 10, 3]);
@@ -2810,18 +3158,49 @@ mod tests {
     }
 
     #[test]
+    fn the_release_guard_never_admits_a_dropped_plan_to_the_allow_set() {
+        let dropped = PagePlan {
+            text: 0,
+            marker: false,
+            dropped: true,
+        };
+        let usable = PagePlan {
+            text: 1,
+            marker: true,
+            dropped: false,
+        };
+        let mut shown = std::collections::HashSet::new();
+        assert!(!admit_planned_source(
+            dropped,
+            "https://example.com/dropped",
+            &mut shown
+        ));
+        assert!(shown.is_empty(), "a dropped URL never becomes citable");
+        assert!(admit_planned_source(
+            usable,
+            "https://example.com/usable",
+            &mut shown
+        ));
+        assert_eq!(shown.len(), 1);
+        assert!(shown.contains("https://example.com/usable"));
+    }
+
+    #[test]
     fn dropped_pages_are_excluded_from_the_shown_allow_set() {
-        // A packet whose headers alone exceed the input budget forces every page
-        // to drop; a dropped page's URL must not enter the shown-set, so claim
-        // validation later rejects a claim citing evidence the synthesis never
-        // saw (round-8).
-        let mut fetched = Vec::new();
+        // One source whose header alone cannot fit is omitted; its URL must not
+        // enter the shown-set, so claim validation later rejects a claim citing
+        // evidence the synthesis never saw (round-8).
+        let budget = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        );
+        let url = format!("https://example.com/{}", "u".repeat(budget));
+        let fetched = vec![(
+            url.clone(),
+            "2026-08-22T10:00:00+00:00".to_string(),
+            None,
+        )];
         let mut page_texts = std::collections::HashMap::new();
-        for i in 0..3000 {
-            let url = format!("https://example.com/{i}");
-            fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
-            page_texts.insert(url, "x".repeat(50));
-        }
+        page_texts.insert(url, "x".repeat(50));
         let t = topic("competitive-position", "Competitive position", &["q1"]);
         let ctx = PassContext {
             holding_brief: "HOLDING: WID",
@@ -2845,11 +3224,67 @@ mod tests {
         );
         assert!(
             shown.is_empty(),
-            "every over-budget page dropped → none enter the validator's allow-set"
+            "the individually unrenderable page never enters the validator's allow-set"
         );
         assert!(
             gaps.iter().any(|g| g.contains("omitted")),
             "the drop is recorded as a gap: {gaps:?}"
+        );
+    }
+
+    #[test]
+    fn synthesis_brief_reclaims_omitted_headers_for_usable_evidence() {
+        // Regression for the post-Fix-B allocator review: reserving every header
+        // before planning bodies made a large cache-hit burst drop all pages and
+        // leave almost the whole input budget unused. The joint selector must
+        // keep a useful subset, reclaim omitted headers, and stay in bounds.
+        let budget = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        );
+        let mut fetched = Vec::new();
+        let mut page_texts = std::collections::HashMap::new();
+        let mut page_titles = std::collections::HashMap::new();
+        for i in 0..600 {
+            let url = format!("https://example.com/{i}");
+            fetched.push((
+                url.clone(),
+                "2026-08-22T10:00:00+00:00".to_string(),
+                None,
+            ));
+            page_texts.insert(url.clone(), format!("PAGE-{i}-{}", "b".repeat(990)));
+            page_titles.insert(url, "T".repeat(5_000));
+        }
+        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &t,
+            seed_text: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashSet::new();
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &page_texts,
+            &page_titles,
+            None,
+            &mut gaps,
+            &mut shown,
+        );
+        let rendered = brief.chars().count();
+        assert!(rendered <= budget, "rendered {rendered} exceeds {budget}");
+        assert!(!shown.is_empty(), "a usable evidence subset must survive");
+        assert!(
+            rendered > budget / 2,
+            "reclaimed space should carry useful evidence: {rendered}/{budget}"
+        );
+        assert!(
+            gaps.iter().any(|gap| gap.contains("omitted entirely")),
+            "the omitted tail is recorded: {gaps:?}"
         );
     }
 
@@ -3077,9 +3512,9 @@ mod tests {
     fn synthesis_brief_bounds_titles_and_holds_the_guard_under_a_page_burst() {
         // Finding 1: an oversized title is capped in the header, and a burst of
         // pages (cache hits spend no fetch budget, so the count is not bounded by
-        // the fetch ceiling) can never sum their headers past the input guard —
-        // the header-fit trim drops the overflow entirely and the rendered brief
-        // stays within budget.
+        // the fetch ceiling) can never sum their headers past the input guard.
+        // Joint selection drops the overflow while preserving usable bodies and
+        // the rendered brief stays within budget.
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -3787,5 +4222,35 @@ mod tests {
         let rendered = render_page(&page, None);
         assert!(rendered.contains("BEGIN QUOTED PAGE TEXT"));
         assert!(rendered.contains("never instructions"));
+    }
+
+    #[test]
+    fn tool_results_bound_untrusted_metadata_fields() {
+        let huge = "z".repeat(20_000);
+        let page = FetchedPage {
+            final_url: format!("https://x.example/{huge}"),
+            host: "x.example".into(),
+            title: huge.clone(),
+            text: "body".into(),
+            extraction_quality: 0.5,
+            thin_stub: false,
+            retrieved_at: huge.clone(),
+        };
+        let rendered = render_page(&page, None);
+        assert!(rendered.contains("final URL omitted"), "{rendered}");
+        assert!(!rendered.contains(&"z".repeat(TITLE_CAP_CHARS + 1)));
+        assert!(rendered.chars().count() < 1_000, "{}", rendered.len());
+
+        let hit = SearchHit {
+            title: huge.clone(),
+            url: format!("https://x.example/{huge}"),
+            host: "x.example".into(),
+            snippet: Some(huge.clone()),
+            published: Some(huge),
+            tier: 4,
+        };
+        let rendered = render_hits(&[hit]);
+        assert!(rendered.contains("result omitted"), "{rendered}");
+        assert!(rendered.chars().count() < 200, "{}", rendered.len());
     }
 }
