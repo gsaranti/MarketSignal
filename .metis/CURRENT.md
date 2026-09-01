@@ -2,63 +2,53 @@
 
 ## What happened
 
-Launched **attempt 4** of the big confirmation run (`job_runs` id 5,
-`portfolio-v32`, 47-holding debut): infra up (OrbStack + SearXNG with the
-**Serper paid floor** + Ollama `NUM_PARALLEL=1`), engines re-probed (Serper +
-google/bing/qwant/reuters served; google cse / duckduckgo / mojeek blocked but
-fail-soft), clean debut confirmed, dev app run, user triggered. The search
-backend served cleanly in-run (Finding 1's gate met, spillover closed) and the
-ledger `quant` under-population did **not** reproduce (Finding 2) — but the **6d
-research-findings terminal turn returned empty/fenced bodies at ~70%**, failing a
-holding (PGNY): **Finding 4**. The action-call prompt friction was diagnosed to
-an overloaded, unordered prompt: **Finding 3**. User cancelled at 7/47 once the
-findings were in.
-
-Then implemented **Fix B** for Finding 4 — the Step-6c research turn split so a
-tools-only gathering loop and a separate grammar-only **synthesis call** never
-share a request (the interleaving caused the empty bodies; mirrors the clean
-interpretation call). User ruled the five build decisions via selector;
-`portfolio::PROMPT_VERSION` → **`portfolio-v33`**. Eight Codex review rounds
-hardened the evidence-sizing (source-quality fidelity, water-fill allocator,
-drop-and-summarize, claim-validator provenance), all fixed.
+Hardened **Fix B** (attempt-4 Finding 4) through **four Codex review rounds** —
+each finding verified against code, some pushed back on, the rest fixed. Landed
+in `portfolio/research.rs`: **body-required citability** (a fetch with no body is
+dropped, gap-recorded, out of the claim-validator allow-set — title-only pages
+included), the **extracted title threaded** into each kept source's synthesis
+header (it was lost when the gathering transcript was discarded), a **title cap +
+header-fit trim + `pass_brief` prefix bound** (per-claim / ledger-block /
+follow-up caps + head-cap) so neither the gathering request nor the synthesis
+prefix can exceed the input guard whatever the page or ledger size (cache hits
+spend no fetch budget, so per-pass counts aren't bounded by the fetch ceiling),
+and **degradation propagation** (failed/empty searches, failed fetches,
+budget-skips, the turn cap, an exact-ceiling budget exhaustion, and a malformed
+non-array `tool_calls`) into a synthesis note + data-health gap. `topic_answered`
+was deliberately **not** hard-overridden (no consumer). Because the synthesis
+input changed, **`portfolio::PROMPT_VERSION` moved v33 → v34**
+(`job::resume_eligibility` refuses a cross-semantics resume). Codex approved.
 
 ## Current state
 
-**Fix B landed — Codex-clean, user-approved** — 4 commits pushed (`6c27a22` core,
-`c46d331` round-7, `3fd45f2` round-8, `1113317` BUILD.md); gate green (1413 tests,
-clippy 0). Findings record: `docs/verification/2026-08-31-big-run-attempt-4-findings.md`
-(+ INDEX pointer, `b238532`).
-
-Attempt 4 is **cancelled** (`job_runs` id 5, no `portfolio_runs`, 5 holdings
-checkpointed). **Infra torn down** (Ollama, SearXNG, OrbStack all stopped). The
-dev store still carries the 5 cancelled-run checkpoints, so **attempt 5 must
-re-wipe to a clean debut** per the watch set. The **debut stamp is now
-`portfolio-v33`** (was v32).
-
-Backlog: **Finding 3** — the action-prompt restructure (cut the reasoning-guidance
-bloat to data+values+schema, keep the ~4–5 behavioral contracts as an ordered gate
-list stated once) — diagnosed in the record's §Finding 3, **unbuilt**; the
-remaining pre-run prompt candidate. Findings 5–6 (throughput, extraction) + the
-attempt-3 open items want the run's telemetry first.
+**Merged to `main`** — PR #71 squash-merged (`dccf293`), feature branch deleted.
+Gate was green (1453 backend tests, clippy 0, `npm run build`, 46 + 254 frontend).
+Record kept current at
+`docs/verification/2026-08-31-big-run-attempt-4-findings.md` §Post-landing review.
+BUILD.md unchanged (it cites the `PROMPT_VERSION` constant, not the value, and
+delegates fix-B detail to the attempt record). The **debut stamp is now
+`portfolio-v34`** (was v33). Nothing in flight. Attempt 5 remains cancelled-store
+state; **attempt 5 must re-wipe to a clean debut** and confirm **v34**.
 
 ## Open questions
 
 - **When to launch attempt 5** — user's call, from a wiped store; don't propose
   it unprompted.
-- **Handle Finding 3 before attempt 5?** — the restructure is diagnosed but
-  unbuilt; a pre-run prompt candidate.
-- Does Fix B actually kill the ~70% empty-body rate on the live 122B — only
-  attempt 5 confirms (watch the 6d research-findings retry rate early).
-- The **permanent** SearXNG engine set — a post-run call; `settings.yml` set is
-  provisional.
-- **Memory drift:** `searxng-orbstack-bringup` + `big-run-waits-on-review-record`
-  still say the debut stamp is `portfolio-v32` → now `portfolio-v33`.
+- **Handle Finding 3 before attempt 5?** — the action-prompt restructure is
+  diagnosed (record §Finding 3) but **unbuilt**; the remaining pre-run prompt
+  candidate.
+- Does Fix B + this hardening actually kill the ~70% empty-body rate on the live
+  122B — only attempt 5 confirms (watch the 6d research-findings retry rate early).
+- The **permanent** SearXNG engine set — a post-run call.
+- **Memory drift:** `searxng-orbstack-bringup` updated to v34, but the
+  `big-run-waits-on-review-record` memory + MEMORY.md index still say the debut
+  stamp is `portfolio-v32` → now **v34**.
 
 ## Where to start
 
-Fix B is done. On the user's go, either **build Finding 3** (action-prompt
-restructure — diagnosis in the attempt-4 record §Finding 3) or **launch attempt
-5**: re-wipe the dev store to a clean debut → bring up infra
-(`searxng-orbstack-bringup` memory) → confirm debut stamps **`portfolio-v33`** /
-`checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3` → trigger → read
-`data-health` early and watch the 6d research-findings retry rate to confirm Fix B.
+On the user's go, either **build Finding 3** (action-prompt restructure —
+diagnosis in the attempt-4 record §Finding 3) or **launch attempt 5**: re-wipe the
+dev store to a clean debut → bring up infra (`searxng-orbstack-bringup` memory) →
+confirm debut stamps **`portfolio-v34`** / `checkpoint-v8` / `evidence-floor-v4` /
+`grade-v2.3` → trigger → read `data-health` early and watch the 6d
+research-findings retry rate to confirm Fix B.
