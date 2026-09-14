@@ -523,7 +523,10 @@ Each is easy to break by accident, so a plan should say how it honors them:
   every page. The two phases also keep one output protocol per request — tools
   and no grammar while gathering, grammar and no tools/history while
   synthesizing, the synthesis prompt showing the object's shape since the
-  grammar never reaches the model (attempt-5 Finding 5) — and the app
+  grammar never reaches the model (attempt-5 Finding 5; since the 2026-09-14
+  prompt-clarity bundle every schema-constrained Portfolio call shows a
+  schema-derived shape template, and the synthesis cites sources by
+  pass-local id, resolved app-side to the persisted URL) — and the app
   re-validates the grammar-required fields and nonblank prose/claim semantics
   before a pass can complete. Every research gap
   persists on the holding audit and contributes typed counts to the run-level
@@ -837,6 +840,17 @@ every stacked runtime confirmation at once.
    beside the full/thin pair (archive format v6, the pre-release v2–v5
    shapes refused) and research-loop retry events name their topic and leg
    — so the wipe before attempt 6 also drops `web_source_state`.
+   The prompt-clarity bundle then merged 2026-09-14 (PR #72, no stamp moved)
+   off a per-call segmentation of the attempt-3–5 thought-logs that put ~85%
+   of attempt 5's re-thinking in the research synthesis call, not the action
+   call — pass-local source-id citations resolved app-side, a dedicated
+   synthesis orientation, schema-derived shape templates on every
+   schema-constrained call, per-holding resolved capital-efficiency facts,
+   validated continuity evidence in the action packet, and bounded original
+   source text for distillation's typed extraction — with tax ruled an
+   optional rationale caveat that never moves the rung, so attempt 6 reads
+   the whole bundle rather than the Finding-5 shape example alone
+   (`docs/verification/2026-09-14-portfolio-prompt-clarity.md`).
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire
