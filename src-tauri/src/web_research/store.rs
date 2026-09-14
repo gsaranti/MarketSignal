@@ -18,9 +18,10 @@
 //! job-partitioned store over these same fetches.
 //!
 //! The source state is the learned layer the fetch telemetry accumulates:
-//! per-domain full-vs-thin recovery counts, the resolved `extractionProfile`,
-//! and the derived **render-first flag** — persisted now, consumed by the
-//! deferred rendered-retrieval tier when that slice lands.
+//! per-domain full-vs-thin recovery counts, the failed and denied (HTTP
+//! 401/403) attempt counts beside them, the resolved `extractionProfile`, and
+//! the derived **render-first flag** — persisted now, consumed by the deferred
+//! rendered-retrieval tier when that slice lands.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -46,7 +47,8 @@ const RENDER_FIRST_THIN_RATIO: f64 = 0.8;
 
 /// Create the web-research tables if absent. Idempotent; called from
 /// `storage::init_schema`. Both tables are exported by data portability
-/// (joined in format v4; the requested/final URL split is format v5): cached
+/// (joined in format v4; the requested/final URL split is format v5; the
+/// failed/denied fetch counters are format v6): cached
 /// documents let an imported corpus's research reuse work offline, and the
 /// source state is learned analytical behavior that does not regenerate
 /// quickly. Import pre-checks mirror the two primary keys.
@@ -86,6 +88,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             host         TEXT PRIMARY KEY,
             full_count   INTEGER NOT NULL,
             thin_count   INTEGER NOT NULL,
+            failed_count INTEGER NOT NULL,
+            denied_count INTEGER NOT NULL,
             profile      TEXT,
             render_first INTEGER NOT NULL,
             updated_at   TEXT NOT NULL
@@ -205,12 +209,36 @@ pub fn prune_expired_documents(conn: &Connection, now: DateTime<Utc>) -> Result<
     Ok(n)
 }
 
+/// One live fetch's outcome for the per-domain telemetry
+/// (`docs/web-research.md §Extraction telemetry`). `Full` / `Thin` are served
+/// pages — the extraction read that derives the profile and render-first flag.
+/// `Denied` is an HTTP 401/403 answer and `Failed` any other failed live
+/// attempt past the app's own guard; both count beside the extraction pair
+/// and neither moves the profile, since a refused or broken fetch says
+/// nothing about how the domain's pages extract. A policy refusal is never
+/// recorded — it is the app's guard, not the source's behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchOutcome {
+    Full,
+    Thin,
+    Denied,
+    Failed,
+}
+
 /// One domain's learned extraction state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceState {
     pub host: String,
     pub full_count: i64,
     pub thin_count: i64,
+    /// Failed live attempts — every error past the app's own policy guard: a
+    /// transport error, an unresolvable host, an HTTP error status, a content
+    /// or redirect bound. The per-domain failed-fetch rate.
+    pub failed_count: i64,
+    /// The `failed_count` subset the source answered HTTP 401/403 — the
+    /// paywall / bot-block read the deferred render tier and Connected
+    /// Sources schedule off.
+    pub denied_count: i64,
     /// The telemetry-resolved profile once samples clear the floor; `None`
     /// while the registry/heuristic default still governs.
     pub profile: Option<ExtractionProfile>,
@@ -219,29 +247,38 @@ pub struct SourceState {
     pub render_first: bool,
 }
 
-/// Record one fetch's extraction outcome for a domain and re-derive its
-/// learned profile + render-first flag (`docs/web-research.md §Extraction
-/// telemetry`).
+/// Record one live fetch's outcome for a domain and re-derive its learned
+/// profile + render-first flag (`docs/web-research.md §Extraction
+/// telemetry`). The profile reads served pages only — a failed attempt has no
+/// extraction to learn from.
 pub fn record_fetch_outcome(
     conn: &Connection,
     host: &str,
-    thin_stub: bool,
+    outcome: FetchOutcome,
     now: DateTime<Utc>,
 ) -> Result<SourceState> {
     let host = super::registry::normalize_host(host);
     let existing = source_state(conn, &host)?;
-    let (mut full, mut thin) = existing
+    let (mut full, mut thin, mut failed, mut denied) = existing
         .as_ref()
-        .map(|s| (s.full_count, s.thin_count))
-        .unwrap_or((0, 0));
-    if thin_stub {
-        thin += 1;
-    } else {
-        full += 1;
+        .map(|s| (s.full_count, s.thin_count, s.failed_count, s.denied_count))
+        .unwrap_or((0, 0, 0, 0));
+    match outcome {
+        FetchOutcome::Full => full += 1,
+        FetchOutcome::Thin => thin += 1,
+        FetchOutcome::Denied => {
+            failed += 1;
+            denied += 1;
+        }
+        FetchOutcome::Failed => failed += 1,
     }
-    let total = full + thin;
-    let thin_ratio = thin as f64 / total as f64;
-    let (profile, render_first) = if total < PROFILE_MIN_SAMPLES {
+    let served = full + thin;
+    let thin_ratio = if served == 0 {
+        0.0
+    } else {
+        thin as f64 / served as f64
+    };
+    let (profile, render_first) = if served < PROFILE_MIN_SAMPLES {
         (None, false)
     } else if thin_ratio >= RENDER_FIRST_THIN_RATIO {
         (Some(ExtractionProfile::JsRequired), true)
@@ -255,12 +292,15 @@ pub fn record_fetch_outcome(
     });
     conn.execute(
         "INSERT OR REPLACE INTO web_source_state
-             (host, full_count, thin_count, profile, render_first, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (host, full_count, thin_count, failed_count, denied_count, profile,
+              render_first, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             host,
             full,
             thin,
+            failed,
+            denied,
             profile_str,
             render_first as i64,
             now.to_rfc3339()
@@ -270,6 +310,8 @@ pub fn record_fetch_outcome(
         host,
         full_count: full,
         thin_count: thin,
+        failed_count: failed,
+        denied_count: denied,
         profile,
         render_first,
     })
@@ -279,7 +321,8 @@ pub fn record_fetch_outcome(
 pub fn source_state(conn: &Connection, host: &str) -> Result<Option<SourceState>> {
     let host = super::registry::normalize_host(host);
     conn.query_row(
-        "SELECT host, full_count, thin_count, profile, render_first
+        "SELECT host, full_count, thin_count, failed_count, denied_count, profile,
+                render_first
          FROM web_source_state WHERE host = ?1",
         params![host],
         |r| {
@@ -287,13 +330,15 @@ pub fn source_state(conn: &Connection, host: &str) -> Result<Option<SourceState>
                 host: r.get(0)?,
                 full_count: r.get(1)?,
                 thin_count: r.get(2)?,
-                profile: match r.get::<_, Option<String>>(3)?.as_deref() {
+                failed_count: r.get(3)?,
+                denied_count: r.get(4)?,
+                profile: match r.get::<_, Option<String>>(5)?.as_deref() {
                     Some("api_or_html") => Some(ExtractionProfile::ApiOrHtml),
                     Some("html") => Some(ExtractionProfile::Html),
                     Some("js_required") => Some(ExtractionProfile::JsRequired),
                     _ => None,
                 },
-                render_first: r.get::<_, i64>(4)? != 0,
+                render_first: r.get::<_, i64>(6)? != 0,
             })
         },
     )
@@ -480,23 +525,55 @@ mod tests {
         let conn = mem_conn();
         let now = at("2026-08-23T00:00:00+00:00");
         // Below the sample floor: no learned profile yet.
-        let s = record_fetch_outcome(&conn, "www.Bloomberg.com", true, now).unwrap();
+        let s = record_fetch_outcome(&conn, "www.Bloomberg.com", FetchOutcome::Thin, now).unwrap();
         assert_eq!(s.host, "bloomberg.com");
         assert_eq!(s.profile, None);
         assert!(!s.render_first);
-        record_fetch_outcome(&conn, "bloomberg.com", true, now).unwrap();
+        record_fetch_outcome(&conn, "bloomberg.com", FetchOutcome::Thin, now).unwrap();
         // Third observation, all thin: profile resolves js_required + render-first.
-        let s = record_fetch_outcome(&conn, "bloomberg.com", true, now).unwrap();
+        let s = record_fetch_outcome(&conn, "bloomberg.com", FetchOutcome::Thin, now).unwrap();
         assert_eq!(s.profile, Some(ExtractionProfile::JsRequired));
         assert!(s.render_first);
         // A healthy full-text run re-derives back toward html.
         for _ in 0..7 {
-            record_fetch_outcome(&conn, "bloomberg.com", false, now).unwrap();
+            record_fetch_outcome(&conn, "bloomberg.com", FetchOutcome::Full, now).unwrap();
         }
         let s = source_state(&conn, "bloomberg.com").unwrap().unwrap();
         assert_eq!(s.profile, Some(ExtractionProfile::Html));
         assert!(!s.render_first);
         assert_eq!(s.full_count, 7);
         assert_eq!(s.thin_count, 3);
+    }
+
+    #[test]
+    fn failed_and_denied_attempts_count_per_domain_without_moving_the_profile() {
+        // Attempt-5 Finding 1: the blocked fetches (17 of 25 on PSX, mostly
+        // HTTP 401/403) counted nowhere per domain — the render-tier and
+        // Connected-Sources scheduling read. A denied answer counts in both
+        // columns, any other failure in `failed_count` alone, and neither is
+        // a served-page sample for the profile.
+        let conn = mem_conn();
+        let now = at("2026-09-14T00:00:00+00:00");
+        let s = record_fetch_outcome(&conn, "www.Reuters.com", FetchOutcome::Denied, now).unwrap();
+        assert_eq!(s.host, "reuters.com");
+        assert_eq!((s.failed_count, s.denied_count), (1, 1));
+        let s = record_fetch_outcome(&conn, "reuters.com", FetchOutcome::Failed, now).unwrap();
+        assert_eq!((s.failed_count, s.denied_count), (2, 1));
+        assert_eq!((s.full_count, s.thin_count), (0, 0));
+        assert_eq!(s.profile, None, "no served page, no learned profile");
+        assert!(!s.render_first);
+        // Three thin pages still resolve js_required: the failures are not
+        // thin samples and do not dilute the ratio either.
+        for _ in 0..3 {
+            record_fetch_outcome(&conn, "reuters.com", FetchOutcome::Thin, now).unwrap();
+        }
+        let s = source_state(&conn, "reuters.com").unwrap().unwrap();
+        assert_eq!(s.profile, Some(ExtractionProfile::JsRequired));
+        assert!(s.render_first);
+        assert_eq!(
+            (s.failed_count, s.denied_count),
+            (2, 1),
+            "the attempt counters persist beside the extraction pair"
+        );
     }
 }

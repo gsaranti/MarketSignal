@@ -183,6 +183,9 @@ Trade Opportunities' placement — per candidate, after its Step-5d topics — i
 **Extraction telemetry.**
 The fetch layer tracks, per domain, how often it recovers full article text vs a thin paywall / JS stub (the same telemetry stance as the report's document-truncation tracking).
 This feeds two things: a domain's `extractionProfile` in the registry, and the **health test** that decides whether a connected subscription is actually yielding value (below) — so a source that renders poorly through a non-browser fetch is never silently trusted as if it did.
+It also counts, per domain, every live attempt that failed past the app's own guard — a transport error, an unresolvable host, an HTTP error status, a content or redirect bound — and, within that, the attempts the source answered HTTP 401 or 403, the paywall / bot-block read.
+A policy refusal (scheme, deny list, a non-public address) never reached the source and is not its record.
+The failed and denied counts sit beside the full / thin pair and never enter the profile or render-first derivation, which reads served pages only: a refused fetch says nothing about how the domain's pages extract.
 
 ## Connected sources (authenticated fetch)
 

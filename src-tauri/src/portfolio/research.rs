@@ -831,7 +831,16 @@ impl ResearchWeb for LiveResearchWeb {
                 return Ok((page, true));
             }
         }
-        let page = crate::web_research::fetch::PageFetcher::fetch(&self.fetcher, url)?;
+        let page = match crate::web_research::fetch::PageFetcher::fetch(&self.fetcher, url) {
+            Ok(page) => page,
+            Err(err) => {
+                // A failed live attempt is the source's record too (attempt-5
+                // Finding 1: the blocked fetches counted nowhere per domain).
+                let conn = self.conn.lock().unwrap();
+                record_failed_fetch(&conn, url, &err, now);
+                return Err(err);
+            }
+        };
         // Cache + telemetry are best-effort: losing a write costs a repeat
         // fetch or a telemetry sample, never the research.
         {
@@ -839,16 +848,48 @@ impl ResearchWeb for LiveResearchWeb {
             if let Err(e) = crate::web_research::store::put_document(&conn, url, &page) {
                 eprintln!("web document cache write failed for {url}: {e}");
             }
+            let outcome = if page.thin_stub {
+                crate::web_research::store::FetchOutcome::Thin
+            } else {
+                crate::web_research::store::FetchOutcome::Full
+            };
             if let Err(e) = crate::web_research::store::record_fetch_outcome(
                 &conn,
                 &page.host,
-                page.thin_stub,
+                outcome,
                 now,
             ) {
                 eprintln!("web source-state write failed for {}: {e}", page.host);
             }
         }
         Ok((page, false))
+    }
+}
+
+/// Per-domain telemetry for a failed live fetch (`docs/web-research.md
+/// §Extraction telemetry`): an HTTP 401/403 answer counts as denied, any other
+/// failure past the app's own guard as failed, and a policy refusal — which
+/// never reached the source — is not the source's record. Keyed by the
+/// requested host, the one a failed attempt can name. Best-effort like the
+/// served-page write: a lost sample never costs the research.
+fn record_failed_fetch(
+    conn: &rusqlite::Connection,
+    url: &str,
+    err: &anyhow::Error,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    use crate::web_research::fetch::{failure_of, requested_host, FetchFailure};
+    use crate::web_research::store::FetchOutcome;
+    let outcome = match failure_of(err) {
+        Some(FetchFailure::Policy) => return,
+        Some(FetchFailure::Http(401 | 403)) => FetchOutcome::Denied,
+        _ => FetchOutcome::Failed,
+    };
+    let Some(host) = requested_host(url) else {
+        return;
+    };
+    if let Err(e) = crate::web_research::store::record_fetch_outcome(conn, &host, outcome, now) {
+        eprintln!("web source-state write failed for {host}: {e}");
     }
 }
 
@@ -1073,6 +1114,18 @@ pub struct ResearchRunner<'a> {
     pub step_label: String,
 }
 
+/// The stage a research-loop retry event carries (`docs/local-models.md §The
+/// local-model adapter seam`): the holding's tracker step, then the topic and
+/// the leg — `gathering` (a tool turn) or `synthesis` (the grammar-only
+/// findings call, its parse re-issue included) — so a fired retry is
+/// attributable to the topic it failed on, not only the holding (attempt-5
+/// Finding 5, `docs/verification/2026-09-01-big-run-attempt-5-findings.md`:
+/// the bare holding stage left the parse-retry ↔ dropped-topic link a
+/// per-holding co-occurrence).
+fn research_retry_stage(step_label: &str, topic_key: &str, leg: &str) -> String {
+    format!("{step_label} research {topic_key} {leg}")
+}
+
 /// Everything a pass needs beyond the runner: the holding brief, the topic,
 /// the seed, and the loop-known seed IDs.
 struct PassContext<'a> {
@@ -1293,6 +1346,7 @@ impl ResearchRunner<'_> {
         // history, fetch, or wall-clock bound is reached — then synthesis writes
         // up whatever landed.
         let mut turns = 0u32;
+        let gathering_stage = research_retry_stage(&self.step_label, &ctx.topic.key, "gathering");
         'gather: loop {
             if self.progress.is_cancelled() {
                 bail!("research cancelled");
@@ -1328,7 +1382,7 @@ impl ResearchRunner<'_> {
             // (`docs/local-models.md §The local-model adapter seam`).
             let resp = match self.model.research_turn(&messages, Some(&tools), None) {
                 Ok(resp) => resp,
-                Err(first) if self.model.retry_permitted(&self.step_label, &first) => self
+                Err(first) if self.model.retry_permitted(&gathering_stage, &first) => self
                     .model
                     .research_turn(&messages, Some(&tools), None)
                     .map_err(|e| e.context(crate::local_model::retried_once_annotation(&first)))
@@ -1480,6 +1534,7 @@ impl ResearchRunner<'_> {
         gaps: &mut Vec<String>,
     ) -> Result<(FindingsWire, std::collections::HashSet<String>)> {
         let schema = findings_schema();
+        let stage = research_retry_stage(&self.step_label, &ctx.topic.key, "synthesis");
         let mut shown = std::collections::HashSet::new();
         let messages = vec![
             ChatMessage::system(synthesis_system_prompt()),
@@ -1502,7 +1557,7 @@ impl ResearchRunner<'_> {
             }
             let resp = match self.model.research_turn(&messages, None, Some(&schema)) {
                 Ok(resp) => resp,
-                Err(first) if self.model.retry_permitted(&self.step_label, &first) => self
+                Err(first) if self.model.retry_permitted(&stage, &first) => self
                     .model
                     .research_turn(&messages, None, Some(&schema))
                     .map_err(|e| e.context(crate::local_model::retried_once_annotation(&first)))
@@ -1521,7 +1576,7 @@ impl ResearchRunner<'_> {
             match parsed {
                 Ok(wire) => return Ok((wire, shown)),
                 Err(err) => {
-                    if !findings_retry_used && self.model.retry_permitted(&self.step_label, &err) {
+                    if !findings_retry_used && self.model.retry_permitted(&stage, &err) {
                         findings_retry_used = true;
                         continue;
                     }
@@ -2424,6 +2479,41 @@ mod tests {
         chrono::DateTime::parse_from_rfc3339(s)
             .unwrap()
             .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn a_failed_live_fetch_counts_against_its_requested_host() {
+        // Attempt-5 Finding 1: 17 of PSX's 25 fetch attempts failed, almost all
+        // HTTP 401/403, and none of them reached the per-domain telemetry the
+        // render tier and Connected Sources schedule off — only served pages
+        // did. Every non-policy failure now counts, 401/403 as denied.
+        use crate::web_research::fetch::FetchFailure;
+        use crate::web_research::store::source_state;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::web_research::store::init_schema(&conn).unwrap();
+        let now = chrono::Utc::now();
+        let url = "https://www.Reuters.com/business/widget";
+        let denied = anyhow::Error::new(FetchFailure::Http(403))
+            .context("fetch of https://www.reuters.com/business/widget returned HTTP 403");
+        record_failed_fetch(&conn, url, &denied, now);
+        let unauthorized = anyhow::Error::new(FetchFailure::Http(401)).context("HTTP 401");
+        record_failed_fetch(&conn, url, &unauthorized, now);
+        let server_error = anyhow::Error::new(FetchFailure::Http(503)).context("HTTP 503");
+        record_failed_fetch(&conn, url, &server_error, now);
+        let transport = anyhow::anyhow!("fetching https://reuters.com/x: connection reset");
+        record_failed_fetch(&conn, url, &transport, now);
+        // The app's own guard never reached the source: not its record.
+        let policy = anyhow::Error::new(FetchFailure::Policy).context("fetch blocked: deny list");
+        record_failed_fetch(&conn, url, &policy, now);
+        let s = source_state(&conn, "reuters.com")
+            .unwrap()
+            .expect("keyed by the normalized requested host");
+        assert_eq!((s.full_count, s.thin_count), (0, 0));
+        assert_eq!(s.failed_count, 4, "every non-policy failure");
+        assert_eq!(s.denied_count, 2, "the 401/403 subset");
+        // An unparseable URL has no host to charge; nothing is written.
+        record_failed_fetch(&conn, "not a url", &anyhow::anyhow!("parsing"), now);
+        assert!(source_state(&conn, "not a url").unwrap().is_none());
     }
 
     #[test]
@@ -4217,6 +4307,88 @@ mod tests {
             .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
             .unwrap();
         assert_eq!(out.topics.len(), 1, "the retried turn completed the pass");
+    }
+
+    #[test]
+    fn a_fired_research_retry_names_its_topic_and_leg() {
+        // Attempt-5 Finding 5: the retry gate must be handed a stage naming the
+        // topic and the leg — a gathering turn or the synthesis call — so a
+        // persisted "content failed its parse" event correlates with the topic
+        // that dropped at reconciliation, not only with the holding.
+        struct StageRecorder {
+            inner: ScriptModel,
+            fail_first: Mutex<RefCell<bool>>,
+            stages: Mutex<RefCell<Vec<String>>>,
+        }
+        impl ResearchModel for StageRecorder {
+            fn research_turn(
+                &self,
+                messages: &[ChatMessage],
+                tools: Option<&Value>,
+                format: Option<&Value>,
+            ) -> Result<ChatResponse> {
+                {
+                    let guard = self.fail_first.lock().unwrap();
+                    let mut flag = guard.borrow_mut();
+                    if *flag {
+                        *flag = false;
+                        return Err(anyhow::Error::new(
+                            crate::local_model::RetryClass::DaemonStatus,
+                        )
+                        .context("local model returned 502"));
+                    }
+                }
+                self.inner.research_turn(messages, tools, format)
+            }
+            fn retry_permitted(&self, stage: &str, err: &anyhow::Error) -> bool {
+                self.stages
+                    .lock()
+                    .unwrap()
+                    .borrow_mut()
+                    .push(stage.to_string());
+                crate::local_model::retry_class(err).is_some()
+            }
+        }
+        let model = StageRecorder {
+            inner: ScriptModel::new(vec![
+                // The first gathering turn fails transient (re-issued), then
+                // the first synthesis body fails its parse (re-issued).
+                gather_done(),
+                findings_turn(json!({})),
+                findings_turn(simple_findings("https://reuters.com/widget")),
+                gather_done(),
+                disconfirm_findings(),
+            ]),
+            fail_first: Mutex::new(RefCell::new(true)),
+            stages: Mutex::new(RefCell::new(Vec::new())),
+        };
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 10,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &ctx,
+            step_label: "holding-WID".into(),
+        };
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+        assert_eq!(out.topics.len(), 1, "both retries recovered the pass");
+        let stages = model.stages.lock().unwrap().borrow().clone();
+        assert_eq!(
+            stages,
+            vec![
+                "holding-WID research competitive-position gathering",
+                "holding-WID research competitive-position synthesis",
+            ],
+            "the holding step, then the topic and the leg"
+        );
     }
 
     /// A model that fails (marked transient) on scripted issued-call indices,

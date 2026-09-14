@@ -55,10 +55,15 @@ use crate::storage;
 /// shapes were pre-release formats no shipped build wrote; import refuses them
 /// outright (`check_format_version`, ruled 2026-08-29).
 /// v5 (redirect-cache slice): `web_documents.url` became the requested-URL key
-/// and the post-redirect `final_url` joined separately. New builds import v4 by
-/// treating its one URL as both values; the bump makes older builds reject v5
-/// instead of silently misreading requested-URL provenance as final.
-pub const FORMAT_VERSION: u32 = 5;
+/// and the post-redirect `final_url` joined separately; the bump made older
+/// builds reject v5 instead of silently misreading requested-URL provenance
+/// as final.
+/// v6 (attempt-5 telemetry slice): `web_source_state` gained the per-domain
+/// `failed_count` / `denied_count` fetch-attempt counters. Every pre-release
+/// shape below it — v2 through v5, none of which a shipped build wrote — is
+/// refused outright (`check_format_version`, the 2026-08-29 no-compat ruling),
+/// so the v4 single-URL import rung retired with them.
+pub const FORMAT_VERSION: u32 = 6;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -104,7 +109,7 @@ const DB_ENTRY_NAMES: [&str; 11] = [
 /// closed set (`docs/data-portability.md` §Import flow): a v1 archive — the
 /// shipped build's format — predates the quick-check store, so it is complete
 /// at five entries; requiring the current format's entries of it would refuse
-/// it as truncated. The v2 and v3 shapes were pre-release dev formats no
+/// it as truncated. The v2 through v5 shapes were pre-release dev formats no
 /// shipped build wrote and are refused at [`check_format_version`] (ruled
 /// 2026-08-29 — no data compat pre-release).
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
@@ -240,10 +245,8 @@ struct PriceBarRow {
 struct WebDocumentRow {
     /// Normalized requested-URL cache key.
     url: String,
-    /// Normalized post-redirect provenance. Optional on an archive written by
-    /// the original v4 shape, where `url` represented both values.
-    #[serde(default)]
-    final_url: Option<String>,
+    /// Normalized post-redirect provenance.
+    final_url: String,
     host: String,
     retrieved_at: String,
     title: String,
@@ -253,12 +256,15 @@ struct WebDocumentRow {
 }
 
 /// One web-research source-state row on the wire: a domain's learned
-/// extraction telemetry (full-vs-thin counts, resolved profile, render-first).
+/// extraction telemetry (full-vs-thin counts, the failed / denied attempt
+/// counts, resolved profile, render-first).
 #[derive(Debug, Serialize, Deserialize)]
 struct WebSourceStateRow {
     host: String,
     full_count: i64,
     thin_count: i64,
+    failed_count: i64,
+    denied_count: i64,
     profile: Option<String>,
     render_first: bool,
     updated_at: String,
@@ -867,7 +873,7 @@ pub fn import_archive(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 row.url,
-                row.final_url.as_deref().unwrap_or(&row.url),
+                row.final_url,
                 row.host,
                 row.retrieved_at,
                 row.title,
@@ -879,13 +885,16 @@ pub fn import_archive(
     }
     for row in &web_source_state_rows {
         tx.execute(
-            "INSERT INTO web_source_state (host, full_count, thin_count, profile,
-                                           render_first, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO web_source_state (host, full_count, thin_count, failed_count,
+                                           denied_count, profile, render_first,
+                                           updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 row.host,
                 row.full_count,
                 row.thin_count,
+                row.failed_count,
+                row.denied_count,
                 row.profile,
                 row.render_first as i64,
                 row.updated_at
@@ -1081,7 +1090,8 @@ fn read_web_document_rows(conn: &Connection) -> Result<Vec<WebDocumentRow>> {
 
 fn read_web_source_state_rows(conn: &Connection) -> Result<Vec<WebSourceStateRow>> {
     let mut stmt = conn.prepare(
-        "SELECT host, full_count, thin_count, profile, render_first, updated_at
+        "SELECT host, full_count, thin_count, failed_count, denied_count, profile,
+                render_first, updated_at
          FROM web_source_state ORDER BY host",
     )?;
     let rows = stmt
@@ -1090,9 +1100,11 @@ fn read_web_source_state_rows(conn: &Connection) -> Result<Vec<WebSourceStateRow
                 host: r.get(0)?,
                 full_count: r.get(1)?,
                 thin_count: r.get(2)?,
-                profile: r.get(3)?,
-                render_first: r.get::<_, i64>(4)? != 0,
-                updated_at: r.get(5)?,
+                failed_count: r.get(3)?,
+                denied_count: r.get(4)?,
+                profile: r.get(5)?,
+                render_first: r.get::<_, i64>(6)? != 0,
+                updated_at: r.get(7)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1189,7 +1201,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 2 | 3) {
+    if matches!(manifest.format_version, 2..=5) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -1415,17 +1427,6 @@ mod tests {
     use super::*;
     use crate::vector_memory::embedding_to_blob;
 
-    #[test]
-    fn original_v4_web_document_rows_default_the_missing_final_url() {
-        let row: WebDocumentRow = serde_json::from_str(
-            r#"{"url":"https://reuters.com/a","host":"reuters.com",
-                "retrieved_at":"2026-08-20T12:00:00+00:00","title":"t",
-                "text":"body","extraction_quality":0.9,"thin_stub":false}"#,
-        )
-        .unwrap();
-        assert_eq!(row.final_url, None);
-    }
-
     /// A provisioned empty store under a temp dir (guard returned to keep it
     /// alive), mirroring `pipeline`'s tempdir-not-`:memory:` test pattern.
     fn temp_store() -> (tempfile::TempDir, ReportPaths) {
@@ -1527,9 +1528,11 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO web_source_state (host, full_count, thin_count, profile,
-                                           render_first, updated_at)
-             VALUES ('bloomberg.com', 0, 3, 'js_required', 1, '2026-07-06T10:00:00+00:00')",
+            "INSERT INTO web_source_state (host, full_count, thin_count, failed_count,
+                                           denied_count, profile, render_first,
+                                           updated_at)
+             VALUES ('bloomberg.com', 0, 3, 2, 1, 'js_required', 1,
+                     '2026-07-06T10:00:00+00:00')",
             [],
         )
         .unwrap();
@@ -1693,16 +1696,17 @@ mod tests {
         assert_eq!(final_url, "https://reuters.com/widget");
         assert_eq!(retrieved_at, "2026-07-06T10:00:00+00:00");
         assert_eq!(thin, 0);
-        let (profile, render_first): (String, i64) = conn
+        let (profile, render_first, failed, denied): (String, i64, i64, i64) = conn
             .query_row(
-                "SELECT profile, render_first FROM web_source_state
-                 WHERE host = 'bloomberg.com'",
+                "SELECT profile, render_first, failed_count, denied_count
+                 FROM web_source_state WHERE host = 'bloomberg.com'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
         assert_eq!(profile, "js_required");
         assert_eq!(render_first, 1);
+        assert_eq!((failed, denied), (2, 1), "the v6 attempt counters round-trip");
         let seed_vintage: String = conn
             .query_row(
                 "SELECT vintage FROM portfolio_research_seeds
@@ -1752,52 +1756,6 @@ mod tests {
         );
         // Import never touches app_settings — the target's stays empty.
         assert_eq!(table_count(&target, "app_settings"), 0);
-    }
-
-    #[test]
-    fn a_v4_archive_imports_its_single_url_as_key_and_provenance() {
-        let (_a, source) = temp_store();
-        seed_store(&source);
-        let exported = source.db_path.parent().unwrap().join("export-v5.zip");
-        export_archive(&source, &exported, None, None).unwrap();
-
-        let mut entries = read_archive_entries(&exported);
-        let original = String::from_utf8(entries["db/web_documents.ndjson"].clone()).unwrap();
-        let mut old_rows = String::new();
-        for line in original.lines().filter(|line| !line.trim().is_empty()) {
-            let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
-            let final_url = row["final_url"].as_str().unwrap().to_string();
-            row.as_object_mut().unwrap().remove("final_url");
-            row["url"] = serde_json::Value::String(final_url);
-            old_rows.push_str(&serde_json::to_string(&row).unwrap());
-            old_rows.push('\n');
-        }
-        replace_entry_rechecksummed(
-            &mut entries,
-            "db/web_documents.ndjson",
-            old_rows.into_bytes(),
-        );
-        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        manifest.format_version = 4;
-        entries.insert(
-            "manifest.json".to_string(),
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        );
-        let old_archive = source.db_path.parent().unwrap().join("import-v4.zip");
-        rebuild_zip(&entries, &old_archive);
-
-        let (_b, target) = temp_store();
-        import_archive(&target, &old_archive, None, false).unwrap();
-        let conn = storage::open(&target.db_path).unwrap();
-        let (key, final_url): (String, String) = conn
-            .query_row(
-                "SELECT url, final_url FROM web_documents",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(key, "https://reuters.com/widget");
-        assert_eq!(final_url, key);
     }
 
     #[test]
@@ -2263,7 +2221,7 @@ mod tests {
         export_archive(&source, &dest, None, None).unwrap();
 
         // Drop the entries introduced in v4 and their listings. Under the
-        // archive's own current (v5) version that is truncation and must refuse…
+        // archive's own current (v6) version that is truncation and must refuse…
         let mut entries = read_archive_entries(&dest);
         for name in [
             "db/web_documents.ndjson",
@@ -2285,7 +2243,7 @@ mod tests {
             "manifest.json".to_string(),
             serde_json::to_vec_pretty(&manifest).unwrap(),
         );
-        let truncated = source.db_path.parent().unwrap().join("truncated-v5.zip");
+        let truncated = source.db_path.parent().unwrap().join("truncated-v6.zip");
         rebuild_zip(&entries, &truncated);
         let (_b, target) = temp_store();
         let err = import_archive(&target, &truncated, None, false).unwrap_err();
@@ -2304,6 +2262,33 @@ mod tests {
         let err = import_archive(&target, &v3_path, None, false).unwrap_err();
         assert!(err.to_string().contains("pre-release format"), "{err}");
         assert_eq!(table_count(&target, "reports"), 0, "nothing imported");
+    }
+
+    #[test]
+    fn v4_and_v5_stamps_are_refused_as_pre_release_formats() {
+        // The single-URL (v4) and pre-counter (v5) shapes were pre-release
+        // formats no shipped build wrote (ruled 2026-08-29): a complete current
+        // export re-stamped either way is refused outright, never read through
+        // a compat rung.
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+        let mut entries = read_archive_entries(&dest);
+        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        for version in [4, 5] {
+            manifest.format_version = version;
+            entries.insert(
+                "manifest.json".to_string(),
+                serde_json::to_vec_pretty(&manifest).unwrap(),
+            );
+            let path = source.db_path.parent().unwrap().join(format!("v{version}.zip"));
+            rebuild_zip(&entries, &path);
+            let (_b, target) = temp_store();
+            let err = import_archive(&target, &path, None, false).unwrap_err();
+            assert!(err.to_string().contains("pre-release format"), "v{version}: {err}");
+            assert_eq!(table_count(&target, "reports"), 0, "nothing imported");
+        }
     }
 
     #[test]

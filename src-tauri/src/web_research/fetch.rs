@@ -28,6 +28,50 @@ use reqwest::Url;
 
 use super::registry::{self, SourcePolicy};
 
+/// Why a live fetch failed, typed so the per-domain telemetry counts what the
+/// *source* did without parsing error text (`docs/web-research.md §Extraction
+/// telemetry`). `Policy` is the app's own guard — scheme, deny list, a
+/// non-public address — which never reaches the network and is never the
+/// source's record; `Http` is the source's own answer (401/403 read as
+/// denied). Anything unmarked — a transport error, an unresolvable host, the
+/// content-type or redirect-cap bound — is a plain failed attempt. Attached at
+/// the root of the error chain; read back through [`failure_of`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchFailure {
+    Policy,
+    Http(u16),
+}
+
+impl std::fmt::Display for FetchFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Policy => f.write_str("blocked by the fetch policy"),
+            Self::Http(status) => write!(f, "HTTP {status}"),
+        }
+    }
+}
+
+impl std::error::Error for FetchFailure {}
+
+/// The typed failure at the root of a fetch error's chain, if any.
+pub fn failure_of(err: &anyhow::Error) -> Option<FetchFailure> {
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<FetchFailure>().copied())
+}
+
+fn policy_err(message: String) -> anyhow::Error {
+    anyhow::Error::new(FetchFailure::Policy).context(message)
+}
+
+/// The normalized host a fetch was requested against — the telemetry key for
+/// a failed attempt, which has no served page (and so no post-redirect host)
+/// to name one. `None` for an unparseable or host-less URL.
+pub fn requested_host(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    Some(registry::normalize_host(host))
+}
+
 /// Per-fetch timeout. A research fetch is one page, not a bulk pull; anything
 /// slower is treated as unreachable and degrades fail-soft.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -188,7 +232,9 @@ fn resolve_public(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
             continue;
         }
         if let Some(reason) = non_public_reason(addr.ip()) {
-            bail!("fetch blocked: {host} resolves to a {reason}");
+            return Err(policy_err(format!(
+                "fetch blocked: {host} resolves to a {reason}"
+            )));
         }
     }
     Ok(addrs)
@@ -199,7 +245,11 @@ fn resolve_public(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
 fn validate_url(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
     match url.scheme() {
         "http" | "https" => {}
-        other => bail!("fetch blocked: scheme {other:?} is not allowed"),
+        other => {
+            return Err(policy_err(format!(
+                "fetch blocked: scheme {other:?} is not allowed"
+            )))
+        }
     }
     resolve_public(url, allow_loopback)
 }
@@ -214,14 +264,16 @@ pub fn check_url_policy(url_str: &str) -> Result<()> {
     let url = Url::parse(url_str).with_context(|| format!("unparseable URL {url_str:?}"))?;
     match url.scheme() {
         "http" | "https" => {}
-        other => bail!("blocked: scheme {other:?} is not allowed"),
+        other => return Err(policy_err(format!("blocked: scheme {other:?} is not allowed"))),
     }
     let host = url.host_str().context("URL carries no host")?;
     if let SourcePolicy::Deny(reason) = registry::assess(host) {
-        bail!("blocked: {host} is on the deny list ({reason})");
+        return Err(policy_err(format!(
+            "blocked: {host} is on the deny list ({reason})"
+        )));
     }
     if let Some(reason) = literal_host(&url).and_then(non_public_reason) {
-        bail!("blocked: {host} is a {reason}");
+        return Err(policy_err(format!("blocked: {host} is a {reason}")));
     }
     Ok(())
 }
@@ -292,7 +344,9 @@ impl HttpPageFetcher {
             // a redirect landed on it.
             let host = url.host_str().unwrap_or_default();
             if let SourcePolicy::Deny(reason) = registry::assess(host) {
-                bail!("fetch blocked: {host} is on the deny list ({reason})");
+                return Err(policy_err(format!(
+                    "fetch blocked: {host} is on the deny list ({reason})"
+                )));
             }
             let addrs = validate_url(&url, self.allow_loopback)?;
             let client = reqwest::blocking::Client::builder()
@@ -325,7 +379,8 @@ impl HttpPageFetcher {
                 continue;
             }
             if !status.is_success() {
-                bail!("fetch of {url} returned HTTP {}", status.as_u16());
+                return Err(anyhow::Error::new(FetchFailure::Http(status.as_u16()))
+                    .context(format!("fetch of {url} returned HTTP {}", status.as_u16())));
             }
             // Content-type bound: HTML/text only — a research fetch reads
             // documents, never binaries.
@@ -590,9 +645,32 @@ mod tests {
         let fetcher = HttpPageFetcher::allowing_loopback();
         let err = fetcher
             .fetch(&format!("{}nope", server.base_url))
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        // The status rides the chain typed, so the per-domain telemetry can
+        // count a denied answer without parsing the message.
+        assert_eq!(failure_of(&err), Some(FetchFailure::Http(403)), "{err:#}");
+        let err = err.to_string();
         assert!(err.contains("HTTP 403"), "{err}");
+    }
+
+    #[test]
+    fn policy_refusals_are_typed_and_the_requested_host_keys_a_failure() {
+        // The app's own guard marks itself `Policy` so a refusal is never
+        // charged to the source's telemetry; the requested host is the key a
+        // failed attempt (no page, no post-redirect host) can still name.
+        let err = check_url_policy("https://stockinvest.us/x").unwrap_err();
+        assert_eq!(failure_of(&err), Some(FetchFailure::Policy), "{err:#}");
+        let err = check_url_policy("http://192.168.1.10/admin").unwrap_err();
+        assert_eq!(failure_of(&err), Some(FetchFailure::Policy), "{err:#}");
+        let fetcher = HttpPageFetcher::allowing_loopback();
+        let err = fetcher.fetch("ftp://example.com/x").unwrap_err();
+        assert_eq!(failure_of(&err), Some(FetchFailure::Policy), "{err:#}");
+        assert_eq!(failure_of(&anyhow::anyhow!("connection reset")), None);
+        assert_eq!(
+            requested_host("https://www.Reuters.com/business/widget").as_deref(),
+            Some("reuters.com")
+        );
+        assert_eq!(requested_host("not a url"), None);
     }
 
     #[test]

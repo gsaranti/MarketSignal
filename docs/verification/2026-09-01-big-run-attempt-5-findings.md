@@ -75,6 +75,16 @@ fetch, but it is the extraction-telemetry signal the deferred rendered-retrieval
 tier's scheduling reads, so the per-domain thin-stub and failed-fetch rates are a
 quantify-across-the-book action rather than a defect.
 
+Fix landed 2026-09-14: the per-domain telemetry had counted served pages only —
+the fetch's error path returned before the source-state write — so the
+failed-fetch rate above existed nowhere per domain.
+`web_source_state` now counts every failed live attempt past the app's own guard
+(`failed_count`) and the HTTP 401/403 subset (`denied_count`) against the
+requested host, policy refusals excluded and the profile / render-first
+derivation untouched; the archive format moved to v6 with the two columns.
+The attempt-6 wipe must drop the table so the new columns exist
+(`big-run-watch-set.md`, intro).
+
 ## Finding 2 — Ledger `quant` population: does not reproduce on TSLA (interim)
 
 TSLA's persisted `verdict.thesis_ledger` carries structured conditions with a
@@ -231,6 +241,11 @@ The quantify-across-the-book action above now sits in `big-run-watch-set.md` §T
 research loop.
 The 6d distillation prompts were left untouched so attempt 6's unreconciled-topic
 read attributes to this one change.
+Also landed 2026-09-14: a research-loop retry event now names the holding step,
+the topic, and the leg (`holding-PSX research narrative-sentiment synthesis`)
+instead of the bare holding step, so attempt 6 reads the parse-retry ↔
+unreconciled-topic link per topic rather than as the per-holding co-occurrence
+this record could establish; no stamp moved.
 
 ## Finding 6 — Fund path: first clean priced and role/risk reads (new)
 

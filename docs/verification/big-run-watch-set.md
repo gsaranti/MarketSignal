@@ -11,6 +11,8 @@ The live attempts between ran earlier stamps to early cancellation, none to comp
 The observation-admission-stamp slice (Codex I20) moved the checkpoint format stamp to `checkpoint-v3`; the required period span moved it to `checkpoint-v4`; the quick-check carried-tail evaluation stamp moved it to `checkpoint-v5`; the raw fiscal-period consensus rows moved it to `checkpoint-v6`; the corrected Schwab cash-position reconciliation moved it to `checkpoint-v7` so an older pinned denominator cannot resume.
 The local suite's move to SearXNG-only then removed the Tavily-fallback route witness (`tavily_fallback_used`) from a completed holding's research audit, moving the stamp to `checkpoint-v8` so an attempt-3 `checkpoint-v7` trail is refused at the resume gate.
 The dev store is wiped before this run (ruled 2026-08-29), so every holding is a debut: no prior verdict exists, and nothing that reads against one — the retrospective, the input delta, the ledger evaluation and its crossings, the what-changed audit, the parameter-boundary NOTE, the statement-basis and equity-source gates, episode extension — can fire on run 1.
+The wipe must also drop `web_source_state`: its failed / denied fetch counters (attempt-5 Finding 1) are columns on a create-if-absent table, so a row-delete wipe leaves the old shape and every telemetry write then fails soft, silently, for the whole run.
+`PRAGMA table_info(web_source_state)` at bring-up is the check; the app recreates the table on start.
 The quick check is the exception: it runs between runs against run 1's own persisted comparators, so its first sweep is a run-1 watch (the oracle under §Thesis ledger and the quick check).
 The items below that read against a prior are therefore run-2 watches, and a second run follows only on the user's decision after run 1's result.
 Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime), the sub-distillation-cap watch (§The research loop), and the one-month cap-saturation watch (§Grade, valuation and targets).
@@ -103,7 +105,7 @@ What the run measures is how often each binds, and what the seed's fixed drop or
 Any gathering-input-bound or per-turn-call-cap event must appear as a partial-coverage research gap and still produce the pass's fresh synthesis; no issued gathering request may rely on daemon-side head truncation, and a synthesis under a large cache-hit burst must retain usable body-bearing sources rather than spend the packet on headers that are later omitted.
 The run-level data-health counts must equal the completed audits' research-gap totals and affected-holding count, so those partial-coverage events are visible on the Portfolio roll-up rather than audit-only.
 No empty, structurally incomplete, or semantically blank findings object may land as a completed pass; each must enter the bounded `SchemaParse` re-issue or fail its holding after that bound, and the prompt-size observation for a gathering turn must include its assistant tool calls and tool schema rather than visible message text alone.
-The Finding-5 synthesis-shape prompt clarity (introduced under `portfolio-v35`, its debut): count `unreconciled_topics` across completed holdings, read whether they cluster on the confusion-prone thin-evidence topics (narrative-sentiment, disconfirming), and correlate each against the holding's `model_retries` "content failed its parse" events.
+The Finding-5 synthesis-shape prompt clarity (introduced under `portfolio-v35`, its debut): count `unreconciled_topics` across completed holdings, read whether they cluster on the confusion-prone thin-evidence topics (narrative-sentiment, disconfirming), and correlate each against the holding's `model_retries` "content failed its parse" events, which now name the topic and the leg (`… research <topic> synthesis`), so the read is per topic rather than a per-holding co-occurrence.
 A cluster on those topics, or a tight correlation with the parse retries, is the evidence that format confusion was causing topic loss.
 A scattered, retry-independent residual is the distillation-reconciliation miss the gap mechanism already expects.
 The synthesis reasoning stream should no longer show the model resolving the output format ("JSON or Markdown?") before planning its content — the attempt-5 PSX tell.
@@ -120,6 +122,7 @@ Read that gap line's tail — `its prior object rides the reduce retained on its
 
 Extraction telemetry — the deferred rendered-retrieval tier's scheduling evidence.
 Per-domain thin-stub and `extraction_quality` rates decide whether and where a render tier earns its slice, so the run record's disposition reads them deliberately, not incidentally.
+Read the per-domain `failed_count` and `denied_count` on `web_source_state` beside them (attempt-5 Finding 1): the denied share is the paywall / bot-block evidence the render tier and Connected Sources each schedule off, and a domain failing without denials is a dead or flaky source rather than a render case.
 
 The three 2026-08-24 ruling watches — the shadow evidence the promotion decisions read.
 Shadow-assumption resolutions: inspect each would-have audit line against its cited pages.

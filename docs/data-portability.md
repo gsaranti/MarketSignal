@@ -35,7 +35,7 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | `portfolio_outcome_episodes` | Outcome-learning decision episodes (format v3) — calibration state that outlives the 30-run retention; an aged-out anchor run cannot regenerate its episodes. |
 | `price_bars` | The shared price-bar cache (format v3) — public price data, carried so imported pending episodes can mature offline rather than refetching a year of bars. |
 | `web_documents` | The shared web-research document cache (joined in format v4; requested/final URL split in format v5), including each normalized requested-URL key and its separate post-redirect final URL so imported repeat fetches preserve both cache hits and provenance. |
-| `web_source_state` | The shared web-research extraction telemetry (format v4) — learned full/thin counts, extraction profile, and render-first state. |
+| `web_source_state` | The shared web-research extraction telemetry (joined in format v4; the failed / denied fetch-attempt counters joined in format v6) — learned full/thin counts, the failed and denied attempt counts, extraction profile, and render-first state. |
 | `portfolio_research_seeds` | Portfolio's per-symbol, per-topic distilled research seeds (format v4), which survive run retention and cannot be rebuilt from the document cache alone. |
 
 **Exported — filesystem stores:**
@@ -137,7 +137,7 @@ The **Import** action in the same Settings section:
 2. If the container is encrypted, it decrypts with the Data section's shared passphrase field; absent or wrong, import stops with a typed error asking for it (no dedicated prompt dialog — retrying reopens the picker).
 3. Read and validate the manifest: reject a format version newer than this build understands; verify every entry's size + checksum, and never consume bytes the manifest doesn't list.
    Every table entry **the archive's own format version requires** (five in format v1 — the shipped build's format; the current set otherwise) must be **present and manifest-listed** — a truncated archive is refused, never imported as a sparse store, while a v1 archive imports complete under its own five-entry set (backward compatibility by version, never sparse tolerance).
-   The pre-release v2 and v3 shapes, which no shipped build wrote, are refused outright (ruled 2026-08-29 — no local-suite data compat pre-release; [verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md](verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md)).
+   The pre-release v2 through v5 shapes, which no shipped build wrote, are refused outright (ruled 2026-08-29 — no local-suite data compat pre-release; [verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md](verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md)).
    All row-level validation — NDJSON parse, embedding decode, the schema's uniqueness/cardinality — also runs here, **before any destructive step**, so a bad archive can only abort while the store is untouched.
    Reading the archive is itself bounded: entries unpack under a total-size ceiling (4 GiB — generous by orders of magnitude over a real corpus), and `manifest.json` — which is read before that ceiling can apply — carries its own smaller bound (16 MiB), so a crafted zip can't demand unbounded memory through either read.
 4. Determine whether the target store is **empty** (no reports, no learnings, no portfolio runs):
