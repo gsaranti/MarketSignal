@@ -412,7 +412,7 @@ test("the investor-profile section renders the five preset rows verbatim, with n
       "maximize profit (total return; no income or capital-preservation mandate)",
     risk_tolerance: "aggressive (medium-to-high)",
     horizon: "long-term (durable multi-quarter / multi-year theses)",
-    tax: "tax-aware — the possible benefit of realizing a loss is weighed qualitatively; no tax-lot, holding-period, or rate modeling",
+    tax: "tax-aware — tax consequences are an optional caveat, with no effect on the action; account type, tax lots, holding periods, and rates are unmodeled",
     cash: "unconstrained — adds are never gated on observed Schwab cash",
   };
   const wrapper = makeWrapper({ investorProfile: profile });
