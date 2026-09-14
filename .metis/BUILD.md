@@ -522,8 +522,10 @@ Each is easy to break by accident, so a plan should say how it honors them:
   within the same guard, reclaiming omitted-header space rather than starving
   every page. The two phases also keep one output protocol per request — tools
   and no grammar while gathering, grammar and no tools/history while
-  synthesizing — and the app re-validates the grammar-required fields and
-  nonblank prose/claim semantics before a pass can complete. Every research gap
+  synthesizing, the synthesis prompt showing the object's shape since the
+  grammar never reaches the model (attempt-5 Finding 5) — and the app
+  re-validates the grammar-required fields and nonblank prose/claim semantics
+  before a pass can complete. Every research gap
   persists on the holding audit and contributes typed counts to the run-level
   data-health summary; the runtime prompt-size read shares the gathering
   message-and-tool serializer.
@@ -817,8 +819,19 @@ every stacked runtime confirmation at once.
    share a request (`portfolio::PROMPT_VERSION` bumped to bar a pre-fix resume).
    Finding 3's fix then restructured the action-call prompt to data-plus-ordered
    gates and swept the full Portfolio prompt surface to the prompt-posture bar
-   (no stamp moved — `portfolio-v34`, never run); attempt 5 is again the user's
-   call, from a wiped store.
+   (no stamp moved — `portfolio-v34`).
+   Attempt 5 launched from a wiped store on 2026-09-01 (`portfolio-v34` debut)
+   and was user-ended at 4 of 47 for a trip
+   (`docs/verification/2026-09-01-big-run-attempt-5-findings.md`): fix B's
+   empty-body rate did not reproduce and both bounded retries recovered
+   (Finding 4), the fund path's two branches read clean (Finding 6), and the
+   research findings-synthesis prompt (fix B's grammar-only call) showed the
+   model no schema shape — the grammar is a decoding mask it never sees — so
+   a format-confused topic dropped whole at reconciliation (Finding 5).
+   Finding 5's fix landed as `portfolio-v35`: the synthesis prompt shows the
+   object's keys, types, required members and a placeholder example, pinned
+   to the grammar by test; attempt 6 is again the user's call, from a wiped
+   store.
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire
