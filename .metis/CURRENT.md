@@ -2,33 +2,33 @@
 
 ## What happened
 
-**Attempt 5 — the single big confirmation run — was launched and user-ended at 4 of 47.**
-From a re-wiped clean debut store the `portfolio-v34` debut was confirmed (stamps `checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v3`); infra was brought up (Ollama + OrbStack + SearXNG with the Serper floor serving) and torn down after.
-TSLA, PSX, SPMO, ARKF completed; the user stopped for a trip.
-Record committed + pushed `42e47db` (`docs/verification/2026-09-01-big-run-attempt-5-findings.md`).
-
-Reads on the 4-holding sample (not rates): **Fix B / empty-body — the C8 live question — does NOT reproduce**, with 2 retries over 4 holdings from two causes (parse, daemon-error), both recovered, 0 hard failures.
-**Finding 5 (new):** the 6d synthesis prompt shows the model no schema, so it hand-builds a Markdown serialization; on PSX the confused narrative-sentiment topic dropped whole as the one unreconciled topic (its content absent from the synthesis, the diverse citation set hiding the loss).
-**Finding 6 (new):** fund path clean — SPMO `priced`, ARKF `role_risk_only`.
-Findings 1–3 interim clean (search serving with paywall fetch-failure friction, ledger `quant` populated, action output clean on all four).
+**The attempt-5 Finding-5 fix landed and was pushed** (`5f45532`; BUILD/INDEX update `2041902`, user-authorized one-time).
+The Step-6c findings-synthesis system prompt now shows the model the findings object's shape — every key with its type and required marker plus a terse placeholder-valued example (`research.rs`, `findings_shape_example`) — in place of naming an output grammar the model cannot see; the "as JSON" phrasing fix B dropped stays out.
+Three tests pin the shown keys to `findings_schema`, decode the example through `parse_findings_wire`, and cap the system prompt far under the slack above the brief budget (the brief is sized to `input_budget_chars`; the system prompt rides the unmeasured slack).
+`PROMPT_VERSION` moved to **`portfolio-v35`** — v34 had run (attempt 5's four holdings persist under it) and the change alters the synthesis input, the v34 precedent.
+Docs: `web-research.md §The research loop` carries the contract; the watch set gained a Finding-5 read and its stamp lines moved to v35; the attempt-5 record carries the fix-landed disposition.
+Reviewer verdict approve-with-nits; the two doc nits were fixed before commit.
+The 6d distillation prompts (`distill.rs`) were deliberately left untouched so attempt 6's unreconciled-topic read attributes to this one change.
+Gates: `cargo test` 1435 passed, clippy clean.
 
 ## Current state
 
-Working tree clean; the findings doc and the big-run tracking memory are committed/pushed.
-**The dev store was NOT re-wiped** — it holds the 4 completed holdings + checkpoint header for post-trip inspection; **attempt 6 must re-wipe** per the standing ruling.
-No terminal `job_runs` row was written (the run was ended by killing the dev process, not a cooperative cancel; the table stays at id 5).
-C8's live side is trending toward closed but not closed — the full-book empty-body rate, the unreconciled-topic rate, and the Finding-3 oscillation all still need a completed run.
-**Finding 5 has a fix candidate — show the model the schema shape (field names, types, a terse example object)** — a post-run prompt-clarity slice, same class as attempt-4 Findings 2/3; not built.
+Working tree clean, `main` in sync with `origin/main`.
+Nothing in flight.
+**The dev store still holds attempt 5's four `portfolio-v34` holdings + checkpoint header** (kept for inspection); attempt 6 must re-wipe per the standing ruling, and its debut stamp to confirm is **`portfolio-v35`** (the other stamps unchanged: `checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v3`).
+The two plan flags — the v35 bump, and leaving the distillation prompts alone — were implemented on the plan's recommendation; the user's commit instruction is taken as ratification, so they are not carried as open.
+No terminal `job_runs` row exists for attempt 5 (the table stays at id 5).
 
 ## Open questions
 
-- **Build the Finding-5 synthesis-prompt fix before attempt 6, or re-launch first?** The fix would improve attempt 6's research quality; re-launching as-is banks the full-book rates on the current build. User's call.
-- **When to launch attempt 6** — user's call, from a re-wiped store; don't propose it unprompted.
-- Does the empty-body rate stay low at book scale, and does topic-drop cluster on the confusion-prone topics (narrative-sentiment, disconfirming) and correlate with the parse retries? Finding 5's across-book reads — only a completed run answers.
+- **When to launch attempt 6** — the user's call, from a re-wiped store; don't propose it unprompted.
+- Does the empty-body rate stay low at book scale, and does the `unreconciled_topics` rate fall under the v35 prompt — no longer clustering on narrative-sentiment / disconfirming or correlating with parse retries? Finding 5's across-book read; only a completed run answers (watch line in `big-run-watch-set.md §The research loop`).
 - **Finding 3 oscillation** — still unmeasured; needs the reasoning stream across the book.
 - The **permanent** SearXNG engine set — a post-run config call once a full run shows which engines serve under volume.
+- Whether the 6d distillation prompts should get the same shape-showing treatment — deferred until attempt 6 reads the unreconciled-topic rate under v35.
 
 ## Where to start
 
-The next move is the user's call: either build the **Finding-5 fix** (show the synthesis schema — a post-run prompt-clarity slice) or **re-launch attempt 6** from a freshly re-wiped store (bring up infra per the OrbStack bring-up notes, confirm the `portfolio-v34` debut, read `data-health` early).
+Nothing is queued ahead of the run.
+Wait for the user to name the attempt-6 session; then re-wipe the store, bring up infra per the OrbStack bring-up notes, confirm the `portfolio-v35` debut, and read `data-health` early.
 Don't propose the run unprompted.
