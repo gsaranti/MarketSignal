@@ -121,6 +121,11 @@ For a financial pipeline whose downstream stages and persisted records depend on
 ## Prompt posture
 
 Grammar constrains an output's *structure*; the prompt supplies the model's *inputs* — the evidence, the engine's reads, the deterministic facts, and any degradation in them — and states the task's constraints.
+Portfolio interpretation, role/risk and distillation show schema-derived nested examples and enum/null alternatives alongside the field meanings, so the model can see the structure before decoding is constrained.
+Numeric and enum values in those examples are illustrative, not suggested findings.
+The priced interpretation explicitly identifies `price_target_rationale` as the explanation of the engine's twelve-month base target or its absence.
+Portfolio prompts provide the authoritative per-share quote directly and identify higher risk-axis scores as greater resilience.
+Role/risk interpretation additionally supplies daily `return-volatility` from the same short history used by ledger evaluation, separately from the annualized observable-risk display, which can use a different history window.
 Governed prompt content is traceable to a canonical project contract: field meanings, output requirements, source-provenance policy, continuity rules, and explicitly ruled decision frameworks such as Portfolio action precedence.
 Ungoverned prompt content does not belong: app or downstream-consumer architecture, meta-reasoning instructions, author-added financial preferences, or weighting and conclusion nudges without a canonical contract.
 Within the governed constraints, the model draws the inference from the supplied facts; the prompt does not add an unruled conclusion for it to reproduce (attempt-4 Finding 3).

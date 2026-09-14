@@ -247,6 +247,12 @@ Every worked topic's full response flows intact to distillation — nothing is s
 
 ### Step 6d: Distillation
 
+Every distillation shape includes a schema-derived example with populated nested objects and array items, plus explicit enum and null alternatives.
+The final single-pass or reduce call also receives original fetched page text for typed extraction, so exact excerpts do not have to be reconstructed from summaries.
+This separate source section uses at most one third of the widest input allowance and only the space remaining after the full consolidation prompt; pages receive deterministic allocations in URL order, and omitted or truncated text is recorded as an extraction-coverage gap.
+The prompt requires a typed fact's supporting text in that section; absent text calls for the affected field to be null or observation absent, while the existing app-side source validators still check the original fetched page.
+Role/risk-only consolidation has no typed extraction fields and receives no additional source section.
+
 **Type:** Local-model call(s) (122B, non-thinking; the optional 35B fast tier if resident) — a single pass, or **hierarchical** (tier-1 per topic-tree → a reduce) when the holding's research is large.
 Consolidation, not new reasoning.
 **Built** with the research-loop slice: the call is schema-constrained (the stub-era free-prose exception is retired), the single-vs-hierarchical routing and the per-topic seed merge run live, and the `role_risk_only` branch runs the fund agenda and a pure-consolidation distillation like any fund (the stub-time bypass is retired).
@@ -429,6 +435,8 @@ A chosen rung outside the engine set persists exactly as authored, with the depa
 No model.
 
 This step is an **app-layer validator**, not just a recorder.
+The attribution validation runs before the action call so its packet can include the validated changes and their input-delta evidence beside the prior read and current continuity summary.
+Prior target prices on an uncertified share basis are not copied into that packet; comparable target changes ride the existing validated input-delta path.
 Every move the 6f audit labels **external** must resolve to a concrete entry in the engine's input delta, a source-backed research finding, or the logged `research_forward_assumption`; an attribution that resolves to nothing is **downgraded to self-correction with a logged reason** (ruled 2026-08-21 — the downgrade is the primary outcome; hard schema failure is reserved for structurally malformed rows), so the model cannot launder a no-new-facts swing as "the market changed."
 This **attribution validator is built**: the 6f response carries typed what-changed rows (kind, old → new, attribution, evidence) beside the prose line, and each external row's evidence must cite a rendered input-delta entry by bracketed id or label verbatim.
 Two further checks are purely structural, deterministic string comparisons that never appraise the model's prose.

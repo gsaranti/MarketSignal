@@ -127,6 +127,8 @@ pub struct ActionInput<'a> {
     /// role/risk branch).
     pub engine_set: &'a [Action],
     pub profile: &'a crate::portfolio::InvestorProfile,
+    /// Validated attribution from this run's interpretation, before action.
+    pub changes: Option<&'a crate::portfolio::WhatChangedAudit>,
 }
 
 /// The app-stamped annotation for a chosen rung outside the engine's per-holding
@@ -978,6 +980,7 @@ pub fn analyze_holding(
                         subject: ActionSubject::RoleRisk { verdict: &rr },
                         engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
                         profile: &dossier.profile,
+                        changes: what_changed_audit.as_ref(),
                     })
                     .context("deciding the role/risk holding's action")?;
                 record_stage_models(analyst.reasoner_id());
@@ -1483,6 +1486,7 @@ pub fn analyze_holding(
             },
             engine_set: &engine_set,
             profile: &dossier.profile,
+            changes: what_changed_audit.as_ref(),
         })
         .context("deciding the holding's action")?;
     record_stage_models(analyst.reasoner_id());
@@ -2831,15 +2835,15 @@ fn role_risk_input_delta(
 /// Render the input delta and the attribution rules into the user prompt — the
 /// bracketed ids are the `what_changed_entries` evidence vocabulary.
 fn input_delta_prompt_section(entries: &[crate::portfolio::DeltaEntry]) -> String {
-    if entries.is_empty() {
-        return String::new();
-    }
     let mut s = String::from(
         "\nINPUT DELTA (the concrete changes since the prior read — the evidence \
          ids for what_changed_entries):\n",
     );
     for e in entries {
         s.push_str(&format!("[{}] {}\n", e.id, e.label));
+    }
+    if entries.is_empty() {
+        s.push_str("No input-delta entries are available for external attribution.\n");
     }
     s.push_str(
         "WHAT_CHANGED_ENTRIES: author one typed row per moved intrinsic value — each row \
@@ -3053,12 +3057,14 @@ fn holding_header(d: &HoldingDossier) -> String {
         described
     };
     format!(
-        "HOLDING: {} ({})\nQuantity: {}  Cost basis: ${:.0} total  Market value: ${:.0} total\n",
+        "HOLDING: {} ({})\nQuantity: {}  Cost basis: ${:.0} total  Market value: ${:.0} total\nCurrent price (per share, USD): {}\n",
         d.position.symbol,
         name,
         d.position.quantity,
         d.position.cost_basis,
         d.position.market_value,
+        d.financials.current_price.filter(|p| p.is_finite() && *p > 0.0)
+            .map(|p| format!("${p:.4}")).unwrap_or_else(|| "(gap)".into()),
     )
 }
 
@@ -3091,9 +3097,14 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     }
     p.push_str(&format!(
         "EXPENSE RATIO (decimal fraction of assets per year; 0.0075 = 0.75%/yr): {}\n\
-         OBSERVABLE RISK (annualized volatility): {}\n",
+         OBSERVABLE RISK (annualized volatility; deep history when available): {}\n",
         fmt_expense_ratio(r.expense_ratio),
         opt(r.observable_risk),
+    ));
+    p.push_str(&format!(
+        "LEDGER OBSERVATION return-volatility (daily decimal; short price-history window): {}\n",
+        engine::compute_metrics(&d.financials).return_volatility
+            .map(|v| v.to_string()).unwrap_or_else(|| "(gap)".into()),
     ));
     // The closed-end read renders only where the vehicle makes it meaningful
     // (`docs/portfolio-analysis.md` §Asset eligibility); its absence is a named
@@ -3683,7 +3694,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
 
     p.push_str(&format!(
         "\nENGINE GRADE (the baseline arm{}): {}\nENGINE SUB-SCORES (0-100, higher better on every axis — a high risk score = \
-         resilient/low-risk): quality {:.0}, valuation {:.0}, risk {:.0}; \
+         resilient/low-risk): quality {:.0}, valuation {:.0}, risk/resilience {:.0}; \
          momentum {:.0} rides as market-setup context OUTSIDE the letter\n",
         if e.low_confidence_grade {
             "; low-confidence — an imputed sub-score underlies it"
@@ -3903,7 +3914,8 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         Some(prior) => {
             p.push_str(
                 "\nCONTINUITY: a prior verdict for this holding exists. Keep the verdict firm; \
-                 only move grade/target if the evidence has materially changed, and say what.\n",
+                 move grade/target on materially changed evidence or an identified correction \
+                 to the prior assessment, and attribute the reason in what_changed_entries.\n",
             );
             // A band recalibration moves letters with no input change; without this
             // line the model's what-changed would attribute an engine-driven letter
@@ -4161,43 +4173,68 @@ pub fn action_system_prompt() -> String {
      OUTPUT: exactly ONE rung from the fixed ladder — sell-all, trim, hold, add, \
      add-aggressively — the rung only, no share counts, dollar amounts, or portfolio \
      weights; and a rationale of exactly ONE sentence, never empty, giving the single \
-     reason for the rung. Keep the action firm run to run — it moves only when the \
+     investment reason for the rung, optionally with a tax caveat in the same sentence. Keep the action firm run to run — it moves only when the \
      verdict's evidence has materially moved.\n\
      \n\
-     WHAT THE INPUTS ARE, in the order they bear on the rung (the values are below; \
-     these state what each input is, and the reasoning over them is yours):\n\
-     - The grade and both arms' implied target moves against the current price are the \
-     primary basis. The engine's moves carry a stated provenance; the model arm's band \
-     is the verdict's own forward call, gated to its declared domain and carrying no \
-     provenance to discount.\n\
-     - The risk tier and the horizon outlook refine that read.\n\
+     SHARED DECISION CONTRACT (the holding's applicable evidence and decision basis are below):\n\
      - The investor profile breaks ties: an aggressive risk tolerance admits the \
      aggressive rung where the evidence supports it, and it never changes the \
      verdict's facts.\n\
-     - Tax: account type, lots, and rates are unmodeled, so a possible benefit from \
-     booking a loss or a cost from realizing a gain is a user-facing flag for the \
-     rationale, not an input the rung turns on; a tax-exempt profile carries no tax \
-     consideration.\n\
-     - Capital efficiency is an exit input only on a `fails` hurdle — where even the \
-     bull case misses over the holding's horizon and the forward prospects are \
-     independently poor. A `clears` or `indeterminate` read carries no exit signal.\n\
      - The ENGINE SET shown is the engine arm's own restriction, given as evidence, \
      not a bound on you: the full ladder is open, and a rung outside the set persists \
      exactly as authored — the app stamps the departure onto the holding's audit, so \
      emit only the rung and its one-sentence rationale, never a departure note of your \
      own.\n\
-     - For a role/risk-only vehicle (a class this pipeline cannot price) the rung \
-     follows from the vehicle's own attributes — role read, expense drag, observable \
-     risk, structural flags, evidence gaps; an add-side rung is earned by those merits \
-     in the rationale, and no price is fabricated.\n\
      {}",
         crate::portfolio::action_response_contract()
     )
 }
 
-/// The user prompt for the action call: the finished verdict digest, the
-/// position's own economics, the engine's per-holding action set (with the
-/// engine arm's own pick withheld), and the investor profile.
+/// Prior evidence and validated current changes, with no inferred equivalence
+/// between unavailable attribution and unchanged evidence.
+fn action_continuity_section(
+    d: &HoldingDossier,
+    summary: &str,
+    changes: Option<&crate::portfolio::WhatChangedAudit>,
+) -> String {
+    let mut out = String::from("\nACTION CONTINUITY EVIDENCE:\n");
+    match d.prior_verdict.as_ref().map(|v| &v.disposition) {
+        Some(VerdictDisposition::Priced(prior)) => {
+            // Prior target price levels may be on another share basis. The
+            // validated delta carries comparable target changes when available.
+            out.push_str(&format!(
+                "Prior engine grade {}; model letter {}; conviction {:?}; outlook short {:?} / mid {:?} / long {:?}.\nPrior financial summary: {}\n",
+                prior.grade.as_str(), prior.model_view.letter.as_str(), prior.conviction,
+                prior.horizon_outlook.short, prior.horizon_outlook.mid, prior.horizon_outlook.long,
+                prior.financial_summary));
+        }
+        Some(VerdictDisposition::RoleRiskOnly(prior)) => {
+            out.push_str(&format!("Prior class: {}; role read: {}\n", prior.class_label, prior.role_summary));
+        }
+        _ => out.push_str("No comparable prior priced or role/risk read.\n"),
+    }
+    out.push_str(&format!("Current interpretation's continuity summary: {summary}\n"));
+    if let Some(changes) = changes {
+        for entry in &changes.entries {
+            out.push_str(&format!("- {:?} {}: {} -> {}; attribution {:?}; evidence {}\n",
+                entry.kind, entry.detail, entry.old, entry.new, entry.attribution, entry.evidence));
+        }
+        out.push_str(&input_delta_prompt_evidence(&changes.input_delta));
+        if changes.entries.is_empty() {
+            out.push_str("No validated attribution rows; this alone does not establish that the evidence is unchanged.\n");
+        }
+    } else {
+        out.push_str("Validated change attribution is unavailable.\n");
+    }
+    out
+}
+
+fn input_delta_prompt_evidence(entries: &[crate::portfolio::DeltaEntry]) -> String {
+    entries.iter().map(|entry| format!("[{}] {}\n", entry.id, entry.label)).collect()
+}
+
+/// The finished verdict, position economics, prior evidence, engine action set
+/// (its choice withheld), and investor profile.
 pub fn action_user_prompt(input: &ActionInput) -> String {
     let d = input.dossier;
     let mut p = String::new();
@@ -4240,10 +4277,16 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
             engine,
             pre_profit,
         } => {
+            p.push_str(
+                "\nACTION BASIS: The grade and both arms' implied target moves are the primary basis; \
+                 risk tier and horizon outlook refine the read. The letter summarizes quality, \
+                 valuation and resilience; it has no fixed action mapping. The engine's moves \
+                 carry stated provenance; the model's bands are its own forward call.\n",
+            );
             p.push_str(&format!(
                 "\nTHE VERDICT (already authored — the evidence you act on):\n\
                  ENGINE ARM: grade {}{}; sub-scores quality {:.0} / valuation {:.0} / \
-                 risk {:.0} (momentum {:.0} outside the letter); risk tier {}; \
+                 risk/resilience {:.0} (higher = more resilient; momentum {:.0} outside the letter); risk tier {}; \
                  capital-efficiency read {}.\n",
                 graded.grade.as_str(),
                 if graded.low_confidence_grade {
@@ -4262,7 +4305,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 let mv = &graded.model_view;
                 p.push_str(&format!(
                     "MODEL ARM: letter {}; sub-scores quality {:.0} / valuation {:.0} / \
-                     momentum {:.0} / risk {:.0}.\n",
+                     momentum {:.0} / risk/resilience {:.0} (higher = more resilient).\n",
                     mv.letter.as_str(),
                     mv.sub_scores.quality,
                     mv.sub_scores.valuation,
@@ -4277,6 +4320,19 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 graded.horizon_outlook.mid,
                 graded.horizon_outlook.long,
             ));
+            p.push_str(match engine.hurdle.state {
+                crate::portfolio::HurdleState::Fails =>
+                    "CAPITAL EFFICIENCY: fails — even the bull case misses the hurdle over the assessed horizon; an exit input when forward prospects are independently poor.\n",
+                crate::portfolio::HurdleState::Clears =>
+                    "CAPITAL EFFICIENCY: clears — this assessment carries no exit signal.\n",
+                crate::portfolio::HurdleState::Indeterminate =>
+                    "CAPITAL EFFICIENCY: indeterminate — this assessment carries no exit signal.\n",
+                crate::portfolio::HurdleState::Unscorable =>
+                    "CAPITAL EFFICIENCY: unscorable — no hurdle assessment is available.\n",
+            });
+            if d.prior_verdict.is_some() {
+                p.push_str(&action_continuity_section(d, &graded.what_changed, input.changes));
+            }
             // Both arms' implied moves, both horizons (the 2026-08-24 review's
             // Codex I5, ruled 2026-08-28): the action call acts on the model's
             // choices by design (`ModelView`), so its own authored forecast
@@ -4309,6 +4365,12 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
             }
         }
         ActionSubject::RoleRisk { verdict } => {
+            p.push_str(
+                "\nACTION BASIS: The vehicle's role, expense drag, observable risk, structural \
+                 flags and evidence gaps support the decision. An add-side rung needs support \
+                 from those attributes in the rationale. This branch has no price forecast \
+                 or capital-efficiency hurdle assessment.\n",
+            );
             p.push_str(&format!(
                 "\nTHE VERDICT (already authored — a role/risk-only vehicle; no grade, \
                  targets, or conviction exist for this class):\nCLASS: {}\nROLE: {}\n",
@@ -4344,6 +4406,9 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                     verdict.evidence_gaps.join("; ")
                 ));
             }
+            if d.prior_verdict.is_some() {
+                p.push_str(&action_continuity_section(d, &verdict.what_changed, input.changes));
+            }
         }
     }
 
@@ -4354,7 +4419,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     p.push_str("\nENGINE SET (the engine arm's own restriction, shown as evidence): ");
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&set.join(", "));
-    p.push_str("\nThe rung the engine arm itself picked is not included.\n");
+    p.push_str("\nThe listed actions are those permitted by the engine's rules. Its selected action is undisclosed.\n");
 
     p.push_str("\nINVESTOR PROFILE (frames the decision; the verdict's facts are fixed):\n");
     let profile = input.profile.display();
@@ -4660,8 +4725,11 @@ pub fn ledger_prompt_section(
          conditions with rough probability leans (percent, roughly summing to 100); \
          what must improve to migrate toward the bull case and what must not break to \
          stay in the base case; the key falsifiers; and the action triggers. \
-         Every falsifier and trigger carries a `quant` object — {series, comparator, \
-         threshold, margin}; a falsifier additionally carries a `technology_class` flag, \
+         Every falsifier and trigger carries a `quant` field: an object {series, comparator, \
+         threshold, margin} for an engine-series condition, or null for a qualitative condition. \
+         Observed values come from the supplied evidence; a new monitoring threshold and its \
+         margin are your authored condition, not a claim about an observed value. \
+         A falsifier additionally carries a `technology_class` flag, \
          and a trigger a `family` (the add / trim / sell family it pre-commits — the \
          final action rung is the later action call's, not the trigger's). \
          Whenever the condition \
@@ -5950,7 +6018,7 @@ mod tests {
     /// The rendered section carries every bracketed id plus the attribution rules;
     /// with no entries (a debut) it renders nothing at all.
     #[test]
-    fn input_delta_section_renders_ids_and_rules_or_nothing() {
+    fn input_delta_section_renders_ids_and_rules_even_without_external_changes() {
         let s = input_delta_prompt_section(&delta_fixture());
         assert!(s.contains("[D1] spot: 100.00 -> 92.00"), "{s}");
         assert!(s.contains("[D2] metric gross margin"), "{s}");
@@ -5962,7 +6030,9 @@ mod tests {
         );
         assert!(s.contains("downgraded to self-correction"), "{s}");
         assert!(s.contains("never for a rephrasing"), "{s}");
-        assert_eq!(input_delta_prompt_section(&[]), "");
+        let empty = input_delta_prompt_section(&[]);
+        assert!(empty.contains("No input-delta entries are available"));
+        assert!(empty.contains("self-correction"));
     }
 
     /// The standing-thesis signal: a resolved external thesis-level row trips it;
@@ -8079,6 +8149,7 @@ mod tests {
                 pre_profit: None,
             },
             engine_set: &engine_set,
+            changes: None,
             profile: &d.profile,
         });
         assert!(action.contains("HARD TRIGGER TRIPPED"), "{action}");
@@ -8136,12 +8207,13 @@ mod tests {
                 pre_profit: None,
             },
             engine_set: &engine_set,
+            changes: None,
             profile: &d.profile,
         };
         let user = action_user_prompt(&input);
         assert!(user.contains("INVESTOR PROFILE"), "{user}");
         assert!(user.contains("ENGINE SET"), "{user}");
-        assert!(user.contains("engine arm itself picked is not included"), "{user}");
+        assert!(user.contains("Its selected action is undisclosed"), "{user}");
         assert!(!user.contains("scoreboard"), "{user}");
         assert!(user.contains("THE VERDICT"), "{user}");
         assert!(user.contains("Unrealized P/L"), "{user}");
@@ -8182,7 +8254,7 @@ mod tests {
         assert!(!user.contains("off-scale as authored"), "{user}");
         assert!(!user.contains("band inverted as authored"), "{user}");
         let system = action_system_prompt();
-        assert!(system.contains("both arms' implied target moves"), "{system}");
+        assert!(user.contains("both arms' implied target moves"), "{user}");
         assert!(system.contains("the investor profile alone"), "{system}");
         assert!(system.contains("exactly ONE rung"), "{system}");
         assert!(system.contains("not a bound on you"), "{system}");
@@ -8195,18 +8267,8 @@ mod tests {
         assert!(!system.contains("TUNNEL VISION"), "{system}");
         assert!(!system.contains("planning stage"), "{system}");
         assert!(!system.contains("concentration"), "{system}");
-        // Finding-3 (attempt 4): the behavioral contracts the schema cannot carry
-        // are stated ONCE, in the system prompt, as facts the model infers from —
-        // never duplicated into the user prompt (the duplication that amplified the
-        // re-checking) and never phrased as a how-to-weigh prohibition (the
-        // prompt-posture violation). Two are pinned as COMPLETE clauses so a partial
-        // revert fails here, not only a stamp shift. Signal 1: the whole "app stamps
-        // the departure … emit only the rung AND its rationale, never a departure
-        // note" clause — pinning it entire catches a revert to "only the rung" (the
-        // original P2 contradiction) that a bare "never a departure note" substring
-        // would miss. Signal 2: the capital-efficiency clause naming BOTH non-`fails`
-        // states — pinning `clears` or `indeterminate` catches dropping
-        // `indeterminate` (the state whose leak drove the finding).
+        // The output contract stays shared. Holding-specific hurdle facts now
+        // live only in the branch packet, tested across every state below.
         assert!(
             system.contains(
                 "the app stamps the departure onto the holding's audit, so emit only the \
@@ -8214,16 +8276,8 @@ mod tests {
             ),
             "{system}"
         );
-        assert!(
-            system.contains(
-                "Capital efficiency is an exit input only on a `fails` hurdle"
-            ) && system.contains("A `clears` or `indeterminate` read carries no exit signal"),
-            "{system}"
-        );
-        // Dedup: the user prompt carries the capital-efficiency read VALUE but not
-        // its rule, and the departure rule lives only in the system prompt.
+        assert!(!system.contains("Capital efficiency"), "{system}");
         assert!(user.contains("capital-efficiency read"), "{user}");
-        assert!(!user.contains("carries no exit signal"), "{user}");
         assert!(!user.contains("never an exit input"), "{user}");
         assert!(!user.contains("never a departure note"), "{user}");
         // No whole-book vocabulary leaks into the user prompt — the cash row
@@ -8266,6 +8320,7 @@ mod tests {
                     pre_profit: None,
                 },
                 engine_set: &engine_set,
+                changes: None,
                 profile: &d.profile,
             })
         };
@@ -8290,9 +8345,63 @@ mod tests {
         d.profile.tax_sensitive = true;
         let taxable = render(&d);
         assert!(taxable.contains("may carry a tax cost"), "{taxable}");
-        let system = action_system_prompt();
-        assert!(system.contains("account type, lots, and rates are unmodeled"), "{system}");
-        assert!(system.contains("a tax-exempt profile carries no tax consideration"), "{system}");
+        assert!(taxable.contains("account type, tax lots, holding periods, and rates are unmodeled"), "{taxable}");
+        assert!(taxable.contains("with no effect on the action"), "{taxable}");
+        assert!(!taxable.contains("weighed qualitatively"));
+    }
+
+    #[test]
+    fn action_facts_resolve_each_hurdle_and_include_validated_continuity() {
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let (prior, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        let VerdictDisposition::Priced(graded) = &prior.disposition else { panic!("priced"); };
+        let mut engine = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(engine) => engine,
+            _ => panic!("priced"),
+        };
+        d.prior_verdict = Some(prior.clone());
+        let changes = validate_what_changed(&[crate::portfolio::WhatChangedEntry {
+            kind: crate::portfolio::ChangedValueKind::Target,
+            detail: "twelve-month base".into(), old: "100".into(), new: "110".into(),
+            attribution: crate::portfolio::ChangeAttribution::CompanyInformation,
+            evidence: "D1".into(),
+        }], vec![crate::portfolio::DeltaEntry {
+            id: "D1".into(), label: "forward earnings changed".into(), related_condition_id: None,
+        }]);
+        for state in [crate::portfolio::HurdleState::Fails, crate::portfolio::HurdleState::Clears,
+            crate::portfolio::HurdleState::Indeterminate, crate::portfolio::HurdleState::Unscorable] {
+            engine.hurdle.state = state;
+            let prompt = action_user_prompt(&ActionInput {
+                dossier: &d, subject: ActionSubject::Priced { graded, engine: &engine, pre_profit: None },
+                engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
+            });
+            assert_eq!(prompt.contains("independently poor"), state == crate::portfolio::HurdleState::Fails);
+            assert_eq!(prompt.contains("this assessment carries no exit signal"),
+                matches!(state, crate::portfolio::HurdleState::Clears | crate::portfolio::HurdleState::Indeterminate));
+            assert!(prompt.contains("Prior engine grade"));
+            assert!(prompt.contains("twelve-month base: 100 -> 110"));
+            assert!(prompt.contains("[D1] forward earnings changed"));
+        }
+    }
+
+    #[test]
+    fn role_risk_ledger_observation_uses_daily_short_history_without_conversion() {
+        let mut d = dossier(AssetClass::Etf, strong_financials());
+        d.financials.price_history = vec![100.0, 101.0, 99.0, 102.0];
+        d.financials.daily_closes = vec![
+            DatedValue { date: "2025-01-01".into(), value: 20.0 },
+            DatedValue { date: "2026-01-01".into(), value: 100.0 },
+        ];
+        let readout = RoleRiskReadout { observable_risk: Some(0.417), ..Default::default() };
+        let prompt = role_risk_user_prompt(&RoleRiskInput {
+            dossier: &d, readout: &readout, prior_ledger: None, ledger_eval: None,
+            input_delta: &[], distilled: "research",
+        });
+        let daily = engine::compute_metrics(&d.financials).return_volatility.unwrap();
+        assert!(prompt.contains(&format!("daily decimal; short price-history window): {daily}")));
+        assert!(prompt.contains("OBSERVABLE RISK (annualized volatility; deep history when available): 0.417"));
+        assert!(prompt.contains("Current price (per share, USD): $195.0000"));
+        assert!((daily - 0.417 / 15.87).abs() > 0.001);
     }
 
     #[test]
@@ -8388,6 +8497,7 @@ mod tests {
                 pre_profit: None,
             },
             engine_set: &engine_set,
+            changes: None,
             profile: &d.profile,
         });
         assert!(action.contains("SAME-UNDERLYING OPTION OVERLAY"), "{action}");
@@ -8434,6 +8544,7 @@ mod tests {
                     pre_profit: None,
                 },
                 engine_set: &engine_set,
+                changes: None,
                 profile: &d.profile,
             })
         };
@@ -8498,6 +8609,7 @@ mod tests {
                 pre_profit: None,
             },
             engine_set: &engine_set,
+            changes: None,
             profile: &d.profile,
         });
         assert!(
@@ -8537,6 +8649,7 @@ mod tests {
                 pre_profit: None,
             },
             engine_set: &engine_set,
+            changes: None,
             profile: &d4.profile,
         });
         assert!(!user4.contains("inf"), "{user4}");
@@ -8747,6 +8860,7 @@ mod tests {
                 pre_profit: None,
             },
             engine_set: &engine_set,
+            changes: None,
             profile: &d.profile,
         });
         assert!(user.contains("continuity baseline"), "{user}");
@@ -9662,14 +9776,19 @@ mod tests {
             dossier: &d,
             subject: ActionSubject::RoleRisk { verdict: &rr },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+            changes: None,
             profile: &d.profile,
         });
         assert!(action.contains("PRICE VS NAV: -7.2% (discount)"), "{action}");
+        assert!(action.contains("This branch has no price forecast or capital-efficiency hurdle assessment"));
+        assert!(!action.contains("both arms' implied target moves"));
+        assert!(!action.contains("even the bull case"));
         rr.nav_premium = None;
         let action_gap = action_user_prompt(&ActionInput {
             dossier: &d,
             subject: ActionSubject::RoleRisk { verdict: &rr },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+            changes: None,
             profile: &d.profile,
         });
         assert!(!action_gap.contains("PRICE VS NAV:"), "{action_gap}");
@@ -10209,6 +10328,7 @@ mod tests {
             dossier: &d,
             subject: ActionSubject::RoleRisk { verdict: &rr },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+            changes: None,
             profile: &d.profile,
         });
         assert!(
@@ -11839,7 +11959,7 @@ mod tests {
         // (a numeric threshold left only in prose), and describes `technology_class`
         // — the prose gaps behind the 2026-08-30 big-run ledger under-population
         // finding (`portfolio-v31`).
-        assert!(s.contains("`quant` object"), "{s}");
+        assert!(s.contains("`quant` field: an object"), "{s}");
         assert!(
             s.contains("Put the number in `quant`, not only in the statement text"),
             "{s}"
@@ -11849,7 +11969,7 @@ mod tests {
         // `technology_class` is a falsifier-only schema field — the prose must not
         // attribute it to triggers (the mismatch Codex caught on the first cut).
         assert!(
-            s.contains("a falsifier additionally carries a `technology_class`"),
+            s.contains("A falsifier additionally carries a `technology_class`"),
             "{s}"
         );
         // `family` is a trigger-only field and is the add/trim/sell family, not an
@@ -12694,6 +12814,7 @@ mod tests {
                 pre_profit: Some(&overlay),
             },
             engine_set: &engine_set,
+            changes: None,
             profile: &d.profile,
         });
         assert!(action.contains("Your rung is UNRESTRICTED"), "{action}");

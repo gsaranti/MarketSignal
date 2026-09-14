@@ -115,7 +115,7 @@ impl InvestorProfile {
     /// The documented fixed preset (`docs/configuration.md` §Investor Profile):
     /// profit-maximization objective, medium-to-high risk tolerance (represented as
     /// the aggressive rung of the three-step scale), a long-term horizon,
-    /// taxable/tax-aware (the qualitative loss-realization counterweight only — no
+    /// taxable/tax-aware (an optional tax caveat, never an action input — no
     /// tax-lot modeling), and **cash treated as unconstrained** (the user may hold
     /// cash the app can't see). The real per-user profile is configured in a later
     /// Settings slice.
@@ -141,8 +141,8 @@ impl InvestorProfile {
             risk_tolerance: self.risk_tolerance.label().to_string(),
             horizon: self.horizon.label().to_string(),
             tax: if self.tax_sensitive {
-                "tax-aware — the possible benefit of realizing a loss is weighed \
-                 qualitatively; no tax-lot, holding-period, or rate modeling"
+                "tax-aware — tax consequences are an optional caveat, with no effect on \
+                 the action; account type, tax lots, holding periods, and rates are unmodeled"
                     .to_string()
             } else {
                 "tax-exempt — no tax consideration applied".to_string()
@@ -2093,10 +2093,13 @@ pub struct HoldingAudit {
 /// resolving "JSON or Markdown?" toward a hand-built Markdown block while
 /// planning its content, and the topic worked under that confusion dropped whole
 /// at reconciliation (attempt-5 Finding 5,
-/// `docs/verification/2026-09-01-big-run-attempt-5-findings.md`). Prompt-prose
-/// only, but it changes the synthesis input and so a completed holding's
-/// analysis, and v34 has now run (attempt 5's four holdings persist under it),
-/// so it moves to v35 rather than folding in; no schema or other axis moves.
+/// `docs/verification/2026-09-01-big-run-attempt-5-findings.md`). Before v35's
+/// debut, the joint prompt review also adds pass-local source-id citations
+/// (resolved to the existing persisted URLs), dedicated synthesis orientation,
+/// schema-derived nested examples, bounded original text for distillation
+/// extraction, explicit daily ledger volatility and spot, branch-specific
+/// action facts, and validated continuity evidence. These fold into the unrun
+/// v35 contract; persisted shapes and the other version axes are unchanged.
 pub const PROMPT_VERSION: &str = "portfolio-v35";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
@@ -2560,6 +2563,8 @@ pub fn interpretation_response_contract() -> String {
          holding.",
         INTERPRETATION_KEYS.join(", ")
     )
+    + " price_target_rationale explains the engine's twelve-month base target or its absence; your own targets belong in model_price_targets. "
+    + &response_shape_contract(&interpretation_schema())
 }
 
 /// The `role_risk_only` branch's contract, generated from [`ROLE_RISK_KEYS`].
@@ -2567,6 +2572,44 @@ pub fn role_risk_response_contract() -> String {
     format!(
         "Respond with a single JSON object carrying exactly these keys: {}.",
         ROLE_RISK_KEYS.join(", ")
+    ) + &response_shape_contract(&role_risk_interpretation_schema())
+}
+
+/// Show the same nested structure and enums that constrain decoding. Examples
+/// populate nullable objects and array items so neither shape is left implicit.
+pub(crate) fn response_shape_contract(schema: &Value) -> String {
+    let mut enums = Vec::new();
+    fn visit(schema: &Value, path: &str, enums: &mut Vec<String>) -> Value {
+        if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+            enums.push(format!("{path}: {}", serde_json::to_string(values).unwrap()));
+            return values.iter().find(|v| !v.is_null()).cloned().unwrap_or(Value::Null);
+        }
+        if schema["type"].as_array().is_some_and(|ts| ts.iter().any(|t| t == "null")) {
+            enums.push(format!("{path}: may also be null"));
+        }
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            return Value::Object(properties.iter().map(|(key, child)| {
+                let next = if path.is_empty() { key.clone() } else { format!("{path}.{key}") };
+                (key.clone(), visit(child, &next, enums))
+            }).collect());
+        }
+        if let Some(items) = schema.get("items") {
+            return serde_json::json!([visit(items, &format!("{path}[]"), enums)]);
+        }
+        let kind = schema["type"].as_str().or_else(|| {
+            schema["type"].as_array()?.iter().filter_map(Value::as_str).find(|t| *t != "null")
+        });
+        match kind {
+            Some("number" | "integer") => serde_json::json!(1),
+            Some("boolean") => serde_json::json!(false),
+            Some("string") => serde_json::json!(format!("<{path}>")),
+            _ => Value::Null,
+        }
+    }
+    let example = visit(schema, "", &mut enums);
+    format!(
+        "\nResponse shape example (text, numbers, booleans and enum choices illustrate types, not findings; replace them with this holding's read; arrays may be empty):\n{}\nField alternatives:\n{}\nThe entire response is one JSON object beginning with {{.\n",
+        serde_json::to_string(&example).unwrap(), enums.join("\n")
     )
 }
 
@@ -2770,7 +2813,7 @@ pub fn action_response_contract() -> String {
     format!(
         "Respond with a single JSON object carrying exactly these keys: {}.",
         ACTION_KEYS.join(", ")
-    )
+    ) + " Example shape: {\"action\": \"hold\", \"rationale\": \"<investment reason, optionally followed by a tax caveat in the same sentence>\"}; the example action is illustrative."
 }
 
 /// The JSON Schema for [`ActionDecision`] — the action enum lists the full
@@ -2797,6 +2840,26 @@ pub fn action_decision_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_examples_decode_with_populated_nested_shapes() {
+        let example = |schema: Value| -> Value {
+            let contract = response_shape_contract(&schema);
+            serde_json::from_str(contract.lines().find(|line| line.starts_with('{')).unwrap()).unwrap()
+        };
+        let priced = example(interpretation_schema());
+        let decoded: Interpretation = serde_json::from_value(priced.clone()).unwrap();
+        assert!(!decoded.what_changed_entries.is_empty());
+        assert!(decoded.ledger.falsifiers[0].quant.is_some());
+        assert!(decoded.ledger.triggers[0].quant.is_some());
+        let role = example(role_risk_interpretation_schema());
+        let _: RoleRiskInterpretation = serde_json::from_value(role.clone()).unwrap();
+        assert!(role.get("model_sub_scores").is_none());
+        assert_ne!(role["ledger"]["triggers"][0]["family"], "add");
+        let contract = interpretation_response_contract();
+        assert!(contract.contains("horizon_outlook.short: [\"bullish\",\"neutral\",\"bearish\"]"));
+        assert!(contract.contains("ledger.falsifiers[].quant: may also be null"));
+    }
 
     #[test]
     fn model_arm_domain_admits_the_scale_edges_and_an_inverted_band() {
@@ -2862,8 +2925,8 @@ mod tests {
                     "maximize profit (total return; no income or capital-preservation mandate)",
                 "risk_tolerance": "aggressive (medium-to-high)",
                 "horizon": "long-term (durable multi-quarter / multi-year theses)",
-                "tax": "tax-aware — the possible benefit of realizing a loss is weighed \
-                        qualitatively; no tax-lot, holding-period, or rate modeling",
+                "tax": "tax-aware — tax consequences are an optional caveat, with no effect on \
+                        the action; account type, tax lots, holding periods, and rates are unmodeled",
                 "cash": "unconstrained — adds are never gated on observed Schwab cash",
             })
         );
