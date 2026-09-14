@@ -8588,8 +8588,10 @@ mod tests {
         // input and so a completed holding's analysis, moving it to v34. The
         // final pre-debut sweep's aggregate gather-packet / tool-batch bounds and
         // joint header-plus-body evidence selector fold into that same never-run
-        // v34 contract.
-        assert_eq!(PROMPT_VERSION, "portfolio-v34");
+        // v34 contract. Attempt 5 ran v34 (four holdings persist under it); its
+        // Finding-5 fix shows the synthesis prompt the findings object's shape,
+        // changing the synthesis input again, so it moves to v35.
+        assert_eq!(PROMPT_VERSION, "portfolio-v35");
     }
 
     #[test]

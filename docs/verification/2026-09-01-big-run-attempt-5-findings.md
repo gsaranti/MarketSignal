@@ -221,6 +221,17 @@ events — a cluster on those topics, or a tight correlation with the parse retr
 is the evidence that the format confusion is causing topic loss rather than the
 independent distillation-reconciliation miss the gap mechanism already expects.
 
+Fix landed 2026-09-14 (`portfolio-v35`): the synthesis system prompt now shows the
+findings object's shape — exact keys, types, required members, and a terse
+placeholder-valued example pinned to the grammar's key set by test — and no longer
+names an output grammar the model cannot see.
+The stamp moved because v34 had run (this record's four holdings persist under it)
+and the change alters the synthesis input, the v34 precedent.
+The quantify-across-the-book action above now sits in `big-run-watch-set.md` §The
+research loop.
+The 6d distillation prompts were left untouched so attempt 6's unreconciled-topic
+read attributes to this one change.
+
 ## Finding 6 — Fund path: first clean priced and role/risk reads (new)
 
 The two fund holdings exercised both branches of the intrinsic verdict's

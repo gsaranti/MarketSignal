@@ -2084,7 +2084,20 @@ pub struct HoldingAudit {
 /// those corrections fold into the same never-run v34 contract. The resume contract,
 /// `job::resume_eligibility`, refuses a resume across changed synthesis semantics
 /// rather than mixing them.
-pub const PROMPT_VERSION: &str = "portfolio-v34";
+///
+/// `portfolio-v35`: the Step-6c synthesis prompt shows the model the findings
+/// object's shape — exact keys, types, required members, and a terse
+/// placeholder-valued example pinned to `findings_schema` by test — in place of
+/// telling it only that "your output grammar" exists. The `format` grammar is a
+/// decoding mask the model never sees; attempt 5's PSX trace showed the model
+/// resolving "JSON or Markdown?" toward a hand-built Markdown block while
+/// planning its content, and the topic worked under that confusion dropped whole
+/// at reconciliation (attempt-5 Finding 5,
+/// `docs/verification/2026-09-01-big-run-attempt-5-findings.md`). Prompt-prose
+/// only, but it changes the synthesis input and so a completed holding's
+/// analysis, and v34 has now run (attempt 5's four holdings persist under it),
+/// so it moves to v35 rather than folding in; no schema or other axis moves.
+pub const PROMPT_VERSION: &str = "portfolio-v35";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
