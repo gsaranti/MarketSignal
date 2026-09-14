@@ -169,6 +169,7 @@ build status lives in `BUILD.md`.*
 - Local-suite connection indicators (Ollama / SearXNG) — interface.md §Connection status
 - Source registry & evidence tiers — data-sources.md §Source registry and evidence tiers; web-research.md §Source quality and evidence weighting; configuration.md §Web Research
 - Source quality & evidence weighting — web-research.md §Source quality and evidence weighting
+- Extraction telemetry — per-domain fetch outcomes (the web-research.md statement is canonical) — web-research.md §Source quality and evidence weighting; storage.md §Local Analysis Suite Storage; data-portability.md §What moves, and what deliberately does not
 - Connected Sources — web-research.md §Connected sources; configuration.md §Connected Sources (subscriptions)
 - Charles Schwab integration — schwab-integration.md
 - Schwab connection requirement — schwab-integration.md §A connected Schwab account is required

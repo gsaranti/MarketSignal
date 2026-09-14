@@ -19,7 +19,7 @@ Nothing in flight.
 `PRAGMA table_info(web_source_state)` at bring-up is the check (the watch-set intro carries it); the app recreates the table on start.
 The attempt-6 debut stamp to confirm is still **`portfolio-v35`** (`checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v3` unchanged).
 The old `web_source_state` counts from attempts 3–5 are lost on the drop — three partial runs' worth, read nowhere.
-`BUILD.md` / `INDEX.md` were not touched this session (user-run writes): a one-sentence addition to BUILD §What remains item 1 and an INDEX row for the extraction-telemetry contract are pending the user's call.
+`BUILD.md` §What remains item 1 and an `INDEX.md` extraction-telemetry row were updated at the user's direction in the follow-up commit.
 
 ## Open questions
 

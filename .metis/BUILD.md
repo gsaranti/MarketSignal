@@ -832,6 +832,11 @@ every stacked runtime confirmation at once.
    object's keys, types, required members and a placeholder example, pinned
    to the grammar by test; attempt 6 is again the user's call, from a wiped
    store.
+   The attempt-5 telemetry gaps then landed 2026-09-14 with no stamp moved
+   — the per-domain source state counts failed and denied live fetches
+   beside the full/thin pair (archive format v6, the pre-release v2–v5
+   shapes refused) and research-loop retry events name their topic and leg
+   — so the wipe before attempt 6 also drops `web_source_state`.
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire
