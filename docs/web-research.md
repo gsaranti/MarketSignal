@@ -19,7 +19,8 @@ The pass's findings are then authored by a **separate synthesis call** — a fre
 The degradation the discarded gathering history carried — failed or empty searches, failed fetches, a per-page fetch truncated at the text cap, capped or budget-skipped calls — is surfaced to that synthesis call as a plain note of what was lost and recorded as a persisted gap.
 The note states the loss and no more: it does not tell the synthesis model to temper conviction or leave the topic unanswered, per the posture that the app informs the model and never prescribes its conclusion ([local-models.md §Prompt posture](local-models.md#prompt-posture)).
 The synthesis prompt also shows the model the findings object's shape: its exact keys, types, required members, and a terse placeholder-valued example, pinned to the grammar's key set by test.
-For Portfolio, each usable source has a pass-local `S1`, `S2`, … identifier, and the synthesis wire cites `source_id` instead of copying a URL.
+For Portfolio, each rendered source has a contiguous pass-local `S1`, `S2`, … identifier assigned after evidence admission, and the synthesis wire cites `source_id` instead of copying a URL.
+The same rendered-source mapping supplies the prompt identifiers and their resolution; empty, duplicate and budget-omitted pages introduce no numbering gaps.
 The app resolves only identifiers for evidence actually shown in that call, then preserves the existing claim + final source URL + retrieval timestamp contract, including redirected seed lineage.
 Unknown identifiers, URL strings supplied as identifiers, and identifiers for budget-omitted sources cannot become citations.
 Portfolio synthesis has its own orientation packet: topic questions, seed identifiers and headlines, cached orientation, and the prior assertions a disconfirming pass tests, without gathering-stage search instructions or a second prior-claim URL roster.

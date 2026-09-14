@@ -247,7 +247,8 @@ Every worked topic's full response flows intact to distillation — nothing is s
 
 ### Step 6d: Distillation
 
-Every distillation shape includes a schema-derived example with populated nested objects and array items, plus explicit enum and null alternatives.
+Every distillation shape includes a schema-derived template with populated nested objects and array items, plus explicit enum and null alternatives.
+Multi-choice enum fields use named placeholders rather than sample judgments; the template explicitly requires replacing them with a listed alternative, never emitting the placeholder literally.
 The final single-pass or reduce call also receives original fetched page text for typed extraction, so exact excerpts do not have to be reconstructed from summaries.
 This separate source section uses at most one third of the widest input allowance and only the space remaining after the full consolidation prompt; pages receive deterministic allocations in URL order, and omitted or truncated text is recorded as an extraction-coverage gap.
 The prompt requires a typed fact's supporting text in that section; absent text calls for the affected field to be null or observation absent, while the existing app-side source validators still check the original fetched page.
@@ -380,6 +381,13 @@ For a **`role_risk_only`** holding the same call authors the union's other branc
 Since `portfolio-v9` the interpretation authors **no action**: a second, dedicated **action call** follows in the same step — it reads the finished verdict, the holding's own sizing evidence, and the **investor profile** (its only entry point into the job), and returns the rung-only portfolio action with a one-line rationale (see the second call block below).
 
 #### Local-model call — Interpretation & grading (Qwen3.5-122B, thinking)
+
+Priced and role/risk interpretation show schema-derived nested templates and enum/null alternatives alongside the field meanings.
+Outlook samples use `neutral`; other multi-choice enums use named placeholders tied to their allowed values, avoiding default confidence, trigger-family, or attribution judgments.
+The templates are explicitly not completed answers: placeholders must be replaced, and sample numbers, booleans and outlooks are illustrative rather than findings.
+Both prompts provide the authoritative per-share quote directly, and the priced interpretation identifies higher risk-axis scores as greater resilience.
+The priced interpretation identifies `price_target_rationale` as the explanation of the engine's twelve-month base target or its absence.
+Role/risk interpretation supplies daily `return-volatility` from the short history used by ledger evaluation, separately from the annualized observable-risk display, which can use a different history window.
 
 **Model.**
 The resident 122B in thinking mode; schema-constrained output.

@@ -1511,7 +1511,7 @@ impl ResearchRunner<'_> {
         // evidence the synthesis never saw is rejected, not accepted (round-8).
         let shown_fetched: Vec<(String, String, Option<SourceAnnotation>)> = fetched
             .iter()
-            .filter(|(url, _, _)| shown.contains(url))
+            .filter(|(url, _, _)| shown.contains_key(url))
             .cloned()
             .collect();
         Ok(self.validate_findings(wire, ctx, &shown_fetched, &url_aliases, gaps))
@@ -1535,10 +1535,10 @@ impl ResearchRunner<'_> {
         page_titles: &std::collections::HashMap<String, String>,
         degradation_note: Option<&str>,
         gaps: &mut Vec<String>,
-    ) -> Result<(FindingsWire, std::collections::HashSet<String>)> {
+    ) -> Result<(FindingsWire, std::collections::HashMap<String, String>)> {
         let schema = findings_schema();
         let stage = research_retry_stage(&self.step_label, &ctx.topic.key, "synthesis");
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let messages = vec![
             ChatMessage::system(synthesis_system_prompt()),
             ChatMessage::user(synthesis_brief(
@@ -1551,7 +1551,6 @@ impl ResearchRunner<'_> {
                 &mut shown,
             )),
         ];
-        let source_ids = synthesis_source_ids(fetched, page_texts);
         // The parse leg of the bounded retry-once fires at most once; the
         // call leg is gated per issued call below.
         let mut findings_retry_used = false;
@@ -1580,8 +1579,8 @@ impl ResearchRunner<'_> {
             match parsed {
                 Ok(mut wire) => {
                     for claim in &mut wire.claims {
-                        claim.source_url = source_ids.iter()
-                            .find(|(url, id)| **id == claim.source_url && shown.contains(*url))
+                        claim.source_url = shown.iter()
+                            .find(|(_, id)| **id == claim.source_url)
                             .map(|(url, _)| url.clone())
                             .unwrap_or_default();
                     }
@@ -1785,7 +1784,7 @@ impl ResearchRunner<'_> {
         }
         if dropped > 0 {
             gaps.push(format!(
-                "topic {}: {dropped} claim(s) dropped (unfetched source URL or over the per-pass cap)",
+                "topic {}: {dropped} claim(s) dropped (unresolved source ID, source not shown, or over the per-pass cap)",
                 ctx.topic.key
             ));
         }
@@ -1910,10 +1909,10 @@ fn synthesis_brief(
     // partial (attempt-4 review, Finding 2). `None` when gathering was clean.
     degradation_note: Option<&str>,
     gaps: &mut Vec<String>,
-    // The URLs actually rendered into the brief — a dropped page is excluded, so
+    // The URLs and IDs actually rendered into the brief — a dropped page is excluded, so
     // its URL leaves the claim validator's allow-set and a claim citing evidence
     // the synthesis never saw is rejected, not accepted (round-8).
-    shown: &mut std::collections::HashSet<String>,
+    shown: &mut std::collections::HashMap<String, String>,
 ) -> String {
     let mut out = synthesis_orientation(ctx);
     if let Some(note) = degradation_note {
@@ -1984,12 +1983,13 @@ fn synthesis_brief(
     // extraction quality, recency, thin-stub. The extracted title leads the body
     // so the sole findings author sees the headline the gathering transcript
     // used to carry (attempt-4 review, Finding 3).
-    let source_ids = synthesis_source_ids(fetched, page_texts);
+    // Reserve the largest possible ID before selection; final IDs are assigned
+    // only at admission, so compacting them cannot exceed this budget.
+    let source_prefix_reserve = synthesis_header("", &format!("S{}", kept.len())).chars().count();
     let headers: Vec<String> = kept
         .iter()
         .map(|(url, retrieved_at, annotation)| {
-            let id = &source_ids[url];
-            let mut h = format!("\n=== SOURCE [{id}]: {url} (retrieved {retrieved_at}");
+            let mut h = format!(": {url} (retrieved {retrieved_at}");
             if let Some(a) = annotation {
                 h.push_str(&format!(
                     " | tier {} | kinds {:?} | extraction quality {:.2}{}{}",
@@ -2043,6 +2043,7 @@ fn synthesis_brief(
         headers[index]
             .chars()
             .count()
+            .saturating_add(source_prefix_reserve)
             .saturating_add(1) // trailing newline after this source
             .saturating_add(body_cost)
             .saturating_add(if lengths[index] >= PAGE_TEXT_CAP_CHARS {
@@ -2056,8 +2057,12 @@ fn synthesis_brief(
     });
     if full_total <= budget {
         for index in 0..kept.len() {
-            shown.insert(kept[index].0.clone());
-            out.push_str(&headers[index]);
+            admit_planned_source(
+                PagePlan { text: lengths[index], marker: false, dropped: false },
+                &kept[index].0,
+                shown,
+            );
+            out.push_str(&synthesis_header(&headers[index], &shown[&kept[index].0]));
             out.push_str(texts[index]);
             if lengths[index] >= PAGE_TEXT_CAP_CHARS {
                 out.push_str(FETCH_CAP_MARKER);
@@ -2127,7 +2132,7 @@ fn synthesis_brief(
             defensive_dropped += 1;
             continue;
         }
-        out.push_str(&headers[source_index]);
+        out.push_str(&synthesis_header(&headers[source_index], &shown[&kept[source_index].0]));
         out.push_str(
             &texts[source_index]
                 .chars()
@@ -2236,12 +2241,13 @@ struct PagePlan {
 fn admit_planned_source(
     plan: PagePlan,
     source_url: &str,
-    shown: &mut std::collections::HashSet<String>,
+    shown: &mut std::collections::HashMap<String, String>,
 ) -> bool {
     if plan.dropped || plan.text == 0 {
         return false;
     }
-    shown.insert(source_url.to_string());
+    let next_id = format!("S{}", shown.len() + 1);
+    shown.entry(source_url.to_string()).or_insert(next_id);
     true
 }
 
@@ -2285,20 +2291,10 @@ fn body_snippet(content: &str) -> String {
     }
 }
 
-/// Assemble one pass's opening brief.
-/// Stable ids follow fetch order, deduplicate final URLs, and exclude empty
-/// bodies. Budget-dropped sources retain their ids but cannot resolve a claim.
-fn synthesis_source_ids(
-    fetched: &[(String, String, Option<SourceAnnotation>)],
-    page_texts: &std::collections::HashMap<String, String>,
-) -> std::collections::HashMap<String, String> {
-    let mut ids = std::collections::HashMap::new();
-    for (url, _, _) in fetched {
-        if !ids.contains_key(url) && page_texts.get(url).is_some_and(|text| !text.is_empty()) {
-            ids.insert(url.clone(), format!("S{}", ids.len() + 1));
-        }
-    }
-    ids
+/// Render a source header with its admitted ID (or the largest possible ID
+/// while reserving space before selection).
+fn synthesis_header(header: &str, id: &str) -> String {
+    format!("\n=== SOURCE [{id}]{header}")
 }
 
 /// Synthesis sees the propositions being tested, but no instructions to search
@@ -2309,12 +2305,24 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
         out.push_str(&format!("- {question}\n"));
     }
     if ctx.disconfirming {
-        out.push_str("\nDISCONFIRMING PASS: assess how the gathered evidence bears on the prior assertions below.\n");
+        out.push_str(if ctx.prior_claims.is_empty() {
+            "\nDISCONFIRMING PASS: assess contrary evidence for this topic; no prior assertions are available.\n"
+        } else {
+            "\nDISCONFIRMING PASS: assess how the gathered evidence bears on the prior assertions below.\n"
+        });
     }
     if let Some(followup) = ctx.followup {
-        out.push_str(&format!("\nFOLLOW-UP QUESTION: {}\nRationale: {}\n",
-            crate::data_sources::cap_chars(&followup.question, FOLLOWUP_CAP_CHARS).0,
-            crate::data_sources::cap_chars(&followup.rationale, FOLLOWUP_CAP_CHARS).0));
+        out.push_str("\nFOLLOW-UP QUESTION: ");
+        let (question, cut) = crate::data_sources::cap_chars(&followup.question, FOLLOWUP_CAP_CHARS);
+        out.push_str(&question);
+        if cut { out.push('…'); }
+        if !followup.rationale.trim().is_empty() {
+            out.push_str("\nRationale: ");
+            let (rationale, cut) = crate::data_sources::cap_chars(&followup.rationale, FOLLOWUP_CAP_CHARS);
+            out.push_str(&rationale);
+            if cut { out.push('…'); }
+        }
+        out.push('\n');
     }
     if let Some(seed) = ctx.seed_text {
         out.push_str(&format!("\nCACHED ORIENTATION (not fresh evidence):\n{seed}\n"));
@@ -3114,10 +3122,104 @@ mod tests {
             ("a".into(), "later".into(), None), ("b".into(), "now".into(), None)];
         let pages = [("a".into(), "first".into()), ("empty".into(), String::new()),
             ("b".into(), "second".into())].into();
-        let ids = synthesis_source_ids(&fetched, &pages);
+        let mut ids = std::collections::HashMap::new();
+        let brief = synthesis_brief(&ctx, &fetched, &pages, &Default::default(), None, &mut vec![], &mut ids);
         assert_eq!(ids.len(), 2);
         assert_eq!(ids["a"], "S1");
         assert_eq!(ids["b"], "S2");
+        assert_eq!(brief.matches("=== SOURCE [").count(), 2);
+    }
+
+    #[test]
+    fn synthesis_orientation_handles_absent_assertions_and_marks_followup_cuts() {
+        let agenda = one_topic_agenda();
+        let followup = FollowupProposal {
+            question: "é".repeat(FOLLOWUP_CAP_CHARS + 1),
+            rationale: " ".into(),
+            technology_event: false,
+        };
+        let render = |followup| synthesis_orientation(&PassContext {
+            holding_brief: "HOLDING: WID", topic: &agenda[0], seed_text: None,
+            seeds: &[], followup: Some(followup), prior_claims: &[], disconfirming: true,
+        });
+        let orientation = render(&followup);
+        assert!(orientation.contains("no prior assertions are available"));
+        assert!(!orientation.contains("assertions below"));
+        assert!(!orientation.contains("Rationale:"));
+        assert!(orientation.contains(&format!("FOLLOW-UP QUESTION: {}…\n", "é".repeat(FOLLOWUP_CAP_CHARS))));
+        let followup = FollowupProposal {
+            question: "q".repeat(FOLLOWUP_CAP_CHARS),
+            rationale: "r".repeat(FOLLOWUP_CAP_CHARS + 1),
+            technology_event: false,
+        };
+        let orientation = render(&followup);
+        assert!(orientation.contains(&format!("FOLLOW-UP QUESTION: {}\n", followup.question)));
+        assert!(orientation.contains(&format!("Rationale: {}…\n", "r".repeat(FOLLOWUP_CAP_CHARS))));
+        assert_eq!(orientation.matches('…').count(), 1);
+    }
+
+    #[test]
+    fn synthesis_ids_are_contiguous_after_middle_omissions_and_resolve_the_rendered_map() {
+        let budget = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        );
+        let oversized = format!("https://example.com/{}", "x".repeat(budget));
+        let mut fetched = vec![
+            ("https://example.com/a".into(), "now".into(), None),
+            (oversized.clone(), "now".into(), None),
+            ("https://example.com/empty".into(), "now".into(), None),
+            ("https://example.com/a".into(), "later".into(), None),
+        ];
+        for i in 1..=10 {
+            fetched.push((format!("https://example.com/b{i}"), "now".into(), None));
+        }
+        let mut pages: std::collections::HashMap<String, String> = fetched.iter()
+            .map(|(url, _, _)| (url.clone(), "usable evidence".into())).collect();
+        pages.insert("https://example.com/empty".into(), String::new());
+        let agenda = one_topic_agenda();
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID", topic: &agenda[0], seed_text: None,
+            seeds: &[], followup: None, prior_claims: &[], disconfirming: false,
+        };
+        let mut shown = std::collections::HashMap::new();
+        let mut gaps = vec![];
+        let brief = synthesis_brief(&ctx, &fetched, &pages, &Default::default(), None, &mut gaps, &mut shown);
+        assert!(brief.chars().count() <= budget);
+        assert_eq!(shown.len(), 11);
+        assert!(!shown.contains_key(&oversized));
+        assert!(!shown.contains_key("https://example.com/empty"));
+        let headers: Vec<_> = brief.lines().filter(|line| line.starts_with("=== SOURCE [")).collect();
+        assert_eq!(headers.len(), shown.len());
+        for (i, header) in headers.iter().enumerate() {
+            assert!(header.starts_with(&format!("=== SOURCE [S{}]:", i + 1)), "{header}");
+        }
+        assert_eq!(shown["https://example.com/a"], "S1");
+        assert_eq!(shown["https://example.com/b1"], "S2");
+        assert_eq!(shown["https://example.com/b10"], "S11");
+        let model = ScriptModel::new(vec![findings_turn(json!({
+            "findings": "findings", "topic_answered": true,
+            "claims": [
+                {"claim": "first", "source_id": "S1"},
+                {"claim": "second", "source_id": "S2"},
+                {"claim": "last", "source_id": "S11"},
+                {"claim": "unknown", "source_id": "S12"},
+                {"claim": "URL is not an ID", "source_id": "https://example.com/a"}
+            ]
+        }))]);
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(10));
+        let progress = RunContext::noop();
+        let runner = runner(&model, &web, &clock, &progress, 10);
+        let (wire, resolved) = runner.synthesize_findings(
+            &ctx, &fetched, &pages, &Default::default(), None, &mut gaps,
+        ).unwrap();
+        assert_eq!(resolved, shown);
+        let allowed: Vec<_> = fetched.into_iter().filter(|(url, _, _)| resolved.contains_key(url)).collect();
+        let findings = runner.validate_findings(wire, &ctx, &allowed, &Default::default(), &mut gaps);
+        let urls: Vec<_> = findings.claims.iter().map(|claim| claim.source_url.as_str()).collect();
+        assert_eq!(urls, ["https://example.com/a", "https://example.com/b1", "https://example.com/b10"]);
+        assert!(gaps.iter().any(|gap| gap.contains("unresolved source ID")));
+        assert!(gaps.iter().any(|gap| gap.contains("omitted entirely")));
     }
 
     #[test]
@@ -3569,7 +3671,7 @@ mod tests {
             marker: true,
             dropped: false,
         };
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         assert!(!admit_planned_source(
             dropped,
             "https://example.com/dropped",
@@ -3591,7 +3693,8 @@ mod tests {
             &mut shown
         ));
         assert_eq!(shown.len(), 1);
-        assert!(shown.contains("https://example.com/usable"));
+        assert!(shown.contains_key("https://example.com/usable"));
+        assert_eq!(shown["https://example.com/usable"], "S1");
     }
 
     #[test]
@@ -3621,7 +3724,7 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let _ = synthesis_brief(
             &ctx,
             &fetched,
@@ -3674,7 +3777,7 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let brief = synthesis_brief(
             &ctx,
             &fetched,
@@ -3724,7 +3827,7 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let brief = synthesis_brief(
             &ctx,
             &fetched,
@@ -3769,7 +3872,7 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let brief = synthesis_brief(
             &ctx,
             &fetched,
@@ -3822,7 +3925,7 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let brief = synthesis_brief(
             &ctx,
             &fetched,
@@ -3885,7 +3988,7 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let brief = synthesis_brief(
             &ctx,
             &fetched,
@@ -3900,11 +4003,11 @@ mod tests {
             "the body-bearing page renders its extracted title: {brief}"
         );
         assert!(
-            shown.contains(&rich),
+            shown.contains_key(&rich),
             "the body-bearing page is citable"
         );
         assert!(
-            !shown.contains(&title_only) && !shown.contains(&empty),
+            !shown.contains_key(&title_only) && !shown.contains_key(&empty),
             "neither body-less page enters the validator's allow-set"
         );
         assert!(
@@ -3949,7 +4052,7 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let brief = synthesis_brief(
             &ctx,
             &fetched,
@@ -3997,7 +4100,7 @@ mod tests {
             disconfirming: false,
         };
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let brief = synthesis_brief(
             &ctx,
             &fetched,
@@ -4163,7 +4266,7 @@ mod tests {
         fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
         page_texts.insert(url, "b".repeat(5000));
         let mut gaps = Vec::new();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         let synth = synthesis_brief(
             &ctx,
             &fetched,

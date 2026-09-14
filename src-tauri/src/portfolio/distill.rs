@@ -2196,14 +2196,15 @@ mod tests {
     }
 
     #[test]
-    fn distillation_shape_examples_decode_on_every_branch() {
+    fn distillation_shape_templates_decode_with_all_enum_choices_on_every_branch() {
         for (role_risk, overlay) in [(false, false), (false, true), (true, false)] {
-            let contract = crate::portfolio::response_shape_contract(&combined_schema(role_risk, overlay));
-            let example = contract.lines().find(|line| line.starts_with('{')).unwrap();
-            let _: CombinedWire = serde_json::from_str(example).unwrap();
+            for example in crate::portfolio::response_template_samples(&combined_schema(role_risk, overlay)) {
+                let _: CombinedWire = serde_json::from_value(example).unwrap();
+            }
         }
-        let contract = crate::portfolio::response_shape_contract(&tier1_schema());
-        let _: Tier1Wire = serde_json::from_str(contract.lines().find(|line| line.starts_with('{')).unwrap()).unwrap();
+        for example in crate::portfolio::response_template_samples(&tier1_schema()) {
+            let _: Tier1Wire = serde_json::from_value(example).unwrap();
+        }
     }
 
     /// [`ScriptDistill`] with the bounded retry-once gate opened: permits any

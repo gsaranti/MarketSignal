@@ -4279,15 +4279,13 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
         } => {
             p.push_str(
                 "\nACTION BASIS: The grade and both arms' implied target moves are the primary basis; \
-                 risk tier and horizon outlook refine the read. The letter summarizes quality, \
-                 valuation and resilience; it has no fixed action mapping. The engine's moves \
+                 risk tier and horizon outlook refine the read. The engine's moves \
                  carry stated provenance; the model's bands are its own forward call.\n",
             );
             p.push_str(&format!(
                 "\nTHE VERDICT (already authored — the evidence you act on):\n\
                  ENGINE ARM: grade {}{}; sub-scores quality {:.0} / valuation {:.0} / \
-                 risk/resilience {:.0} (higher = more resilient; momentum {:.0} outside the letter); risk tier {}; \
-                 capital-efficiency read {}.\n",
+                 risk/resilience {:.0} (higher = more resilient; momentum {:.0} outside the letter); risk tier {}.\n",
                 graded.grade.as_str(),
                 if graded.low_confidence_grade {
                     " (low-confidence — an imputed sub-score underlies it)"
@@ -4299,7 +4297,6 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 graded.sub_scores.risk,
                 graded.sub_scores.momentum,
                 graded.risk_tier.as_str(),
-                format!("{:?}", graded.dead_money).to_lowercase(),
             ));
             {
                 let mv = &graded.model_view;
@@ -8277,7 +8274,9 @@ mod tests {
             "{system}"
         );
         assert!(!system.contains("Capital efficiency"), "{system}");
-        assert!(user.contains("capital-efficiency read"), "{user}");
+        assert_eq!(user.matches("CAPITAL EFFICIENCY:").count(), 1, "{user}");
+        assert!(!user.contains("capital-efficiency read"), "{user}");
+        assert!(!user.contains("fixed action mapping"), "{user}");
         assert!(!user.contains("never an exit input"), "{user}");
         assert!(!user.contains("never a departure note"), "{user}");
         // No whole-book vocabulary leaks into the user prompt — the cash row
@@ -8376,6 +8375,9 @@ mod tests {
                 engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
             });
             assert_eq!(prompt.contains("independently poor"), state == crate::portfolio::HurdleState::Fails);
+            assert_eq!(prompt.matches("CAPITAL EFFICIENCY:").count(), 1);
+            assert!(!prompt.contains("capital-efficiency read"));
+            assert!(!prompt.contains("fixed action mapping"));
             assert_eq!(prompt.contains("this assessment carries no exit signal"),
                 matches!(state, crate::portfolio::HurdleState::Clears | crate::portfolio::HurdleState::Indeterminate));
             assert!(prompt.contains("Prior engine grade"));
