@@ -2,45 +2,35 @@
 
 ## What happened
 
-**Portfolio financial-correctness fixes are approved and uncommitted** (2026-09-15).
-The user authorized fixes to the four sweep findings.
-Claude confirmed the financial corrections and identified unnecessary pre-release compatibility code and documentation gaps.
-After the second review, the user accepted the fixes and requested the remaining pre-commit record and documentation cleanup.
-The follow-up removed that compatibility code and the unused priced-fund structural flag, corrected the tier signature and fixtures, consolidated the financial-unit rule, and added the three runtime watches.
-The verification record is [2026-09-15-portfolio-financial-correctness.md](../docs/verification/2026-09-15-portfolio-financial-correctness.md); full Rust tests, clippy, frontend build/tests and diff whitespace checks pass.
-The record now includes the dated approvals and summarizes both independent reviews without referencing a gitignored file.
-The final cleanup aligns the outlook contract, records deferred ADR normalization, and matches the watch-set formatting.
-BUILD and INDEX point to the completed record.
-No live analysis or store wipe was performed in this slice.
-
-**The Portfolio prompt-clarity bundle landed** (2026-09-14; PR #72 squash-merged to `main` at `c8f8c08`; `portfolio-v35` unchanged under the pre-debut rule).
-The session began as a review of the Portfolio prompts against Qwen's re-thinking traces: the debug thought-logs from attempts 3–5 were segmented per model call, which showed that ~85% of attempt 5's re-thinking sat in the research synthesis call (unseen schema, the "no code fences" prohibition, exact-URL transcription, seed citability), not in the action call the user's screenshots came from; the v34 Finding-3 fix had already cut the action call's churn by roughly a third.
-Codex implemented the combined Claude + Codex findings, Claude reviewed the diff and re-ran the gate, Codex fixed all eight review findings, and the gate ran clean again.
-Landed: pass-local source-id citations resolved app-side, a dedicated synthesis orientation, schema-derived shape templates on interpretation / role-risk / distillation with neutral samples and named enum placeholders, explicit spot price and daily `return-volatility`, per-holding resolved capital-efficiency facts, validated continuity evidence in the action packet, and bounded original source text for distillation's typed extraction.
-User ruling: tax is an optional rationale caveat with no effect on the rung (`docs/verification/2026-09-14-portfolio-prompt-clarity.md`).
-BUILD §What remains item 1 + §Standing constraints and INDEX §Verification records were updated at this session-end.
+**The Portfolio financial-correctness sweep landed** (2026-09-15; `7987972` on `main`, pushed).
+Codex audited the Portfolio job and found four financial-correctness defects: non-USD and ADR statement units priced against a USD market cap, covered-call funds priced on an uncapped equity payoff plus distributions, a quick-check sweep able to confirm a falsifier off an annual-to-TTM basis flip, and model outlooks scored at the engine's 1/6/12-month windows instead of their authored 1-month / 1-year / 3–5-year horizons.
+Codex implemented; Claude reviewed over three rounds.
+Round one cut roughly 250 lines of pre-release data-compat Codex had added (the 2026-08-29 no-compat rule) and the now-dead priced-branch structural flag; the pre-existing v1/v2 quick-state migrations went with them.
+User ratified all four rulings: option-overlay funds route to `role_risk_only`; every depositary receipt and any non-USD quote or statement currency is excluded as unsupported units (reversing the 2026-08-05 US-listed-ADR admission — the way back is the deferred FX + ADS-ratio slice in BUILD §Owned by no slice); the scoreboard scores the model's mid read at 12 months and leaves its long read unscored while the engine keeps 1/6/12; stamps moved to `evidence-floor-v5` / `quick-check-v4` / `checkpoint-v9` with `PROMPT_VERSION` staying `portfolio-v35` (unrun).
+Record: `docs/verification/2026-09-15-portfolio-financial-correctness.md`; the unit rule is single-homed at `portfolio-analysis.md §Asset eligibility`; the watch set gained the null-`reportedCurrency`, ADR/overlay-exclusion, and first-sweep flow-withhold watches; BUILD and INDEX were updated in the same commit.
+The prompt-clarity bundle (PR #72, 2026-09-14) is still the unrun v35 content attempt 6 measures.
 
 ## Current state
 
-The approved financial-correctness diff is uncommitted on `main`.
-The remaining pre-commit documentation items are complete.
-The prior handoff records a clean debut store (wiped 2026-09-14); this slice did not inspect or change it.
-The standing pre-release wipe and bring-up checks still apply before a user-named run.
-Attempt 6 writes `job_runs` id 6; its debut stamp to confirm is still **`portfolio-v35`** (`checkpoint-v9` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`).
+Working tree clean, `main` in sync with `origin/main` after this session-end commit.
+Nothing in flight.
+The dev store is still the clean debut wiped 2026-09-14 (`web_source_state` absent until the dev app's next fresh start recreates it); this session did not touch it.
+Attempt 6 writes `job_runs` id 6; its debut stamp set to confirm is **`portfolio-v35` / `checkpoint-v9` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`**.
 **Bring-up caution stands:** build the dev app fresh before the first start — a stale binary would recreate the old `web_source_state` shape.
-Attempt 6 is now the after-measurement of the whole bundle, not of the Finding-5 shape example alone; the per-call segmentation method and the attempt-5 baseline are recorded in memory (`thought-log-oscillation-measurement`).
+Attempt 6 is both the after-measurement of the prompt-clarity bundle (segmentation method and attempt-5 baseline in memory `thought-log-oscillation-measurement`) and the first run under the unit and overlay guards, so expect some holdings to land not-rated or role-risk that priced in attempts 3–5.
 
 ## Open questions
 
 - **When to launch attempt 6** — the user's call; don't propose it.
-- Does the per-call re-think volume drop under v35 — read attempt 6's thought-logs with the same segmentation (v34 baseline over four holdings: synthesis 381 markers / action 40 / interpretation ~30 / gathering 0).
-- Distillation original-source allocation (fair-share by URL order, up to ~79k chars of non-thinking prefill per reduce) — a throughput and truncation watch; evidence selection is named follow-up work.
-- Sampling A/B (the thinking-precise row for synthesis / action) and non-thinking synthesis — deferred experiments, only if the bundle falls short.
-- Carried: the per-domain `denied_count` share at book scale; the permanent SearXNG engine set; Finding 3 oscillation on the action call is now measured on four holdings but not at book scale.
+- Does the per-call re-think volume drop under v35 — same segmentation as the v34 baseline over four holdings (synthesis 381 markers / action 40 / interpretation ~30 / gathering 0).
+- How many holdings the ADR guard, the null-`reportedCurrency` rule, and the overlay name screen remove at book scale — `reportedCurrency` is a provider field the app never read before, untested live.
+- Distillation original-source allocation (fair-share by URL order, up to ~79k chars of prefill per reduce) — a throughput and truncation watch; evidence selection is named follow-up work.
+- Sampling A/B and non-thinking synthesis — deferred experiments, only if the bundle falls short.
+- Carried: the per-domain `denied_count` share at book scale; the permanent SearXNG engine set; action-call oscillation measured on four holdings, not book scale.
+- Post-release only: the quick-check state's own parameter stamp now has no mismatch consumer (the checkpoint header's copy still gates resume) — needs a policy before any shipped build, outside the pre-release wipe rule.
 
 ## Where to start
 
-The financial-correctness slice is ready for commit.
-Commit and launch remain separate actions.
-Wait for the user to name the attempt-6 session; then build the dev app fresh, start it, verify `PRAGMA table_info(web_source_state)` lists `failed_count` / `denied_count`, confirm zero `portfolio_runs` / `portfolio_checkpoints`, bring up infra per the OrbStack bring-up notes, confirm the `portfolio-v35` debut, read `data-health` early, and keep the run's thought-log folder for the per-call after-measurement.
+Nothing is queued ahead of the run.
+Wait for the user to name the attempt-6 session; then build the dev app fresh, start it, verify `PRAGMA table_info(web_source_state)` lists `failed_count` / `denied_count`, confirm zero `portfolio_runs` / `portfolio_checkpoints`, bring up infra per the OrbStack bring-up notes, confirm the `portfolio-v35` debut with the v9 / v5 / v4 stamps, read `data-health` early, count the unit and overlay exclusions against the watch set, and keep the run's thought-log folder for the per-call after-measurement.
 Don't propose the run unprompted.
