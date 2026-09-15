@@ -23,7 +23,7 @@ Before committing or marking a slice done, run the full set — not a subset
     which mounts real components and asserts behavior/accessibility. Currently the
     specs under `tests/components/` (App, ConfirmDialog, JobStatusPanel,
     JobTrackerView, LatestReportView, PersistentWarningArea, PortfolioView,
-    RecentReportsSidebar, ResearchDocuments,
+    ReasoningPane, RecentReportsSidebar, ResearchDocuments,
     Settings), with shared mock helpers in `tests/helpers/`. Spec files run through esbuild
     type-stripping, so they're a runtime/behavioral floor, not a type gate
     (tsconfig `include` is `src/**`; specs aren't in the `vue-tsc` pass).

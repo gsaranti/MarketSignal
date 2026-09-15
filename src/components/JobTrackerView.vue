@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import Icon from "./Icon.vue";
+import ReasoningPane from "./ReasoningPane.vue";
 import type { PortfolioResumeStatus, RunTrace, StepStatus } from "../types";
 
 // Live job run tracker — shown in place of the report pane while a run is in
@@ -21,6 +22,11 @@ import type { PortfolioResumeStatus, RunTrace, StepStatus } from "../types";
 // rejected patterns (it is one slow opacity oscillation on the *current* item, not
 // skeleton shimmer, a spinner, or completion celebration) and is gated by
 // prefers-reduced-motion. Approved as an intentional departure.
+//
+// The streamed-reasoning well is its own primitive (ReasoningPane.vue), shared by
+// the main agent's, each analyst's, and a local job's per-step stream: bounded in
+// height with its own scroller and auto-follow, so a long run's earlier steps
+// stay compact (ruled 2026-09-15; the extension note lives with the component).
 const props = withDefaults(
   defineProps<{
     trace: RunTrace;
@@ -378,22 +384,25 @@ watch(contentSignature, async () => {
           <!-- Each analyst's streamed reasoning (thoughts only — the review body never
                streams), one pane per analyst that surfaces thinking, labeled by posture.
                Absent for analyst models that don't surface thinking. -->
-          <div
+          <ReasoningPane
             v-for="pane in analystPanes(step.analystThinking)"
             :key="pane.posture"
-            class="agent-thinking"
-          >
-            <span class="agent-thinking-label">{{ pane.label }} · Reasoning</span>
-            <pre class="agent-thinking-body">{{ pane.text }}</pre>
-          </div>
+            :label="`${pane.label} · Reasoning`"
+            :accessible-label="`${pane.label} reasoning`"
+            :text="pane.text"
+          />
 
-          <!-- The main agent's streamed reasoning (extended thinking), shown above
-               its report text as a quieter, subordinate stream. Absent for models
-               that don't surface thinking — the block simply doesn't render. -->
-          <div v-if="step.agentThinking" class="agent-thinking">
-            <span class="agent-thinking-label">Reasoning</span>
-            <pre class="agent-thinking-body">{{ step.agentThinking }}</pre>
-          </div>
+          <!-- The step's streamed reasoning (the main agent's extended thinking, or
+               a local job's per-step stream), shown above any report text as a
+               quieter, subordinate stream. Absent for models that don't surface
+               thinking — the block simply doesn't render. The accessible name carries
+               the step label so a long run's panes don't all read "Reasoning". -->
+          <ReasoningPane
+            v-if="step.agentThinking"
+            label="Reasoning"
+            :accessible-label="`${step.label} reasoning`"
+            :text="step.agentThinking"
+          />
 
           <!-- The main agent's report text, streamed live (decoded Markdown). -->
           <pre v-if="step.agentText" class="agent-stream">{{ step.agentText }}</pre>
@@ -777,43 +786,13 @@ watch(contentSignature, async () => {
   }
 }
 
-/* The main agent's streamed reasoning — a subordinate stream, set apart from the
-   report-text console below so the two never read as one. DESIGN-SYSTEM EXTENSION
-   (per CLAUDE.md §5, same family as this file's tracker note): the report stream is
-   the mono inset-well; the reasoning is the system's quiet serif-italic "aside" voice
-   on the same paper-edge surface, in --ink-3 and a softer hairline so it reads as
-   secondary to the deliverable. A caption label names it. Static, like the rest of
-   the tracker (no shimmer/motion), so reduced-motion needs no special handling. */
-.agent-thinking {
-  margin: var(--s-4) 0 0 0;
-}
-.agent-thinking-label {
-  display: block;
-  font-family: var(--font-sans);
-  font-size: var(--t-caption);
-  letter-spacing: var(--track-caption);
-  text-transform: uppercase;
-  color: var(--ink-3);
-  margin-bottom: var(--s-2);
-}
-.agent-thinking-body {
-  margin: 0;
-  padding: var(--s-4) var(--s-5);
-  background: var(--paper-edge);
-  border: 1px solid var(--hairline-soft);
-  border-radius: var(--radius);
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: var(--t-ui-sm);
-  line-height: var(--lh-ui);
-  color: var(--ink-3);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
+/* The streamed-reasoning well (the subordinate stream above the report text)
+   is ReasoningPane.vue, which owns its look and its bound. */
 
 /* The main agent's streamed report text — the system's inset-well code block
    idiom (mono on paper-edge, hairline border), here growing as the model writes
-   and softly wrapping its Markdown source. */
+   and softly wrapping its Markdown source. Deliberately left unbounded — it is
+   the deliverable and there is one per run — unlike the reasoning wells. */
 .agent-stream {
   margin: var(--s-4) 0 0 0;
   padding: var(--s-4) var(--s-5);

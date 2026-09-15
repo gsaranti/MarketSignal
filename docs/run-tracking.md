@@ -30,6 +30,8 @@ When a run begins, the owning page (the report pane for a report run) is replace
   A local job's per-item interpretation stages stream their reasoning onto the step the stage belongs to — a Portfolio run's "Analyze {symbol}" step shows the model's live thinking for that holding while it runs, in the same subordinate reasoning pane the report steps use.
   The structured verdict itself never streams; only the reasoning does, so the schema-validated result remains the single source of truth.
 
+Every reasoning pane is bounded in height and scrolls on its own, so a long run's earlier steps stay compact and the tracker scrolls between steps rather than through every thought.
+
 The tracker is a live view of one run.
 Its contents are kept for the current application session and reflect the **latest run only**; they are not persisted across restarts.
 
