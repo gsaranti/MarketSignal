@@ -804,13 +804,13 @@ const MODEL_LETTER_TITLE =
   "The model's letter, derived from its own quality/valuation/risk through the " +
   "shared cutoffs";
 
-// The model outlook's ≠ engine read compares per-horizon against the stand-in;
-// any differing window tags the row — one quiet tag, the conviction/lean idiom.
+const ENGINE_HORIZONS = { short: "1 mo", mid: "6 mo", long: "12 mo" };
+const MODEL_HORIZONS = { short: "1 mo", mid: "1 yr", long: "3–5 yr" };
+
+// Compare only the horizons both arms actually forecast.
 function outlookDiverges(d: GradedVerdict): boolean {
-  const ev = d.engine_view;
-  return (["short", "mid", "long"] as const).some(
-    (h) => d.horizon_outlook[h] !== ev.outlook[h]
-  );
+  return d.horizon_outlook.short !== d.engine_view.outlook.short ||
+    d.horizon_outlook.mid !== d.engine_view.outlook.long;
 }
 
 // Column A renders the engine stand-in's conviction/outlook.
@@ -866,12 +866,14 @@ const scoreboardLines = computed<string[]>(() => {
       );
     const engine = arm("engine");
     const model = arm("model");
-    if (engine && model) {
-      lines.push(
-        `${window}-mo direction: model ${model.hits}/${model.scored} ` +
-          `vs engine ${engine.hits}/${engine.scored}`
-      );
-    }
+    const arms = [
+      model ? `model ${model.hits}/${model.scored}` : null,
+      engine ? `engine ${engine.hits}/${engine.scored}` : null,
+    ].filter((value) => value !== null);
+    if (arms.length) lines.push(`${window}-mo direction: ${arms.join(" vs ")}`);
+  }
+  if (reads.outlook_direction.some((r) => r.scored > 0)) {
+    lines.push("Model direction scores cover 1 month and 1 year; the 3–5-year outlook has no matching outcome window.");
   }
   return lines;
 });
@@ -1813,12 +1815,6 @@ const keyFigures = computed(() => {
                           title="An imputed (neutral) sub-score underlies this letter"
                           >Low confidence</span
                         >
-                        <span
-                          v-if="v.disposition.structural_flag"
-                          class="ana-tag"
-                          title="Option-overlay vehicle — structurally path-dependent; the Low risk tier is barred"
-                          >Structurally path-dependent</span
-                        >
                         <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                           >No longer held</span
                         >
@@ -2025,7 +2021,7 @@ const keyFigures = computed(() => {
                           :key="horizon"
                           class="hc-horizon"
                         >
-                          <span class="hc-horizon-label">{{ horizon }}</span>
+                          <span class="hc-horizon-label">{{ ENGINE_HORIZONS[horizon] }}</span>
                           <span class="dir" :class="HORIZON_DIR[read]">{{
                             read
                           }}</span>
@@ -2167,7 +2163,7 @@ const keyFigures = computed(() => {
                           :key="horizon"
                           class="hc-horizon"
                         >
-                          <span class="hc-horizon-label">{{ horizon }}</span>
+                          <span class="hc-horizon-label">{{ MODEL_HORIZONS[horizon] }}</span>
                           <span class="dir" :class="HORIZON_DIR[read]">{{
                             read
                           }}</span>

@@ -650,10 +650,6 @@ pub struct GradedVerdict {
     /// stock) — "the classification is deterministic, shown on the card"
     /// (`docs/portfolio-analysis.md` §Asset eligibility), the priced branch included.
     pub fund_class_label: Option<String>,
-    /// The deterministic structural path-dependency flag on the priced branch (an
-    /// option-overlay fund; leveraged / inverse routes to `role_risk_only` instead) —
-    /// card-visible beside the classification.
-    pub structural_flag: bool,
     /// A concise read of the company's financial health (model prose).
     pub financial_summary: String,
     /// The continuity diff against the prior run (model prose, or "new holding") —
@@ -2101,6 +2097,7 @@ pub struct HoldingAudit {
 /// extraction, explicit daily ledger volatility and spot, branch-specific
 /// action facts, and validated continuity evidence. These fold into the unrun
 /// v35 contract; persisted shapes and the other version axes are unchanged.
+/// The pre-debut bundle also names option-overlay funds in the role/risk prompt.
 pub const PROMPT_VERSION: &str = "portfolio-v35";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local

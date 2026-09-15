@@ -758,6 +758,9 @@ pub fn analyze_holding(
     // wrong-issuer mapping can never grade the wrong company's financials.
     if matches!(asset_class, crate::portfolio::AssetClass::Stock) {
         let unsupported = match &dossier.listing {
+            Some(crate::portfolio::listing::ListingResolution::UnsupportedUnits { detail }) => {
+                Some(format!("unsupported financial units — {detail}"))
+            }
             Some(crate::portfolio::listing::ListingResolution::Unresolved) => Some(
                 "unsupported listing — no canonical FMP resolution for this symbol".to_string(),
             ),
@@ -1455,7 +1458,6 @@ pub fn analyze_holding(
         dead_money: engine_output.hurdle.state,
         low_confidence_grade: engine_output.low_confidence_grade,
         fund_class_label: engine_output.fund_class_label.clone(),
-        structural_flag: engine_output.structural_flag,
         financial_summary: interpretation.financial_summary,
         what_changed: interpretation.what_changed,
         // The model arm: persisted exactly as authored, letter derived from the
@@ -2997,7 +2999,7 @@ pub fn role_risk_system_prompt() -> String {
     format!(
         "You are a disciplined portfolio analyst assessing one holding whose vehicle \
      class this pipeline is structurally unable to price (a bond or commodity fund, \
-     an equity fund below the US-exposure guard, a leveraged/inverse vehicle, or a \
+     an equity fund below the US-exposure guard, a leveraged/inverse or option-overlay vehicle, or a \
      fund without usable weightings). \
      Do NOT produce a grade, price target, conviction, or action — none exists for \
      this branch here. Your job: \
@@ -6994,7 +6996,6 @@ mod tests {
                 assert!(tm.methodology.contains("fund exposure composite"));
                 // The deterministic classification reaches the card-visible verdict.
                 assert_eq!(g.fund_class_label.as_deref(), Some("US equity fund"));
-                assert!(!g.structural_flag);
             }
             other => panic!("expected a priced fund verdict, got {other:?}"),
         }
@@ -7267,6 +7268,52 @@ mod tests {
             }
             other => panic!("expected not-rated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unsupported_units_and_overlay_payoffs_never_persist_priced_outputs() {
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.listing = Some(
+            crate::portfolio::listing::ListingResolution::UnsupportedUnits {
+                detail: "unverified ADR share basis".into(),
+            },
+        );
+        let (verdict, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
+        assert!(
+            matches!(verdict.disposition, VerdictDisposition::NotRated { reason } if reason.contains("unsupported financial units"))
+        );
+        assert!(audit.target_meta.is_none());
+        assert!(audit.quick_basis.is_none());
+
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.financials.unit_issues.push(engine::StatementUnitIssue {
+            surface: "income".into(),
+            reported_currency: Some("TWD".into()),
+        });
+        let (verdict, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
+        assert!(
+            matches!(verdict.disposition, VerdictDisposition::InsufficientEvidence { reason } if reason.contains("unsupported financial units"))
+        );
+        assert!(audit.target_meta.is_none());
+        assert!(audit.quick_basis.is_none());
+
+        let mut fund = us_equity_fund();
+        fund.name = Some("US Equity Covered Call ETF".into());
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &fund_dossier(fund), &rates(), "2026-08-04").unwrap();
+        assert!(matches!(
+            verdict.disposition,
+            VerdictDisposition::RoleRiskOnly(_)
+        ));
+        assert!(audit.target_meta.is_none());
+        assert!(audit.quick_basis.is_none());
+        assert!(verdict
+            .thesis_ledger
+            .as_ref()
+            .unwrap()
+            .monitor
+            .iter()
+            .all(|m| m.engine_target.is_none()));
     }
 
     #[test]

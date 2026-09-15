@@ -10,6 +10,8 @@ Records this run persists stamp `portfolio-v35`, not the `portfolio-v11` these a
 The live attempts between ran earlier stamps to early cancellation, none to completion: attempt 3 `portfolio-v30` (2 holdings), attempt 4 `portfolio-v32` (7), attempt 5 `portfolio-v34` (4).
 The observation-admission-stamp slice (Codex I20) moved the checkpoint format stamp to `checkpoint-v3`; the required period span moved it to `checkpoint-v4`; the quick-check carried-tail evaluation stamp moved it to `checkpoint-v5`; the raw fiscal-period consensus rows moved it to `checkpoint-v6`; the corrected Schwab cash-position reconciliation moved it to `checkpoint-v7` so an older pinned denominator cannot resume.
 The local suite's move to SearXNG-only then removed the Tavily-fallback route witness (`tavily_fallback_used`) from a completed holding's research audit, moving the stamp to `checkpoint-v8` so an attempt-3 `checkpoint-v7` trail is refused at the resume gate.
+The financial-correctness fixes move the debut set to `checkpoint-v9` / `evidence-floor-v5` / `quick-check-v4`.
+The priced verdict no longer carries a structural flag.
 The dev store is wiped before this run (ruled 2026-08-29), so every holding is a debut: no prior verdict exists, and nothing that reads against one — the retrospective, the input delta, the ledger evaluation and its crossings, the what-changed audit, the parameter-boundary NOTE, the statement-basis and equity-source gates, episode extension — can fire on run 1.
 The wipe must also drop `web_source_state`: its failed / denied fetch counters (attempt-5 Finding 1) are columns on a create-if-absent table, so a row-delete wipe leaves the old shape and every telemetry write then fails soft, silently, for the whole run.
 `PRAGMA table_info(web_source_state)` at bring-up is the check; the app recreates the table on start.
@@ -67,6 +69,8 @@ For any carried stock stopped by the listing guard, confirm no sector-benchmark 
 The risk-tier distribution now that negative-book issuers take High, read against the stacked conviction and action watches.
 
 ## Thesis ledger and the quick check
+
+On the first sweep, count filing-flow conditions withheld for Annual or unstamped authoring basis, and confirm each leaves Filing `unknown` without a breach or evaluation-state movement.
 
 Debut ledger authorship quality at 47-position scale.
 
@@ -169,6 +173,12 @@ No prior run exists, so every holding carries no pace read on run 1 — a missin
 On run 2, inspect the persisted fiscal-period matches and confirm that the reality leg uses the prior weights across those matches; a rolled NTM blend alone must neither create a quick-check revision event nor mask the narrative read, and no common period must use the operating fallback.
 
 ## Listing and identity shapes
+
+Count statement rows with null or missing `reportedCurrency` and the holdings they prevent from grading.
+The [financial-unit guard](../portfolio-analysis.md#asset-eligibility) is a new provider-field dependency.
+
+Count holdings excluded by the ADR guard and funds routed to role/risk by the option-overlay screen.
+Record the source metadata behind each classification.
 
 The listing guard against real Schwab identity shapes, including possessive issuers whose account description omits the apostrophe (`MCD`, `KSS`, `MCO`, `WEN`).
 Slash-notation class-share symbols read unsupported under the verbatim FMP lookup, and ticker-noise descriptions carry a false-conflict risk.

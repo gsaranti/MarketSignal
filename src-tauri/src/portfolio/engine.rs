@@ -604,6 +604,10 @@ pub struct ConsensusEstimate {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CompanyFinancials {
     pub symbol: String,
+    /// A served statement whose currency is not verifiably USD invalidates
+    /// cross-statement and market/statement arithmetic. Never heal this with
+    /// an unrelated SEC fallback or a currency-less analyst estimate.
+    pub unit_issues: Vec<StatementUnitIssue>,
     pub current_price: Option<f64>,
     pub market_cap: Option<f64>,
     pub shares_outstanding: Option<f64>,
@@ -666,6 +670,23 @@ pub struct CompanyFinancials {
     /// an unchanged flow basis, and both series step with nothing having happened
     /// ([`crate::portfolio::EquitySource`]). It alters no value.
     pub equity_source: Option<crate::portfolio::EquitySource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatementUnitIssue {
+    pub surface: String,
+    pub reported_currency: Option<String>,
+}
+
+impl std::fmt::Display for StatementUnitIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} currency {} is not verified USD — no FX conversion is available",
+            self.surface,
+            self.reported_currency.as_deref().unwrap_or("unknown")
+        )
+    }
 }
 
 /// The shared statement canonicalization policy, applied **in place**: quarterly
@@ -876,12 +897,6 @@ pub struct EngineOutput {
     /// stock) — the classification is shown on the card
     /// (`docs/portfolio-analysis.md` §Asset eligibility).
     pub fund_class_label: Option<String>,
-    /// The deterministic structural path-dependency flag (an option-overlay fund on
-    /// the priced path; always false for a stock) — card-visible, and it barred the
-    /// Low risk tier.
-    pub structural_flag: bool,
-    /// The stored closed-form re-anchor basis the engine-only quick paths read
-    /// (`docs/portfolio-analysis.md` §The quick check) — persisted on the audit.
     pub quick_basis: Option<QuickCheckBasis>,
     /// The implied-expectations range ([`ImpliedExpectations`]) — computed on the
     /// stock path; `None` on the fund path (its settled flat driver prices no driver
@@ -1613,7 +1628,8 @@ pub fn usable_price(value: Option<f64>) -> Option<f64> {
 /// and read as a −100% return into σ, momentum, and drawdown — off the
 /// review's Codex I16, its reviewer round (the stamp off its Codex round 1;
 /// ruled 2026-08-29).
-pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v4";
+/// v5 rejects unverified statement units and routes option-overlay funds to role/risk.
+pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v5";
 
 /// Analyze a holding's financials into sub-scores, a grade, and scenario targets — or
 /// abstain. The evidence floor fails when there is no usable current price
@@ -1621,6 +1637,16 @@ pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v4";
 /// [`MIN_SUBSCORES_FOR_GRADE`] sub-scores are computable; either is an explicit
 /// `insufficient-evidence`, never a low-conviction guess.
 pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
+    if !fin.unit_issues.is_empty() {
+        return EngineVerdict::InsufficientEvidence(format!(
+            "unsupported financial units: {}",
+            fin.unit_issues
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
     let metrics = compute_metrics(fin);
 
     let quality = quality_score(&metrics);
@@ -1709,7 +1735,6 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
         target_meta: bundle.meta,
         low_confidence_grade,
         fund_class_label: None,
-        structural_flag: false,
         quick_basis: Some(bundle.basis),
         implied_expectations: bundle.implied,
     }))
@@ -3308,27 +3333,19 @@ pub fn assign_stock_tier(
     }
 }
 
-/// Deterministic **priced-equity-fund** tier mapping (`docs/portfolio-analysis.md`
-/// §Starting parameters, drafted): High on a **leveraged / inverse** structural flag,
-/// annualized volatility > 40%, or maximum drawdown > 50%; Low on volatility < 25%
-/// with **no structural flag of either kind** — an option-overlay flag bars Low
-/// without forcing High (the doc keys the High leg to leveraged / inverse
-/// specifically, while Low requires no structural flag at all); else Medium.
+/// Risk tier for priced equity funds: High above 40% annualized volatility
+/// or 50% drawdown; Low below 25% volatility; otherwise Medium.
+/// Structural vehicles route to role/risk before this function is called.
 pub fn assign_fund_tier(
-    leveraged_inverse: bool,
-    structural_flag: bool,
     annual_vol: Option<f64>,
     drawdown: Option<f64>,
 ) -> crate::portfolio::RiskTier {
     use crate::portfolio::RiskTier;
-    if leveraged_inverse
-        || annual_vol.map(|v| v > TIER_HIGH_MIN_ANNUAL_VOL).unwrap_or(false)
+    if annual_vol.map(|v| v > TIER_HIGH_MIN_ANNUAL_VOL).unwrap_or(false)
         || drawdown.map(|d| d > TIER_HIGH_MIN_DRAWDOWN).unwrap_or(false)
     {
         RiskTier::High
-    } else if !structural_flag
-        && annual_vol.map(|v| v < TIER_LOW_MAX_ANNUAL_VOL).unwrap_or(false)
-    {
+    } else if annual_vol.map(|v| v < TIER_LOW_MAX_ANNUAL_VOL).unwrap_or(false) {
         RiskTier::Low
     } else {
         RiskTier::Medium
@@ -4154,8 +4171,12 @@ mod tests {
                 value: 130.0 + 4.0 * i as f64,
             })
             .collect();
-        daily_closes.push(DatedValue { date: "2026-07-15".into(), value: 195.0 });
+        daily_closes.push(DatedValue {
+            date: "2026-07-15".into(),
+            value: 195.0,
+        });
         CompanyFinancials {
+            unit_issues: vec![],
             symbol: "AAPL".into(),
             // The shared fixture stands on a contiguous quarterly window, as the
             // production adopt path would stamp it.
@@ -5846,14 +5867,11 @@ mod tests {
 
     #[test]
     fn fund_tier_maps_flag_vol_and_drawdown() {
-        assert_eq!(assign_fund_tier(true, true, Some(0.10), Some(0.05)), RiskTier::High);
-        assert_eq!(assign_fund_tier(false, false, Some(0.45), None), RiskTier::High);
-        assert_eq!(assign_fund_tier(false, false, Some(0.30), Some(0.60)), RiskTier::High);
-        assert_eq!(assign_fund_tier(false, false, Some(0.12), Some(0.15)), RiskTier::Low);
-        // An option-overlay structural flag bars Low without forcing High.
-        assert_eq!(assign_fund_tier(false, true, Some(0.12), Some(0.15)), RiskTier::Medium);
-        assert_eq!(assign_fund_tier(false, false, Some(0.30), Some(0.20)), RiskTier::Medium);
-        assert_eq!(assign_fund_tier(false, false, None, None), RiskTier::Medium);
+        assert_eq!(assign_fund_tier(Some(0.45), None), RiskTier::High);
+        assert_eq!(assign_fund_tier(Some(0.30), Some(0.60)), RiskTier::High);
+        assert_eq!(assign_fund_tier(Some(0.12), Some(0.15)), RiskTier::Low);
+        assert_eq!(assign_fund_tier(Some(0.30), Some(0.20)), RiskTier::Medium);
+        assert_eq!(assign_fund_tier(None, None), RiskTier::Medium);
     }
 
     #[test]
@@ -8091,5 +8109,20 @@ mod tests {
         };
         let view = engine_view(&clean, &fin, &[], Some(&overlay), false, true);
         assert_eq!(view.conviction, Conviction::Low);
+    }
+    #[test]
+    fn unit_issue_cannot_be_rescued_by_otherwise_complete_financials() {
+        let mut fin = strong();
+        assert!(matches!(
+            analyze(&fin, &rates()),
+            EngineVerdict::Analyzed(_)
+        ));
+        fin.unit_issues.push(StatementUnitIssue {
+            surface: "balance sheet".into(),
+            reported_currency: Some("TWD".into()),
+        });
+        assert!(
+            matches!(analyze(&fin, &rates()), EngineVerdict::InsufficientEvidence(reason) if reason.contains("TWD"))
+        );
     }
 }

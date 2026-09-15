@@ -1160,11 +1160,8 @@ fn run_analysis(
     // the same prior run applies. Same fail-soft as the prior run: an unreadable
     // (corrupt — loud-skipped in the store) or unreadable-by-error state reads as
     // "no quick check since the last pass", logged.
-    let mut quick_state = prior_state_read("quick-check-state", store::latest_quick_check(conn))
+    let quick_state = prior_state_read("quick-check-state", store::latest_quick_check(conn))
         .filter(|s| Some(&s.swept_run_id) == prior_run_id.as_ref());
-    if let (Some(state), Some(prior)) = (&mut quick_state, &prior_run) {
-        crate::portfolio::quick_check::reconcile_parameter_version(state, prior);
-    }
 
     // The run's one wall-clock instant, minted before any dated decision: the
     // house-view freshness gate, the over-age reads, the label pass, and the
@@ -1595,6 +1592,7 @@ fn run_analysis(
                 crate::portfolio::listing::ListingResolution::Unresolved
                     | crate::portfolio::listing::ListingResolution::NonUs { .. }
                     | crate::portfolio::listing::ListingResolution::Conflict { .. }
+                    | crate::portfolio::listing::ListingResolution::UnsupportedUnits { .. }
             )
         );
         // A class the equity pipeline never grades skips the same retrieval, for the
@@ -2554,10 +2552,7 @@ fn run_analysis(
     // lifecycle state. The cost of a swallowed error here is a stale
     // quick-check row the next sweep supersedes.
     let retention: anyhow::Result<()> = (|| {
-        let mut store_state = store::latest_quick_check(conn)?;
-        if let (Some(state), Some(prior)) = (&mut store_state, &prior_run) {
-            crate::portfolio::quick_check::reconcile_parameter_version(state, prior);
-        }
+        let store_state = store::latest_quick_check(conn)?;
         let mut retained_holdings: Vec<crate::portfolio::quick_check::HoldingQuickState> =
             Vec::new();
         for v in &run.verdicts {
@@ -3837,6 +3832,8 @@ mod tests {
             use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
             if symbol == "NTDOF" {
                 ProfileLookup::Resolved(ProfileIdentity {
+                    currency: Some("USD".into()),
+                    is_adr: Some(false),
                     company_name: Some("Nintendo Co., Ltd.".into()),
                     exchange: Some("PNK".into()),
                     sector: Some("Communication Services".into()),
@@ -4025,6 +4022,8 @@ mod tests {
                 use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
                 if symbol == "MSFT" {
                     ProfileLookup::Resolved(ProfileIdentity {
+                        currency: Some("USD".into()),
+                        is_adr: Some(false),
                         company_name: Some("Zenith Mining Corp".into()),
                         exchange: Some("NYSE".into()),
                         sector: None,
@@ -5944,6 +5943,8 @@ mod tests {
         fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
             use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
             ProfileLookup::Resolved(ProfileIdentity {
+                currency: Some("USD".into()),
+                is_adr: Some(false),
                 company_name: Some(format!("{symbol} Inc.")),
                 exchange: Some("NASDAQ".into()),
                 sector: Some("Technology".into()),

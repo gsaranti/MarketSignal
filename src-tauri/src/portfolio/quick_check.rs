@@ -67,11 +67,8 @@ pub const QUICK_EOD_LOOKBACK_DAYS: i64 = 180;
 /// split-anchor fetch widening isolated from the fixed 180-day trailing-return
 /// and volatility window (Review 2 N3); `v3` retires rolling-NTM revision
 /// events and compares estimates only on matched fiscal periods (Review 2 M11).
-pub const QUICK_CHECK_PARAMETER_VERSION: &str = "quick-check-v3";
-
-pub(crate) fn legacy_quick_check_parameter_version() -> String {
-    "quick-check-v1".to_string()
-}
+/// `v4` withholds filing flow comparisons unless their authored basis is TTM.
+pub const QUICK_CHECK_PARAMETER_VERSION: &str = "quick-check-v4";
 
 // ---- Typed sweep results -----------------------------------------------------
 
@@ -198,7 +195,6 @@ pub struct HoldingQuickState {
 pub struct QuickCheckState {
     /// The evaluation semantics under which condition streaks and condition-
     /// sourced flags were produced.
-    #[serde(default = "legacy_quick_check_parameter_version")]
     pub parameter_version: String,
     /// The full run these sweeps ran against (`PortfolioRun::run_id`).
     pub swept_run_id: String,
@@ -208,98 +204,6 @@ pub struct QuickCheckState {
     /// checks (and their fail-soft) read alongside the run blob's.
     pub rate_cache: Option<RatePrints>,
     pub holdings: Vec<HoldingQuickState>,
-}
-
-/// Reconcile a persisted state with the current evaluation semantics while
-/// preserving unrelated durable state. The v1→v2 boundary changed only the
-/// trailing-return and return-volatility measurement window, so their streaks
-/// and any flag explicitly sourced from one of those statements are retired.
-/// The v2→v3 boundary retires only revision-move events, because their rolling
-/// NTM comparator could have moved on calendar weights alone.
-pub fn reconcile_parameter_version(
-    state: &mut QuickCheckState,
-    run: &crate::portfolio::PortfolioRun,
-) {
-    if state.parameter_version == QUICK_CHECK_PARAMETER_VERSION {
-        return;
-    }
-    let legacy_v1 = state.parameter_version == "quick-check-v1";
-    let legacy_v2 = state.parameter_version == "quick-check-v2";
-    if !(legacy_v1 || legacy_v2) {
-        for holding in &mut state.holdings {
-            holding.condition_states.clear();
-            holding
-                .evidence_events
-                .retain(|event| event.kind != EvidenceEventKind::RevisionMove);
-            if holding.flag.as_ref().is_some_and(|f| {
-                matches!(
-                    f.trigger,
-                    FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
-                )
-            }) {
-                holding.flag = None;
-            }
-        }
-        state.parameter_version = QUICK_CHECK_PARAMETER_VERSION.to_string();
-        return;
-    }
-    if legacy_v1 {
-        for holding in &mut state.holdings {
-            let Some(verdict) = run
-                .verdicts
-                .iter()
-                .find(|v| v.symbol.eq_ignore_ascii_case(&holding.symbol))
-            else {
-                // A legacy state with no ledger identity cannot be
-                // interpreted safely. Preserve non-condition evidence only.
-                holding.condition_states.clear();
-                if holding.flag.as_ref().is_some_and(|f| {
-                    matches!(
-                        f.trigger,
-                        FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
-                    )
-                }) {
-                    holding.flag = None;
-                }
-                continue;
-            };
-            let affected: Vec<(&str, &str)> = verdict
-                .thesis_ledger
-                .as_ref()
-                .into_iter()
-                .flat_map(|l| &l.conditions)
-                .filter(|c| {
-                    c.quant.as_ref().is_some_and(|q| {
-                        matches!(
-                            q.series,
-                            engine::LedgerSeries::TrailingReturn
-                                | engine::LedgerSeries::ReturnVolatility
-                        )
-                    })
-                })
-                .map(|c| (c.condition_id.as_str(), c.statement.as_str()))
-                .collect();
-            holding
-                .condition_states
-                .retain(|(id, _)| !affected.iter().any(|(affected_id, _)| id == affected_id));
-            if holding.flag.as_ref().is_some_and(|flag| {
-                matches!(
-                    flag.trigger,
-                    FlagTrigger::ConfirmedFalsifierBreach | FlagTrigger::FiredTrigger
-                ) && affected
-                    .iter()
-                    .any(|(_, statement)| flag.detail.ends_with(statement))
-            }) {
-                holding.flag = None;
-            }
-        }
-    }
-    for holding in &mut state.holdings {
-        holding
-            .evidence_events
-            .retain(|event| event.kind != EvidenceEventKind::RevisionMove);
-    }
-    state.parameter_version = QUICK_CHECK_PARAMETER_VERSION.to_string();
 }
 
 // ---- The retrieval seam ------------------------------------------------------
@@ -385,8 +289,12 @@ impl QuickCheckDataSource for LiveQuickCheckData {
             symbol: symbol.to_string(),
             ..CompanyFinancials::default()
         };
-        fin.quarterly_income = self.fmp.fetch_quarterly_income(symbol, &mut fin.gaps);
-        let balance = self.fmp.fetch_balance_sheet(symbol, &mut fin.gaps);
+        fin.quarterly_income =
+            self.fmp
+                .fetch_quarterly_income(symbol, &mut fin.gaps, &mut fin.unit_issues);
+        let balance = self
+            .fmp
+            .fetch_balance_sheet(symbol, &mut fin.gaps, &mut fin.unit_issues);
         fin.total_debt = balance.total_debt;
         fin.total_equity = balance.total_equity;
         fin.ttm_dividends_per_share = self.fmp.fetch_ttm_dividends(symbol, &mut fin.gaps);
@@ -572,11 +480,8 @@ fn run_quick_check_at(
 
     // The prior quick-check state chains streaks / flags — but only against the
     // same run; a newer full run supersedes it wholesale.
-    let mut prior_state = store::latest_quick_check(conn)?
+    let prior_state = store::latest_quick_check(conn)?
         .filter(|s| s.swept_run_id == run.run_id);
-    if let Some(state) = &mut prior_state {
-        reconcile_parameter_version(state, &run);
-    }
 
     // The run-level rate prints, fail-soft to the freshest cached print within the
     // drafted max age — none eligible reads the rate-dependent families `unknown`
@@ -1646,6 +1551,18 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         let sweep_equity_source = crate::portfolio::EquitySource::FmpQuarterly;
         let withheld_reason = |c: &crate::portfolio::LedgerCondition| -> Option<String> {
             let quant = c.quant.as_ref()?;
+            if quant.series.flow_basis() && quant.series.cadence() == ConditionCadence::Filing {
+                let authored = c
+                    .eval_state
+                    .as_ref()
+                    .and_then(|s| s.authored_statement_basis);
+                if authored != Some(crate::portfolio::StatementBasis::Ttm) {
+                    return Some(format!(
+                        "filing flow condition authored on {} — the sweep reads TTM and cannot compare across an unverified basis; the full pass owns the gate",
+                        authored.map(|b| b.label()).unwrap_or("an unstamped basis")
+                    ));
+                }
+            }
             if quant.series != engine::LedgerSeries::DebtToEquity {
                 return None;
             }
@@ -1675,18 +1592,15 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             ..overlaid.clone()
         };
         let mut eval = engine::evaluate_ledger_conditions_gated(
-            &evaluable,
-            &metrics,
-            &eval_fin,
-            inp.today,
-            allow,
+            &evaluable, &metrics, &eval_fin, inp.today, allow,
         );
-        if allow(engine::LedgerSeries::DebtToEquity) {
-            for c in &overlaid.conditions {
+        for c in &overlaid.conditions {
+            if c.quant.as_ref().is_some_and(|q| allow(q.series)) {
                 if let Some(reason) = withheld_reason(c) {
                     eval.unevaluable
                         .push(format!("condition '{}': {reason}", c.statement));
-                    eval.unevaluable_series.push(engine::LedgerSeries::DebtToEquity);
+                    eval.unevaluable_series
+                        .push(c.quant.as_ref().expect("quant checked").series);
                 }
             }
         }
@@ -2241,7 +2155,6 @@ mod tests {
                 dead_money: HurdleState::Indeterminate,
                 low_confidence_grade: false,
                 fund_class_label: None,
-                structural_flag: false,
                 financial_summary: "fixture".into(),
                 what_changed: "fixture".into(),
             })),
@@ -2976,112 +2889,6 @@ mod tests {
     }
 
     #[test]
-    fn the_v1_to_v3_boundary_retires_only_affected_quick_state() {
-        let mut trailing = price_condition("c-tr", ConditionRole::Falsifier, 0.50);
-        trailing.statement = "trailing return above 50%".into();
-        trailing.quant.as_mut().unwrap().series = LedgerSeries::TrailingReturn;
-        let price = price_condition("c-price", ConditionRole::Falsifier, 180.0);
-        let run = sample_run(
-            priced_verdict("AAPL", vec![trailing, price]),
-            audit_for("AAPL", Some(basis())),
-        );
-        let event = EvidenceEvent {
-            kind: EvidenceEventKind::EarningsActual,
-            detail: "earnings actual posted".into(),
-            observed_at: "2026-08-01T12:00:00Z".into(),
-        };
-        let legacy_revision = EvidenceEvent {
-            kind: EvidenceEventKind::RevisionMove,
-            detail: "rolling NTM moved".into(),
-            observed_at: "2026-08-01T12:00:00Z".into(),
-        };
-        let mut state = QuickCheckState {
-            parameter_version: "quick-check-v1".into(),
-            swept_run_id: run.run_id.clone(),
-            last_checked_at: "2026-08-01T12:00:00Z".into(),
-            rate_cache: None,
-            holdings: vec![HoldingQuickState {
-                symbol: "AAPL".into(),
-                families: vec![],
-                flag: Some(AttentionFlag {
-                    trigger: FlagTrigger::ConfirmedFalsifierBreach,
-                    detail: "confirmed falsifier breach: trailing return above 50%".into(),
-                    raised_at: "2026-08-01T12:00:00Z".into(),
-                }),
-                evidence_events: vec![event.clone(), legacy_revision],
-                condition_states: vec![
-                    ("c-tr".into(), ConditionEvalState::default()),
-                    ("c-price".into(), ConditionEvalState::default()),
-                ],
-                last_hurdle_state: Some(HurdleState::Clears),
-                notes: vec![],
-            }],
-        };
-
-        reconcile_parameter_version(&mut state, &run);
-
-        assert_eq!(state.parameter_version, QUICK_CHECK_PARAMETER_VERSION);
-        assert_eq!(
-            state.holdings[0]
-                .condition_states
-                .iter()
-                .map(|(id, _)| id.as_str())
-                .collect::<Vec<_>>(),
-            ["c-price"]
-        );
-        assert!(state.holdings[0].flag.is_none());
-        assert_eq!(state.holdings[0].evidence_events, vec![event]);
-        assert_eq!(state.holdings[0].last_hurdle_state, Some(HurdleState::Clears));
-    }
-
-    #[test]
-    fn the_v2_to_v3_boundary_retires_only_rolling_revision_events() {
-        let run = sample_run(
-            priced_verdict("AAPL", vec![]),
-            audit_for("AAPL", Some(basis())),
-        );
-        let keep = EvidenceEvent {
-            kind: EvidenceEventKind::EarningsActual,
-            detail: "earnings actual posted".into(),
-            observed_at: "2026-08-01T12:00:00Z".into(),
-        };
-        let mut state = QuickCheckState {
-            parameter_version: "quick-check-v2".into(),
-            swept_run_id: run.run_id.clone(),
-            last_checked_at: "2026-08-01T12:00:00Z".into(),
-            rate_cache: None,
-            holdings: vec![HoldingQuickState {
-                symbol: "AAPL".into(),
-                families: vec![],
-                flag: Some(AttentionFlag {
-                    trigger: FlagTrigger::PriceOutsideBand,
-                    detail: "price crossed the frozen band".into(),
-                    raised_at: "2026-08-01T12:00:00Z".into(),
-                }),
-                evidence_events: vec![
-                    keep.clone(),
-                    EvidenceEvent {
-                        kind: EvidenceEventKind::RevisionMove,
-                        detail: "rolling NTM moved".into(),
-                        observed_at: "2026-08-01T12:00:00Z".into(),
-                    },
-                ],
-                condition_states: vec![("c-price".into(), ConditionEvalState::default())],
-                last_hurdle_state: Some(HurdleState::Clears),
-                notes: vec!["durable note".into()],
-            }],
-        };
-
-        reconcile_parameter_version(&mut state, &run);
-
-        assert_eq!(state.parameter_version, QUICK_CHECK_PARAMETER_VERSION);
-        assert_eq!(state.holdings[0].evidence_events, vec![keep]);
-        assert_eq!(state.holdings[0].condition_states.len(), 1);
-        assert_eq!(state.holdings[0].flag.as_ref().unwrap().trigger, FlagTrigger::PriceOutsideBand);
-        assert_eq!(state.holdings[0].notes, vec!["durable note"]);
-    }
-
-    #[test]
     fn a_tail_sweep_uses_the_parent_runs_pinned_session() {
         let verdict = priced_verdict(
             "AAPL",
@@ -3326,8 +3133,16 @@ mod tests {
             threshold: 0.20,
             margin: 0.0,
         });
+        cond.eval_state = Some(ConditionEvalState {
+            authored_statement_basis: Some(crate::portfolio::StatementBasis::Ttm),
+            ..Default::default()
+        });
         let verdict = priced_verdict("AAPL", vec![cond]);
-        store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(basis())))).unwrap();
+        store::insert_run(
+            &conn,
+            &sample_run(verdict, audit_for("AAPL", Some(basis()))),
+        )
+        .unwrap();
 
         let mut stub = StubData::quiet(200.0, "2026-08-01");
         stub.filings = FilingSweep::Filings(vec![RecentFiling {
@@ -4038,4 +3853,76 @@ mod tests {
         store::clear_quick_check(&conn).unwrap();
         assert!(store::latest_quick_check(&conn).unwrap().is_none());
     }
+    #[test]
+    fn annual_or_unstamped_flow_conditions_are_withheld_on_a_ttm_refresh() {
+        for authored in [Some(crate::portfolio::StatementBasis::Annual), None] {
+            let mut cond = price_condition("margin", ConditionRole::Falsifier, 0.15);
+            cond.statement = "net margin below 15% on annual basis".into();
+            cond.quant.as_mut().unwrap().series = LedgerSeries::NetMargin;
+            cond.eval_state = Some(ConditionEvalState {
+                authored_statement_basis: authored,
+                last_observation_id: Some("2026-03-31".into()),
+                last_value: Some(0.20),
+                ..Default::default()
+            });
+            let v = priced_verdict("AAPL", vec![cond]);
+            let conn = mem();
+            store::insert_run(
+                &conn,
+                &sample_run(v.clone(), audit_for("AAPL", Some(basis()))),
+            )
+            .unwrap();
+            let mut data = StubData::quiet(195.0, "2026-08-01");
+            data.filings = FilingSweep::Filings(vec![RecentFiling {
+                form: "10-Q".into(),
+                filing_date: "2026-07-31".into(),
+                items: Some(vec![]),
+                accession: "test".into(),
+            }]);
+            data.statements.quarterly_income =
+                ["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"]
+                    .iter()
+                    .map(|d| engine::QuarterlyIncomeRow {
+                        period_end: (*d).into(),
+                        revenue: Some(100.0),
+                        net_income: Some(10.0),
+                        ..Default::default()
+                    })
+                    .collect();
+            let mut fresh = data.statements.clone();
+            assert!(crate::portfolio::dossier::apply_ttm_statement_basis(
+                &mut fresh
+            ));
+            let full = engine::evaluate_ledger_conditions(
+                v.thesis_ledger.as_ref().unwrap(),
+                &engine::compute_metrics(&fresh),
+                &fresh,
+                "2026-08-01",
+            );
+            if authored.is_some() {
+                assert!(full.crossings.is_empty());
+                assert!(!full.unevaluable.is_empty());
+            }
+            let sweep =
+                run_quick_check_at(&data, &conn, &noop_ctx(), "2026-08-01T18:00:00Z".into())
+                    .unwrap();
+            let h = &sweep.holdings[0];
+            assert!(h
+                .condition_states
+                .iter()
+                .all(|(id, st)| id != "margin" || st.confirmed_at.is_none()));
+            assert!(h.flag.is_none(), "{:?}", h.flag);
+            assert!(h
+                .families
+                .iter()
+                .any(|f| f.family == SweepFamily::Filing && f.state == SweepState::Unknown));
+            assert!(
+                h.notes.iter().any(|n| n.contains("sweep reads TTM")),
+                "{:?}",
+                h.notes
+            );
+        }
+    }
+
+
 }

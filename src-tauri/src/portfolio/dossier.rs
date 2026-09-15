@@ -871,6 +871,7 @@ pub fn assemble(
             crate::portfolio::listing::ListingResolution::Unresolved
                 | crate::portfolio::listing::ListingResolution::NonUs { .. }
                 | crate::portfolio::listing::ListingResolution::Conflict { .. }
+                | crate::portfolio::listing::ListingResolution::UnsupportedUnits { .. }
         )
     );
     //

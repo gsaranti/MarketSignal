@@ -68,7 +68,6 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     action_rationale: "Hold — the thesis is intact.",
     low_confidence_grade: false,
     fund_class_label: null,
-    structural_flag: false,
     financial_summary: "Solid margins.",
     what_changed: "First analyzed run.",
     // Every persisted verdict carries both arms (portfolio-v7). The base
@@ -673,15 +672,12 @@ describe("PortfolioView verdict cards", () => {
     );
   });
 
-  test("a priced fund shows its classification and the option-overlay flag", () => {
-    // The deterministic classification is shown on the card — the priced branch
-    // included — and an option-overlay fund carries the structural flag beside it
-    // (docs/portfolio-analysis.md §Asset eligibility).
-    const overlayRun: PortfolioRun = {
+  test("a priced equity fund shows its classification", () => {
+    const fundRun: PortfolioRun = {
       ...run,
       holdings: {
         positions: [
-          position("QYLD", {
+          position("SPY", {
             asset_class: "etf",
             cost_basis: 9_000,
             market_value: 10_000,
@@ -692,23 +688,22 @@ describe("PortfolioView verdict cards", () => {
       },
       verdicts: [
         verdict(
-          "QYLD",
+          "SPY",
           {
             status: "priced",
             ...graded({
               low_confidence_grade: true,
               fund_class_label: "US equity fund",
-              structural_flag: true,
             }),
           },
           { asset_class: "etf" }
         ),
       ],
     };
-    const wrapper = mountView({ run: overlayRun });
+    const wrapper = mountView({ run: fundRun });
     expect(wrapper.text()).toContain("US equity fund · reduced verdict");
     const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
-    expect(tags).toContain("Structurally path-dependent");
+    expect(tags).not.toContain("Structurally path-dependent");
     // A stock (null classification) renders neither.
     const clean = mountView({ run });
     expect(clean.text()).toContain("Stock · full verdict");
@@ -1664,6 +1659,8 @@ describe("PortfolioView two-arm verdict", () => {
     // The engine column carries the stand-in action (rung-only).
     const engineCol = card.find(".hc-col-intrinsic");
     expect(engineCol.text()).toContain("Hold");
+    expect(engineCol.findAll(".hc-horizon-label").map((x) => x.text())).toEqual(["1 mo", "6 mo", "12 mo"]);
+    expect(card.findAll(".hc-horizon-label").slice(3).map((x) => x.text())).toEqual(["1 mo", "1 yr", "3–5 yr"]);
     // Model values render as authored beside the engine's.
     expect(card.text()).toContain("$280.00");
     // Divergent conviction, outlook, and action each carry the quiet ≠ engine
@@ -1679,7 +1676,7 @@ describe("PortfolioView two-arm verdict", () => {
 
   test("a model outlook matching the stand-in on every horizon drops its tag", () => {
     const aligned = twoArmGraded();
-    aligned.horizon_outlook = { ...aligned.engine_view!.outlook };
+    aligned.horizon_outlook = { short: aligned.engine_view!.outlook.short, mid: aligned.engine_view!.outlook.long, long: "bullish" };
     const wrapper = mountView({
       run: {
         ...run,

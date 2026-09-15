@@ -2451,62 +2451,62 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
         });
     }
 
-    // Outlook direction hit-rate, both arms: each horizon read scored against the
-    // realized price-only sign at its mapped window (short → 1-month, mid →
-    // 6-month, long → 12-month), vintage-fresh episodes only; a neutral read is
-    // counted beside the hit-rate, never inside it.
+    // The model authors 1-month / 1-year / 3–5-year reads; the engine
+    // stand-in authors 1 / 6 / 12 months. No outcome window exists for the
+    // model's long outlook, so it is excluded rather than shortened.
     let mut outlook_direction = Vec::new();
-    for (arm, pick) in [
-        (
-            "engine",
-            &(|p: &PricedEpisode| p.snapshot.engine_outlook)
-                as &dyn Fn(&PricedEpisode) -> crate::portfolio::HorizonOutlook,
-        ),
-        ("model", &(|p: &PricedEpisode| p.snapshot.model_outlook)),
+    for (arm, months, horizon) in [
+        ("engine", 1u32, 0),
+        ("engine", 6, 1),
+        ("engine", 12, 2),
+        ("model", 1, 0),
+        ("model", 12, 1),
     ] {
-        for (months, read_of) in [
-            (1u32, &(|o: &crate::portfolio::HorizonOutlook| o.short)
-                as &dyn Fn(&crate::portfolio::HorizonOutlook) -> crate::portfolio::HorizonRead),
-            (6u32, &(|o: &crate::portfolio::HorizonOutlook| o.mid)),
-            (12u32, &(|o: &crate::portfolio::HorizonOutlook| o.long)),
-        ] {
-            let (mut scored, mut hits, mut neutral) = (0usize, 0usize, 0usize);
-            for ep in episodes {
-                if !ep.vintage_fresh {
-                    continue;
-                }
-                let EpisodeBody::Priced(p) = &ep.body else {
-                    continue;
-                };
-                let outlook = pick(p);
-                let Some(label) = scored_for(ep, months) else {
-                    continue;
-                };
-                let pr = label.price_return;
-                match read_of(&outlook) {
-                    crate::portfolio::HorizonRead::Neutral => neutral += 1,
-                    crate::portfolio::HorizonRead::Bullish => {
-                        scored += 1;
-                        if pr > 0.0 {
-                            hits += 1;
-                        }
+        let (mut scored, mut hits, mut neutral) = (0usize, 0usize, 0usize);
+        for ep in episodes {
+            if !ep.vintage_fresh {
+                continue;
+            }
+            let EpisodeBody::Priced(p) = &ep.body else {
+                continue;
+            };
+            let outlook = if arm == "engine" {
+                p.snapshot.engine_outlook
+            } else {
+                p.snapshot.model_outlook
+            };
+            let Some(label) = scored_for(ep, months) else {
+                continue;
+            };
+            let pr = label.price_return;
+            let direction = match horizon {
+                0 => outlook.short,
+                1 => outlook.mid,
+                _ => outlook.long,
+            };
+            match direction {
+                crate::portfolio::HorizonRead::Neutral => neutral += 1,
+                crate::portfolio::HorizonRead::Bullish => {
+                    scored += 1;
+                    if pr > 0.0 {
+                        hits += 1;
                     }
-                    crate::portfolio::HorizonRead::Bearish => {
-                        scored += 1;
-                        if pr < 0.0 {
-                            hits += 1;
-                        }
+                }
+                crate::portfolio::HorizonRead::Bearish => {
+                    scored += 1;
+                    if pr < 0.0 {
+                        hits += 1;
                     }
                 }
             }
-            outlook_direction.push(OutlookDirectionRead {
-                arm: arm.to_string(),
-                window_months: months,
-                scored,
-                hits,
-                neutral,
-            });
         }
+        outlook_direction.push(OutlookDirectionRead {
+            arm: arm.to_string(),
+            window_months: months,
+            scored,
+            hits,
+            neutral,
+        });
     }
 
     let falsifier_lead_times = episodes
@@ -2712,7 +2712,6 @@ mod tests {
             dead_money: HurdleState::Indeterminate,
             low_confidence_grade: false,
             fund_class_label: None,
-            structural_flag: false,
             financial_summary: "fine".into(),
             what_changed: "new holding".into(),
         }
@@ -5096,10 +5095,10 @@ mod tests {
             paired.engine_mean_interval_score, paired.model_mean_interval_score,
             "the pair scores both arms on the same events"
         );
-        // Direction reads: both arms present at all three mapped windows; the
+        // Direction reads: engine 1/6/12 months, model 1/12 months; the
         // fixture's model is bullish everywhere and the engine bearish/neutral,
         // so on the synthetic series exactly one directional arm can be hitting.
-        assert_eq!(reads.outlook_direction.len(), 6);
+        assert_eq!(reads.outlook_direction.len(), 5);
         let read = |arm: &str, months: u32| {
             reads
                 .outlook_direction
@@ -5480,5 +5479,28 @@ mod tests {
             .collect();
         assert!(versions.contains(&Some("targets-v2")));
         assert!(versions.contains(&Some("targets-v3")));
+    }
+    #[test]
+    fn model_mid_scores_at_one_year_and_long_is_not_compressed() {
+        let mut ep = old_episode("TEST", "2025-06-02T12:00:00Z");
+        let EpisodeBody::Priced(ref mut p) = ep.body else {
+            panic!("priced fixture")
+        };
+        p.snapshot.model_outlook.mid = crate::portfolio::HorizonRead::Bullish;
+        p.snapshot.model_outlook.long = crate::portfolio::HorizonRead::Bearish;
+        set_scored(&mut ep, 6, scored_label(-0.1, Some(-0.1)));
+        set_scored(&mut ep, 12, scored_label(0.1, Some(0.1)));
+        let reads = derive_reads(&[ep]);
+        assert!(!reads
+            .outlook_direction
+            .iter()
+            .any(|r| r.arm == "model" && r.window_months == 6));
+        let mid = reads
+            .outlook_direction
+            .iter()
+            .find(|r| r.arm == "model" && r.window_months == 12)
+            .unwrap();
+        assert_eq!((mid.scored, mid.hits), (1, 1));
+
     }
 }

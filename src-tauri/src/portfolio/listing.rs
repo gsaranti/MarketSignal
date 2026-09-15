@@ -13,6 +13,10 @@
 /// fields are `None` (the guard types them unverifiable, never a mismatch).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProfileIdentity {
+    /// The quote denomination and depositary-receipt classification, independent
+    /// of the issuer's listing venue and financial-statement denomination.
+    pub currency: Option<String>,
+    pub is_adr: Option<bool>,
     pub company_name: Option<String>,
     pub exchange: Option<String>,
     pub sector: Option<String>,
@@ -38,9 +42,11 @@ pub enum ProfileLookup {
 /// `analyze_holding` beside the asset-class and net-short gates.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ListingResolution {
-    /// A resolved, matching US listing (US-listed ADRs included) — the full
+    /// A resolved, matching US listing with no unsupported unit signal — the full
     /// pipeline runs.
     SupportedUs,
+    /// No verified mapping from provider amounts to the listed USD share.
+    UnsupportedUnits { detail: String },
     /// No canonical FMP resolution — not-rated (unsupported listing), a structural
     /// can't-grade.
     Unresolved,
@@ -204,8 +210,8 @@ pub fn displayable_source_name(name: &str, symbol: &str) -> bool {
 }
 
 /// Route one stock's profile lookup to its listing resolution. The exchange test
-/// runs before the name comparison — the exchange, not the profile's HQ country,
-/// is what lets a US-listed ADR pass — and a Schwab description carrying no issuer
+/// runs before the name comparison and is independent of headquarters country.
+/// A Schwab description carrying no issuer
 /// identity ([`describes_issuer`]) has nothing to compare, so it reads unverifiable.
 /// Blank and noise-only descriptions reached the same `Unverified` outcome through
 /// `compare_names`'s empty-token arm before that check was hoisted; only the
@@ -216,6 +222,28 @@ pub fn resolve_listing(
     schwab_description: &str,
     lookup: &ProfileLookup,
 ) -> ListingResolution {
+    let description_is_adr = schwab_description
+        .to_ascii_uppercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| matches!(word, "ADR" | "ADS" | "DEPOSITARY" | "DEPOSITORY"));
+    if description_is_adr || matches!(lookup, ProfileLookup::Resolved(p) if p.is_adr == Some(true))
+    {
+        return ListingResolution::UnsupportedUnits {
+            detail: "depositary receipt — provider per-share amounts have no verified ordinary-share-to-ADS conversion".into(),
+        };
+    }
+    if let ProfileLookup::Resolved(p) = lookup {
+        if p.currency
+            .as_deref()
+            .is_some_and(|c| !c.eq_ignore_ascii_case("USD"))
+        {
+            return ListingResolution::UnsupportedUnits {
+                detail:
+                    "the listing quote is not denominated in USD — no FX conversion is available"
+                        .into(),
+            };
+        }
+    }
     match lookup {
         ProfileLookup::Unresolved => ListingResolution::Unresolved,
         ProfileLookup::Unverified(detail) => ListingResolution::Unverified {
@@ -280,6 +308,8 @@ mod tests {
 
     fn profile(name: &str, exchange: &str) -> ProfileLookup {
         ProfileLookup::Resolved(ProfileIdentity {
+            currency: Some("USD".into()),
+            is_adr: Some(false),
             company_name: Some(name.to_string()),
             exchange: Some(exchange.to_string()),
             sector: Some("Technology".to_string()),
@@ -296,18 +326,38 @@ mod tests {
             ListingResolution::SupportedUs
         );
         assert_eq!(
-            resolve_listing("NVDA", "NVIDIA CORP", &profile("NVIDIA Corporation", "NASDAQ")),
+            resolve_listing(
+                "NVDA",
+                "NVIDIA CORP",
+                &profile("NVIDIA Corporation", "NASDAQ")
+            ),
             ListingResolution::SupportedUs
         );
-        // A US-listed ADR passes on the exchange test, never an HQ-country read.
-        assert_eq!(
+        // A USD exchange quote does not establish the provider's ADS share basis.
+        assert!(matches!(
             resolve_listing(
                 "ASML",
                 "ASML HOLDING NV ADR",
                 &profile("ASML Holding N.V.", "NASDAQ")
             ),
-            ListingResolution::SupportedUs
-        );
+            ListingResolution::UnsupportedUnits { .. }
+        ));
+        let mut adr = profile("Acme", "NYSE");
+        if let ProfileLookup::Resolved(ref mut p) = adr {
+            p.is_adr = Some(true);
+        }
+        assert!(matches!(
+            resolve_listing("ACME", "ACME", &adr),
+            ListingResolution::UnsupportedUnits { .. }
+        ));
+        if let ProfileLookup::Resolved(ref mut p) = adr {
+            p.is_adr = Some(false);
+            p.currency = Some("CAD".into());
+        }
+        assert!(matches!(
+            resolve_listing("ACME", "ACME", &adr),
+            ListingResolution::UnsupportedUnits { .. }
+        ));
     }
 
     #[test]
@@ -433,6 +483,8 @@ mod tests {
         // A resolved profile missing its exchange or name cannot be verified —
         // and is never routed terminal.
         let no_exchange = ProfileLookup::Resolved(ProfileIdentity {
+            currency: Some("USD".into()),
+            is_adr: Some(false),
             company_name: Some("Apple Inc.".to_string()),
             exchange: None,
             sector: None,
@@ -443,6 +495,8 @@ mod tests {
             ListingResolution::Unverified { .. }
         ));
         let no_name = ProfileLookup::Resolved(ProfileIdentity {
+            currency: Some("USD".into()),
+            is_adr: Some(false),
             company_name: None,
             exchange: Some("NASDAQ".to_string()),
             sector: None,

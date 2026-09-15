@@ -512,12 +512,8 @@ export interface GradedVerdict {
   // the visible low-confidence marker beside the letter (every priced fund, per
   // the fund-grade contract).
   low_confidence_grade: boolean;
-  // The fund path's deterministic strategy classification, shown on the card
-  // (docs/portfolio-analysis.md §Asset eligibility) — null for a stock; the
-  // structural flag marks an option-overlay fund on the priced branch
-  // (leveraged/inverse routes to role_risk_only instead).
+  // The priced fund's deterministic strategy classification; null for a stock.
   fund_class_label: string | null;
-  structural_flag: boolean;
   financial_summary: string;
   // The what-changed audit (authored at interpretation; the retired action half
   // no longer exists).

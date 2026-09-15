@@ -772,6 +772,17 @@ every stacked runtime confirmation at once.
   `docs/verification/2026-08-31-portfolio-failure-isolation.md`, the contract
   canonical at `docs/portfolio-analysis.md §Failure posture`. No stamp moved.
 
+- **Portfolio financial-correctness sweep** — the four financial fixes and
+  review corrections are approved (2026-09-15).
+  The dated rulings and verification are
+  `docs/verification/2026-09-15-portfolio-financial-correctness.md`.
+  Eligibility rules live only at `docs/portfolio-analysis.md §Asset
+  eligibility`.
+  The ledger section owns flow-basis withholding and Outcome learning owns
+  matching-horizon scoring.
+  The priced structural flag and pre-release quick-state migration branches
+  were removed under the existing keep-versus-cut rule.
+
 ### Remaining, in order
 
 1. **The single big confirmation run** — the queue's next item now the
@@ -880,6 +891,11 @@ every stacked runtime confirmation at once.
 These ride the queue rather than any one slice. They are collected here because
 each is unbuilt work that no scheduled slice will pick up on its own.
 
+- **ADR financial-unit normalization** — dated FX conversion plus verified
+  ordinary-share-to-ADS ratios and provider per-share conventions, applied
+  consistently to statement, consensus, historical and market-price inputs.
+  This deferred slice is the path to readmitting depositary receipts under
+  `docs/portfolio-analysis.md §Asset eligibility`.
 - **Configurable investor profiles** — user config for the profile preset,
   deferred.
 - **Paid-FMP baseline enrichment** — three additive report signals the paid key
@@ -946,6 +962,8 @@ until built. The fund slice's remaining drafted constants — the coverage and U
 guards, tier premiums, add floors, and CIK-cache staleness — stay pinned until
 the run supplies evidence to move them. The **engine stand-in arm** rides the
 same rule: its outlook windows and flat thresholds, the conviction
-degradation-count mapping, the action rung rule, and the scoreboard's
-outlook-window mapping are all drafted, calibratable, and none yet calibrated
-against live evidence.
+degradation-count mapping and the action rung rule are drafted, calibratable,
+and none yet calibrated against live evidence.
+The scoreboard must score each forecast at its authored horizon; that matching
+contract is fixed at `docs/portfolio-analysis.md §Outcome learning`, not a
+calibration parameter.

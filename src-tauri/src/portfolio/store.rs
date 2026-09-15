@@ -183,7 +183,6 @@ pub struct CheckpointHeader {
     pub target_parameter_version: String,
     pub pre_profit_parameter_version: String,
     /// The semantics of the selective carried-tail sweep pinned in this header.
-    #[serde(default = "crate::portfolio::quick_check::legacy_quick_check_parameter_version")]
     pub quick_check_parameter_version: String,
     /// The evidence-floor rule the trail's completed holdings were floored under
     /// ([`crate::portfolio::engine::EVIDENCE_FLOOR_VERSION`]).
@@ -218,7 +217,8 @@ pub struct CheckpointHeader {
 /// with the local suite's move to SearXNG-only, so a v7 trail (which could carry
 /// a Tavily-researched holding) is refused at the resume gate rather than
 /// restoring a Tavily-researched holding under the SearXNG-only contract.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v8";
+/// v9 removes the priced verdict's unused structural flag.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v9";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header

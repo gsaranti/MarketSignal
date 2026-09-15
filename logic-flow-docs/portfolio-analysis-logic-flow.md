@@ -464,7 +464,8 @@ A guard-terminal stock — one the guard finds unsupported, non-US, or identity-
 - **Stock identity validation**
   - Company profile and listing identity — one FMP company-profile fetch, pulled before the rest.
   - Cross-check that profile against Schwab’s — exchange first (the symbol is queried as-is; no symbol remap), then issuer name:
-    - US primary exchange (NYSE / NASDAQ / AMEX) with a matching name → continue; a US-listed ADR passes on venue, not domicile.
+    - US primary exchange (NYSE / NASDAQ / AMEX) with a matching name → continue subject to unit guards, independent of domicile.
+    - Apply the financial-unit guards in [portfolio-analysis.md §Asset eligibility](../docs/portfolio-analysis.md#asset-eligibility).
     - FMP definitively resolves no such listing (an honest empty response), or a non-US primary listing → not rated.
     - US exchange but the issuer names share no significant token → insufficient evidence (a possibly-transient identity conflict).
     - A failed or unreadable profile fetch, or identity too sparse to cross-check on either side — a resolved profile missing its exchange or name, or a Schwab description with no issuer name (or only a ticker the FMP name doesn’t contain) → continue with a recorded degraded input.
@@ -531,7 +532,7 @@ A fund’s route — read from the `etf/info` and weights gathered above — is 
   - Bond or commodity fund → role-risk-only path.
   - International fund below the US-exposure guard → role-risk-only path.
   - Leveraged or inverse fund → role-risk-only path.
-  - Option-overlay fund → structural path-dependence flag; other priceability rules decide the route.
+  - Option-overlay fund → role-risk-only path with its structural flag; no price targets or capital-efficiency hurdle because option payoffs are not modeled.
   - Mutual fund without usable weights → role-risk-only path.
   - Closed-end fund (built) → a structure marker orthogonal to the class, detected from the profile's `isFund` flag plus a closed-end description fragment (both required — never guessed). A bond CEF still routes bond; on today's empty `etf/info` surface a CEF resolves no class and takes the role-risk path labeled "closed-end fund", never `insufficient-evidence`.
 
@@ -810,9 +811,9 @@ The alternative branch to the stock spine above; the fund engine makes the final
   - The flat-driver form is the settled design, not a stopgap (ruled 2026-08-21, closing the former open item): a scenario-differentiated priced-fund formula returns only on realized-outcome evidence ([portfolio-analysis.md §Starting parameters](../docs/portfolio-analysis.md) is canonical).
 
 - **Fund risk tier** (priced fund)
-  - High — annualized volatility > 40%, or max drawdown > 50%. (The function also flags leveraged/inverse structure, but those funds route to role-risk and never reach the priced tier.)
-  - Low — no option-overlay flag and annualized volatility < 25%.
-  - Otherwise Medium (an option-overlay flag bars Low without forcing High).
+  - High — annualized volatility > 40%, or max drawdown > 50%.
+  - Low — annualized volatility < 25% on the priced fund branch.
+  - Otherwise Medium (option-overlay funds route to role/risk before this priced-fund tier read).
 
 - **Fund hurdle** — identical to the stock hurdle (`DGS2 + tier premium`; same three-state and new-money test).
 
@@ -1430,7 +1431,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - Both arms are scored, separately: the engine baseline and the unrestricted model arm each froze their own targets and outlook on the episode at open, and the reads below score each arm on its own — the target-band read is the one place they meet directly head-to-head — because grading the model against the baseline is the whole point of the two-arm design.
   - **Target-band calibration** — the bear–bull band's coverage of the realized price against its declared nominal 80%, an interval score rewarding calibration and sharpness together, and the base case's mean signed error; scored on the price-only label at the **1- and 12-month windows only** (each band against its matching window — the 3- and 6-month labels are never band-scored), over vintage-fresh priced episodes, split by target-parameter version so a recalibration never mixes bases. The same scorer runs unchanged for the engine bands and for the model's frozen bands.
   - **Engine-vs-model head-to-head** — that same interval score and coverage for both arms over the paired population alone (the 1- and 12-month episodes where both arms carried the band and the window scored), so neither arm is graded on an easier sample; this is the only read the two arms are directly compared on.
-  - **Outlook direction hit-rate** — each arm's short / mid / long read scored against the realized price sign at its mapped window (short → 1-month, mid → 6-month, long → 12-month); a flat outcome scores a directional call as a miss, and a neutral read is counted beside the hit-rate, never inside it.
+  - **Outlook direction hit-rate** — each arm's short / mid / long read scored against the realized price sign at its mapped window (engine short/mid/long → 1/6/12 months; model short/mid → 1/12 months, with model long (3–5 years) unscored); a flat outcome scores a directional call as a miss, and a neutral read is counted beside the hit-rate, never inside it.
   - **Action cohorts** — mean total and price return plus vs-market / vs-sector spreads, grouped by the action rung recorded at episode creation, across all four windows: the cohort spreads the action ranking is read from (do the add cohorts out-return the hold cohort, and hold the trim / sell cohorts). Computed over model-chosen priced episodes — a vintage-fresh intrinsic-layer set reported beside the all-model-chosen final-action set; role-risk-only and rule-demoted episodes are counted in their own classes, out of the pooled read.
   - **Falsifier lead times** — the 12-month bear-line crossings above, surfaced per episode.
   - **Proposal eligibility** — a gate counting the unique holdings with a scored matured window against a bar (drafted 30). **As-built the gate is built but the proposals are not**: below the bar the pass records the typed below-bar note and proposes nothing, and above it the proposal statistics still land with a later slice once enough matured data exists — and even then the loop only proposes, never auto-applies.

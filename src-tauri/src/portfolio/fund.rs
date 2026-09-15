@@ -63,16 +63,17 @@ const STRUCTURAL_FLAG_FRAGMENTS: &[&str] = &[
 /// Known cost (ruled 2026-08-05, piece-3 Codex round): "iShares Short Treasury
 /// Bond"-style duration names flag as leveraged/inverse — still
 /// `role_risk_only` either way, a wrong class label only; a big-run watch.
-const SHORT_DURATION_PHRASES: &[&str] =
-    &["short-term", "short term", "short duration", "short maturity"];
+const SHORT_DURATION_PHRASES: &[&str] = &[
+    "short-term",
+    "short term",
+    "short duration",
+    "short maturity",
+];
 
 /// Name / mandate fragments that deterministically flag an **option-overlay** vehicle
-/// (covered-call / buy-write / put-write / defined-outcome buffer funds). Unlike
-/// leveraged / inverse, an overlay fund is **not** in the unpriceable list — it stays
-/// on its class routing and carries the structural path-dependency flag instead
-/// (`docs/portfolio-analysis.md` §Asset eligibility), which bars the Low risk tier
-/// and rides the audit. The screen runs on fund names only, but still errs toward
-/// false negatives like the movers screen it mirrors.
+/// (covered-call / buy-write / put-write / defined-outcome buffer funds).
+/// These route to role/risk: sector exposure cannot price an option payoff.
+/// The screen runs on fund names only and can miss unnamed strategies.
 const OPTION_OVERLAY_FRAGMENTS: &[&str] = &[
     "covered call",
     "covered-call",
@@ -266,9 +267,9 @@ pub fn classify(fund: &FundData) -> FundClassification {
         };
     }
 
-    // An option-overlay vehicle carries the structural path-dependency flag but keeps
-    // its class routing — it is not in the unpriceable list, so a US equity
-    // covered-call fund still prices, flagged.
+    // The exposure composite cannot price the options' payoff. Route these
+    // vehicles to role/risk so neither equity targets nor distributions can
+    // manufacture a capital-efficiency conclusion.
     let overlay_flag = OPTION_OVERLAY_FRAGMENTS
         .iter()
         .any(|f| name_blob.contains(f));
@@ -290,6 +291,19 @@ pub fn classify(fund: &FundData) -> FundClassification {
     } else {
         FundStrategyClass::Unknown
     };
+
+    if overlay_flag {
+        return FundClassification {
+            class,
+            structural_kind,
+            us_share: us_share(fund),
+            class_label: cef_suffix("option-overlay fund"),
+            role_reason: Some(
+                "option-overlay fund — the exposure composite does not model option payoffs, capped upside or downside buffers; price targets and the capital-efficiency hurdle are unavailable".into(),
+            ),
+            is_cef,
+        };
+    }
 
     let us = us_share(fund);
     match class {
@@ -984,8 +998,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     metrics.composite_coverage = Some(composite.covered_share);
 
     // The uncovered slice is reported beside the read, never averaged in
-    // (`docs/portfolio-analysis.md` §Asset eligibility), and an option-overlay flag
-    // is recorded where it was detected — carried, never silently absorbed.
+    // (`docs/portfolio-analysis.md` §Asset eligibility).
     let mut engine_notes: Vec<String> = Vec::new();
     if composite.covered_share < 1.0 {
         engine_notes.push(format!(
@@ -994,14 +1007,6 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             composite.covered_share * 100.0,
             (1.0 - composite.covered_share) * 100.0
         ));
-    }
-    if classification.structural_flag() {
-        engine_notes.push(
-            "option-overlay structural path-dependency flag (name / mandate screen) — \
-             the overlay reshapes the return path the exposure composite prices, so \
-             the flag rides the audit and bars the Low risk tier"
-                .to_string(),
-        );
     }
 
     let targets = engine::build_price_targets(
@@ -1027,14 +1032,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
                 .to_string(),
         );
     }
-    let tier = engine::assign_fund_tier(
-        // Leveraged / inverse never reaches the priced path (it routes to
-        // `role_risk_only` above); the comparison keeps the High leg honest anyway.
-        classification.class == FundStrategyClass::LeveragedInverse,
-        classification.structural_flag(),
-        annual_vol,
-        drawdown,
-    );
+    let tier = engine::assign_fund_tier(annual_vol, drawdown);
     let hurdle = engine::hurdle_read(&scenario, inp.rates.dgs2, tier);
     let meta = TargetMeta {
         driver_rung: "fund exposure composite".to_string(),
@@ -1066,9 +1064,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         // always carries the visible low-confidence marker on this branch.
         low_confidence_grade: true,
         // The deterministic classification is shown on the card — the priced branch
-        // included, an option-overlay flag riding beside it.
+        // included; structural vehicles have already routed to role/risk.
         fund_class_label: Some(classification.class_label),
-        structural_flag: classification.structural_kind.is_some(),
         quick_basis: Some(engine::QuickCheckBasis {
             spot,
             drivers: [implied_eps, implied_eps, implied_eps],
@@ -1100,9 +1097,8 @@ pub struct FundExposureBasis {
     pub us_share: Option<f64>,
     /// The largest sector weight `(label, weight)`.
     pub top_sector: Option<(String, f64)>,
-    /// The structural path-dependency flag the classification carried (an
-    /// option-overlay vehicle keeps its class routing but is flagged) — persisted
-    /// so the sweep can see a flag transition that changes no label
+    /// The structural path-dependency flag the classification carried — persisted
+    /// so the sweep can see a strategy transition alongside the class label
     /// (`docs/portfolio-analysis.md` §Starting parameters, the every-fund
     /// asset-class-change leg: a structural-flag reclassification counts).
     pub structural_flag: bool,
@@ -2082,43 +2078,33 @@ mod tests {
     }
 
     #[test]
-    fn option_overlay_funds_carry_the_structural_flag_and_stay_priced() {
-        // An option-overlay fund is not in the unpriceable list — it prices, carries
-        // the deterministic path-dependency flag, and the flag bars the Low tier
-        // without forcing High (`docs/portfolio-analysis.md` §Asset eligibility,
-        // §Starting parameters).
-        let mut overlay = fund();
-        overlay.name = Some("US Equity Covered Call ETF".to_string());
-        let c = classify(&overlay);
-        assert!(c.structural_flag());
-        assert_eq!(c.structural_kind, Some(FundStructuralKind::OptionOverlay));
-        assert!(c.role_reason.is_none(), "overlay funds still price");
-
-        let fin = financials(282.0);
-        let inputs = FundEngineInputs {
-            fund: &overlay,
-            financials: &fin,
-            sector_pe: &snapshot(),
-            sector_pe_history: &history(),
-            rates: &rates(),
-            as_of: as_of(),
-        };
-        match analyze_fund(&inputs) {
-            FundEngineVerdict::Priced(out) => {
-                assert!(
-                    out.tier_gaps.iter().any(|g| g.contains("option-overlay")),
-                    "the flag must be a recorded note: {:?}",
-                    out.tier_gaps
-                );
-                // The fixture's realized volatility is low — without the flag this
-                // fund would read Low; the overlay bars it.
-                assert_eq!(out.risk_tier, crate::portfolio::RiskTier::Medium);
-                // The classification rides the priced output — card-visible, not
-                // just an audit note.
-                assert!(out.structural_flag);
-                assert_eq!(out.fund_class_label.as_deref(), Some("US equity fund"));
-            }
-            other => panic!("expected the priced branch, got {other:?}"),
+    fn option_overlay_funds_with_distributions_have_no_price_or_hurdle() {
+        for name in [
+            "US Equity Covered Call ETF",
+            "S&P BuyWrite ETF",
+            "PutWrite ETF",
+            "Premium Income ETF",
+            "S&P Buffer ETF",
+        ] {
+            let mut overlay = fund();
+            overlay.name = Some(name.into());
+            let c = classify(&overlay);
+            assert_eq!(c.structural_kind, Some(FundStructuralKind::OptionOverlay));
+            assert!(c.role_reason.is_some(), "{name}");
+            let mut fin = financials(282.0);
+            fin.ttm_dividends_per_share = Some(28.0);
+            let inputs = FundEngineInputs {
+                fund: &overlay,
+                financials: &fin,
+                sector_pe: &snapshot(),
+                sector_pe_history: &history(),
+                rates: &rates(),
+                as_of: as_of(),
+            };
+            assert!(
+                matches!(analyze_fund(&inputs), FundEngineVerdict::RoleRiskOnly(_)),
+                "{name}"
+            );
         }
 
         // The unflagged control: same fund without overlay naming reads Low.

@@ -1794,9 +1794,11 @@ impl FmpDataSource {
         symbol: &str,
     ) -> crate::portfolio::engine::CompanyFinancials {
         let mut fin = self.fetch_quote_and_eod(symbol);
-        fin.quarterly_income = self.fetch_quarterly_income(symbol, &mut fin.gaps);
-        fin.quarterly_cash_flow = self.fetch_quarterly_cash_flow(symbol, &mut fin.gaps);
-        let balance = self.fetch_balance_sheet(symbol, &mut fin.gaps);
+        fin.quarterly_income =
+            self.fetch_quarterly_income(symbol, &mut fin.gaps, &mut fin.unit_issues);
+        fin.quarterly_cash_flow =
+            self.fetch_quarterly_cash_flow(symbol, &mut fin.gaps, &mut fin.unit_issues);
+        let balance = self.fetch_balance_sheet(symbol, &mut fin.gaps, &mut fin.unit_issues);
         fin.total_debt = balance.total_debt;
         fin.total_equity = balance.total_equity;
         fin.cash_and_equivalents = balance.cash_and_equivalents;
@@ -2181,7 +2183,7 @@ mod tests {
             })
             .with_context(ctx);
         let mut gaps = Vec::new();
-        let income = source.fetch_quarterly_income("AAPL", &mut gaps);
+        let income = source.fetch_quarterly_income("AAPL", &mut gaps, &mut vec![]);
         assert!(income.is_empty());
         let finished: Vec<(String, Option<String>)> = rec
             .messages()
@@ -2230,8 +2232,12 @@ mod tests {
         ]);
         let source = test_source(&server.base_url).with_context(ctx);
         let mut gaps = Vec::new();
-        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
-        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
+        assert!(source
+            .fetch_quarterly_income("AAPL", &mut gaps, &mut vec![])
+            .is_empty());
+        assert!(source
+            .fetch_quarterly_income("AAPL", &mut gaps, &mut vec![])
+            .is_empty());
         let finished: Vec<(String, Option<String>)> = rec
             .messages()
             .into_iter()
@@ -2457,10 +2463,18 @@ mod tests {
         let source = test_source(&server.base_url).with_context(ctx);
 
         let mut gaps = Vec::new();
-        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
+        assert!(source
+            .fetch_quarterly_income("AAPL", &mut gaps, &mut vec![])
+            .is_empty());
         assert_eq!(gaps.len(), 1, "the empty read still records its gap");
-        assert!(source.fetch_live_price("AAPL").is_err(), "priceless stays Err");
-        assert!(source.fetch_live_price("AAPL").is_err(), "malformed stays Err");
+        assert!(
+            source.fetch_live_price("AAPL").is_err(),
+            "priceless stays Err"
+        );
+        assert!(
+            source.fetch_live_price("AAPL").is_err(),
+            "malformed stays Err"
+        );
         assert_eq!(
             source
                 .fetch_sector_pe_snapshot("NASDAQ", "2026-08-10")
@@ -2535,12 +2549,14 @@ mod tests {
         let source = test_source(&server.base_url).with_context(ctx);
 
         let mut gaps = Vec::new();
-        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
+        assert!(source
+            .fetch_quarterly_income("AAPL", &mut gaps, &mut vec![])
+            .is_empty());
         assert!(
             gaps.iter().any(|g| g.contains("were malformed")),
             "the gap names the drift, not emptiness: {gaps:?}"
         );
-        let lines = source.fetch_balance_sheet("AAPL", &mut gaps);
+        let lines = source.fetch_balance_sheet("AAPL", &mut gaps, &mut vec![]);
         assert_eq!(lines, BalanceSheetLines::default());
         let fund = source.fetch_fund_data("SPY");
         assert!(
@@ -2622,9 +2638,17 @@ mod tests {
         );
         let server = MockHttp::serve(vec![
             // 1) income: rows served, none readable (dateless).
-            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"reportedCurrency":"USD"}]"#,
+            },
             // 2) estimates: rows served, none datable → malformed.
-            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "[{}]",
+            },
             // 3) estimates: datable but past-only → the honest empty.
             Canned::Reply { status: 200, headers: vec![], body: r#"[{"date":"2020-01-01"}]"# },
             // 4-5) quote + EOD: both served empty.
@@ -2646,8 +2670,13 @@ mod tests {
         let source = test_source(&server.base_url).with_context(ctx);
 
         let mut gaps = Vec::new();
-        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
-        assert!(gaps.iter().any(|g| g.contains("were malformed")), "{gaps:?}");
+        assert!(source
+            .fetch_quarterly_income("AAPL", &mut gaps, &mut vec![])
+            .is_empty());
+        assert!(
+            gaps.iter().any(|g| g.contains("were malformed")),
+            "{gaps:?}"
+        );
         gaps.clear();
         assert!(source.fetch_analyst_estimates("AAPL", &mut gaps).is_none());
         assert!(gaps.iter().any(|g| g.contains("no datable rows")), "{gaps:?}");
@@ -3014,7 +3043,7 @@ mod tests {
             Canned::Reply {
                 status: 200,
                 headers: vec![],
-                body: r#"[{"date":"2026-03-31","filingDate":"2026-05-01","revenue":95.0e9,
+                body: r#"[{"reportedCurrency":"USD","date":"2026-03-31","filingDate":"2026-05-01","revenue":95.0e9,
                            "epsDiluted":1.55,"weightedAverageShsOutDil":1.5e10,
                            "netIncome":24.0e9,"grossProfit":44.0e9,"costOfRevenue":51.0e9,
                            "operatingIncome":29.0e9}]"#,
@@ -3022,13 +3051,13 @@ mod tests {
             Canned::Reply {
                 status: 200,
                 headers: vec![],
-                body: r#"[{"date":"2026-03-31","freeCashFlow":20.0e9,
+                body: r#"[{"reportedCurrency":"USD","date":"2026-03-31","freeCashFlow":20.0e9,
                            "operatingCashFlow":28.0e9,"capitalExpenditure":-8.0e9}]"#,
             },
             Canned::Reply {
                 status: 200,
                 headers: vec![],
-                body: r#"[{"date":"2026-03-31","totalDebt":110.0e9,"totalStockholdersEquity":62.0e9,"totalEquity":63.0e9,
+                body: r#"[{"reportedCurrency":"USD","date":"2026-03-31","totalDebt":110.0e9,"totalStockholdersEquity":62.0e9,"totalEquity":63.0e9,
                            "cashAndCashEquivalents":30.0e9,"shortTermInvestments":32.0e9}]"#,
             },
             Canned::Reply {
@@ -4044,8 +4073,9 @@ mod tests {
                 }
             }
             let mut gaps = vec![];
-            fin.quarterly_income = src.fetch_quarterly_income(&v.symbol, &mut gaps);
-            let balance = src.fetch_balance_sheet(&v.symbol, &mut gaps);
+            fin.quarterly_income =
+                src.fetch_quarterly_income(&v.symbol, &mut gaps, &mut fin.unit_issues);
+            let balance = src.fetch_balance_sheet(&v.symbol, &mut gaps, &mut fin.unit_issues);
             fin.total_debt = balance.total_debt;
             fin.total_equity = balance.total_equity;
             calls += 3;
@@ -5041,6 +5071,7 @@ impl FmpDataSource {
         &self,
         symbol: &str,
         gaps: &mut Vec<String>,
+        unit_issues: &mut Vec<crate::portfolio::engine::StatementUnitIssue>,
     ) -> Vec<crate::portfolio::engine::QuarterlyIncomeRow> {
         match self.suite_get_shaped(
             "company-income-q",
@@ -5063,6 +5094,12 @@ impl FmpDataSource {
                     return Shaped::malformed(vec![])
                         .with_detail("non-array body — malformed or drifted response");
                 };
+                if let Some(issue) = statement_unit_issue(value, "quarterly income statements") {
+                    let detail = issue.to_string();
+                    gaps.push(detail.clone());
+                    unit_issues.push(issue);
+                    return Shaped::empty(vec![]).with_detail(detail);
+                }
                 match quarterly_income_from_value(value) {
                     rows if !rows.is_empty() => Shaped::ok(rows),
                     rows if body.is_empty() => {
@@ -5094,31 +5131,44 @@ impl FmpDataSource {
     /// grade-band slice's F5 closure; before it, `total_debt` had no source at all and
     /// the risk read rested on volatility alone). Fail-soft: a gap leaves both `None`
     /// with a tagged reason.
-    pub fn fetch_balance_sheet(&self, symbol: &str, gaps: &mut Vec<String>) -> BalanceSheetLines {
+    pub fn fetch_balance_sheet(
+        &self,
+        symbol: &str,
+        gaps: &mut Vec<String>,
+        unit_issues: &mut Vec<crate::portfolio::engine::StatementUnitIssue>,
+    ) -> BalanceSheetLines {
         match self.suite_get_shaped(
             "company-balance",
             symbol,
             "Balance sheet",
             FMP_BALANCE_SHEET_PATH,
             &[("symbol", symbol), ("period", "quarter"), ("limit", "1")],
-            |value| match balance_sheet_from_value(value) {
-                // A parsed row whose four lines are all absent (`[{}]`) is no
-                // usable data — the row must not read ok on parse alone.
-                Some(lines) if lines != BalanceSheetLines::default() => Shaped::ok(lines),
-                Some(lines) => {
-                    gaps.push("FMP balance sheet was empty or malformed".to_string());
-                    Shaped::empty(lines)
+            |value| {
+                if let Some(issue) = statement_unit_issue(value, "balance sheet") {
+                    let detail = issue.to_string();
+                    gaps.push(detail.clone());
+                    unit_issues.push(issue);
+                    return Shaped::empty(BalanceSheetLines::default()).with_detail(detail);
                 }
-                None => {
-                    gaps.push("FMP balance sheet was empty or malformed".to_string());
-                    // The parser folds both causes into `None`; the row splits
-                    // them honestly — a served-but-empty array is `empty`, an
-                    // unreadable body `malformed` with its cause.
-                    if value.as_array().is_some_and(|a| a.is_empty()) {
-                        Shaped::empty(BalanceSheetLines::default())
-                    } else {
-                        Shaped::malformed(BalanceSheetLines::default())
-                            .with_detail("body was not the expected array shape — malformed or drifted response")
+                match balance_sheet_from_value(value) {
+                    // A parsed row whose four lines are all absent (`[{}]`) is no
+                    // usable data — the row must not read ok on parse alone.
+                    Some(lines) if lines != BalanceSheetLines::default() => Shaped::ok(lines),
+                    Some(lines) => {
+                        gaps.push("FMP balance sheet was empty or malformed".to_string());
+                        Shaped::empty(lines)
+                    }
+                    None => {
+                        gaps.push("FMP balance sheet was empty or malformed".to_string());
+                        // The parser folds both causes into `None`; the row splits
+                        // them honestly — a served-but-empty array is `empty`, an
+                        // unreadable body `malformed` with its cause.
+                        if value.as_array().is_some_and(|a| a.is_empty()) {
+                            Shaped::empty(BalanceSheetLines::default())
+                        } else {
+                            Shaped::malformed(BalanceSheetLines::default())
+                                .with_detail("body was not the expected array shape — malformed or drifted response")
+                        }
                     }
                 }
             },
@@ -5138,6 +5188,7 @@ impl FmpDataSource {
         &self,
         symbol: &str,
         gaps: &mut Vec<String>,
+        unit_issues: &mut Vec<crate::portfolio::engine::StatementUnitIssue>,
     ) -> Vec<crate::portfolio::engine::QuarterlyCashFlowRow> {
         match self.suite_get_shaped(
             "company-cashflow-q",
@@ -5157,6 +5208,12 @@ impl FmpDataSource {
                     return Shaped::malformed(vec![])
                         .with_detail("non-array body — malformed or drifted response");
                 };
+                if let Some(issue) = statement_unit_issue(value, "quarterly cash-flow statements") {
+                    let detail = issue.to_string();
+                    gaps.push(detail.clone());
+                    unit_issues.push(issue);
+                    return Shaped::empty(vec![]).with_detail(detail);
+                }
                 match quarterly_cash_flow_from_value(value) {
                     rows if !rows.is_empty() => Shaped::ok(rows),
                     rows if body.is_empty() => {
@@ -6082,6 +6139,30 @@ fn symbol_news_from_value(value: &Value, from: &str) -> Result<Vec<SymbolNewsIte
         .collect())
 }
 
+/// Reject a whole served statement surface if any row has foreign or unknown
+/// denomination. Filtering individual rows could silently build a different TTM
+/// window, or combine a foreign balance sheet with USD cash flows.
+fn statement_unit_issue(
+    value: &Value,
+    surface: &str,
+) -> Option<crate::portfolio::engine::StatementUnitIssue> {
+    value.as_array()?.iter().find_map(|row| {
+        let currency = row
+            .get("reportedCurrency")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|c| !c.is_empty());
+        if currency.is_some_and(|c| c.eq_ignore_ascii_case("USD")) {
+            None
+        } else {
+            Some(crate::portfolio::engine::StatementUnitIssue {
+                surface: surface.into(),
+                reported_currency: currency.map(str::to_string),
+            })
+        }
+    })
+}
+
 /// Shape an FMP `/balance-sheet-statement` array body into [`BalanceSheetLines`] from
 /// its newest row. `None` only when the body is not the expected non-empty array;
 /// individual missing lines stay `None`. Equity prefers `totalStockholdersEquity`
@@ -6446,6 +6527,8 @@ fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::Prof
             .map(String::from)
     };
     ProfileLookup::Resolved(ProfileIdentity {
+        currency: field("currency"),
+        is_adr: obj.get("isAdr").and_then(Value::as_bool),
         company_name: field("companyName"),
         exchange: field("exchange"),
         sector: field("sector"),
@@ -6660,14 +6743,18 @@ mod suite_tests {
     #[test]
     fn quarterly_income_rows_parse_with_filing_dates() {
         let body = r#"[
-          {"date":"2026-03-31","filingDate":"2026-05-01","revenue":95000000000.0,
+          {"reportedCurrency":"USD","date":"2026-03-31","filingDate":"2026-05-01","revenue":95000000000.0,
            "epsDiluted":1.55,"weightedAverageShsOutDil":15000000000.0},
-          {"date":"2025-12-31","fillingDate":"2026-01-30","revenue":120000000000.0,
+          {"reportedCurrency":"USD","date":"2025-12-31","fillingDate":"2026-01-30","revenue":120000000000.0,
            "epsdiluted":2.10,"weightedAverageShsOutDil":15100000000.0}
         ]"#;
-        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body,
+        }]);
         let mut gaps = vec![];
-        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps);
+        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps, &mut vec![]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].period_end, "2026-03-31");
         assert_eq!(rows[0].filing_date.as_deref(), Some("2026-05-01"));
@@ -6688,15 +6775,23 @@ mod suite_tests {
         // non-contiguous, and TTM adoption would fail onto the annual basis
         // (large-scale review 2026-08-24, P1 minor).
         let income = r#"[
-          {"date":"2026-9-30","filingDate":"2026-11-5","revenue":1.0},
-          {"date":"2026-6-30","filingDate":"soon","fillingDate":"2026-8-1","revenue":2.0},
-          {"date":"2026-3-31","filingDate":"never","fillingDate":"later","revenue":3.0},
-          {"date":"Q4 2025","filingDate":"2026-02-01","revenue":4.0}
+          {"reportedCurrency":"USD","date":"2026-9-30","filingDate":"2026-11-5","revenue":1.0},
+          {"reportedCurrency":"USD","date":"2026-6-30","filingDate":"soon","fillingDate":"2026-8-1","revenue":2.0},
+          {"reportedCurrency":"USD","date":"2026-3-31","filingDate":"never","fillingDate":"later","revenue":3.0},
+          {"reportedCurrency":"USD","date":"Q4 2025","filingDate":"2026-02-01","revenue":4.0}
         ]"#;
-        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body: income }]);
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: income,
+        }]);
         let mut gaps = vec![];
-        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps);
-        assert_eq!(rows.len(), 3, "the undatable-period row is unreadable: {rows:?}");
+        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps, &mut vec![]);
+        assert_eq!(
+            rows.len(),
+            3,
+            "the undatable-period row is unreadable: {rows:?}"
+        );
         assert_eq!(rows[0].period_end, "2026-09-30");
         assert_eq!(rows[0].filing_date.as_deref(), Some("2026-11-05"));
         // Datable-string-first: an undatable `filingDate` falls through to the
@@ -6712,12 +6807,17 @@ mod suite_tests {
         // The cash-flow shaper holds the same rule; an impossible calendar date
         // is as unreadable as a non-date.
         let cash = r#"[
-          {"date":"2026-9-30","fillingDate":"2026-11-5","freeCashFlow":1.0},
-          {"date":"2026-06-31","freeCashFlow":2.0}
+          {"reportedCurrency":"USD","date":"2026-9-30","fillingDate":"2026-11-5","freeCashFlow":1.0},
+          {"reportedCurrency":"USD","date":"2026-06-31","freeCashFlow":2.0}
         ]"#;
-        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body: cash }]);
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: cash,
+        }]);
         let mut gaps = vec![];
-        let rows = source(&server.base_url).fetch_quarterly_cash_flow("AAPL", &mut gaps);
+        let rows =
+            source(&server.base_url).fetch_quarterly_cash_flow("AAPL", &mut gaps, &mut vec![]);
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].period_end, "2026-09-30");
         assert_eq!(rows[0].filing_date.as_deref(), Some("2026-11-05"));
@@ -6729,19 +6829,34 @@ mod suite_tests {
         // A served array with no readable row is the fetch layer's existing
         // `malformed` branch — an undatable date is unreadable exactly as a
         // dateless row is, never a benign `empty`.
-        let body = r#"[{"date":"soon","revenue":1.0},{"date":"Q3","revenue":2.0}]"#;
-        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let body = r#"[{"reportedCurrency":"USD","date":"soon","revenue":1.0},{"reportedCurrency":"USD","date":"Q3","revenue":2.0}]"#;
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body,
+        }]);
         let mut gaps = vec![];
-        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps);
+        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps, &mut vec![]);
         assert!(rows.is_empty(), "{rows:?}");
-        assert_eq!(gaps, vec!["FMP quarterly income statements were malformed".to_string()]);
+        assert_eq!(
+            gaps,
+            vec!["FMP quarterly income statements were malformed".to_string()]
+        );
 
-        let body = r#"[{"date":"soon","freeCashFlow":1.0}]"#;
-        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let body = r#"[{"reportedCurrency":"USD","date":"soon","freeCashFlow":1.0}]"#;
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body,
+        }]);
         let mut gaps = vec![];
-        let rows = source(&server.base_url).fetch_quarterly_cash_flow("AAPL", &mut gaps);
+        let rows =
+            source(&server.base_url).fetch_quarterly_cash_flow("AAPL", &mut gaps, &mut vec![]);
         assert!(rows.is_empty(), "{rows:?}");
-        assert_eq!(gaps, vec!["FMP quarterly cash-flow statements were malformed".to_string()]);
+        assert_eq!(
+            gaps,
+            vec!["FMP quarterly cash-flow statements were malformed".to_string()]
+        );
     }
 
     #[test]
@@ -6807,12 +6922,12 @@ mod suite_tests {
         ]);
         let src = source(&server.base_url);
         let mut gaps = vec![];
-        let lines = src.fetch_balance_sheet("AAPL", &mut gaps);
+        let lines = src.fetch_balance_sheet("AAPL", &mut gaps, &mut vec![]);
         assert_eq!(lines, BalanceSheetLines::default());
         assert_eq!(gaps.len(), 1, "{gaps:?}");
         // Premium gate (402) → the same fail-soft shape with the gated reason.
         let mut gaps = vec![];
-        let lines = src.fetch_balance_sheet("AAPL", &mut gaps);
+        let lines = src.fetch_balance_sheet("AAPL", &mut gaps, &mut vec![]);
         assert_eq!(lines, BalanceSheetLines::default());
         assert!(gaps[0].contains("unavailable"), "{gaps:?}");
     }
@@ -7291,7 +7406,7 @@ mod suite_tests {
     fn profile_identity_reads_array_of_one_or_bare_object() {
         use crate::portfolio::listing::ProfileLookup;
         let v: Value = serde_json::from_str(
-            r#"[{"symbol":"AAPL","companyName":"Apple Inc.","exchange":"NASDAQ","sector":"Technology"}]"#,
+            r#"[{"symbol":"AAPL","isAdr": true, "currency": "USD", "companyName":"Apple Inc.","exchange":"NASDAQ","sector":"Technology"}]"#,
         )
         .unwrap();
         let ProfileLookup::Resolved(identity) = profile_identity_from_value(&v) else {
@@ -7300,6 +7415,8 @@ mod suite_tests {
         assert_eq!(identity.company_name.as_deref(), Some("Apple Inc."));
         assert_eq!(identity.exchange.as_deref(), Some("NASDAQ"));
         assert_eq!(identity.sector.as_deref(), Some("Technology"));
+        assert_eq!(identity.currency.as_deref(), Some("USD"));
+        assert_eq!(identity.is_adr, Some(true));
         let bare: Value = serde_json::from_str(r#"{"sector":"Energy"}"#).unwrap();
         let ProfileLookup::Resolved(identity) = profile_identity_from_value(&bare) else {
             panic!("expected resolved");
@@ -7797,5 +7914,84 @@ mod suite_tests {
         }
         assert_eq!(finished[2].0, "sector-pe-history");
         assert_eq!(finished[3].0, "sector-pe");
+    }
+    #[test]
+    fn statement_currency_guards_block_foreign_unknown_and_mixed_surfaces() {
+        use crate::portfolio::{dossier, engine};
+        for currency in [Some("USD"), Some("TWD"), None] {
+            let scale = if currency == Some("TWD") { 30.0 } else { 1.0 };
+            let rows: Vec<Value> = ["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"]
+                .iter()
+                .map(|date| {
+                    serde_json::json!({
+                        "date": date, "reportedCurrency": currency,
+                        "revenue": 2.5e9 * scale, "netIncome": 0.25e9 * scale,
+                        "grossProfit": 1.25e9 * scale, "epsDiluted": 1.25 * scale,
+                        "weightedAverageShsOutDil": 200e6
+                    })
+                })
+                .collect();
+            let body = serde_json::to_string(&rows).unwrap();
+            let server = MockHttp::serve(vec![Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: Box::leak(body.into_boxed_str()),
+            }]);
+            let mut fin = engine::CompanyFinancials {
+                symbol: "UNITTEST".into(),
+                current_price: Some(100.0),
+                market_cap: Some(20e9),
+                ..Default::default()
+            };
+            fin.quarterly_income = source(&server.base_url).fetch_quarterly_income(
+                "UNITTEST",
+                &mut fin.gaps,
+                &mut fin.unit_issues,
+            );
+            let adopted = dossier::apply_ttm_statement_basis(&mut fin);
+            let fin = dossier::merge_financials(fin, &crate::sec::CompanyFacts::default(), adopted);
+            if currency == Some("USD") {
+                assert_eq!(fin.pe_ratio, Some(20.0));
+                assert!(fin.unit_issues.is_empty());
+            } else {
+                assert!(fin.quarterly_income.is_empty());
+                assert_eq!(fin.pe_ratio, None);
+                assert_eq!(fin.unit_issues[0].reported_currency.as_deref(), currency);
+                assert!(
+                    matches!(engine::analyze(&fin, &engine::RateAnchors::default()), engine::EngineVerdict::InsufficientEvidence(reason) if reason.contains("unsupported financial units"))
+                );
+            }
+        }
+        for foreign in [r#""CAD""#, "null"] {
+            let body = format!(
+                r#"[{{"date":"2026-06-30","reportedCurrency":"USD","freeCashFlow":10}},{{"date":"2026-03-31","reportedCurrency":{foreign},"freeCashFlow":300}}]"#
+            );
+            let balance = format!(
+                r#"[{{"reportedCurrency":{foreign},"totalDebt":300,"totalStockholdersEquity":600}}]"#
+            );
+            let server = MockHttp::serve(vec![
+                Canned::Reply {
+                    status: 200,
+                    headers: vec![],
+                    body: Box::leak(body.into_boxed_str()),
+                },
+                Canned::Reply {
+                    status: 200,
+                    headers: vec![],
+                    body: Box::leak(balance.into_boxed_str()),
+                },
+            ]);
+            let src = source(&server.base_url);
+            let mut gaps = vec![];
+            let mut issues = vec![];
+            assert!(src
+                .fetch_quarterly_cash_flow("UNITTEST", &mut gaps, &mut issues)
+                .is_empty());
+            assert_eq!(
+                src.fetch_balance_sheet("UNITTEST", &mut gaps, &mut issues),
+                BalanceSheetLines::default()
+            );
+            assert_eq!(issues.len(), 2);
+        }
     }
 }

@@ -2,6 +2,17 @@
 
 ## What happened
 
+**Portfolio financial-correctness fixes are approved and uncommitted** (2026-09-15).
+The user authorized fixes to the four sweep findings.
+Claude confirmed the financial corrections and identified unnecessary pre-release compatibility code and documentation gaps.
+After the second review, the user accepted the fixes and requested the remaining pre-commit record and documentation cleanup.
+The follow-up removed that compatibility code and the unused priced-fund structural flag, corrected the tier signature and fixtures, consolidated the financial-unit rule, and added the three runtime watches.
+The verification record is [2026-09-15-portfolio-financial-correctness.md](../docs/verification/2026-09-15-portfolio-financial-correctness.md); full Rust tests, clippy, frontend build/tests and diff whitespace checks pass.
+The record now includes the dated approvals and summarizes both independent reviews without referencing a gitignored file.
+The final cleanup aligns the outlook contract, records deferred ADR normalization, and matches the watch-set formatting.
+BUILD and INDEX point to the completed record.
+No live analysis or store wipe was performed in this slice.
+
 **The Portfolio prompt-clarity bundle landed** (2026-09-14; PR #72 squash-merged to `main` at `c8f8c08`; `portfolio-v35` unchanged under the pre-debut rule).
 The session began as a review of the Portfolio prompts against Qwen's re-thinking traces: the debug thought-logs from attempts 3–5 were segmented per model call, which showed that ~85% of attempt 5's re-thinking sat in the research synthesis call (unseen schema, the "no code fences" prohibition, exact-URL transcription, seed citability), not in the action call the user's screenshots came from; the v34 Finding-3 fix had already cut the action call's churn by roughly a third.
 Codex implemented the combined Claude + Codex findings, Claude reviewed the diff and re-ran the gate, Codex fixed all eight review findings, and the gate ran clean again.
@@ -11,10 +22,11 @@ BUILD §What remains item 1 + §Standing constraints and INDEX §Verification re
 
 ## Current state
 
-Working tree clean, `main` in sync with `origin/main`.
-Nothing in flight.
-The dev store is still a clean debut (wiped 2026-09-14; `web_source_state` is absent until the dev app's next start recreates it).
-Attempt 6 writes `job_runs` id 6; its debut stamp to confirm is still **`portfolio-v35`** (`checkpoint-v8` / `evidence-floor-v4` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v3` unchanged).
+The approved financial-correctness diff is uncommitted on `main`.
+The remaining pre-commit documentation items are complete.
+The prior handoff records a clean debut store (wiped 2026-09-14); this slice did not inspect or change it.
+The standing pre-release wipe and bring-up checks still apply before a user-named run.
+Attempt 6 writes `job_runs` id 6; its debut stamp to confirm is still **`portfolio-v35`** (`checkpoint-v9` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`).
 **Bring-up caution stands:** build the dev app fresh before the first start — a stale binary would recreate the old `web_source_state` shape.
 Attempt 6 is now the after-measurement of the whole bundle, not of the Finding-5 shape example alone; the per-call segmentation method and the attempt-5 baseline are recorded in memory (`thought-log-oscillation-measurement`).
 
@@ -28,6 +40,7 @@ Attempt 6 is now the after-measurement of the whole bundle, not of the Finding-5
 
 ## Where to start
 
-Nothing is queued ahead of the run.
+The financial-correctness slice is ready for commit.
+Commit and launch remain separate actions.
 Wait for the user to name the attempt-6 session; then build the dev app fresh, start it, verify `PRAGMA table_info(web_source_state)` lists `failed_count` / `denied_count`, confirm zero `portfolio_runs` / `portfolio_checkpoints`, bring up infra per the OrbStack bring-up notes, confirm the `portfolio-v35` debut, read `data-health` early, and keep the run's thought-log folder for the per-call after-measurement.
 Don't propose the run unprompted.
