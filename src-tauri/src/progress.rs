@@ -101,6 +101,53 @@ pub enum ProgressEvent {
     /// runs — unlike [`Self::AgentThinking`] / [`Self::AnalystThinking`], which route
     /// to the report workflow's fixed agent / analysts steps.
     StepThinking { step: String, delta: String },
+    /// A local-model chat call is being issued — the diagnostic call boundary
+    /// the thought-log sink and the stderr tee consume; the tracker does not
+    /// render it (`docs/run-tracking.md §Thought-log capture`). `call` is the
+    /// run's per-call counter (1-based, monotonic), `stage` the caller's label
+    /// (`interpret AAPL`, `holding-AAPL research <topic> gathering turn 2`),
+    /// and the rest are the request's own controls — never prompt text. `step`
+    /// carries the same emit-stamped ownership as [`Self::RequestStarted`].
+    ModelCallStarted {
+        call: u64,
+        stage: String,
+        model: String,
+        /// The request's `think` flag as sent: `Some(true)` / `Some(false)`, or
+        /// `None` when the request left the model's own default in force.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        think: Option<bool>,
+        streamed: bool,
+        tools: bool,
+        format: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        num_ctx: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        num_predict: Option<u32>,
+        prompt_chars: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
+    },
+    /// The local-model call `call` resolved. `status` ∈ {`ok`, `failed`};
+    /// `detail` is a failed call's capped top-level message. The counts are
+    /// Ollama's reported `prompt_eval_count` / `eval_count` and its
+    /// `done_reason`, absent when the daemon omitted them or the call failed
+    /// before a reply landed.
+    ModelCallFinished {
+        call: u64,
+        stage: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        elapsed_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        generated_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        done_reason: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
+    },
     /// The run reached a terminal state. `status` ∈ {`successful`, `failed`,
     /// `cancelled`}; `report_id` is set only on success.
     RunFinished {
@@ -120,6 +167,35 @@ pub struct ProgressMessage {
     pub seq: u64,
     #[serde(flatten)]
     pub event: ProgressEvent,
+}
+
+/// What a local-model call boundary reports about the request it wraps: the
+/// caller's stage label and the request's controls — never its prompt text.
+/// Built by the local-model client at issue for [`RunContext::model_call_started`].
+#[derive(Debug, Clone)]
+pub struct ModelCallInfo {
+    pub stage: String,
+    pub model: String,
+    pub think: Option<bool>,
+    pub streamed: bool,
+    pub tools: bool,
+    pub format: bool,
+    pub num_ctx: Option<u32>,
+    pub num_predict: Option<u32>,
+    pub prompt_chars: u64,
+}
+
+/// How a local-model call resolved, for [`RunContext::model_call_finished`].
+/// `ok` carries the daemon's counts when reported; a failure carries its capped
+/// top-level message and no counts.
+#[derive(Debug, Clone)]
+pub struct ModelCallOutcome {
+    pub ok: bool,
+    pub detail: Option<String>,
+    pub elapsed_ms: u64,
+    pub prompt_tokens: Option<u64>,
+    pub generated_tokens: Option<u64>,
+    pub done_reason: Option<String>,
 }
 
 /// Sink for [`ProgressMessage`]s. Implemented by the Tauri layer (an `emit`-backed
@@ -161,6 +237,24 @@ fn tee_to_stderr(run_id: &str, event: &ProgressEvent) {
                 None => eprintln!("[run {run_id}] [{step}] {provider} {group}/{series_id}: {status}"),
             }
         }
+        ProgressEvent::ModelCallStarted { call, stage, model, think, streamed, step, .. } => {
+            let step = step.as_deref().unwrap_or("unattributed");
+            let think = match think {
+                Some(true) => "think on",
+                Some(false) => "think off",
+                None => "think default",
+            };
+            let transport = if *streamed { "streamed" } else { "non-streaming" };
+            eprintln!("[run {run_id}] [{step}] model call {call}: {stage} → {model} ({think}, {transport})");
+        }
+        ProgressEvent::ModelCallFinished { call, stage, status, detail, elapsed_ms, step, .. } => {
+            let step = step.as_deref().unwrap_or("unattributed");
+            let elapsed = elapsed_label(*elapsed_ms);
+            match detail {
+                Some(d) => eprintln!("[run {run_id}] [{step}] model call {call}: {stage} {status} after {elapsed} — {d}"),
+                None => eprintln!("[run {run_id}] [{step}] model call {call}: {stage} {status} after {elapsed}"),
+            }
+        }
         ProgressEvent::RunFinished { status, detail, .. } => match detail {
             Some(d) => eprintln!("[run {run_id}] finished: {status} — {d}"),
             None => eprintln!("[run {run_id}] finished: {status}"),
@@ -169,6 +263,24 @@ fn tee_to_stderr(run_id: &str, event: &ProgressEvent) {
         | ProgressEvent::AgentThinking { .. }
         | ProgressEvent::AnalystThinking { .. }
         | ProgressEvent::StepThinking { .. } => {}
+    }
+}
+
+/// A human elapsed-time label for a call boundary — `900ms`, `12s`, `7m41s`,
+/// `1h02m05s` — shared by the stderr tee and the thought-log fences so the two
+/// renderings of one call never disagree.
+pub fn elapsed_label(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms}ms");
+    }
+    let secs = ms / 1_000;
+    let (h, m, s) = (secs / 3_600, (secs % 3_600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h}h{m:02}m{s:02}s")
+    } else if m > 0 {
+        format!("{m}m{s:02}s")
+    } else {
+        format!("{s}s")
     }
 }
 
@@ -201,6 +313,10 @@ pub struct RunContext {
     /// explicitly; until then an unowned request degrades to a visible
     /// unattributed row, never a misattributed one.
     active_step: Mutex<Option<String>>,
+    /// The run's local-model call counter — the `call` number both boundary
+    /// events of one call share, so a sink can pair them and a reader can
+    /// count calls per holding. Handed out by [`Self::model_call_started`].
+    calls: AtomicU64,
 }
 
 impl RunContext {
@@ -217,6 +333,7 @@ impl RunContext {
             cancel,
             seq: AtomicU64::new(0),
             active_step: Mutex::new(None),
+            calls: AtomicU64::new(0),
         })
     }
 
@@ -256,7 +373,9 @@ impl RunContext {
     /// the adapters emitting them never need to know which step is running.
     fn emit(&self, mut event: ProgressEvent) {
         if let ProgressEvent::RequestStarted { step, .. }
-        | ProgressEvent::RequestFinished { step, .. } = &mut event
+        | ProgressEvent::RequestFinished { step, .. }
+        | ProgressEvent::ModelCallStarted { step, .. }
+        | ProgressEvent::ModelCallFinished { step, .. } = &mut event
         {
             *step = self.active_step.lock().unwrap().clone();
         }
@@ -372,6 +491,45 @@ impl RunContext {
         self.emit(ProgressEvent::StepThinking {
             step: step.into(),
             delta: delta.into(),
+        });
+    }
+
+    /// Announce a local-model call about to be issued and return its call
+    /// number, which the matching [`Self::model_call_finished`] must carry.
+    /// Stamped with the active step like a request row.
+    pub fn model_call_started(&self, info: ModelCallInfo) -> u64 {
+        let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        self.emit(ProgressEvent::ModelCallStarted {
+            call,
+            stage: info.stage,
+            model: info.model,
+            think: info.think,
+            streamed: info.streamed,
+            tools: info.tools,
+            format: info.format,
+            num_ctx: info.num_ctx,
+            num_predict: info.num_predict,
+            prompt_chars: info.prompt_chars,
+            // Placeholder — `emit` overwrites it with the run's active step.
+            step: None,
+        });
+        call
+    }
+
+    /// Close the local-model call `call` (from [`Self::model_call_started`])
+    /// with how it resolved.
+    pub fn model_call_finished(&self, call: u64, stage: impl Into<String>, outcome: ModelCallOutcome) {
+        self.emit(ProgressEvent::ModelCallFinished {
+            call,
+            stage: stage.into(),
+            status: if outcome.ok { "ok" } else { "failed" }.to_string(),
+            detail: outcome.detail,
+            elapsed_ms: outcome.elapsed_ms,
+            prompt_tokens: outcome.prompt_tokens,
+            generated_tokens: outcome.generated_tokens,
+            done_reason: outcome.done_reason,
+            // Placeholder — `emit` overwrites it with the run's active step.
+            step: None,
         });
     }
 
@@ -616,6 +774,133 @@ mod tests {
         assert_eq!(v["step"], "holding-AAPL");
         assert_eq!(v["delta"], "Weighing the trim against the tilt");
         assert_eq!(v["run_id"], "run-4");
+    }
+
+    fn call_info(stage: &str) -> ModelCallInfo {
+        ModelCallInfo {
+            stage: stage.into(),
+            model: "qwen".into(),
+            think: Some(true),
+            streamed: false,
+            tools: true,
+            format: false,
+            num_ctx: Some(131_072),
+            num_predict: Some(65_536),
+            prompt_chars: 4_200,
+        }
+    }
+
+    #[test]
+    fn model_call_boundaries_number_calls_and_carry_the_active_step() {
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-8", rec.clone(), Arc::new(AtomicBool::new(false)));
+
+        // Before any step: unowned, numbered 1.
+        let first = ctx.model_call_started(call_info("probe"));
+        ctx.step_started("holding-AAPL", "Analyze AAPL");
+        let second = ctx.model_call_started(call_info("interpret AAPL"));
+        ctx.model_call_finished(
+            second,
+            "interpret AAPL",
+            ModelCallOutcome {
+                ok: true,
+                detail: None,
+                elapsed_ms: 461_000,
+                prompt_tokens: Some(41_203),
+                generated_tokens: Some(8_921),
+                done_reason: Some("stop".into()),
+            },
+        );
+        ctx.step_finished("holding-AAPL", "ok", None);
+        ctx.model_call_finished(
+            first,
+            "probe",
+            ModelCallOutcome {
+                ok: false,
+                detail: Some("local model returned 500".into()),
+                elapsed_ms: 12,
+                prompt_tokens: None,
+                generated_tokens: None,
+                done_reason: None,
+            },
+        );
+
+        assert_eq!((first, second), (1, 2), "calls number from 1, monotonic");
+        let calls: Vec<(u64, Option<String>)> = rec
+            .messages()
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::ModelCallStarted { call, step, .. }
+                | ProgressEvent::ModelCallFinished { call, step, .. } => {
+                    Some((*call, step.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                (1, None),
+                (2, Some("holding-AAPL".to_string())),
+                (2, Some("holding-AAPL".to_string())),
+                (1, None),
+            ],
+            "each boundary is stamped with the step open when it was emitted"
+        );
+    }
+
+    #[test]
+    fn model_call_events_serialize_flat_with_kebab_kinds_and_no_null_fields() {
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-9", rec.clone(), Arc::new(AtomicBool::new(false)));
+        let mut info = call_info("distill AAPL");
+        info.think = None;
+        let call = ctx.model_call_started(info);
+        ctx.model_call_finished(
+            call,
+            "distill AAPL",
+            ModelCallOutcome {
+                ok: false,
+                detail: Some("boom".into()),
+                elapsed_ms: 1_500,
+                prompt_tokens: None,
+                generated_tokens: None,
+                done_reason: None,
+            },
+        );
+
+        let msgs = rec.messages();
+        let started = serde_json::to_value(&msgs[0]).unwrap();
+        assert_eq!(started["kind"], "model-call-started");
+        assert_eq!(started["call"], 1);
+        assert_eq!(started["stage"], "distill AAPL");
+        assert_eq!(started["model"], "qwen");
+        assert!(started.get("think").is_none(), "a default think flag is absent, not null");
+        assert_eq!(started["streamed"], false);
+        assert_eq!(started["tools"], true);
+        assert_eq!(started["format"], false);
+        assert_eq!(started["num_ctx"], 131_072);
+        assert_eq!(started["num_predict"], 65_536);
+        assert_eq!(started["prompt_chars"], 4_200);
+        assert!(started.get("step").is_none());
+
+        let finished = serde_json::to_value(&msgs[1]).unwrap();
+        assert_eq!(finished["kind"], "model-call-finished");
+        assert_eq!(finished["call"], 1);
+        assert_eq!(finished["status"], "failed");
+        assert_eq!(finished["detail"], "boom");
+        assert_eq!(finished["elapsed_ms"], 1_500);
+        assert!(finished.get("prompt_tokens").is_none());
+        assert!(finished.get("generated_tokens").is_none());
+        assert!(finished.get("done_reason").is_none());
+    }
+
+    #[test]
+    fn elapsed_labels_read_humanly() {
+        assert_eq!(elapsed_label(900), "900ms");
+        assert_eq!(elapsed_label(12_000), "12s");
+        assert_eq!(elapsed_label(461_000), "7m41s");
+        assert_eq!(elapsed_label(3_725_000), "1h02m05s");
     }
 
     #[test]

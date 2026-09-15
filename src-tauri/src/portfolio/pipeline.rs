@@ -5621,18 +5621,25 @@ impl HoldingAnalyst for LocalAnalyst {
         impl research::ResearchModel for TurnAdapter<'_> {
             fn research_turn(
                 &self,
+                stage: &str,
                 messages: &[ChatMessage],
                 tools: Option<&serde_json::Value>,
                 format: Option<&serde_json::Value>,
             ) -> Result<crate::local_model::ChatResponse> {
-                let req = research_turn_request(
+                let mut req = research_turn_request(
                     &self.analyst.reasoner_model,
                     messages.to_vec(),
                     tools,
                     format,
                 );
+                req.stage = Some(stage.to_string());
                 self.analyst.record_model_call(&req);
-                let resp = self.analyst.client.chat(&req)?;
+                // Non-streaming (the tool protocol), the reply's thinking
+                // forwarded whole onto the holding's step once it lands.
+                let resp = self
+                    .analyst
+                    .client
+                    .chat_with_role(&req, StreamRole::Step(self.stage))?;
                 self.analyst.record_usage(self.stage.to_string(), &req, &resp);
                 ensure_not_output_limited(self.stage, &req, &resp)?;
                 ensure_nonempty_completion(self.stage, &resp)?;
@@ -5690,13 +5697,14 @@ impl HoldingAnalyst for LocalAnalyst {
                     &self.analyst.fast_model,
                     &self.analyst.reasoner_model,
                 )?;
-                let req = distill_request(
+                let mut req = distill_request(
                     model,
                     num_ctx,
                     NUM_PREDICT_DISTILL,
                     prompt.clone(),
                     schema,
                 );
+                req.stage = Some(stage.to_string());
                 self.analyst.record_model_call(&req);
                 let resp = self.analyst.client.chat(&req)?;
                 self.analyst.record_usage(stage.to_string(), &req, &resp);
@@ -5709,13 +5717,14 @@ impl HoldingAnalyst for LocalAnalyst {
                     self.spent_output_retries
                         .borrow_mut()
                         .insert(stage.to_string());
-                    let expanded_req = distill_request(
+                    let mut expanded_req = distill_request(
                         &self.analyst.reasoner_model,
                         NUM_CTX_INTERPRET,
                         NUM_PREDICT_DISTILL_RETRY,
                         prompt,
                         schema,
                     );
+                    expanded_req.stage = Some(format!("{stage} (expanded)"));
                     self.analyst.record_model_call(&expanded_req);
                     let expanded_resp = self.analyst.client.chat(&expanded_req)?;
                     self.analyst.record_usage(stage.to_string(), &expanded_req, &expanded_resp);
@@ -5769,13 +5778,14 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
-        let req = interpret_request(&self.reasoner_model, input);
+        let mut req = interpret_request(&self.reasoner_model, input);
         // Stream step-scoped: the structured body has no console value (it stays
         // accumulated, never streamed), but the reasoning streams onto this
         // holding's own "Analyze {SYM}" step, so the tracker shows live thinking
         // instead of a minutes-long quiet stretch (the first live run's F8).
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("interpret {}", input.dossier.position.symbol);
+        req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
             let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
@@ -5787,9 +5797,10 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
-        let req = role_risk_request(&self.reasoner_model, input);
+        let mut req = role_risk_request(&self.reasoner_model, input);
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("role-risk {}", input.dossier.position.symbol);
+        req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
             let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
@@ -5810,11 +5821,12 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
-        let req = action_request(&self.reasoner_model, input);
+        let mut req = action_request(&self.reasoner_model, input);
         // Stream step-scoped like interpretation: the decision's reasoning lands
         // on this holding's own "Analyze {SYM}" step.
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("action {}", input.dossier.position.symbol);
+        req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
             let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;

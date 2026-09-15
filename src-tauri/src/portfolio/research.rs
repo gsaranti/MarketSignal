@@ -744,8 +744,15 @@ pub fn offline_stub(plan: &ResearchPlan) -> HoldingResearch {
 /// implementation wraps [`crate::local_model::LocalModelClient`] with the
 /// reasoner id and thinking options; tests script it.
 pub trait ResearchModel {
+    /// One model turn. `stage` is the call's diagnostic label — the holding's
+    /// step, the topic, the leg, and a gathering turn's index — carried on the
+    /// call-boundary progress events (`docs/run-tracking.md §Thought-log
+    /// capture`); it never reaches the prompt. The live adapter forwards the
+    /// reply's thinking under the holding's step role itself, so the loop
+    /// emits none.
     fn research_turn(
         &self,
+        stage: &str,
         messages: &[ChatMessage],
         tools: Option<&Value>,
         format: Option<&Value>,
@@ -1383,18 +1390,19 @@ impl ResearchRunner<'_> {
             // One bounded re-attempt on a transient turn failure — the messages
             // are unchanged, so the re-issued request is the same turn
             // (`docs/local-models.md §The local-model adapter seam`).
-            let resp = match self.model.research_turn(&messages, Some(&tools), None) {
+            let turn_stage = format!("{gathering_stage} turn {turns}");
+            let resp = match self
+                .model
+                .research_turn(&turn_stage, &messages, Some(&tools), None)
+            {
                 Ok(resp) => resp,
                 Err(first) if self.model.retry_permitted(&gathering_stage, &first) => self
                     .model
-                    .research_turn(&messages, Some(&tools), None)
+                    .research_turn(&turn_stage, &messages, Some(&tools), None)
                     .map_err(|e| e.context(crate::local_model::retried_once_annotation(&first)))
                     .context("research turn failed")?,
                 Err(first) => return Err(first.context("research turn failed")),
             };
-            if let Some(thinking) = &resp.thinking {
-                self.progress.step_thinking(&self.step_label, thinking);
-            }
             let Some(raw_calls) = resp.tool_calls.clone() else {
                 // No tool call requested: the model has finished gathering this
                 // topic — hand off to synthesis rather than parsing this turn.
@@ -1558,18 +1566,18 @@ impl ResearchRunner<'_> {
             if self.progress.is_cancelled() {
                 bail!("research cancelled");
             }
-            let resp = match self.model.research_turn(&messages, None, Some(&schema)) {
+            let resp = match self
+                .model
+                .research_turn(&stage, &messages, None, Some(&schema))
+            {
                 Ok(resp) => resp,
                 Err(first) if self.model.retry_permitted(&stage, &first) => self
                     .model
-                    .research_turn(&messages, None, Some(&schema))
+                    .research_turn(&stage, &messages, None, Some(&schema))
                     .map_err(|e| e.context(crate::local_model::retried_once_annotation(&first)))
                     .context("synthesizing findings failed")?,
                 Err(first) => return Err(first.context("synthesizing findings failed")),
             };
-            if let Some(thinking) = &resp.thinking {
-                self.progress.step_thinking(&self.step_label, thinking);
-            }
             let parsed = parse_findings_wire(&resp.content).map_err(|e| {
                 e.context(format!(
                     "research findings response failed its schema parse (body: {})",
@@ -2860,6 +2868,7 @@ mod tests {
     impl ResearchModel for ScriptModel {
         fn research_turn(
             &self,
+            _stage: &str,
             _messages: &[ChatMessage],
             _tools: Option<&Value>,
             _format: Option<&Value>,
@@ -3350,11 +3359,12 @@ mod tests {
     impl ResearchModel for RetryingModel {
         fn research_turn(
             &self,
+            stage: &str,
             messages: &[ChatMessage],
             tools: Option<&Value>,
             format: Option<&Value>,
         ) -> Result<ChatResponse> {
-            self.inner.research_turn(messages, tools, format)
+            self.inner.research_turn(stage, messages, tools, format)
         }
         fn retry_permitted(&self, _stage: &str, err: &anyhow::Error) -> bool {
             crate::local_model::retry_class(err).is_some()
@@ -3383,6 +3393,7 @@ mod tests {
         impl ResearchModel for RecordingModel {
             fn research_turn(
                 &self,
+                stage: &str,
                 messages: &[ChatMessage],
                 tools: Option<&Value>,
                 format: Option<&Value>,
@@ -3392,7 +3403,7 @@ mod tests {
                     tools.is_some(),
                     format.is_some(),
                 ));
-                self.inner.research_turn(messages, tools, format)
+                self.inner.research_turn(stage, messages, tools, format)
             }
         }
         let model = RecordingModel {
@@ -3527,6 +3538,7 @@ mod tests {
         impl ResearchModel for PacketRecordingModel {
             fn research_turn(
                 &self,
+                stage: &str,
                 messages: &[ChatMessage],
                 tools: Option<&Value>,
                 format: Option<&Value>,
@@ -3538,7 +3550,7 @@ mod tests {
                         .borrow_mut()
                         .push(gathering_packet_chars(messages, tools));
                 }
-                self.inner.research_turn(messages, tools, format)
+                self.inner.research_turn(stage, messages, tools, format)
             }
         }
         let batch = |offset: usize| {
@@ -4457,6 +4469,7 @@ mod tests {
         impl ResearchModel for FlakyModel {
             fn research_turn(
                 &self,
+                stage: &str,
                 messages: &[ChatMessage],
                 tools: Option<&Value>,
                 format: Option<&Value>,
@@ -4472,7 +4485,7 @@ mod tests {
                         .context("local model returned 502"));
                     }
                 }
-                self.inner.research_turn(messages, tools, format)
+                self.inner.research_turn(stage, messages, tools, format)
             }
             fn retry_permitted(&self, _stage: &str, err: &anyhow::Error) -> bool {
                 crate::local_model::retry_class(err).is_some()
@@ -4521,6 +4534,7 @@ mod tests {
         impl ResearchModel for StageRecorder {
             fn research_turn(
                 &self,
+                stage: &str,
                 messages: &[ChatMessage],
                 tools: Option<&Value>,
                 format: Option<&Value>,
@@ -4536,7 +4550,7 @@ mod tests {
                         .context("local model returned 502"));
                     }
                 }
-                self.inner.research_turn(messages, tools, format)
+                self.inner.research_turn(stage, messages, tools, format)
             }
             fn retry_permitted(&self, stage: &str, err: &anyhow::Error) -> bool {
                 self.stages
@@ -4601,6 +4615,7 @@ mod tests {
     impl ResearchModel for FlakyModel {
         fn research_turn(
             &self,
+            stage: &str,
             messages: &[ChatMessage],
             tools: Option<&Value>,
             format: Option<&Value>,
@@ -4617,7 +4632,7 @@ mod tests {
                         .context("local model returned 502"),
                 );
             }
-            self.inner.research_turn(messages, tools, format)
+            self.inner.research_turn(stage, messages, tools, format)
         }
         fn retry_permitted(&self, _stage: &str, err: &anyhow::Error) -> bool {
             crate::local_model::retry_class(err).is_some()

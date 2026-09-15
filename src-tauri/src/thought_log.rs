@@ -6,6 +6,14 @@
 //! agent's report body (`AgentToken`) persists as the report itself, and the
 //! non-thinking events are run structure, already owned by the stderr tee.
 //!
+//! The one structural addition is the **call fence**: every local-model call's
+//! boundary events (`ModelCallStarted` / `ModelCallFinished`) write a header
+//! and a trailer line into the owning step's file, so a holding's file reads
+//! as a call timeline — the stage, model, controls and start time above each
+//! call's thinking, its outcome, elapsed time and token counts below — instead
+//! of every call's reasoning run together. Fences carry labels and counts
+//! only, never prompt or body text.
+//!
 //! Best-effort by contract: the sink may never fail or reorder the run it
 //! observes. Every message is forwarded to the inner reporter first; any
 //! capture I/O error disables capture for the rest of the run with one stderr
@@ -25,15 +33,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::progress::{ProgressEvent, ProgressMessage, ProgressReporter};
+use crate::progress::{elapsed_label, ProgressEvent, ProgressMessage, ProgressReporter};
 
 /// How many run folders survive pruning, newest first — bounded accumulation
 /// across dev runs (~kilobytes each, so this is history depth, not a cost
-/// question). Pruning runs only after a run's **first delta has landed on
-/// disk**, keeping [`THOUGHT_LOG_RETENTION`] − 1 prior folders beside this
-/// run's own; a run that captures nothing — or whose capture fails before the
-/// first write — prunes nothing, so an old log is never deleted without a
-/// replacement existing.
+/// question). Pruning runs only after a run's **first capture has landed on
+/// disk** (a call fence or a thinking delta), keeping [`THOUGHT_LOG_RETENTION`]
+/// − 1 prior folders beside this run's own; a run that captures nothing — or
+/// whose capture fails before the first write — prunes nothing, so an old log
+/// is never deleted without a replacement existing.
 pub const THOUGHT_LOG_RETENTION: usize = 10;
 
 /// A thinking-capture decorator around the live reporter. Constructed per run
@@ -41,14 +49,30 @@ pub const THOUGHT_LOG_RETENTION: usize = 10;
 /// contexts) it simply never exists.
 pub struct ThoughtLogSink {
     inner: Arc<dyn ProgressReporter>,
-    /// This run's own folder. Created lazily on the first captured delta, so a
-    /// run that streams no thinking (a quick check, an early cancel) leaves no
-    /// empty folder behind.
+    /// This run's own folder. Created lazily on the first capture (a call
+    /// fence or a thinking delta), so a run that issues no local call and
+    /// streams no thinking (a quick check, an early cancel) leaves no empty
+    /// folder behind.
     dir: PathBuf,
     /// Open appenders keyed by sanitized stream file name.
-    files: Mutex<HashMap<String, File>>,
+    files: Mutex<HashMap<String, Appender>>,
     /// Latched by the first capture error; the sink then forwards only.
     disabled: AtomicBool,
+}
+
+/// One stream file plus whether its last byte was a newline — the fence
+/// guard: a header or trailer always starts on its own line, even after a
+/// thinking delta that ended mid-sentence, while deltas append verbatim.
+struct Appender {
+    file: File,
+    at_line_start: bool,
+}
+
+/// What one captured event appends: a thinking delta verbatim, or a fence
+/// line that must begin at a line start.
+enum Capture {
+    Delta(String),
+    Line(String),
 }
 
 impl ThoughtLogSink {
@@ -60,7 +84,7 @@ impl ThoughtLogSink {
     /// the whole point. The id half is normalized to exactly eight
     /// alphanumerics so every folder this sink writes matches
     /// [`looks_like_run_dir`]. Nothing is pruned here — pruning waits for the
-    /// first *successfully written* delta, so a run that streams no thinking
+    /// first *successfully written* capture, so a run that streams no thinking
     /// (a quick check, a blocked or skipped attempt) or whose capture fails
     /// outright can never delete an old log without leaving a replacement.
     pub fn attach(inner: Arc<dyn ProgressReporter>, base: &Path, run_id: &str) -> Self {
@@ -75,26 +99,42 @@ impl ThoughtLogSink {
         }
     }
 
-    /// The stream file a captured event appends to; `None` for everything the
-    /// sink deliberately ignores.
-    fn stream_file(event: &ProgressEvent) -> Option<(String, &str)> {
+    /// The stream file a captured event appends to and what it appends;
+    /// `None` for everything the sink deliberately ignores. A call boundary
+    /// lands in its stamped step's file — the same file that step's thinking
+    /// deltas use — or in `run.txt` when it fired with no step open.
+    fn stream_file(event: &ProgressEvent) -> Option<(String, Capture)> {
         match event {
-            ProgressEvent::AgentThinking { delta } => Some(("main-agent.txt".into(), delta)),
-            ProgressEvent::AnalystThinking { posture, delta } => {
-                Some((format!("analyst-{}.txt", sanitize(posture)), delta))
+            ProgressEvent::AgentThinking { delta } => {
+                Some(("main-agent.txt".into(), Capture::Delta(delta.clone())))
             }
+            ProgressEvent::AnalystThinking { posture, delta } => Some((
+                format!("analyst-{}.txt", sanitize(posture)),
+                Capture::Delta(delta.clone()),
+            )),
             ProgressEvent::StepThinking { step, delta } => {
-                Some((format!("{}.txt", sanitize(step)), delta))
+                Some((format!("{}.txt", sanitize(step)), Capture::Delta(delta.clone())))
+            }
+            ProgressEvent::ModelCallStarted { step, .. }
+            | ProgressEvent::ModelCallFinished { step, .. } => {
+                let file = match step {
+                    Some(step) => format!("{}.txt", sanitize(step)),
+                    None => "run.txt".to_string(),
+                };
+                Some((file, Capture::Line(render_fence(event))))
             }
             _ => None,
         }
     }
 
-    fn append(&self, file_name: String, delta: &str) {
-        if self.disabled.load(Ordering::Relaxed) || delta.is_empty() {
+    fn append(&self, file_name: String, capture: Capture) {
+        let empty = match &capture {
+            Capture::Delta(text) | Capture::Line(text) => text.is_empty(),
+        };
+        if self.disabled.load(Ordering::Relaxed) || empty {
             return;
         }
-        if let Err(e) = self.try_append(&file_name, delta) {
+        if let Err(e) = self.try_append(&file_name, &capture) {
             // One line, once: capture is diagnostics and must cost the run
             // nothing, so the first error retires it for the rest of the run.
             self.disabled.store(true, Ordering::Relaxed);
@@ -105,7 +145,7 @@ impl ThoughtLogSink {
         }
     }
 
-    fn try_append(&self, file_name: &str, delta: &str) -> std::io::Result<()> {
+    fn try_append(&self, file_name: &str, capture: &Capture) -> std::io::Result<()> {
         let mut files = match self.files.lock() {
             Ok(g) => g,
             // A poisoned lock means a prior capture panicked; treat as an
@@ -119,12 +159,27 @@ impl ThoughtLogSink {
                 .create(true)
                 .append(true)
                 .open(self.dir.join(file_name))?;
-            files.insert(file_name.to_string(), file);
+            files.insert(
+                file_name.to_string(),
+                Appender {
+                    file,
+                    at_line_start: true,
+                },
+            );
         }
-        let file = files.get_mut(file_name).expect("inserted above");
-        file.write_all(delta.as_bytes())?;
+        let appender = files.get_mut(file_name).expect("inserted above");
+        let text = match capture {
+            Capture::Delta(text) => text.as_str(),
+            Capture::Line(text) => text.as_str(),
+        };
+        if matches!(capture, Capture::Line(_)) && !appender.at_line_start {
+            appender.file.write_all(b"\n")?;
+        }
+        appender.file.write_all(text.as_bytes())?;
+        appender.at_line_start = text.ends_with('\n');
         if first_capture {
-            // Prune only now, with the first delta already on disk: a capture
+            // Prune only now, with the first capture (a fence header or a
+            // delta) already on disk: a capture
             // that failed anywhere above latched the disable without pruning,
             // so a failed run can never delete an old log while producing no
             // replacement. This run's own folder is exempt by name, so even a
@@ -142,9 +197,91 @@ impl ProgressReporter for ThoughtLogSink {
     fn report(&self, message: &ProgressMessage) {
         // Forward first: the live tracker must never wait on disk.
         self.inner.report(message);
-        if let Some((file_name, delta)) = Self::stream_file(&message.event) {
-            self.append(file_name, delta);
+        if let Some((file_name, capture)) = Self::stream_file(&message.event) {
+            self.append(file_name, capture);
         }
+    }
+}
+
+/// The fence lines a call's boundary events write. The header opens the call
+/// with its number, stage, model, controls, prompt size and UTC start time;
+/// the trailer closes it with the outcome, elapsed time and the daemon's counts
+/// (or a failure's capped detail), then a blank line so the next call stands
+/// apart. `====` is the fixed prefix a reader splits on.
+fn render_fence(event: &ProgressEvent) -> String {
+    match event {
+        ProgressEvent::ModelCallStarted {
+            call,
+            stage,
+            model,
+            think,
+            streamed,
+            tools,
+            format,
+            num_ctx,
+            num_predict,
+            prompt_chars,
+            ..
+        } => {
+            let mut parts = vec![
+                format!("==== call {call}"),
+                stage.clone(),
+                model.clone(),
+                match think {
+                    Some(true) => "think on",
+                    Some(false) => "think off",
+                    None => "think default",
+                }
+                .to_string(),
+                if *streamed { "streamed" } else { "non-streaming" }.to_string(),
+            ];
+            if *tools {
+                parts.push("tools".into());
+            }
+            if *format {
+                parts.push("format".into());
+            }
+            if let Some(n) = num_ctx {
+                parts.push(format!("ctx {n}"));
+            }
+            if let Some(n) = num_predict {
+                parts.push(format!("predict {n}"));
+            }
+            parts.push(format!("prompt {prompt_chars} chars"));
+            parts.push(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+            format!("{}\n", parts.join(" | "))
+        }
+        ProgressEvent::ModelCallFinished {
+            call,
+            status,
+            detail,
+            elapsed_ms,
+            prompt_tokens,
+            generated_tokens,
+            done_reason,
+            ..
+        } => {
+            let mut parts = vec![
+                format!("==== end {call}"),
+                status.clone(),
+                elapsed_label(*elapsed_ms),
+            ];
+            if let Some(n) = prompt_tokens {
+                parts.push(format!("prompt {n} tok"));
+            }
+            if let Some(n) = generated_tokens {
+                parts.push(format!("generated {n} tok"));
+            }
+            if let Some(reason) = done_reason {
+                parts.push(reason.clone());
+            }
+            if let Some(detail) = detail {
+                // One line: a detail's own newlines would break the fence.
+                parts.push(detail.replace(['\n', '\r'], " "));
+            }
+            format!("{}\n\n", parts.join(" | "))
+        }
+        _ => String::new(),
     }
 }
 
@@ -265,6 +402,142 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names.len(), 4, "no file for uncaptured events: {names:?}");
+    }
+
+    fn started(call: u64, stage: &str, step: Option<&str>) -> ProgressEvent {
+        ProgressEvent::ModelCallStarted {
+            call,
+            stage: stage.into(),
+            model: "qwen".into(),
+            think: Some(true),
+            streamed: true,
+            tools: false,
+            format: true,
+            num_ctx: Some(131_072),
+            num_predict: Some(65_536),
+            prompt_chars: 4_200,
+            step: step.map(str::to_string),
+        }
+    }
+
+    fn finished_ok(call: u64, step: Option<&str>) -> ProgressEvent {
+        ProgressEvent::ModelCallFinished {
+            call,
+            stage: "interpret AAPL".into(),
+            status: "ok".into(),
+            detail: None,
+            elapsed_ms: 461_000,
+            prompt_tokens: Some(41_203),
+            generated_tokens: Some(8_921),
+            done_reason: Some("stop".into()),
+            step: step.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn call_fences_bracket_a_step_file_around_its_thinking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (inner, sink) = sink_under(tmp.path());
+        let step = Some("holding-AAPL");
+        sink.report(&msg(started(1, "interpret AAPL", step)));
+        sink.report(&msg(ProgressEvent::StepThinking {
+            step: "holding-AAPL".into(),
+            delta: "weighing the trim".into(),
+        }));
+        // The delta ended mid-line: the trailer must still start its own line.
+        sink.report(&msg(finished_ok(1, step)));
+        assert_eq!(inner.0.load(Ordering::Relaxed), 3, "every message forwards");
+
+        let text = fs::read_to_string(sink.dir.join("holding-AAPL.txt")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4, "header, thinking, trailer, blank: {text:?}");
+        assert!(
+            lines[0].starts_with(
+                "==== call 1 | interpret AAPL | qwen | think on | streamed | format | \
+                 ctx 131072 | predict 65536 | prompt 4200 chars | 20"
+            ),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[0].ends_with('Z'), "UTC start time closes the header: {}", lines[0]);
+        assert_eq!(lines[1], "weighing the trim");
+        assert_eq!(
+            lines[2],
+            "==== end 1 | ok | 7m41s | prompt 41203 tok | generated 8921 tok | stop"
+        );
+        assert_eq!(lines[3], "", "a blank line separates calls");
+        assert!(text.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn a_non_thinking_call_leaves_adjacent_fences_in_the_same_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, sink) = sink_under(tmp.path());
+        let step = Some("holding-AAPL");
+        let mut distill = started(2, "distill AAPL", step);
+        if let ProgressEvent::ModelCallStarted { think, streamed, tools, format, .. } = &mut distill {
+            *think = Some(false);
+            *streamed = false;
+            *tools = true;
+            *format = false;
+        }
+        sink.report(&msg(distill));
+        sink.report(&msg(ProgressEvent::ModelCallFinished {
+            call: 2,
+            stage: "distill AAPL".into(),
+            status: "ok".into(),
+            detail: None,
+            elapsed_ms: 12_000,
+            prompt_tokens: None,
+            generated_tokens: None,
+            done_reason: None,
+            step: step.map(str::to_string),
+        }));
+        let text = fs::read_to_string(sink.dir.join("holding-AAPL.txt")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].starts_with("==== call 2 | distill AAPL | qwen | think off | non-streaming | tools | ctx"),
+            "{}",
+            lines[0]
+        );
+        assert_eq!(lines[1], "==== end 2 | ok | 12s", "absent counts are omitted, not printed");
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn a_failed_call_trailer_carries_its_detail_on_one_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, sink) = sink_under(tmp.path());
+        sink.report(&msg(ProgressEvent::ModelCallFinished {
+            call: 3,
+            stage: "action AAPL".into(),
+            status: "failed".into(),
+            detail: Some("local model returned 500:\nrunner crashed".into()),
+            elapsed_ms: 900,
+            prompt_tokens: None,
+            generated_tokens: None,
+            done_reason: None,
+            step: Some("holding-AAPL".into()),
+        }));
+        let text = fs::read_to_string(sink.dir.join("holding-AAPL.txt")).unwrap();
+        assert_eq!(
+            text,
+            "==== end 3 | failed | 900ms | local model returned 500: runner crashed\n\n"
+        );
+    }
+
+    #[test]
+    fn an_unstamped_call_fences_into_run_txt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, sink) = sink_under(tmp.path());
+        sink.report(&msg(started(1, "probe", None)));
+        sink.report(&msg(finished_ok(1, None)));
+        assert!(sink.dir.join("run.txt").exists());
+        let names: Vec<String> = fs::read_dir(&sink.dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["run.txt".to_string()]);
     }
 
     #[test]

@@ -36,18 +36,34 @@ Its contents are kept for the current application session and reflect the **late
 ## Thought-log capture (diagnostic)
 
 Because the tracker's reasoning panes are transient, a diagnostic sink can capture them to disk.
-It decorates the live progress reporter and appends every streamed **thinking** delta to one plain-text file per stream: `main-agent.txt`, `analyst-<posture>.txt`, and `<step-key>.txt` for step-scoped reasoning (each per-holding step, its interpretation and action calls alike).
+It decorates the live progress reporter and appends every streamed **thinking** delta to one plain-text file per stream: `main-agent.txt`, `analyst-<posture>.txt`, and `<step-key>.txt` for step-scoped reasoning (each per-holding step — its research turns, interpretation and action calls alike).
 The files land under a per-run folder at `<data-dir>/thought-logs/<UTC-timestamp>-<run-id-prefix>/`.
 It exists because a failed live run otherwise leaves no reasoning evidence; the 2026-08-10 attempt-1 analysis rested on screenshots of the panes.
 The capture is thoughts-only by construction: the main agent's report body persists as the report itself, and a review body or structured verdict never streams, so neither can ever land in a log.
 
+A local-model call additionally writes a **call fence** around its thinking.
+Every local chat call emits a `model-call-started` and a `model-call-finished` event on the progress seam, and the sink renders them as a header and a trailer line in the owning step's file (`run.txt` when the call fired with no step open), so a holding's file reads as a call timeline rather than every call's reasoning run together.
+The header carries the run's call number, the caller's stage label (the interpretation, role-risk or action stage, a distillation stage, or a research topic's gathering turn or synthesis leg), the model, the `think` flag, whether the call streamed, whether tools or a format grammar rode the request, `num_ctx`, `num_predict`, the prompt's size in characters, and the UTC start time.
+The trailer carries the outcome, the elapsed time, and the daemon's prompt and generated token counts and stop reason when reported, or a failed call's top-level message capped to about 200 characters.
+Fences carry labels and counts only, never prompt or body text.
+Every local call is fenced.
+A non-thinking distillation call therefore leaves adjacent fences with nothing between.
+The tracker does not render the two boundary events.
+They exist for this sink and the stderr tee.
+A streamed call's thinking lands between its fences as it streams.
+A non-streaming call — the research loop's gathering turns and synthesis call — forwards its thinking whole once the reply lands.
+A non-streaming call that meets a handled timeout or daemon error leaves a header and a failed trailer with no thinking between them.
+Abrupt app termination while a non-streaming call is still in flight leaves only its header, which names the interrupted call.
+The cloud report job's calls carry no fences.
+Its `main-agent.txt` and `analyst-<posture>.txt` streams are unchanged.
+
 The sink is permanent code with build-gated behavior: debug builds capture by default (opt out with the variable below), and release builds stay silent unless explicitly opted in.
 `MARKET_SIGNAL_THOUGHT_LOG` (`1`/`true` or `0`/`false`) forces capture on or off in either build.
 The folder rides the same data-directory resolution as every store (`MARKET_SIGNAL_DATA_DIR` override; `dev/` nesting in debug builds).
-The newest ten run folders are kept: pruning happens only after a run's first delta has landed on disk, so a run that captures nothing (a quick check, a blocked attempt) — or whose capture fails outright — never spends an old log without a replacement existing.
+The newest ten run folders are kept: pruning happens only after a run's first capture — a call fence or a thinking delta — has landed on disk, so a run that captures nothing (a quick check, a blocked attempt) — or whose capture fails outright — never spends an old log without a replacement existing.
 Pruning is shape-guarded: only folders matching the sink's own exact timestamp-and-id naming are counted or deleted, so anything else in the directory is not its to remove.
 The logs are loose diagnostic files — outside SQLite, outside the portability archive, and outside every store retention rule.
-Capture is best-effort: a run that streams no thinking creates no folder, and an I/O failure disables capture for that run with one log line, never the run itself.
+Capture is best-effort: a run that streams no thinking and issues no local-model call creates no folder, and an I/O failure disables capture for that run with one log line, never the run itself.
 Appends are synchronous and unbuffered — the crash-honesty the sink exists for, since everything streamed before a failure is already on disk; the accepted cost is that a stalled disk would stall the run, tolerable for a debug-gated diagnostic.
 
 ## Cancellation

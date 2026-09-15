@@ -28,14 +28,14 @@
 
 use std::io::BufRead;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::{self, AppConfig, ValidationReport, WarningCategory, WarningKind};
-use crate::progress::RunContext;
+use crate::progress::{ModelCallInfo, ModelCallOutcome, RunContext};
 
 /// Native Ollama endpoint paths, joined onto the configured daemon base.
 const CHAT_PATH: &str = "/api/chat";
@@ -475,6 +475,12 @@ pub struct ChatRequest {
     /// (`docs/local-models.md §The model roster and per-task routing`). `None`
     /// omits the field (the daemon's own idle-unload default).
     pub keep_alive: Option<i64>,
+    /// The caller's diagnostic label for this call (`interpret AAPL`,
+    /// `holding-AAPL research <topic> gathering turn 2`) — carried on the
+    /// call-boundary progress events for the thought log and the stderr tee,
+    /// **never on the wire** (`build_chat_body` serializes explicit fields
+    /// only). `None` labels the call by its model id.
+    pub stage: Option<String>,
 }
 
 impl ChatRequest {
@@ -488,6 +494,7 @@ impl ChatRequest {
             think: None,
             options: None,
             keep_alive: None,
+            stage: None,
         }
     }
 }
@@ -922,13 +929,82 @@ impl LocalModelClient {
 
     /// One non-streaming chat call, returning content and any reasoning. A
     /// constrained caller still validates the returned body. Emits one tracker
-    /// row per call.
+    /// row per call. Any reasoning in the reply stays in the returned envelope
+    /// only — [`Self::chat_with_role`] is the variant that forwards it.
     pub fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        self.chat_with_role(req, StreamRole::Silent)
+    }
+
+    /// [`Self::chat`], with the completed reply's reasoning forwarded through
+    /// `role` once the reply lands — whole, not live, since nothing streams on
+    /// this path. The research loop's tool turns and synthesis call ride this
+    /// under the holding's step role, so their thinking reaches the tracker
+    /// and the thought log from the same seam as the streamed stages, and
+    /// always between the call's two boundary events. `Silent` forwards
+    /// nothing.
+    pub fn chat_with_role(&self, req: &ChatRequest, role: StreamRole<'_>) -> Result<ChatResponse> {
+        let (call, started) = self.call_started(req, false);
         self.progress
             .request_started("Local", "local", req.model_id.as_str(), "Local model");
         let result = self.chat_inner(req);
         self.finish_row(&req.model_id, &result);
+        if let Ok(resp) = &result {
+            if let Some(thinking) = &resp.thinking {
+                emit_thinking(&self.progress, role, thinking.clone());
+            }
+        }
+        self.call_finished(call, req, started, &result);
         result
+    }
+
+    /// Open a call's boundary: the `model-call-started` event with the
+    /// request's controls (never its prompt text), returning the call number
+    /// and the clock the matching close reads.
+    fn call_started(&self, req: &ChatRequest, streamed: bool) -> (u64, Instant) {
+        let call = self.progress.model_call_started(ModelCallInfo {
+            stage: call_stage(req),
+            model: req.model_id.clone(),
+            think: req.think,
+            streamed,
+            tools: req.tools.is_some(),
+            format: req.format_schema.is_some(),
+            num_ctx: request_num_ctx(req),
+            num_predict: request_num_predict(req),
+            prompt_chars: u64::try_from(prompt_material_chars(&req.messages, req.tools.as_ref()))
+                .unwrap_or(u64::MAX),
+        });
+        (call, Instant::now())
+    }
+
+    /// Close a call's boundary with how it resolved: the daemon's counts on
+    /// success, the capped top-level message on failure.
+    fn call_finished(
+        &self,
+        call: u64,
+        req: &ChatRequest,
+        started: Instant,
+        result: &Result<ChatResponse>,
+    ) {
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let outcome = match result {
+            Ok(resp) => ModelCallOutcome {
+                ok: true,
+                detail: None,
+                elapsed_ms,
+                prompt_tokens: resp.prompt_eval_count,
+                generated_tokens: resp.eval_count,
+                done_reason: resp.done_reason.clone(),
+            },
+            Err(e) => ModelCallOutcome {
+                ok: false,
+                detail: Some(cap_call_detail(&e.to_string())),
+                elapsed_ms,
+                prompt_tokens: None,
+                generated_tokens: None,
+                done_reason: None,
+            },
+        };
+        self.progress.model_call_finished(call, call_stage(req), outcome);
     }
 
     fn chat_inner(&self, req: &ChatRequest) -> Result<ChatResponse> {
@@ -968,6 +1044,13 @@ impl LocalModelClient {
     /// so a prose stage can't mistake a cut-off stream for a complete answer and
     /// `run_job` classifies a cancelled run off the shared flag (`jobs.rs`).
     pub fn chat_streaming(&self, req: &ChatRequest, role: StreamRole<'_>) -> Result<ChatResponse> {
+        let (call, started) = self.call_started(req, true);
+        let result = self.chat_streaming_inner(req, role);
+        self.call_finished(call, req, started, &result);
+        result
+    }
+
+    fn chat_streaming_inner(&self, req: &ChatRequest, role: StreamRole<'_>) -> Result<ChatResponse> {
         let deadline = self.deadline.request_deadline(req, true);
         let body = build_chat_body(req, true);
         let http = Self::streaming_http(deadline)?;
@@ -1081,6 +1164,26 @@ pub enum StreamRole<'a> {
     Step(&'a str),
     /// Stream nothing — accumulate silently (structured stages with no console value).
     Silent,
+}
+
+/// The label a call's boundary events carry: the caller's diagnostic stage,
+/// or the model id when none was set.
+fn call_stage(req: &ChatRequest) -> String {
+    req.stage.clone().unwrap_or_else(|| req.model_id.clone())
+}
+
+/// How much of a failed call's top-level message the boundary event carries —
+/// enough to name the failure (the class and the status line), never a body.
+const CALL_DETAIL_CAP: usize = 200;
+
+/// Cap a failed call's message for its boundary event, marking a cut.
+fn cap_call_detail(message: &str) -> String {
+    let (head, cut) = crate::data_sources::cap_chars(message, CALL_DETAIL_CAP);
+    if cut {
+        format!("{head}…")
+    } else {
+        head
+    }
 }
 
 /// Route a coalesced reasoning chunk to the channel the role selects.
@@ -2256,6 +2359,150 @@ mod tests {
             &m.event,
             ProgressEvent::StepThinking { step, .. } if step == "holding-AAPL"
         )));
+    }
+
+    /// The event kinds a recording context saw, in order, as compact labels.
+    fn event_trace(rec: &RecordingReporter) -> Vec<String> {
+        rec.messages()
+            .iter()
+            .map(|m| match &m.event {
+                ProgressEvent::ModelCallStarted { call, stage, streamed, step, .. } => {
+                    format!(
+                        "started {call} {stage} {} {}",
+                        if *streamed { "streamed" } else { "non-streaming" },
+                        step.as_deref().unwrap_or("-")
+                    )
+                }
+                ProgressEvent::ModelCallFinished { call, status, prompt_tokens, generated_tokens, done_reason, detail, .. } => {
+                    format!(
+                        "finished {call} {status} {:?} {:?} {:?} {:?}",
+                        prompt_tokens, generated_tokens, done_reason, detail
+                    )
+                }
+                ProgressEvent::RequestStarted { .. } => "row sent".into(),
+                ProgressEvent::RequestFinished { status, .. } => format!("row {status}"),
+                ProgressEvent::StepThinking { step, delta } => format!("thinking {step} {delta}"),
+                ProgressEvent::StepStarted { .. } => "step".into(),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn chat_with_role_brackets_the_call_and_forwards_the_reply_thinking_between() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"message":{"role":"assistant","content":"{}","thinking":"weighing"},"prompt_eval_count":10,"eval_count":5,"done_reason":"stop"}"#,
+        }]);
+        let (rec, ctx) = recording_ctx();
+        ctx.step_started("holding-AAPL", "Analyze AAPL");
+        let client = LocalModelClient::new(&server.base_url).unwrap().with_context(ctx);
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("gather")]);
+        req.stage = Some("holding-AAPL research t1 gathering turn 1".into());
+        let resp = client
+            .chat_with_role(&req, StreamRole::Step("holding-AAPL"))
+            .unwrap();
+        assert_eq!(resp.thinking.as_deref(), Some("weighing"));
+        assert_eq!(
+            event_trace(&rec),
+            vec![
+                "step".to_string(),
+                "started 1 holding-AAPL research t1 gathering turn 1 non-streaming holding-AAPL".into(),
+                "row sent".into(),
+                "row ok".into(),
+                "thinking holding-AAPL weighing".into(),
+                "finished 1 ok Some(10) Some(5) Some(\"stop\") None".into(),
+            ],
+            "the reply's thinking lands between the call's two boundaries"
+        );
+    }
+
+    #[test]
+    fn plain_chat_brackets_the_call_but_forwards_no_thinking() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"message":{"role":"assistant","content":"{}","thinking":"quiet"}}"#,
+        }]);
+        let (rec, ctx) = recording_ctx();
+        let client = LocalModelClient::new(&server.base_url).unwrap().with_context(ctx);
+        // No stage set: the boundary labels the call by its model id.
+        client
+            .chat(&ChatRequest::new("qwen", vec![ChatMessage::user("condense")]))
+            .unwrap();
+        assert_eq!(
+            event_trace(&rec),
+            vec![
+                "started 1 qwen non-streaming -".to_string(),
+                "row sent".into(),
+                "row ok".into(),
+                "finished 1 ok None None None None".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_call_closes_its_boundary_with_a_capped_detail() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 500,
+            headers: vec![],
+            body: "runner crashed",
+        }]);
+        let (rec, ctx) = recording_ctx();
+        let client = LocalModelClient::new(&server.base_url).unwrap().with_context(ctx);
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        req.stage = Some("interpret AAPL".into());
+        client.chat(&req).unwrap_err();
+        let trace = event_trace(&rec);
+        assert_eq!(trace[0], "started 1 interpret AAPL non-streaming -");
+        assert!(
+            trace[3].starts_with("finished 1 failed None None None Some(\"local model returned 500"),
+            "{trace:?}"
+        );
+        // The cap: a long message is cut and marked, a short one kept whole.
+        let long = "x".repeat(CALL_DETAIL_CAP + 50);
+        let capped = cap_call_detail(&long);
+        assert_eq!(capped.chars().count(), CALL_DETAIL_CAP + 1);
+        assert!(capped.ends_with('…'));
+        assert_eq!(cap_call_detail("short"), "short");
+    }
+
+    #[test]
+    fn chat_streaming_brackets_the_stream_with_its_counts() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: concat!(
+                r#"{"message":{"thinking":"the trim balances concentration risk"}}"#,
+                "\n",
+                r#"{"message":{"content":"{\"grade\":\"B\"}"}}"#,
+                "\n",
+                r#"{"done":true,"prompt_eval_count":40,"eval_count":9,"done_reason":"stop"}"#,
+                "\n",
+            ),
+        }]);
+        let (rec, ctx) = recording_ctx();
+        ctx.step_started("holding-AAPL", "Analyze AAPL");
+        let client = LocalModelClient::new(&server.base_url).unwrap().with_context(ctx);
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("interpret")]);
+        req.stage = Some("interpret AAPL".into());
+        client
+            .chat_streaming(&req, StreamRole::Step("holding-AAPL"))
+            .unwrap();
+        let trace = event_trace(&rec);
+        assert_eq!(trace.first().map(String::as_str), Some("step"));
+        assert_eq!(trace[1], "started 1 interpret AAPL streamed holding-AAPL");
+        assert!(
+            trace[2..trace.len() - 1]
+                .iter()
+                .all(|t| t.starts_with("thinking holding-AAPL ")),
+            "only the stream's thinking sits between the boundaries: {trace:?}"
+        );
+        assert_eq!(
+            trace.last().map(String::as_str),
+            Some("finished 1 ok Some(40) Some(9) Some(\"stop\") None")
+        );
     }
 
     #[test]

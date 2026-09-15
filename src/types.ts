@@ -913,6 +913,11 @@ export type ProgressKind =
   | "agent-thinking"
   | "analyst-thinking"
   | "step-thinking"
+  // model-call-started / model-call-finished: a local-model call's diagnostic
+  // boundaries, consumed by the backend's thought-log sink and stderr tee. The
+  // tracker deliberately ignores them (they carry no rendered field).
+  | "model-call-started"
+  | "model-call-finished"
   | "run-finished";
 
 export interface ProgressMessage {
