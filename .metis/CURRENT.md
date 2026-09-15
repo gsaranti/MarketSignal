@@ -28,7 +28,6 @@ Attempt 6 is the after-measurement of the prompt-clarity bundle, the first run u
 - Distillation original-source allocation as a throughput/truncation watch; evidence selection is named follow-up work.
 - Sampling A/B and non-thinking synthesis — deferred experiments, only if the bundle falls short.
 - Carried: the per-domain `denied_count` share at book scale; the permanent SearXNG engine set; action-call oscillation measured on four holdings, not book scale.
-- `BUILD.md` §Built has no bullet for the fences slice (`c0ca8e6`) or the pane slice (`80fb228`); whether either rises to BUILD's altitude is the user's call.
 - Post-release only: the quick-check state's own parameter stamp has no mismatch consumer — needs a policy before any shipped build.
 
 ## Where to start
