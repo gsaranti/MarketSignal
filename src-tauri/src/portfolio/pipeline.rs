@@ -525,10 +525,13 @@ pub fn analyze_holding(
     // every machine consumer — evaluation, 6g validation and carry,
     // persistence — sees one basis and the rewrite lands new-basis (the 6c/6d
     // prompts read this same instance but render statements only — no machine
-    // core reaches them; statement prose is model-authored and never rewritten).
-    // Margins scale with thresholds (absolute, same units), so breach semantics
-    // are invariant under the conversion, and a verbatim re-emission of the
-    // converted number matches the normalized core and keeps its condition id.
+    // core reaches them). Margins scale with thresholds (absolute, same units),
+    // so breach semantics are invariant under the conversion. A price
+    // condition's statement re-bases its dollar figures with the core (ruled
+    // 2026-09-16, the follow-up slice): the 6g level check reads the stated
+    // level against the threshold, so a verbatim re-emission of "$700" beside a
+    // core re-based to 175 would otherwise downgrade and lose its carry — latent
+    // since v36's level check, masked by fixtures that stated no figure.
     // The monitor's stamped engine targets convert for render coherence; on a
     // resolvable pass validation re-stamps them from this run's engine set (an
     // unresolvable pass withholds the fresh stamp — absent beats wrong).
@@ -540,6 +543,7 @@ pub fn analyze_holding(
                     if q.series.price_denominated() {
                         q.threshold *= f;
                         q.margin *= f;
+                        cond.statement = rebase_dollar_figures(&cond.statement, f);
                     }
                 }
             }
@@ -1641,6 +1645,10 @@ pub mod downgrade_class {
     pub const BASIS: &str = "basis-mismatch";
     /// A `price` core whose statement names no price at all.
     pub const NO_PRICE_LEVEL: &str = "no-price-level";
+    /// A core whose statement names no figure in the series' unit, so nothing in
+    /// the sentence can agree or disagree with the threshold (fix list 1.5, ruled
+    /// 2026-09-16 off the live read's L1 — a 300% growth floor passed this way).
+    pub const NO_LEVEL: &str = "no-level";
     /// A `price` core whose stated level disagrees with the threshold.
     pub const PRICE_LEVEL: &str = "price-level-mismatch";
     /// A non-price core whose stated level disagrees with the threshold.
@@ -1658,6 +1666,14 @@ pub mod downgrade_class {
 const LEVEL_TOLERANCE_FRACTION: f64 = 0.05;
 /// Relative tolerance for a stated dollar price against the threshold.
 const LEVEL_TOLERANCE_PRICE: f64 = 0.01;
+/// The relative margin cap on the price, the multiples and the debt / equity
+/// ratio: a margin past this share of the level is implausible even when it
+/// clears the magnitude bound (fix list 1.8, ruled 2026-09-16 off the live
+/// read's L5 — a 489.5 margin on a $490 level).
+const MARGIN_CAP_PRICE_RATIO: f64 = 0.25;
+/// The relative margin cap on the fraction-unit series, whose levels sit near
+/// zero so their noise band is proportionally wider.
+const MARGIN_CAP_FRACTION: f64 = 0.50;
 
 /// One figure the statement states in the series' own unit, converted to it.
 struct StatedFigure {
@@ -1783,6 +1799,57 @@ fn stated_figures(lower: &str, series: engine::LedgerSeries) -> Vec<StatedFigure
     out
 }
 
+/// The percent figures a dollar-less price statement states as a move of the
+/// price from its current level — "reaches +24% from current levels", "share
+/// price falls more than 40% below its current level", "drops 20% from here" —
+/// and nothing else: a percent on another metric in the same sentence ("as
+/// gross margin falls below 20%", "as gross margin drops 20% from current
+/// levels") is not a price level and must not resolve to one (Codex, the
+/// follow-up review's findings 2 and, in its second round, 1–2). A figure
+/// qualifies when no other metric sits in the six words before it and either
+/// the words after it anchor it to the current level or its nearest move verb
+/// has the price as its subject.
+fn relative_price_figures(lower: &str) -> Vec<StatedFigure> {
+    const FROM_CURRENT: [&str; 13] = [
+        "from current", "from here", "from today", "from spot", "from the current",
+        "from its current", "versus current", "vs current", "vs. current",
+        "relative to current", "off current", "below its current", "above its current",
+    ];
+    const MOVE_VERBS: [&str; 20] = [
+        "falls", "fall", "drops", "drop", "declines", "decline", "slides", "collapses",
+        "retreats", "rises", "rise", "climbs", "gains", "rallies", "reaches", "moves",
+        "up", "down", "gain", "loss",
+    ];
+    const PRICE_WORDS: [&str; 4] = ["price", "stock", "shares", "share"];
+    stated_figures(lower, engine::LedgerSeries::TrailingReturn)
+        .into_iter()
+        .filter(|f| {
+            let before: Vec<&str> = lower[..f.start]
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '\''))
+                .filter(|w| !w.is_empty())
+                .collect();
+            let n = before.len();
+            // Whatever the anchor, the percent must not describe another metric
+            // named just before it ("gross margin drops 20% from current levels").
+            if names_non_price_metric(&before[n.saturating_sub(6)..].join(" ")) {
+                return false;
+            }
+            let after = lower[figure_end(lower, f.start)..].trim_start();
+            if FROM_CURRENT.iter().any(|p| after.starts_with(p)) {
+                return true;
+            }
+            // The move verb nearest the figure (at most two connector words
+            // between — "falls more than 40%"), itself preceded within three
+            // words by the price ("the holding's price falls"); a verb whose
+            // subject is another noun ("yield falls below 5%") does not qualify.
+            let Some(j) = (n.saturating_sub(3)..n).rev().find(|&j| MOVE_VERBS.contains(&before[j])) else {
+                return false;
+            };
+            before[j.saturating_sub(3)..j].iter().any(|w| PRICE_WORDS.contains(w))
+        })
+        .collect()
+}
+
 /// Compare signed levels. The figure parser handles the narrow implicit-decline
 /// forms on trailing return ("falls more than 40%" means −0.40).
 fn level_agrees(stated: f64, threshold: f64, tolerance: f64) -> bool {
@@ -1816,9 +1883,13 @@ const DURATION_COUNTS: [&str; 12] = [
     "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "several",
     "multiple", "consecutive",
 ];
-const DURATION_UNITS: [&str; 6] = ["day", "week", "month", "quarter", "session", "year"];
-const CONJUNCTION_CLAUSES: [&str; 10] = [
-    "without", "unless", "confirmed by", "confirming", "accompanied by", "coupled with",
+const DURATION_UNITS: [&str; 7] = ["day", "week", "month", "quarter", "session", "year", "close"];
+/// Second-condition markers. "confirming" left the list 2026-09-16 (fix list
+/// 1.6): "a break below $320 confirming broader multiple compression" states what
+/// the break would mean, not a second test — a genuine second level is still
+/// caught by [`multiple_comparison_levels`] and a volume clause by its own check.
+const CONJUNCTION_CLAUSES: [&str; 9] = [
+    "without", "unless", "confirmed by", "accompanied by", "coupled with",
     "and stays", "and remains", "and holds", "only if",
 ];
 
@@ -1842,7 +1913,54 @@ fn anchored_levels<'a>(lower: &str, figures: &'a [StatedFigure]) -> Vec<&'a Stat
     // occurrences remain distinct even when they happen to have equal values.
     levels.sort_by_key(|f| f.start);
     levels.dedup_by_key(|f| f.start);
+    // Inside a parenthetical that opens right after another figure — at most two
+    // unit words between, no digit — a figure restates that level in another
+    // unit rather than stating a second one (fix list 1.6, ruled 2026-09-16:
+    // "above 1.2% (approx annualized >19%)").
+    let restated = |f: &StatedFigure| -> bool {
+        let Some(open) = lower[..f.start].rfind('(') else { return false };
+        if lower[open..f.start].contains(')') {
+            return false;
+        }
+        let Some(prev) = figures.iter().filter(|g| g.start < open).max_by_key(|g| g.start) else {
+            return false;
+        };
+        let prev_end = figure_end(lower, prev.start);
+        if prev_end > open {
+            return false;
+        }
+        let between = &lower[prev_end..open];
+        if between.chars().any(|c| c.is_ascii_digit()) || between.split_whitespace().count() > 2 {
+            return false;
+        }
+        // A parenthetical that names a metric states a second condition, never a
+        // restatement: "below $200 (with gross margin below 15%)" (Codex, the
+        // follow-up review's finding 1).
+        let close = lower[f.start..].find(')').map(|c| f.start + c).unwrap_or(lower.len());
+        !names_any_metric(&lower[open..close])
+    };
+    levels.retain(|f| !restated(f));
     levels
+}
+
+/// Whether a span names any engine series (the price included) or off-surface
+/// metric — the parenthetical test, where "(or above $250)" is a second level.
+fn names_any_metric(span: &str) -> bool {
+    engine::LedgerSeries::ALL
+        .iter()
+        .any(|s| s.statement_aliases().iter().any(|a| contains_phrase(span, a)))
+        || OFF_SURFACE_METRICS.iter().any(|m| contains_phrase(span, m))
+}
+
+/// Whether a span names a metric other than the price — the relative-price
+/// test's subject check, where the price's own aliases are the expected
+/// subject (Codex, the follow-up review's second round).
+fn names_non_price_metric(span: &str) -> bool {
+    engine::LedgerSeries::ALL
+        .iter()
+        .filter(|s| **s != engine::LedgerSeries::Price)
+        .any(|s| s.statement_aliases().iter().any(|a| contains_phrase(span, a)))
+        || OFF_SURFACE_METRICS.iter().any(|m| contains_phrase(span, m))
 }
 
 /// Resolve once, before the unit check, so a starting value cannot be mistaken
@@ -1882,6 +2000,20 @@ fn multiple_comparison_levels(lower: &str) -> bool {
     anchored_levels(lower, &figures).len() > 1
 }
 
+/// Where the figure starting at `start` ends: its digits, separators and an
+/// attached `%` or `x`.
+fn figure_end(lower: &str, start: usize) -> usize {
+    let bytes = lower.as_bytes();
+    let mut i = start;
+    while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b',' || bytes[i] == b'.') {
+        i += 1;
+    }
+    if i < bytes.len() && (bytes[i] == b'%' || bytes[i] == b'x') {
+        i += 1;
+    }
+    i
+}
+
 /// The statement's direction, read from its unambiguous words: `Some(true)` =
 /// below only, `Some(false)` = above only, `None` = none or mixed.
 fn stated_direction(lower: &str) -> Option<bool> {
@@ -1896,23 +2028,57 @@ fn stated_direction(lower: &str) -> Option<bool> {
 }
 
 /// A duration clause: "for two weeks", "for three consecutive months", "two
-/// consecutive quarters", "for 2 quarters".
-fn names_duration(lower: &str) -> bool {
+/// consecutive quarters", "for 2 quarters", "for two consecutive distinct daily
+/// sessions", "on 2 consecutive closes". Returns the count (`None` for a word
+/// like "several") and the singular unit. Up to two adjectives may sit between
+/// "consecutive" and the unit, since the model mirrors the contract's own
+/// "consecutive distinct breaching daily closes" (fix list 1.6, ruled
+/// 2026-09-16 off the live read's L2).
+fn duration_clauses(lower: &str) -> Vec<(Option<u32>, &'static str)> {
     let words: Vec<&str> = lower
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
         .filter(|w| !w.is_empty())
         .collect();
-    let is_unit = |w: &str| DURATION_UNITS.iter().any(|u| w == *u || w == format!("{u}s"));
-    let is_count = |w: &str| {
-        w.chars().all(|c| c.is_ascii_digit()) || DURATION_COUNTS.contains(&w)
+    let unit_of = |w: &str| DURATION_UNITS.iter().copied().find(|u| w == *u || w == format!("{u}s"));
+    let count_of = |w: &str| -> Option<Option<u32>> {
+        if w.chars().all(|c| c.is_ascii_digit()) {
+            return Some(w.parse().ok());
+        }
+        const NUMBERS: [&str; 9] = ["two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+        if let Some(i) = NUMBERS.iter().position(|n| *n == w) {
+            return Some(Some(i as u32 + 2));
+        }
+        DURATION_COUNTS.contains(&w).then_some(None)
     };
-    // "for <count> <unit>" or "<count> consecutive <unit>" (with or without a
-    // leading "for") — never a bare "<count> <unit>", which also describes a
-    // level ("not seen in 3 years") rather than asking for a duration.
-    words.windows(3).any(|w| {
-        (is_count(w[0]) && w[1] == "consecutive" && is_unit(w[2]))
-            || (w[0] == "for" && is_count(w[1]) && is_unit(w[2]))
-    })
+    // Every clause is collected — a later unsupported duration behind a
+    // cadence-exact one still binds ("for two consecutive sessions and persists
+    // there for three weeks"; Codex, the follow-up review's finding 3).
+    let mut out = Vec::new();
+    for i in 0..words.len() {
+        let Some(count) = count_of(words[i]) else { continue };
+        // "<count> consecutive [adjective [adjective]] <unit>", with or without
+        // a leading "for".
+        if words.get(i + 1) == Some(&"consecutive") {
+            for w in words.get((i + 2)..(i + 5).min(words.len())).unwrap_or(&[]) {
+                if let Some(unit) = unit_of(w) {
+                    out.push((count, unit));
+                    break;
+                }
+                if count_of(w).is_some() {
+                    break;
+                }
+            }
+            continue;
+        }
+        // "for <count> <unit>" — never a bare "<count> <unit>", which also
+        // describes a level ("not seen in 3 years") rather than a duration.
+        if i > 0 && words[i - 1] == "for" {
+            if let Some(unit) = words.get(i + 1).and_then(|w| unit_of(w)) {
+                out.push((count, unit));
+            }
+        }
+    }
+    out
 }
 
 /// Validate a draft's quantitative-core claim into a persisted [`QuantCore`] — the
@@ -1929,6 +2095,7 @@ fn validate_quant_core(
     qd: &QuantCoreDraft,
     is_fund: bool,
     basis: Option<crate::portfolio::StatementBasis>,
+    spot: Option<f64>,
 ) -> std::result::Result<QuantCore, String> {
     use downgrade_class as class;
     let series = engine::LedgerSeries::parse(&qd.series).ok_or_else(|| {
@@ -1967,7 +2134,31 @@ fn validate_quant_core(
     };
     let threshold = qd.threshold;
     let lower = statement.to_lowercase();
-    let figures = stated_figures(&lower, series);
+    let mut figures = stated_figures(&lower, series);
+    // A price statement naming a percent from current levels states its level
+    // relative to the spot ("+24% from current levels"): resolve it against the
+    // spot the caller passes, the sign from the sentence when explicit or an
+    // implicit-decline phrase, from the comparator otherwise (fix list 1.5,
+    // ruled 2026-09-16, F1).
+    if series == engine::LedgerSeries::Price && figures.is_empty() {
+        if let Some(spot) = spot.filter(|v| v.is_finite() && *v > 0.0) {
+            figures = relative_price_figures(&lower)
+                .into_iter()
+                .map(|f| {
+                    let before = lower[..f.start].trim_end_matches('$');
+                    let explicit = before.chars().next_back().is_some_and(|c| matches!(c, '+' | '-' | '−'));
+                    let relative = if explicit || f.value < 0.0 {
+                        f.value
+                    } else if comparator == LedgerComparator::Below {
+                        -f.value
+                    } else {
+                        f.value
+                    };
+                    StatedFigure { value: spot * (1.0 + relative), start: f.start }
+                })
+                .collect();
+        }
+    }
     let level = stated_level(&lower, &figures);
 
     // Unit: a percent figure authored as its raw number on a fraction series.
@@ -2092,6 +2283,14 @@ fn validate_quant_core(
             class::NO_PRICE_LEVEL
         ));
     }
+    if figures.is_empty() {
+        return Err(format!(
+            "{}: the statement names no figure in the series' unit, so nothing in it \
+             can agree or disagree with the core's threshold {}",
+            class::NO_LEVEL,
+            fmt_num(threshold)
+        ));
+    }
     match level {
         Ok(None) => {}
         Ok(Some(figure)) => {
@@ -2129,6 +2328,17 @@ fn validate_quant_core(
             })
         ));
     }
+    let cap = if series.percent_unit() { MARGIN_CAP_FRACTION } else { MARGIN_CAP_PRICE_RATIO };
+    if threshold != 0.0 && margin > cap * threshold.abs() {
+        return Err(format!(
+            "{}: margin {} is more than {}% of the level {} — a noise band that wide would \
+             confirm a crossing far from the stated level",
+            class::MARGIN,
+            fmt_num(margin),
+            fmt_num(cap * 100.0),
+            fmt_num(threshold.abs())
+        ));
+    }
 
     // Qualifier: a duration, a volume clause, or a second condition.
     if multiple_comparison_levels(&lower) {
@@ -2138,13 +2348,24 @@ fn validate_quant_core(
             class::QUALIFIER
         ));
     }
-    if names_duration(&lower) {
-        return Err(format!(
-            "{}: the statement asks for a duration the single-level predicate cannot \
-             carry (the series {}); a condition that needs one stays qualitative",
-            class::QUALIFIER,
-            series.confirmation_note()
-        ));
+    {
+        // A duration naming the market-data cadence exactly — two days, sessions
+        // or closes — is what the predicate already carries and keeps its core;
+        // a filing series never exempts a duration (ruled 2026-09-16, A1). Every
+        // stated duration must be the cadence, not only the first.
+        let is_cadence = |count: &Option<u32>, unit: &str| {
+            series.cadence() == crate::portfolio::ConditionCadence::MarketData
+                && *count == Some(engine::LEDGER_CONSECUTIVE_MARKET_DATA)
+                && matches!(unit, "day" | "session" | "close")
+        };
+        if duration_clauses(&lower).iter().any(|(count, unit)| !is_cadence(count, unit)) {
+            return Err(format!(
+                "{}: the statement asks for a duration the single-level predicate cannot \
+                 carry (the series {}); a condition that needs one stays qualitative",
+                class::QUALIFIER,
+                series.confirmation_note()
+            ));
+        }
     }
     if contains_phrase(&lower, "volume") {
         return Err(format!(
@@ -2348,6 +2569,58 @@ fn assign_supersessions(
     assigned
 }
 
+/// Re-base every `$N` figure in a price condition's statement by the split
+/// bridge factor, keeping the figure's own decimal count (a whole-dollar figure
+/// that lands on cents prints two decimals), so the sentence names the level
+/// its converted core carries. Only the dollar-marked figures move: a percent,
+/// a multiple or a date in the same sentence is not a price.
+pub(crate) fn rebase_dollar_figures(statement: &str, factor: f64) -> String {
+    let bytes = statement.as_bytes();
+    let mut out = String::with_capacity(statement.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b',') {
+                j += 1;
+            }
+            let mut decimals = 0usize;
+            if j + 1 < bytes.len() && bytes[j] == b'.' && bytes[j + 1].is_ascii_digit() {
+                j += 1;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                    decimals += 1;
+                }
+            }
+            let literal: String = statement[start..j].chars().filter(|c| *c != ',').collect();
+            if let Ok(n) = literal.parse::<f64>() {
+                let v = n * factor;
+                // Keep the figure's own decimals, adding places until the
+                // rendering sits within 0.1% of the converted value — well inside
+                // the 1% price tolerance the level check applies to it ("$3.5"
+                // at 4:1 is "$0.875", never "$0.9"; Codex, finding 5).
+                let mut decimals = decimals;
+                while decimals < 6 {
+                    let rendered: f64 = format!("{v:.decimals$}").parse().unwrap_or(v);
+                    if v == 0.0 || ((rendered - v) / v).abs() <= 1e-3 {
+                        break;
+                    }
+                    decimals += 1;
+                }
+                out.push('$');
+                out.push_str(&format!("{v:.decimals$}"));
+                i = j;
+                continue;
+            }
+        }
+        let ch = statement[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Pull the prior qualitative condition with the same statement (qualitative
 /// identity is textual — no machine core, no evaluation state to protect). The
 /// trigger family disambiguates here too, for the same reason as the exact-core
@@ -2388,12 +2661,13 @@ fn validate_condition(
     updated_states: &std::collections::HashMap<String, ConditionEvalState>,
     price_basis_verified: bool,
     stamps: crate::portfolio::ContinuityStamps,
+    spot: Option<f64>,
     audit: &mut LedgerAudit,
 ) -> LedgerCondition {
     let statement = statement.trim().to_string();
     let (quant, downgraded_reason) = match quant_draft {
         None => (None, None),
-        Some(qd) => match validate_quant_core(&statement, qd, is_fund, stamps.statement_basis) {
+        Some(qd) => match validate_quant_core(&statement, qd, is_fund, stamps.statement_basis, spot) {
             Ok(core) => {
                 // The unverifiable-basis supersede guard: with the split bridge
                 // unresolvable, a NEW or RE-ANCHORED price-denominated core was
@@ -2625,7 +2899,7 @@ pub fn validate_ledger_rewrite_with_research(
                      quant_draft: Option<&QuantCoreDraft>,
                      statement: &str| {
         match quant_draft
-            .and_then(|qd| validate_quant_core(statement, qd, is_fund, stamps.statement_basis).ok())
+            .and_then(|qd| validate_quant_core(statement, qd, is_fund, stamps.statement_basis, spot).ok())
         {
             Some(core) => format!(
                 "{role:?}|{family:?}|{}|{}|{}|{}",
@@ -2684,7 +2958,7 @@ pub fn validate_ledger_rewrite_with_research(
             continue;
         }
         let Some(core) = quant_draft
-            .and_then(|qd| validate_quant_core(statement, qd, is_fund, stamps.statement_basis).ok())
+            .and_then(|qd| validate_quant_core(statement, qd, is_fund, stamps.statement_basis, spot).ok())
         else {
             continue;
         };
@@ -2734,6 +3008,7 @@ pub fn validate_ledger_rewrite_with_research(
             &updated_states,
             price_basis_verified,
             stamps,
+            spot,
             &mut audit,
         ));
     }
@@ -2784,6 +3059,7 @@ pub fn validate_ledger_rewrite_with_research(
             &updated_states,
             price_basis_verified,
             stamps,
+            spot,
             &mut audit,
         ));
     }
@@ -4944,12 +5220,14 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
             p.push_str(match engine.hurdle.state {
                 crate::portfolio::HurdleState::Fails =>
                     "CAPITAL EFFICIENCY: fails — even the bull case misses the hurdle over the assessed horizon; an exit input when forward prospects are independently poor.\n",
+                // Fix list 2.4 (ruled 2026-09-16): "carries no exit signal" read as a
+                // directive not to sell; the line states the hurdle fact and its reach.
                 crate::portfolio::HurdleState::Clears =>
-                    "CAPITAL EFFICIENCY: clears — this assessment carries no exit signal.\n",
+                    "CAPITAL EFFICIENCY: clears — even the bear case clears the hurdle over the assessed horizon. This line states the hurdle test only; it neither requires nor forbids any rung.\n",
                 crate::portfolio::HurdleState::Indeterminate =>
-                    "CAPITAL EFFICIENCY: indeterminate — this assessment carries no exit signal.\n",
+                    "CAPITAL EFFICIENCY: indeterminate — the bear case misses the hurdle and the bull case clears it, so the read proves nothing either way. This line neither requires nor forbids any rung.\n",
                 crate::portfolio::HurdleState::Unscorable =>
-                    "CAPITAL EFFICIENCY: unscorable — no hurdle assessment is available.\n",
+                    "CAPITAL EFFICIENCY: unscorable — no hurdle assessment is available. This line neither requires nor forbids any rung.\n",
             });
             if d.prior_verdict.is_some() {
                 p.push_str(&action_continuity_section(d, &graded.what_changed, input.changes));
@@ -5238,6 +5516,13 @@ impl LedgerSeriesContract {
             "\nENGINE SERIES for quantitative ledger conditions on this holding (use exactly \
              these labels; a series absent from this list is not computable for this \
              vehicle and must not be authored as `quant`):\n",
+        );
+        // Fix list 1.7 (ruled 2026-09-16): the model buffered every threshold away
+        // from the level its sentence stated.
+        p.push_str(
+            "The threshold is exactly the level the statement names, in the series' unit; \
+             the margin is the separate noise band around it and is never folded into the \
+             threshold.\n",
         );
         for row in &self.rows {
             let s = row.series;
@@ -5739,7 +6024,7 @@ pub(crate) fn stub_ledger_draft(prior: Option<&ThesisLedger>, symbol: &str, role
             tripped: false,
         }],
         triggers: vec![TriggerDraft {
-            statement: "Trim above the priced-in ceiling".into(),
+            statement: "Trim above the priced-in ceiling of $150".into(),
             family: "trim".into(),
             quant: Some(QuantCoreDraft {
                 series: "price".into(),
@@ -6692,7 +6977,7 @@ pub(crate) mod tests {
         assert!(
             entries[0]
                 .label
-                .contains("— bears on ledger condition 'Trailing return collapses'"),
+                .contains("— bears on ledger condition 'Trailing return collapses to -40%'"),
             "{}",
             entries[0].label
         );
@@ -8113,7 +8398,7 @@ pub(crate) mod tests {
             condition_id: "px-1".into(),
             role: ConditionRole::Falsifier,
             trigger_family: None,
-            statement: "price below 700".into(),
+            statement: "price below $700".into(),
             quant: Some(QuantCore {
                 series: engine::LedgerSeries::Price,
                 comparator: LedgerComparator::Below,
@@ -8214,7 +8499,7 @@ pub(crate) mod tests {
             condition_id: "px-1".into(),
             role: ConditionRole::Falsifier,
             trigger_family: None,
-            statement: "price below 700".into(),
+            statement: "price below $700".into(),
             quant: Some(QuantCore {
                 series: engine::LedgerSeries::Price,
                 comparator: LedgerComparator::Below,
@@ -8372,7 +8657,7 @@ pub(crate) mod tests {
                 condition_id: "px-1".into(),
                 role: ConditionRole::Falsifier,
                 trigger_family: None,
-                statement: "price below 700".into(),
+                statement: "price below $700".into(),
                 quant: Some(QuantCore {
                     series: engine::LedgerSeries::Price,
                     comparator: LedgerComparator::Below,
@@ -8396,7 +8681,7 @@ pub(crate) mod tests {
             what_must_improve: String::new(),
             what_must_not_break: String::new(),
             falsifiers: vec![FalsifierDraft {
-                statement: format!("price below {threshold}"),
+                statement: format!("price below ${threshold}"),
                 quant: Some(QuantCoreDraft {
                     series: "price".into(),
                     comparator: "below".into(),
@@ -9175,8 +9460,12 @@ pub(crate) mod tests {
             assert_eq!(prompt.matches("CAPITAL EFFICIENCY:").count(), 1);
             assert!(!prompt.contains("capital-efficiency read"));
             assert!(!prompt.contains("fixed action mapping"));
-            assert_eq!(prompt.contains("this assessment carries no exit signal"),
-                matches!(state, crate::portfolio::HurdleState::Clears | crate::portfolio::HurdleState::Indeterminate));
+            assert!(!prompt.contains("carries no exit signal"));
+            assert!(!prompt.contains("could not be evaluated"));
+            assert_eq!(prompt.contains("even the bear case clears"), state == crate::portfolio::HurdleState::Clears);
+            assert_eq!(prompt.contains("proves nothing either way"), state == crate::portfolio::HurdleState::Indeterminate);
+            assert_eq!(prompt.contains("neither requires nor forbids any rung"),
+                state != crate::portfolio::HurdleState::Fails);
             assert!(prompt.contains("Prior engine grade"));
             assert!(prompt.contains("twelve-month base: 100 -> 110"));
             assert!(prompt.contains("[D1] forward earnings changed"));
@@ -9506,7 +9795,12 @@ pub(crate) mod tests {
         // Attempt 6 ran v35 (six holdings persist under it); the ledger-authoring
         // contract, the 6g agreement checks and the investment-only action packet
         // change the prompts and the model-facing contract, so they move to v36.
-        assert_eq!(PROMPT_VERSION, "portfolio-v36");
+        // The §8.2 live read of v36 (never run at book scale) raised the
+        // validator follow-up — no-level, the cadence exemption, the lexicon
+        // narrowing, the margin caps, the contract's threshold sentence and the
+        // capital-efficiency wording — changing the prompts and what 6g keeps,
+        // so it moves to v37.
+        assert_eq!(PROMPT_VERSION, "portfolio-v37");
     }
 
     #[test]
@@ -11682,7 +11976,7 @@ pub(crate) mod tests {
                     condition_id: "keep-1".into(),
                     role: ConditionRole::Falsifier,
                     trigger_family: None,
-                    statement: "Trailing return collapses".into(),
+                    statement: "Trailing return collapses to -40%".into(),
                     quant: Some(QuantCore {
                         series: engine::LedgerSeries::TrailingReturn,
                         comparator: LedgerComparator::Below,
@@ -11802,7 +12096,7 @@ pub(crate) mod tests {
                     de_threshold,
                 ),
                 falsifier("net margin above 90%", "net-margin", 0.9),
-                falsifier("price above 500", "price", 500.0),
+                falsifier("price above $500", "price", 500.0),
             ];
             draft.triggers = vec![];
             draft
@@ -11985,6 +12279,7 @@ pub(crate) mod tests {
         let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
         // Edit the falsifier's threshold: same series + role, changed core.
         draft.falsifiers[0].quant.as_mut().unwrap().threshold = -0.50;
+        draft.falsifiers[0].statement = "Trailing return collapses to -50%".into();
         let (ledger, audit) =
             validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         let f = ledger
@@ -12024,7 +12319,7 @@ pub(crate) mod tests {
             condition_id: "keep-2".into(),
             role: ConditionRole::Falsifier,
             trigger_family: None,
-            statement: "Trailing return collapses harder".into(),
+            statement: "Trailing return collapses harder to -60%".into(),
             quant: Some(QuantCore {
                 series: engine::LedgerSeries::TrailingReturn,
                 comparator: LedgerComparator::Below,
@@ -12046,13 +12341,13 @@ pub(crate) mod tests {
         let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
         draft.falsifiers = vec![
             FalsifierDraft {
-                statement: "Collapses even harder".into(),
+                statement: "Collapses even harder to -65%".into(),
                 quant: Some(core_draft(-0.65)), // keep-2's core, edited
                 technology_class: false,
                 tripped: false,
             },
             FalsifierDraft {
-                statement: "Trailing return collapses".into(),
+                statement: "Trailing return collapses to -40%".into(),
                 quant: Some(core_draft(-0.40)), // keep-1's core, unchanged
                 technology_class: false,
                 tripped: false,
@@ -12089,7 +12384,7 @@ pub(crate) mod tests {
             condition_id: "keep-2".into(),
             role: ConditionRole::Falsifier,
             trigger_family: None,
-            statement: "Trailing return collapses harder".into(),
+            statement: "Trailing return collapses harder to -60%".into(),
             quant: Some(QuantCore {
                 series: engine::LedgerSeries::TrailingReturn,
                 comparator: LedgerComparator::Below,
@@ -12103,7 +12398,7 @@ pub(crate) mod tests {
             eval_state: Some(ConditionEvalState::default()),
         });
         let falsifier = |threshold: f64| FalsifierDraft {
-            statement: format!("Edited at {threshold}"),
+            statement: format!("Edited at {:.0}%", threshold * 100.0),
             quant: Some(QuantCoreDraft {
                 series: "trailing-return".into(),
                 comparator: "below".into(),
@@ -12179,7 +12474,7 @@ pub(crate) mod tests {
             ("keep-2", LedgerComparator::Below, -0.60, 0.02),
         ]);
         let falsifier = |threshold: f64| FalsifierDraft {
-            statement: format!("Edited at {threshold}"),
+            statement: format!("Edited at {:.0}%", threshold * 100.0),
             quant: Some(QuantCoreDraft {
                 series: "trailing-return".into(),
                 comparator: "below".into(),
@@ -12233,7 +12528,7 @@ pub(crate) mod tests {
                 condition_id: "trim-1".into(),
                 role: ConditionRole::Trigger,
                 trigger_family: Some(TriggerFamily::Trim),
-                statement: "Trim above the priced-in ceiling".into(),
+                statement: "Trim above the priced-in ceiling of $150".into(),
                 quant: Some(price_core.clone()),
                 downgraded_reason: None,
                 technology_class: false,
@@ -12251,7 +12546,7 @@ pub(crate) mod tests {
                 condition_id: "sell-1".into(),
                 role: ConditionRole::Trigger,
                 trigger_family: Some(TriggerFamily::Sell),
-                statement: "Exit fully above the priced-in ceiling".into(),
+                statement: "Exit fully above the priced-in ceiling of $150".into(),
                 quant: Some(price_core.clone()),
                 downgraded_reason: None,
                 technology_class: false,
@@ -12266,7 +12561,7 @@ pub(crate) mod tests {
             },
         ];
         let trigger = |family: &str| TriggerDraft {
-            statement: format!("{family} above the priced-in ceiling"),
+            statement: format!("{family} above the priced-in ceiling of $150"),
             family: family.into(),
             quant: Some(QuantCoreDraft {
                 series: "price".into(),
@@ -12320,7 +12615,7 @@ pub(crate) mod tests {
             condition_id: "sell-1".into(),
             role: ConditionRole::Trigger,
             trigger_family: Some(TriggerFamily::Sell),
-            statement: "Exit fully above the priced-in ceiling".into(),
+            statement: "Exit fully above the priced-in ceiling of $150".into(),
             quant: Some(QuantCore {
                 series: engine::LedgerSeries::Price,
                 comparator: LedgerComparator::Above,
@@ -12335,7 +12630,7 @@ pub(crate) mod tests {
         }];
         let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
         draft.triggers = vec![TriggerDraft {
-            statement: "Trim above a higher ceiling".into(),
+            statement: "Trim above a higher ceiling of $180".into(),
             family: "trim".into(),
             quant: Some(QuantCoreDraft {
                 series: "price".into(),
@@ -12375,7 +12670,7 @@ pub(crate) mod tests {
         ]);
         let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
         draft.falsifiers = vec![FalsifierDraft {
-            statement: "Widened noise guard".into(),
+            statement: "Widened noise guard at -40%".into(),
             quant: Some(QuantCoreDraft {
                 series: "trailing-return".into(),
                 comparator: "below".into(),
@@ -12433,7 +12728,7 @@ pub(crate) mod tests {
         let eval = LedgerEvaluation {
             crossings: vec![ConditionCrossing {
                 condition_id: "keep-1".into(),
-                statement: "Trailing return collapses".into(),
+                statement: "Trailing return collapses to -40%".into(),
                 role: ConditionRole::Falsifier,
                 outcome: CrossingOutcome::Confirmed,
                 observed_value: -0.45,
@@ -12692,7 +12987,7 @@ pub(crate) mod tests {
             condition_id: "keep-2".into(),
             role: ConditionRole::Falsifier,
             trigger_family: None,
-            statement: "Trailing return collapses harder".into(),
+            statement: "Trailing return collapses harder to -60%".into(),
             quant: Some(QuantCore {
                 series: engine::LedgerSeries::TrailingReturn,
                 comparator: LedgerComparator::Below,
@@ -12787,7 +13082,7 @@ pub(crate) mod tests {
         let eval = LedgerEvaluation {
             crossings: vec![ConditionCrossing {
                 condition_id: "keep-1".into(),
-                statement: "Trailing return collapses".into(),
+                statement: "Trailing return collapses to -40%".into(),
                 role: ConditionRole::Falsifier,
                 outcome: CrossingOutcome::Confirmed,
                 observed_value: -0.45,
@@ -13705,7 +14000,14 @@ pub(crate) mod tests {
         is_fund: bool,
         basis: Option<crate::portfolio::StatementBasis>,
     ) -> Option<String> {
-        validate_quant_core(statement, &qd, is_fund, basis)
+        validate_quant_core(statement, &qd, is_fund, basis, None)
+            .err()
+            .map(|e| e.split(':').next().unwrap().to_string())
+    }
+
+    /// [`class_of`] with a spot for the relative price-level form.
+    fn class_of_at(statement: &str, qd: QuantCoreDraft, is_fund: bool, spot: f64) -> Option<String> {
+        validate_quant_core(statement, &qd, is_fund, None, Some(spot))
             .err()
             .map(|e| e.split(':').next().unwrap().to_string())
     }
@@ -13716,7 +14018,7 @@ pub(crate) mod tests {
         use downgrade_class as c;
         // The seven attempt-6 defects plus the rulings' additions, each by class
         // (`docs/verification/2026-09-16-ledger-conditions-and-action-packet.md`).
-        let cases: [(&str, QuantCoreDraft, bool, Option<crate::portfolio::StatementBasis>, &str); 13] = [
+        let cases: [(&str, QuantCoreDraft, bool, Option<crate::portfolio::StatementBasis>, &str); 21] = [
             ("Revenue growth fails to meet minimum profitable scale threshold of 3% YoY.",
              core("revenue-growth", "below", 3.0, 0.02), false, Some(Ttm), c::UNIT),
             ("Revenue growth re-accelerates to >8% YoY on guidance or TTM basis.",
@@ -13743,6 +14045,24 @@ pub(crate) mod tests {
              core("price", "below", 38.0, 0.15), true, None, c::QUALIFIER),
             ("Valuation multiple expands to >40x P/E without corresponding margin/growth acceleration.",
              core("pe-ratio", "above", 40.0, 0.15), false, Some(Ttm), c::QUALIFIER),
+            // The live read's follow-up (fix list 1.5–1.8, ruled 2026-09-16): a
+            // statement naming no figure passes nothing (the 300% floor, the
+            // levelless price and net-margin cores); a margin past the relative
+            // cap; a duration that is not the cadence.
+            ("Revenue growth slows materially below sustainable organic run rate due to employer attrition or administrative guidance cuts.",
+             core("revenue-growth", "below", 3.0, 0.5), false, Some(Ttm), c::NO_LEVEL),
+            ("Price retests strong support zone near recent lows while fundamental thesis remains intact (DOL proposal or lives guidance stability).",
+             core("price", "below", 24.0, 1.0), false, Some(Ttm), c::NO_LEVEL),
+            ("Net margin structural compression below historical cyclical averages.",
+             core("net-margin", "below", 0.035, 0.01), false, Some(Ttm), c::NO_LEVEL),
+            ("Trim above the priced-in ceiling", core("price", "above", 150.0, 0.0), false, None, c::NO_LEVEL),
+            ("Price closes below $490 triggers position trimming to reduce concentration risk",
+             core("price", "below", 490.0, 489.5), true, None, c::MARGIN),
+            ("Net margin falls below 4% on a TTM basis", core("net-margin", "below", 0.04, 0.025), false, Some(Ttm), c::MARGIN),
+            ("Price closes below $135 support level for three consecutive distinct daily sessions.",
+             core("price", "below", 135.0, 2.0), true, None, c::QUALIFIER),
+            ("Gross margin falls below 15% for two consecutive quarters.",
+             core("gross-margin", "below", 0.15, 0.01), false, Some(Ttm), c::QUALIFIER),
         ];
         for (statement, qd, is_fund, basis, expected) in cases {
             assert_eq!(
@@ -13761,13 +14081,11 @@ pub(crate) mod tests {
         );
         // The sound cores stay quantitative — including legitimate growth past
         // 100%, a sign carried in words, and a bare "sustains".
-        let kept: [(&str, QuantCoreDraft, bool, Option<crate::portfolio::StatementBasis>); 14] = [
+        let kept: [(&str, QuantCoreDraft, bool, Option<crate::portfolio::StatementBasis>); 20] = [
             ("Gross margin permanently falls below 16% (floor breach indicating structural profitability impairment).",
              core("gross-margin", "below", 0.16, 0.02), false, Some(Ttm)),
             ("Price sustains above $575 implying base-case multiple expansion despite elevated discount rates near 5% on the 10Y",
              core("price", "above", 575.0, 0.5), true, None),
-            ("Price reaches +24% from current levels suggesting multiple expansion beyond fair value given discount rate headwinds",
-             core("price", "above", 648.0, 0.15), true, None),
             ("Price closes below $210 support level / fair value floor.",
              core("price", "below", 210.0, 5.0), false, Some(Ttm)),
             ("Share price closes below $22 support indicating valuation breakdown.",
@@ -13778,7 +14096,6 @@ pub(crate) mod tests {
              core("trailing-return", "below", -0.40, 0.02), false, None),
             ("Expense ratio rises above 0.75% (mandate/cost drift)",
              core("expense-ratio", "above", 0.0075, 0.0005), true, None),
-            ("Trim above the priced-in ceiling", core("price", "above", 150.0, 0.0), false, None),
             ("P/E breaches 38x indicating an unsustainable premium", core("pe-ratio", "above", 38.0, 0.5), false, Some(Ttm)),
             // Review regressions (2026-09-16): a stock's "expense" is not the
             // fund-only expense ratio; a level "not seen in 3 years" is not a
@@ -13788,10 +14105,97 @@ pub(crate) mod tests {
             ("Price falls below $150, a level not seen in 3 years", core("price", "below", 150.0, 1.0), false, None),
             ("P/E exceeds 25x, above the 2027 consensus multiple", core("pe-ratio", "above", 25.0, 0.5), false, Some(Ttm)),
             ("Price closes below key support at $210, versus $257 spot", core("price", "below", 210.0, 2.0), false, None),
+            // The live read's follow-up (fix list 1.6–1.8, ruled 2026-09-16): a
+            // cadence-exact duration in any of its phrasings, an interpretive
+            // "confirming …", a unit-restating parenthetical, and margins under the
+            // relative caps.
+            ("Price closes below $135 support level for two consecutive distinct daily sessions.",
+             core("price", "below", 135.0, 2.0), true, None),
+            ("Price sustains above $52 for two consecutive sessions as partial profit-take on stabilization path",
+             core("price", "above", 52.0, 1.5), true, None),
+            ("Daily realized volatility breaks above 2.5% and confirms on 2 consecutive closes—signaling structural risk premium elevation",
+             core("return-volatility", "above", 0.025, 0.005), true, None),
+            ("Share price sustained break below technical support zone ($320) confirming broader multiple compression in tech/growth sector.",
+             core("price", "below", 320.0, 5.0), false, Some(Ttm)),
+            ("Price closes below $32 confirming bear case extension", core("price", "below", 32.0, 1.0), true, None),
+            ("Realized daily volatility spikes above 1.2% (approx annualized >19%) indicating regime instability",
+             core("return-volatility", "above", 0.012, 0.002), true, None),
+            ("Dow components collectively fail to support price floor, breaking below $485 which invalidates the defensive value thesis",
+             core("price", "below", 485.0, 15.0), true, None),
+            ("Daily return volatility sustains above 2.5% indicating regime shift into elevated market stress",
+             core("return-volatility", "above", 0.025, 0.01), true, None),
         ];
         for (statement, qd, is_fund, basis) in kept {
             assert_eq!(class_of(statement, qd, is_fund, basis), None, "{statement}");
         }
+        // A percent from current levels on the price resolves against the spot
+        // (ruled 2026-09-16, F1): the sign from the sentence when explicit, from
+        // the comparator otherwise; without a spot the statement names no level.
+        let up = "Price reaches +24% from current levels suggesting multiple expansion beyond fair value given discount rate headwinds";
+        assert_eq!(class_of_at(up, core("price", "above", 648.0, 0.15), true, 524.49), None);
+        assert_eq!(class_of_at(up, core("price", "above", 600.0, 0.15), true, 524.49).as_deref(), Some(c::PRICE_LEVEL));
+        assert_eq!(class_of(up, core("price", "above", 648.0, 0.15), true, None).as_deref(), Some(c::NO_LEVEL));
+        let down = "Price falls 20% from here on a guidance cut";
+        assert_eq!(class_of_at(down, core("price", "below", 80.0, 1.0), false, 100.0), None);
+        assert_eq!(class_of_at(down, core("price", "below", 120.0, 1.0), false, 100.0).as_deref(), Some(c::PRICE_LEVEL));
+        assert_eq!(
+            class_of_at("Share price falls more than 40% below its current level", core("price", "below", 60.0, 1.0), false, 100.0),
+            None
+        );
+        // A percent on another metric never resolves to a price level, even when
+        // the core happens to equal spot × (1 − p) (Codex, finding 2).
+        assert_eq!(
+            class_of_at("Price breaks support as gross margin falls below 20%", core("price", "below", 80.0, 1.0), false, 100.0).as_deref(),
+            Some(c::NO_LEVEL)
+        );
+        assert_eq!(
+            class_of_at("Price falls while dividend yield drops below 5%", core("price", "below", 95.0, 1.0), false, 100.0).as_deref(),
+            Some(c::NO_LEVEL)
+        );
+        assert_eq!(
+            class_of_at("Price drops as yield falls below 5%", core("price", "below", 95.0, 1.0), false, 100.0).as_deref(),
+            Some(c::NO_LEVEL)
+        );
+        // Codex, second round: the price-subject branch must be reachable
+        // ("Share price drops 20%"), and the from-current anchor must not carry
+        // another metric's percent.
+        assert_eq!(class_of_at("Share price drops 20%", core("price", "below", 80.0, 1.0), false, 100.0), None);
+        assert_eq!(class_of_at("The stock rallies 15% on the print", core("price", "above", 115.0, 1.0), false, 100.0), None);
+        assert_eq!(
+            class_of_at("Price weakens as gross margin drops 20% from current levels", core("price", "below", 80.0, 1.0), false, 100.0).as_deref(),
+            Some(c::NO_LEVEL)
+        );
+        // A parenthetical alternative names the price series and is a second level.
+        assert_eq!(
+            class_of("Price below $200 (or above $250)", core("price", "below", 200.0, 2.0), false, None).as_deref(),
+            Some(c::QUALIFIER)
+        );
+        // A parenthetical naming a metric is a second condition (Codex, finding
+        // 1); every stated duration must be the cadence (Codex, finding 3).
+        assert_eq!(
+            class_of("Price below $200 (with gross margin below 15%)", core("price", "below", 200.0, 2.0), false, None).as_deref(),
+            Some(c::QUALIFIER)
+        );
+        assert_eq!(
+            class_of(
+                "Price closes below $100 for two consecutive sessions and persists there for three weeks",
+                core("price", "below", 100.0, 1.0), false, None
+            ).as_deref(),
+            Some(c::QUALIFIER)
+        );
+    }
+
+    #[test]
+    fn split_rebasis_moves_the_statement_dollar_figures_with_the_core() {
+        assert_eq!(rebase_dollar_figures("price below $700", 0.25), "price below $175");
+        assert_eq!(rebase_dollar_figures("Stock falls to ≤$145 on margin collapse", 0.25), "Stock falls to ≤$36.25 on margin collapse");
+        assert_eq!(rebase_dollar_figures("Price closes below $27.85 or $1,000", 2.0), "Price closes below $55.70 or $2000");
+        // Percents, multiples and dates are not prices.
+        assert_eq!(rebase_dollar_figures("Gross margin below 16% by 2027 at 25x", 0.25), "Gross margin below 16% by 2027 at 25x");
+        assert_eq!(rebase_dollar_figures("no figure here $", 0.5), "no figure here $");
+        // Precision follows the converted value, not the original's decimals.
+        assert_eq!(rebase_dollar_figures("Price below $3.5", 0.25), "Price below $0.875");
+        assert_eq!(rebase_dollar_figures("Price below $10", 0.3333333333), "Price below $3.33");
     }
 
     #[test]
@@ -13882,7 +14286,17 @@ pub(crate) mod tests {
             class_of("Price falls below $100", core("price", "below", 100.0, 100.0), false, None).as_deref(),
             Some(c::MARGIN)
         );
-        assert_eq!(class_of("Price falls below $100", core("price", "below", 100.0, 99.0), false, None), None);
+        // Under the magnitude bound but past the relative cap (fix list 1.8, ruled
+        // 2026-09-16): a quarter of the level on the price, half on a fraction.
+        assert_eq!(
+            class_of("Price falls below $100", core("price", "below", 100.0, 99.0), false, None).as_deref(),
+            Some(c::MARGIN)
+        );
+        assert_eq!(
+            class_of("Price falls below $100", core("price", "below", 100.0, 26.0), false, None).as_deref(),
+            Some(c::MARGIN)
+        );
+        assert_eq!(class_of("Price falls below $100", core("price", "below", 100.0, 25.0), false, None), None);
         // A zero threshold is exempt: the margin is its only scale.
         assert_eq!(class_of("Net margin falls below 0%", core("net-margin", "below", 0.0, 0.02), false, None), None);
         // A negative threshold compares on magnitude.
@@ -13896,7 +14310,14 @@ pub(crate) mod tests {
         assert_eq!(
             class_of(
                 "The holding's price falls more than 40% below its current level",
-                core("trailing-return", "below", -0.40, 0.39), false, None
+                core("trailing-return", "below", -0.40, 0.21), false, None
+            ).as_deref(),
+            Some(c::MARGIN)
+        );
+        assert_eq!(
+            class_of(
+                "The holding's price falls more than 40% below its current level",
+                core("trailing-return", "below", -0.40, 0.20), false, None
             ),
             None
         );

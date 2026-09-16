@@ -93,7 +93,7 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   Check: PGNY's "revenue growth slows materially below sustainable organic run rate"
   with a core of 3 downgrades; a sentence stating "3%" with a core of 0.03 keeps.
   Raised by the live read (L1).
-  Ruled 2026-09-16: adopt, on every series.
+  Ruled 2026-09-16: adopt, on every series; landed as `portfolio-v37`.
 - 1.6 The duration detector exempts a duration equal to the series' confirmation count
   in its cadence unit and tolerates adjectives between count, "consecutive" and unit;
   "confirming …" leaves the conjunction list or narrows to a named series or level;
@@ -102,17 +102,17 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   distinct daily sessions" downgrades; TSLA's "$320 confirming broader multiple
   compression" keeps; DIA's "1.2% (approx annualized >19%)" keeps.
   Raised by the live read (L2, L3, L6).
-  Ruled 2026-09-16: adopt all three.
+  Ruled 2026-09-16: adopt all three; landed as `portfolio-v37`.
 - 1.7 The ledger contract states that the threshold is exactly the level the sentence
   names and the margin is the separate band.
   Check: on the fixed set the level-mismatch rate on repeats falls from SPMO's three
   of three.
   Raised by the live read (L4).
-  Ruled 2026-09-16: adopt.
+  Ruled 2026-09-16: adopt; landed as `portfolio-v37`.
 - 1.8 A relative margin cap per series kind on top of the magnitude bound.
   Check: DIA's margin of 489.5 on a $490 level downgrades; a $15 margin on $485 keeps.
   Raised by the live read (L5).
-  Ruled 2026-09-16: adopt, the fraction per series kind drafted at plan time.
+  Ruled 2026-09-16: adopt, the fraction per series kind drafted at plan time (25% on the price and ratios, 50% on fractions); landed as `portfolio-v37`.
 
 ## 2. Action call — an investment-only packet
 
@@ -150,13 +150,14 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   `portfolio-v36`.
   Live 2026-09-16: PSX's momentum and DIA's valuation readings carry the stated
   polarity in every rationale that names them.
-- 2.4 The packet's capital-efficiency line states the fact and its reach — the hurdle
-  test cleared or could not be evaluated, and the line neither requires nor forbids any
-  rung — instead of "carries no exit signal", which the model reads as a directive.
+- 2.4 The packet's capital-efficiency line states the fact and its reach — what the
+  three-state read found (even the bear case clears; the bear case misses and the bull
+  case clears; no assessment available), and that the line neither requires nor forbids
+  any rung — instead of "carries no exit signal", which the model reads as a directive.
   Check: on the fixed set with thinking captured, the capital-efficiency cause falls
   from 83 of 235 action markers toward the attempt-6 share (19 across every class).
   Raised by the live thinking read (L7 in `2026-09-16-ledger-conditions-and-action-packet.md`).
-  Ruled 2026-09-16: adopt.
+  Ruled 2026-09-16: adopt; landed as `portfolio-v37`.
 
 ## 3. Interpretation call — one responsibility per field, no account economics
 

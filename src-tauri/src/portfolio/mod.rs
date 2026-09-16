@@ -2116,7 +2116,20 @@ pub struct HoldingAudit {
 /// choice. Prompt prose and the model-facing contract change, so a v35 trail
 /// cannot resume into v36; the persisted shapes and every other axis are
 /// unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v36";
+///
+/// `portfolio-v37`: the ledger-validator follow-up off the §8.2 live read
+/// (`docs/verification/2026-09-16-ledger-validator-follow-up.md`). The 6g seam
+/// downgrades a statement naming no figure as `no-level` on every series,
+/// resolves a percent-from-current price level against the spot, keeps a
+/// duration that names the market-data cadence exactly, no longer reads
+/// "confirming …" or a unit-restating parenthetical as a second condition, and
+/// caps the margin at a share of the level; the authoring contract states that
+/// the threshold is the level the sentence names and the margin the separate
+/// band; the action packet's capital-efficiency line states the hurdle fact
+/// and that it neither requires nor forbids any rung. Prompt prose and the
+/// validator's meaning change, so a v36 trail cannot resume into v37; the
+/// persisted shapes and every other axis are unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v37";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

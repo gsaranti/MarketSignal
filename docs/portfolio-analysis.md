@@ -185,17 +185,24 @@ Each gradable holding carries a ledger with:
   Direction words that all oppose the comparator are `comparator-mismatch`.
   A metric or a statement basis the series is not is `metric-mismatch` or `basis-mismatch`.
   A `price` core whose statement names no price is `no-price-level`.
+  A statement naming no figure in the series' unit is `no-level` on every series, since nothing in it can agree or disagree with the threshold (`portfolio-v37`).
+  A price statement naming a percent from current levels resolves that percent against the spot before the level check, the sign from the sentence when explicit and from the comparator otherwise.
   A stated level that disagrees with the threshold is `price-level-mismatch` on the price and `level-mismatch` elsewhere.
   When several figures are stated the level is the one attached to the comparison clause, and a statement with none attached keeps its condition qualitative as `ambiguous-level`.
   The unit check uses that same associated level, never a starting value elsewhere in the statement.
   Multiple comparison levels stay qualitative as `qualifier`, since one predicate cannot represent them all.
   A margin at or beyond the threshold's magnitude is `margin-implausible`, a zero threshold exempt.
+  A margin past a quarter of the level on the price, the multiples and debt / equity, or past half of it on a fraction-unit series, is `margin-implausible` too (`portfolio-v37`).
   A duration, volume or second-condition clause the single-level predicate cannot carry is `qualifier`.
+  A duration naming the market-data cadence exactly — two days, sessions or closes — is what the predicate already carries and keeps its core (`portfolio-v37`).
+  A filing series never exempts a duration.
+  An interpretive "confirming …" clause and a parenthetical restating the level in another unit are not second conditions (`portfolio-v37`).
   Levels compare with their signs intact within a tolerance (5% on a percent or multiple, 1% on a price).
   Explicit signs are preserved; a narrow implicit-decline phrase on trailing return (such as "falls more than 40%") supplies a negative sign only when the figure has no explicit sign.
   The margin guard rejects an impossible margin, not an unwise one.
   The margin stays model-authored (fix list 1.3, not adopted 2026-09-16).
   The model authors against a **holding-scoped authoring contract** rendered in both interpretation prompts: only the series the engine computes for the vehicle kind, each with its unit, statement basis, current observation and confirmation cadence, plus one worked quantitative and one worked qualitative example in the vehicle's own vocabulary ([portfolio-workflow.md §Step 6f](portfolio-workflow.md#step-6f-interpretation-and-grading)).
+  The contract states that the threshold is exactly the level the statement names and the margin the separate band around it (`portfolio-v37`).
   The as-built **observation identities** are the series' own dated prints, never the calendar: a market-data series keys its streak to the **marks' trading day**, a filing series to the **newest reported period end**, and the expense ratio — a value that changes rarely, with no dated print of its own — to the **changed value itself**; a read with **no dated print to key** is typed **unevaluable** rather than advancing or resetting a streak, and the quick check downgrades the family's claimed clear on it ([§The quick check](#the-quick-check-engine-only)).
   Two further reads are typed **unevaluable** on the same channel, for the same reason — the engine refuses to compare where a comparison would be meaningless, and refusing moves no state at all, so it can neither fabricate a crossing nor silently clear a standing one:
   a **signed multiple** is off-scale for a threshold (a loss-maker's negative P/E is not a cheap P/E, and a negative debt/equity is liabilities past the equity base — maximal leverage, never low; compared naively the latter also read as a *clean* observation and reset the streak, first-breach date, confirmation and acknowledgment together);
@@ -515,8 +522,10 @@ They are recorded here so the spec matches the engine, not to pin them.
   Every stored price-denominated comparator converts through the factor before comparison: the sweep's ledger `price` thresholds **and their absolute margins**, the stored-multiple rescale's spot, the hurdle re-anchor's spot and same-sweep filing dividend, the frozen band targets, and every raw fiscal-period EPS row used by the revision preflight.
   The sweep's conversions are transient — the stored ledger is never rewritten.
   The full pass instead normalizes the **ingested prior ledger once, at ingestion**, so every compared, validated, and persisted machine value — the evaluation, 6g carry, and the rewrite — sits on one basis and the rewritten ledger lands on the persisting run's basis.
+  Since `portfolio-v37` that normalization also re-bases the dollar figures in a price condition's statement, so a verbatim re-emission names the level its converted core carries and the 6g level check keeps the carry (ruled 2026-09-16; latent since the v36 level check).
   The 6c seed and 6d citation list read the same normalized instance but render statements only — no machine core reaches those prompts; rendering the core beside the statement there is a named, undecided candidate (a `PROMPT_VERSION` event).
-  A condition's **statement prose stays model-authored and is never rewritten by the app**: after a re-basis the prose may quote the old-basis number until the model's own rewrite heals it, guided by the re-basis delta entry — the machine core is the authoritative comparator throughout.
+  A condition's **statement prose stays model-authored**, with one app rewrite: the dollar figures of a price condition's statement re-base with its core at ingestion (above), so no carried sentence quotes an old-basis number beside a new-basis core.
+  The machine core is the authoritative comparator throughout.
   It bridges the prior spot and every matched prior consensus-EPS row **together** (their ratio — each prior matched-period multiple — is basis-free and must stay so).
   A detected re-basis writes its own input-delta entry so the what-changed audit can attribute the apparent price move.
   An anchor whose bar date is missing from the fresh window is an **unverifiable basis: the comparison is excluded, typed — never run cross-basis**.
