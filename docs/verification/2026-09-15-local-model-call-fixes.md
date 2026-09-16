@@ -7,6 +7,10 @@ Each entry is a decision, the finding it rests on, the acceptance check, and the
 stamp it moves; the evidence stays in the record and is not repeated here.
 Every entry needs a ruling before implementation starts (`Ruled <date>:` lines);
 "open" marks the ones still waiting.
+Ruled 2026-09-15: scope and direction are ruled here; every other open entry is ruled
+as a flag of the slice's `/metis-plan-task` plan, with the code in view, not before.
+Ruled 2026-09-15: the first slice is §1 (ledger conditions) plus §2 (action packet),
+one plan and one `portfolio-v36` stamp; §3–§7 follow as their own slices.
 Contract text belongs in the job docs named per entry, never here.
 
 Standing constraints that apply to every entry:
@@ -76,7 +80,8 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   Check: the complete serialized action packet, embedded summaries included, carries no
   tax flag, P/L or cost figure; varying tax status and entry cost with the verdict
   held fixed cannot change the rung over repeated runs.
-  Ruling: open — Claude and Codex both recommend yes.
+  Ruled 2026-09-15: adopt — the tax caveat is app-rendered after the rung; the
+  caveat-only tax ruling is enforced by input separation, not by sentence.
 - 2.2 Restate the ENGINE SET once, declaratively, as engine evidence: the full ladder is
   the model's, the set is one input, choose and stop; drop the departure-mechanics
   sentence (stamping is app behavior).
@@ -143,8 +148,9 @@ Docs that change: `web-research.md §The research loop and context management`,
 - 4.4 Fund exposure fit: research gathers exposure facts only; the fit judgment moves
   whole to interpretation, which already sees the house view; retitle the topic.
   Check: no synthesis trace reasons about an unseen house view.
-  Ruling: open — Codex prefers this form; Claude's alternative (render the house view
-  into the topic) is not adopted.
+  Ruled 2026-09-15: adopt — research gathers exposure facts only, interpretation owns
+  the fit judgment, the topic is retitled; rendering the house view into research is
+  not adopted.
 - 4.5 Untrusted text is data, not instruction, and also fallible evidence: an
   internally impossible number may be excluded or reported as a source defect.
   Check: PSX's impossible insider-sale amount is excluded or persisted as a source
@@ -240,11 +246,14 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   release claim.
   Packets rebuilt from the persisted rows and thought-log headers are labelled
   reconstructed, not replayed.
-  Ruling: open — Claude recommends yes.
+  Ruled 2026-09-15: adopt — the fixed-evidence gate precedes any further book-scale
+  attempt; every slice from §1 on verifies against it, and the single big confirmation
+  run comes after the calls pass it (BUILD §What remains' pre-run bar gains that
+  sentence).
 - 8.2 Order: sections 1–6 first, model, runtime and sampling held fixed; admit a
   candidate only when executable cores agree with their sentences, source dates stay
   intact, claims keep valid provenance, and tax or P/L variation cannot move the rung.
-  Ruling: open.
+  Ruled 2026-09-15: adopt, as the gate's admission rule.
 - 8.3 Experiments, after 8.2: non-thinking synthesis on the frozen evidence, comparing
   claim retention, dates, citation resolution and partial-coverage accuracy as well as
   time, with repeats for variability; then non-thinking action separately on the
@@ -258,6 +267,8 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   Ruling: open.
 
 ## Not adopted
+
+Ruled 2026-09-15: all six ratified; none is re-raised in a plan.
 
 - A universal "decimal threshold above 1 is invalid" guard (Claude, record Finding 2):
   legitimate growth exceeds 100%; superseded by 1.2's prose-mismatch form.

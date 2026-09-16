@@ -18,17 +18,18 @@ Working tree clean, `main` in sync with `origin/main` after this session-end com
 Nothing running.
 The dev store is NOT the debut: it holds the attempt-6 header, six holding rows, 52 `web_source_state` rows and `job_runs` max 6; the next attempt must re-wipe (drop `web_source_state`, clear checkpoints/holdings; keep reports/vectors/baselines/job_runs).
 `portfolio-v35` has now run, so the fix-list changes land as `portfolio-v36`; checkpoint and evidence-floor stamps move where an entry changes a persisted shape (confirm at plan).
-The fix list's 24 open entries await the ruling round; only 8.3 (experiment order: non-thinking synthesis first, then action, after the packet fixes; interpretation stays thinking-on) is ruled.
-The standing single-big-run bar is now preceded by a fixed-evidence evaluation gate (fix list §8) if the user ratifies it.
+Scope and direction are RULED (2026-09-15, recorded in the fix list): first slice = §1 ledger conditions + §2 action packet (one plan, one `portfolio-v36` stamp); the fixed-evidence evaluation gate (§8.1/8.2) is adopted and precedes any book-scale attempt; 2.1 (tax/P&L withheld from the action packet, caveat app-rendered after the rung) and 4.4 (fund fit judgment moves to interpretation) are adopted; the six "not adopted" items are ratified; 8.3's experiment order stands.
+Every other open entry in the fix list is ruled as a flag of its slice's plan, not before it.
+BUILD §What remains' pre-run bar needs one sentence for the gate — not yet written (user-run).
 
 ## Open questions
 
-- Ruling round on the fix list — 1.2's guard form (narrow prose-mismatch, not a universal decimal>1 rule), 1.3 app-assigned margins (per series or per series+vehicle), 3.1 `price_target_rationale` ownership (rename moves `checkpoint-v9`), 4.3 whether an app-built no-evidence object counts as answered or a gap, 5.2's stamp (evidence-floor, checkpoint, or both).
+- Plan flags for the §1+§2 slice, to be ruled on the plan: 1.2's guard form (narrow prose-mismatch), 1.3 margin policy granularity (per series, or per series+vehicle), 1.4's qualifier handling, 2.2/2.3 wording; the later slices carry 3.1 field ownership (a rename moves `checkpoint-v9`), 4.3 no-evidence semantics, 5.2's stamp.
 - Whether to add a short erratum under the Claude sections of the attempt-6 record for Codex's seven corrections (record committed as-is).
 - ARKF now prices (was `role_risk_only` on attempt 5) under the 2026-09-15 rulings — confirm intended.
 - Carried: stop rule 1 (unit-exclusion rate) unread; per-domain denied share and the SearXNG engine set at book scale; the deferred watches listed at the fix list's end.
 
 ## Where to start
 
-Start with the ruling round on `docs/verification/2026-09-15-local-model-call-fixes.md`: present each open entry as a decision with its recommendation, record `Ruled 2026-09-…:` lines in that file, then `/metis-plan-task` the first slice (fix list §1 ledger conditions and §2 action packet are the highest-consequence groups; §8.1's fixed evidence set from the six persisted holdings is the verification substrate).
+`/metis-plan-task` the first slice: fix list §1 (ledger conditions) + §2 (action packet) from `docs/verification/2026-09-15-local-model-call-fixes.md`, with §8.1's fixed evidence set (reconstructed packets from the six persisted holdings in the dev store, extracts in `~/Downloads/market-signal-attempt-6-logs/store-extracts/`) as the verification substrate and `cargo test` + clippy named in the verification command; surface every open §1/§2 entry as a plan flag for the user to rule before implement.
 Do not launch or propose another run; the next attempt re-wipes the dev store first.
