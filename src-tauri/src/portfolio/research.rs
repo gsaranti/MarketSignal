@@ -45,7 +45,7 @@ use serde_json::{json, Value};
 use crate::local_model::{ChatMessage, ChatResponse};
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::{ConditionRole, ThesisLedger};
-use crate::progress::RunContext;
+use crate::progress::{RequestTarget, RunContext};
 use crate::research_executor::Clock;
 use crate::web_research::fetch::FetchedPage;
 use crate::web_research::registry::SourceAnnotation;
@@ -1616,6 +1616,8 @@ impl ResearchRunner<'_> {
     /// Execute one search call, with its tracker row. Degradation (a failed
     /// call or an empty result set) is tallied so the synthesis call, which
     /// never sees this tool result, still learns coverage was partial (Finding 2).
+    /// The row names the topic and carries the query as its target; the
+    /// series id pairs start with finish and is never rendered.
     fn exec_search(
         &self,
         query: &str,
@@ -1623,32 +1625,38 @@ impl ResearchRunner<'_> {
         degradation: &mut PassDegradation,
     ) -> String {
         let series = format!("search: {query}");
+        let target = || RequestTarget {
+            kind: "search".into(),
+            text: query.to_string(),
+        };
         self.progress
-            .request_started("web", "research", &series, &ctx.topic.key);
+            .request_started_with_target("web", "research", &series, &ctx.topic.key, target());
         match self.web.search(query) {
             Ok(hits) => {
                 if hits.is_empty() {
                     degradation.searches_empty += 1;
                 }
-                self.progress.request_finished(
+                self.progress.request_finished_with_target(
                     "web",
                     "research",
                     &series,
                     &ctx.topic.key,
                     "ok",
                     Some(format!("{} hits", hits.len())),
+                    target(),
                 );
                 render_hits(&hits)
             }
             Err(e) => {
                 degradation.searches_failed += 1;
-                self.progress.request_finished(
+                self.progress.request_finished_with_target(
                     "web",
                     "research",
                     &series,
                     &ctx.topic.key,
                     "failed",
                     Some(e.to_string()),
+                    target(),
                 );
                 format!("SEARCH FAILED: {e:#}. Work with what you have or try a different query.")
             }
@@ -1670,8 +1678,12 @@ impl ResearchRunner<'_> {
         degradation: &mut PassDegradation,
     ) -> String {
         let series = format!("fetch: {url}");
+        let target = || RequestTarget {
+            kind: "fetch".into(),
+            text: url.to_string(),
+        };
         self.progress
-            .request_started("web", "research", &series, &ctx.topic.key);
+            .request_started_with_target("web", "research", &series, &ctx.topic.key, target());
         match self.web.fetch(url) {
             Ok((page, from_cache)) => {
                 if !from_cache {
@@ -1710,7 +1722,7 @@ impl ResearchRunner<'_> {
                 // synthesis header can carry it (Finding 3).
                 page_titles.insert(normalized.clone(), page.title.clone());
                 fetched.push((normalized, page.retrieved_at.clone(), annotation.clone()));
-                self.progress.request_finished(
+                self.progress.request_finished_with_target(
                     "web",
                     "research",
                     &series,
@@ -1721,6 +1733,7 @@ impl ResearchRunner<'_> {
                     } else {
                         format!("{page_text_chars} chars extracted")
                     }),
+                    target(),
                 );
                 render_page(&page, annotation.as_ref())
             }
@@ -1730,13 +1743,14 @@ impl ResearchRunner<'_> {
                 // fetches can't ride for free under the wall clock alone.
                 *fetches_spent += 1;
                 degradation.fetches_failed += 1;
-                self.progress.request_finished(
+                self.progress.request_finished_with_target(
                     "web",
                     "research",
                     &series,
                     &ctx.topic.key,
                     "failed",
                     Some(e.to_string()),
+                    target(),
                 );
                 format!("FETCH FAILED: {e:#}. The page contributes no evidence.")
             }
@@ -3296,6 +3310,72 @@ mod tests {
         assert_eq!(out.fetches_spent, 1);
         assert_eq!(web.fetch_count(), 1);
         assert_eq!(out.seed_decisions, vec!["competitive-position: cold"]);
+    }
+
+    #[test]
+    fn research_rows_name_what_they_asked_for() {
+        // Each search and fetch row carries its subject — the query or the
+        // page address — as a typed target on both the start and the finish,
+        // beside the topic key the row is named for. The series id stays the
+        // pairing key (`docs/run-tracking.md §What the Tracker Shows`).
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let model = ScriptModel::new(vec![
+            turn_with_tools(json!([
+                {"function": {"name": "web_search", "arguments": {"query": "widget co earnings"}}}
+            ])),
+            turn_with_tools(json!([
+                {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
+            ])),
+            gather_done(),
+            findings_turn(simple_findings()),
+            gather_done(),
+            findings_turn(json!({
+                "findings": "No credible disconfirming evidence surfaced.",
+                "claims": [],
+                "topic_answered": true
+            })),
+        ]);
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(10));
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-t", rec.clone(), Arc::new(AtomicBool::new(false)));
+        let r = runner(&model, &web, &clock, &ctx, 10);
+        r.run_holding("HOLDING: WID", &one_topic_agenda(), &seeds(), &|_| None)
+            .unwrap();
+
+        let expected = [
+            ("search: widget co earnings", "search", "widget co earnings"),
+            ("fetch: https://reuters.com/widget", "fetch", "https://reuters.com/widget"),
+        ];
+        let started: Vec<(String, String, String)> = rec
+            .messages()
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::RequestStarted { series_id, name, target: Some(t), .. } => {
+                    assert_eq!(name, "competitive-position");
+                    Some((series_id.clone(), t.kind.clone(), t.text.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let finished: Vec<(String, String, String)> = rec
+            .messages()
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::RequestFinished { series_id, target: Some(t), .. } => {
+                    Some((series_id.clone(), t.kind.clone(), t.text.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<(String, String, String)> = expected
+            .iter()
+            .map(|(s, k, t)| (s.to_string(), k.to_string(), t.to_string()))
+            .collect();
+        assert_eq!(started, expected);
+        assert_eq!(finished, expected);
     }
 
     #[test]

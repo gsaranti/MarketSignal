@@ -40,6 +40,14 @@ design-system README (§Empty-state and status copy).
 - **Motion** — state changes 120ms ease-out. View switches are hard cuts.
   No page transitions, no celebrations, no skeleton shimmer.
 
+## Request subject disclosure extension
+
+The production run tracker adds the search query or page URL beside a research row's topic and a short outcome note beside its status.
+The subject uses a compact ghost button with the existing caption kind label, sans UI-small text, neutral ▸/▾ disclosure glyph, paper-soft hover, and accent focus outline.
+The closed subject truncates with ellipsis; activation by Enter, Space, or pointer reveals the full text beneath the row in secondary ink, spanning all columns and wrapping even unbroken URLs.
+Each row expands independently, exposes its state with `aria-expanded`, and keeps focus on its button when opened or closed.
+This extends the kit's text-reveal posture to request rows without changing the default single-line density.
+
 ## To run
 
 Open `index.html` in any browser. React + Babel are loaded from CDN. No

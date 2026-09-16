@@ -64,6 +64,10 @@ pub enum ProgressEvent {
         name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         step: Option<String>,
+        /// What a research request asked for — see [`RequestTarget`]. Absent
+        /// on every other row.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<RequestTarget>,
     },
     /// A single baseline data request resolved — paired with a prior `RequestStarted`
     /// by `provider`/`group`/`series_id`. `status` is `ok` for a resolved value, the
@@ -80,6 +84,10 @@ pub enum ProgressEvent {
         detail: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         step: Option<String>,
+        /// The same target the row's [`Self::RequestStarted`] carried, so a
+        /// row resolved without its start still names its subject.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<RequestTarget>,
     },
     /// A coalesced chunk of the main agent's streamed output (decoded report
     /// text), appended to the tracker's live console as the model writes.
@@ -155,6 +163,19 @@ pub enum ProgressEvent {
         detail: Option<String>,
         report_id: Option<String>,
     },
+}
+
+/// What a research request asked for — the search query or the page address —
+/// carried on its tracker row so the tracker can name it beside the topic the
+/// request served (`docs/run-tracking.md §What the Tracker Shows`). `kind` is
+/// `search` or `fetch`. Only the research loop's two emitters set it; the
+/// series id stays the started/finished pairing key, and the tracker never
+/// parses a subject out of it (it falls back to the series id only as a
+/// row's name when no name was sent).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RequestTarget {
+    pub kind: String,
+    pub text: String,
 }
 
 /// The wire payload actually handed to a [`ProgressReporter`]: a [`ProgressEvent`]
@@ -443,6 +464,27 @@ impl RunContext {
             name: name.into(),
             // Placeholder — `emit` overwrites it with the run's active step.
             step: None,
+            target: None,
+        });
+    }
+
+    /// [`Self::request_started`] for a research request, naming what it asked
+    /// for so the tracker row can show the query or page address.
+    pub fn request_started_with_target(
+        &self,
+        provider: impl Into<String>,
+        group: impl Into<String>,
+        series_id: impl Into<String>,
+        name: impl Into<String>,
+        target: RequestTarget,
+    ) {
+        self.emit(ProgressEvent::RequestStarted {
+            provider: provider.into(),
+            group: group.into(),
+            series_id: series_id.into(),
+            name: name.into(),
+            step: None,
+            target: Some(target),
         });
     }
 
@@ -465,6 +507,32 @@ impl RunContext {
             detail,
             // Placeholder — `emit` overwrites it with the run's active step.
             step: None,
+            target: None,
+        });
+    }
+
+    /// [`Self::request_finished`] for a research request, carrying the same
+    /// target its start did.
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_finished_with_target(
+        &self,
+        provider: impl Into<String>,
+        group: impl Into<String>,
+        series_id: impl Into<String>,
+        name: impl Into<String>,
+        status: impl Into<String>,
+        detail: Option<String>,
+        target: RequestTarget,
+    ) {
+        self.emit(ProgressEvent::RequestFinished {
+            provider: provider.into(),
+            group: group.into(),
+            series_id: series_id.into(),
+            name: name.into(),
+            status: status.into(),
+            detail,
+            step: None,
+            target: Some(target),
         });
     }
 
@@ -603,6 +671,7 @@ mod tests {
                 status: "ok".into(),
                 detail: None,
                 step: Some("baseline".into()),
+                target: None,
             },
         };
         let v = serde_json::to_value(&msg).unwrap();
@@ -615,6 +684,41 @@ mod tests {
         assert_eq!(v["name"], "10-Year Treasury");
         assert_eq!(v["status"], "ok");
         assert_eq!(v["step"], "baseline");
+        // An untargeted row carries no `target` key at all — the frontend's
+        // "has a subject" check is a plain absent-field test.
+        assert!(v.get("target").is_none());
+    }
+
+    #[test]
+    fn a_targeted_request_serializes_its_subject_as_a_nested_object() {
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-t", rec.clone(), Arc::new(AtomicBool::new(false)));
+        ctx.request_started_with_target(
+            "web",
+            "research",
+            "search: widget co earnings",
+            "competitive-position",
+            RequestTarget { kind: "search".into(), text: "widget co earnings".into() },
+        );
+        ctx.request_finished_with_target(
+            "web",
+            "research",
+            "search: widget co earnings",
+            "competitive-position",
+            "ok",
+            Some("3 hits".into()),
+            RequestTarget { kind: "search".into(), text: "widget co earnings".into() },
+        );
+        let msgs = rec.messages();
+        assert_eq!(msgs.len(), 2);
+        for m in &msgs {
+            let v = serde_json::to_value(m).unwrap();
+            assert_eq!(v["target"]["kind"], "search");
+            assert_eq!(v["target"]["text"], "widget co earnings");
+            // The pairing key is untouched by the target.
+            assert_eq!(v["series_id"], "search: widget co earnings");
+            assert_eq!(v["name"], "competitive-position");
+        }
     }
 
     #[test]
@@ -630,6 +734,7 @@ mod tests {
                 series_id: "SPX".into(),
                 name: "S&P 500".into(),
                 step: None,
+                target: None,
             },
         };
         let v = serde_json::to_value(&msg).unwrap();

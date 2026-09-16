@@ -943,6 +943,9 @@ export interface ProgressMessage {
   group?: string;
   series_id?: string;
   name?: string;
+  // request-started / request-finished: what a research request asked for
+  // (the query or page address); absent on every other row.
+  target?: RequestTarget;
   // agent-token / agent-thinking / analyst-thinking / step-thinking: a coalesced
   // chunk of the streamed report text, the main agent's reasoning, one analyst's
   // reasoning, or a step-scoped stage's reasoning, respectively.
@@ -954,9 +957,21 @@ export interface ProgressMessage {
   report_id?: string | null;
 }
 
+// What a research request asked for — the search query or the page address —
+// shown beside the topic its row is named for. `kind` is "search" or "fetch".
+// Mirrors the Rust `progress::RequestTarget`; only the research loop's rows
+// carry one.
+export interface RequestTarget {
+  kind: string;
+  text: string;
+}
+
 // One baseline data request, as shown in the tracker (one row per actual HTTP
 // call). `status` is "running" while in-flight, then "ok", "empty" (a 2xx with no
 // usable data), or a gap reason (unavailable / rejected / malformed / out-of-scope).
+// `target` is the research row's subject (null on every other row); `detail` is
+// the failure's cause, or a completed row's short outcome note where the
+// request left one ("12 hits", "served from document cache").
 export interface TrackerRequest {
   provider: string;
   group: string;
@@ -964,6 +979,7 @@ export interface TrackerRequest {
   name: string;
   status: string;
   detail: string | null;
+  target: RequestTarget | null;
 }
 
 // `flagged` / `unknown` are the quick check's per-holding sweep outcomes

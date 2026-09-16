@@ -259,6 +259,7 @@ function handleProgress(msg: ProgressMessage) {
         name: msg.name ?? msg.series_id ?? "",
         status: "running",
         detail: null,
+        target: msg.target ?? null,
       });
       break;
     }
@@ -284,6 +285,7 @@ function handleProgress(msg: ProgressMessage) {
           name: msg.name ?? msg.series_id ?? "",
           status: msg.status ?? "ok",
           detail: msg.detail ?? null,
+          target: msg.target ?? null,
         });
       }
       break;

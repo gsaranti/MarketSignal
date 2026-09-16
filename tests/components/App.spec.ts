@@ -455,6 +455,34 @@ describe("App.vue run tracker", () => {
     wrapper.unmount();
   });
 
+  test("a research row's subject rides the fold on both the start and a start-less finish", async () => {
+    const { wrapper, emit } = await mountWithTracker();
+
+    // The research loop stamps its search / fetch rows with a typed target
+    // (progress.rs `RequestTarget`); the fold carries it onto the row from the
+    // start event, and from a finish that arrives with no start to resolve.
+    emit({ run_id: "R1", seq: 2, kind: "step-started", step: "holding-PSX", label: "Analyze PSX" });
+    emit({ run_id: "R1", seq: 3, kind: "request-started", step: "holding-PSX", group: "research", provider: "web", series_id: "search: PSX refining margins", name: "competitive-position", target: { kind: "search", text: "PSX refining margins" } });
+    emit({ run_id: "R1", seq: 4, kind: "request-finished", step: "holding-PSX", group: "research", provider: "web", series_id: "search: PSX refining margins", name: "competitive-position", status: "ok", detail: "12 hits", target: { kind: "search", text: "PSX refining margins" } });
+    emit({ run_id: "R1", seq: 5, kind: "request-finished", step: "holding-PSX", group: "research", provider: "web", series_id: "fetch: https://example.com/a", name: "competitive-position", status: "ok", detail: "900 chars extracted", target: { kind: "fetch", text: "https://example.com/a" } });
+    await flushPromises();
+
+    const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
+    const holding = steps.find((s) => s.key === "holding-PSX");
+    expect(holding?.requests).toHaveLength(2);
+    expect(holding?.requests[0]).toMatchObject({
+      status: "ok",
+      detail: "12 hits",
+      target: { kind: "search", text: "PSX refining margins" },
+    });
+    expect(holding?.requests[1]).toMatchObject({
+      status: "ok",
+      target: { kind: "fetch", text: "https://example.com/a" },
+    });
+
+    wrapper.unmount();
+  });
+
   test("an unstamped row lands in the unattributed list and can never fail the run's record", async () => {
     const { wrapper, emit } = await mountWithTracker();
 

@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import ReasoningPane from "./ReasoningPane.vue";
-import type { PortfolioResumeStatus, RunTrace, StepStatus } from "../types";
+import type { PortfolioResumeStatus, RunTrace, StepStatus, TrackerRequest } from "../types";
 
 // Live job run tracker — shown in place of the report pane while a run is in
 // flight (and reopenable as a terminal "run log" afterward, latest run only).
@@ -27,6 +27,16 @@ import type { PortfolioResumeStatus, RunTrace, StepStatus } from "../types";
 // the main agent's, each analyst's, and a local job's per-step stream: bounded in
 // height with its own scroller and auto-follow, so a long run's earlier steps
 // stay compact (ruled 2026-09-15; the extension note lives with the component).
+//
+// REQUEST-ROW SUBJECT (ruled 2026-09-15): the kit's tracker row is pip + name +
+// status. A research row (a local job's web search or page fetch) adds a third
+// text segment on the same line — a tracked-caps SEARCH / FETCH token and the
+// query or page address — and a completed row shows its short outcome note
+// ("12 hits") in the caption register beside the status. Both reuse the row's
+// existing registers (the provider column's caption, the name's ellipsis).
+// The subject is a ghost-button disclosure: keyboard or pointer activation
+// reveals the full text across the row. See the desktop kit README's request
+// subject disclosure extension; no hover is required to read clipped text.
 const props = withDefaults(
   defineProps<{
     trace: RunTrace;
@@ -56,6 +66,18 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "resume"): void;
 }>();
+
+// Use row identity: repeated requests can have identical queries/URLs, and a
+// completion updates the existing row in place. Each disclosure stays independent.
+const expandedTargets = ref(new Set<TrackerRequest>());
+watch(() => props.trace.runId, () => expandedTargets.value.clear());
+function toggleTarget(row: TrackerRequest) {
+  if (!expandedTargets.value.delete(row)) expandedTargets.value.add(row);
+}
+function targetDisclosureLabel(row: TrackerRequest): string {
+  const subject = row.target?.kind === "search" ? "search query" : "fetch URL";
+  return `${expandedTargets.value.has(row) ? "Hide" : "Show"} full ${subject}: ${row.target?.text ?? ""}`;
+}
 
 // The owning-page label set (docs/run-tracking.md): a Portfolio run's tracker
 // must never announce itself as report generation.
@@ -352,6 +374,32 @@ watch(contentSignature, async () => {
             >
               <span class="req-provider">{{ r.provider }}</span>
               <span class="req-name" :title="r.name">{{ r.name }}</span>
+              <!-- What a research request asked for — the search query or the
+                   page address — beside the topic it served. Only research
+                   rows carry one. The button reveals clipped text below. -->
+              <button
+                v-if="r.target"
+                type="button"
+                class="btn btn-ghost req-target"
+                :title="r.target.text"
+                :aria-label="targetDisclosureLabel(r)"
+                :aria-expanded="expandedTargets.has(r)"
+                @click="toggleTarget(r)"
+              >
+                <span class="req-target-chevron" aria-hidden="true">{{ expandedTargets.has(r) ? "▾" : "▸" }}</span>
+                <span class="req-target-kind">{{ r.target.kind }}</span>
+                <span class="req-target-text">{{ r.target.text }}</span>
+              </button>
+              <!-- A completed row's short outcome note ("12 hits", "served from
+                   document cache"); a failure's cause takes the detail line
+                   below instead. -->
+              <span
+                v-if="reqTone(r.status) === 'ok' && r.detail"
+                class="req-note"
+                :title="r.detail"
+              >
+                {{ r.detail }}
+              </span>
               <span class="req-status" :data-tone="reqTone(r.status)">
                 <Icon
                   v-if="reqTone(r.status) === 'ok'"
@@ -367,6 +415,7 @@ watch(contentSignature, async () => {
                 ></span>
                 <template v-else>{{ r.status }}</template>
               </span>
+              <span v-if="r.target && expandedTargets.has(r)" class="req-target-full">{{ r.target.text }}</span>
               <!-- The failure's cause (the transport error or HTTP status +
                    provider sentence the backend leaves on the row) — rendered,
                    not tooltip-only, so the diagnosis no longer needs a
@@ -428,6 +477,26 @@ watch(contentSignature, async () => {
           >
             <span class="req-provider">{{ r.provider }}</span>
             <span class="req-name" :title="r.name">{{ r.name }}</span>
+            <button
+              v-if="r.target"
+              type="button"
+              class="btn btn-ghost req-target"
+              :title="r.target.text"
+              :aria-label="targetDisclosureLabel(r)"
+              :aria-expanded="expandedTargets.has(r)"
+              @click="toggleTarget(r)"
+            >
+              <span class="req-target-chevron" aria-hidden="true">{{ expandedTargets.has(r) ? "▾" : "▸" }}</span>
+              <span class="req-target-kind">{{ r.target.kind }}</span>
+              <span class="req-target-text">{{ r.target.text }}</span>
+            </button>
+            <span
+              v-if="reqTone(r.status) === 'ok' && r.detail"
+              class="req-note"
+              :title="r.detail"
+            >
+              {{ r.detail }}
+            </span>
             <span class="req-status" :data-tone="reqTone(r.status)">
               <Icon
                 v-if="reqTone(r.status) === 'ok'"
@@ -443,6 +512,7 @@ watch(contentSignature, async () => {
               ></span>
               <template v-else>{{ r.status }}</template>
             </span>
+            <span v-if="r.target && expandedTargets.has(r)" class="req-target-full">{{ r.target.text }}</span>
             <span
               v-if="reqTone(r.status) === 'fail' && r.detail"
               class="req-detail"
@@ -738,6 +808,100 @@ watch(contentSignature, async () => {
 }
 .req-status[data-tone="fail"] {
   color: var(--accent-text);
+}
+
+/* A research row's subject — the search query or the page address — as its own
+   column between the topic and the status (ruled 2026-09-15: one line, not a
+   second line under the row). Such a row is an explicit five-column grid
+   rather than the wrapping flex row — provider, topic, subject, note, status
+   — so at any width the status marker holds the right edge and nothing wraps
+   to the row's left edge. The provider track is `auto` so the span's own 9ch
+   (set in its caption size) sizes it, keeping the topic flush with the plain
+   rows' names. Under pressure the tracks yield in this order: the subject
+   keeps a 12ch floor, the topic (20ch fits every agenda key) and the note
+   share what remains, and the subject takes everything past that — so a
+   note clips before a subject ever falls below its floor. The kind token
+   takes the provider column's caption register; the text takes the name's
+   clip treatment; the disclosure reveals a long address on a full-width line. */
+.req:has(.req-target) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 20ch) minmax(12ch, 1fr) minmax(0, max-content) auto;
+}
+.req:has(.req-target) .req-name {
+  grid-column: 2;
+}
+.req:has(.req-target) .req-target {
+  grid-column: 3;
+}
+/* The subject is a `.btn-ghost` stripped to the row's own metrics: no padding
+   and no border (the kit button's transparent 1px border would add 2px to a
+   research row and break the hairline list's shared rhythm), the row's font,
+   so it sits on the same baseline as the topic beside it. Hover keeps the
+   ghost's paper-soft fill; focus keeps the kit's accent outline. */
+.req-target {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  overflow: hidden;
+  justify-content: flex-start;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  text-align: left;
+}
+.req-target-chevron {
+  flex-shrink: 0;
+}
+/* The revealed full text starts at the topic column, like the failure-cause
+   line below it, never under the provider column. */
+.req-target-full {
+  grid-column: 2 / -1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+}
+.req-target-kind {
+  flex-shrink: 0;
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.req-target-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+.req:has(.req-target) .req-status {
+  grid-column: 5;
+  justify-self: end;
+}
+.req:has(.req-target) .req-detail {
+  grid-column: 1 / -1;
+}
+
+/* A completed row's short outcome note ("12 hits", "served from document
+   cache") in the caption register beside the status; the cap bounds its
+   track's max-content so a long note can never push the marker off the row.
+   The column placement is scoped to the research-row grid: today only
+   research rows resolve ok with a detail, but a plain flex row that ever
+   does must not carry a stray grid-column. */
+.req:has(.req-target) .req-note {
+  grid-column: 4;
+}
+.req-note {
+  min-width: 0;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-caption);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
 }
 
 /* The failure's cause sentence — a quiet full-width line under the row,

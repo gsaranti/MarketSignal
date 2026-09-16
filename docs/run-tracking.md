@@ -19,6 +19,10 @@ When a run begins, the owning page (the report pane for a report run) is replace
   A row belongs to the step that issued it, and that ownership is stated by the run itself — every request event is stamped with its owning step as it is emitted — never inferred from arrival order or request naming.
   A row that arrives owning no step is shown in its own small "requests outside any step" list rather than being forced into a step, so a stray request can never make a step look failed.
   A row reads *ok* only when the request landed usable data: a response that parsed but carried nothing usable shows *empty*, and an unreadable response shows *malformed* with its cause on the row.
+  A research row — a local job's web search or page fetch — also names what it asked for: the search query, or the address of the page, shown beside the topic it served.
+  The subject is a disclosure button: activate it with Enter, Space, or a pointer to reveal the full text on a wrapping line beneath the row.
+  Activate it again to hide that line.
+  A completed row carries its short outcome note when the request left one, such as the number of hits a search returned or that a page was served from the document cache.
 - **The main agent's report, streamed live.**
   As the main agent writes the report, its text streams into the tracker as it is produced, rather than appearing only once the report is finished.
 - **The main agent's reasoning, streamed live.**

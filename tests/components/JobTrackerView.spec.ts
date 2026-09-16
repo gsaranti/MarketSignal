@@ -238,6 +238,118 @@ test("request rows map status to tone and show the raw word for non-ok/non-runni
   expect(reqs[1].find(".req-detail").exists()).toBe(false);
 });
 
+test("a research row names what it asked for, and a completed row shows its outcome note", () => {
+  const longUrl =
+    "https://www.sec.gov/Archives/edgar/data/1534701/000153470126000012/psx-20260630.htm";
+  const trace: RunTrace = {
+    runId: "r-web",
+    label: "Portfolio run",
+    steps: [
+      {
+        key: "holding-PSX",
+        label: "Analyze PSX",
+        status: "running",
+        detail: null,
+        agentText: "",
+        agentThinking: "",
+        analystThinking: {},
+        requests: [
+          // A completed search: subject + its outcome note.
+          { provider: "web", group: "research", seriesId: "search: PSX refining margins 2026", name: "competitive-position", status: "ok", detail: "12 hits", target: { kind: "search", text: "PSX refining margins 2026" } },
+          // An in-flight fetch of a long address: subject, no note yet.
+          { provider: "web", group: "research", seriesId: `fetch: ${longUrl}`, name: "competitive-position", status: "running", detail: null, target: { kind: "fetch", text: longUrl } },
+          // A failed fetch: the cause takes the detail line, never the note slot.
+          { provider: "web", group: "research", seriesId: "fetch: https://example.com/x", name: "competitive-position", status: "failed", detail: "SearXNG returned no usable results", target: { kind: "fetch", text: "https://example.com/x" } },
+          // An ordinary data row: no subject, no note.
+          { provider: "SEC", group: "company-facts", seriesId: "0000078214", name: "SEC company facts", status: "ok", detail: null, target: null },
+        ],
+      },
+    ],
+    unattributed: [],
+    terminal: null,
+  };
+  const wrapper = mount(JobTrackerView, {
+    props: { trace, active: true, cancelRequested: false },
+  });
+  const reqs = wrapper.findAll(".req");
+  expect(reqs).toHaveLength(4);
+  // The subject renders as a kind token plus the text, in reading order after
+  // the topic and before the status, with the full text mirrored as a title.
+  expect(reqs[0].find(".req-name").text()).toBe("competitive-position");
+  expect(reqs[0].find(".req-target-kind").text()).toBe("search");
+  expect(reqs[0].find(".req-target-text").text()).toBe("PSX refining margins 2026");
+  expect(reqs[0].find(".req-target").attributes("title")).toBe("PSX refining margins 2026");
+  expect(reqs[0].find(".req-target").attributes("aria-label")).toBe("Show full search query: PSX refining margins 2026");
+  expect(reqs[1].find(".req-target-kind").text()).toBe("fetch");
+  expect(reqs[1].find(".req-target-text").text()).toBe(longUrl);
+  expect(reqs[1].find(".req-target").attributes("title")).toBe(longUrl);
+  const order = reqs[0].findAll(".req-name, .req-target, .req-status").map((s) =>
+    s.classes().find((c) => ["req-name", "req-target", "req-status"].includes(c))
+  );
+  expect(order.indexOf("req-name")).toBeLessThan(order.indexOf("req-target"));
+  expect(order.indexOf("req-target")).toBeLessThan(order.indexOf("req-status"));
+  // A completed row shows its outcome note; an in-flight row has none yet, and
+  // a failed row's cause goes to the detail line, not the note.
+  expect(reqs[0].find(".req-note").text()).toBe("12 hits");
+  expect(reqs[0].find(".req-note").attributes("title")).toBe("12 hits");
+  expect(reqs[1].find(".req-note").exists()).toBe(false);
+  expect(reqs[2].find(".req-note").exists()).toBe(false);
+  expect(reqs[2].find(".req-detail").text()).toBe("SearXNG returned no usable results");
+  // A row with no subject renders neither segment.
+  expect(reqs[3].find(".req-target").exists()).toBe(false);
+  expect(reqs[3].find(".req-note").exists()).toBe(false);
+});
+
+test.each(["step", "unattributed"])("%s request subjects reveal their full text independently and keep focus", async (home) => {
+  const url = `https://example.com/${"long-path-".repeat(30)}?document=123`;
+  // Identical URLs are separate requests and must never share expansion state.
+  const requests = Array.from({ length: 2 }, () => ({
+    provider: "web", group: "research", seriesId: `fetch: ${url}`,
+    name: "competitive-position", status: "running", detail: null,
+    target: { kind: "fetch", text: url },
+  }));
+  const trace: RunTrace = {
+    runId: "disclosure-run", label: "Portfolio run", terminal: null,
+    steps: home === "step" ? [{
+      key: "holding-PSX", label: "Analyze PSX", status: "running", detail: null,
+      agentText: "", agentThinking: "", analystThinking: {}, requests,
+    }] : [],
+    unattributed: home === "unattributed" ? requests : [],
+  };
+  const wrapper = mount(JobTrackerView, {
+    props: { trace, active: true, cancelRequested: false },
+    attachTo: document.body,
+  });
+  try {
+    const rows = wrapper.findAll(".req");
+    const button = rows[0].get<HTMLButtonElement>(".req-target");
+    // A native, enabled button supplies Tab focus and Enter/Space activation.
+    // happy-dom does not synthesize native keyboard clicks; exercise its click
+    // handler and focus retention here, rather than pretending keydown does so.
+    expect(button.element.tagName).toBe("BUTTON");
+    expect(button.attributes("type")).toBe("button");
+    expect(button.element.disabled).toBe(false);
+    expect(button.element.tabIndex).toBe(0);
+    expect(button.attributes("aria-expanded")).toBe("false");
+    expect(rows[0].find(".req-target-full").exists()).toBe(false);
+    button.element.focus();
+    await button.trigger("click");
+    expect(button.attributes("aria-expanded")).toBe("true");
+    expect(button.attributes("aria-label")).toBe(`Hide full fetch URL: ${url}`);
+    expect(rows[0].get(".req-target-full").text()).toBe(url);
+    expect(rows[1].find(".req-target-full").exists()).toBe(false);
+    expect(document.activeElement).toBe(button.element);
+
+    await button.trigger("click");
+    expect(button.attributes("aria-expanded")).toBe("false");
+    expect(button.attributes("aria-label")).toBe(`Show full fetch URL: ${url}`);
+    expect(rows[0].find(".req-target-full").exists()).toBe(false);
+    expect(document.activeElement).toBe(button.element);
+  } finally {
+    wrapper.unmount();
+  }
+});
+
 test("the streamed agent text renders only where present", () => {
   const wrapper = mount(JobTrackerView, {
     props: { trace: activeTrace, active: true, cancelRequested: false },
