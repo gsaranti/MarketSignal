@@ -19,6 +19,7 @@ The quick check is the exception: it runs between runs against run 1's own persi
 The items below that read against a prior are therefore run-2 watches, and a second run follows only on the user's decision after run 1's result.
 Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime), the sub-distillation-cap watch (§The research loop), and the one-month cap-saturation watch (§Grade, valuation and targets).
 Revised again 2026-08-27 with the technology-event pre-flag watch (§Thesis ledger and the quick check).
+Revised again 2026-09-15 with the research-row subject watch (§How to read the run).
 
 Nothing here is a defect report.
 Each item is a behavior that has only ever been exercised against fixtures, a small live run, or a single symbol, and needs a read at real scale (a 47-position book) before it can be called confirmed.
@@ -228,6 +229,14 @@ A `model arm value off its declared domain` class is the first live measurement 
 
 Read `data-health` early.
 It carries the deep-price fetch health, the context-pressure and truncation flags, the fired-retry events, and the run-level roll-up with its attention state — several items above resolve off that one surface before the per-holding cards are worth reading.
+
+The tracker's research rows name their subject, this run's first live look (landed 2026-09-15, no stamp; [run-tracking.md §What the Tracker Shows](../run-tracking.md#what-the-tracker-shows)).
+Each web search or page fetch row shows a SEARCH / FETCH token and the query or page address beside the topic key, and a completed row shows its outcome note ("N hits", "N chars extracted", "served from document cache"); the subject is a disclosure that reveals the full text on activation.
+Watch the first holding's rows for three things.
+The subject and note render on every research row and on no other row.
+The status marker holds the right edge with the window at its narrowest.
+The disclosure opens and closes on a live row while later rows keep streaming beneath it, and a row's subject survives its own completion.
+This is presentation only — the rows' pairing and the holding's research audit are unchanged — so a wrong read here is a tracker defect, never a research finding.
 
 One expected absence: Step-6a semantic recall retrieves nothing this run.
 The per-holding summary partition holds no rows until this run persists them, retrieval going live only on a later run — an empty recall is design, not a defect.
