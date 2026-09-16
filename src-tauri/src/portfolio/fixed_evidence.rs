@@ -492,12 +492,23 @@ fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades()
 /// Requires the local Ollama daemon up with the configured roster present. Run:
 ///   `MARKET_SIGNAL_LOCAL_EVAL_REPEATS=3 cargo test fixed_evidence_live -- --ignored --nocapture`
 /// `MARKET_SIGNAL_LOCAL_EVAL_SYMBOLS=TSLA,PGNY` narrows the set.
+/// `MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR=<dir>` also captures every call's
+/// thinking, fenced, into `<dir>/<stamp>-fixedevi/holding-<SYM>.txt` through
+/// the same [`crate::thought_log::ThoughtLogSink`] the dev app's debug capture
+/// uses, so the attempt-6 per-call segmentation reads the files unchanged
+/// (re-think marker counts stay a diagnostic beside the table, never the gate
+/// — fix list 8.4).
 #[test]
 #[ignore = "hits the live local daemon; set MARKET_SIGNAL_LOCAL_* and run with --nocapture"]
 fn fixed_evidence_live() {
     use crate::config::AppConfig;
     use crate::local_model::{self, DaemonProbe, LocalModelClient};
     use crate::portfolio::pipeline::{HoldingAnalyst, LocalAnalyst};
+    use crate::progress::{NoopReporter, ProgressReporter, RunContext};
+    use crate::thought_log::ThoughtLogSink;
+    use std::path::Path;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
 
     let repeats: usize = std::env::var("MARKET_SIGNAL_LOCAL_EVAL_REPEATS")
         .ok()
@@ -509,7 +520,20 @@ fn fixed_evidence_live() {
     let cfg = AppConfig::from_env();
     let endpoint = local_model::endpoint_from_config(&cfg).expect("MARKET_SIGNAL_LOCAL_DAEMON_ENDPOINT set");
     let roster = local_model::roster_from_config(&cfg);
-    let client = LocalModelClient::new(&endpoint).expect("build local client");
+    let thought_dir = std::env::var("MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let ctx = {
+        let noop: Arc<dyn ProgressReporter> = Arc::new(NoopReporter);
+        let reporter: Arc<dyn ProgressReporter> = match &thought_dir {
+            Some(dir) => Arc::new(ThoughtLogSink::attach(noop, Path::new(dir), "fixed-evidence")),
+            None => noop,
+        };
+        RunContext::new("fixed-evidence", reporter, Arc::new(AtomicBool::new(false)))
+    };
+    let client = LocalModelClient::new(&endpoint)
+        .expect("build local client")
+        .with_context(ctx.clone());
     match client.probe_daemon(&roster) {
         DaemonProbe::Reachable { missing } if missing.is_empty() => {}
         other => panic!("local daemon/roster not ready: {other:?}"),
@@ -517,6 +541,9 @@ fn fixed_evidence_live() {
     let analyst = LocalAnalyst::new(client, roster.reasoner.clone(), roster.fast.clone());
 
     println!("\n== fixed evidence, live (RECONSTRUCTED packets, not a replay of attempt 6) — {repeats} repeat(s) ==");
+    if let Some(dir) = &thought_dir {
+        println!("  thinking captured under {dir} (newest folder; one fenced holding-<SYM>.txt per holding)");
+    }
     for f in fixtures() {
         if let Some(only) = &only {
             if !only.contains(&f.symbol) {
@@ -525,6 +552,11 @@ fn fixed_evidence_live() {
         }
         let VerdictDisposition::Priced(graded) = &f.disposition else { continue };
         let d = dossier_of(&f, true);
+        // Bracket the holding as its own step so each call's fence lands in the
+        // same `holding-<SYM>.txt` its thinking streams to (the sink files a
+        // fence under the active step, a delta under its stream key).
+        let step_key = crate::portfolio::holding_step_key(&f.symbol);
+        ctx.step_started(step_key.clone(), format!("Analyze {}", f.symbol));
         println!("\n---- {} ({}; basis {:?}; spot {}) ----", f.symbol, if f.is_fund { "fund" } else { "stock" }, f.statement_basis, f.spot);
         println!(
             "  fidelity: engine numbers, options readings, distilled research and house view exact; the ledger contract's \
@@ -605,5 +637,6 @@ fn fixed_evidence_live() {
         let mut costly = dossier_of(&f, true);
         costly.position.cost_basis *= 3.0;
         decide(&costly, "cost-basis ×3 variant");
+        ctx.step_finished(step_key, "ok", None);
     }
 }

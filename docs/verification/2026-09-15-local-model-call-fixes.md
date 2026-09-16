@@ -11,6 +11,8 @@ Ruled 2026-09-15: scope and direction are ruled here; every other open entry is 
 as a flag of the slice's `/metis-plan-task` plan, with the code in view, not before.
 Ruled 2026-09-15: the first slice is §1 (ledger conditions) plus §2 (action packet),
 one plan and one `portfolio-v36` stamp; §3–§7 follow as their own slices.
+Ruled 2026-09-16: the live read's follow-up (1.5–1.8, 2.4) is its own small slice ahead
+of §3, under `portfolio-v37`.
 Contract text belongs in the job docs named per entry, never here.
 
 Standing constraints that apply to every entry:
@@ -45,6 +47,9 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   Ruled 2026-09-16: adopt, on both branches — the contract renders the computable series
   with unit, basis, current observation and confirmation cadence plus two worked
   examples; landed as `portfolio-v36`.
+  Live 2026-09-16: the model mirrors the contract's cadence language and units on every
+  kept core; it still buffers thresholds away from the stated level (finding L4 in
+  `2026-09-16-ledger-conditions-and-action-packet.md` §Live admission read).
 - 1.2 Validate prose-versus-core agreement at 6g and downgrade on disagreement with a
   typed reason (downgrade-not-drop, the existing contract): a statement naming N% on a
   decimal series against a core of N; a statement naming one metric or basis against a
@@ -60,6 +65,10 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   comparator check and a level check that reads the comparison clause (ambiguous
   associations stay qualitative) and the margin guard at or beyond the threshold's
   magnitude (a zero threshold exempt); landed as `portfolio-v36`.
+  Live 2026-09-16: sixteen of nineteen kept cores match a stated figure; the level and
+  margin classes caught eight wrong cores; one wrong core (a 300% growth floor) passed
+  on a sentence naming no figure, and a margin of 489.5 on a $490 level passed the
+  magnitude bound — findings L1 and L5 in `2026-09-16-ledger-conditions-and-action-packet.md` §Live admission read.
 - 1.3 Assign the noise margin from a per-series app policy instead of asking the model
   to author it; the model authors series, comparator and threshold only.
   This changes the persisted `QuantCore` authoring path but not its shape.
@@ -75,6 +84,35 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   Ruled 2026-09-16: adopt for duration, volume and second-condition clauses ("without",
   "unless", "confirmed by"); a generic "on <event>" clause is not detected; landed as
   `portfolio-v36`.
+  Live 2026-09-16: every duration, volume and "without" clause downgraded as ruled; five
+  sound cores were lost to the lexicon's reach ("confirming …" ×3, a cadence-exact
+  duration, a unit-restating parenthetical) — findings L2, L3 and L6 in `2026-09-16-ledger-conditions-and-action-packet.md` §Live admission read.
+- 1.5 A sentence naming no figure downgrades on every series (`no-level`), extending
+  1.2's level check from the price alias to a figure; the model can always restate the
+  number.
+  Check: PGNY's "revenue growth slows materially below sustainable organic run rate"
+  with a core of 3 downgrades; a sentence stating "3%" with a core of 0.03 keeps.
+  Raised by the live read (L1).
+  Ruled 2026-09-16: adopt, on every series.
+- 1.6 The duration detector exempts a duration equal to the series' confirmation count
+  in its cadence unit and tolerates adjectives between count, "consecutive" and unit;
+  "confirming …" leaves the conjunction list or narrows to a named series or level;
+  a parenthetical restating the level in another unit is not a second level.
+  Check: ARKF's "for two consecutive sessions" on price keeps; "three consecutive
+  distinct daily sessions" downgrades; TSLA's "$320 confirming broader multiple
+  compression" keeps; DIA's "1.2% (approx annualized >19%)" keeps.
+  Raised by the live read (L2, L3, L6).
+  Ruled 2026-09-16: adopt all three.
+- 1.7 The ledger contract states that the threshold is exactly the level the sentence
+  names and the margin is the separate band.
+  Check: on the fixed set the level-mismatch rate on repeats falls from SPMO's three
+  of three.
+  Raised by the live read (L4).
+  Ruled 2026-09-16: adopt.
+- 1.8 A relative margin cap per series kind on top of the magnitude bound.
+  Check: DIA's margin of 489.5 on a $490 level downgrades; a $15 margin on $485 keeps.
+  Raised by the live read (L5).
+  Ruled 2026-09-16: adopt, the fraction per series kind drafted at plan time.
 
 ## 2. Action call — an investment-only packet
 
@@ -89,18 +127,36 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   held fixed cannot change the rung over repeated runs.
   Ruled 2026-09-15: adopt — the tax caveat is app-rendered after the rung; the
   caveat-only tax ruling is enforced by input separation, not by sentence.
+  Live 2026-09-16: no rationale in thirty carried tax, P/L, cost or quantity language;
+  the variants never left their repeat set except one DIA call on a byte-identical
+  prompt — the check holds by construction (§The rung under repeats and variants in
+  `2026-09-16-ledger-conditions-and-action-packet.md` §Live admission read).
 - 2.2 Restate the ENGINE SET once, declaratively, as engine evidence: the full ladder is
   the model's, the set is one input, choose and stop; drop the departure-mechanics
   sentence (stamping is app behavior).
   Check: on the fixed evidence set the rung is stable across repeats and never lands
   outside the ladder; the trace's reading of the set is a diagnostic only.
   Ruled 2026-09-16: adopt with the ratified wording; landed as `portfolio-v36`.
+  Live 2026-09-16: no rung outside the set in thirty calls; three holdings held one rung
+  across five calls and three moved between adjacent rungs on identical packets, the
+  model's sampling variance.
+  Thinking 2026-09-16: the ENGINE SET clause fell from 43% of the action call's re-think
+  markers to 7% on the fixed set; the capital-efficiency line replaced it at 35% (2.4).
 - 2.3 State every sub-score's polarity in the action prompt's verdict block ("0–100,
   higher better on every axis"), as the interpretation prompt already does.
   Check: on PSX and SPMO the rationale's reading of the valuation score matches the
   score's meaning (high = attractive), where attempt 6's traces read it both ways.
   Ruled 2026-09-16: adopt with the ratified wording on both arms; landed as
   `portfolio-v36`.
+  Live 2026-09-16: PSX's momentum and DIA's valuation readings carry the stated
+  polarity in every rationale that names them.
+- 2.4 The packet's capital-efficiency line states the fact and its reach — the hurdle
+  test cleared or could not be evaluated, and the line neither requires nor forbids any
+  rung — instead of "carries no exit signal", which the model reads as a directive.
+  Check: on the fixed set with thinking captured, the capital-efficiency cause falls
+  from 83 of 235 action markers toward the attempt-6 share (19 across every class).
+  Raised by the live thinking read (L7 in `2026-09-16-ledger-conditions-and-action-packet.md`).
+  Ruled 2026-09-16: adopt.
 
 ## 3. Interpretation call — one responsibility per field, no account economics
 
@@ -262,6 +318,12 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   candidate only when executable cores agree with their sentences, source dates stay
   intact, claims keep valid provenance, and tax or P/L variation cannot move the rung.
   Ruled 2026-09-15: adopt, as the gate's admission rule.
+  Read 2026-09-16, §1+§2 slice: §2 admitted; §1 admitted conditionally on 1.5 landing and
+  a re-read of the fixed set; dates and provenance not exercised (§4, §5) — the table and
+  verdict are in `2026-09-16-ledger-conditions-and-action-packet.md` §Live admission read.
+  Ruled 2026-09-16: that verdict stands; 1.5–1.8 and 2.4 land as one small follow-up
+  slice before §3 (one plan, `portfolio-v37` since 1.7 and 2.4 touch prompts), then the
+  fixed-set re-read admits §1 and §3 planning starts from it.
 - 8.3 Experiments, after 8.2: non-thinking synthesis on the frozen evidence, comparing
   claim retention, dates, citation resolution and partial-coverage accuracy as well as
   time, with repeats for variability; then non-thinking action separately on the

@@ -45,8 +45,9 @@ use crate::progress::{elapsed_label, ProgressEvent, ProgressMessage, ProgressRep
 pub const THOUGHT_LOG_RETENTION: usize = 10;
 
 /// A thinking-capture decorator around the live reporter. Constructed per run
-/// by `live_run_context` when the gate is on; everywhere else (tests, noop
-/// contexts) it simply never exists.
+/// by `live_run_context` when the gate is on, and by the fixed-evidence live
+/// harness when asked to capture (`MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR`);
+/// everywhere else (tests, noop contexts) it simply never exists.
 pub struct ThoughtLogSink {
     inner: Arc<dyn ProgressReporter>,
     /// This run's own folder. Created lazily on the first capture (a call
