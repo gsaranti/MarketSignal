@@ -638,3 +638,304 @@ never reached), the run-wide retry rate per cause, the `unreconciled_topics` rat
 the fetch-failure and denied-share rates under full query volume, the fund
 classification split, the quick-check and data-health reads, and every
 outcome-learning input.
+
+## Codex analysis (appended 2026-09-15)
+
+### Assessment and evidence boundary
+
+The local calls are not yet acceptable, but the next change should address semantic correctness as well as deliberation cost.
+The run demonstrates that a short, apparently orderly thinking trace can produce a corrupt executable ledger, while a successfully parsed response can violate the intended tax or evidence contract.
+Conversely, some long deliberation is a reasonable response to missing inputs or ambiguous responsibilities.
+Counting fewer occurrences of “wait” cannot establish that the calls improved.
+
+I independently segmented all seven holding files, checked every call header and trailer, scanned the thinking across stages, and closely read representative synthesis calls, the interpretation outliers and shorter controls, and the action deliberations.
+I checked the six persisted row extracts, the checkpoint header extract, the app and Ollama logs, and the active prompt, schema, adapter, validation and evaluation paths on `main` at `6dd6118233d2b6c4d9cffc5f2ff094c742ff68cb`.
+I read the Claude analysis above only after forming the findings below.
+Earlier prompt-review notes supplied historical orientation; I did not independently reconstruct attempt 5 or conduct a controlled before/after comparison.
+The current handoff in `.metis/CURRENT.md` predates the launch and was not treated as evidence of the run's terminal state.
+
+Evidence shorthand below:
+
+- `thoughts` means `/Users/georgesarantinos/Library/Application Support/com.georgesarantinos.market-signal/dev/thought-logs/20260916-020416-5f629ffe/`, with files named `holding-<SYM>.txt` and globally numbered calls.
+- `logs` means `/Users/georgesarantinos/Downloads/market-signal-attempt-6-logs/`, including `tauri-dev.log`, `ollama.log` and `store-extracts/<sym>_row.json`.
+- Persisted JSON paths are relative to the relevant row extract.
+  A thought is evidence of the model's deliberation, not proof that the final response contained it; persisted rows establish the accepted downstream result.
+
+No app data, log, extract, database or database copy was written or opened for mutation.
+The supplied extracts were sufficient; I did not open the live store or read `app_settings`.
+No service, app, model call, build or test was started, and no implementation was changed.
+This appended section is the only requested write.
+
+### 1. Measured cost: synthesis is still the largest opportunity
+
+The complete fenced corpus contains 320 calls: 319 have transport-success trailers and one has a failure trailer.
+One transport-success synthesis was subsequently rejected by application validation and retried, so transport success is not acceptance.
+All 320 calls have end fences; NFLX was interrupted between research work, not inside an unfinished fenced call.
+The supplied `segment.py` reports call 178 as “IN PROGRESS” because its end matcher requires token counts, which the failure trailer does not have.
+
+| Stage | Calls | Logged thinking words | Re-think markers | Sum of fenced elapsed times | Median elapsed |
+|---|---:|---:|---:|---:|---:|
+| Gathering | 266 | 14,476 | 9 | 21m48s | 3s |
+| Synthesis | 36 | 61,536 | 214 | 50m18s | 81.5s |
+| Distillation | 6 | 0 | 0 | 7m58s | 84s |
+| Interpretation | 6 | 12,341 | 71 | 14m45s | 93s |
+| Action | 6 | 14,787 | 92 | 11m14s | 105.5s |
+
+These totals include NFLX's two synthesis calls and both retry attempts where present.
+Words are whitespace-split thinking text after removing fences; markers use the helper's case-insensitive `\b(wait|actually|re-?read)\b` expression.
+The cause buckets are heuristic keyword matches, not a reliable semantic classification of every hesitation.
+Elapsed values are rounded fence durations and include request overhead, not just decoding.
+Their sum is 106m03s of the 135m32s job interval, approximately 78%; synthesis alone is approximately 37% of job elapsed time.
+The remaining interval includes web work and other pipeline work and cannot all be attributed to fetch failures.
+
+Interpretation is variable: ARKF call 207 takes 5m11s and 5,496 thinking words, versus TSLA call 62 at 1m16s and 692 words.
+Action is consistently expensive for a two-field answer: all six calls take 73–174 seconds.
+The two recovered failures are not the main throughput problem.
+The failed PSX synthesis costs 91 seconds and the failed ARKF tool call costs 3 seconds before their replacement calls.
+
+### 2. Highest correctness priority: stop accepting incoherent executable conditions
+
+The persisted ledger is stronger evidence than the apparent fluency of the interpretation trace.
+TSLA call 62 has zero re-think markers, yet its accepted ledger includes these conditions:
+
+| Holding and statement | Accepted machine core | Consequence under the current evaluator |
+|---|---|---|
+| TSLA: NHTSA restrictions or recall affecting more than 20% of fleet | `price above 3560.21`, margin `3944589657` | Tests a multibillion-dollar share-price boundary instead of the regulatory event |
+| TSLA: stock falls to at most $145 on margin collapse without a Robotaxi catalyst | `price below 13.9`, margin `70429518` | Tests price below approximately negative $70.4 million; it does not trigger at $13.90 |
+| TSLA: operating margin below 1% without credit support | `net-margin below 0.037`, margin `0.04` | Tests net margin below `-0.003`, with a different metric and threshold from the prose |
+| PGNY: revenue growth below 3% | `revenue-growth below 3.0`, margin `0.02` | Tests growth below 298%, rather than the stated 3% |
+| PGNY: revenue growth above 8% | `revenue-growth above 8.0`, margin `0.15` | Tests growth above 815%, rather than the stated 8% |
+| SPMO: daily volatility above approximately 2.7% | `return-volatility above 0.0267`, margin `0.15` | Moves the effective boundary to 17.67% daily volatility |
+
+Evidence: `verdict.thesis_ledger.conditions` in the three row extracts; `pipeline.rs::parse_quant_core` and `validate_condition`; `engine.rs::LedgerSeries::describe`, `resolve_series` and the breach comparison in `evaluate_ledger_conditions_gated`.
+The evaluator compares against `threshold - margin` for “below” and `threshold + margin` for “above”.
+The validator checks recognized and computable series, comparators and finiteness, but does not establish agreement between prose, units and machine meaning.
+These are accepted future monitoring defects; the excerpts do not show these newly authored conditions firing during this cancelled run.
+
+There is also a broader expressiveness problem.
+ARKF's “above $55 for two weeks” and “below $38 on elevated volume” conditions persist a price-only core; PSX's “quarterly net margin” condition is stamped on the TTM statement basis.
+A price or margin threshold alone does not represent the additional duration, volume, accounting-basis or catalyst qualification in the sentence.
+More careful numeric ranges alone would not fix that mismatch.
+
+Recommended change:
+
+- Give ledger authoring a small, explicit contract containing only series actually computable for this holding, their units, statement basis, current observations and the supported crossing cadence.
+  Include examples for both a quantitative condition and a genuinely qualitative condition.
+- Prefer a typed condition representation from which the executable description is rendered, or validate that the proposed description and structured condition have the same meaning before admission.
+  Conditions requiring unsupported conjunctions should remain qualitative or use an explicitly extended condition representation; silently executing one clause is not equivalent.
+- Treat impossible or inconsistent machine cores as a typed failure or downgrade with an explanation, using the existing bounded retry/downgrade architecture.
+  Do not silently repair a chosen investment threshold or clamp it toward the engine's opinion.
+- Consider assigning noise margins from an explicit per-series policy instead of asking the model to invent them along with the thesis.
+  That is a persisted semantic change requiring its own policy decision and compatibility review.
+
+I would not adopt a universal “decimal threshold above 1 is invalid” guard.
+Revenue growth can legitimately exceed 100%; the demonstrable defect here is that the sentence says 3% while the typed threshold says 300%.
+Similarly, a threshold far from spot can be intentional, so proximity to spot is a review signal rather than a sufficient truth test.
+
+### 3. Supply the inputs the research questions actually require
+
+The research adapter passes `holding_header(dossier)` as its holding brief.
+That header contains identity, quantity, position cost, market value and spot, but no authoritative analysis date, house view or structured-feed coverage summary (`pipeline.rs`, around lines 3037 and 5671).
+The topic prompts then ask about recent developments, exposure fit against the house view, and material forward facts the structured feeds lack.
+The model cannot reliably answer those questions from the information supplied.
+
+The missing house view is explicit in SPMO call 156 and ARKF call 196.
+ARKF spends much of its 2,306-word synthesis deciding whether describing holdings is enough to mark “fit” answered when the comparison thesis is absent.
+For that topic, either supply a compact, dated house-view block explicitly classified as context, or ask research to establish exposure facts and move the fit judgment entirely to interpretation.
+My preference is the latter: interpretation already sees the house view, and factual gathering has a clearer stopping condition.
+
+The calendar omission is pervasive across stocks and funds.
+TSLA calls 10 and 19 treat September 2026 seed articles as future-dated; DIA call 226 calls the provided dates simulated; ARKF call 177 notices March 2025 versus September 2026 but still reasons about a forthcoming listing change.
+The accepted ARKF `audit.research.combined` says the change was announced on September 16, 2026, with trading expected March 31, 2025, and describes the shift as underway.
+The same row's topic summary calls the March 2025 change prospective.
+This is an internal temporal contradiction, without needing to re-fetch the original article to establish it.
+
+Add an authoritative run timestamp and market-session date to every relevant stage, and distinguish source publication date, fact/reporting period, and retrieval timestamp.
+Do not treat a recently fetched page as a recently announced fact.
+Distillation's “newest wins” rule needs that distinction too: preserve factual period and publication provenance through claims and consolidation, while retaining retrieval time for cache bookkeeping.
+TSLA's final rationale also calls the 236-crash observation “July CY25” while the persisted research claim identifies July 2026; the temporal check must reach interpretation, not stop at synthesis.
+
+For `material_forward_fact`, supply a compact list of feed-covered fields or change the model's task to identify a sourced forward fact and let the application determine whether the feeds lack it.
+The current synthesis prompt asks the model to infer feed absence without showing the feeds.
+Scope these inputs by topic instead of adding the whole dossier to every gathering turn.
+
+### 4. Enforce the tax boundary through input separation
+
+The intended tax rule is already explicit in `InvestorProfile::display`: tax consequences may be mentioned as a caveat, with no effect on the action.
+That rule does not hold reliably in this run.
+DIA call 242 repeatedly uses avoiding capital-gains taxes to select `hold`, and the accepted rationale says the expected returns do not warrant realizing substantial capital gains.
+PGNY call 304 says the tax loss makes exiting more attractive, while using the position's small dollar size as an additional reason to sell all.
+The evidence does not establish which rung either holding would receive without those inputs, but it does establish that excluded considerations entered the decision process and, for DIA, the rationale.
+
+The current prompt supplies the tax-sensitive profile, unrealized P/L and purchase economics in the same call that chooses the action, then asks the model not to use the tax information for that choice.
+Repeatedly strengthening that sentence is weaker than withholding the information.
+Prefer an investment-only action packet with the fixed verdict, objective, risk tolerance and horizon, followed by an application-rendered optional tax caveat after the rung is fixed.
+Preserve the current user's tax ruling; changing tax to an action input would be a different product decision.
+
+The ENGINE SET also reliably provokes rereading in all six action traces.
+The combination of “restriction,” “permitted” and “not a bound on you” makes the model repeatedly determine whose constraints apply.
+Keep the full ladder and the independent model arm, but represent the engine eligibility information once as engine evidence, with positive wording that the model chooses any ladder value.
+Departure stamping is application behavior and need not occupy the decision prompt.
+State all score polarities together so valuation is not repeatedly reinterpreted as either cheapness or expensiveness.
+
+### 5. Reduce interpretation's conflicting responsibilities and irrelevant data
+
+ARKF call 207 repeatedly revisits the relationship between `what_changed` and `what_changed_entries`, field ownership, output fencing and the engine-versus-model target rationale.
+These are genuine costs, but not every apparent contradiction in the thought stream is an actual schema defect.
+The active response schema and contract both contain the two `what_changed*` fields; the model repeatedly loses track of a present structure.
+
+The target-rationale ownership does fail in the persisted answers.
+The active contract says `price_target_rationale` explains the engine's twelve-month base target, with model prices in their separate object.
+TSLA's rationale leads with its own $145 target and invents a Robotaxi assumption for the engine; PSX explains $240 rather than the engine's $319.34; PGNY begins with its own $30 target.
+The model can disagree with the engine without attributing an unstated business assumption to a deterministic calculation.
+
+Prefer application-rendered engine methodology plus a clearly named model-target explanation owned by the model.
+If the existing field must retain its engine meaning, enforce that meaning consistently instead of quietly redefining it in one prompt.
+A rename or semantic change needs persistence, resume, prompt-version and consumer review before implementation is considered complete.
+
+For debut holdings, remove unnecessary continuity work from the model-facing shape where practical and insert application-known empty change entries deterministically.
+Offer stock and fund ledger schemas containing their actual permitted series, rather than making a fund inspect a general enum and discover later that some choices are downgraded.
+Do not replace the current explicit shape with an invisible grammar; the trace demonstrates residual confusion despite the shape, not that omitting it would help.
+
+Remove purchase cost and position P/L from intrinsic financial interpretation unless a specific field actually requires them.
+DIA call 241 invents conflicting per-share cost figures, which enter its persisted financial summary; call 242 then spends time correcting those figures against the position header.
+PGNY call 303 uses its price relative to the user's entry cost to reason about momentum despite the separate market-derived momentum evidence.
+Those facts are about the account's ownership history, not the issuer's intrinsic financial condition.
+Spot remains necessary for valuation, while account economics can remain available in their appropriate application surfaces.
+
+A separate, compact ledger-authoring call is worth testing after the contract is clarified because its output becomes executable state.
+That split should share a fixed evidence packet and accepted investment read, not trigger another research cycle or ask the second call to re-decide scores and targets.
+It is a candidate architecture, not a conclusion that more calls will automatically be faster or safer.
+
+### 6. Make synthesis smaller before trying another general rewrite
+
+Synthesis now usually recognizes the requested object at the start, but it still repeatedly revisits serializing it.
+Examples include TSLA call 51, ARKF call 196, DIA call 239 and the lengthy interpretation outlier.
+The useful distinction is between knowing the shape initially and staying focused through completion.
+
+Several avoidable synthesis decisions recur:
+
+- `seeded_by` asks a fresh synthesis conversation which seeds genuinely guided gathering, even though gathering's decision history has been discarded.
+  The model reconstructs attribution from topical resemblance rather than observed selection.
+  Prefer deterministic URL lineage plus any bounded attribution collected at the point of gathering, or explicitly define this field as thematic relevance if that is the intended meaning.
+- When there are no seed IDs, show an explicit empty allowed set and require an empty result.
+  The funds still persist unknown-seed gaps, so silence about an absent set is not sufficient.
+- `topic_answered` conflates obtaining relevant evidence with answering all parts of the question.
+  Specify what coverage it represents, allowing useful partial findings without pretending the whole topic was answered.
+  A compact per-question coverage state is a candidate if a single boolean remains too ambiguous.
+- Do not ask the model to compose a full write-up solely to announce that no citable evidence exists.
+  TSLA call 51 spends 78 seconds and 1,751 words on a zero-page pass.
+  An explicit no-evidence result could be assembled by the application while preserving gaps and orientation separately; that would be a deliberate contract change from the current always-synthesize path.
+
+I would test non-thinking synthesis on the pinned, schema-verified Ollama version as the first mode experiment after the correctness-oriented packet changes.
+The six distillation calls already demonstrate that non-thinking structured requests run through this adapter on the current version, but their semantic mistakes mean this is feasibility evidence, not evidence that non-thinking synthesis will preserve quality.
+Compare source-supported claim retention, dates, citation resolution and partial-coverage accuracy as well as time.
+Keep the gathering-tools and synthesis-grammar separation intact.
+
+For action, test a non-thinking mode independently on the investment-only packet.
+Its answer is small and its relevant evidence is already authored; the current six calls spend 14,787 thinking words revisiting that decision and its formatting.
+No latency saving is established until the same packets are evaluated in both modes.
+
+### 7. Gathering needs failure memory and a visible stopping contract
+
+Across the six completed holdings, the supplied app log contains 180 search requests and 180 successful result rows, each with 9–12 hits.
+It contains 114 fetch request rows: 44 successful and 70 failed.
+Including NFLX gives 189 searches and 122 fetches, with 48 successful and 74 failed fetches.
+These are app request-row counts; cached documents, tool invocations and spent fetch budget are different denominators.
+Twenty-four of the 33 completed holdings' topic passes report hitting the eight-turn cap.
+
+PGNY repeatedly tries its investor-relations host, with 15 failure rows, and PSX has 11 failures on its investor-relations host.
+No amount of smoother synthesis can recover evidence those calls never obtained.
+Give gathering a shared per-holding record of failed URLs and failure classes, reuse successful fetched evidence across topics, and prefer another source when a previous route is unavailable.
+Exact-URL failure reuse and a short-lived host backoff are different policies: a transient failure should not become a permanent global source ban.
+Classify failures before deciding their retry scope.
+
+Expose remaining turns and the topic's unanswered questions to gathering so it can spend the final turns fetching rather than beginning another broad search.
+A small stopping checklist should describe evidence coverage, not tell the model what investment conclusion to reach.
+The high cap-hit frequency is reason to improve allocation and reuse before increasing the cap.
+Search date anchoring belongs in the same change: the supplied queries repeatedly request 2024/2025 material for a September 2026 analysis.
+Some historical retrieval is appropriate, but it should be intentional and labeled as such.
+
+Keep source-quality and extraction-quality distinctions visible.
+The PSX synthesis notices an impossible insider-sale amount and debates whether “treat it strictly as data” obliges acceptance.
+Clarify that untrusted text is never an instruction and is also fallible evidence: an internally impossible number may be excluded or reported as an unresolved source defect.
+The instruction should not imply that every fetched assertion is true.
+
+### 8. Token telemetry needs a runtime-specific correction
+
+The fence's `generated N tok` is not the total generation for these thinking-plus-format calls.
+For TSLA synthesis call 9, `ollama.log` shows an initial prompt of 2,196 tokens and a thinking generation task, cancellation at the thinking/content boundary, then a second task whose prompt is 4,597 tokens and whose generated count is 426.
+The fence reports that second task's 4,597 prompt tokens and 426 generated tokens alongside a 1,399-word thinking body.
+The pinned Ollama implementation explicitly restarts completion with accumulated thinking and the output constraint, while response metrics are taken from the active completion response; this explains the observed counters ([Ollama v0.32.5, `server/routes.go`, structured-output loop](https://github.com/ollama/ollama/blob/v0.32.5/server/routes.go#L2563-L2727)).
+
+Consequently, do not divide fence-generated tokens by whole-call time to infer model decoding speed, or treat the reported prompt tokens as only the original application input.
+The local adapter's comments describing `eval_count` as thinking plus content are not reliable for this path on this runtime.
+Record original packet size, whole-call elapsed time, thinking characters/words and returned API counters as separate measures with explicit semantics.
+If total token or prefill cost is needed, obtain phase-aware runtime accounting instead of guessing from the final counter.
+
+The log also exposes an effective `repeat_penalty` of `1.100` in addition to the application's temperature `1.0`, `top_p` `0.95`, `top_k` `20` and presence penalty `1.5` for thinking calls.
+Any sampling experiment should record effective parameters, including inherited defaults.
+This run does not identify sampling as the cause of malformed ledger digits or prompt rereading.
+Change one sampling variable at a time after fixing missing inputs and responsibility conflicts; do not present a temperature adjustment as an established remedy.
+
+### 9. A bounded next evaluation, before another full-book attempt
+
+The first objective should be a reviewable set of correct, economical calls on fixed evidence, not another 47-position run used to discover the same failures.
+None of the experiments below was executed in this review.
+
+1. Preserve a small representative evaluation set: TSLA for short-thinking/corrupt-ledger behavior, PGNY for percentage units and stale facts, ARKF for the interpretation outlier and missing house view, DIA for tax leakage and numeric narrative drift, and PSX for thin-source synthesis and its recovered blank findings.
+   Include an empty-evidence topic and a fund with no seeds.
+   This run does not cover role/risk-only interpretation or prior-ledger continuity; add those fixtures before a general release claim.
+2. Fix and evaluate date/context completeness, executable-condition semantics and action input isolation first, holding the model, runtime and sampling fixed.
+   Use the exact original request bodies if available in a future diagnostic capture; the present thought logs record headers and reasoning, not a complete replayable request/response corpus.
+   If packets are reconstructed, label them reconstructed rather than claiming exact replay of attempt 6.
+3. On the same frozen evidence, compare thinking and non-thinking synthesis, then action, separately.
+   Repeat packets to measure variability instead of declaring success from a single favorable sample.
+   Keep interpretation's thinking mode unchanged initially so the result remains attributable.
+4. Admit a candidate only when executable units and meanings agree, source dates remain intact, claims retain valid provenance, and tax/P&L changes cannot change the investment rung under the existing tax contract.
+   Test that last property by varying tax status and entry cost while holding investment evidence fixed.
+   Verify qualitative conditions remain qualitative when the supported machine predicate cannot represent them.
+5. Measure end-to-end acceptance and useful evidence retained per unit of elapsed time, plus per-stage median and worst-case latency, retries, source drops and thought length.
+   Marker counts remain a diagnostic, never the sole success gate.
+   Set a user-acceptable time budget explicitly rather than treating the current 65,536-token thinking reservation as a target.
+6. If interpretation remains slow or unreliable, compare a focused ledger-authoring stage against the single broad call.
+   Only then consider broader sampling changes or another model, preserving the same evidence and semantic checks for comparison.
+
+The current sample provides no evidence of context exhaustion: successful fences end with `stop`, and all stored prompt-usage rows have `output_limited = false`.
+Increasing context or the output ceiling is therefore not the next remedy.
+Streaming the research turns would improve progress visibility but would not itself reduce deliberation or make the accepted facts correct.
+Avoid increasing retry counts: the existing bounded retries recovered the observed transport/content failures, while the more important errors passed those gates.
+Any implemented prompt/schema or executable-condition change needs the relevant compatibility stamps and living contracts reviewed before a subsequent run can reuse persisted state.
+
+### 10. Reconciliation with the preceding Claude analysis
+
+I independently corroborate the principal observations behind Findings 1, 2, 3, 7, 8 and 9: repeated failed fetches, invalid ledger numerics, action-prompt friction, temporal drift, interpretation outliers and missing house-view context.
+The additions above emphasize accepted semantic failures, input isolation, smaller stage responsibilities, mode experiments and a fixed-evidence acceptance process.
+The following corrections and qualifications apply to the existing record without changing its text:
+
+- “Synthesis fixed” is too broad.
+  Initial shape recognition and zero unreconciled topics improved the observed delivery behavior, but synthesis still debates fences, coverage and citations, and some accepted findings are temporally wrong.
+  This review does not independently establish a causal 65% improvement over attempt 5; the different samples, topic counts and ARKF branch make per-holding marker comparisons descriptive.
+- PSX call 107 did not return only an opening brace.
+  The app log at the parse retry shows a complete object with empty claims, `findings` containing only two newlines, `topic_answered: false`, and `seeded_by: ["seed-1"]`.
+  The semantic blank-findings guard caught it; the successful fence had recorded transport completion only.
+- The claimed reliability of fence-generated token counts as total reasoning size is incorrect on the observed two-phase runtime path.
+  A condensed-looking thought fragment does not establish lost streamed output; this review found no independent evidence that the logger dropped thinking deltas.
+- The largest reported prompt count is 20,315 tokens on PGNY distillation call 302, not 12,673.
+  It remains far below the 131,072 context, subject to the counter semantics explained above.
+- The supplied six-holding app log shows 180 successful search rows with 9–12 hits, not 180 nonempty plus 20 empty searches.
+  Fetch totals of 44 successful and 70 failed do reproduce.
+- TSLA's malformed add core does not fire at $13.90 because the evaluator subtracts its enormous margin.
+  The accepted “operating margin below 1%” core is also not sound merely because its numbers are finite: its metric, threshold and effective boundary disagree with its statement.
+- SPMO's enormous volatility margins make the intended conditions ineffective, but “can never breach” is stronger than the evaluator proves for an unbounded return-volatility series.
+  The demonstrated issue is the radically different effective threshold.
+- Action JSON validity and a plausible rung do not establish tax-contract compliance.
+  DIA's accepted rationale makes tax avoidance part of the decision; the trace supports that reading.
+- The engine/model outlook summary above overgeneralizes ARKF with PSX and PGNY.
+  ARKF's persisted engine outlook is bullish/bullish/bearish, with momentum about 74 and valuation about 83, not all-bullish with momentum 100 and valuation 88–97.
+
+The most useful next slice is therefore correctness and input-boundary repair, followed by measured non-thinking synthesis/action experiments.
+A shorter thought stream is valuable only when the accepted research, investment explanation and executable ledger remain coherent.
+
+Append verification: the original 43,494 bytes remain byte-for-byte unchanged, and the diff contains only this appended section in the requested file.
+`git diff --check` passed; no commit was made.
