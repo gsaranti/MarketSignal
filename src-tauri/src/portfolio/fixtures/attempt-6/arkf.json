@@ -1,0 +1,218 @@
+{
+ "symbol": "ARKF",
+ "origin": "reconstructed, not replayed: reduced from the persisted holding row of big-run attempt 6 (portfolio run 8d6b0b88-c00a-4b93-9bf0-13c7b1542eac, job_runs id 6, portfolio-v35, 2026-09-16T02:04Z), extracted 2026-09-16; the position's quantity, cost basis and market value are synthetic",
+ "asset_class": "etf",
+ "is_fund": true,
+ "statement_basis": null,
+ "spot": 46.43,
+ "authoring_close": {
+  "date": "2026-09-14",
+  "value": 46.43
+ },
+ "synthetic_position": {
+  "quantity": 10.0,
+  "cost_basis": 603.59,
+  "market_value": 464.3
+ },
+ "conditions": [
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Price sustains above $55 for two weeks despite high rate backdrop (invalidates bearish risk-off thesis).",
+   "technology_class": false,
+   "quant": {
+    "series": "price",
+    "comparator": "above",
+    "threshold": 55.0,
+    "margin": 3.0
+   },
+   "expect": "downgraded:qualifier"
+  },
+  {
+   "role": "trigger",
+   "family": "sell",
+   "statement": "Thematic rotation away from Tech/Growth into Value/Energy confirmed by sector relative strength index.",
+   "technology_class": false,
+   "quant": null,
+   "expect": "qualitative"
+  },
+  {
+   "role": "trigger",
+   "family": "trim",
+   "statement": "Price closes below $38 on elevated volume confirming break of 6-month support structure.",
+   "technology_class": false,
+   "quant": {
+    "series": "price",
+    "comparator": "below",
+    "threshold": 38.0,
+    "margin": 0.15
+   },
+   "expect": "downgraded:qualifier"
+  }
+ ],
+ "disposition": {
+  "status": "priced",
+  "grade": "C",
+  "sub_scores": {
+   "quality": 50.0,
+   "valuation": 83.33333333333334,
+   "momentum": 73.56131875582679,
+   "risk": 33.56200315631931
+  },
+  "action": "sell-all",
+  "action_rationale": "[rationale removed from the fixture: the run's sentence referenced whether the position was up or down]",
+  "conviction": "medium",
+  "horizon_outlook": {
+   "short": "bearish",
+   "mid": "neutral",
+   "long": "bullish"
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 44.56582891371208,
+    "bear": 37.88095457665527,
+    "bull": 51.25070325076889,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 41.05494696454503,
+    "bear": 32.843957571636025,
+    "bull": 49.26593635745404,
+    "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   }
+  },
+  "price_target_rationale": "The engine's twelve-month base target of $41.05 is derived from a volatility-scaled dispersion floor applied to the fund exposure composite using spread-anchored multiples over 12 quarterly anchors (inverse map). It assumes flat holding weights across scenarios with band widening reflecting realized return volatility (daily std dev ~2.1%). This baseline embeds an implicit multiple compression logic consistent with current high-rate pricing but does not fully weight active fee drag or ARK-specific operational underperformance history relative to the broad market beta.",
+  "options_signal": {
+   "put_call_volume": 0.034482758620689655,
+   "put_call_open_interest": 0.11578947368421053,
+   "implied_volatility": 0.6039116666666665,
+   "iv_skew": 0.0
+  },
+  "risk_tier": "high",
+  "dead_money": "fails",
+  "low_confidence_grade": true,
+  "fund_class_label": "US equity fund",
+  "financial_summary": "ARKF is an actively managed thematic ETF focused on fintech and blockchain innovation with high concentration risk and a 0.75% expense ratio. While trailing returns are positive (+14%), the fund faces multiple compression risks in a rising rate environment given its heavy exposure to growth stocks trading at rich multiples. Active management track record shows historical realized losses, adding an opacity premium compared to passive peers.",
+  "what_changed": "Initial position entry; no prior conditions or targets existed to change against.",
+  "model_view": {
+   "sub_scores": {
+    "quality": 45.0,
+    "valuation": 35.0,
+    "momentum": 60.0,
+    "risk": 28.0
+   },
+   "letter": "F",
+   "price_targets": {
+    "one_month": {
+     "base": 42.5,
+     "bear": 36.0,
+     "bull": 49.0
+    },
+    "twelve_month": {
+     "base": 37.0,
+     "bear": 28.0,
+     "bull": 54.0
+    }
+   },
+   "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
+  },
+  "engine_view": {
+   "outlook": {
+    "short": "bullish",
+    "mid": "bullish",
+    "long": "bearish"
+   },
+   "conviction": "low",
+   "action": "trim"
+  }
+ },
+ "engine_output": {
+  "sub_scores": {
+   "quality": 50.0,
+   "valuation": 83.33333333333334,
+   "momentum": 73.56131875582679,
+   "risk": 33.56200315631931
+  },
+  "grade": "C",
+  "metrics": {
+   "net_margin": null,
+   "gross_margin": null,
+   "revenue_growth": null,
+   "debt_to_equity": null,
+   "return_volatility": 0.021391208670875572,
+   "trailing_return": 0.14136791253496073,
+   "pe_ratio": null,
+   "ps_ratio": null,
+   "pb_ratio": null,
+   "expense_ratio": 0.0075,
+   "nav_premium": -0.0326508620689655,
+   "composite_coverage": 0.9999
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 44.56582891371208,
+    "bear": 37.88095457665527,
+    "bull": 51.25070325076889,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 41.05494696454503,
+    "bear": 32.843957571636025,
+    "bull": 49.26593635745404,
+    "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   }
+  },
+  "risk_tier": "high",
+  "tier_gaps": [],
+  "hurdle": {
+   "state": "fails",
+   "hurdle_rate": 0.1265,
+   "tr_bear": -0.26730628112652277,
+   "tr_base": -0.08437235235501761,
+   "tr_bull": 0.09856157641648755,
+   "admits_new_money": false
+  },
+  "target_meta": {
+   "driver_rung": "fund exposure composite",
+   "rate_anchored": true,
+   "anchor_observations": 12,
+   "flat_driver": true,
+   "degenerate_scenarios": 0,
+   "monotonicity_repaired": false,
+   "current_multiple_carry": false,
+   "consensus_rows": null,
+   "consensus_near_weight": null,
+   "clamp_flattened": false,
+   "dispersion_floor_applied": true,
+   "anchor_bounded": 0,
+   "clamp_released": false,
+   "parameter_version": "targets-v6"
+  },
+  "low_confidence_grade": true,
+  "fund_class_label": "US equity fund",
+  "quick_basis": {
+   "spot": 44.885,
+   "drivers": [
+    1.6566305035392395,
+    1.6566305035392395,
+    1.6566305035392395
+   ],
+   "spread_percentiles": [
+    -0.006268292451995816,
+    -0.009348455885964183,
+    -0.011607055144258452
+   ],
+   "raw_percentiles": [
+    28.4830910030217,
+    30.442332693869094,
+    31.707635504219517
+   ],
+   "forward_dividends": 0.043,
+   "dispersion_floor": 0.2,
+   "consensus_eps_mid": null,
+   "consensus_eps_periods": []
+  },
+  "implied_expectations": null
+ },
+ "research_combined": "ARK Fintech Innovation ETF (ARKF) is an actively managed, non-diversified Technology sector ETF launched in 2019 by ARK Investment Management LLC. The fund targets companies deriving significant revenue or market value from financial technology themes, maintaining a portfolio heavily concentrated in fintech and blockchain-adjacent equities such as Shopify, Circle Internet Group, Block Inc., Coinbase Global Inc., Robinhood Markets Inc., Palantir Technologies Inc., Toast Inc., Amazon.com Inc., and Bullish. As of September 2026, the fund held $818.74 million in net assets with a stock allocation of 90.08% and zero bond exposure. The expense ratio is 0.75%, which is approximately 36% higher than the Technology category average, resulting in an 'F' grade for YTD performance (-2.9%) despite a recent August 2026 return spike of 16.8%. Portfolio turnover stands at 32%, below the category average of 40%. A significant administrative change is underway: ARK announced on September 16, 2026 (with trading expected March 31, 2025) that it will move the primary listing venue from NYSE Arca to Cboe BZX Exchange; no shareholder action is required. This structural shift does not alter the investment mandate or management team, led by Catherine Wood with an average tenure of roughly 7.6 years. However, broader analysis indicates ARK Investment Management as a whole incurred approximately $13.4 billion in realized and unrealized capital losses over the trailing decade ended December 2024, driven largely by poorly timed inflows into volatile thematic strategies during market peaks."
+}

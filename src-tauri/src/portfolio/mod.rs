@@ -22,6 +22,8 @@
 //! the model's own sub-scores through the same shared cutoffs.
 
 pub mod diff;
+#[cfg(test)]
+mod fixed_evidence;
 pub mod distill;
 pub mod dossier;
 pub mod engine;
@@ -2098,7 +2100,23 @@ pub struct HoldingAudit {
 /// action facts, and validated continuity evidence. These fold into the unrun
 /// v35 contract; persisted shapes and the other version axes are unchanged.
 /// The pre-debut bundle also names option-overlay funds in the role/risk prompt.
-pub const PROMPT_VERSION: &str = "portfolio-v35";
+///
+/// `portfolio-v36`: the ledger-conditions and action-packet slice off attempt 6
+/// (`docs/verification/2026-09-16-ledger-conditions-and-action-packet.md`).
+/// The interpretation prompts render a holding-scoped ledger-authoring contract
+/// — only the series the engine computes for the vehicle kind, each with its
+/// unit, current observation and confirmation cadence, plus two worked
+/// examples — and the 6g seam validates prose-versus-core agreement (unit,
+/// comparator, metric, basis, level, margin, qualifier), downgrading a
+/// disagreeing core to qualitative with a class-prefixed reason. The action
+/// call reads an investment-only packet: no cost basis, unrealized P/L, tax
+/// row, quantity or market value; the engine set stated once as evidence; the
+/// score polarity spelled out on both arms; the overlay rendered as structure
+/// and ratios; the tax caveat app-appended after the rung on an exit-family
+/// choice. Prompt prose and the model-facing contract change, so a v35 trail
+/// cannot resume into v36; the persisted shapes and every other axis are
+/// unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v36";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2859,7 +2877,7 @@ pub fn action_response_contract() -> String {
     format!(
         "Respond with a single JSON object carrying exactly these keys: {}.",
         ACTION_KEYS.join(", ")
-    ) + " Example shape: {\"action\": \"hold\", \"rationale\": \"<investment reason, optionally followed by a tax caveat in the same sentence>\"}; the example action is illustrative."
+    ) + " Example shape: {\"action\": \"hold\", \"rationale\": \"<the single investment reason for the rung>\"}; the example action is illustrative."
 }
 
 /// The JSON Schema for [`ActionDecision`] — the action enum lists the full

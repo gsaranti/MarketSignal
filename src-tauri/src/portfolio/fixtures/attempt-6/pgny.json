@@ -1,0 +1,262 @@
+{
+ "symbol": "PGNY",
+ "origin": "reconstructed, not replayed: reduced from the persisted holding row of big-run attempt 6 (portfolio run 8d6b0b88-c00a-4b93-9bf0-13c7b1542eac, job_runs id 6, portfolio-v35, 2026-09-16T02:04Z), extracted 2026-09-16; the position's quantity, cost basis and market value are synthetic",
+ "asset_class": "stock",
+ "is_fund": false,
+ "statement_basis": "ttm",
+ "spot": 27.85,
+ "authoring_close": {
+  "date": "2026-09-14",
+  "value": 27.85
+ },
+ "synthetic_position": {
+  "quantity": 10.0,
+  "cost_basis": 362.05,
+  "market_value": 278.5
+ },
+ "conditions": [
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Revenue growth fails to meet minimum profitable scale threshold of 3% YoY.",
+   "technology_class": false,
+   "quant": {
+    "series": "revenue-growth",
+    "comparator": "below",
+    "threshold": 3.0,
+    "margin": 0.02
+   },
+   "expect": "downgraded:unit-mismatch"
+  },
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Valuation multiple expands to >40x P/E without corresponding margin/growth acceleration.",
+   "technology_class": false,
+   "quant": {
+    "series": "pe-ratio",
+    "comparator": "above",
+    "threshold": 40.0,
+    "margin": 0.15
+   },
+   "expect": "downgraded:qualifier"
+  },
+  {
+   "role": "trigger",
+   "family": "sell",
+   "statement": "Share price closes below $22 support indicating valuation breakdown.",
+   "technology_class": false,
+   "quant": {
+    "series": "price",
+    "comparator": "below",
+    "threshold": 22.0,
+    "margin": 5.0
+   },
+   "expect": "kept"
+  },
+  {
+   "role": "trigger",
+   "family": "add",
+   "statement": "Revenue growth re-accelerates to >8% YoY on guidance or TTM basis.",
+   "technology_class": false,
+   "quant": {
+    "series": "revenue-growth",
+    "comparator": "above",
+    "threshold": 8.0,
+    "margin": 0.15
+   },
+   "expect": "downgraded:unit-mismatch"
+  }
+ ],
+ "disposition": {
+  "status": "priced",
+  "grade": "D",
+  "sub_scores": {
+   "quality": 19.570906738360225,
+   "valuation": 87.67315096912294,
+   "momentum": 100.0,
+   "risk": 67.64011269187883
+  },
+  "action": "sell-all",
+  "action_rationale": "[rationale removed from the fixture: the run's sentence referenced whether the position was up or down]",
+  "conviction": "medium",
+  "horizon_outlook": {
+   "short": "bearish",
+   "mid": "bearish",
+   "long": "neutral"
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 28.405952705037112,
+    "bear": 24.145059799281544,
+    "bull": 32.66684561079268,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 35.51143246044532,
+    "bear": 28.409145968356256,
+    "bull": 42.613718952534384,
+    "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   }
+  },
+  "price_target_rationale": "My twelve-month base target ($30) is below the engine's base ($35.51). While PGNY has a strong moat (Smart Cycles), the current macro regime (rising rates to ~5%, oil shock, inflation stickiness) creates high risk of multiple compression for growth stocks trading at 27x earnings with only 5% top-line growth. The engine's valuation score (88) assumes multiples hold or expand; I assign a lower valuation score (35) reflecting the higher cost of capital and potential P/E contraction in this environment. My bear case ($21) accounts for deeper compression if guidance is missed, while my bull case ($42) requires rates to stabilize and earnings re-acceleration.",
+  "options_signal": {
+   "put_call_volume": 0.0,
+   "put_call_open_interest": 0.0,
+   "implied_volatility": 1.5088599999999999,
+   "iv_skew": 0.0
+  },
+  "risk_tier": "high",
+  "dead_money": "indeterminate",
+  "low_confidence_grade": false,
+  "fund_class_label": null,
+  "financial_summary": "Progyny generates $787M revenue with low-single-digit growth and thin net margins (~6%), supported by a debt-free balance sheet. Despite recent earnings beats, management lowered FY26 covered lives guidance citing administrative changes (though not immediate attrition), introducing uncertainty on top-line expansion in a tightening employer budget environment.",
+  "what_changed": "Initial Ledger Creation",
+  "model_view": {
+   "sub_scores": {
+    "quality": 40.0,
+    "valuation": 35.0,
+    "momentum": 55.0,
+    "risk": 60.0
+   },
+   "letter": "D",
+   "price_targets": {
+    "one_month": {
+     "base": 27.5,
+     "bear": 23.8,
+     "bull": 31.4
+    },
+    "twelve_month": {
+     "base": 30.0,
+     "bear": 21.0,
+     "bull": 42.0
+    }
+   },
+   "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
+  },
+  "engine_view": {
+   "outlook": {
+    "short": "bullish",
+    "mid": "bullish",
+    "long": "bullish"
+   },
+   "conviction": "low",
+   "action": "hold"
+  }
+ },
+ "engine_output": {
+  "sub_scores": {
+   "quality": 19.570906738360225,
+   "valuation": 87.67315096912294,
+   "momentum": 100.0,
+   "risk": 67.64011269187883
+  },
+  "grade": "D",
+  "metrics": {
+   "net_margin": 0.05999020418626084,
+   "gross_margin": 0.24572539373983418,
+   "revenue_growth": 0.05539273153575608,
+   "debt_to_equity": 0.059502666257774284,
+   "return_volatility": 0.029935867186372544,
+   "trailing_return": 0.5311638168781028,
+   "pe_ratio": 27.65386785446314,
+   "ps_ratio": 1.6589611791291186,
+   "pb_ratio": 4.797513532057971,
+   "expense_ratio": null,
+   "nav_premium": null,
+   "composite_coverage": null
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 28.405952705037112,
+    "bear": 24.145059799281544,
+    "bull": 32.66684561079268,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 35.51143246044532,
+    "bear": 28.409145968356256,
+    "bull": 42.613718952534384,
+    "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   }
+  },
+  "risk_tier": "high",
+  "tier_gaps": [],
+  "hurdle": {
+   "state": "indeterminate",
+   "hurdle_rate": 0.1265,
+   "tr_bear": 0.023384220762112884,
+   "tr_base": 0.27923027595264105,
+   "tr_bull": 0.5350763311431694,
+   "admits_new_money": true
+  },
+  "target_meta": {
+   "driver_rung": "consensus forward EPS",
+   "rate_anchored": true,
+   "anchor_observations": 12,
+   "flat_driver": false,
+   "degenerate_scenarios": 0,
+   "monotonicity_repaired": false,
+   "current_multiple_carry": false,
+   "consensus_rows": 2,
+   "consensus_near_weight": 0.29315068493150687,
+   "clamp_flattened": true,
+   "dispersion_floor_applied": true,
+   "anchor_bounded": 0,
+   "clamp_released": false,
+   "parameter_version": "targets-v6"
+  },
+  "low_confidence_grade": false,
+  "fund_class_label": null,
+  "quick_basis": {
+   "spot": 27.76,
+   "drivers": [
+    1.2420000000000002,
+    1.2420000000000002,
+    1.2420000000000002
+   ],
+   "spread_percentiles": [
+    -0.011138410432539502,
+    -0.014725347783888709,
+    -0.018370161753122314
+   ],
+   "raw_percentiles": [
+    30.739765669113492,
+    36.34168755221387,
+    40.32939705473743
+   ],
+   "forward_dividends": 0.0,
+   "dispersion_floor": 0.2,
+   "consensus_eps_mid": 1.451507397260274,
+   "consensus_eps_periods": [
+    {
+     "period_end": "2026-12-31",
+     "eps_mid": 1.28614,
+     "ntm_weight": 0.29315068493150687
+    },
+    {
+     "period_end": "2027-12-31",
+     "eps_mid": 1.52009,
+     "ntm_weight": 0.7068493150684931
+    }
+   ]
+  },
+  "implied_expectations": {
+   "implied_drivers": [
+    1.0704697263927032,
+    0.9708963455192493,
+    0.8697163097333246
+   ],
+   "implied_growth": [
+    0.16355405042685134,
+    0.055322114694836166,
+    -0.05465618507247327
+   ],
+   "driver_rung": "consensus forward EPS",
+   "revenue_based": false,
+   "rate_anchored": true,
+   "dgs10": 0.049699999999999994
+  }
+ },
+ "research_combined": "Progyny (PGNY) maintains a dominant position as the established leader in fertility benefits management, serving approximately 6.4 million lives across over 460 employer clients as of March 2024, with financial scale evidenced by $787M revenue in 2022 and record FY25 results including $1.3B revenue and $222M Adjusted EBITDA. The company's competitive moat is defined by its proprietary 'Smart Cycles' benefit design which drives higher live birth efficacy rates than national averages while reducing multiple-birth costs for employers, alongside a pharmacy solution (Progyny Rx) delivering 10-20% medication savings. Recent Q3 CY25 results significantly beat expectations ($313.3M revenue vs $299.3M estimate; $0.45 EPS vs $0.39), though management lowered FY26 covered lives guidance to 7.2 million due to administrative reporting updates rather than attrition, and Q4 CY25 revenue guidance of $300.2M sits slightly below consensus. Management demonstrated strong capital allocation with $84M in share repurchases during Q4 FY25 while maintaining a debt-free balance sheet. The market narrative remains bullish with a mean analyst price target of $34 (approx. 25% upside) and high institutional ownership at ~95%, though insider selling totaling $0.1M over the last three months presents a minor cautionary signal. A key regulatory catalyst is a May 2026 Department of Labor proposal to classify fertility treatments as 'excepted benefits,' potentially expanding addressable market opportunities by allowing selective employer offerings."
+}

@@ -1,0 +1,234 @@
+{
+ "symbol": "DIA",
+ "origin": "reconstructed, not replayed: reduced from the persisted holding row of big-run attempt 6 (portfolio run 8d6b0b88-c00a-4b93-9bf0-13c7b1542eac, job_runs id 6, portfolio-v35, 2026-09-16T02:04Z), extracted 2026-09-16; the position's quantity, cost basis and market value are synthetic",
+ "asset_class": "etf",
+ "is_fund": true,
+ "statement_basis": null,
+ "spot": 524.49,
+ "authoring_close": {
+  "date": "2026-09-14",
+  "value": 524.49
+ },
+ "synthetic_position": {
+  "quantity": 10.0,
+  "cost_basis": 4195.92,
+  "market_value": 5244.9
+ },
+ "conditions": [
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Dow's price-weighted methodology meaningfully underperforms market-cap alternatives (SPY/QQQ) as growth/tech leadership continues despite rate headwinds",
+   "technology_class": false,
+   "quant": null,
+   "expect": "qualitative"
+  },
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Price sustains above $575 implying base-case multiple expansion despite elevated discount rates near 5% on the 10Y",
+   "technology_class": false,
+   "quant": {
+    "series": "price",
+    "comparator": "above",
+    "threshold": 575.0,
+    "margin": 0.5
+   },
+   "expect": "kept"
+  },
+  {
+   "role": "trigger",
+   "family": "trim",
+   "statement": "2Y yield sustains above 4.80% for two consecutive sessions confirming funding-stress regime",
+   "technology_class": false,
+   "quant": null,
+   "expect": "qualitative"
+  },
+  {
+   "role": "trigger",
+   "family": "sell",
+   "statement": "Price reaches +24% from current levels suggesting multiple expansion beyond fair value given discount rate headwinds",
+   "technology_class": false,
+   "quant": {
+    "series": "price",
+    "comparator": "above",
+    "threshold": 648.0,
+    "margin": 0.15
+   },
+   "expect": "kept"
+  },
+  {
+   "role": "trigger",
+   "family": "add",
+   "statement": "Fed delivers one-and-done pause signal with 10Y rolling below 4.7% and HY OAS <2.8%",
+   "technology_class": false,
+   "quant": null,
+   "expect": "qualitative"
+  }
+ ],
+ "disposition": {
+  "status": "priced",
+  "grade": "C",
+  "sub_scores": {
+   "quality": 50.0,
+   "valuation": 83.33333333333334,
+   "momentum": 73.88734124459849,
+   "risk": 74.647228286766
+  },
+  "action": "hold",
+  "action_rationale": "[rationale removed from the fixture: the run's sentence referenced whether the position was up or down]",
+  "conviction": "medium",
+  "horizon_outlook": {
+   "short": "bearish",
+   "mid": "bearish",
+   "long": "neutral"
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 520.8433158853557,
+    "bear": 481.6241044225376,
+    "bull": 560.0625273481737,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 7.5% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 516.5897906242677,
+    "bear": 478.5739523917931,
+    "bull": 554.6056288567423,
+    "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   }
+  },
+  "price_target_rationale": "Engine's twelve-month base target of $516.59 reflects spread-anchored P/E multiples held flat across scenarios at current discount rate levels (~4.85% 10Y). I adopt slightly higher ($535) anticipating mean reversion as Fed guidance clarifies in H2, with bull case ($590) assuming one-and-done pause plus credit stability allowing multiple expansion toward historical Dow averages. Bear case ($470) assumes funding event triggers (HY OAS >3%, WTI sustained $105+) compressing multiples to 6-8x P/E floor from current ~21x. One-month volatility band widened per realized daily vol of 0.82% annualized (~$8 at spot), clamped to ±7.5% as engine methodology specifies.",
+  "options_signal": {
+   "put_call_volume": 0.8333490432651522,
+   "put_call_open_interest": 2.958138963908667,
+   "implied_volatility": 0.14312583333333337,
+   "iv_skew": 0.0
+  },
+  "risk_tier": "low",
+  "dead_money": "indeterminate",
+  "low_confidence_grade": true,
+  "fund_class_label": "US equity fund",
+  "financial_summary": "DIA is a low-cost (0.16% expense ratio) ETF tracking the Dow Jones Industrial Average, comprising 30 price-weighted blue-chip U.S. stocks with significant concentration risk—top 10 holdings represent ~54.7% of assets per Morningstar data as of September 2026. The fund trades at negligible discount to NAV (-0.01%) with high liquidity (500k+ daily shares). [position sentence removed from the fixture]",
+  "what_changed": "",
+  "model_view": {
+   "sub_scores": {
+    "quality": 82.0,
+    "valuation": 76.0,
+    "momentum": 48.0,
+    "risk": 52.0
+   },
+   "letter": "B",
+   "price_targets": {
+    "one_month": {
+     "base": 518.0,
+     "bear": 490.0,
+     "bull": 562.0
+    },
+    "twelve_month": {
+     "base": 535.0,
+     "bear": 470.0,
+     "bull": 590.0
+    }
+   },
+   "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
+  },
+  "engine_view": {
+   "outlook": {
+    "short": "bearish",
+    "mid": "bullish",
+    "long": "bullish"
+   },
+   "conviction": "low",
+   "action": "hold"
+  }
+ },
+ "engine_output": {
+  "sub_scores": {
+   "quality": 50.0,
+   "valuation": 83.33333333333334,
+   "momentum": 73.88734124459849,
+   "risk": 74.647228286766
+  },
+  "grade": "C",
+  "metrics": {
+   "net_margin": null,
+   "gross_margin": null,
+   "revenue_growth": null,
+   "debt_to_equity": null,
+   "return_volatility": 0.008215842769900507,
+   "trailing_return": 0.14332404746759098,
+   "pe_ratio": null,
+   "ps_ratio": null,
+   "pb_ratio": null,
+   "expense_ratio": 0.0016,
+   "nav_premium": -0.006272401433691677,
+   "composite_coverage": 0.9999
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 520.8433158853557,
+    "bear": 481.6241044225376,
+    "bull": 560.0625273481737,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 7.5% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 516.5897906242677,
+    "bear": 478.5739523917931,
+    "bull": 554.6056288567423,
+    "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   }
+  },
+  "risk_tier": "low",
+  "tier_gaps": [],
+  "hurdle": {
+   "state": "indeterminate",
+   "hurdle_rate": 0.07650000000000001,
+   "tr_bear": -0.06773404755713774,
+   "tr_base": 0.005200814658150366,
+   "tr_bull": 0.07813567687343848,
+   "admits_new_money": false
+  },
+  "target_meta": {
+   "driver_rung": "fund exposure composite",
+   "rate_anchored": true,
+   "anchor_observations": 12,
+   "flat_driver": true,
+   "degenerate_scenarios": 0,
+   "monotonicity_repaired": false,
+   "current_multiple_carry": false,
+   "consensus_rows": null,
+   "consensus_near_weight": null,
+   "clamp_flattened": false,
+   "dispersion_floor_applied": true,
+   "anchor_bounded": 0,
+   "clamp_released": false,
+   "parameter_version": "targets-v6"
+  },
+  "low_confidence_grade": true,
+  "fund_class_label": "US equity fund",
+  "quick_basis": {
+   "spot": 521.23,
+   "drivers": [
+    21.808325063104352,
+    21.808325063104352,
+    21.808325063104352
+   ],
+   "spread_percentiles": [
+    -0.004621312769957827,
+    -0.007484057178616894,
+    -0.010324867053861164
+   ],
+   "raw_percentiles": [
+    26.57305405144395,
+    28.57050744091181,
+    30.258605791203742
+   ],
+   "forward_dividends": 7.35103,
+   "dispersion_floor": 0.07358999136729892,
+   "consensus_eps_mid": null,
+   "consensus_eps_periods": []
+  },
+  "implied_expectations": null
+ },
+ "research_combined": "The SPDR Dow Jones Industrial Average ETF Trust (DIA) maintains a stable mandate to track the price and yield performance of the Dow Jones Industrial Average (DJIA), a price-weighted index of 30 blue-chip U.S. stocks, as confirmed by State Street Global Advisors data from September 2026. The fund operates with a gross expense ratio of 0.16% and distributes dividends monthly. As of September 14, 2026, the ETF held $45.7 billion in assets under management, traded at a negligible discount to NAV (-0.01%), and exhibited high liquidity with over 500,000 daily shares exchanged. The portfolio is characterized by significant concentration risk, with the top 10 holdings comprising 54.7% of total assets as of September 2026, driven by its price-weighted methodology which disproportionately favors high-share-priced companies regardless of market capitalization. Morningstar rates the fund a 'Large Value' category product with an overall 4-star rating based on risk-adjusted returns through August 2026. While administrative announcements regarding entity name changes for NYSE and PDR Services LLC were noted, no evidence suggests these impact the investment mandate or core strategy."
+}

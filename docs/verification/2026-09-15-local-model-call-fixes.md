@@ -42,7 +42,9 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   example and one genuinely qualitative example.
   Check: a fund never sees a stock-only series; a stock's current observation appears
   beside each series it may threshold.
-  Ruling: open.
+  Ruled 2026-09-16: adopt, on both branches — the contract renders the computable series
+  with unit, basis, current observation and confirmation cadence plus two worked
+  examples; landed as `portfolio-v36`.
 - 1.2 Validate prose-versus-core agreement at 6g and downgrade on disagreement with a
   typed reason (downgrade-not-drop, the existing contract): a statement naming N% on a
   decimal series against a core of N; a statement naming one metric or basis against a
@@ -54,20 +56,25 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   Check: the seven attempt-6 defects (TSLA ×3, PGNY ×2, SPMO ×2) each downgrade with the
   reason named; DIA's cores pass 1.2 unchanged; ARKF's pass 1.2 and are then handled by
   1.4.
-  Ruling: open — Codex opposes a universal "decimal threshold above 1" guard (growth can
-  exceed 100%); Claude recommends adopting only the narrow prose-mismatch form above.
+  Ruled 2026-09-16: adopt the narrow prose-mismatch form, basis leg included, plus a
+  comparator check and a level check that reads the comparison clause (ambiguous
+  associations stay qualitative) and the margin guard at or beyond the threshold's
+  magnitude (a zero threshold exempt); landed as `portfolio-v36`.
 - 1.3 Assign the noise margin from a per-series app policy instead of asking the model
   to author it; the model authors series, comparator and threshold only.
   This changes the persisted `QuantCore` authoring path but not its shape.
   Check: no persisted margin exceeds its series' policy value; the prompt no longer
   shows a `margin` placeholder.
-  Ruling: open — Claude recommends yes; Codex names it as a policy decision.
+  Ruled 2026-09-16: not adopted — the margin stays model-authored; 1.2's margin guard
+  covers the implausible case.
 - 1.4 Conditions that need a qualifier the machine predicate cannot carry (duration,
   volume, catalyst, a different accounting basis) stay qualitative; a later slice may
   add an extended representation.
   Check: ARKF's "above $55 for two weeks" and "below $38 on elevated volume" persist
   qualitative with the reason.
-  Ruling: open.
+  Ruled 2026-09-16: adopt for duration, volume and second-condition clauses ("without",
+  "unless", "confirmed by"); a generic "on <event>" clause is not detected; landed as
+  `portfolio-v36`.
 
 ## 2. Action call — an investment-only packet
 
@@ -87,12 +94,13 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   sentence (stamping is app behavior).
   Check: on the fixed evidence set the rung is stable across repeats and never lands
   outside the ladder; the trace's reading of the set is a diagnostic only.
-  Ruling: open.
+  Ruled 2026-09-16: adopt with the ratified wording; landed as `portfolio-v36`.
 - 2.3 State every sub-score's polarity in the action prompt's verdict block ("0–100,
   higher better on every axis"), as the interpretation prompt already does.
   Check: on PSX and SPMO the rationale's reading of the valuation score matches the
   score's meaning (high = attractive), where attempt 6's traces read it both ways.
-  Ruling: open.
+  Ruled 2026-09-16: adopt with the ratified wording on both arms; landed as
+  `portfolio-v36`.
 
 ## 3. Interpretation call — one responsibility per field, no account economics
 
@@ -302,7 +310,8 @@ watch set rather than fixed here:
 
 ## Open questions for the ruling round
 
-- Whether 1.3's app-assigned margin is per series only or per series and vehicle kind.
+- ~~Whether 1.3's app-assigned margin is per series only or per series and vehicle kind.~~
+  Ruled 2026-09-16: moot — 1.3 not adopted.
 - Whether 3.1 renames the field (moves `checkpoint-v9`) or keeps its engine meaning.
 - Whether 4.3's app-built no-evidence object counts the pass as answered or as a gap.
 - Which stamp 5.2's claim-shape change moves (evidence-floor, checkpoint, or both).

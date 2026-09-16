@@ -1,0 +1,239 @@
+{
+ "symbol": "SPMO",
+ "origin": "reconstructed, not replayed: reduced from the persisted holding row of big-run attempt 6 (portfolio run 8d6b0b88-c00a-4b93-9bf0-13c7b1542eac, job_runs id 6, portfolio-v35, 2026-09-16T02:04Z), extracted 2026-09-16; the position's quantity, cost basis and market value are synthetic",
+ "asset_class": "etf",
+ "is_fund": true,
+ "statement_basis": null,
+ "spot": 144.19,
+ "authoring_close": {
+  "date": "2026-09-14",
+  "value": 144.19
+ },
+ "synthetic_position": {
+  "quantity": 10.0,
+  "cost_basis": 1153.52,
+  "market_value": 1441.9
+ },
+ "conditions": [
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Top-10 concentration inflection toward >58% without commensurate performance outperformance",
+   "technology_class": false,
+   "quant": null,
+   "expect": "qualitative"
+  },
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Underlying portfolio P/E breaches 38x indicating unsustainable momentum premium",
+   "technology_class": false,
+   "quant": {
+    "series": "pe-ratio",
+    "comparator": "above",
+    "threshold": 38.0,
+    "margin": 0.5
+   },
+   "expect": "downgraded:series-uncomputable"
+  },
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Daily return volatility sustained above 2.7% indicating momentum factor regime breakdown",
+   "technology_class": false,
+   "quant": {
+    "series": "return-volatility",
+    "comparator": "above",
+    "threshold": 0.0267,
+    "margin": 0.15
+   },
+   "expect": "downgraded:margin-implausible"
+  },
+  {
+   "role": "trigger",
+   "family": "sell",
+   "statement": "Top-10 concentration >58% without commensurate relative outperformance",
+   "technology_class": false,
+   "quant": null,
+   "expect": "qualitative"
+  },
+  {
+   "role": "trigger",
+   "family": "trim",
+   "statement": "Daily volatility sustained >2.6% for three consecutive months",
+   "technology_class": false,
+   "quant": {
+    "series": "return-volatility",
+    "comparator": "above",
+    "threshold": 0.0257,
+    "margin": 2.0
+   },
+   "expect": "downgraded:margin-implausible"
+  }
+ ],
+ "disposition": {
+  "status": "priced",
+  "grade": "C",
+  "sub_scores": {
+   "quality": 50.0,
+   "valuation": 83.33333333333334,
+   "momentum": 93.81262084724906,
+   "risk": 66.76173582026925
+  },
+  "action": "trim",
+  "action_rationale": "[rationale removed from the fixture: the run's sentence referenced whether the position was up or down]",
+  "conviction": "medium",
+  "horizon_outlook": {
+   "short": "neutral",
+   "mid": "bearish",
+   "long": "neutral"
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 143.24773978683098,
+    "bear": 121.76057881880632,
+    "bull": 164.7349007548556,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 138.38287744197177,
+    "bear": 124.02965597530088,
+    "bull": 152.73609890864265,
+    "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   }
+  },
+  "price_target_rationale": "Twelve-month base target of $139 (slight downside from current $143.69) reflects my view that while momentum factors have worked recently, the market signal house thesis indicates controlled derate risk with elevated multiples facing compression under Fed tightening + energy shock conditions. The engine's 12M targets ($124/138/$152) are largely consistent but I've narrowed bear-bull dispersion slightly to account for SPMO's low beta characteristic versus broad market (expense ratio only 0.13% limits drag, creating a floor under severe cases). My bull case assumes momentum factor continuation into AI leadership year-end with potential net-short squeeze convexity as noted in the house view; my bear reflects valuation reset scenario if HY spreads breach 3.0% and rotation to defensives accelerates.",
+  "options_signal": {
+   "put_call_volume": 0.7339181286549707,
+   "put_call_open_interest": 0.6991869918699187,
+   "implied_volatility": 0.2782754166666667,
+   "iv_skew": 0.0
+  },
+  "risk_tier": "low",
+  "dead_money": "fails",
+  "low_confidence_grade": true,
+  "fund_class_label": "US equity fund",
+  "financial_summary": "SPMO provides concentrated S&P 500 exposure tilted toward price-momentum factors with top-10 holdings representing 51.8% concentration (led by Micron at 10.65%, NVIDIA at 8.82%). Underlying portfolio P/E of ~30x reflects premium valuation for momentum strategy execution in technology/semiconductor sectors. Expense ratio of 0.13% is low-cost relative to active alternatives but capital efficiency fails the 7.7% hurdle given market-setup headwinds from rising rates (10Y approaching 5%) and compression risk on rich multiples.",
+  "what_changed": "",
+  "model_view": {
+   "sub_scores": {
+    "quality": 58.0,
+    "valuation": 48.0,
+    "momentum": 78.0,
+    "risk": 52.0
+   },
+   "letter": "D",
+   "price_targets": {
+    "one_month": {
+     "base": 142.0,
+     "bear": 130.0,
+     "bull": 158.0
+    },
+    "twelve_month": {
+     "base": 139.0,
+     "bear": 122.0,
+     "bull": 168.0
+    }
+   },
+   "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
+  },
+  "engine_view": {
+   "outlook": {
+    "short": "bearish",
+    "mid": "bullish",
+    "long": "bullish"
+   },
+   "conviction": "low",
+   "action": "trim"
+  }
+ },
+ "engine_output": {
+  "sub_scores": {
+   "quality": 50.0,
+   "valuation": 83.33333333333334,
+   "momentum": 93.81262084724906,
+   "risk": 66.76173582026925
+  },
+  "grade": "C",
+  "metrics": {
+   "net_margin": null,
+   "gross_margin": null,
+   "revenue_growth": null,
+   "debt_to_equity": null,
+   "return_volatility": 0.0196786104653529,
+   "trailing_return": 0.2628757250834943,
+   "pe_ratio": null,
+   "ps_ratio": null,
+   "pb_ratio": null,
+   "expense_ratio": 0.0013,
+   "nav_premium": -0.003467646854844353,
+   "composite_coverage": 1.0
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 143.24773978683098,
+    "bear": 121.76057881880632,
+    "bull": 164.7349007548556,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 138.38287744197177,
+    "bear": 124.02965597530088,
+    "bull": 152.73609890864265,
+    "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   }
+  },
+  "risk_tier": "low",
+  "tier_gaps": [],
+  "hurdle": {
+   "state": "fails",
+   "hurdle_rate": 0.07650000000000001,
+   "tr_bear": -0.1295249079594899,
+   "tr_base": -0.029634717503154162,
+   "tr_bull": 0.07025547295318146,
+   "admits_new_money": false
+  },
+  "target_meta": {
+   "driver_rung": "fund exposure composite",
+   "rate_anchored": true,
+   "anchor_observations": 12,
+   "flat_driver": true,
+   "degenerate_scenarios": 0,
+   "monotonicity_repaired": false,
+   "current_multiple_carry": false,
+   "consensus_rows": null,
+   "consensus_near_weight": null,
+   "clamp_flattened": false,
+   "dispersion_floor_applied": true,
+   "anchor_bounded": 0,
+   "clamp_released": false,
+   "parameter_version": "targets-v6"
+  },
+  "low_confidence_grade": true,
+  "fund_class_label": "US equity fund",
+  "quick_basis": {
+   "spot": 143.69,
+   "drivers": [
+    4.958598285545822,
+    4.958598285545822,
+    4.958598285545822
+   ],
+   "spread_percentiles": [
+    -0.010742638978564801,
+    -0.013867544589285498,
+    -0.01570314529698721
+   ],
+   "raw_percentiles": [
+    32.25273000201928,
+    35.498806691841835,
+    36.80877212183464
+   ],
+   "forward_dividends": 1.04891,
+   "dispersion_floor": 0.10372107974622533,
+   "consensus_eps_mid": null,
+   "consensus_eps_periods": []
+  },
+  "implied_expectations": null
+ },
+ "research_combined": "The Invesco S&P 500 Momentum ETF (SPMO) is actively managed by Invesco Capital Management LLC under a copyright date of 2026, maintaining its mandate to track momentum factors within the S&P 500 without recent disclosed changes to strategy or personnel. As of September 14, 2026, the fund holds exactly 102 equity positions with significant concentration risk, where the top 10 holdings represent approximately 51.8% of assets. The portfolio is heavily tilted toward technology and semiconductor sectors, led by Micron Technology (10.65%) and NVIDIA (8.82%), resulting in a Price-to-Earnings ratio of 29.88 as of the reporting date. While specific expense ratios were not disclosed in the fetched documents, structural mechanics require share redemptions only in Creation Unit aggregations ranging from 10,000 to 150,000 shares."
+}

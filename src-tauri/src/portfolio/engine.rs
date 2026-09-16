@@ -1104,7 +1104,138 @@ impl LedgerSeries {
         }
     }
 
-    /// A short human description for the interpretation prompt's vocabulary list.
+    /// Whether a figure the statement states as a percent is this series' own unit
+    /// (the fraction family: a stated 16% is 0.16 here). The multiples, debt /
+    /// equity and the price are not percent-denominated.
+    pub fn percent_unit(&self) -> bool {
+        matches!(
+            self,
+            LedgerSeries::NetMargin
+                | LedgerSeries::GrossMargin
+                | LedgerSeries::RevenueGrowth
+                | LedgerSeries::ReturnVolatility
+                | LedgerSeries::TrailingReturn
+                | LedgerSeries::ExpenseRatio
+        )
+    }
+
+    /// The unit sentence the ledger-authoring contract renders beside each series
+    /// (attempt-6 Finding 2: "(decimal)" alone left a stated 3% authored as 3.0).
+    pub fn unit_note(&self) -> &'static str {
+        match self {
+            LedgerSeries::NetMargin
+            | LedgerSeries::GrossMargin
+            | LedgerSeries::RevenueGrowth
+            | LedgerSeries::TrailingReturn => "a fraction, never a percent (0.16 means 16%)",
+            LedgerSeries::ReturnVolatility => {
+                "a daily fraction, never a percent (0.02 means 2% per day)"
+            }
+            LedgerSeries::ExpenseRatio => {
+                "a fraction of assets per year, never a percent (0.0075 means 0.75%)"
+            }
+            LedgerSeries::DebtToEquity => "a ratio (1.5 means debt is 1.5 times equity)",
+            LedgerSeries::PeRatio | LedgerSeries::PsRatio | LedgerSeries::PbRatio => {
+                "a multiple (25 means 25x)"
+            }
+            LedgerSeries::Price => "dollars per share",
+        }
+    }
+
+    /// How a breach of this series confirms under the persistence semantics —
+    /// rendered on the authoring contract so the model states a level and leaves
+    /// the confirmation count to the app (durations belong to no quantitative
+    /// condition).
+    pub fn confirmation_note(&self) -> String {
+        match self.cadence() {
+            crate::portfolio::ConditionCadence::Filing => format!(
+                "confirms on the first breaching filing print (count {})",
+                LEDGER_CONSECUTIVE_FILING
+            ),
+            crate::portfolio::ConditionCadence::MarketData => format!(
+                "confirms on {} consecutive distinct breaching daily closes",
+                LEDGER_CONSECUTIVE_MARKET_DATA
+            ),
+        }
+    }
+
+    /// The statement vocabulary that names this series — the 6g agreement check's
+    /// metric lexicon (`docs/portfolio-workflow.md` §Step 6g). Matched as whole
+    /// phrases, case-insensitive. The price's vocabulary is the price-level
+    /// check's, listed here so the lexicon has one home.
+    pub fn statement_aliases(&self) -> &'static [&'static str] {
+        match self {
+            LedgerSeries::NetMargin => &["net margin", "net profit margin", "net income margin"],
+            LedgerSeries::GrossMargin => &["gross margin", "gross profit margin"],
+            LedgerSeries::RevenueGrowth => &[
+                "revenue growth",
+                "sales growth",
+                "top-line growth",
+                "top line growth",
+                "revenue grows",
+                "revenue declines",
+            ],
+            LedgerSeries::DebtToEquity => &[
+                "debt/equity",
+                "debt-to-equity",
+                "debt to equity",
+                "d/e ratio",
+                "leverage ratio",
+            ],
+            LedgerSeries::ReturnVolatility => &[
+                "return volatility",
+                "realized volatility",
+                "daily volatility",
+                "volatility",
+            ],
+            LedgerSeries::TrailingReturn => &[
+                "trailing return",
+                "price return",
+                "total return",
+                "trailing price return",
+            ],
+            LedgerSeries::PeRatio => &[
+                "p/e",
+                "pe ratio",
+                "price/earnings",
+                "price-to-earnings",
+                "price to earnings",
+                "earnings multiple",
+            ],
+            LedgerSeries::PsRatio => &[
+                "p/s",
+                "ps ratio",
+                "price/sales",
+                "price-to-sales",
+                "price to sales",
+                "sales multiple",
+            ],
+            LedgerSeries::PbRatio => &[
+                "p/b",
+                "pb ratio",
+                "price/book",
+                "price-to-book",
+                "price to book",
+                "book multiple",
+            ],
+            LedgerSeries::ExpenseRatio => &["expense ratio", "expense", "fee"],
+            LedgerSeries::Price => &[
+                "price",
+                "prices",
+                "priced",
+                "stock",
+                "share",
+                "shares",
+                "trades",
+                "trade",
+                "closes",
+                "close",
+                "$",
+            ],
+        }
+    }
+
+    /// A short human description for the interpretation prompt's vocabulary list
+    /// (the unit rides beside it — [`Self::unit_note`]).
     /// The statement-derived family names no basis: the holding's statement basis
     /// is per holding and per run (`docs/portfolio-analysis.md` §Starting
     /// parameters), so the prompt states it once beside this list rather than a
@@ -1112,16 +1243,16 @@ impl LedgerSeries {
     /// review 2026-08-24, Priority-1 minor).
     pub fn describe(&self) -> &'static str {
         match self {
-            LedgerSeries::NetMargin => "net margin (decimal)",
-            LedgerSeries::GrossMargin => "gross margin (decimal)",
-            LedgerSeries::RevenueGrowth => "year-over-year revenue growth (decimal)",
+            LedgerSeries::NetMargin => "net margin",
+            LedgerSeries::GrossMargin => "gross margin",
+            LedgerSeries::RevenueGrowth => "year-over-year revenue growth",
             LedgerSeries::DebtToEquity => "debt / equity ratio",
-            LedgerSeries::ReturnVolatility => "daily realized return volatility (decimal)",
-            LedgerSeries::TrailingReturn => "trailing price return (decimal)",
+            LedgerSeries::ReturnVolatility => "daily realized return volatility",
+            LedgerSeries::TrailingReturn => "trailing price return",
             LedgerSeries::PeRatio => "price / earnings multiple",
             LedgerSeries::PsRatio => "price / sales multiple",
             LedgerSeries::PbRatio => "price / book multiple",
-            LedgerSeries::ExpenseRatio => "fund expense ratio (decimal)",
+            LedgerSeries::ExpenseRatio => "fund expense ratio",
             LedgerSeries::Price => "the holding's price (account currency)",
         }
     }
@@ -6877,10 +7008,10 @@ mod tests {
                 "{d}"
             );
         }
-        assert_eq!(LedgerSeries::NetMargin.describe(), "net margin (decimal)");
+        assert_eq!(LedgerSeries::NetMargin.describe(), "net margin");
         assert_eq!(
             LedgerSeries::GrossMargin.describe(),
-            "gross margin (decimal)"
+            "gross margin"
         );
         // The flow family is the gate's family less its two balance-sheet instants.
         let flow: Vec<_> = LedgerSeries::ALL

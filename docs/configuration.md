@@ -159,6 +159,7 @@ The default posture:
 - **tax sensitivity — no precise modeling.**
   No tax-lot, holding-period, account-type, or marginal-rate calculation is applied to actions — the job never computes a tax harvest.
   This preset permits an optional caveat about **possible tax consequences** in the action rationale, with no effect on the chosen action ([portfolio-analysis.md §Portfolio action](portfolio-analysis.md#portfolio-action)).
+  Since `portfolio-v36` the caveat is a fixed sentence the app appends after the rung; the action packet carries no tax row and no P/L.
   Account type, tax lots, holding periods, and rates are unmodeled, so the user assesses their own specifics.
   A tax-exempt profile applies no tax consideration.
 

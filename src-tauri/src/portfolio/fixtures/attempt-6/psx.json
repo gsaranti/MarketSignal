@@ -1,0 +1,236 @@
+{
+ "symbol": "PSX",
+ "origin": "reconstructed, not replayed: reduced from the persisted holding row of big-run attempt 6 (portfolio run 8d6b0b88-c00a-4b93-9bf0-13c7b1542eac, job_runs id 6, portfolio-v35, 2026-09-16T02:04Z), extracted 2026-09-16; the position's quantity, cost basis and market value are synthetic",
+ "asset_class": "stock",
+ "is_fund": false,
+ "statement_basis": "ttm",
+ "spot": 257.06,
+ "authoring_close": {
+  "date": "2026-09-14",
+  "value": 257.06
+ },
+ "synthetic_position": {
+  "quantity": 10.0,
+  "cost_basis": 2056.48,
+  "market_value": 2570.6
+ },
+ "conditions": [
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Quarterly net margin collapses below 3% indicating cycle peak failure.",
+   "technology_class": false,
+   "quant": {
+    "series": "net-margin",
+    "comparator": "below",
+    "threshold": 0.03,
+    "margin": 0.005
+   },
+   "expect": "downgraded:basis-mismatch"
+  },
+  {
+   "role": "trigger",
+   "family": "sell",
+   "statement": "Price closes below $210 support level / fair value floor.",
+   "technology_class": false,
+   "quant": {
+    "series": "price",
+    "comparator": "below",
+    "threshold": 210.0,
+    "margin": 5.0
+   },
+   "expect": "kept"
+  }
+ ],
+ "disposition": {
+  "status": "priced",
+  "grade": "D",
+  "sub_scores": {
+   "quality": 7.696397569444445,
+   "valuation": 96.65743095576131,
+   "momentum": 100.0,
+   "risk": 67.75436484246362
+  },
+  "action": "trim",
+  "action_rationale": "[rationale removed from the fixture: the run's sentence referenced whether the position was up or down]",
+  "conviction": "medium",
+  "horizon_outlook": {
+   "short": "neutral",
+   "mid": "bearish",
+   "long": "neutral"
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 269.4642333210673,
+    "bear": 229.0445983229072,
+    "bull": 309.88386831922736,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 319.3407998528069,
+    "bear": 224.4828817183803,
+    "bull": 496.61410564354713,
+    "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map) [targets-v6]"
+   }
+  },
+  "price_target_rationale": "Base target ($240) reflects fair value reversion ($192 research estimate) adjusted for near-term cash flow persistence given current high oil environment. Bull case ($340) assumes cycle extension with WTI >$105 sustaining margins; Bear case ($185) prices in mean-reversion to normalized earnings and multiple compression if rates remain elevated.",
+  "options_signal": {
+   "put_call_volume": 0.49064449064449067,
+   "put_call_open_interest": 0.7464559230894574,
+   "implied_volatility": 0.44893023809523797,
+   "iv_skew": 0.0
+  },
+  "risk_tier": "medium",
+  "dead_money": "indeterminate",
+  "low_confidence_grade": false,
+  "fund_class_label": null,
+  "financial_summary": "PSX displays peak-cycle cash flow with net margin ~4.6% and revenue growth of 15%, driven by strong refining utilization (95%) but facing structural headwinds as WCS discounts narrow post-TM Expansion. Research fair value estimates ($192) sit significantly below current price ($265), suggesting valuation premium unless margins sustain historic highs. Insider selling outpaces buying, signaling management caution despite analyst upgrades.",
+  "what_changed": "Initial Read",
+  "model_view": {
+   "sub_scores": {
+    "quality": 15.0,
+    "valuation": 30.0,
+    "momentum": 70.0,
+    "risk": 50.0
+   },
+   "letter": "F",
+   "price_targets": {
+    "one_month": {
+     "base": 270.0,
+     "bear": 245.0,
+     "bull": 295.0
+    },
+    "twelve_month": {
+     "base": 240.0,
+     "bear": 185.0,
+     "bull": 340.0
+    }
+   },
+   "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
+  },
+  "engine_view": {
+   "outlook": {
+    "short": "bullish",
+    "mid": "bullish",
+    "long": "bullish"
+   },
+   "conviction": "medium",
+   "action": "hold"
+  }
+ },
+ "engine_output": {
+  "sub_scores": {
+   "quality": 7.696397569444445,
+   "valuation": 96.65743095576131,
+   "momentum": 100.0,
+   "risk": 67.75436484246362
+  },
+  "grade": "D",
+  "metrics": {
+   "net_margin": 0.04617838541666667,
+   "gross_margin": 0.09777994791666667,
+   "revenue_growth": 0.15772494987714247,
+   "debt_to_equity": 0.6527328127975623,
+   "return_volatility": 0.020352783121268106,
+   "trailing_return": 0.5098307402974869,
+   "pe_ratio": 14.975287586211758,
+   "ps_ratio": 0.6915346018815104,
+   "pb_ratio": 3.371412265885863,
+   "expense_ratio": null,
+   "nav_premium": null,
+   "composite_coverage": null
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 269.4642333210673,
+    "bear": 229.0445983229072,
+    "bull": 309.88386831922736,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 319.3407998528069,
+    "bear": 224.4828817183803,
+    "bull": 496.61410564354713,
+    "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map) [targets-v6]"
+   }
+  },
+  "risk_tier": "medium",
+  "tier_gaps": [],
+  "hurdle": {
+   "state": "indeterminate",
+   "hurdle_rate": 0.0965,
+   "tr_bear": -0.13376030755905222,
+   "tr_base": 0.2242886794730945,
+   "tr_bull": 0.89342130239515,
+   "admits_new_money": true
+  },
+  "target_meta": {
+   "driver_rung": "consensus forward EPS",
+   "rate_anchored": true,
+   "anchor_observations": 12,
+   "flat_driver": false,
+   "degenerate_scenarios": 0,
+   "monotonicity_repaired": false,
+   "current_multiple_carry": false,
+   "consensus_rows": 2,
+   "consensus_near_weight": 0.29315068493150687,
+   "clamp_flattened": false,
+   "dispersion_floor_applied": false,
+   "anchor_bounded": 0,
+   "clamp_released": false,
+   "parameter_version": "targets-v6"
+  },
+  "low_confidence_grade": false,
+  "fund_class_label": null,
+  "quick_basis": {
+   "spot": 264.93,
+   "drivers": [
+    20.057831616438357,
+    23.692500000000003,
+    23.692500000000003
+   ],
+   "spread_percentiles": [
+    0.03965127464018142,
+    0.024491897843684676,
+    -0.001991931037082376
+   ],
+   "raw_percentiles": [
+    11.634750268122092,
+    15.11955628204458,
+    24.294230220437726
+   ],
+   "forward_dividends": 5.01,
+   "dispersion_floor": 0.1614993340672624,
+   "consensus_eps_mid": 26.204178684931506,
+   "consensus_eps_periods": [
+    {
+     "period_end": "2026-12-31",
+     "eps_mid": 28.0292,
+     "ntm_weight": 0.29315068493150687
+    },
+    {
+     "period_end": "2027-12-31",
+     "eps_mid": 25.44729,
+     "ntm_weight": 0.7068493150684931
+    }
+   ]
+  },
+  "implied_expectations": {
+   "implied_drivers": [
+    23.67183319042326,
+    19.65565949572738,
+    12.639298710345765
+   ],
+   "implied_growth": [
+    0.34882240401272124,
+    0.11998059804714423,
+    -0.27981203929653764
+   ],
+   "driver_rung": "consensus forward EPS",
+   "revenue_based": false,
+   "rate_anchored": true,
+   "dgs10": 0.049699999999999994
+  }
+ },
+ "research_combined": "Phillips 66 (PSX) demonstrated robust operational performance in Q1/Q2 2026 with a worldwide market capture of 138% and refining utilization at 95%, driven by an asset-backed trading model that tripled time-charter vessels to arbitrage dislocations. However, the company faces significant structural headwinds: Western Canadian Select (WCS) discounts have narrowed structurally by ~$3/bbl since the Trans Mountain expansion in 2024, undermining a key competitive advantage for heavy-crude refiners like PSX despite its full WRB consolidation. While management targets $5.50/barrel controllable costs and $4.5B midstream EBITDA run-rate by end-2027, the stock trades at a premium to fair value estimates (~$192) based on peak cash flow assumptions ($21/share), with analysts warning of cyclical reversion risks if margins normalize from historic highs. Insiders have sold 14 shares for every 2 purchased in the last six months, contrasting with bullish analyst upgrades (UBS $300, MS $284) and strong Q2 adjusted earnings ($9.41/share)."
+}

@@ -1,0 +1,288 @@
+{
+ "symbol": "TSLA",
+ "origin": "reconstructed, not replayed: reduced from the persisted holding row of big-run attempt 6 (portfolio run 8d6b0b88-c00a-4b93-9bf0-13c7b1542eac, job_runs id 6, portfolio-v35, 2026-09-16T02:04Z), extracted 2026-09-16; the position's quantity, cost basis and market value are synthetic",
+ "asset_class": "stock",
+ "is_fund": false,
+ "statement_basis": "ttm",
+ "spot": 358.97,
+ "authoring_close": {
+  "date": "2026-09-14",
+  "value": 358.97
+ },
+ "synthetic_position": {
+  "quantity": 10.0,
+  "cost_basis": 2871.76,
+  "market_value": 3589.7
+ },
+ "conditions": [
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Gross margin permanently falls below 16% (floor breach indicating structural profitability impairment).",
+   "technology_class": false,
+   "quant": {
+    "series": "gross-margin",
+    "comparator": "below",
+    "threshold": 0.16,
+    "margin": 0.02
+   },
+   "expect": "kept"
+  },
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "NHTSA investigation results in operational constraints or recall affecting >20% of registered fleet.",
+   "technology_class": true,
+   "quant": {
+    "series": "price",
+    "comparator": "above",
+    "threshold": 3560.21,
+    "margin": 3944589657.0
+   },
+   "expect": "downgraded:no-price-level"
+  },
+  {
+   "role": "falsifier",
+   "family": null,
+   "statement": "Operating margin collapses below 1% without credit support (profitability floor breach).",
+   "technology_class": false,
+   "quant": {
+    "series": "net-margin",
+    "comparator": "below",
+    "threshold": 0.037,
+    "margin": 0.04
+   },
+   "expect": "downgraded:metric-mismatch"
+  },
+  {
+   "role": "trigger",
+   "family": "sell",
+   "statement": "Gross margin drops below 16% and stays there for two consecutive quarters (fundamental thesis breach).",
+   "technology_class": false,
+   "quant": {
+    "series": "gross-margin",
+    "comparator": "below",
+    "threshold": 0.16,
+    "margin": 0.02
+   },
+   "expect": "downgraded:qualifier"
+  },
+  {
+   "role": "trigger",
+   "family": "trim",
+   "statement": "Stock trades above $485 without Robotaxi deployment confirmation by Q2-CY26 (multiple expansion unsupported).",
+   "technology_class": false,
+   "quant": {
+    "series": "price",
+    "comparator": "above",
+    "threshold": 485.3,
+    "margin": 5348709521.0
+   },
+   "expect": "downgraded:margin-implausible"
+  },
+  {
+   "role": "trigger",
+   "family": "add",
+   "statement": "Stock falls to ≤$145 on margin collapse without Robotaxi catalyst (buy-the-dip entry).",
+   "technology_class": false,
+   "quant": {
+    "series": "price",
+    "comparator": "below",
+    "threshold": 13.9,
+    "margin": 70429518.0
+   },
+   "expect": "downgraded:price-level-mismatch"
+  }
+ ],
+ "disposition": {
+  "status": "priced",
+  "grade": "F",
+  "sub_scores": {
+   "quality": 9.992842368034179,
+   "valuation": 32.94588317435207,
+   "momentum": 44.845454216037986,
+   "risk": 64.08818394145621
+  },
+  "action": "trim",
+  "action_rationale": "[rationale removed from the fixture: the run's sentence referenced whether the position was up or down]",
+  "conviction": "low",
+  "horizon_outlook": {
+   "short": "bearish",
+   "mid": "bearish",
+   "long": "neutral"
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 340.458457070837,
+    "bear": 289.38968851021144,
+    "bull": 391.52722563146256,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 163.12148485004408,
+    "bear": 62.043446280585925,
+    "bull": 911.737378406473,
+    "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high, growth clamp released on corroborated consensus (trough signature) × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map; degenerate-denominator raw fallback on some scenario(s)) [targets-v6]"
+   }
+  },
+  "price_target_rationale": "My base twelve-month target of $145 derives from a conservative auto peer multiple (P/S: ~6x on normalized revenue) plus Energy/storage optionality at ~30% discount to standalone value. I reject the engine's base case ($163) because it assumes Robotaxi commercialization without material regulatory headwinds—a scenario unsupported by current NHTSA investigation status and FSD safety record deterioration (236 crashes in July CY25, four fatalities). My bear target ($92) applies a distress multiple to core auto earnings excluding credits. Bull case ($398) requires successful Robotaxi launch with approved commercial operations by Q1-CY27; this is possible but not probable given regulatory and technical execution risks.",
+  "options_signal": {
+   "put_call_volume": 0.960584448531209,
+   "put_call_open_interest": 1.090170542635659,
+   "implied_volatility": 0.4354846527777779,
+   "iv_skew": 0.0
+  },
+  "risk_tier": "high",
+  "dead_money": "indeterminate",
+  "low_confidence_grade": false,
+  "fund_class_label": null,
+  "financial_summary": "Tesla exhibits structurally thin operating margins (3.68% net) heavily reliant on regulatory credits, with gross margin contraction to 18.85%. Revenue growth at 11.75% YoY reflects deceleration from historical hyper-growth rates. Balance sheet remains fortress-quality with minimal leverage (D/E: 0.11x), but the valuation is exceptionally extended across all multiples—P/E of 369x, P/S of 14x, and P/B over 16x assume material Robotaxi monetization within 12-24 months without commercialized revenue to validate these expectations.",
+  "what_changed": "New holding assessment — ledger initialized, baseline scores authored",
+  "model_view": {
+   "sub_scores": {
+    "quality": 8.0,
+    "valuation": 18.0,
+    "momentum": 35.0,
+    "risk": 72.0
+   },
+   "letter": "F",
+   "price_targets": {
+    "one_month": {
+     "base": 298.5,
+     "bear": 247.8,
+     "bull": 356.1
+    },
+    "twelve_month": {
+     "base": 145.0,
+     "bear": 92.0,
+     "bull": 398.0
+    }
+   },
+   "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
+  },
+  "engine_view": {
+   "outlook": {
+    "short": "bullish",
+    "mid": "bearish",
+    "long": "bearish"
+   },
+   "conviction": "medium",
+   "action": "trim"
+  }
+ },
+ "engine_output": {
+  "sub_scores": {
+   "quality": 9.992842368034179,
+   "valuation": 32.94588317435207,
+   "momentum": 44.845454216037986,
+   "risk": 64.08818394145621
+  },
+  "grade": "F",
+  "metrics": {
+   "net_margin": 0.03684652428608653,
+   "gross_margin": 0.18851754987019756,
+   "revenue_growth": 0.11754745470232963,
+   "debt_to_equity": 0.10755485965599024,
+   "return_volatility": 0.032008575092339196,
+   "trailing_return": -0.0309272747037721,
+   "pe_ratio": 368.8657961636983,
+   "ps_ratio": 13.59142251665235,
+   "pb_ratio": 16.214161156750098,
+   "expense_ratio": null,
+   "nav_premium": null,
+   "composite_coverage": null
+  },
+  "price_targets": {
+   "one_month": {
+    "base": 340.458457070837,
+    "bear": 289.38968851021144,
+    "bull": 391.52722563146256,
+    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   },
+   "twelve_month": {
+    "base": 163.12148485004408,
+    "bear": 62.043446280585925,
+    "bull": 911.737378406473,
+    "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high, growth clamp released on corroborated consensus (trough signature) × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map; degenerate-denominator raw fallback on some scenario(s)) [targets-v6]"
+   }
+  },
+  "risk_tier": "high",
+  "tier_gaps": [],
+  "hurdle": {
+   "state": "indeterminate",
+   "hurdle_rate": 0.1265,
+   "tr_bear": -0.8260041329278537,
+   "tr_base": -0.5425388837005887,
+   "tr_bull": 1.5568943249943157,
+   "admits_new_money": false
+  },
+  "target_meta": {
+   "driver_rung": "consensus forward EPS",
+   "rate_anchored": true,
+   "anchor_observations": 12,
+   "flat_driver": false,
+   "degenerate_scenarios": 1,
+   "monotonicity_repaired": false,
+   "current_multiple_carry": false,
+   "consensus_rows": 2,
+   "consensus_near_weight": 0.29315068493150687,
+   "clamp_flattened": false,
+   "dispersion_floor_applied": false,
+   "anchor_bounded": 0,
+   "clamp_released": true,
+   "parameter_version": "targets-v6"
+  },
+  "low_confidence_grade": false,
+  "fund_class_label": null,
+  "quick_basis": {
+   "spot": 356.58,
+   "drivers": [
+    1.3808912602739725,
+    2.103475123287671,
+    3.0700617260273972
+   ],
+   "spread_percentiles": [
+    -0.027443156722323003,
+    -0.03680485546878527,
+    -0.039852855438297086
+   ],
+   "raw_percentiles": [
+    66.10245076644904,
+    158.25519032584486,
+    296.97688833971563
+   ],
+   "forward_dividends": 0.0,
+   "dispersion_floor": 0.2,
+   "consensus_eps_mid": 2.103475123287671,
+   "consensus_eps_periods": [
+    {
+     "period_end": "2026-12-31",
+     "eps_mid": 1.70542,
+     "ntm_weight": 0.29315068493150687
+    },
+    {
+     "period_end": "2027-12-31",
+     "eps_mid": 2.26856,
+     "ntm_weight": 0.7068493150684931
+    }
+   ]
+  },
+  "implied_expectations": {
+   "implied_drivers": [
+    7.936345175954061,
+    4.598150636940546,
+    1.2006994954843206
+   ],
+   "implied_growth": [
+    6.34846775551302,
+    3.257546886056061,
+    0.11175879211511153
+   ],
+   "driver_rung": "consensus forward EPS",
+   "revenue_based": false,
+   "rate_anchored": true,
+   "dgs10": 0.049699999999999994
+  }
+ },
+ "research_combined": "Tesla's Q3 2026 financial performance showed a top-line beat ($28.01B vs $26.27B expected) but an adjusted EPS miss ($0.50 vs $0.54), with operating profit dropping 40% YoY to $1.624B due largely to reduced regulatory credits. While management signals a strategic pivot toward autonomy with a planned >$20B CapEx ramp in 2026, the core Robotaxi thesis faces immediate and severe headwinds. The NHTSA launched an investigation on September 5, 2026, into Tesla's self-certification of ~1,000 Cybercabs lacking conventional controls (steering wheels/pedals), creating a critical regulatory mismatch as commercial deployment began in Austin with only 45 registered units. Compounding execution risks, July 2026 saw a record 236 driver-assist crashes involving Tesla vehicles, including four fatalities where FSD/Autopilot was verified engaged; critics note Tesla redacts narrative data for 100% of filings compared to competitors like GM (0%), raising transparency concerns. Market sentiment turned negative post-Cybercab reveal in September 2026, with stock dropping ~6-8% due to lack of pricing details and early execution failures (routing errors) reported by users."
+}
