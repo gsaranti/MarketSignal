@@ -4,6 +4,7 @@
  "asset_class": "etf",
  "is_fund": true,
  "statement_basis": null,
+ "equity_source": null,
  "spot": 144.19,
  "authoring_close": {
   "date": "2026-09-14",

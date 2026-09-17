@@ -2149,7 +2149,20 @@ pub struct HoldingAudit {
 /// for the level in the sentence, and the action packet's `fails` line states
 /// the hurdle fact, the sunk-cost lean and its reach. A v37 trail cannot
 /// resume into v38 on either the prompt or the checkpoint axis.
-pub const PROMPT_VERSION: &str = "portfolio-v38";
+///
+/// `portfolio-v39` is the residue slice off the v38 read and the 2026-09-17
+/// Codex churn analysis (fix list 3.5–3.14; the record is
+/// `docs/verification/2026-09-17-residue-slice.md`): the cadence exemption
+/// refuses a period adjective on the unit; the ledger contract states the
+/// margin's purpose and caps and the key-driver null rule; the interpretation
+/// score line glosses every axis; both response contracts close with no code
+/// fence or surrounding prose; the action packet's capital-efficiency lines
+/// name the engine's twelve-month total-return test and the hurdle rate, its
+/// ACTION BASIS defines the grade, the low-confidence letter is stated apart
+/// from conviction, and the financial summary is labelled model-authored. No
+/// persisted shape changes: the checkpoint stamp stays `checkpoint-v10`. A v38
+/// trail cannot resume into v39 on the prompt axis.
+pub const PROMPT_VERSION: &str = "portfolio-v39";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2740,12 +2753,12 @@ pub(crate) fn response_shape_contract(schema: &Value) -> String {
         "\nField notes (the ledger's numeric fields; the template's 1 values are placeholders without magnitude):\n\
          ledger.bear, ledger.base and ledger.bull are three sibling scenario objects under ledger, each with its conditions and probability_pct (0-100).\n\
          ledger.*.quant.threshold is exactly the level the statement names, in the series' unit.\n\
-         ledger.*.quant.margin is the separate noise band around that level in the same unit, non-negative and a fraction of the level, never folded into the threshold.\n"
+         ledger.*.quant.margin is the separate noise band around that level in the same unit, non-negative and a fraction of a nonzero level (a zero level has no cap), never folded into the threshold.\n"
     } else {
         ""
     };
     format!(
-        "\nResponse shape template (illustrative structure, not a completed answer; arrays may be empty). Replace each <field-path> placeholder with that field's value; for enum fields choose one of the Field alternatives below, never the literal placeholder. Sample numbers, booleans and neutral outlooks are not findings:\n{}\nField alternatives (allowed values, not preferences):\n{}\n{notes}The entire response is one JSON object beginning with {{.\n",
+        "\nResponse shape template (illustrative structure, not a completed answer; arrays may be empty). Replace each <field-path> placeholder with that field's value; for enum fields choose one of the Field alternatives below, never the literal placeholder. Sample numbers, booleans and neutral outlooks are not findings:\n{}\nField alternatives (allowed values, not preferences):\n{}\n{notes}The entire response is one JSON object beginning with {{, with no code fence or surrounding prose.\n",
         serde_json::to_string(&example).unwrap(), enums.join("\n")
     )
 }
@@ -3013,7 +3026,7 @@ pub const ACTION_KEYS: [&str; 2] = ["action", "rationale"];
 /// The action call's response-contract sentence, generated from [`ACTION_KEYS`].
 pub fn action_response_contract() -> String {
     format!(
-        "Respond with a single JSON object carrying exactly these keys: {}.",
+        "Respond with a single JSON object carrying exactly these keys: {}, with no code fence or surrounding prose.",
         ACTION_KEYS.join(", ")
     ) + " Example shape: {\"action\": \"hold\", \"rationale\": \"<the single investment reason for the rung>\"}; the example action is illustrative."
 }
@@ -3108,8 +3121,13 @@ mod tests {
             assert!(c.contains("Field notes (the ledger's numeric fields"), "{c}");
             assert!(c.contains("three sibling scenario objects"), "{c}");
             assert!(c.contains("exactly the level the statement names"), "{c}");
-            assert!(c.contains("never folded into the threshold"), "{c}");
+            assert!(c.contains("a fraction of a nonzero level (a zero level has no cap), never folded into the threshold"), "{c}");
+            // The closing sentence names the surface the grammar never shows the
+            // model (fix list 3.7, portfolio-v39).
+            assert!(c.contains("beginning with {, with no code fence or surrounding prose."), "{c}");
         }
+        // The action contract carries the same sentence (fix list 3.13).
+        assert!(action_response_contract().contains(", with no code fence or surrounding prose."), "{}", action_response_contract());
         assert!(contract.contains("\"pe-ratio\"") && !contract.contains("\"expense-ratio\""), "stock enum: {contract}");
         let fund_contract = interpretation_response_contract(true, false);
         assert!(fund_contract.contains("\"expense-ratio\"") && !fund_contract.contains("\"pe-ratio\""), "fund enum: {fund_contract}");

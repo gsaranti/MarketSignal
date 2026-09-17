@@ -14,9 +14,9 @@
 
 use super::engine::{self, CompanyFinancials, EngineOutput};
 use super::pipeline::{
-    self, action_user_prompt, interpretation_user_prompt, role_risk_user_prompt, tax_caveat,
-    validate_ledger_rewrite_with_research, ActionInput, ActionSubject, InterpretationInput,
-    RoleRiskInput,
+    self, action_user_prompt, action_user_prompt_with_form, interpretation_user_prompt,
+    role_risk_user_prompt, tax_caveat, validate_ledger_rewrite_with_research, ActionInput,
+    ActionSubject, EngineSetForm, InterpretationInput, RoleRiskInput,
 };
 use super::{
     Action, AssetClass, ContinuityStamps, FalsifierDraft, LedgerDraft, QuantCoreDraft,
@@ -33,6 +33,12 @@ struct Fixture {
     asset_class: AssetClass,
     is_fund: bool,
     statement_basis: Option<StatementBasis>,
+    /// The balance-sheet instants' equity source the run stamped — present on
+    /// every holding whose computed metrics carry debt / equity or price / book,
+    /// since the live dossier stamps the source wherever an equity line reached
+    /// the engine (fix list 8.5, ruled 2026-09-17: the harness must not render
+    /// a computed D/E beside a no-balance-sheet line the run never showed).
+    equity_source: Option<crate::portfolio::EquitySource>,
     spot: f64,
     /// The dated close the run authored against — seeded as the one daily
     /// close of the reconstructed financials, so the market-data series
@@ -117,7 +123,7 @@ fn draft_of(f: &Fixture) -> LedgerDraft {
 fn stamps_of(f: &Fixture) -> ContinuityStamps {
     ContinuityStamps {
         statement_basis: f.statement_basis,
-        equity_source: None,
+        equity_source: f.equity_source,
     }
 }
 
@@ -131,6 +137,7 @@ fn dossier_of(f: &Fixture, tax_sensitive: bool) -> super::dossier::HoldingDossie
         symbol: f.symbol.clone(),
         current_price: Some(f.spot),
         statement_basis: f.statement_basis,
+        equity_source: f.equity_source,
         daily_closes: vec![f.authoring_close.clone()],
         ..Default::default()
     };
@@ -243,31 +250,55 @@ fn attempt_6_action_packets_carry_no_account_economics_and_are_tax_invariant() {
             panic!("{}: every attempt-6 holding priced", f.symbol)
         };
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        let render = |d: &super::dossier::HoldingDossier| {
-            action_user_prompt(&ActionInput {
-                dossier: d,
-                subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
-                engine_set: &engine_set,
-                changes: None,
-                profile: &d.profile,
-            })
-        };
-        let taxable = render(&dossier_of(&f, true));
-        let exempt = render(&dossier_of(&f, false));
-        assert_eq!(taxable, exempt, "{}: the tax posture must not change the packet", f.symbol);
-        let mut repriced = dossier_of(&f, true);
-        repriced.position.cost_basis *= 3.0;
-        repriced.position.quantity *= 2.0;
-        repriced.position.market_value *= 2.0;
-        assert_eq!(taxable, render(&repriced), "{}: account economics must not change the packet", f.symbol);
-        // Case-insensitive on the whole packet: the app-rendered lines never carry
-        // these, and the fixture's model-authored summaries are scrubbed of them.
-        let lower = taxable.to_lowercase();
-        for absent in ["cost basis", "unrealized", "quantity:", "market value", "p/l", "- tax", "share-equivalents"] {
-            assert!(!lower.contains(absent), "{}: {absent} leaked: {taxable}", f.symbol);
+        // Both engine-set forms (fix list 3.9): the isolation holds on each, and
+        // the production form is the plain prompt byte for byte.
+        for form in [EngineSetForm::List, EngineSetForm::Facts] {
+            let render = |d: &super::dossier::HoldingDossier| {
+                action_user_prompt_with_form(
+                    &ActionInput {
+                        dossier: d,
+                        subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
+                        engine_set: &engine_set,
+                        changes: None,
+                        profile: &d.profile,
+                    },
+                    form,
+                )
+            };
+            let taxable = render(&dossier_of(&f, true));
+            let exempt = render(&dossier_of(&f, false));
+            assert_eq!(taxable, exempt, "{}: the tax posture must not change the packet", f.symbol);
+            let mut repriced = dossier_of(&f, true);
+            repriced.position.cost_basis *= 3.0;
+            repriced.position.quantity *= 2.0;
+            repriced.position.market_value *= 2.0;
+            assert_eq!(taxable, render(&repriced), "{}: account economics must not change the packet", f.symbol);
+            // Case-insensitive on the whole packet: the app-rendered lines never carry
+            // these, and the fixture's model-authored summaries are scrubbed of them.
+            let lower = taxable.to_lowercase();
+            for absent in ["cost basis", "unrealized", "quantity:", "market value", "p/l", "- tax", "share-equivalents"] {
+                assert!(!lower.contains(absent), "{}: {absent} leaked: {taxable}", f.symbol);
+            }
+            match form {
+                EngineSetForm::List => {
+                    let d = dossier_of(&f, true);
+                    let plain = action_user_prompt(&ActionInput {
+                        dossier: &d,
+                        subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
+                        engine_set: &engine_set,
+                        changes: None,
+                        profile: &d.profile,
+                    });
+                    assert_eq!(taxable, plain, "{}", f.symbol);
+                    assert_eq!(taxable.matches("ENGINE SET").count(), 1, "{}", f.symbol);
+                }
+                EngineSetForm::Facts => {
+                    assert!(!taxable.contains("ENGINE SET"), "{}: {taxable}", f.symbol);
+                    assert_eq!(taxable.matches("ENGINE ADMISSION FACTS").count(), 1, "{}", f.symbol);
+                }
+            }
+            assert!(taxable.contains("higher is better on every axis"), "{}", f.symbol);
         }
-        assert_eq!(taxable.matches("ENGINE SET").count(), 1, "{}", f.symbol);
-        assert!(taxable.contains("higher is better on every axis"), "{}", f.symbol);
         // The app-appended caveat for the rung the run chose, on the synthetic P/L.
         let d = dossier_of(&f, true);
         let caveat = tax_caveat(&d.profile, &d.position, graded.action);
@@ -279,6 +310,23 @@ fn attempt_6_action_packets_carry_no_account_economics_and_are_tax_invariant() {
         }
     }
 }
+
+/// Phrases a rationale carries when it argues from what the engine permits
+/// rather than from the evidence — the 3.9 read's permission scan, printed by
+/// the live harness beside each action line and never a gate.
+const PERMISSION_PHRASES: [&str; 11] = [
+    "engine set",
+    "engine admits",
+    "admitted by the engine",
+    "engine's rules",
+    "engine excludes",
+    "excluded by the engine",
+    "not allowed",
+    "not permitted",
+    "forbid",
+    "prohibit",
+    "outside the set",
+];
 
 /// The phrases no model-facing packet may carry once account economics leave
 /// the intrinsic packets (fix list 3.2, `portfolio-v38`): the header's own
@@ -339,6 +387,14 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
         }
         assert!(taxable.starts_with(&format!("HOLDING: {} (", f.symbol)), "{taxable}");
         assert!(taxable.contains("Position change since last run: NEW (no prior verdict"), "{taxable}");
+        // Fix list 8.5 (portfolio-v39): a fixture carrying a computed debt / equity
+        // stamps the equity source its live dossier would have, so the packet's
+        // balance-sheet line never contradicts its own computed metrics.
+        match (f.engine_output.metrics.debt_to_equity, f.equity_source) {
+            (Some(_), Some(src)) => assert!(taxable.contains(&format!("supplied this run by {}.", src.label())), "{}: {taxable}", f.symbol),
+            (None, None) => assert!(taxable.contains("no equity line reached the engine"), "{}: {taxable}", f.symbol),
+            (de, src) => panic!("{}: debt/equity {de:?} beside equity source {src:?}", f.symbol),
+        }
     }
     // The role/risk branch on a synthetic fund (attempt 6 produced none).
     let financials = CompanyFinancials { symbol: "BND".into(), current_price: Some(72.0), ..Default::default() };
@@ -581,6 +637,10 @@ fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades()
 /// Requires the local Ollama daemon up with the configured roster present. Run:
 ///   `MARKET_SIGNAL_LOCAL_EVAL_REPEATS=3 cargo test fixed_evidence_live -- --ignored --nocapture`
 /// `MARKET_SIGNAL_LOCAL_EVAL_SYMBOLS=TSLA,PGNY` narrows the set.
+/// `MARKET_SIGNAL_LOCAL_EVAL_ENGINE_SET=list|facts|both` (default `list`) picks
+/// the engine-set form the plain action repeats run under — `both` runs the
+/// `Facts` repeats after the `List` repeats on each holding, the fix list 3.9
+/// A/B in one pass; the tax, cost and fresh-interpretation calls stay on `List`.
 /// `MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR=<dir>` also captures every call's
 /// thinking, fenced, into `<dir>/<stamp>-fixedevi/holding-<SYM>.txt` through
 /// the same [`crate::thought_log::ThoughtLogSink`] the dev app's debug capture
@@ -609,6 +669,16 @@ fn fixed_evidence_live() {
     let cfg = AppConfig::from_env();
     let endpoint = local_model::endpoint_from_config(&cfg).expect("MARKET_SIGNAL_LOCAL_DAEMON_ENDPOINT set");
     let roster = local_model::roster_from_config(&cfg);
+    let engine_set_forms: Vec<EngineSetForm> = match std::env::var("MARKET_SIGNAL_LOCAL_EVAL_ENGINE_SET")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("list") => vec![EngineSetForm::List],
+        Some("facts") => vec![EngineSetForm::Facts],
+        Some("both") => vec![EngineSetForm::List, EngineSetForm::Facts],
+        Some(other) => panic!("MARKET_SIGNAL_LOCAL_EVAL_ENGINE_SET={other}: expected list, facts or both"),
+    };
     let thought_dir = std::env::var("MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR")
         .ok()
         .filter(|v| !v.trim().is_empty());
@@ -629,7 +699,9 @@ fn fixed_evidence_live() {
     }
     let analyst = LocalAnalyst::new(client, roster.reasoner.clone(), roster.fast.clone());
 
-    println!("\n== fixed evidence, live (RECONSTRUCTED packets, not a replay of attempt 6) — {repeats} repeat(s) ==");
+    println!(
+        "\n== fixed evidence, live (RECONSTRUCTED packets, not a replay of attempt 6) — {repeats} repeat(s); engine-set forms {engine_set_forms:?} =="
+    );
     if let Some(dir) = &thought_dir {
         println!("  thinking captured under {dir} (newest folder; one fenced holding-<SYM>.txt per holding)");
     }
@@ -726,10 +798,19 @@ fn fixed_evidence_live() {
             );
             for c in &ledger.conditions {
                 match (&c.quant, &c.downgraded_reason) {
+                    // The margin beside its share of the level (fix list 3.14's
+                    // anchoring watch): a read whose ratios drift toward the cap
+                    // shows here. A diagnostic, never a gate.
                     (Some(q), _) => println!(
-                        "    KEPT   [{:?}{}] {} {} {} (margin {}) <= \"{}\"",
+                        "    KEPT   [{:?}{}] {} {} {} (margin {}, {}) <= \"{}\"",
                         c.role, c.trigger_family.map(|f| format!(" {f:?}")).unwrap_or_default(),
-                        q.series.as_kebab(), q.comparator.as_kebab(), q.threshold, q.margin, c.statement
+                        q.series.as_kebab(), q.comparator.as_kebab(), q.threshold, q.margin,
+                        if q.threshold != 0.0 {
+                            format!("{:.0}% of level", q.margin / q.threshold.abs() * 100.0)
+                        } else {
+                            "no ratio: zero level".to_string()
+                        },
+                        c.statement
                     ),
                     (None, Some(reason)) => println!("    DOWN   \"{}\" — {reason}", c.statement),
                     (None, None) => println!("    QUAL   \"{}\"", c.statement),
@@ -742,31 +823,42 @@ fn fixed_evidence_live() {
         // (the pipeline's own assembly), so clean interpretation prose is seen
         // reaching the rung.
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        let decide = |d: &super::dossier::HoldingDossier, subject: &super::GradedVerdict, label: &str| {
+        let decide = |d: &super::dossier::HoldingDossier, subject: &super::GradedVerdict, form: EngineSetForm, label: &str| {
             let started = std::time::Instant::now();
-            match analyst.decide_action(&ActionInput {
+            match analyst.decide_action_under(&ActionInput {
                 dossier: d,
                 subject: ActionSubject::Priced { graded: subject, engine: &f.engine_output, pre_profit: None },
                 engine_set: &engine_set,
                 changes: None,
                 profile: &d.profile,
-            }) {
-                Ok(decision) => println!(
-                    "  action {label}: {} ({:.0}s; set [{}]; run chose {}) — {}",
-                    decision.action.as_kebab(), started.elapsed().as_secs_f64(),
-                    engine_set.iter().map(Action::as_kebab).collect::<Vec<_>>().join(", "),
-                    graded.action.as_kebab(), decision.rationale
-                ),
-                Err(e) => println!("  action {label}: FAILED — {e:#}"),
+            }, form) {
+                Ok(decision) => {
+                    println!(
+                        "  action {label} [{form:?}]: {} ({:.0}s; set [{}]; run chose {}) — {}",
+                        decision.action.as_kebab(), started.elapsed().as_secs_f64(),
+                        engine_set.iter().map(Action::as_kebab).collect::<Vec<_>>().join(", "),
+                        graded.action.as_kebab(), decision.rationale
+                    );
+                    // The 3.9 read's permission scan (a diagnostic, never a gate):
+                    // a rationale that argues from what the engine permits rather
+                    // than from the evidence names itself here.
+                    let lower = decision.rationale.to_lowercase();
+                    if let Some(phrase) = PERMISSION_PHRASES.iter().find(|p| lower.contains(**p)) {
+                        println!("    !! permission phrase in rationale: \"{phrase}\"");
+                    }
+                }
+                Err(e) => println!("  action {label} [{form:?}]: FAILED — {e:#}"),
             }
         };
-        for r in 1..=repeats {
-            decide(&d, graded, &format!("#{r}"));
+        for form in &engine_set_forms {
+            for r in 1..=repeats {
+                decide(&d, graded, *form, &format!("#{r}"));
+            }
         }
-        decide(&dossier_of(&f, false), graded, "tax-exempt variant");
+        decide(&dossier_of(&f, false), graded, EngineSetForm::List, "tax-exempt variant");
         let mut costly = dossier_of(&f, true);
         costly.position.cost_basis *= 3.0;
-        decide(&costly, graded, "cost-basis ×3 variant");
+        decide(&costly, graded, EngineSetForm::List, "cost-basis ×3 variant");
         if let Some(interp) = fresh {
             let assembled = pipeline::graded_verdict_from_interpretation(
                 &f.engine_output,
@@ -774,7 +866,7 @@ fn fixed_evidence_live() {
                 interp,
                 graded.engine_view.clone(),
             );
-            decide(&d, &assembled, "fresh-interpretation verdict");
+            decide(&d, &assembled, EngineSetForm::List, "fresh-interpretation verdict");
         }
         ctx.step_finished(step_key, "ok", None);
     }

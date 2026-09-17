@@ -187,7 +187,7 @@ Docs that change: `portfolio-workflow.md §Step 6f`, `portfolio-analysis.md §Th
 verdict` (the model-arm field list), `§Portfolio action`, `§What changed`, `§Holdings
 change tracking` and `§The position thesis ledger`.
 Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are recorded in
-`2026-09-16-interpretation-slice.md` §Rulings; every entry below landed as `portfolio-v38`.
+`2026-09-16-interpretation-slice.md` §Rulings; 3.1–3.3 landed as `portfolio-v38`, and 3.5–3.14 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 
 - 3.1 Resolve `price_target_rationale` ownership: either the app renders the engine's
   methodology and the model owns a clearly named explanation of its own targets, or the
@@ -228,16 +228,19 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   "two consecutive daily closes" keeps.
   Raised by the v38 read (L10).
   Ruled 2026-09-16: adopt; lands in the residue slice (`portfolio-v39`).
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.6 The interpretation prompt's sub-score line glosses every axis, as the action
   packet's polarity clause does (valuation = more attractive, risk = more resilient).
   Check: the interpretation re-think's polarity re-checks fall on the fixed set.
   Raised by the v38 read (L11).
   Ruled 2026-09-16: adopt; residue slice.
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.7 The shape contract's closing sentence states "with no code fence or surrounding
   prose".
   Check: fence deliberation in the interpretation thinking falls toward zero on the fixed set.
   Raised by the v38 read (L12).
   Ruled 2026-09-16: adopt; residue slice.
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.8 The ledger prompt states that a key driver with no series in this holding's list
   carries null.
   Check: the driver-mapping deliberation falls on the fixed set; the persisted driver
@@ -246,6 +249,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-16: adopt; residue slice.
   Amended 2026-09-17: the prompt states the rule alone; the expectation clause ("most
   drivers will") is dropped, since it invites skipping a mapping that plainly exists.
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.9 The ENGINE SET line, at thirty percent of the action call's re-think since 2.2:
   an A/B on the fixed set — the live harness gains a variant that renders the set's
   underlying facts (the new-money admission result, the hurdle state, the grade bar)
@@ -256,6 +260,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-16: adopt the A/B; the form is ruled on its evidence.
   Ruled 2026-09-17: the A/B's read also scans every action call under both forms for invented permission claims, prose-ownership errors and rationale correctness.
   The marker share and the rung table alone do not decide the form (Codex churn analysis S3; DIA call 44 concluded three times that the set excludes add while quoting "the full ladder is yours").
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.10 The action packet's capital-efficiency line names its owner, horizon and rate: the
   engine's twelve-month total-return test against the stated hurdle rate, each of the four
   states saying what it establishes and no more.
@@ -265,6 +270,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   engine and the packet.
   Ruled 2026-09-17: adopt the wording; lands in the residue slice (`portfolio-v39`).
   The numbers themselves are 3.15.
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.11 The action packet distinguishes the grade's low-confidence marker (an imputed
   sub-score) from conviction (the degradation count), and states what the grade is: the
   backward composite of the quality, valuation and risk sub-scores, distinct from the
@@ -276,18 +282,21 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Amended 2026-09-17: the coexistence clause became the grade's definition, so the sentence
   reads as a meaning, never a permission, and answers the imported grade-to-action
   convention directly (PGNY calls 51 and 53).
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.12 The action packet labels the financial summary as model-authored, so its provenance
   reads beside the engine's.
   Check: no action thinking attributes the financial summary to the engine.
   Raised by the Codex churn analysis (S4, the labeling half).
   Ruled 2026-09-17: adopt; residue slice.
   Forwarding the model's target rationale is 3.16.
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.13 The action response contract states "with no code fence or surrounding prose",
   the 3.7 sentence, since the two contracts are separate strings.
   Check: fence deliberation in the action thinking falls toward zero on the fixed set (SPMO
   call 22 spent seven markers on it).
   Raised by the Codex churn analysis (S5).
   Ruled 2026-09-17: adopt; residue slice.
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.14 The ledger prompt states what the margin is for — the noise band that keeps a print
   inside the series' ordinary variation from confirming a breach — and then the relative
   and magnitude caps the 6g seam applies (the ruled 1.8 rule), where the margin is authored,
@@ -299,6 +308,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-17: adopt; residue slice.
   Amended 2026-09-17: the purpose precedes the cap and the check watches for anchoring, so a
   model that learns the ceiling as the norm shows in the read.
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 3.15 The action packet carries the hurdle read's numbers — the hurdle rate and the bear /
   base / bull twelve-month total returns it tested — beside the state.
   This adds to the decision's evidence set under `portfolio-analysis.md §Portfolio action`
@@ -492,6 +502,7 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   Ruled 2026-09-17: a fixture fix only, no prompt change and no stamp, landing with the
   residue slice; the plan verifies the live dossier cannot produce the split before treating
   it as harness-only.
+  Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
 - 8.6 A sampling-profile comparison on the action call, on the fixed set: the current
   "Thinking — general" row against the vendor "Thinking — precise" row
   (`local-model-operations.md §Sampling settings`), the packet byte-identical, thinking on,

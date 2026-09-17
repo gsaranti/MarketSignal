@@ -131,6 +131,52 @@ pub struct ActionInput<'a> {
     pub changes: Option<&'a crate::portfolio::WhatChangedAudit>,
 }
 
+/// How the engine's per-holding action set renders in the action packet (fix
+/// list 3.9, `portfolio-v39`): `List` is the production form — the admitted
+/// rungs stated once as evidence — and `Facts` the harness-only A/B variant
+/// that renders, in the set's place, the admission facts the set derives from
+/// that the packet does not already carry (the new-money admission point test
+/// and the letter's bar; the hurdle state, the overlay bars and a forensic trip
+/// render in their own sections). The contract is unchanged until the A/B is
+/// read; the pipeline always decides under `List`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineSetForm {
+    List,
+    Facts,
+}
+
+/// The `Facts` form's line: engine evidence with no rung named. A role/risk
+/// vehicle has no return evidence, which is the one fact its set rests on.
+fn engine_admission_facts_line(subject: &ActionSubject) -> String {
+    match subject {
+        ActionSubject::Priced { engine, .. } => {
+            let admission = if engine.hurdle.admits_new_money {
+                "passes — the base-case total return clears the hurdle as a point test"
+            } else {
+                "fails — the base-case total return misses the hurdle as a point test"
+            };
+            let letter = match engine.grade {
+                crate::portfolio::Grade::F => "F, which bars the add family in the engine's own rule".to_string(),
+                crate::portfolio::Grade::A | crate::portfolio::Grade::B => format!(
+                    "{}, which supports add-aggressively in the engine's own rule",
+                    engine.grade.as_str()
+                ),
+                g => format!(
+                    "{}, which neither bars the add family nor supports add-aggressively in the engine's own rule",
+                    g.as_str()
+                ),
+            };
+            format!(
+                "\nENGINE ADMISSION FACTS (engine evidence; the full ladder is yours): new-money \
+                 admission {admission}; the letter is {letter}.\n"
+            )
+        }
+        ActionSubject::RoleRisk { .. } => "\nENGINE ADMISSION FACTS (engine evidence; the full ladder is yours): this \
+             branch carries no return evidence, so the add family has no engine support here.\n"
+            .to_string(),
+    }
+}
+
 /// The app-stamped annotation for a chosen rung outside the engine's per-holding
 /// action set — the choice persists exactly as authored; the departure records on
 /// the holding's audit (`docs/portfolio-analysis.md` §Portfolio action, the
@@ -1875,6 +1921,13 @@ const DURATION_COUNTS: [&str; 12] = [
     "multiple", "consecutive",
 ];
 const DURATION_UNITS: [&str; 7] = ["day", "week", "month", "quarter", "session", "year", "close"];
+/// Period adjectives that defeat the cadence exemption when they sit on the
+/// duration unit: "weekly closes" are a week apart, not the daily cadence
+/// (fix list 3.5, `portfolio-v39`). Each maps to the unit it names.
+const PERIOD_ADJECTIVES: [(&str, &str); 6] = [
+    ("weekly", "week"), ("monthly", "month"), ("quarterly", "quarter"),
+    ("annual", "year"), ("annually", "year"), ("yearly", "year"),
+];
 /// Second-condition markers. "confirming" left the list 2026-09-16 (fix list
 /// 1.6): "a break below $320 confirming broader multiple compression" states what
 /// the break would mean, not a second test — a genuine second level is still
@@ -2024,7 +2077,10 @@ fn stated_direction(lower: &str) -> Option<bool> {
 /// like "several") and the singular unit. Up to two adjectives may sit between
 /// "consecutive" and the unit, since the model mirrors the contract's own
 /// "consecutive distinct breaching daily closes" (fix list 1.6, ruled
-/// 2026-09-16 off the live read's L2).
+/// 2026-09-16 off the live read's L2). A period adjective on the unit (weekly,
+/// monthly, quarterly, annual, yearly) names that period as the unit instead,
+/// so "two consecutive weekly closes" reads as two weeks (fix list 3.5,
+/// `portfolio-v39`).
 fn duration_clauses(lower: &str) -> Vec<(Option<u32>, &'static str)> {
     let words: Vec<&str> = lower
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
@@ -2041,6 +2097,9 @@ fn duration_clauses(lower: &str) -> Vec<(Option<u32>, &'static str)> {
         }
         DURATION_COUNTS.contains(&w).then_some(None)
     };
+    let period_of = |w: &str| -> Option<&'static str> {
+        PERIOD_ADJECTIVES.iter().find(|(adj, _)| w == *adj).map(|(_, unit)| *unit)
+    };
     // Every clause is collected — a later unsupported duration behind a
     // cadence-exact one still binds ("for two consecutive sessions and persists
     // there for three weeks"; Codex, the follow-up review's finding 3).
@@ -2050,22 +2109,30 @@ fn duration_clauses(lower: &str) -> Vec<(Option<u32>, &'static str)> {
         // "<count> consecutive [adjective [adjective]] <unit>", with or without
         // a leading "for".
         if words.get(i + 1) == Some(&"consecutive") {
+            let mut period = None;
             for w in words.get((i + 2)..(i + 5).min(words.len())).unwrap_or(&[]) {
                 if let Some(unit) = unit_of(w) {
-                    out.push((count, unit));
+                    out.push((count, period.unwrap_or(unit)));
                     break;
                 }
                 if count_of(w).is_some() {
                     break;
                 }
+                period = period.or_else(|| period_of(w));
             }
             continue;
         }
-        // "for <count> <unit>" — never a bare "<count> <unit>", which also
-        // describes a level ("not seen in 3 years") rather than a duration.
+        // "for <count> [period adjective] <unit>" — never a bare "<count> <unit>",
+        // which also describes a level ("not seen in 3 years") rather than a
+        // duration.
         if i > 0 && words[i - 1] == "for" {
             if let Some(unit) = words.get(i + 1).and_then(|w| unit_of(w)) {
                 out.push((count, unit));
+            } else if let (Some(period), Some(_)) = (
+                words.get(i + 1).and_then(|w| period_of(w)),
+                words.get(i + 2).and_then(|w| unit_of(w)),
+            ) {
+                out.push((count, period));
             }
         }
     }
@@ -4596,8 +4663,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     ));
 
     p.push_str(&format!(
-        "\nENGINE GRADE (the baseline arm{}): {}\nENGINE SUB-SCORES (0-100, higher better on every axis — a high risk score = \
-         resilient/low-risk): quality {:.0}, valuation {:.0}, risk/resilience {:.0}; \
+        "\nENGINE GRADE (the baseline arm{}): {}\nENGINE SUB-SCORES {SCORE_POLARITY}: quality {:.0}, valuation {:.0}, risk/resilience {:.0}; \
          momentum {:.0} rides as market-setup context OUTSIDE the letter\n",
         if e.low_confidence_grade {
             "; low-confidence — an imputed sub-score underlies it"
@@ -5133,8 +5199,14 @@ fn input_delta_prompt_evidence(entries: &[crate::portfolio::DeltaEntry]) -> Stri
 }
 
 /// The finished verdict, prior evidence, engine action set
-/// (its choice withheld), and investor profile.
+/// (its choice withheld), and investor profile — the production `List` form.
 pub fn action_user_prompt(input: &ActionInput) -> String {
+    action_user_prompt_with_form(input, EngineSetForm::List)
+}
+
+/// [`action_user_prompt`] under a chosen engine-set rendering (fix list 3.9):
+/// the packet is identical outside the one line the form selects.
+pub fn action_user_prompt_with_form(input: &ActionInput, form: EngineSetForm) -> String {
     let d = input.dossier;
     let mut p = String::new();
     p.push_str(&holding_header(d));
@@ -5165,7 +5237,10 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
             p.push_str(
                 "\nACTION BASIS: The grade and both arms' implied target moves are the primary basis; \
                  risk tier and horizon outlook refine the read. The engine's moves \
-                 carry stated provenance; the model's bands are its own forward call.\n",
+                 carry stated provenance; the model's bands are its own forward call. \
+                 The grade is the backward composite of the quality, valuation and risk \
+                 sub-scores, and the targets are the forward scenario read; each is its own \
+                 read.\n",
             );
             p.push_str(&format!(
                 "\nTHE VERDICT (already authored — the evidence you act on):\n\
@@ -5174,7 +5249,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                  outside the letter; risk tier {}.\n",
                 graded.grade.as_str(),
                 if graded.low_confidence_grade {
-                    " (low-confidence — an imputed sub-score underlies it)"
+                    " (a low-confidence letter: one sub-score is imputed — a property of the grade, not the conviction)"
                 } else {
                     ""
                 },
@@ -5197,12 +5272,24 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 ));
             }
             p.push_str(&format!(
-                "CONVICTION: {:?}. HORIZON OUTLOOK: short {:?} / mid {:?} / long {:?}.\n",
+                "CONVICTION (the verdict's own confidence): {:?}. HORIZON OUTLOOK: short {:?} / mid {:?} / long {:?}.\n",
                 graded.conviction,
                 graded.horizon_outlook.short,
                 graded.horizon_outlook.mid,
                 graded.horizon_outlook.long,
             ));
+            // Fix list 3.10 (ruled 2026-09-17 off the v38 read and the Codex churn
+            // analysis, S1): each line opens by naming its owner, horizon and
+            // rate — the engine's twelve-month total-return test against the
+            // tier-scaled hurdle — after the action calls guessed the assessed
+            // horizon and read `indeterminate` as a reason to hold.
+            p.push_str(&match engine.hurdle.hurdle_rate {
+                Some(h) => format!(
+                    "CAPITAL EFFICIENCY (the engine's twelve-month total-return test against a {:.1}% hurdle): ",
+                    h * 100.0
+                ),
+                None => "CAPITAL EFFICIENCY (the engine's twelve-month total-return test; no hurdle rate this run): ".to_string(),
+            });
             p.push_str(match engine.hurdle.state {
                 // Fix list 2.5 (ruled 2026-09-16, wording ratified 2026-09-16 F5):
                 // "an exit input when forward prospects are independently poor" read
@@ -5211,15 +5298,15 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 // the sunk-cost lean it feeds, and its reach, like the other three
                 // states (`docs/portfolio-analysis.md` §Portfolio action).
                 crate::portfolio::HurdleState::Fails =>
-                    "CAPITAL EFFICIENCY: fails — even the bull case misses the hurdle over the assessed horizon, so the position is dead money. This is a weighed exit input beside the forward read, not a rung: it leans toward realizing some or all of the position where the forward prospects are independently poor, and it neither requires nor forbids any rung.\n",
+                    "fails — even the bull case misses it, so the position is dead money. This is a weighed exit input beside the forward read, not a rung: it leans toward realizing some or all of the position where the forward prospects are independently poor, and it neither requires nor forbids any rung.\n",
                 // Fix list 2.4 (ruled 2026-09-16): "carries no exit signal" read as a
                 // directive not to sell; the line states the hurdle fact and its reach.
                 crate::portfolio::HurdleState::Clears =>
-                    "CAPITAL EFFICIENCY: clears — even the bear case clears the hurdle over the assessed horizon. This line states the hurdle test only; it neither requires nor forbids any rung.\n",
+                    "clears — even the bear case clears it. This line states the hurdle test only; it neither requires nor forbids any rung.\n",
                 crate::portfolio::HurdleState::Indeterminate =>
-                    "CAPITAL EFFICIENCY: indeterminate — the bear case misses the hurdle and the bull case clears it, so the read proves nothing either way. This line neither requires nor forbids any rung.\n",
+                    "indeterminate — the bear case misses it and the bull case clears it, so the read proves nothing either way. This line neither requires nor forbids any rung.\n",
                 crate::portfolio::HurdleState::Unscorable =>
-                    "CAPITAL EFFICIENCY: unscorable — no hurdle assessment is available. This line neither requires nor forbids any rung.\n",
+                    "unscorable — no hurdle assessment is available. This line neither requires nor forbids any rung.\n",
             });
             if d.prior_verdict.is_some() {
                 p.push_str(&action_continuity_section(d, &graded.what_changed, input.changes));
@@ -5250,7 +5337,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                     "raw-percentile fallback (thin issuer history)"
                 }
             ));
-            p.push_str(&format!("FINANCIAL SUMMARY: {}\n", graded.financial_summary));
+            p.push_str(&format!("FINANCIAL SUMMARY (model-authored at interpretation): {}\n", graded.financial_summary));
             if let Some(overlay) = pre_profit {
                 p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Action));
             }
@@ -5310,12 +5397,17 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     // The engine's per-holding set, stated once as evidence (ruled 2026-09-16
     // off attempt-6 Finding 3: the departure mechanics are app behavior —
     // `outside_set_annotation` — and stay out of the decision prompt).
-    let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
-    p.push_str(&format!(
-        "\nENGINE SET (engine evidence): the engine arm's rules admit [{}]; its own pick \
-         is undisclosed. The full ladder is yours; this set is one input.\n",
-        set.join(", ")
-    ));
+    match form {
+        EngineSetForm::List => {
+            let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
+            p.push_str(&format!(
+                "\nENGINE SET (engine evidence): the engine arm's rules admit [{}]; its own pick \
+                 is undisclosed. The full ladder is yours; this set is one input.\n",
+                set.join(", ")
+            ));
+        }
+        EngineSetForm::Facts => p.push_str(&engine_admission_facts_line(&input.subject)),
+    }
 
     p.push_str("\nINVESTOR PROFILE (frames the decision; the verdict's facts are fixed):\n");
     let profile = input.profile.display();
@@ -5514,14 +5606,27 @@ impl LedgerSeriesContract {
         // landed with the §3 slice): levelless prose cost PSX and PGNY three of
         // four executable cores each under `no-level`, so the contract asks for
         // the level in the sentence itself.
-        p.push_str(
+        // Fix list 3.14 and 3.8 (ruled 2026-09-17 off the v38 read and the Codex
+        // churn analysis, S6 and L13): the band's purpose before the caps the 6g
+        // seam applies, the numbers read from the seam's own constants so the
+        // prompt cannot drift from the validator, and the key-driver null rule.
+        p.push_str(&format!(
             "A quantitative condition's statement names its level in the series' unit — a \
              percent on a fraction series, dollars on the price, a multiple on a ratio — \
              since a statement naming no figure stays qualitative. \
              The threshold is exactly the level the statement names, in the series' unit; \
-             the margin is the separate noise band around it and is never folded into the \
-             threshold.\n",
-        );
+             the margin is the separate noise band around it — the ordinary print-to-print \
+             variation a crossing must clear before it counts — and is never folded into the \
+             threshold. Against a nonzero level a margin is at most {price_cap:.0}% of it on the \
+             price, the multiples and debt / equity, at most {fraction_cap:.0}% of it on a \
+             fraction-unit series, and always below its magnitude; a wider band leaves the \
+             condition qualitative. A zero level has no cap, since the margin is then the \
+             condition's only scale. \
+             A key driver's series is one of the labels below where one fits; a driver with \
+             no series in this list carries null.\n",
+            price_cap = MARGIN_CAP_PRICE_RATIO * 100.0,
+            fraction_cap = MARGIN_CAP_FRACTION * 100.0,
+        ));
         for row in &self.rows {
             let s = row.series;
             let basis = if s.flow_basis() {
@@ -5728,7 +5833,8 @@ pub fn ledger_prompt_section(
     p.push_str(
         "\nREWRITE THE THESIS LEDGER in `ledger`: the current thesis (the app carries \
          the original thesis unchanged); the key drivers the thesis actually depends \
-         on, each tied to an engine series where one fits; the bear/base/bull monitor \
+         on, each tied to an engine series where one fits and carrying null where none \
+         does; the bear/base/bull monitor \
          conditions with rough probability leans (percent, roughly summing to 100); \
          what must improve to migrate toward the bull case and what must not break to \
          stay in the base case; the key falsifiers; and the action triggers. \
@@ -5744,9 +5850,10 @@ pub fn ledger_prompt_section(
          (exactly one label from the list above), below/above, the threshold as a \
          number in that series' own units per the unit shown above — gross margin \
          below 16% is threshold 0.16, not 16 — and a materiality margin in those same \
-         units, well inside the level's magnitude (the noise guard: moves inside the \
-         margin don't count; typically a few percent of the level, and a margin at or \
-         beyond the level's magnitude downgrades the condition to qualitative). \
+         units, a positive noise band well inside a nonzero level's magnitude (the noise \
+         guard: moves inside the margin don't count; typically a few percent of a nonzero level; \
+         a margin at or beyond a nonzero level's magnitude downgrades the condition to \
+         qualitative, and a zero level has no cap). \
          Put the number in `quant`, not only in the statement text: a statement that \
          asserts a numeric threshold on an engine series while leaving `quant` null \
          cannot be machine-evaluated and silently degrades to a prose-only condition. \
@@ -6665,17 +6772,18 @@ fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest
     req
 }
 
-/// Build the per-holding action request: thinking on (the rung is a judgment
+/// Build the per-holding action request under the chosen engine-set rendering
+/// (fix list 3.9; the pipeline passes `List`): thinking on (the rung is a judgment
 /// call weighing the whole verdict against the profile), the action schema, and
 /// the **shared** interpret context size — the one-`num_ctx`-per-model rule (an
 /// Ollama `num_ctx` change reloads the resident runner,
 /// `docs/local-model-operations.md §The num_ctx trap`).
-fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatRequest {
+fn action_request(reasoner_model: &str, input: &ActionInput, form: EngineSetForm) -> ChatRequest {
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
             ChatMessage::system(action_system_prompt()),
-            ChatMessage::user(action_user_prompt(input)),
+            ChatMessage::user(action_user_prompt_with_form(input, form)),
         ],
     );
     req.format_schema = Some(crate::portfolio::action_decision_schema());
@@ -6683,6 +6791,48 @@ fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatRequest {
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
+}
+
+impl LocalAnalyst {
+    /// The action call's one issue path, under the engine-set rendering the
+    /// caller chose (fix list 3.9): the pipeline decides under
+    /// [`EngineSetForm::List`] through [`HoldingAnalyst::decide_action`]; the
+    /// fixed-evidence harness, which holds a concrete `LocalAnalyst`, calls this
+    /// directly for the `Facts` arm, so the production trait stays as it was.
+    /// The `Facts` form labels its stage so the thought-log fence and the usage
+    /// row tell the A/B's arms apart.
+    pub(crate) fn decide_action_under(
+        &self,
+        input: &ActionInput,
+        form: EngineSetForm,
+    ) -> Result<crate::portfolio::ActionDecision> {
+        let mut req = action_request(&self.reasoner_model, input, form);
+        // Stream step-scoped like interpretation: the decision's reasoning lands
+        // on this holding's own "Analyze {SYM}" step.
+        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
+        let stage = match form {
+            EngineSetForm::List => format!("action {}", input.dossier.position.symbol),
+            EngineSetForm::Facts => format!("action {} (engine-set facts)", input.dossier.position.symbol),
+        };
+        req.stage = Some(stage.clone());
+        self.retry.run(self.client.progress(), &stage, || {
+            self.record_model_call(&req);
+            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
+            self.record_usage(stage.clone(), &req, &resp);
+            ensure_not_output_limited(&stage, &req, &resp)?;
+            ensure_nonempty_completion(&stage, &resp)?;
+            serde_json::from_str(&resp.content)
+                .map_err(|e| {
+                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
+                })
+                .with_context(|| {
+                    format!(
+                        "parsing action-decision JSON: {}",
+                        body_snippet(&resp.content)
+                    )
+                })
+        })
+    }
 }
 
 impl HoldingAnalyst for LocalAnalyst {
@@ -6900,29 +7050,7 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
-        let mut req = action_request(&self.reasoner_model, input);
-        // Stream step-scoped like interpretation: the decision's reasoning lands
-        // on this holding's own "Analyze {SYM}" step.
-        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
-        let stage = format!("action {}", input.dossier.position.symbol);
-        req.stage = Some(stage.clone());
-        self.retry.run(self.client.progress(), &stage, || {
-            self.record_model_call(&req);
-            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
-            self.record_usage(stage.clone(), &req, &resp);
-            ensure_not_output_limited(&stage, &req, &resp)?;
-            ensure_nonempty_completion(&stage, &resp)?;
-            serde_json::from_str(&resp.content)
-                .map_err(|e| {
-                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
-                })
-                .with_context(|| {
-                    format!(
-                        "parsing action-decision JSON: {}",
-                        body_snippet(&resp.content)
-                    )
-                })
-        })
+        self.decide_action_under(input, EngineSetForm::List)
     }
 
     fn fast_id(&self) -> String {
@@ -8901,6 +9029,8 @@ pub(crate) mod tests {
         let user = interpretation_user_prompt(&input);
         assert!(user.contains("ENGINE GRADE (the baseline arm"), "{user}");
         assert!(user.contains("ENGINE SUB-SCORES"), "{user}");
+        // Every axis glossed with the action packet's clause (fix list 3.6, portfolio-v39).
+        assert!(user.contains(&format!("ENGINE SUB-SCORES {SCORE_POLARITY}:")), "{user}");
         assert!(user.contains("NOT a grade input"), "options proxy is flagged: {user}");
         assert!(user.contains("RISK TIER"), "{user}");
         assert!(user.contains("YOUR MODEL ARM"), "{user}");
@@ -9365,6 +9495,12 @@ pub(crate) mod tests {
         assert!(user.contains("THE VERDICT"), "{user}");
         assert!(!user.contains("Unrealized"), "no account economics: {user}");
         assert!(!user.contains("Cost basis"), "{user}");
+        // Since portfolio-v39: the grade defined beside the forward read (3.11),
+        // conviction named as the verdict's own confidence (3.11), and the
+        // financial summary labelled model-authored (3.12).
+        assert!(user.contains("The grade is the backward composite of the quality, valuation and risk sub-scores, and the targets are the forward scenario read"), "{user}");
+        assert!(user.contains("CONVICTION (the verdict's own confidence): "), "{user}");
+        assert!(user.contains("FINANCIAL SUMMARY (model-authored at interpretation): "), "{user}");
         // Both arms' targets reach the rung, both horizons (Codex I5): the
         // engine's lines under their provenance, the model's own band beside
         // them — the stub authors its twelve-month base at 1.05× the engine's,
@@ -9423,7 +9559,7 @@ pub(crate) mod tests {
         assert!(!system.contains("the app stamps the departure"), "{system}");
         assert!(system.contains("The investor profile breaks ties"), "{system}");
         assert!(!system.contains("Capital efficiency"), "{system}");
-        assert_eq!(user.matches("CAPITAL EFFICIENCY:").count(), 1, "{user}");
+        assert_eq!(user.matches("CAPITAL EFFICIENCY (the engine's twelve-month total-return test").count(), 1, "{user}");
         assert!(!user.contains("capital-efficiency read"), "{user}");
         assert!(!user.contains("fixed action mapping"), "{user}");
         assert!(!user.contains("never an exit input"), "{user}");
@@ -9518,8 +9654,10 @@ pub(crate) mod tests {
         for state in [crate::portfolio::HurdleState::Fails, crate::portfolio::HurdleState::Clears,
             crate::portfolio::HurdleState::Indeterminate, crate::portfolio::HurdleState::Unscorable] {
             engine.hurdle.state = state;
+            let mut low = graded.clone();
+            low.low_confidence_grade = true;
             let prompt = action_user_prompt(&ActionInput {
-                dossier: &d, subject: ActionSubject::Priced { graded, engine: &engine, pre_profit: None },
+                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &engine, pre_profit: None },
                 engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
             });
             // The `fails` line since portfolio-v38 (fix list 2.5): the fact, the
@@ -9529,7 +9667,17 @@ pub(crate) mod tests {
             assert_eq!(prompt.contains("a weighed exit input beside the forward read, not a rung"), fails);
             assert_eq!(prompt.contains("realizing some or all of the position where the forward prospects are independently poor"), fails);
             assert!(!prompt.contains("an exit input when forward prospects"), "{prompt}");
-            assert_eq!(prompt.matches("CAPITAL EFFICIENCY:").count(), 1);
+            // Since portfolio-v39 (fix list 3.10) the line opens with its owner,
+            // horizon and rate, and the ratified remainder follows it.
+            assert_eq!(prompt.matches("CAPITAL EFFICIENCY (the engine's twelve-month total-return test against a ").count(), 1, "{prompt}");
+            assert!(prompt.contains("% hurdle): "), "{prompt}");
+            assert!(!prompt.contains("over the assessed horizon"), "{prompt}");
+            assert!(!prompt.contains("CAPITAL EFFICIENCY:"), "{prompt}");
+            assert_eq!(prompt.contains("fails — even the bull case misses it, so the position is dead money"), fails);
+            // The low-confidence letter reads as a property of the grade, apart
+            // from the conviction line (fix list 3.11).
+            assert!(prompt.contains("a low-confidence letter: one sub-score is imputed — a property of the grade, not the conviction"), "{prompt}");
+            assert!(!prompt.contains("low-confidence — an imputed sub-score underlies it"), "{prompt}");
             assert!(!prompt.contains("capital-efficiency read"));
             assert!(!prompt.contains("fixed action mapping"));
             assert!(!prompt.contains("carries no exit signal"));
@@ -9538,6 +9686,15 @@ pub(crate) mod tests {
             assert_eq!(prompt.contains("proves nothing either way"), state == crate::portfolio::HurdleState::Indeterminate);
             // Every state closes with the same reach clause.
             assert_eq!(prompt.matches("neither requires nor forbids any rung").count(), 1, "{prompt}");
+            // With no hurdle rate the prefix says so rather than printing a gap.
+            let mut no_rate = engine.clone();
+            no_rate.hurdle.hurdle_rate = None;
+            let prompt = action_user_prompt(&ActionInput {
+                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &no_rate, pre_profit: None },
+                engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
+            });
+            assert_eq!(prompt.matches("CAPITAL EFFICIENCY (the engine's twelve-month total-return test; no hurdle rate this run): ").count(), 1, "{prompt}");
+            assert!(!prompt.contains("% hurdle): "), "{prompt}");
             assert!(prompt.contains("Prior engine grade"));
             assert!(prompt.contains("twelve-month base: 100 -> 110"));
             assert!(prompt.contains("[D1] forward earnings changed"));
@@ -9877,7 +10034,7 @@ pub(crate) mod tests {
         // schema per call and rewords two contract lines, changing the prompts,
         // the grammar and a persisted field, so it moves to v38 (and the
         // checkpoint trail to v10).
-        assert_eq!(PROMPT_VERSION, "portfolio-v38");
+        assert_eq!(PROMPT_VERSION, "portfolio-v39");
         assert_eq!(crate::portfolio::store::CHECKPOINT_FORMAT_VERSION, "checkpoint-v10");
     }
 
@@ -10957,6 +11114,21 @@ pub(crate) mod tests {
         assert!(action.contains("This branch has no price forecast or capital-efficiency hurdle assessment"));
         assert!(!action.contains("both arms' implied target moves"));
         assert!(!action.contains("even the bull case"));
+        // The harness's Facts form on this branch states the one fact its set
+        // rests on (fix list 3.9): no return evidence, so no engine support for
+        // the add family.
+        let facts = action_user_prompt_with_form(
+            &ActionInput {
+                dossier: &d,
+                subject: ActionSubject::RoleRisk { verdict: &rr },
+                engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+                changes: None,
+                profile: &d.profile,
+            },
+            EngineSetForm::Facts,
+        );
+        assert!(!facts.contains("ENGINE SET"), "{facts}");
+        assert!(facts.contains("ENGINE ADMISSION FACTS (engine evidence; the full ladder is yours): this branch carries no return evidence, so the add family has no engine support here."), "{facts}");
         rr.nav_premium = None;
         let action_gap = action_user_prompt(&ActionInput {
             dossier: &d,
@@ -14256,7 +14428,7 @@ pub(crate) mod tests {
         );
         // The sound cores stay quantitative — including legitimate growth past
         // 100%, a sign carried in words, and a bare "sustains".
-        let kept: [(&str, QuantCoreDraft, bool, Option<crate::portfolio::StatementBasis>); 20] = [
+        let kept: [(&str, QuantCoreDraft, bool, Option<crate::portfolio::StatementBasis>); 21] = [
             ("Gross margin permanently falls below 16% (floor breach indicating structural profitability impairment).",
              core("gross-margin", "below", 0.16, 0.02), false, Some(Ttm)),
             ("Price sustains above $575 implying base-case multiple expansion despite elevated discount rates near 5% on the 10Y",
@@ -14286,6 +14458,9 @@ pub(crate) mod tests {
             // relative caps.
             ("Price closes below $135 support level for two consecutive distinct daily sessions.",
              core("price", "below", 135.0, 2.0), true, None),
+            // A daily adjective is the cadence; a period adjective is not (fix
+            // list 3.5, `portfolio-v39`; the qualifier cases sit below).
+            ("Price closes below $300 for two consecutive daily closes", core("price", "below", 300.0, 3.0), false, None),
             ("Price sustains above $52 for two consecutive sessions as partial profit-take on stabilization path",
              core("price", "above", 52.0, 1.5), true, None),
             ("Daily realized volatility breaks above 2.5% and confirms on 2 consecutive closes—signaling structural risk premium elevation",
@@ -14358,6 +14533,21 @@ pub(crate) mod tests {
             ).as_deref(),
             Some(c::QUALIFIER)
         );
+        // A period adjective on the unit defeats the cadence exemption (fix list
+        // 3.5, `portfolio-v39`, off the v38 read's L10): weekly closes are a week
+        // apart, in either clause form.
+        for statement in [
+            "Price closes below $300 for two consecutive weekly closes",
+            "Price closes below $300 for two weekly closes",
+            "Price holds below $300 on two consecutive monthly closes",
+            "Price closes below $300 for two consecutive quarterly sessions",
+        ] {
+            assert_eq!(
+                class_of(statement, core("price", "below", 300.0, 3.0), false, None).as_deref(),
+                Some(c::QUALIFIER),
+                "{statement}"
+            );
+        }
     }
 
     #[test]
@@ -14580,6 +14770,33 @@ pub(crate) mod tests {
         assert_eq!(user.matches(SCORE_POLARITY).count(), 2, "{user}");
         assert_eq!(user.matches("ENGINE SET").count(), 1, "{user}");
         assert!(user.contains("The full ladder is yours; this set is one input."), "{user}");
+        // The harness's A/B form (fix list 3.9, portfolio-v39): `List` is the
+        // production prompt byte for byte; `Facts` renders the admission facts
+        // in the set's place and nothing else moves.
+        let input = ActionInput {
+            dossier: &d,
+            subject: ActionSubject::Priced { graded, engine: &engine_output, pre_profit: None },
+            engine_set: &engine_set,
+            changes: None,
+            profile: &d.profile,
+        };
+        assert_eq!(action_user_prompt_with_form(&input, EngineSetForm::List), user);
+        let facts = action_user_prompt_with_form(&input, EngineSetForm::Facts);
+        assert!(!facts.contains("ENGINE SET"), "{facts}");
+        assert_eq!(facts.matches("ENGINE ADMISSION FACTS (engine evidence; the full ladder is yours): new-money admission ").count(), 1, "{facts}");
+        assert!(
+            facts.contains(if engine_output.hurdle.admits_new_money {
+                "passes — the base-case total return clears the hurdle as a point test"
+            } else {
+                "fails — the base-case total return misses the hurdle as a point test"
+            }),
+            "{facts}"
+        );
+        assert!(facts.contains("in the engine's own rule."), "{facts}");
+        let (u_head, u_rest) = user.split_once("\nENGINE SET (").unwrap();
+        let (f_head, f_rest) = facts.split_once("\nENGINE ADMISSION FACTS (").unwrap();
+        assert_eq!(u_head, f_head);
+        assert_eq!(&u_rest[u_rest.find('\n').unwrap()..], &f_rest[f_rest.find('\n').unwrap()..]);
         for absent in ["restriction", "not a bound", "departure", "Its selected action"] {
             assert!(!user.contains(absent), "{absent}: {user}");
         }
@@ -14718,6 +14935,18 @@ pub(crate) mod tests {
             assert!(contract.contains("A quantitative condition's statement names its level in the series' unit"), "{label}: {contract}");
             assert!(contract.contains("since a statement naming no figure stays qualitative"), "{label}: {contract}");
             assert!(contract.contains("The threshold is exactly the level the statement names"), "{label}: {contract}");
+            // The band's purpose before the caps (3.14) and the key-driver null
+            // rule (3.8), since portfolio-v39; the caps read the seam's constants.
+            assert!(contract.contains("the ordinary print-to-print variation a crossing must clear before it counts"), "{label}: {contract}");
+            assert!(
+                contract.contains(&format!(
+                    "Against a nonzero level a margin is at most {:.0}% of it on the price, the multiples and debt / equity, at most {:.0}% of it on a fraction-unit series, and always below its magnitude",
+                    MARGIN_CAP_PRICE_RATIO * 100.0, MARGIN_CAP_FRACTION * 100.0
+                )),
+                "{label}: {contract}"
+            );
+            assert!(contract.contains("A zero level has no cap, since the margin is then the condition's only scale."), "{label}: {contract}");
+            assert!(contract.contains("a driver with no series in this list carries null"), "{label}: {contract}");
         }
         // Both prompts carry the worked examples in the vehicle's vocabulary.
         assert!(stock.examples().contains("gross-margin"), "{}", stock.examples());

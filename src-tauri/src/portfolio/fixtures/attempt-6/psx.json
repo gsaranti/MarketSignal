@@ -4,6 +4,7 @@
  "asset_class": "stock",
  "is_fund": false,
  "statement_basis": "ttm",
+ "equity_source": "fmp-quarterly",
  "spot": 257.06,
  "authoring_close": {
   "date": "2026-09-14",
