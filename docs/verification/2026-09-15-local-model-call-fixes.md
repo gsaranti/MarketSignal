@@ -109,6 +109,12 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   of three.
   Raised by the live read (L4).
   Ruled 2026-09-16: adopt; landed as `portfolio-v37`.
+- 1.9 A quantitative condition's statement names its level in the series' unit, stated
+  in the authoring contract, so `no-level` stops costing executable cores where the
+  model writes levelless prose.
+  Check: PSX and PGNY recover from one executable core over three repeats toward run 1's
+  four on the fixed set.
+  Raised by the v37 re-read (L9); ruling: open.
 - 1.8 A relative margin cap per series kind on top of the magnitude bound.
   Check: DIA's margin of 489.5 on a $490 level downgrades; a $15 margin on $485 keeps.
   Raised by the live read (L5).
@@ -158,6 +164,15 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   from 83 of 235 action markers toward the attempt-6 share (19 across every class).
   Raised by the live thinking read (L7 in `2026-09-16-ledger-conditions-and-action-packet.md`).
   Ruled 2026-09-16: adopt; landed as `portfolio-v37`.
+  Re-read 2026-09-17: the per-call capital-efficiency markers fell on every holding whose
+  line changed (TSLA 4.3 → 3.4, PSX 1.3 → 0.6, DIA 5.3 → 1.6, PGNY 6.7 → 2.4).
+- 2.5 The `fails` capital-efficiency line states the fact and its reach as the other
+  three states do — the bull case misses the hurdle; a weighed exit input, not a rung —
+  instead of "an exit input when forward prospects are independently poor", which the
+  model reads as a mandate to sell everything.
+  Check: on the fixed set with thinking captured, SPMO's and ARKF's capital-efficiency
+  markers (38 and 48 over five action calls) fall toward the reworded holdings' share.
+  Raised by the v37 re-read (L8); ruling: open.
 
 ## 3. Interpretation call — one responsibility per field, no account economics
 
@@ -325,6 +340,10 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   Ruled 2026-09-16: that verdict stands; 1.5–1.8 and 2.4 land as one small follow-up
   slice before §3 (one plan, `portfolio-v37` since 1.7 and 2.4 touch prompts), then the
   fixed-set re-read admits §1 and §3 planning starts from it.
+  Re-read 2026-09-17 on `portfolio-v37`: twenty-one kept cores, twenty-one matching; no
+  wrong or levelless core admitted; the rung never moved with tax or cost — §1 ADMITTED
+  (`2026-09-16-ledger-validator-follow-up.md` §The fixed-set re-read). §1 and §2 are
+  both admitted; §3 planning starts from the admitted set.
 - 8.3 Experiments, after 8.2: non-thinking synthesis on the frozen evidence, comparing
   claim retention, dates, citation resolution and partial-coverage accuracy as well as
   time, with repeats for variability; then non-thinking action separately on the

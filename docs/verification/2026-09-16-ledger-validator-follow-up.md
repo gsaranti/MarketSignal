@@ -83,4 +83,65 @@ A second Codex round found two more in the relative-price parser, both fixed:
 
 ## The fixed-set re-read
 
-Pending.
+Run on commit `38e52ce` after the task review and both Codex rounds, three repeats with thinking captured, Ollama v0.32.5 (one slot, the 128K context override, flash attention), `qwen3.5:122b-a10b`.
+Forty-eight calls in 1 h 44 min, no transport failure and no retry.
+The per-condition read is in the session's notes; the tables carry what it showed.
+
+### Cores beside their sentences
+
+| Holding | Kept cores across the three repeats | Wrong cores caught | Levelless caught | Other downgrades |
+|---|---|---|---|---|
+| TSLA | 3 (0 / 2 / 1): revenue-growth above 0.35, gross-margin below 0.16 and 0.18, each matching | 2 `level-mismatch` (0.15 against 16% and 17%, on a 53-second short-thinking call) | — | 1 `qualifier` ("without") |
+| PSX | 1 (1 / 0 / 0): gross-margin below 0.065 matching its 6.5% | — | 3 `no-level` (net-margin cores of 0.03 and 0.04, a price core of 215) | `ambiguous-level`, volume |
+| SPMO | 4 (3 / 1 / 0): return-volatility above 0.035, price below 130 "on two consecutive sessions", 135 and 125, each matching | — | 1 `no-level` ("above regime normal (>1 SD)") | 1 `qualifier` ("without") |
+| ARKF | 5 (2 / 2 / 1): price above 54 "confirming multiple expansion", below 40 and 38 "for two consecutive sessions", expense-ratio above 0.0085 and 0.008 "(currently 0.75%)", each matching | 2 `price-level-mismatch` (55 against $57, 38 against $37.50) | — | 2 `margin-implausible` (1 on 0.023, 2 on 0.0085) |
+| DIA | 7 (1 / 2 / 4): price below 490 (margin 5), 480, 495 "for two consecutive sessions", 505, above 560, expense-ratio above 0.0025, return-volatility above 0.01, each matching | 1 `price-level-mismatch` (485 against $490) | — | — |
+| PGNY | 1 (1 / 0 / 0): price below 20 matching | 1 `unit-mismatch` (2 against 2%, the attempt-6 shape) | 2 (`no-level` on net margin, `no-price-level`) | 1 `qualifier` ("without") |
+
+Twenty-one kept cores, twenty-one matching a figure their sentence states in the series' unit; run 1 had sixteen of nineteen plus three on sentences naming no figure, one of them wrong.
+Six wrong cores caught, six levelless cores caught, two implausible margins caught; no wrong core admitted and no levelless core kept.
+The five shapes the follow-up recovered all appeared and validated: cadence-exact durations three times, an interpretive "confirming …" twice, a parenthetical restatement once, and DIA's $490 condition now carrying a $5 margin where run 1 kept 489.5.
+Yield is twenty-one cores over eighteen calls against run 1's nineteen; DIA rose from three to seven and ARKF from three to five, while PSX and PGNY each fell from four to one because their sentences name no figure and `no-level` now holds them qualitative.
+Buffered thresholds persisted on three calls (TSLA's short call, ARKF's third, DIA's first) despite the contract sentence, each caught.
+
+### The rung under repeats and variants
+
+| Holding | Engine set | Repeats 1–3 | Tax-exempt | Cost basis ×3 |
+|---|---|---|---|---|
+| TSLA | sell-all, trim, hold | trim ×3 | trim | sell-all |
+| PSX | sell-all, trim, hold, add | trim ×3 | trim | trim |
+| SPMO | sell-all, trim, hold | sell-all ×3 | sell-all | sell-all |
+| ARKF | sell-all, trim, hold | sell-all, sell-all, trim | trim | sell-all |
+| DIA | sell-all, trim, hold | hold ×3 | hold | hold |
+| PGNY | sell-all, trim, hold, add | trim, hold, hold | hold | trim |
+
+No rung outside its engine set (0 of 30) and no rationale carrying tax, P/L, cost or quantity language.
+Three holdings held one rung across all five calls; the one variant outside its repeat set (TSLA cost basis on sell-all against three trims) is the same adjacent-rung draw TSLA showed in run 1 on a prompt the invariance test pins byte-identical.
+
+### Re-think markers
+
+| Call class | v35 (attempt 6) | v36 (run 2, one repeat) | v37 (this read, three repeats) |
+|---|---|---|---|
+| Action, words / markers per call | 2,465 / 15.3 | 2,433 / 13.1 | 2,404 / 12.9 |
+| Interpretation, words / markers per call | 2,057 / 12 | 1,811 / 7.5 | 2,474 / 11.9 |
+
+Action: the capital-efficiency bucket is 126 of 386 markers, but 86 of those sit on SPMO and ARKF, whose hurdle state is `fails` and whose line 2.4 left unchanged ("an exit input when forward prospects are independently poor" — the model deliberates whether an exit input mandates `sell-all`).
+On the four holdings whose line was reworded the per-call count fell on every one: TSLA 4.3 → 3.4, PSX 1.3 → 0.6, DIA 5.3 → 1.6, PGNY 6.7 → 2.4.
+The ENGINE SET clause stays at a tenth of the markers; genuine rung deliberation is a quarter.
+Interpretation is back at the v35 level and bimodal (TSLA's second call ran 4,526 words and 27 markers, ten of them on the response-shape template and three on the `price_target_rationale` sentence); that surface is fix list §3 and untouched by this slice.
+
+### Findings from the re-read
+
+- L8 — The `fails` capital-efficiency line is the action call's remaining re-think hotspot: 86 of 126 capital-efficiency markers on the two failing holdings, reading "an exit input" as a mandate to sell everything.
+  Proposed: state the fact and its reach on `fails` as the other three states now do (the bull case misses the hurdle; the line is a weighed exit input, not a rung).
+  Ruling: open (fix list 2.5).
+- L9 — Levelless prose costs yield where the model writes it: PSX and PGNY each fell from four executable cores to one under `no-level`.
+  Proposed: one contract sentence — a quantitative condition's statement names its level in the series' unit.
+  Ruling: open (fix list 1.9).
+- Watches, no entry: buffered thresholds persist on some calls and are caught; "breaches" and "breaks" are not comparison anchors, so "breaches $210 support" reads as ambiguous.
+
+### Verdict
+
+Against fix list 8.2 as ruled: every executable core admitted agrees with its sentence, the levelless hole is closed, every attempt-6 defect shape that recurred was caught, and tax or P/L variation cannot move the rung by construction or on the live table.
+**§1 is admitted** (2026-09-17), alongside §2 admitted 2026-09-16.
+L8 and L9 are clarity and yield, flags for the §3 plan or the ruling round, not conditions on the admission.
