@@ -239,11 +239,13 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Raised by the v38 read (L12).
   Ruled 2026-09-16: adopt; residue slice.
 - 3.8 The ledger prompt states that a key driver with no series in this holding's list
-  carries null, and most drivers will.
+  carries null.
   Check: the driver-mapping deliberation falls on the fixed set; the persisted driver
-  series are unchanged in kind.
+  series are unchanged in kind, and a driver with a plainly matching series still maps.
   Raised by the v38 read (L13).
   Ruled 2026-09-16: adopt; residue slice.
+  Amended 2026-09-17: the prompt states the rule alone; the expectation clause ("most
+  drivers will") is dropped, since it invites skipping a mapping that plainly exists.
 - 3.9 The ENGINE SET line, at thirty percent of the action call's re-think since 2.2:
   an A/B on the fixed set — the live harness gains a variant that renders the set's
   underlying facts (the new-money admission result, the hurdle state, the grade bar)
@@ -252,6 +254,68 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Check: the ENGINE SET marker share and the rung table under both forms.
   Raised by the v38 read (L15).
   Ruled 2026-09-16: adopt the A/B; the form is ruled on its evidence.
+  Ruled 2026-09-17: the A/B's read also scans every action call under both forms for invented permission claims, prose-ownership errors and rationale correctness.
+  The marker share and the rung table alone do not decide the form (Codex churn analysis S3; DIA call 44 concluded three times that the set excludes add while quoting "the full ladder is yours").
+- 3.10 The action packet's capital-efficiency line names its owner, horizon and rate: the
+  engine's twelve-month total-return test against the stated hurdle rate, each of the four
+  states saying what it establishes and no more.
+  Check: no action call guesses the assessed horizon, and no `indeterminate` rationale cites
+  the line as its reason for a rung (SPMO call 27 and DIA call 41 on the v38 read).
+  Raised by the 2026-09-17 Codex churn analysis of the v38 read (S1), verified against the
+  engine and the packet.
+  Ruled 2026-09-17: adopt the wording; lands in the residue slice (`portfolio-v39`).
+  The numbers themselves are 3.15.
+- 3.11 The action packet distinguishes the grade's low-confidence marker (an imputed
+  sub-score) from conviction (the degradation count), and states what the grade is: the
+  backward composite of the quality, valuation and risk sub-scores, distinct from the
+  forward scenario targets.
+  Check: no rationale calls a low-confidence grade "low conviction" or a "confidence
+  rating" on a Medium-conviction packet (DIA calls 40, 41 and 43 on the v38 read).
+  Raised by the Codex churn analysis (S2).
+  Ruled 2026-09-17: adopt; residue slice.
+  Amended 2026-09-17: the coexistence clause became the grade's definition, so the sentence
+  reads as a meaning, never a permission, and answers the imported grade-to-action
+  convention directly (PGNY calls 51 and 53).
+- 3.12 The action packet labels the financial summary as model-authored, so its provenance
+  reads beside the engine's.
+  Check: no action thinking attributes the financial summary to the engine.
+  Raised by the Codex churn analysis (S4, the labeling half).
+  Ruled 2026-09-17: adopt; residue slice.
+  Forwarding the model's target rationale is 3.16.
+- 3.13 The action response contract states "with no code fence or surrounding prose",
+  the 3.7 sentence, since the two contracts are separate strings.
+  Check: fence deliberation in the action thinking falls toward zero on the fixed set (SPMO
+  call 22 spent seven markers on it).
+  Raised by the Codex churn analysis (S5).
+  Ruled 2026-09-17: adopt; residue slice.
+- 3.14 The ledger prompt states what the margin is for — the noise band that keeps a print
+  inside the series' ordinary variation from confirming a breach — and then the relative
+  and magnitude caps the 6g seam applies (the ruled 1.8 rule), where the margin is authored,
+  in the series' own unit; the margin stays model-authored.
+  Check: `margin-implausible` downgrades fall on the fixed set (five on the v38 read, four
+  of them PGNY's), and the margin-to-level ratios of the kept cores do not drift toward the
+  cap across the read.
+  Raised by the Codex churn analysis (S6).
+  Ruled 2026-09-17: adopt; residue slice.
+  Amended 2026-09-17: the purpose precedes the cap and the check watches for anchoring, so a
+  model that learns the ceiling as the norm shows in the read.
+- 3.15 The action packet carries the hurdle read's numbers — the hurdle rate and the bear /
+  base / bull twelve-month total returns it tested — beside the state.
+  This adds to the decision's evidence set under `portfolio-analysis.md §Portfolio action`
+  and needs that ruling on its form.
+  Check: SPMO's `fails` calls reason from the tested returns rather than a guessed horizon.
+  Raised by the Codex churn analysis (S1, the numeric half).
+  Ruled 2026-09-17: a follow-on after the 3.9 A/B is read, its own plan; not in the residue
+  slice.
+- 3.16 The action packet forwards `model_target_rationale` and a compact statement of the
+  engine's valuation and target basis, so a disagreement between the arms reaches the rung
+  with both explanations and no governing arm.
+  Same evidence-set ruling as 3.15.
+  Check: PSX's action calls reconcile the engine's valuation sub-score against the model's
+  fair-value read from the forwarded rationale rather than by inference (call 18 spent 3,447
+  words on it).
+  Raised by the Codex churn analysis (S4, the forwarding half).
+  Ruled 2026-09-17: follow-on after the 3.9 A/B; not in the residue slice.
 - Not adopted (L14, ruled 2026-09-16): rendering "keep the action firm run to run" on
   continuity calls only — the debut check is accepted cost.
 
@@ -415,6 +479,41 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   thought length; re-think marker counts stay a diagnostic, never the gate; set the
   user's time budget explicitly.
   Ruling: open.
+
+- 8.5 The fixed evidence set's equity source is consistent with each fixture's computed
+  metrics: a fixture carrying a debt/equity or price/book value stamps the equity source its
+  live dossier would have, so the ledger prompt's statement-basis line and the computed
+  metrics never disagree on the harness alone.
+  Check: PGNY's interpretation prompt on the fixed set no longer says no equity line reached
+  the engine beside a computed debt/equity (call 47 on the v38 read read that line as a
+  template error and used the metrics).
+  Raised by the Codex churn analysis (S7), read as a harness artifact: the live pipeline
+  derives both from the same statement surface.
+  Ruled 2026-09-17: a fixture fix only, no prompt change and no stamp, landing with the
+  residue slice; the plan verifies the live dossier cannot produce the split before treating
+  it as harness-only.
+- 8.6 A sampling-profile comparison on the action call, on the fixed set: the current
+  "Thinking — general" row against the vendor "Thinking — precise" row
+  (`local-model-operations.md §Sampling settings`), the packet byte-identical, thinking on,
+  the same repeats per holding each way with thinking captured; the model, runtime and
+  `num_ctx` held fixed; greedy decoding excluded (vendor-warned).
+  Rests on: the v38 read's rung flips on byte-identical packets (SPMO and ARKF between
+  sell-all and trim across repeats, as on v36 and v37) — a debut-only exposure, since a
+  continuity run renders the prior model-chosen action as its baseline; Codex churn analysis
+  S8 / P9 and the Claude brief's H3, which both name sampling as a plausible cause no
+  observation yet isolates.
+  Requires 7.2 first, so each run's effective options (the inherited defaults included) are
+  on the record and the comparison is attributable.
+  Check: judged in this order — no wrong core admitted and every rung inside its holding's
+  repeat set under both profiles; then the between-repeat rung agreement per holding; then
+  elapsed time; re-think markers diagnostic only (8.4).
+  The precise row is adopted for the action call only if correctness holds and rung
+  agreement rises; an adoption updates the ops doc's stage mapping and is a per-call option,
+  never a load-time change.
+  The interpretation call is a second leg only if the first shows an effect.
+  Ruled 2026-09-17: adopt as an entry; runs after the residue slice's read and after 7.2
+  lands; its place relative to 8.3's action leg is a plan flag — Claude recommends before
+  it, so 8.3 compares against the better thinking-on profile.
 
 ## Not adopted
 

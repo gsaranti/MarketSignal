@@ -107,10 +107,10 @@ The harness log and thought logs are `~/Downloads/market-signal-fixed-evidence-2
 | SPMO | 5 (0 / 2 / 3): price below 130 and 132 "on two consecutive days", return-volatility above 0.045 (4.5%), price below 130 and 135, each matching | 1 `level-mismatch` (a converted-annualized volatility figure) | `qualifier` (a two-week duration) |
 | ARKF | 4 (1 / 1 / 2): price below 32, return-volatility above 0.025 (2.5%), price above 52, price below 38, each matching, three on cadence-exact clauses | — | `qualifier` ("without") |
 | DIA | 5 (2 / 1 / 2): price below 478, 475, 460, 480 and 480, each matching | 1 `comparator-mismatch` (a "below $480" sentence on an `above` core) | — |
-| PGNY | 2 (2 / 0 / 0): net-margin below 0.04 (4%) and ps-ratio below 1.3, matching | — | `margin-implausible` ×3 (0.015 on 0.02, 10.5 on 24, 1 on 0.05); `qualifier` ×3 (a two-quarter duration, volume, "without … over two consecutive quarters") |
+| PGNY | 2 (2 / 0 / 0): net-margin below 0.04 (4%) and ps-ratio below 1.3, matching | — | `margin-implausible` ×4 (0.015 on 0.02, 10.5 on 24, 0.5 on 0.04, 1 on 0.05); `qualifier` ×3 (a two-quarter duration, volume, "without … over two consecutive quarters") |
 
 Twenty-two kept cores, twenty-two matching a figure their sentence states in the series' unit; the v37 re-read had twenty-one of twenty-one.
-Three wrong cores caught, four implausible margins caught, and no levelless core authored anywhere — the v37 re-read caught six `no-level` downgrades, so the 1.9 sentence removed levelless prose outright.
+Three wrong cores caught, five implausible margins caught, and no levelless core authored anywhere — the v37 re-read caught six `no-level` downgrades, so the 1.9 sentence removed levelless prose outright.
 Yield is twenty-two cores over eighteen calls (v37: twenty-one); PSX and PGNY each rose from one core to two, short of run 1's four, because their remaining conditions now spend themselves on durations and, on PGNY, on noise bands too wide for the relative cap.
 The buffered-threshold habit did not appear on any call.
 The three fund holdings authored no stock-only series across nine calls, where the v36 read had SPMO author a P/E core the seam downgraded as uncomputable (3.3a).
@@ -193,3 +193,36 @@ Entry 1.9 is admitted with its yield read honestly: levelless prose is gone, and
 Entry 2.5's check is met.
 L10 through L15 are yield and clarity, flags for the ruling round, not conditions on the admission.
 Ruled 2026-09-16: L10–L13 and the L15 A/B land as one small residue slice ahead of §4, its own plan and stamp (`portfolio-v39`), mirroring the v37 follow-up; L14 stays as it is.
+
+## Codex churn analysis — 2026-09-17
+
+The user had Codex read all fifty-four v38 calls for the double-guessing and confusion causes, scoped to that alone, from a Claude-written brief carrying the harness, the log locations, the findings above and eight hypotheses.
+Codex's full ledger and its eight-item summary live in the gitignored `iris-codex-*` files; this section carries what was verified and what was ruled.
+Each suggestion was verified against the logs and the code before the ruling round:
+
+1. Name the hurdle's owner, horizon and rate on the action packet's capital-efficiency line — verified.
+   The engine tests the twelve-month total return against `DGS2` plus a tier premium; the line says "over the assessed horizon" and names neither; SPMO call 27 guessed the horizon and DIA call 41 read `indeterminate` as its reason to hold.
+2. Separate the grade's low-confidence marker from conviction, and a weak grade from a positive forward read — verified.
+   DIA's packet says grade C low-confidence beside Medium conviction, and three of its six rationales say "Low conviction" or "confidence rating".
+3. Strengthen 3.9's read beyond the marker share and the rung table — verified.
+   DIA call 44 concludes three times that the set excludes add while quoting "the full ladder is yours"; a facts-rendered set could lower the count while the misreading survives.
+4. Label the financial summary model-authored and forward `model_target_rationale` with an engine basis — verified.
+   The summary renders unlabeled and the rationale never reaches the action call.
+5. The fence sentence on both contracts — verified.
+   The action response contract carries no such sentence; SPMO call 22 spent seven markers on the question.
+6. State the margin caps where the margin is authored — verified.
+   The prompt says "a fraction of the level" and the seam caps it; the run had five `margin-implausible` downgrades, four on PGNY (the read above had said four and three; corrected in place).
+7. Explain a computed value without a dated filing observation — disputed.
+   PGNY call 47 did meet the split, but the fixture carries no equity source beside reconstructed metrics the live dossier derives from the same statement surface, so the state reads as harness-only.
+8. Runtime experiments after the packet work, with effective sampling recorded — already ruled (8.3, 7.2, 8.4).
+
+Codex's corrections to the brief, accepted: the exact negation-adjacency counts are small (5 / 11 / 0), so the negation hypothesis is not supported literally; the underdetermination-versus-wording framing was a false dichotomy; PSX's model valuation is 30, not 35.
+
+Ruled 2026-09-17, through the selector:
+
+- The wording-class fixes (1, 2, the labeling half of 4, 5, 6) fold into the residue slice as fix list 3.10–3.14 under `portfolio-v39`; both A/B arms receive the same wording, so 3.9's attribution holds.
+- The evidence-set additions (the numbers of 1, the forwarding half of 4) are a follow-on after the 3.9 A/B is read, fix list 3.15–3.16, each needing a `§Portfolio action` ruling on its form.
+- 3.9's read is strengthened as Codex proposed.
+- 7 is a fixture fix only, fix list 8.5, no prompt change and no stamp; the plan verifies the live dossier cannot produce the split.
+- Amended the same day after a read-through for intent: 3.8 drops its expectation clause, 3.11 defines the grade instead of asserting coexistence, and 3.14 states the band's purpose before the cap and watches for anchoring.
+- The sampling-profile comparison both analyses recommended is fix list 8.6, after 7.2 lands; its place relative to 8.3's action leg is a plan flag.
