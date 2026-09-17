@@ -99,7 +99,7 @@
     "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
    }
   },
-  "price_target_rationale": "My twelve-month base target ($30) is below the engine's base ($35.51). While PGNY has a strong moat (Smart Cycles), the current macro regime (rising rates to ~5%, oil shock, inflation stickiness) creates high risk of multiple compression for growth stocks trading at 27x earnings with only 5% top-line growth. The engine's valuation score (88) assumes multiples hold or expand; I assign a lower valuation score (35) reflecting the higher cost of capital and potential P/E contraction in this environment. My bear case ($21) accounts for deeper compression if guidance is missed, while my bull case ($42) requires rates to stabilize and earnings re-acceleration.",
+  "model_target_rationale": "My twelve-month base target ($30) is below the engine's base ($35.51). While PGNY has a strong moat (Smart Cycles), the current macro regime (rising rates to ~5%, oil shock, inflation stickiness) creates high risk of multiple compression for growth stocks trading at 27x earnings with only 5% top-line growth. The engine's valuation score (88) assumes multiples hold or expand; I assign a lower valuation score (35) reflecting the higher cost of capital and potential P/E contraction in this environment. My bear case ($21) accounts for deeper compression if guidance is missed, while my bull case ($42) requires rates to stabilize and earnings re-acceleration.",
   "options_signal": {
    "put_call_volume": 0.0,
    "put_call_open_interest": 0.0,

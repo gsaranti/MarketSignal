@@ -2701,7 +2701,7 @@ mod tests {
                     methodology: "test".into(),
                 }),
             },
-            price_target_rationale: "test".into(),
+            model_target_rationale: "test".into(),
             options_signal: OptionsSignal {
                 put_call_volume: None,
                 put_call_open_interest: None,

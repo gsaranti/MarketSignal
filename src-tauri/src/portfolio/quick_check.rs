@@ -2144,7 +2144,7 @@ mod tests {
                         methodology: "fixture".into(),
                     }),
                 },
-                price_target_rationale: "fixture".into(),
+                model_target_rationale: "fixture".into(),
                 options_signal: OptionsSignal {
                     put_call_volume: None,
                     put_call_open_interest: None,

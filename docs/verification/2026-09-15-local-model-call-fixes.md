@@ -115,7 +115,8 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   Check: PSX and PGNY recover from one executable core over three repeats toward run 1's
   four on the fixed set.
   Raised by the v37 re-read (L9).
-  Ruled 2026-09-17: adopt; lands with the §3 slice, not its own.
+  Ruled 2026-09-16: adopt; lands with the §3 slice, not its own.
+  Landed 2026-09-16 as `portfolio-v38`: the contract's sentence names the unit per series kind (`2026-09-16-interpretation-slice.md`).
 - 1.8 A relative margin cap per series kind on top of the magnitude bound.
   Check: DIA's margin of 489.5 on a $490 level downgrades; a $15 margin on $485 keeps.
   Raised by the live read (L5).
@@ -165,7 +166,7 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   from 83 of 235 action markers toward the attempt-6 share (19 across every class).
   Raised by the live thinking read (L7 in `2026-09-16-ledger-conditions-and-action-packet.md`).
   Ruled 2026-09-16: adopt; landed as `portfolio-v37`.
-  Re-read 2026-09-17: the per-call capital-efficiency markers fell on every holding whose
+  Re-read 2026-09-16: the per-call capital-efficiency markers fell on every holding whose
   line changed (TSLA 4.3 → 3.4, PSX 1.3 → 0.6, DIA 5.3 → 1.6, PGNY 6.7 → 2.4).
 - 2.5 The `fails` capital-efficiency line states the fact and its reach as the other
   three states do — the bull case misses the hurdle; a weighed exit input, not a rung —
@@ -174,34 +175,47 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   Check: on the fixed set with thinking captured, SPMO's and ARKF's capital-efficiency
   markers (38 and 48 over five action calls) fall toward the reworded holdings' share.
   Raised by the v37 re-read (L8).
-  Ruled 2026-09-17: adopt; lands with the §3 slice, not its own.
+  Ruled 2026-09-16: adopt; lands with the §3 slice, not its own.
+  Ruled 2026-09-16 (F5): the ratified wording states the fact, the sunk-cost lean it feeds beside the forward read, and the same closing reach as the other three states; landed as `portfolio-v38`.
 
 ## 3. Interpretation call — one responsibility per field, no account economics
 
 Rests on: record Finding 8; Codex §5.
-Docs that change: `portfolio-workflow.md §Step 6f`, `portfolio-analysis.md §The two-arm
-verdict` (or wherever the field contract is homed — confirm at plan time).
+Docs that change: `portfolio-workflow.md §Step 6f`, `portfolio-analysis.md §The holding
+verdict` (the model-arm field list), `§Portfolio action`, `§What changed`, `§Holdings
+change tracking` and `§The position thesis ledger`.
+Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are recorded in
+`2026-09-16-interpretation-slice.md` §Rulings; every entry below landed as `portfolio-v38`.
 
 - 3.1 Resolve `price_target_rationale` ownership: either the app renders the engine's
   methodology and the model owns a clearly named explanation of its own targets, or the
   field keeps its engine meaning and the prompt enforces it.
   A rename or meaning change moves `checkpoint-v9`.
   Check: TSLA, PSX and PGNY's persisted rationales explain the field's stated subject.
-  Ruling: open — Claude recommends the first form.
+  Ruled 2026-09-16 (F1): the first form — the field is `model_target_rationale`, the
+  model explaining its own bands against the engine's; the card moves it to the model
+  column; `checkpoint-v9` → `checkpoint-v10` and portability format 6 → 7 (A1).
 - 3.2 Remove purchase cost and position P/L from the intrinsic interpretation packet;
   spot stays.
   Check: no persisted financial summary carries a per-share cost figure.
-  Ruling: open.
+  Ruled 2026-09-16 (F2, F3, the Codex review's point 2): one identity-and-spot header
+  serves every model-facing packet, the research brief included; the position line
+  states its direction only; the option overlay renders unsized on every packet.
 - 3.3 Give funds a fund-specific ledger schema whose series enum is the fund-computable
   set, and let the app insert the debut continuity fields (`what_changed_entries = []`)
   deterministically instead of asking the model.
   Check: a fund interpretation never authors a `pe-ratio` core; a debut never spends
   markers on `what_changed` versus `what_changed_entries`.
-  Ruling: open.
+  Ruled 2026-09-16 (3.3a, F4, F6, A2): the series enum is scoped to the vehicle kind on
+  both branches; a debut requests neither continuity field and the app writes "New
+  holding (no prior verdict)." with an empty row set; the continuity contract states the
+  two fields' relation once; the template gains notes for the ledger's numeric fields;
+  the continuity shape is proven by offline tests and live continuity stays unverified.
 - 3.4 Candidate, not adopted: a separate compact ledger-authoring call on the same
   evidence packet and accepted read.
   Test only if 3.1–3.3 leave interpretation slow or unreliable (Codex §9 step 6).
-  Ruling: deferred by construction.
+  Ruling: deferred by construction; re-tested only if the v38 fixed-set read leaves
+  interpretation slow or unreliable.
 
 ## 4. Synthesis fields — define what the model is asked to attribute
 
@@ -342,7 +356,7 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   Ruled 2026-09-16: that verdict stands; 1.5–1.8 and 2.4 land as one small follow-up
   slice before §3 (one plan, `portfolio-v37` since 1.7 and 2.4 touch prompts), then the
   fixed-set re-read admits §1 and §3 planning starts from it.
-  Re-read 2026-09-17 on `portfolio-v37`: twenty-one kept cores, twenty-one matching; no
+  Re-read 2026-09-16 on `portfolio-v37`: twenty-one kept cores, twenty-one matching; no
   wrong or levelless core admitted; the rung never moved with tax or cost — §1 ADMITTED
   (`2026-09-16-ledger-validator-follow-up.md` §The fixed-set re-read). §1 and §2 are
   both admitted; §3 planning starts from the admitted set.
@@ -396,6 +410,7 @@ watch set rather than fixed here:
 
 - ~~Whether 1.3's app-assigned margin is per series only or per series and vehicle kind.~~
   Ruled 2026-09-16: moot — 1.3 not adopted.
-- Whether 3.1 renames the field (moves `checkpoint-v9`) or keeps its engine meaning.
+- ~~Whether 3.1 renames the field (moves `checkpoint-v9`) or keeps its engine meaning.~~
+  Ruled 2026-09-16: renamed — `model_target_rationale`, `checkpoint-v10`.
 - Whether 4.3's app-built no-evidence object counts the pass as answered or as a gap.
 - Which stamp 5.2's claim-shape change moves (evidence-floor, checkpoint, or both).

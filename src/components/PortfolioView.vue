@@ -2063,9 +2063,6 @@ const keyFigures = computed(() => {
                       >
                         {{ v.disposition.price_targets.twelve_month.methodology }}
                       </p>
-                      <p class="hc-prose">
-                        {{ v.disposition.price_target_rationale }}
-                      </p>
                     </div>
                   </div>
 
@@ -2187,6 +2184,18 @@ const keyFigures = computed(() => {
                         >
                       </dd>
                     </dl>
+                    <!-- The model's explanation of its own bands (portfolio-v38,
+                         fix list 3.1) — the model-arm counterpart of the engine
+                         column's methodology reveal, inline since it is the
+                         model's own call rather than a disclosed calculation. -->
+                    <template v-if="v.disposition.model_target_rationale">
+                      <span class="hc-kicker hc-target-rationale"
+                        >Target rationale</span
+                      >
+                      <p class="hc-prose">
+                        {{ v.disposition.model_target_rationale }}
+                      </p>
+                    </template>
                   </div>
                 </div>
 
@@ -3021,6 +3030,12 @@ const keyFigures = computed(() => {
 
 .hc-col > .hc-kicker {
   margin-bottom: var(--s-3);
+}
+
+/* The model column's target-rationale kicker sits beneath its kv list with
+   the same seam the engine column's methodology reveal takes. */
+.hc-target-rationale {
+  margin-top: var(--s-4);
 }
 
 .hc-subscores {

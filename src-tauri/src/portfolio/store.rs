@@ -218,7 +218,12 @@ pub struct CheckpointHeader {
 /// a Tavily-researched holding) is refused at the resume gate rather than
 /// restoring a Tavily-researched holding under the SearXNG-only contract.
 /// v9 removes the priced verdict's unused structural flag.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v9";
+/// v10 renames the priced verdict's `price_target_rationale` to
+/// `model_target_rationale` with its meaning — the model explains its own
+/// target bands, not the engine's (fix list 3.1, `portfolio-v38`), so a v9
+/// trail's completed holdings, whose rationales explain the engine's target,
+/// cannot resume under the new field.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v10";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header

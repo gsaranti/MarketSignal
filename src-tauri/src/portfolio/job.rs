@@ -1039,7 +1039,12 @@ fn semantic_recall_for(
 /// `role_risk_only` branch — and the portfolio action, so cross-run recall
 /// surfaces the substance of prior analysis rather than a bare grade. `None` on
 /// a not-rated or insufficient-evidence verdict — nothing analyzed to recall.
+/// The action rides as the model's investment sentence alone
+/// ([`crate::portfolio::pipeline::investment_sentence`]): the app's tax caveat
+/// never enters the embedding, so recall cannot carry the tax posture or the
+/// P/L sign back into an intrinsic interpretation (fix list 3.2, `portfolio-v38`).
 fn holding_summary_text(v: &crate::portfolio::HoldingVerdict) -> Option<String> {
+    use crate::portfolio::pipeline::investment_sentence;
     let ledger = v.thesis_ledger.as_ref();
     let thesis = ledger
         .map(|l| l.current_thesis.as_str())
@@ -1073,7 +1078,7 @@ fn holding_summary_text(v: &crate::portfolio::HoldingVerdict) -> Option<String> 
             g.grade.as_str(),
             g.conviction,
             g.action.as_kebab(),
-            g.action_rationale,
+            investment_sentence(&g.action_rationale),
             thesis,
             drivers,
             lean,
@@ -1089,7 +1094,7 @@ fn holding_summary_text(v: &crate::portfolio::HoldingVerdict) -> Option<String> 
                 ""
             },
             r.action.as_kebab(),
-            r.action_rationale,
+            investment_sentence(&r.action_rationale),
             r.role_summary,
             thesis,
             drivers,
@@ -6483,6 +6488,43 @@ mod tests {
         assert!(text.contains("action "), "{text}");
         assert!(text.contains("Standing thesis:"), "{text}");
 
+        // The app's tax caveat never enters the embedding on either branch
+        // (fix list 3.2, the §3 slice's Codex review): the summary carries the
+        // model's investment sentence alone, so recall cannot re-supply the
+        // tax posture or the P/L sign to the next intrinsic interpretation.
+        use crate::portfolio::pipeline::{TAX_CAVEAT_GAIN, TAX_CAVEAT_LOSS};
+        let mut taxed = verdict(&run, "AAPL").clone();
+        if let crate::portfolio::VerdictDisposition::Priced(g) = &mut taxed.disposition {
+            g.action = crate::portfolio::Action::Trim;
+            g.action_rationale = format!("Trim on the stretched multiple. {TAX_CAVEAT_GAIN}");
+        }
+        let text = holding_summary_text(&taxed).unwrap();
+        assert!(text.contains("action trim — Trim on the stretched multiple.") && text.contains("Standing thesis:"), "{text}");
+        for absent in ["Tax note", "unrealized", "tax cost", "tax benefit"] {
+            assert!(!text.contains(absent), "{absent} leaked into the priced summary: {text}");
+        }
+        v.disposition = crate::portfolio::VerdictDisposition::RoleRiskOnly(Box::new(
+            crate::portfolio::RoleRiskVerdict {
+                class_label: "bond fund".into(),
+                role_summary: "Core fixed-income sleeve.".into(),
+                exposure_tilt: Vec::new(),
+                expense_drag: None,
+                observable_risk: None,
+                structural_flag: false,
+                is_cef: false,
+                nav_premium: None,
+                evidence_gaps: Vec::new(),
+                action: crate::portfolio::Action::SellAll,
+                action_rationale: format!("Exit the sleeve on mandate drift. {TAX_CAVEAT_LOSS}"),
+                what_changed: crate::portfolio::DEBUT_WHAT_CHANGED.into(),
+            },
+        ));
+        let text = holding_summary_text(&v).unwrap();
+        assert!(text.contains("action sell-all — Exit the sleeve on mandate drift.") && text.contains("Role:"), "{text}");
+        for absent in ["Tax note", "unrealized", "tax cost", "tax benefit"] {
+            assert!(!text.contains(absent), "{absent} leaked into the role/risk summary: {text}");
+        }
+
         v.disposition = crate::portfolio::VerdictDisposition::NotRated {
             reason: "cash".into(),
         };
@@ -6544,6 +6586,66 @@ mod tests {
         assert!(recall.gap.is_none(), "{:?}", recall.gap);
         assert!(!recall.hits.is_empty());
         assert!(recall.hits[0].starts_with("[summary · "), "{}", recall.hits[0]);
+
+        // Two-run regression, both branches (fix list 3.2, the §3 slice's Codex
+        // review): a stored row written from a taxed exit on each branch reads
+        // back at the next run's recall without the app's caveat — the tax
+        // posture and the P/L sign never reach an intrinsic interpretation
+        // through memory.
+        use crate::embedding::Embedder;
+        use crate::portfolio::pipeline::{TAX_CAVEAT_GAIN, TAX_CAVEAT_LOSS};
+        let mut priced = verdict(&run, "AAPL").clone();
+        if let crate::portfolio::VerdictDisposition::Priced(g) = &mut priced.disposition {
+            g.action = crate::portfolio::Action::Trim;
+            g.action_rationale = format!("Trim on the stretched multiple. {TAX_CAVEAT_GAIN}");
+        }
+        let mut role = priced.clone();
+        role.symbol = "BND".into();
+        role.disposition = crate::portfolio::VerdictDisposition::RoleRiskOnly(Box::new(
+            crate::portfolio::RoleRiskVerdict {
+                class_label: "bond fund".into(),
+                role_summary: "Core fixed-income sleeve.".into(),
+                exposure_tilt: Vec::new(),
+                expense_drag: None,
+                observable_risk: None,
+                structural_flag: false,
+                is_cef: false,
+                nav_premium: None,
+                evidence_gaps: Vec::new(),
+                action: crate::portfolio::Action::SellAll,
+                action_rationale: format!("Exit the sleeve on mandate drift. {TAX_CAVEAT_LOSS}"),
+                what_changed: crate::portfolio::DEBUT_WHAT_CHANGED.into(),
+            },
+        ));
+        for (v, key) in [(&priced, "taxed-run:AAPL"), (&role, "taxed-run:BND")] {
+            let text = holding_summary_text(v).unwrap();
+            crate::vector_memory::insert_memory(
+                &conn,
+                crate::vector_memory::MemoryKind::Summary,
+                crate::vector_memory::MemoryNamespace::Portfolio,
+                Some(key),
+                &text,
+                &embedder.embed(&text).unwrap(),
+                "2026-09-16T00:00:00+00:00",
+            )
+            .unwrap();
+        }
+        let recall = semantic_recall_for(&conn, Some(&embedder), "holding AAPL, sector Technology");
+        assert!(recall.hits.iter().any(|h| h.contains("Trim on the stretched multiple")), "{:?}", recall.hits);
+        for hit in &recall.hits {
+            for absent in ["Tax note", "unrealized", "tax cost", "tax benefit"] {
+                assert!(!hit.contains(absent), "{absent} reached recall: {hit}");
+            }
+        }
+        let stored: Vec<String> = conn
+            .prepare("SELECT content FROM vector_memory WHERE namespace = 'portfolio' AND kind = 'summary'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert!(stored.iter().any(|t| t.contains("Exit the sleeve on mandate drift")), "{stored:?}");
+        assert!(stored.iter().all(|t| !t.contains("Tax note")), "{stored:?}");
 
         // And pruning to one run keeps these rows (theirs) while a foreign-run id
         // sweeps.

@@ -123,7 +123,7 @@ export const samplePortfolioRun: PortfolioRun = {
             methodology: "drift off revenue growth",
           },
         },
-        price_target_rationale: "base case tracks revenue drift",
+        model_target_rationale: "base case tracks revenue drift",
         options_signal: {
           put_call_volume: null,
           put_call_open_interest: null,

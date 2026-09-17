@@ -503,7 +503,7 @@ export interface GradedVerdict {
   conviction: PortfolioConviction;
   horizon_outlook: HorizonOutlook;
   price_targets: PriceTargets;
-  price_target_rationale: string;
+  model_target_rationale: string;
   options_signal: OptionsSignal;
   // Engine reads added by the fund slice.
   risk_tier: RiskTier;

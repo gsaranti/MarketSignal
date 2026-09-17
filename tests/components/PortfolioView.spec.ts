@@ -56,7 +56,7 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
         methodology: "v2 spread-anchored multiples",
       },
     },
-    price_target_rationale: "base case tracks revenue drift",
+    model_target_rationale: "base case tracks revenue drift",
     options_signal: {
       put_call_volume: null,
       put_call_open_interest: null,
@@ -614,13 +614,44 @@ describe("PortfolioView verdict cards", () => {
     expect(wrapper.text()).not.toContain("v5 one-month 2σ band");
     await reveal.trigger("click");
     expect(reveal.attributes("aria-expanded")).toBe("true");
-    // Both horizons' methodology, one-month first (Codex I10).
+    // Both horizons' methodology, one-month first (Codex I10). The model's
+    // target rationale is the model arm's since portfolio-v38 and no longer
+    // rides the engine's reveal.
     const prose = wrapper
       .findAll(".holding-card .hc-methodology .hc-prose")
       .map((p) => p.text());
-    expect(prose).toHaveLength(3); // one-month, twelve-month, rationale
+    expect(prose).toHaveLength(2); // one-month, twelve-month
     expect(prose[0]).toBe("v5 one-month 2σ band");
     expect(prose[1]).toBe("v2 spread-anchored multiples");
+    expect(prose).not.toContain("base case tracks revenue drift");
+  });
+
+  test("the model's target rationale renders in the model column, outside the engine reveal", () => {
+    const wrapper = mountView({ run });
+    // Visible without opening the reveal: it is the model's own call, not a
+    // disclosed calculation (portfolio-v38, fix list 3.1).
+    const kicker = wrapper.find(".holding-card .hc-target-rationale");
+    expect(kicker.exists()).toBe(true);
+    expect(kicker.text()).toBe("Target rationale");
+    const column = kicker.element.parentElement!;
+    expect(column.textContent).toContain("Model view");
+    expect(column.textContent).toContain("base case tracks revenue drift");
+    expect(wrapper.find(".holding-card .hc-methodology").exists()).toBe(false);
+  });
+
+  test("an empty target rationale renders no kicker", () => {
+    const blank: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict("AAPL", {
+          status: "priced",
+          ...graded({ model_target_rationale: "" }),
+        }),
+      ],
+    };
+    const wrapper = mountView({ run: blank });
+    expect(wrapper.find(".holding-card .hc-target-rationale").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Target rationale");
   });
 
   test("the methodology reveal omits a one-month paragraph the engine never authored", async () => {
@@ -648,7 +679,7 @@ describe("PortfolioView verdict cards", () => {
     const prose = wrapper
       .findAll(".holding-card .hc-methodology .hc-prose")
       .map((p) => p.text());
-    expect(prose).toHaveLength(2); // twelve-month, rationale
+    expect(prose).toHaveLength(1); // twelve-month
     expect(prose[0]).toBe("v2 spread-anchored multiples");
   });
 

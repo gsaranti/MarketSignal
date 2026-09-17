@@ -59,11 +59,16 @@ use crate::storage;
 /// builds reject v5 instead of silently misreading requested-URL provenance
 /// as final.
 /// v6 (attempt-5 telemetry slice): `web_source_state` gained the per-domain
-/// `failed_count` / `denied_count` fetch-attempt counters. Every pre-release
-/// shape below it — v2 through v5, none of which a shipped build wrote — is
-/// refused outright (`check_format_version`, the 2026-08-29 no-compat ruling),
-/// so the v4 single-URL import rung retired with them.
-pub const FORMAT_VERSION: u32 = 6;
+/// `failed_count` / `denied_count` fetch-attempt counters, so the v4 single-URL
+/// import rung retired with the refused shapes below it.
+/// v7 (the §3 interpretation slice): the priced verdict inside each
+/// `portfolio_runs.run_json` renamed `price_target_rationale` to
+/// `model_target_rationale` with its meaning (fix list 3.1, `checkpoint-v10`),
+/// so a v6 archive's runs would not decode under the current verdict shape.
+/// Every pre-release shape below the current one — v2 through v6, none of which
+/// a shipped build wrote — is refused outright (`check_format_version`, the
+/// 2026-08-29 no-compat ruling).
+pub const FORMAT_VERSION: u32 = 7;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -109,7 +114,7 @@ const DB_ENTRY_NAMES: [&str; 11] = [
 /// closed set (`docs/data-portability.md` §Import flow): a v1 archive — the
 /// shipped build's format — predates the quick-check store, so it is complete
 /// at five entries; requiring the current format's entries of it would refuse
-/// it as truncated. The v2 through v5 shapes were pre-release dev formats no
+/// it as truncated. The v2 through v6 shapes were pre-release dev formats no
 /// shipped build wrote and are refused at [`check_format_version`] (ruled
 /// 2026-08-29 — no data compat pre-release).
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
@@ -1201,7 +1206,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 2..=5) {
+    if matches!(manifest.format_version, 2..=6) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -2221,7 +2226,7 @@ mod tests {
         export_archive(&source, &dest, None, None).unwrap();
 
         // Drop the entries introduced in v4 and their listings. Under the
-        // archive's own current (v6) version that is truncation and must refuse…
+        // archive's own current (v7) version that is truncation and must refuse…
         let mut entries = read_archive_entries(&dest);
         for name in [
             "db/web_documents.ndjson",
@@ -2243,7 +2248,7 @@ mod tests {
             "manifest.json".to_string(),
             serde_json::to_vec_pretty(&manifest).unwrap(),
         );
-        let truncated = source.db_path.parent().unwrap().join("truncated-v6.zip");
+        let truncated = source.db_path.parent().unwrap().join("truncated-v7.zip");
         rebuild_zip(&entries, &truncated);
         let (_b, target) = temp_store();
         let err = import_archive(&target, &truncated, None, false).unwrap_err();
@@ -2265,10 +2270,11 @@ mod tests {
     }
 
     #[test]
-    fn v4_and_v5_stamps_are_refused_as_pre_release_formats() {
-        // The single-URL (v4) and pre-counter (v5) shapes were pre-release
-        // formats no shipped build wrote (ruled 2026-08-29): a complete current
-        // export re-stamped either way is refused outright, never read through
+    fn v4_v5_and_v6_stamps_are_refused_as_pre_release_formats() {
+        // The single-URL (v4), pre-counter (v5) and pre-rename (v6, the priced
+        // verdict's `price_target_rationale`) shapes were pre-release formats
+        // no shipped build wrote (ruled 2026-08-29): a complete current export
+        // re-stamped any of these ways is refused outright, never read through
         // a compat rung.
         let (_a, source) = temp_store();
         seed_store(&source);
@@ -2276,7 +2282,7 @@ mod tests {
         export_archive(&source, &dest, None, None).unwrap();
         let mut entries = read_archive_entries(&dest);
         let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        for version in [4, 5] {
+        for version in [4, 5, 6] {
             manifest.format_version = version;
             entries.insert(
                 "manifest.json".to_string(),

@@ -632,10 +632,12 @@ pub struct GradedVerdict {
     pub conviction: Conviction,
     pub horizon_outlook: HorizonOutlook,
     pub price_targets: PriceTargets,
-    /// The model's justification for the engine's base-case target (it selects and
-    /// explains; the engine computed the figure). Persisted so a verdict's
-    /// target basis stays inspectable.
-    pub price_target_rationale: String,
+    /// The model's explanation of its OWN target bands — the assumptions behind
+    /// its base case and where and why it departs from the engine's twelve-month
+    /// base target (fix list 3.1, `portfolio-v38`; the engine's methodology is
+    /// app-rendered beside its own targets). Persisted so the model arm's target
+    /// basis stays inspectable.
+    pub model_target_rationale: String,
     pub options_signal: OptionsSignal,
     /// The deterministic per-branch risk tier (`docs/portfolio-analysis.md` §Starting
     /// parameters).
@@ -2059,7 +2061,9 @@ pub struct HoldingAudit {
 /// neutral — neither dead money nor an exit input — so it must not tilt the rung
 /// toward selling, where the prompt had said only that `fails` is dead money and
 /// left the non-`fails` states' neutrality unstated, and an `indeterminate` read
-/// leaked in as a soft sell-lean (Signal 2). Both were the action prompt lagging
+/// leaked in as a soft sell-lean (Signal 2; since `portfolio-v37` every line
+/// states the hurdle fact and that it neither requires nor forbids any rung,
+/// the `fails` line joining under `portfolio-v38`). Both were the action prompt lagging
 /// contracts the docs already state (`docs/portfolio-analysis.md` §Portfolio
 /// action: the departure is app-stamped; indeterminate neither tilts the decision
 /// nor creates dead money); prompt-prose only, no schema or other axis moves
@@ -2129,7 +2133,23 @@ pub struct HoldingAudit {
 /// and that it neither requires nor forbids any rung. Prompt prose and the
 /// validator's meaning change, so a v36 trail cannot resume into v37; the
 /// persisted shapes and every other axis are unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v37";
+///
+/// `portfolio-v38`: the §3 interpretation slice (fix list 3.1–3.3, 1.9 and 2.5;
+/// `docs/verification/2026-09-16-interpretation-slice.md`). The priced
+/// verdict's `price_target_rationale` becomes `model_target_rationale`, the
+/// model explaining its own bands (a persisted-shape change — `checkpoint-v10`,
+/// portability format v7). Every model-facing packet opens with an
+/// identity-and-spot header — the interpretation, role/risk and research
+/// packets stop carrying quantity, cost basis and market value, the position
+/// line states its direction only, and the option overlay renders unsized on
+/// every packet. The ledger schema's series enum is scoped to the vehicle
+/// kind; a debut requests neither continuity field and the app writes both;
+/// the continuity contract states the two fields' relation once; the template
+/// gains notes for the ledger's numeric fields. The authoring contract asks
+/// for the level in the sentence, and the action packet's `fails` line states
+/// the hurdle fact, the sunk-cost lean and its reach. A v37 trail cannot
+/// resume into v38 on either the prompt or the checkpoint axis.
+pub const PROMPT_VERSION: &str = "portfolio-v38";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2446,14 +2466,18 @@ pub struct Interpretation {
     pub conviction: Conviction,
     pub horizon_outlook: HorizonOutlook,
     pub financial_summary: String,
-    /// The model's justification for the engine's base-case price target (it selects
-    /// and explains; the engine computed the figure).
-    pub price_target_rationale: String,
+    /// The model's explanation of its own `model_price_targets` — the base-case
+    /// assumptions and the departure from the engine's twelve-month base target
+    /// (fix list 3.1, `portfolio-v38`).
+    pub model_target_rationale: String,
+    /// The one-line continuity summary. Grammar-required on a continuity call;
+    /// on a debut the app writes [`DEBUT_WHAT_CHANGED`] before the body is
+    /// typed ([`complete_debut_response`]), so the field is always present here.
     pub what_changed: String,
     /// The typed what-changed rows beside the prose line ([`WhatChangedEntry`]) —
     /// one per moved intrinsic value, validated at the 6g seam against the
-    /// rendered input delta. Empty on a debut ("new holding").
-    #[serde(default)]
+    /// rendered input delta. Grammar-required on a continuity call; the app
+    /// writes `[]` on a debut, so no decode default is needed.
     pub what_changed_entries: Vec<WhatChangedEntry>,
     /// The rewritten thesis ledger — required; validated at the 6g seam.
     pub ledger: LedgerDraft,
@@ -2472,10 +2496,18 @@ pub struct Interpretation {
 /// position thesis ledger), shared by both branches: the series and comparator
 /// enums are structural, so a grammar-valid draft names only series the engine
 /// actually computes (the app still validates the claim — defense in depth behind
-/// the constraint). A `role_risk_only` ledger's trigger-family enum drops `add`
+/// the constraint). Since `portfolio-v38` the series enum is scoped to the
+/// vehicle kind (fix list 3.3, ruled 2026-09-16): a fund's schema lists only the
+/// fund-computable series and a stock's omits the expense ratio, so the model
+/// never inspects a general enum and discovers at 6g that a choice downgrades
+/// as uncomputable. A `role_risk_only` ledger's trigger-family enum drops `add`
 /// (its feasible set never offers the add family).
-pub fn ledger_schema(role_risk: bool) -> Value {
-    let series: Vec<&str> = engine::LedgerSeries::ALL.iter().map(|s| s.as_kebab()).collect();
+pub fn ledger_schema(role_risk: bool, is_fund: bool) -> Value {
+    let series: Vec<&str> = engine::LedgerSeries::ALL
+        .iter()
+        .filter(|s| s.computable_for(is_fund))
+        .map(|s| s.as_kebab())
+        .collect();
     // The nullable series enum for a key driver's optional backing series.
     let mut series_or_null: Vec<Value> = series.iter().map(|s| json!(s)).collect();
     series_or_null.push(Value::Null);
@@ -2555,17 +2587,18 @@ pub fn ledger_schema(role_risk: bool) -> Value {
     })
 }
 
-/// The fields the priced interpretation must return. The schema's `required` set and
-/// the prompt's declaration are both built from this list, so the enforced grammar and
-/// the stated contract cannot diverge. Three of these names — `conviction`,
-/// `ledger`, `self_assessment` — also appear in the instructional prose above the
+/// The fields the priced interpretation must return on a continuity call. The
+/// schema's `required` set and the prompt's declaration are both built from this
+/// list (through [`interpretation_keys`]), so the enforced grammar and the stated
+/// contract cannot diverge. Three of these names — `conviction`, `ledger`,
+/// `self_assessment` — also appear in the instructional prose above the
 /// declaration, where a containment test cannot tell a real declaration from an
 /// incidental mention (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 2).
 pub const INTERPRETATION_KEYS: [&str; 10] = [
     "conviction",
     "horizon_outlook",
     "financial_summary",
-    "price_target_rationale",
+    "model_target_rationale",
     "what_changed",
     "what_changed_entries",
     "ledger",
@@ -2574,34 +2607,90 @@ pub const INTERPRETATION_KEYS: [&str; 10] = [
     "self_assessment",
 ];
 
-/// The `role_risk_only` branch's fields, on the same shared-constant footing —
-/// `ledger` is shadowed by that prompt's prose too.
+/// The `role_risk_only` branch's fields on a continuity call, on the same
+/// shared-constant footing — `ledger` is shadowed by that prompt's prose too.
 pub const ROLE_RISK_KEYS: [&str; 4] =
     ["role_summary", "what_changed", "what_changed_entries", "ledger"];
 
+/// The two continuity fields the app writes itself on a debut (fix list 3.3,
+/// `portfolio-v38`, ruled 2026-09-16): with no prior verdict there is nothing to
+/// attribute, so neither is requested of the model — they leave the schema, the
+/// template and the declared key list, and [`complete_debut_response`] inserts
+/// them before the response is typed.
+pub const DEBUT_CONTINUITY_KEYS: [&str; 2] = ["what_changed", "what_changed_entries"];
+
+/// The app-written `what_changed` line on a debut (ruled 2026-09-16, F6).
+pub const DEBUT_WHAT_CHANGED: &str = "New holding (no prior verdict).";
+
+/// The priced branch's declared keys for a call: the full list on a continuity
+/// call, the list less the two debut continuity fields on a debut.
+pub fn interpretation_keys(debut: bool) -> Vec<&'static str> {
+    INTERPRETATION_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !debut || !DEBUT_CONTINUITY_KEYS.contains(k))
+        .collect()
+}
+
+/// The `role_risk_only` branch's declared keys for a call, by the same rule.
+pub fn role_risk_keys(debut: bool) -> Vec<&'static str> {
+    ROLE_RISK_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !debut || !DEBUT_CONTINUITY_KEYS.contains(k))
+        .collect()
+}
+
+/// Insert the app-written debut continuity fields into a decoded debut response
+/// body, so it types as the full wire struct. Idempotent on a body that already
+/// carries them (a stub or a test sample).
+pub(crate) fn complete_debut_response(body: &mut Value) {
+    if let Some(object) = body.as_object_mut() {
+        object.insert("what_changed".into(), json!(DEBUT_WHAT_CHANGED));
+        object.insert("what_changed_entries".into(), json!([]));
+    }
+}
+
 /// The priced branch's response-contract sentence, generated from
-/// [`INTERPRETATION_KEYS`]. The nested shapes are stated after the key list because
-/// they are structure the model benefits from, not part of the top-level set.
-pub fn interpretation_response_contract() -> String {
+/// [`interpretation_keys`]. The nested shapes are stated after the key list
+/// because they are structure the model benefits from, not part of the top-level
+/// set. On a continuity call the two what-changed fields' relation is stated
+/// once — the prose line summarizes the typed rows — since attempt 6's traces
+/// re-derived whether one superseded the other (Finding 8).
+pub fn interpretation_response_contract(is_fund: bool, debut: bool) -> String {
+    let continuity = if debut {
+        String::new()
+    } else {
+        "; what_changed is the one-line summary of what_changed_entries, the typed \
+         rows (kind, detail, old, new, attribution, evidence) — one per moved value — \
+         and both are required"
+            .to_string()
+    };
     format!(
         "Respond with a single JSON object carrying exactly these keys: {}. \
          Within them: horizon_outlook is short / mid / long; model_sub_scores is \
          quality / valuation / momentum / risk; model_price_targets is one_month and \
-         twelve_month, each base / bear / bull; what_changed_entries is a list of \
-         typed rows (kind, detail, old, new, attribution, evidence), empty on a new \
-         holding.",
-        INTERPRETATION_KEYS.join(", ")
+         twelve_month, each base / bear / bull{continuity}.",
+        interpretation_keys(debut).join(", ")
     )
-    + " price_target_rationale explains the engine's twelve-month base target or its absence; your own targets belong in model_price_targets. "
-    + &response_shape_contract(&interpretation_schema())
+    + " model_target_rationale explains your own model_price_targets: the assumptions behind your base case and where and why it departs from the engine's twelve-month base target, whose methodology is given above. "
+    + &response_shape_contract(&interpretation_schema(is_fund, debut))
 }
 
-/// The `role_risk_only` branch's contract, generated from [`ROLE_RISK_KEYS`].
-pub fn role_risk_response_contract() -> String {
+/// The `role_risk_only` branch's contract, generated from [`role_risk_keys`].
+pub fn role_risk_response_contract(debut: bool) -> String {
+    let continuity = if debut {
+        String::new()
+    } else {
+        " what_changed is the one-line summary of what_changed_entries, the typed \
+         rows (kind, detail, old, new, attribution, evidence) — one per moved value — \
+         and both are required."
+            .to_string()
+    };
     format!(
-        "Respond with a single JSON object carrying exactly these keys: {}.",
-        ROLE_RISK_KEYS.join(", ")
-    ) + &response_shape_contract(&role_risk_interpretation_schema())
+        "Respond with a single JSON object carrying exactly these keys: {}.{continuity}",
+        role_risk_keys(debut).join(", ")
+    ) + &response_shape_contract(&role_risk_interpretation_schema(debut))
 }
 
 /// Show the same nested structure and enums that constrain decoding. Templates
@@ -2643,8 +2732,20 @@ pub(crate) fn response_shape_contract(schema: &Value) -> String {
         }
     }
     let example = visit(schema, "", &mut enums);
+    // The ledger's numeric fields, whose `1` placeholders read as magnitudes
+    // (attempt-6 Finding 8; ruled 2026-09-16, F4): each note restates the
+    // ledger contract's own rule (`docs/portfolio-analysis.md` §The position
+    // thesis ledger), never a preference.
+    let notes = if schema["properties"].get("ledger").is_some() {
+        "\nField notes (the ledger's numeric fields; the template's 1 values are placeholders without magnitude):\n\
+         ledger.bear, ledger.base and ledger.bull are three sibling scenario objects under ledger, each with its conditions and probability_pct (0-100).\n\
+         ledger.*.quant.threshold is exactly the level the statement names, in the series' unit.\n\
+         ledger.*.quant.margin is the separate noise band around that level in the same unit, non-negative and a fraction of the level, never folded into the threshold.\n"
+    } else {
+        ""
+    };
     format!(
-        "\nResponse shape template (illustrative structure, not a completed answer; arrays may be empty). Replace each <field-path> placeholder with that field's value; for enum fields choose one of the Field alternatives below, never the literal placeholder. Sample numbers, booleans and neutral outlooks are not findings:\n{}\nField alternatives (allowed values, not preferences):\n{}\nThe entire response is one JSON object beginning with {{.\n",
+        "\nResponse shape template (illustrative structure, not a completed answer; arrays may be empty). Replace each <field-path> placeholder with that field's value; for enum fields choose one of the Field alternatives below, never the literal placeholder. Sample numbers, booleans and neutral outlooks are not findings:\n{}\nField alternatives (allowed values, not preferences):\n{}\n{notes}The entire response is one JSON object beginning with {{.\n",
         serde_json::to_string(&example).unwrap(), enums.join("\n")
     )
 }
@@ -2697,8 +2798,11 @@ pub(crate) fn response_template_samples(schema: &Value) -> Vec<Value> {
 /// contract — `docs/portfolio-analysis.md` §The holding verdict): the conviction
 /// enum lists all three values; the engine's evidence and any pre-profit
 /// conviction ceiling render into the prompt as evidence and into the audit as
-/// annotations, never as schema bars.
-pub fn interpretation_schema() -> Value {
+/// annotations, never as schema bars. Since `portfolio-v38` the schema is
+/// scoped per call (fix list 3.3): the ledger's series enum to the vehicle kind,
+/// and on a debut the two continuity fields leave the shape and the required
+/// set — the app writes them ([`complete_debut_response`]).
+pub fn interpretation_schema(is_fund: bool, debut: bool) -> Value {
     let read = json!({ "type": "string", "enum": ["bullish", "neutral", "bearish"] });
     let convictions = vec!["high", "medium", "low"];
     // The model target band stays within the schema subset the local grammar
@@ -2716,7 +2820,7 @@ pub fn interpretation_schema() -> Value {
         },
         "required": ["base", "bear", "bull"]
     });
-    json!({
+    let mut schema = json!({
         "type": "object",
         "properties": {
             "conviction": { "type": "string", "enum": convictions },
@@ -2726,10 +2830,10 @@ pub fn interpretation_schema() -> Value {
                 "required": ["short", "mid", "long"]
             },
             "financial_summary": { "type": "string" },
-            "price_target_rationale": { "type": "string" },
+            "model_target_rationale": { "type": "string" },
             "what_changed": { "type": "string" },
             "what_changed_entries": what_changed_entries_schema(false),
-            "ledger": ledger_schema(false),
+            "ledger": ledger_schema(false, is_fund),
             "model_sub_scores": {
                 "type": "object",
                 "properties": {
@@ -2747,8 +2851,22 @@ pub fn interpretation_schema() -> Value {
             },
             "self_assessment": { "type": "string" }
         },
-        "required": INTERPRETATION_KEYS
-    })
+        "required": interpretation_keys(debut)
+    });
+    if debut {
+        strip_debut_continuity_fields(&mut schema);
+    }
+    schema
+}
+
+/// Remove the two app-written debut continuity fields from a schema's
+/// properties (the required set is built without them already).
+fn strip_debut_continuity_fields(schema: &mut Value) {
+    if let Some(properties) = schema["properties"].as_object_mut() {
+        for key in DEBUT_CONTINUITY_KEYS {
+            properties.remove(key);
+        }
+    }
 }
 
 /// The model arm's numeric domain, enforced app-side at the interpretation
@@ -2826,11 +2944,12 @@ impl std::error::Error for ModelArmDomainError {}
 pub struct RoleRiskInterpretation {
     /// The vehicle's mandate and the exposure it exists to supply (prose).
     pub role_summary: String,
+    /// The one-line continuity summary — grammar-required on a continuity
+    /// call, app-written on a debut ([`complete_debut_response`]).
     pub what_changed: String,
     /// The typed what-changed rows beside the prose line ([`WhatChangedEntry`],
-    /// the branch's reduced kind set) — validated at the 6g seam. Empty on a
-    /// debut.
-    #[serde(default)]
+    /// the branch's reduced kind set) — validated at the 6g seam. Grammar-
+    /// required on a continuity call; the app writes `[]` on a debut.
     pub what_changed_entries: Vec<WhatChangedEntry>,
     /// The rewritten fund ledger — same sections, the branch's two reductions
     /// enforced at validation (condition-only monitor, trim / sell triggers).
@@ -2847,18 +2966,24 @@ pub const ROLE_RISK_ACTIONS: [Action; 3] = [Action::SellAll, Action::Trim, Actio
 /// The JSON Schema for [`RoleRiskInterpretation`] — no action field (the branch's
 /// action is authored by the per-holding action call, where the reduced set is
 /// the engine arm's evidence and the model's choice is structurally open), and
-/// the ledger's reduced trigger-family enum is structural.
-pub fn role_risk_interpretation_schema() -> Value {
-    json!({
+/// the ledger's reduced trigger-family enum is structural. The branch is a
+/// fund by construction, so its ledger series enum is the fund-computable set
+/// (`portfolio-v38`), and a debut drops the two app-written continuity fields.
+pub fn role_risk_interpretation_schema(debut: bool) -> Value {
+    let mut schema = json!({
         "type": "object",
         "properties": {
             "role_summary": { "type": "string" },
             "what_changed": { "type": "string" },
             "what_changed_entries": what_changed_entries_schema(true),
-            "ledger": ledger_schema(true)
+            "ledger": ledger_schema(true, true)
         },
-        "required": ROLE_RISK_KEYS
-    })
+        "required": role_risk_keys(debut)
+    });
+    if debut {
+        strip_debut_continuity_fields(&mut schema);
+    }
+    schema
 }
 
 // ---- The per-holding action call (the profile's one entry point) --------------
@@ -2920,18 +3045,46 @@ mod tests {
 
     #[test]
     fn prompt_templates_decode_with_all_enum_choices_and_populated_nested_shapes() {
-        for priced in response_template_samples(&interpretation_schema()) {
-            let decoded: Interpretation = serde_json::from_value(priced).unwrap();
-            assert!(!decoded.what_changed_entries.is_empty());
-            assert!(decoded.ledger.falsifiers[0].quant.is_some());
-            assert!(decoded.ledger.triggers[0].quant.is_some());
+        // Every per-call shape (fix list 3.3, portfolio-v38): stock and fund,
+        // continuity and debut. A continuity sample decodes as returned; a
+        // debut sample decodes once the app has written its continuity fields.
+        for (is_fund, debut) in [(false, false), (false, true), (true, false), (true, true)] {
+            for mut priced in response_template_samples(&interpretation_schema(is_fund, debut)) {
+                assert_eq!(priced.get("what_changed").is_none(), debut, "fund {is_fund} debut {debut}");
+                assert_eq!(priced.get("what_changed_entries").is_none(), debut);
+                if debut {
+                    assert!(serde_json::from_value::<Interpretation>(priced.clone()).is_err(), "a debut body types only once completed");
+                    complete_debut_response(&mut priced);
+                }
+                let decoded: Interpretation = serde_json::from_value(priced).unwrap();
+                assert_eq!(decoded.what_changed_entries.is_empty(), debut);
+                if debut {
+                    assert_eq!(decoded.what_changed, DEBUT_WHAT_CHANGED);
+                }
+                assert!(decoded.ledger.falsifiers[0].quant.is_some());
+                assert!(decoded.ledger.triggers[0].quant.is_some());
+            }
         }
-        for role in response_template_samples(&role_risk_interpretation_schema()) {
-            let _: RoleRiskInterpretation = serde_json::from_value(role.clone()).unwrap();
-            assert!(role.get("model_sub_scores").is_none());
-            assert_ne!(role["ledger"]["triggers"][0]["family"], "add");
+        for debut in [false, true] {
+            for mut role in response_template_samples(&role_risk_interpretation_schema(debut)) {
+                assert_eq!(role.get("what_changed").is_none(), debut);
+                if debut {
+                    complete_debut_response(&mut role);
+                }
+                let decoded: RoleRiskInterpretation = serde_json::from_value(role.clone()).unwrap();
+                assert_eq!(decoded.what_changed_entries.is_empty(), debut);
+                assert!(role.get("model_sub_scores").is_none());
+                assert_ne!(role["ledger"]["triggers"][0]["family"], "add");
+            }
         }
-        let contract = interpretation_response_contract();
+        // Completing a body that already carries the fields is idempotent.
+        let mut twice = serde_json::json!({ "what_changed": "x", "what_changed_entries": [1] });
+        complete_debut_response(&mut twice);
+        complete_debut_response(&mut twice);
+        assert_eq!(twice["what_changed"], DEBUT_WHAT_CHANGED);
+        assert_eq!(twice["what_changed_entries"], serde_json::json!([]));
+
+        let contract = interpretation_response_contract(false, false);
         let template: Value = serde_json::from_str(contract.lines().find(|line| line.starts_with('{')).unwrap()).unwrap();
         assert_eq!(template["conviction"], "<conviction>");
         for horizon in ["short", "mid", "long"] {
@@ -2942,6 +3095,28 @@ mod tests {
         assert!(contract.contains("never the literal placeholder"));
         assert!(contract.contains("horizon_outlook.short: [\"bullish\",\"neutral\",\"bearish\"]"));
         assert!(contract.contains("ledger.falsifiers[].quant: may also be null"));
+        // The two what-changed fields' relation, stated once on a continuity call
+        // and absent on a debut (Finding 8).
+        assert!(contract.contains("what_changed is the one-line summary of what_changed_entries"));
+        assert!(contract.contains("both are required"));
+        let debut_contract = interpretation_response_contract(false, true);
+        assert!(!debut_contract.contains("what_changed"), "{debut_contract}");
+        assert!(debut_contract.contains(&interpretation_keys(true).join(", ")));
+        // The ledger's numeric notes (F4) on every interpretation contract, and
+        // the series enum scoped to the vehicle (3.3a).
+        for c in [&contract, &debut_contract, &interpretation_response_contract(true, false), &role_risk_response_contract(false)] {
+            assert!(c.contains("Field notes (the ledger's numeric fields"), "{c}");
+            assert!(c.contains("three sibling scenario objects"), "{c}");
+            assert!(c.contains("exactly the level the statement names"), "{c}");
+            assert!(c.contains("never folded into the threshold"), "{c}");
+        }
+        assert!(contract.contains("\"pe-ratio\"") && !contract.contains("\"expense-ratio\""), "stock enum: {contract}");
+        let fund_contract = interpretation_response_contract(true, false);
+        assert!(fund_contract.contains("\"expense-ratio\"") && !fund_contract.contains("\"pe-ratio\""), "fund enum: {fund_contract}");
+        let role_contract = role_risk_response_contract(false);
+        assert!(role_contract.contains("\"expense-ratio\"") && !role_contract.contains("\"net-margin\""), "{role_contract}");
+        assert!(role_contract.contains("both are required"));
+        assert!(!role_risk_response_contract(true).contains("what_changed"));
     }
 
     #[test]
@@ -3058,8 +3233,9 @@ mod tests {
             "conviction": "high",
             "horizon_outlook": { "short": "neutral", "mid": "bullish", "long": "bullish" },
             "financial_summary": "Durable margins, light leverage.",
-            "price_target_rationale": "Base case tracks the engine's DCF midpoint.",
+            "model_target_rationale": "Base case tracks the engine's DCF midpoint.",
             "what_changed": "new holding",
+            "what_changed_entries": [],
             "ledger": raw_ledger(),
             "model_sub_scores": { "quality": 88.0, "valuation": 35.0, "momentum": 70.0, "risk": 60.0 },
             "model_price_targets": {
@@ -3087,9 +3263,10 @@ mod tests {
     #[test]
     fn ledger_schema_constrains_series_families_and_requires_the_ledger() {
         // Both interpretation schemas require the rewritten ledger, the quant series
-        // enum is exactly the engine's closed executability surface, and the
-        // role-risk trigger-family enum drops `add` (the reduced spine).
-        let schema = interpretation_schema();
+        // enum is exactly the engine's closed executability surface for the
+        // vehicle kind (portfolio-v38, fix list 3.3a), and the role-risk
+        // trigger-family enum drops `add` (the reduced spine).
+        let schema = interpretation_schema(false, false);
         let required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()
@@ -3121,10 +3298,28 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert_eq!(series.len(), engine::LedgerSeries::ALL.len());
+        // A stock's enum is the surface less the fund-only expense ratio.
+        assert_eq!(series.len(), engine::LedgerSeries::ALL.len() - 1);
         assert!(series.contains(&"net-margin"));
+        assert!(!series.contains(&"expense-ratio"));
         // Retired from the closed surface (the tunnel-vision ruling, 2026-08-14).
         assert!(!series.contains(&"portfolio-weight"));
+        // A priced fund's enum is the fund-computable set alone — the model never
+        // inspects a series 6g would downgrade as uncomputable.
+        let fund = interpretation_schema(true, false);
+        let series_path = |s: &Value| -> Vec<String> {
+            s["properties"]["ledger"]["properties"]["falsifiers"]["items"]["properties"]["quant"]["properties"]["series"]["enum"]
+                .as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
+        };
+        let mut fund_series = series_path(&fund);
+        fund_series.sort();
+        assert_eq!(fund_series, vec!["expense-ratio", "price", "return-volatility", "trailing-return"]);
+        let driver_series = &fund["properties"]["ledger"]["properties"]["key_drivers"]["items"]["properties"]["series"]["enum"];
+        assert!(driver_series.as_array().unwrap().iter().all(|v| v.is_null() || fund_series.contains(&v.as_str().unwrap().to_string())));
+        let mut role_series = series_path(&role_risk_interpretation_schema(false));
+        role_series.sort();
+        assert_eq!(role_series, fund_series, "the role/risk branch is a fund by construction");
+        assert_eq!(series_path(&interpretation_schema(false, true)), series, "a debut scopes the shape, never the series");
         let families: Vec<&str> = ledger["properties"]["triggers"]["items"]["properties"]
             ["family"]["enum"]
             .as_array()
@@ -3134,7 +3329,7 @@ mod tests {
             .collect();
         assert_eq!(families, vec!["add", "trim", "sell"]);
 
-        let role = role_risk_interpretation_schema();
+        let role = role_risk_interpretation_schema(false);
         let role_required: Vec<&str> = role["required"]
             .as_array()
             .unwrap()
@@ -3238,7 +3433,7 @@ mod tests {
 
     #[test]
     fn interpretation_schema_lists_every_required_field() {
-        let schema = interpretation_schema();
+        let schema = interpretation_schema(false, false);
         let required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()
@@ -3249,11 +3444,27 @@ mod tests {
             "conviction",
             "horizon_outlook",
             "financial_summary",
-            "price_target_rationale",
+            "model_target_rationale",
             "what_changed",
         ] {
             assert!(required.contains(&field), "schema must require {field}");
         }
+        // A debut requests neither continuity field: absent from the required
+        // set and from the properties, so the grammar cannot ask for them
+        // (fix list 3.3, portfolio-v38).
+        for (schema, keys) in [
+            (interpretation_schema(false, true), interpretation_keys(true)),
+            (role_risk_interpretation_schema(true), role_risk_keys(true)),
+        ] {
+            let required: Vec<&str> = schema["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            assert_eq!(required, keys);
+            for key in DEBUT_CONTINUITY_KEYS {
+                assert!(!required.contains(&key), "{key}");
+                assert!(schema["properties"].get(key).is_none(), "{key}");
+            }
+        }
+        assert_eq!(interpretation_keys(false), INTERPRETATION_KEYS.to_vec());
+        assert_eq!(role_risk_keys(false), ROLE_RISK_KEYS.to_vec());
         // The tunnel-vision contract: interpretation authors no action — the
         // dedicated action call owns it — and the conviction enum stays the full
         // three values (engine evidence annotates, never bars).
@@ -3275,7 +3486,7 @@ mod tests {
     fn role_risk_schema_carries_no_action_field() {
         // The branch's action is authored by the dedicated per-holding action
         // call — the 6f role/risk interpretation authors none.
-        let schema = role_risk_interpretation_schema();
+        let schema = role_risk_interpretation_schema(false);
         assert!(schema["properties"].get("action").is_none());
         let required: Vec<&str> = schema["required"]
             .as_array()

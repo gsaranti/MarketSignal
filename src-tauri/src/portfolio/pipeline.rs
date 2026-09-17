@@ -191,6 +191,23 @@ pub fn tax_caveat(
     }
 }
 
+/// The model's investment sentence alone — the persisted rationale less the
+/// app's appended tax caveat, where one rides. The Step-7 summary embedding
+/// vectorizes this form, never the persisted rationale, so the Step-6a recall
+/// of a prior trim or sell cannot re-supply the tax posture or the P/L sign to
+/// the next intrinsic interpretation (fix list 3.2; the §3 slice's Codex
+/// implementation review, superseding the §1+§2 slice's A3 acceptance). The
+/// caveat is a fixed sentence joined by one space (`with_tax_caveat`), so the
+/// strip is exact; a rationale without one passes through untouched.
+pub fn investment_sentence(rationale: &str) -> &str {
+    for caveat in [TAX_CAVEAT_GAIN, TAX_CAVEAT_LOSS] {
+        if let Some(sentence) = rationale.strip_suffix(caveat) {
+            return sentence.trim_end();
+        }
+    }
+    rationale
+}
+
 /// The persisted rationale: the model's sentence, then the app's caveat where one
 /// applies.
 fn with_tax_caveat(
@@ -967,6 +984,10 @@ pub fn analyze_holding(
                         distilled: &rr_distilled.combined,
                     })
                     .context("interpreting the role/risk holding")?;
+                let interpretation = own_debut_continuity_role_risk(
+                    interpretation,
+                    dossier.prior_verdict.is_none(),
+                );
                 record_stage_models(analyst.reasoner_id());
                 // The 6g what-changed attribution validator — external claims
                 // resolve against the rendered delta or downgrade to
@@ -1439,6 +1460,7 @@ pub fn analyze_holding(
             input_delta: &input_delta,
         })
         .context("interpreting the holding")?;
+    let interpretation = own_debut_continuity(interpretation, dossier.prior_verdict.is_none());
     record_stage_models(analyst.reasoner_id());
     // The 6g what-changed attribution validator — every external row resolves
     // against the rendered delta or downgrades to self-correction with a logged
@@ -1447,13 +1469,6 @@ pub fn analyze_holding(
         .prior_verdict
         .is_some()
         .then(|| validate_what_changed(&interpretation.what_changed_entries, input_delta));
-    // The v7 unrestricted contract: the model's conviction persists exactly as
-    // authored — no bail, no clamp (`docs/portfolio-analysis.md` §The holding
-    // verdict). Any matched pre-profit ceiling stays recorded on the overlay /
-    // engine view, so a conviction above the ceiling reads as an annotated
-    // divergence, never an error.
-    let conviction = interpretation.conviction;
-
     // The 6g ledger seam: validate the rewrite and stamp the engine's scenario
     // targets into the monitor (app-owns-the-number — a model-written target never
     // persists). The research-supported ids carry the source-backed-finding
@@ -1489,36 +1504,12 @@ pub fn analyze_holding(
     // beside the model's (`docs/portfolio-analysis.md` §The holding verdict).
     let engine_view =
         engine::engine_view(&engine_output, &dossier.financials, &degraded, overlay_rules, hard_forensic, narrative_hype);
-    let mut graded = GradedVerdict {
-        grade: engine_output.grade,
-        sub_scores: engine_output.sub_scores,
-        // A placeholder — the per-holding action call below authors the action
-        // and overwrites both fields; the placeholder is never rendered into
-        // that call's prompt.
-        action: Action::Hold,
-        action_rationale: String::new(),
-        conviction,
-        horizon_outlook: interpretation.horizon_outlook,
-        price_targets: engine_output.price_targets.clone(),
-        price_target_rationale: interpretation.price_target_rationale,
-        options_signal: dossier.options_signal.clone(),
-        risk_tier: engine_output.risk_tier,
-        dead_money: engine_output.hurdle.state,
-        low_confidence_grade: engine_output.low_confidence_grade,
-        fund_class_label: engine_output.fund_class_label.clone(),
-        financial_summary: interpretation.financial_summary,
-        what_changed: interpretation.what_changed,
-        // The model arm: persisted exactly as authored, letter derived from the
-        // model's own scores through the shared cutoffs (the two-arm contract —
-        // `docs/portfolio-analysis.md` §The holding verdict).
-        model_view: ModelView {
-            sub_scores: interpretation.model_sub_scores,
-            letter: engine::grade_from_subscores(&interpretation.model_sub_scores),
-            price_targets: interpretation.model_price_targets.clone(),
-            self_assessment: interpretation.self_assessment.clone(),
-        },
+    let mut graded = graded_verdict_from_interpretation(
+        &engine_output,
+        dossier.options_signal.clone(),
+        interpretation,
         engine_view,
-    };
+    );
     // The per-holding action call — the profile's one entry point: the finished
     // verdict plus the holding's own evidence decide the rung, tunnel vision by
     // design (`docs/portfolio-analysis.md` §Portfolio action). The engine's
@@ -3805,8 +3796,10 @@ pub(crate) fn validate_what_changed(
 /// The system prompt for the interpretation stage — the role and the two-arm
 /// contract: the engine arm's numbers are the app's, the model arm's are the
 /// model's own, and the model arm's values never alter or bind the engine
-/// baseline.
-pub fn interpretation_system_prompt() -> String {
+/// baseline. Since `portfolio-v38` the response contract it carries is scoped
+/// per call — the ledger's series enum to the vehicle kind, the key list to
+/// the debut / continuity shape (fix list 3.3).
+pub fn interpretation_system_prompt(is_fund: bool, debut: bool) -> String {
     format!(
         "You are a disciplined equity analyst grading one holding for a prescriptive \
      portfolio review. The verdict has TWO ARMS. The ENGINE ARM — sub-scores, the \
@@ -3836,13 +3829,14 @@ pub fn interpretation_system_prompt() -> String {
      ledger against this run's evidence and the engine's deterministic condition \
      crossings, then rewrite it per the instructions in the prompt. \
      {}",
-        crate::portfolio::interpretation_response_contract()
+        crate::portfolio::interpretation_response_contract(is_fund, debut)
     )
 }
 
 /// The system prompt for the `role_risk_only` interpretation — the union's other
-/// branch: role and risk only, no letter, no targets, no conviction.
-pub fn role_risk_system_prompt() -> String {
+/// branch: role and risk only, no letter, no targets, no conviction. The
+/// contract's key list follows the debut / continuity shape (`portfolio-v38`).
+pub fn role_risk_system_prompt(debut: bool) -> String {
     format!(
         "You are a disciplined portfolio analyst assessing one holding whose vehicle \
      class this pipeline is structurally unable to price (a bond or commodity fund, \
@@ -3857,7 +3851,18 @@ pub fn role_risk_system_prompt() -> String {
      condition-only monitor; trim/sell triggers only) — test the prior ledger against \
      this run's evidence and rewrite it per the instructions in the prompt. \
      {}",
-        crate::portfolio::role_risk_response_contract()
+        crate::portfolio::role_risk_response_contract(debut)
+    )
+}
+
+/// Whether a dossier's vehicle is a fund — the class-shaped executability
+/// surface (statement series never resolve on the fund path, the expense ratio
+/// only there), computed once from the asset class wherever a prompt, schema or
+/// validator needs it.
+pub(crate) fn dossier_is_fund(d: &HoldingDossier) -> bool {
+    matches!(
+        d.position.asset_class,
+        crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
     )
 }
 
@@ -3873,33 +3878,20 @@ pub(crate) fn role_risk_prompt_renders_house_view(d: &HoldingDossier) -> bool {
     d.house_view.latest_sections.is_some()
 }
 
-/// The prompt's holding header — the identity and position line both interpretation
-/// branches open with. Two renderings are deliberate
-/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 4). The name falls
-/// back to the resolved listing's company name when Schwab supplies no description,
-/// which otherwise renders as `HOLDING: PSX ()` and leaves the model speculating
-/// about the ticker. The money figures are marked as position totals in dollars:
-/// rendered bare they read ambiguously as per-share, and the model spent reasoning
-/// re-deriving them by division before starting its analysis.
+/// The prompt's holding header — the identity and per-share quote every
+/// model-facing packet opens with: both interpretation branches, the research
+/// brief and the action call. The name falls back to the resolved listing's
+/// company name when Schwab supplies no description, which otherwise renders
+/// as `HOLDING: PSX ()` and leaves the model speculating about the ticker
+/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 4). Since
+/// `portfolio-v38` the header carries no account economics on any route —
+/// no quantity, cost basis, market value or unrealized P/L (fix list 3.2,
+/// ruled 2026-09-16): those are the account's ownership history, not the
+/// issuer's condition, and the intrinsic read is of no investor
+/// (`docs/portfolio-analysis.md` §Intrinsic verdict). The action call's
+/// header had held that form since `portfolio-v36`; the one function now
+/// serves every packet.
 fn holding_header(d: &HoldingDossier) -> String {
-    format!(
-        "HOLDING: {} ({})\nQuantity: {}  Cost basis: ${:.0} total  Market value: ${:.0} total\nCurrent price (per share, USD): {}\n",
-        d.position.symbol,
-        holding_display_name(d),
-        d.position.quantity,
-        d.position.cost_basis,
-        d.position.market_value,
-        spot_line(d),
-    )
-}
-
-/// The action call's header — identity and the per-share quote only. The
-/// header carries no account economics (cost basis, unrealized P/L, quantity,
-/// market value). Embedded model-authored prose remains a separate isolation
-/// gap until the interpretation packet also withholds purchase economics
-/// (`docs/portfolio-analysis.md` §Portfolio action, ruled 2026-09-16 off
-/// attempt-6 Finding 3 and the Codex tax-boundary read).
-fn action_holding_header(d: &HoldingDossier) -> String {
     format!(
         "HOLDING: {} ({})\nCurrent price (per share, USD): {}\n",
         d.position.symbol,
@@ -3971,7 +3963,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     p.push_str(&holding_header(d));
     p.push_str(&format!(
         "Position change since last run: {}\n",
-        describe_position_change(&d.position_delta, d.position.quantity, d.position.cost_basis)
+        describe_position_change(&d.position_delta)
     ));
     p.push_str(&format!("\nCLASSIFICATION: {}\n", r.class_label));
     if let Some(kind) = r.structural_kind {
@@ -4040,10 +4032,9 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
             // the 6g attribution validator resolves against.
             p.push_str(&input_delta_prompt_section(input.input_delta));
         }
-        None => p.push_str(
-            "\nCONTINUITY: new holding (no prior verdict). what_changed_entries \
-             must be [].\n",
-        ),
+        // A debut requests no continuity fields — the app writes them
+        // (fix list 3.3, `portfolio-v38`).
+        None => p.push_str("\nCONTINUITY: new holding (no prior verdict).\n"),
     }
     p.push_str(&ledger_prompt_section(
         input.prior_ledger,
@@ -4358,12 +4349,14 @@ fn implied_expectations_prompt_section(e: &engine::EngineOutput) -> String {
 /// the holding's own option legs, classified, with coverage and net delta —
 /// rendered into BOTH 6f prompts, because the overlay changes what the right
 /// action is. Empty where the holding carries no option legs.
-/// `sized` renders the overlay's absolute size — per-leg contract counts and the
-/// net delta in share-equivalents — for the interpretation prompt; the action
-/// packet renders structure and ratios only (class, coverage ratio, net delta as
-/// a fraction of the held shares, each leg's direction / kind / strike / expiry /
-/// delta), so position size reaches the rung by no route (ruled 2026-09-16, C1).
-fn option_overlay_prompt_section(d: &HoldingDossier, sized: bool) -> String {
+/// Every packet renders structure and ratios only — class, coverage ratio, net
+/// delta as a fraction of the held shares, each leg's direction / kind / strike /
+/// expiry / delta — never contract counts or share-equivalents: the action
+/// packet since `portfolio-v36` (ruled 2026-09-16, C1) so position size reaches
+/// the rung by no route, and the interpretation packets since `portfolio-v38`
+/// (fix list 3.2, the Codex plan review), where contracts over coverage had
+/// still given the held share count away.
+fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
     use crate::portfolio::dossier::{OverlayClass, OverlayDirection};
     let Some(o) = &d.option_overlay else {
         return String::new();
@@ -4382,9 +4375,7 @@ fn option_overlay_prompt_section(d: &HoldingDossier, sized: bool) -> String {
         s.push_str(&format!(", covering {:.0}% of the held shares", cr * 100.0));
     }
     if let Some(nd) = o.net_delta {
-        if sized {
-            s.push_str(&format!("; net delta {nd:+.0} share-equivalents"));
-        } else if d.position.quantity > 0.0 {
+        if d.position.quantity > 0.0 {
             s.push_str(&format!(
                 "; net delta {:+.0}% of the held shares",
                 nd / d.position.quantity * 100.0
@@ -4394,12 +4385,11 @@ fn option_overlay_prompt_section(d: &HoldingDossier, sized: bool) -> String {
     s.push_str(".\n");
     for l in &o.legs {
         s.push_str(&format!(
-            "- {}{} {} — strike {}, expiry {}, delta {}\n",
+            "- {} {} — strike {}, expiry {}, delta {}\n",
             match l.direction {
                 OverlayDirection::Long => "LONG",
                 OverlayDirection::Short => "SHORT",
             },
-            if sized { format!(" {}×", l.quantity) } else { String::new() },
             l.kind
                 .map(|k| match k {
                     crate::schwab::OptionKind::Call => "CALL",
@@ -4602,7 +4592,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     p.push_str(&holding_header(d));
     p.push_str(&format!(
         "Position change since last run: {}\n",
-        describe_position_change(&d.position_delta, d.position.quantity, d.position.cost_basis)
+        describe_position_change(&d.position_delta)
     ));
 
     p.push_str(&format!(
@@ -4767,7 +4757,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     ));
     p.push_str(&put_call_backdrop_prompt_section(d));
     p.push_str(&short_interest_prompt_section(d));
-    p.push_str(&option_overlay_prompt_section(d, true));
+    p.push_str(&option_overlay_prompt_section(d));
 
     if !d.financials.gaps.is_empty() {
         p.push_str(&format!("\nDATA GAPS: {}\n", d.financials.gaps.join("; ")));
@@ -4892,16 +4882,12 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
             // the 6g attribution validator resolves against.
             p.push_str(&input_delta_prompt_section(input.input_delta));
         }
-        None => p.push_str(
-            "\nCONTINUITY: new holding (no prior verdict). what_changed_entries \
-             must be [].\n",
-        ),
+        // A debut requests no continuity fields — the app writes them
+        // (fix list 3.3, `portfolio-v38`).
+        None => p.push_str("\nCONTINUITY: new holding (no prior verdict).\n"),
     }
 
-    let is_fund = matches!(
-        d.position.asset_class,
-        crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
-    );
+    let is_fund = dossier_is_fund(d);
     p.push_str(&ledger_prompt_section(
         input.prior_ledger,
         input.ledger_eval,
@@ -5151,7 +5137,7 @@ fn input_delta_prompt_evidence(entries: &[crate::portfolio::DeltaEntry]) -> Stri
 pub fn action_user_prompt(input: &ActionInput) -> String {
     let d = input.dossier;
     let mut p = String::new();
-    p.push_str(&action_holding_header(d));
+    p.push_str(&holding_header(d));
     if let Some(prior) = d.prior_verdict.as_ref() {
         if let Some(action) = crate::portfolio::carried_action(prior) {
             match prior.action_source {
@@ -5218,8 +5204,14 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 graded.horizon_outlook.long,
             ));
             p.push_str(match engine.hurdle.state {
+                // Fix list 2.5 (ruled 2026-09-16, wording ratified 2026-09-16 F5):
+                // "an exit input when forward prospects are independently poor" read
+                // as a mandate to sell everything (86 of 126 capital-efficiency
+                // markers on the two failing holdings); the line states the fact,
+                // the sunk-cost lean it feeds, and its reach, like the other three
+                // states (`docs/portfolio-analysis.md` §Portfolio action).
                 crate::portfolio::HurdleState::Fails =>
-                    "CAPITAL EFFICIENCY: fails — even the bull case misses the hurdle over the assessed horizon; an exit input when forward prospects are independently poor.\n",
+                    "CAPITAL EFFICIENCY: fails — even the bull case misses the hurdle over the assessed horizon, so the position is dead money. This is a weighed exit input beside the forward read, not a rung: it leans toward realizing some or all of the position where the forward prospects are independently poor, and it neither requires nor forbids any rung.\n",
                 // Fix list 2.4 (ruled 2026-09-16): "carries no exit signal" read as a
                 // directive not to sell; the line states the hurdle fact and its reach.
                 crate::portfolio::HurdleState::Clears =>
@@ -5313,7 +5305,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
 
     p.push_str(&forensic_prompt_section(input.dossier));
     p.push_str(&commodity_prompt_section(input.dossier));
-    p.push_str(&option_overlay_prompt_section(input.dossier, false));
+    p.push_str(&option_overlay_prompt_section(input.dossier));
 
     // The engine's per-holding set, stated once as evidence (ruled 2026-09-16
     // off attempt-6 Finding 3: the departure mechanics are app behavior —
@@ -5518,9 +5510,15 @@ impl LedgerSeriesContract {
              vehicle and must not be authored as `quant`):\n",
         );
         // Fix list 1.7 (ruled 2026-09-16): the model buffered every threshold away
-        // from the level its sentence stated.
+        // from the level its sentence stated. Fix list 1.9 (ruled 2026-09-16,
+        // landed with the §3 slice): levelless prose cost PSX and PGNY three of
+        // four executable cores each under `no-level`, so the contract asks for
+        // the level in the sentence itself.
         p.push_str(
-            "The threshold is exactly the level the statement names, in the series' unit; \
+            "A quantitative condition's statement names its level in the series' unit — a \
+             percent on a fraction series, dollars on the price, a multiple on a ratio — \
+             since a statement naming no figure stays qualitative. \
+             The threshold is exactly the level the statement names, in the series' unit; \
              the margin is the separate noise band around it and is never folded into the \
              threshold.\n",
         );
@@ -5843,51 +5841,96 @@ fn statement_basis_line(
     format!("{flow_line} {instants_line}\n")
 }
 
+/// The app owns a debut's continuity fields on every analyst path (fix list
+/// 3.3, `portfolio-v38`): the model path never requests them and the decoder
+/// inserts them, but a stub or any other analyst may author its own line, so
+/// the pipeline writes [`crate::portfolio::DEBUT_WHAT_CHANGED`] and an empty
+/// row set itself before the verdict is assembled. A continuity call's fields
+/// pass through untouched.
+fn own_debut_continuity(mut interpretation: Interpretation, debut: bool) -> Interpretation {
+    if debut {
+        interpretation.what_changed = crate::portfolio::DEBUT_WHAT_CHANGED.to_string();
+        interpretation.what_changed_entries.clear();
+    }
+    interpretation
+}
+
+/// The role/risk branch's form of [`own_debut_continuity`].
+fn own_debut_continuity_role_risk(
+    mut interpretation: RoleRiskInterpretation,
+    debut: bool,
+) -> RoleRiskInterpretation {
+    if debut {
+        interpretation.what_changed = crate::portfolio::DEBUT_WHAT_CHANGED.to_string();
+        interpretation.what_changed_entries.clear();
+    }
+    interpretation
+}
+
+/// The priced verdict assembled from a fresh interpretation: the engine arm's
+/// figures app-stamped from the engine output, the model arm persisted exactly
+/// as authored with its letter derived through the shared cutoffs (the two-arm
+/// contract — `docs/portfolio-analysis.md` §The holding verdict). The action
+/// fields are placeholders the per-holding action call overwrites; they are
+/// never rendered into that call's prompt. One assembly serves the pipeline and
+/// the fixed-evidence harness, so the harness's fresh-interpretation action
+/// call reads the verdict the run would have persisted (the §3 slice's Codex
+/// plan review).
+pub(crate) fn graded_verdict_from_interpretation(
+    engine_output: &EngineOutput,
+    options_signal: crate::portfolio::OptionsSignal,
+    interpretation: Interpretation,
+    engine_view: crate::portfolio::EngineView,
+) -> GradedVerdict {
+    GradedVerdict {
+        grade: engine_output.grade,
+        sub_scores: engine_output.sub_scores,
+        action: Action::Hold,
+        action_rationale: String::new(),
+        // The v7 unrestricted contract: the model's conviction persists exactly
+        // as authored — no bail, no clamp; a matched pre-profit ceiling stays
+        // recorded on the engine view as an annotated divergence.
+        conviction: interpretation.conviction,
+        horizon_outlook: interpretation.horizon_outlook,
+        price_targets: engine_output.price_targets.clone(),
+        model_target_rationale: interpretation.model_target_rationale,
+        options_signal,
+        risk_tier: engine_output.risk_tier,
+        dead_money: engine_output.hurdle.state,
+        low_confidence_grade: engine_output.low_confidence_grade,
+        fund_class_label: engine_output.fund_class_label.clone(),
+        financial_summary: interpretation.financial_summary,
+        what_changed: interpretation.what_changed,
+        model_view: ModelView {
+            sub_scores: interpretation.model_sub_scores,
+            letter: engine::grade_from_subscores(&interpretation.model_sub_scores),
+            price_targets: interpretation.model_price_targets,
+            self_assessment: interpretation.self_assessment,
+        },
+        engine_view,
+    }
+}
+
 /// A one-line description of the position's change since the prior run, for the
-/// interpretation prompt — the structured delta the app computed, so the model reasons
-/// over what the user actually did with the position: both the quantity move and the
-/// cost-basis move (paid-up vs averaged-down).
-fn describe_position_change(
-    delta: &PositionDelta,
-    current_qty: f64,
-    current_cost_basis: f64,
-) -> String {
+/// interpretation prompt — the direction of the app-computed delta only
+/// (`docs/portfolio-analysis.md` §Holdings change tracking), so the model reasons
+/// over what the user did with the position — added to, trimmed, or left it —
+/// without the quantity or cost-basis figures. Since `portfolio-v38` those
+/// figures are account economics the intrinsic packet withholds (fix list 3.2,
+/// ruled 2026-09-16 — direction only): a paid-up-versus-averaged-down read is
+/// the account's history, not the issuer's condition.
+fn describe_position_change(delta: &PositionDelta) -> String {
     match delta.change {
         // "NEW" means new to this run history, nothing more — attempt 2's streams
-        // burned large reasoning shares re-litigating "NEW" against a legacy cost
-        // basis as if it meant a fresh purchase
-        // (`docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 2).
+        // burned large reasoning shares re-litigating "NEW" as if it meant a
+        // fresh purchase (`docs/verification/2026-08-13-big-run-attempt-2.md`
+        // §Workstream 2).
         PositionChange::New => "NEW (no prior verdict in this run history — the position \
-             itself may long predate this analysis, so the cost basis is the account's \
-             history, not a recent entry)"
+             itself may long predate this analysis)"
             .to_string(),
         PositionChange::Unchanged => "unchanged".to_string(),
-        PositionChange::Increased | PositionChange::Decreased => {
-            let dir = if matches!(delta.change, PositionChange::Increased) {
-                "INCREASED"
-            } else {
-                "DECREASED"
-            };
-            let qty = match delta.prior_quantity {
-                Some(prev) => format!(" quantity {prev} → now {current_qty}"),
-                None => String::new(),
-            };
-            // Dollar-marked like the header two lines above it. Rendered bare, these
-            // read as per-share against a header that says total, which is the
-            // ambiguity Finding 4 documented the model paying to resolve
-            // (`docs/verification/2026-08-10-big-run-attempt-1.md`).
-            let basis = match delta.prior_cost_basis {
-                Some(prev) => {
-                    format!(", cost basis ${prev:.0} → now ${current_cost_basis:.0} total")
-                }
-                None => String::new(),
-            };
-            if qty.is_empty() && basis.is_empty() {
-                dir.to_string()
-            } else {
-                format!("{dir} (prior{qty}{basis})")
-            }
-        }
+        PositionChange::Increased => "INCREASED (the position grew since the prior run)".to_string(),
+        PositionChange::Decreased => "DECREASED (the position shrank since the prior run)".to_string(),
     }
 }
 
@@ -6076,7 +6119,7 @@ impl HoldingAnalyst for StubAnalyst {
                 e.sub_scores.momentum,
                 e.sub_scores.risk
             ),
-            price_target_rationale: "Base case follows the engine's scenario midpoint.".to_string(),
+            model_target_rationale: "Base case follows the engine's scenario midpoint.".to_string(),
             what_changed,
             // The stub re-affirms — no typed rows, matching the empty-audit
             // re-affirmation contract.
@@ -6402,10 +6445,29 @@ fn ensure_nonempty_completion(
 /// I6, ruled 2026-08-29). Runs inside the retry closure, after
 /// [`ensure_nonempty_completion`], so an off-domain response gets exactly the
 /// one re-issue every content failure gets and never a second retry layer.
-fn decode_interpretation(stage: &str, content: &str) -> Result<Interpretation> {
-    let interpretation: Interpretation = serde_json::from_str(content)
+/// Parse a schema-constrained response body, inserting the app-written debut
+/// continuity fields first on a debut (fix list 3.3, `portfolio-v38`): the
+/// debut grammar carries neither field, so the body is completed before it is
+/// typed, and a structural failure keeps the bounded-retry `SchemaParse` class.
+fn decode_response_body<T: serde::de::DeserializeOwned>(
+    what: &str,
+    content: &str,
+    debut: bool,
+) -> Result<T> {
+    let typed = || -> std::result::Result<T, serde_json::Error> {
+        let mut body: serde_json::Value = serde_json::from_str(content)?;
+        if debut {
+            crate::portfolio::complete_debut_response(&mut body);
+        }
+        serde_json::from_value(body)
+    };
+    typed()
         .map_err(|e| anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse))
-        .with_context(|| format!("parsing interpretation JSON: {}", body_snippet(content)))?;
+        .with_context(|| format!("parsing {what} JSON: {}", body_snippet(content)))
+}
+
+fn decode_interpretation(stage: &str, content: &str, debut: bool) -> Result<Interpretation> {
+    let interpretation: Interpretation = decode_response_body("interpretation", content, debut)?;
     crate::portfolio::validate_model_arm(
         &interpretation.model_sub_scores,
         &interpretation.model_price_targets,
@@ -6564,18 +6626,21 @@ fn research_turn_request(
 /// Build the priced-branch interpretation request: thinking on (composes with the
 /// grammar-constrained `format`), thinking sampling, interpret-sized context.
 fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatRequest {
+    let is_fund = dossier_is_fund(input.dossier);
+    let debut = input.dossier.prior_verdict.is_none();
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
-            ChatMessage::system(interpretation_system_prompt()),
+            ChatMessage::system(interpretation_system_prompt(is_fund, debut)),
             ChatMessage::user(interpretation_user_prompt(input)),
         ],
     );
     // The v7 unrestricted schema: full ladder, full conviction enum — the engine's
     // own lean bars and any pre-profit ceiling render into the prompt as evidence,
     // never as schema narrowing (`docs/portfolio-analysis.md` §The holding verdict,
-    // the two-arm contract).
-    req.format_schema = Some(interpretation_schema());
+    // the two-arm contract). Scoped per call since `portfolio-v38`: the series
+    // enum to the vehicle kind, the shape to debut / continuity (fix list 3.3).
+    req.format_schema = Some(interpretation_schema(is_fund, debut));
     req.think = Some(true);
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
@@ -6585,14 +6650,15 @@ fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatR
 /// Build the `role_risk_only`-branch interpretation request — same mode wiring as
 /// the priced branch, reduced schema.
 fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest {
+    let debut = input.dossier.prior_verdict.is_none();
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
-            ChatMessage::system(role_risk_system_prompt()),
+            ChatMessage::system(role_risk_system_prompt(debut)),
             ChatMessage::user(role_risk_user_prompt(input)),
         ],
     );
-    req.format_schema = Some(role_risk_interpretation_schema());
+    req.format_schema = Some(role_risk_interpretation_schema(debut));
     req.think = Some(true);
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
@@ -6805,6 +6871,7 @@ impl HoldingAnalyst for LocalAnalyst {
         // instead of a minutes-long quiet stretch (the first live run's F8).
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("interpret {}", input.dossier.position.symbol);
+        let debut = input.dossier.prior_verdict.is_none();
         req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
@@ -6812,7 +6879,7 @@ impl HoldingAnalyst for LocalAnalyst {
             self.record_usage(stage.clone(), &req, &resp);
             ensure_not_output_limited(&stage, &req, &resp)?;
             ensure_nonempty_completion(&stage, &resp)?;
-            decode_interpretation(&stage, &resp.content)
+            decode_interpretation(&stage, &resp.content, debut)
         })
     }
 
@@ -6820,6 +6887,7 @@ impl HoldingAnalyst for LocalAnalyst {
         let mut req = role_risk_request(&self.reasoner_model, input);
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("role-risk {}", input.dossier.position.symbol);
+        let debut = input.dossier.prior_verdict.is_none();
         req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
@@ -6827,16 +6895,7 @@ impl HoldingAnalyst for LocalAnalyst {
             self.record_usage(stage.clone(), &req, &resp);
             ensure_not_output_limited(&stage, &req, &resp)?;
             ensure_nonempty_completion(&stage, &resp)?;
-            serde_json::from_str(&resp.content)
-                .map_err(|e| {
-                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
-                })
-                .with_context(|| {
-                    format!(
-                        "parsing role/risk interpretation JSON: {}",
-                        body_snippet(&resp.content)
-                    )
-                })
+            decode_response_body("role/risk interpretation", &resp.content, debut)
         })
     }
 
@@ -7991,9 +8050,11 @@ pub(crate) mod tests {
                         | crate::portfolio::Grade::B
                         | crate::portfolio::Grade::C
                 ));
-                assert_eq!(g.what_changed, "new holding");
-                // The model's base-case justification is carried through, not dropped.
-                assert!(!g.price_target_rationale.is_empty());
+                // The debut line is the app's since portfolio-v38 (fix list
+                // 3.3, F6), whatever the analyst authored.
+                assert_eq!(g.what_changed, crate::portfolio::DEBUT_WHAT_CHANGED);
+                // The model's own-target explanation is carried through, not dropped.
+                assert!(!g.model_target_rationale.is_empty());
                 // The options signal rides on the verdict but never entered the grade.
                 assert!(g.options_signal.put_call_volume.is_some());
                 // The new engine reads persist on the priced branch.
@@ -8794,24 +8855,29 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn position_change_line_shows_quantity_and_cost_basis_moves() {
+    fn position_change_line_states_the_direction_and_no_figure() {
+        // Direction only since portfolio-v38 (fix list 3.2, ruled 2026-09-16):
+        // the quantity and cost-basis moves are account economics the intrinsic
+        // packet withholds; the delta's direction still reaches the read
+        // (`docs/portfolio-analysis.md` §Holdings change tracking).
         let increased = PositionDelta {
             change: PositionChange::Increased,
             prior_quantity: Some(100.0),
             prior_cost_basis: Some(14_000.0),
         };
-        let line = describe_position_change(&increased, 140.0, 19_500.0);
-        assert!(line.contains("INCREASED"), "{line}");
-        assert!(line.contains("100") && line.contains("140"), "quantity move: {line}");
-        assert!(line.contains("14000") && line.contains("19500"), "cost-basis move: {line}");
-        // Dollar-marked like the header this line sits under: bare integers here read
-        // as per-share against a header that says total (Finding 4).
-        assert!(line.contains("$14000") && line.contains("$19500 total"), "units: {line}");
+        let line = describe_position_change(&increased);
+        assert!(line.starts_with("INCREASED"), "{line}");
+        for figure in ["100", "140", "14000", "19500", "$", "cost basis", "quantity"] {
+            assert!(!line.contains(figure), "{figure} leaked: {line}");
+        }
+        let decreased = PositionDelta { change: PositionChange::Decreased, ..increased };
+        assert!(describe_position_change(&decreased).starts_with("DECREASED"));
         // The debut line must disarm the fresh-purchase misread: NEW means no
-        // prior verdict, and the cost basis is account history (v8 tightening).
-        let debut = describe_position_change(&PositionDelta::new_position(), 10.0, 1_000.0);
+        // prior verdict, nothing about when the position was entered.
+        let debut = describe_position_change(&PositionDelta::new_position());
         assert!(debut.starts_with("NEW (no prior verdict"), "{debut}");
-        assert!(debut.contains("not a recent entry"), "{debut}");
+        assert!(debut.contains("may long predate"), "{debut}");
+        assert!(!debut.contains("cost basis"), "{debut}");
     }
 
     #[test]
@@ -8839,7 +8905,7 @@ pub(crate) mod tests {
         assert!(user.contains("RISK TIER"), "{user}");
         assert!(user.contains("YOUR MODEL ARM"), "{user}");
         assert!(user.contains("unrestricted"), "{user}");
-        let system = interpretation_system_prompt();
+        let system = interpretation_system_prompt(false, false);
         assert!(system.contains("TWO ARMS"), "{system}");
         assert!(system.contains("MODEL ARM"), "{system}");
         assert!(!system.contains("never outside them"), "{system}");
@@ -8854,7 +8920,7 @@ pub(crate) mod tests {
         assert!(user.contains("only `fails` is dead money"), "{user}");
         assert!(!user.contains("one input to weigh"), "{user}");
         assert!(!user.contains("Weigh the targets by this provenance"), "{user}");
-        let system = interpretation_system_prompt();
+        let system = interpretation_system_prompt(false, false);
         assert!(system.contains("Conviction means"), "{system}");
         assert!(system.contains("horizon reads and market-setup context"), "{system}");
 
@@ -9456,7 +9522,13 @@ pub(crate) mod tests {
                 dossier: &d, subject: ActionSubject::Priced { graded, engine: &engine, pre_profit: None },
                 engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
             });
-            assert_eq!(prompt.contains("independently poor"), state == crate::portfolio::HurdleState::Fails);
+            // The `fails` line since portfolio-v38 (fix list 2.5): the fact, the
+            // sunk-cost lean, and the same closing reach as the other three states.
+            let fails = state == crate::portfolio::HurdleState::Fails;
+            assert_eq!(prompt.contains("so the position is dead money"), fails);
+            assert_eq!(prompt.contains("a weighed exit input beside the forward read, not a rung"), fails);
+            assert_eq!(prompt.contains("realizing some or all of the position where the forward prospects are independently poor"), fails);
+            assert!(!prompt.contains("an exit input when forward prospects"), "{prompt}");
             assert_eq!(prompt.matches("CAPITAL EFFICIENCY:").count(), 1);
             assert!(!prompt.contains("capital-efficiency read"));
             assert!(!prompt.contains("fixed action mapping"));
@@ -9464,8 +9536,8 @@ pub(crate) mod tests {
             assert!(!prompt.contains("could not be evaluated"));
             assert_eq!(prompt.contains("even the bear case clears"), state == crate::portfolio::HurdleState::Clears);
             assert_eq!(prompt.contains("proves nothing either way"), state == crate::portfolio::HurdleState::Indeterminate);
-            assert_eq!(prompt.contains("neither requires nor forbids any rung"),
-                state != crate::portfolio::HurdleState::Fails);
+            // Every state closes with the same reach clause.
+            assert_eq!(prompt.matches("neither requires nor forbids any rung").count(), 1, "{prompt}");
             assert!(prompt.contains("Prior engine grade"));
             assert!(prompt.contains("twelve-month base: 100 -> 110"));
             assert!(prompt.contains("[D1] forward earnings changed"));
@@ -9800,7 +9872,13 @@ pub(crate) mod tests {
         // narrowing, the margin caps, the contract's threshold sentence and the
         // capital-efficiency wording — changing the prompts and what 6g keeps,
         // so it moves to v37.
-        assert_eq!(PROMPT_VERSION, "portfolio-v37");
+        // The §3 interpretation slice renames the target rationale with its
+        // meaning, strips account economics from every packet, scopes the
+        // schema per call and rewords two contract lines, changing the prompts,
+        // the grammar and a persisted field, so it moves to v38 (and the
+        // checkpoint trail to v10).
+        assert_eq!(PROMPT_VERSION, "portfolio-v38");
+        assert_eq!(crate::portfolio::store::CHECKPOINT_FORMAT_VERSION, "checkpoint-v10");
     }
 
     #[test]
@@ -9883,14 +9961,14 @@ pub(crate) mod tests {
         // The stub's own arm is in-domain, so the offline fixture cannot drift
         // off the gate silently.
         let clean = serde_json::to_string(&stub).unwrap();
-        assert!(decode_interpretation("interpret TEST", &clean).is_ok());
+        assert!(decode_interpretation("interpret TEST", &clean, false).is_ok());
 
         let mut off = serde_json::to_value(&stub).unwrap();
         off["model_sub_scores"]["quality"] = serde_json::json!(10000.0);
         off["model_sub_scores"]["risk"] = serde_json::json!(-1.0);
         off["model_price_targets"]["twelve_month"]["bear"] = serde_json::json!(0.0);
         off["model_price_targets"]["one_month"]["bull"] = serde_json::json!(-5.0);
-        let err = decode_interpretation("interpret TEST", &off.to_string()).unwrap_err();
+        let err = decode_interpretation("interpret TEST", &off.to_string(), false).unwrap_err();
         assert_eq!(
             crate::local_model::retry_class(&err),
             Some(crate::local_model::RetryClass::ModelArmDomain)
@@ -9918,10 +9996,10 @@ pub(crate) mod tests {
         let mut inverted = serde_json::to_value(&stub).unwrap();
         inverted["model_price_targets"]["twelve_month"]["bear"] = serde_json::json!(500.0);
         inverted["model_price_targets"]["twelve_month"]["bull"] = serde_json::json!(50.0);
-        assert!(decode_interpretation("interpret TEST", &inverted.to_string()).is_ok());
+        assert!(decode_interpretation("interpret TEST", &inverted.to_string(), false).is_ok());
 
         // Malformed content keeps its own class.
-        let err = decode_interpretation("interpret TEST", "not json").unwrap_err();
+        let err = decode_interpretation("interpret TEST", "not json", false).unwrap_err();
         assert_eq!(
             crate::local_model::retry_class(&err),
             Some(crate::local_model::RetryClass::SchemaParse)
@@ -13154,8 +13232,8 @@ pub(crate) mod tests {
             narrative: None,
         });
         assert!(user.contains("REWRITE THE THESIS LEDGER"), "{user}");
-        assert!(interpretation_system_prompt().contains("THESIS LEDGER"));
-        assert!(role_risk_system_prompt().contains("THESIS LEDGER"));
+        assert!(interpretation_system_prompt(false, false).contains("THESIS LEDGER"));
+        assert!(role_risk_system_prompt(false).contains("THESIS LEDGER"));
     }
 
     /// The 2026-08-24 large-scale review's Priority-1 minor: the vocabulary said
@@ -13288,10 +13366,11 @@ pub(crate) mod tests {
     }
 
     /// Finding 4 (`docs/verification/2026-08-10-big-run-attempt-1.md`): the header
-    /// names the issuer and marks the money figures as dollar totals, so the model
-    /// does not spend its reasoning deciding whether a bare integer is per-share.
+    /// names the issuer. Since portfolio-v38 it carries identity and the per-share
+    /// quote only — no quantity, cost basis or market value on any packet (fix
+    /// list 3.2), the form the action header had held since v36.
     #[test]
-    fn the_holding_header_marks_dollar_totals_and_names_the_issuer() {
+    fn the_holding_header_carries_identity_and_spot_only_and_names_the_issuer() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
 
         // A usable account description is used as-is.
@@ -13299,9 +13378,16 @@ pub(crate) mod tests {
         d.company_name = Some("Phillips 66 Company".to_string());
         let h = holding_header(&d);
         assert!(h.contains("Phillips 66)"), "{h}");
-        assert!(h.contains("Cost basis: $"), "{h}");
-        assert!(h.contains(" total"), "{h}");
-        assert!(h.contains("Market value: $"), "{h}");
+        assert!(h.contains("Current price (per share, USD)"), "{h}");
+        for absent in ["Quantity", "Cost basis", "Market value", " total"] {
+            assert!(!h.contains(absent), "{absent} leaked: {h}");
+        }
+        // Account economics cannot change the header at all.
+        let mut repriced = d.clone();
+        repriced.position.quantity *= 3.0;
+        repriced.position.cost_basis *= 3.0;
+        repriced.position.market_value *= 3.0;
+        assert_eq!(holding_header(&repriced), h);
 
         // Every no-identity shape falls back to the profile name — blank, whitespace,
         // the ticker repeated, and corporate-form noise that tokenizes to nothing.
@@ -13419,29 +13505,33 @@ pub(crate) mod tests {
             contract: String,
             prompt: String,
         }
-        let cases = [
-            ContractCase {
-                what: "priced",
-                required: required_keys(&pf::interpretation_schema()),
-                keys: pf::INTERPRETATION_KEYS.to_vec(),
-                contract: pf::interpretation_response_contract(),
-                prompt: interpretation_system_prompt(),
-            },
-            ContractCase {
-                what: "role-risk",
-                required: required_keys(&pf::role_risk_interpretation_schema()),
-                keys: pf::ROLE_RISK_KEYS.to_vec(),
-                contract: pf::role_risk_response_contract(),
-                prompt: role_risk_system_prompt(),
-            },
-            ContractCase {
-                what: "action call",
-                required: required_keys(&pf::action_decision_schema()),
-                keys: pf::ACTION_KEYS.to_vec(),
-                contract: pf::action_response_contract(),
-                prompt: action_system_prompt(),
-            },
-        ];
+        // Every per-call shape since portfolio-v38 (fix list 3.3): stock and
+        // fund, continuity and debut, on both branches.
+        let mut cases = vec![ContractCase {
+            what: "action call",
+            required: required_keys(&pf::action_decision_schema()),
+            keys: pf::ACTION_KEYS.to_vec(),
+            contract: pf::action_response_contract(),
+            prompt: action_system_prompt(),
+        }];
+        for (is_fund, debut) in [(false, false), (false, true), (true, false), (true, true)] {
+            cases.push(ContractCase {
+                what: if debut { "priced debut" } else { "priced continuity" },
+                required: required_keys(&pf::interpretation_schema(is_fund, debut)),
+                keys: pf::interpretation_keys(debut),
+                contract: pf::interpretation_response_contract(is_fund, debut),
+                prompt: interpretation_system_prompt(is_fund, debut),
+            });
+        }
+        for debut in [false, true] {
+            cases.push(ContractCase {
+                what: if debut { "role-risk debut" } else { "role-risk continuity" },
+                required: required_keys(&pf::role_risk_interpretation_schema(debut)),
+                keys: pf::role_risk_keys(debut),
+                contract: pf::role_risk_response_contract(debut),
+                prompt: role_risk_system_prompt(debut),
+            });
+        }
 
         for c in cases {
             assert_eq!(
@@ -13472,16 +13562,101 @@ pub(crate) mod tests {
         }
 
         // The branch carries no action of its own — declaring one would invite it.
-        assert!(!pf::role_risk_response_contract().contains("model_price_targets"));
+        assert!(!pf::role_risk_response_contract(false).contains("model_price_targets"));
 
         // The internal build vocabulary of Finding 3 stays out of every prompt.
         for p in [
-            interpretation_system_prompt(),
-            role_risk_system_prompt(),
+            interpretation_system_prompt(false, false),
+            interpretation_system_prompt(true, true),
+            role_risk_system_prompt(false),
+            role_risk_system_prompt(true),
             action_system_prompt(),
         ] {
             assert!(!p.contains("pre-v7"), "internal version vocabulary leaked: {p}");
         }
+    }
+
+    /// Fix list 3.3 (portfolio-v38): the request built for a holding carries the
+    /// schema and contract for its vehicle kind and its debut / continuity
+    /// shape — a fund's grammar lists no stock-only series, a debut's requests
+    /// no continuity field — and the debut user prompt no longer instructs on
+    /// `what_changed_entries`.
+    #[test]
+    fn the_interpretation_request_is_scoped_to_the_vehicle_and_the_debut_shape() {
+        let stock = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&stock.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        fn input<'a>(d: &'a HoldingDossier, engine: &'a EngineOutput) -> InterpretationInput<'a> {
+            InterpretationInput {
+                input_delta: &[],
+                dossier: d,
+                prior_ledger: None,
+                engine,
+                distilled: "",
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: None,
+                narrative: None,
+            }
+        }
+        let debut_req = interpret_request("qwen", &input(&stock, &engine_output));
+        let schema = debut_req.format_schema.as_ref().unwrap();
+        assert!(schema["properties"].get("what_changed").is_none());
+        assert!(schema["properties"].get("what_changed_entries").is_none());
+        let series = schema["properties"]["ledger"]["properties"]["falsifiers"]["items"]["properties"]["quant"]["properties"]["series"]["enum"].to_string();
+        assert!(series.contains("pe-ratio") && !series.contains("expense-ratio"), "{series}");
+        let user = interpretation_user_prompt(&input(&stock, &engine_output));
+        assert!(user.contains("CONTINUITY: new holding (no prior verdict).\n"), "{user}");
+        assert!(!user.contains("must be []"), "{user}");
+
+        let mut fund = dossier(AssetClass::Etf, strong_financials());
+        fund.prior_verdict = stock.prior_verdict.clone();
+        let (v, _) = analyze_holding(&StubAnalyst, &fund, &rates(), "2026-08-03").unwrap();
+        fund.prior_verdict = Some(v);
+        let cont_req = interpret_request("qwen", &input(&fund, &engine_output));
+        let schema = cont_req.format_schema.as_ref().unwrap();
+        assert!(schema["properties"].get("what_changed").is_some());
+        let series = schema["properties"]["ledger"]["properties"]["falsifiers"]["items"]["properties"]["quant"]["properties"]["series"]["enum"].to_string();
+        assert!(series.contains("expense-ratio") && !series.contains("pe-ratio"), "{series}");
+        let role_req = role_risk_request("qwen", &RoleRiskInput {
+            input_delta: &[],
+            dossier: &stock,
+            prior_ledger: None,
+            readout: &RoleRiskReadout::default(),
+            ledger_eval: None,
+            distilled: "",
+        });
+        assert!(role_req.format_schema.as_ref().unwrap()["properties"].get("what_changed").is_none());
+    }
+
+    /// The app owns a debut's continuity fields on every analyst path
+    /// (fix list 3.3, ruled 2026-09-16 F6): the stub authors its own line, and
+    /// the persisted verdict still carries the app's sentence and no rows; a
+    /// continuity run keeps the analyst's line.
+    #[test]
+    fn a_debut_persists_the_app_written_continuity_fields_on_both_branches() {
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        let VerdictDisposition::Priced(graded) = &v.disposition else { panic!("priced") };
+        assert_eq!(graded.what_changed, crate::portfolio::DEBUT_WHAT_CHANGED);
+        let mut second = d.clone();
+        second.prior_verdict = Some(v.clone());
+        let (v2, _) = analyze_holding(&StubAnalyst, &second, &rates(), "2026-08-10").unwrap();
+        let VerdictDisposition::Priced(graded) = &v2.disposition else { panic!("priced") };
+        assert!(graded.what_changed.starts_with("Reaffirmed"), "{}", graded.what_changed);
+
+        let fund = fund_dossier(bond_fund());
+        let (rv, _) = analyze_holding(&StubAnalyst, &fund, &rates(), "2026-08-03").unwrap();
+        let VerdictDisposition::RoleRiskOnly(role) = &rv.disposition else { panic!("role/risk: {:?}", rv.disposition) };
+        assert_eq!(role.what_changed, crate::portfolio::DEBUT_WHAT_CHANGED);
+        // The role/risk continuity run keeps the analyst's line too.
+        let mut second = fund.clone();
+        second.prior_verdict = Some(rv.clone());
+        let (rv2, _) = analyze_holding(&StubAnalyst, &second, &rates(), "2026-08-10").unwrap();
+        let VerdictDisposition::RoleRiskOnly(role) = &rv2.disposition else { panic!("role/risk: {:?}", rv2.disposition) };
+        assert!(role.what_changed.starts_with("Reaffirmed"), "{}", role.what_changed);
     }
 
     #[test]
@@ -14416,7 +14591,9 @@ pub(crate) mod tests {
         assert!(user.contains("HOLDING: AAPL (Apple)\nCurrent price (per share, USD)"), "{user}");
         assert!(user.contains("covering 100% of the held shares; net delta -70% of the held shares"), "{user}");
         assert!(user.contains("- SHORT CALL — strike 220.00"), "{user}");
-        // The interpretation prompt keeps the sized overlay.
+        // The interpretation prompt renders the same unsized overlay since
+        // portfolio-v38 (fix list 3.2, the Codex plan review): contracts over
+        // coverage had given the held share count away.
         let interp = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
@@ -14428,8 +14605,27 @@ pub(crate) mod tests {
             tech_pre_flag: None,
             narrative: None,
         });
-        assert!(interp.contains("net delta -70 share-equivalents"), "{interp}");
-        assert!(interp.contains("- SHORT 2× CALL"), "{interp}");
+        assert!(interp.contains("covering 100% of the held shares; net delta -70% of the held shares"), "{interp}");
+        assert!(interp.contains("- SHORT CALL — strike 220.00"), "{interp}");
+        for absent in ["share-equivalents", "2×", "Quantity", "Market value", "Cost basis"] {
+            assert!(!interp.contains(absent), "{absent}: {interp}");
+        }
+    }
+
+    #[test]
+    fn the_investment_sentence_strips_exactly_the_appended_caveat() {
+        let gain = with_tax_caveat(
+            "Trim on the verdict.  ".into(),
+            &InvestorProfile::default_fixture(),
+            &position(AssetClass::Stock),
+            Action::Trim,
+        );
+        assert!(gain.ends_with(TAX_CAVEAT_GAIN));
+        assert_eq!(investment_sentence(&gain), "Trim on the verdict.");
+        assert_eq!(investment_sentence(&format!("Sell it. {TAX_CAVEAT_LOSS}")), "Sell it.");
+        // No caveat, nothing stripped — a sentence that merely mentions tax stays.
+        assert_eq!(investment_sentence("Hold; tax is not the reason."), "Hold; tax is not the reason.");
+        assert_eq!(investment_sentence(""), "");
     }
 
     #[test]
@@ -14516,6 +14712,13 @@ pub(crate) mod tests {
         );
         assert!(rendered.contains("- price: the holding's price (account currency) — unit: dollars per share; market-data series; current observation: 195.0000"), "{rendered}");
         assert!(rendered.contains("confirms on 2 consecutive distinct breaching daily closes"), "{rendered}");
+        // The contract's two authoring sentences (1.7, and 1.9 since
+        // portfolio-v38): the level in the sentence, the threshold exactly it.
+        for (contract, label) in [(&rendered, "stock"), (&fund, "fund")] {
+            assert!(contract.contains("A quantitative condition's statement names its level in the series' unit"), "{label}: {contract}");
+            assert!(contract.contains("since a statement naming no figure stays qualitative"), "{label}: {contract}");
+            assert!(contract.contains("The threshold is exactly the level the statement names"), "{label}: {contract}");
+        }
         // Both prompts carry the worked examples in the vehicle's vocabulary.
         assert!(stock.examples().contains("gross-margin"), "{}", stock.examples());
         assert!(LedgerSeriesContract::build(true, None, None).examples().contains("Price closes below $38"));

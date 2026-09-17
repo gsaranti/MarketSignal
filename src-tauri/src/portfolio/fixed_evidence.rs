@@ -14,8 +14,9 @@
 
 use super::engine::{self, CompanyFinancials, EngineOutput};
 use super::pipeline::{
-    self, action_user_prompt, tax_caveat, validate_ledger_rewrite_with_research, ActionInput,
-    ActionSubject, InterpretationInput,
+    self, action_user_prompt, interpretation_user_prompt, role_risk_user_prompt, tax_caveat,
+    validate_ledger_rewrite_with_research, ActionInput, ActionSubject, InterpretationInput,
+    RoleRiskInput,
 };
 use super::{
     Action, AssetClass, ContinuityStamps, FalsifierDraft, LedgerDraft, QuantCoreDraft,
@@ -276,6 +277,94 @@ fn attempt_6_action_packets_carry_no_account_economics_and_are_tax_invariant() {
             Action::Trim | Action::SellAll => assert_eq!(caveat, Some(pipeline::TAX_CAVEAT_LOSS), "{}", f.symbol),
             _ => assert_eq!(caveat, None, "{}", f.symbol),
         }
+    }
+}
+
+/// The phrases no model-facing packet may carry once account economics leave
+/// the intrinsic packets (fix list 3.2, `portfolio-v38`): the header's own
+/// labels, the position's P/L vocabulary, and the sized-overlay form. Shared
+/// by the offline isolation test and the live harness's prose scan. The bare
+/// word "unrealized" is deliberately not listed: the distilled research can
+/// legitimately carry an issuer's own "realized and unrealized capital losses"
+/// (ARKF's fixture does), which is the issuer's condition, not the account's.
+pub(crate) const ACCOUNT_ECONOMICS_PHRASES: [&str; 10] = [
+    "cost basis:",
+    "quantity:",
+    "market value:",
+    "unrealized gain",
+    "unrealized loss",
+    "p/l",
+    "share-equivalents",
+    "entry price",
+    "purchase price",
+    "/share cost",
+];
+
+/// Fix list 3.2 (ruled 2026-09-16): both intrinsic interpretation packets are
+/// investment-only — the priced prompt on the six attempt-6 fixtures and the
+/// role/risk prompt on a synthetic fund — so account economics cannot change
+/// the packet and no economics phrase renders. The header, the direction-only
+/// position line and the unsized overlay are the app-rendered routes this
+/// pins; the model-authored prose the packets embed is scrubbed in the
+/// fixtures and scanned live.
+#[test]
+fn attempt_6_interpretation_packets_carry_no_account_economics() {
+    let repriced = |f: &Fixture| {
+        let mut d = dossier_of(f, true);
+        d.position.cost_basis *= 3.0;
+        d.position.quantity *= 2.0;
+        d.position.market_value *= 2.0;
+        d
+    };
+    for f in fixtures() {
+        let render = |d: &super::dossier::HoldingDossier| {
+            interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
+                dossier: d,
+                prior_ledger: None,
+                engine: &f.engine_output,
+                distilled: &f.research_combined,
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: None,
+                narrative: None,
+            })
+        };
+        let taxable = render(&dossier_of(&f, true));
+        assert_eq!(taxable, render(&dossier_of(&f, false)), "{}: tax posture", f.symbol);
+        assert_eq!(taxable, render(&repriced(&f)), "{}: account economics", f.symbol);
+        let lower = taxable.to_lowercase();
+        for phrase in ACCOUNT_ECONOMICS_PHRASES {
+            assert!(!lower.contains(phrase), "{}: {phrase} leaked: {taxable}", f.symbol);
+        }
+        assert!(taxable.starts_with(&format!("HOLDING: {} (", f.symbol)), "{taxable}");
+        assert!(taxable.contains("Position change since last run: NEW (no prior verdict"), "{taxable}");
+    }
+    // The role/risk branch on a synthetic fund (attempt 6 produced none).
+    let financials = CompanyFinancials { symbol: "BND".into(), current_price: Some(72.0), ..Default::default() };
+    let mut fund = pipeline::tests::dossier(AssetClass::Etf, financials);
+    fund.position.symbol = "BND".into();
+    let readout = super::fund::RoleRiskReadout::default();
+    let render = |d: &super::dossier::HoldingDossier| {
+        role_risk_user_prompt(&RoleRiskInput {
+            input_delta: &[],
+            dossier: d,
+            prior_ledger: None,
+            readout: &readout,
+            ledger_eval: None,
+            distilled: "No research findings.",
+        })
+    };
+    let base = render(&fund);
+    let mut moved = fund.clone();
+    moved.position.cost_basis *= 3.0;
+    moved.position.quantity *= 2.0;
+    moved.position.market_value *= 2.0;
+    moved.profile.tax_sensitive = !fund.profile.tax_sensitive;
+    assert_eq!(base, render(&moved), "role/risk: account economics and tax posture");
+    let lower = base.to_lowercase();
+    for phrase in ACCOUNT_ECONOMICS_PHRASES {
+        assert!(!lower.contains(phrase), "role/risk: {phrase} leaked: {base}");
     }
 }
 
@@ -566,7 +655,11 @@ fn fixed_evidence_live() {
             f.authoring_close.date
         );
 
-        // Interpretation → 6g, N repeats.
+        // Interpretation → 6g, N repeats. The first completed interpretation
+        // also feeds a fresh-verdict action call below (the §3 slice's Codex
+        // plan review): the action reads the summary this interpretation wrote,
+        // not the fixture's persisted one.
+        let mut fresh: Option<super::Interpretation> = None;
         for r in 1..=repeats {
             let input = InterpretationInput {
                 input_delta: &[],
@@ -587,6 +680,40 @@ fn fixed_evidence_live() {
                     continue;
                 }
             };
+            // The §3 read: the prose fields beside the figures they should
+            // explain, with two printed diagnostics — never gates — for the
+            // human read: whether the target rationale names one of the
+            // model's own figures (3.1) and whether any prose carries an
+            // account-economics phrase (3.2).
+            {
+                let mt = &interp.model_price_targets;
+                let engine_base = f.engine_output.price_targets.twelve_month.as_ref().map(|t| format!("{:.2}", t.base)).unwrap_or_else(|| "(gap)".into());
+                let own: Vec<f64> = vec![mt.twelve_month.base, mt.twelve_month.bear, mt.twelve_month.bull, mt.one_month.base, mt.one_month.bear, mt.one_month.bull];
+                let names_own = own.iter().any(|v| {
+                    let whole = format!("{v:.0}");
+                    interp.model_target_rationale.contains(&whole) || interp.model_target_rationale.contains(&format!("{v:.1}")) || interp.model_target_rationale.contains(&format!("{v:.2}"))
+                });
+                println!(
+                    "    model 12-mo base {:.2} (bear {:.2} / bull {:.2}) vs engine base {engine_base}; rationale names an own figure: {}",
+                    mt.twelve_month.base, mt.twelve_month.bear, mt.twelve_month.bull, if names_own { "yes" } else { "NO" }
+                );
+                for (label, text) in [
+                    ("target rationale", &interp.model_target_rationale),
+                    ("financial summary", &interp.financial_summary),
+                    ("self-assessment", &interp.self_assessment),
+                    ("what changed", &interp.what_changed),
+                ] {
+                    println!("    {label}: {}", text.replace('\n', " "));
+                    let lower = text.to_lowercase();
+                    if let Some(phrase) = ACCOUNT_ECONOMICS_PHRASES.iter().find(|p| lower.contains(**p)) {
+                        println!("    !! account-economics phrase in {label}: \"{phrase}\"");
+                    }
+                }
+                println!("    what_changed_entries: {} (debut: app-written)", interp.what_changed_entries.len());
+            }
+            if fresh.is_none() {
+                fresh = Some(interp.clone());
+            }
             let (ledger, audit) = validate_ledger_rewrite_with_research(
                 &interp.ledger, None, None, LedgerBranch::Priced, f.is_fund, None, Some(f.spot),
                 &HashSet::new(), true, stamps_of(&f),
@@ -610,13 +737,16 @@ fn fixed_evidence_live() {
             }
         }
 
-        // Action, N repeats, then the tax and cost variants on the fixed verdict.
+        // Action, N repeats, then the tax and cost variants on the fixed verdict,
+        // then one call on the verdict assembled from the fresh interpretation
+        // (the pipeline's own assembly), so clean interpretation prose is seen
+        // reaching the rung.
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        let decide = |d: &super::dossier::HoldingDossier, label: &str| {
+        let decide = |d: &super::dossier::HoldingDossier, subject: &super::GradedVerdict, label: &str| {
             let started = std::time::Instant::now();
             match analyst.decide_action(&ActionInput {
                 dossier: d,
-                subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
+                subject: ActionSubject::Priced { graded: subject, engine: &f.engine_output, pre_profit: None },
                 engine_set: &engine_set,
                 changes: None,
                 profile: &d.profile,
@@ -631,12 +761,21 @@ fn fixed_evidence_live() {
             }
         };
         for r in 1..=repeats {
-            decide(&d, &format!("#{r}"));
+            decide(&d, graded, &format!("#{r}"));
         }
-        decide(&dossier_of(&f, false), "tax-exempt variant");
+        decide(&dossier_of(&f, false), graded, "tax-exempt variant");
         let mut costly = dossier_of(&f, true);
         costly.position.cost_basis *= 3.0;
-        decide(&costly, "cost-basis ×3 variant");
+        decide(&costly, graded, "cost-basis ×3 variant");
+        if let Some(interp) = fresh {
+            let assembled = pipeline::graded_verdict_from_interpretation(
+                &f.engine_output,
+                d.options_signal.clone(),
+                interp,
+                graded.engine_view.clone(),
+            );
+            decide(&d, &assembled, "fresh-interpretation verdict");
+        }
         ctx.step_finished(step_key, "ok", None);
     }
 }

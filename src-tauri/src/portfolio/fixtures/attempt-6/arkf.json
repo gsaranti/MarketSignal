@@ -81,7 +81,7 @@
     "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
    }
   },
-  "price_target_rationale": "The engine's twelve-month base target of $41.05 is derived from a volatility-scaled dispersion floor applied to the fund exposure composite using spread-anchored multiples over 12 quarterly anchors (inverse map). It assumes flat holding weights across scenarios with band widening reflecting realized return volatility (daily std dev ~2.1%). This baseline embeds an implicit multiple compression logic consistent with current high-rate pricing but does not fully weight active fee drag or ARK-specific operational underperformance history relative to the broad market beta.",
+  "model_target_rationale": "The engine's twelve-month base target of $41.05 is derived from a volatility-scaled dispersion floor applied to the fund exposure composite using spread-anchored multiples over 12 quarterly anchors (inverse map). It assumes flat holding weights across scenarios with band widening reflecting realized return volatility (daily std dev ~2.1%). This baseline embeds an implicit multiple compression logic consistent with current high-rate pricing but does not fully weight active fee drag or ARK-specific operational underperformance history relative to the broad market beta.",
   "options_signal": {
    "put_call_volume": 0.034482758620689655,
    "put_call_open_interest": 0.11578947368421053,

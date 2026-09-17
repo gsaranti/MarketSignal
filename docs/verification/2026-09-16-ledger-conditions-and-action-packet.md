@@ -28,6 +28,7 @@ The verification substrate is the fixed evidence set of fix list §8.1, reconstr
 - **A2, tolerances: 5% relative on a percent or multiple, 1% on a price.**
   The implementation review correction preserves explicit signs and interprets narrow implicit-decline wording only on trailing return.
 - **A3, the appended caveat rides into the Step-7 memory embedding: accepted.**
+  Superseded 2026-09-16 by the §3 slice off its Codex review: the embedding carries the model's investment sentence alone (`2026-09-16-interpretation-slice.md` §Codex implementation-review corrections).
 - **A4, DIA's persisted financial summary carries invented per-share cost figures: a known carry to fix list 3.2.**
 - **A5, current observations render on both interpretation branches.**
 - **C1, the option overlay in the action packet: structure and ratios only.**
