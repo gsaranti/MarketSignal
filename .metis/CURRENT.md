@@ -2,32 +2,32 @@
 
 ## What happened
 
-**§1 and §2 of the local-model-call fix list are admitted; the debut stamp is `portfolio-v37`** (2026-09-16 → 17).
-The §8.2 live read of the v36 slice ran on the fixed evidence set (48 calls at three repeats, then 24 with thinking captured after the harness gained `MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR`): §2 admitted, §1 conditional on one hole — a sentence naming no figure passed with any core, and admitted a 300% growth floor.
-Seven live findings were ruled adopt and landed as one follow-up slice (fix list 1.5–1.8, 2.4, plus F5 raised at implement time: the split bridge re-bases a price core but left its sentence on the old basis, latent since v36) — `38e52ce`, after the task review (approve-with-nits) and two Codex rounds (seven findings, all verified and fixed, including a factual correction to the 2.4 wording: `indeterminate` means bear misses / bull clears, not "could not be evaluated").
-The v37 re-read (three repeats, thinking captured, 1 h 44 min, no failures) admitted §1: 21 of 21 kept cores matched their sentences, six wrong and six levelless cores caught, no rung outside its set, tax and cost never moved the rung (`34bc94c`).
-Entries 1.9 (state the level in the sentence — PSX and PGNY fell from four executable cores to one) and 2.5 (the untouched `fails` capital-efficiency line reads as a sell-all mandate) were ruled adopt, landing with §3 (`c9d5ef8`).
-Process rule from the user: the live re-read runs only after the task review and Codex are done, and never restarts unasked.
-Records: `docs/verification/2026-09-16-ledger-conditions-and-action-packet.md`, `docs/verification/2026-09-16-ledger-validator-follow-up.md`; logs in `~/Downloads/market-signal-fixed-evidence-2026-09-16/`.
+**The §3 interpretation slice landed as `portfolio-v38` and was admitted on its live read; §1, §2 and §3 are all admitted** (2026-09-16).
+Twelve rulings (eight plan flags, four Codex plan-review points) shaped it: `price_target_rationale` became `model_target_rationale` with its meaning (`checkpoint-v10`, portability format 7); one identity-and-spot header now serves every model-facing packet, the position line states its direction only, the option overlay renders unsized everywhere; the ledger schema's series enum is scoped to the vehicle kind and a debut's continuity fields are app-written; the template gained numeric field notes; the contract asks for the level in the sentence (1.9); the `fails` capital-efficiency line was reworded (2.5).
+Task review approve-with-nits (four taken); Codex found one P2 — the Step-7 summary embedding carried the app's tax caveat into recall — fixed by embedding the model's investment sentence alone (supersedes the §1+§2 slice's A3).
+The user re-dated the 1.9 / 2.5 rulings, the v37 re-read and the §1 admission to 2026-09-16.
+The v38 read (54 calls, 108 min, no failures): 22/22 kept cores match, no levelless core, the rung invariant under every variant, 18/18 rationales explain the model's own targets, no account economics in 72 prose fields, funds author no stock-only series, debut fields app-written; interpretation re-think 11.9 → 7.1 markers per call with the outliers gone; action churn flat, the `fails` line's share inside the reworded band, ENGINE SET still 30%.
+Commits: `f48f582` (slice), `58f14cf` (read + rulings).
+Records: `docs/verification/2026-09-16-interpretation-slice.md`; the fix list's 3.5–3.9; logs under `~/Downloads/market-signal-fixed-evidence-2026-09-16/` (`run4-*.log`, `thought-logs-v38/`).
 
 ## Current state
 
-Committed and pushed on `main`, tree clean.
-Ollama (one slot, model resident) and a `caffeinate -dims` were still up at session end — check with the runbook's step 0 before starting anything.
-Debut stamps: `portfolio-v37` / `checkpoint-v9` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`.
-The dev store still holds attempt 6; attempt 7 re-wipes first (drop `web_source_state`, clear checkpoints and holdings, keep reports, vectors, baselines, `job_runs`).
-Owed, user-run: BUILD §Built bullets for both 2026-09-16 records and the §What remains gate sentence; INDEX rows for both records.
-Next slices in order: §3 interpretation (3.1–3.4 plus 1.9 and 2.5), §4 synthesis fields, §5 dates, §6 gathering, §7 telemetry — each its own plan.
+Committed and pushed on `main`, tree clean; Ollama and caffeinate torn down.
+Debut stamps: `portfolio-v38` / `checkpoint-v10` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 7.
+The dev store still holds attempt 6; attempt 7 re-wipes first and must now also clear `portfolio_runs` and the `portfolio` namespace of `vector_memory` (attempt-6 summaries carry v35 tax and cost language).
+Queued next, ruled 2026-09-16: one small residue slice ahead of §4 as `portfolio-v39` — fix list 3.5 (a weekly / monthly / quarterly adjective defeats the cadence exemption), 3.6 (per-axis polarity gloss on the interpretation sub-score line), 3.7 ("with no code fence or surrounding prose" on the shape contract), 3.8 (a key driver with no series in the holding's list carries null), and 3.9 (an A/B on the fixed set: the harness renders the ENGINE SET's underlying facts in place of the list, eighteen action calls each way, the contract unchanged until the evidence is read); L14 (firmness sentence on debuts) not adopted.
+Then §4 synthesis fields, §5 dates, §6 gathering, §7 telemetry, each its own plan; 8.3's non-thinking experiments after §1–§6.
+Owed, user-run: BUILD §Built bullets for the three 2026-09-16 records and the §What remains gate sentence; INDEX rows for all three.
 
 ## Open questions
 
-- Interpretation re-think is back at the v35 level and bimodal (TSLA's 4,500-word call: 27 markers, ten on the shape template's nested-versus-sibling ledger scenarios and the `probability_pct: 1` placeholder, three on the `price_target_rationale` sentence) — §3's exhibits, with the trace deriving the share count from the packet's market value (3.2).
-- Buffered thresholds persist on some calls despite the 1.7 contract sentence (all caught) — watch, no entry yet.
-- "breaches" / "breaks" are not comparison anchors, so "breaches $210 support" reads ambiguous — lexicon nit for §3.
-- Carried: the fixture README's gain / loss parenthetical (F8) — randomize or leave; concentration trimming is the planner's; the attempt-6 record erratum; ARKF now prices (confirm intended); stop rule 1 unread; per-domain denied share and the SearXNG engine set at book scale; the fix list's deferred watches.
+- PGNY authors noise bands too wide on every call (three `margin-implausible` in three calls, each caught by the relative cap at a yield cost) — watch, no entry yet.
+- 1.9 removed levelless prose but PSX and PGNY recovered only to two cores each, not four; the rest go to durations — read again after the residue slice.
+- The prose scan's issuer-losses false positive ("realized/unrealized losses for ARK Management") stays a diagnostic; the fixture lexicon already excludes the bare word.
+- Carried: the fixture README's gain / loss parenthetical (F8); concentration trimming is the planner's; the attempt-6 record erratum; ARKF prices (confirm intended); stop rule 1 unread; per-domain denied share and the SearXNG engine set at book scale; the summary text's ".." artifact when a rationale ends in a period (pre-existing, cosmetic).
 
 ## Where to start
 
-`/metis-plan-task` the §3 slice (interpretation: fix list 3.1–3.4 plus 1.9 and 2.5) against the admitted fixed set; surface every open §3 entry and assumption through the selector before implementing.
-The check is `fixed_evidence_live` with thinking captured; the live re-read comes after the task review and Codex, and only when the user says.
-Do not launch or propose a book-scale attempt; attempt 7 re-wipes the dev store first.
+`/metis-plan-task` the residue slice (fix list 3.5–3.9, `portfolio-v39`); surface every flag and assumption through the selector before implementing, the ENGINE SET A/B variant's rendering included.
+The check is the offline gate plus `fixed_evidence_live` with thinking captured; the live read comes after the task review and Codex, and only when the user says, with Ollama brought up per the runbook first.
+Do not launch or propose a book-scale attempt.
