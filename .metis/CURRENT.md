@@ -2,31 +2,32 @@
 
 ## What happened
 
-**The first local-model-call slice landed as `portfolio-v36`: fix list §1 (ledger conditions) + §2 (action packet)** (2026-09-16).
-Planned with every flag ruled by the user in the selector (F1–F9, A1–A5, C1–C2), Codex plan review in three rounds, implemented, task-reviewed (one reject round — fixtures carried model-derived economics, the harness's fidelity label was false — both fixed, then approve-with-nits), then Codex's implementation review made four fixes (signed levels, multiple comparison levels → `qualifier`, the unit check on the associated level, the harness's persisted options readings); its one regression (the implicit-decline lexicon) the gate caught and was closed.
-Shipped: `validate_quant_core` at 6g with class-prefixed downgrade reasons (unit, comparator, metric, basis, level / ambiguous, margin ≥ |threshold|, qualifier); `LedgerSeriesContract` in both interpretation prompts (computable series only, with unit, basis, current observation, confirmation cadence, worked examples); the investment-only action packet (no cost basis, P/L, tax row, quantity or market value; the set stated once; polarity on both arms; overlay as structure and ratios) with `tax_caveat` appended after the rung on exit rungs; the fixed evidence set `src-tauri/src/portfolio/fixtures/attempt-6/` (reduced, synthetic economics, model prose scrubbed) with `fixed_evidence.rs` offline tests, two synthetic cases, and the `#[ignore]`d `fixed_evidence_live` harness.
-Not adopted: 1.3 (margin stays model-authored). A2 refined: levels compare with signs intact.
-Record: `docs/verification/2026-09-16-ledger-conditions-and-action-packet.md`; per-entry rulings on the fix list.
-Gate at commit: `cargo test` 1478 / 0 / 32 ignored, clippy 0, `npm run build` green.
+**§1 and §2 of the local-model-call fix list are admitted; the debut stamp is `portfolio-v37`** (2026-09-16 → 17).
+The §8.2 live read of the v36 slice ran on the fixed evidence set (48 calls at three repeats, then 24 with thinking captured after the harness gained `MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR`): §2 admitted, §1 conditional on one hole — a sentence naming no figure passed with any core, and admitted a 300% growth floor.
+Seven live findings were ruled adopt and landed as one follow-up slice (fix list 1.5–1.8, 2.4, plus F5 raised at implement time: the split bridge re-bases a price core but left its sentence on the old basis, latent since v36) — `38e52ce`, after the task review (approve-with-nits) and two Codex rounds (seven findings, all verified and fixed, including a factual correction to the 2.4 wording: `indeterminate` means bear misses / bull clears, not "could not be evaluated").
+The v37 re-read (three repeats, thinking captured, 1 h 44 min, no failures) admitted §1: 21 of 21 kept cores matched their sentences, six wrong and six levelless cores caught, no rung outside its set, tax and cost never moved the rung (`34bc94c`).
+Entries 1.9 (state the level in the sentence — PSX and PGNY fell from four executable cores to one) and 2.5 (the untouched `fails` capital-efficiency line reads as a sell-all mandate) were ruled adopt, landing with §3 (`c9d5ef8`).
+Process rule from the user: the live re-read runs only after the task review and Codex are done, and never restarts unasked.
+Records: `docs/verification/2026-09-16-ledger-conditions-and-action-packet.md`, `docs/verification/2026-09-16-ledger-validator-follow-up.md`; logs in `~/Downloads/market-signal-fixed-evidence-2026-09-16/`.
 
 ## Current state
 
-Committed and pushed on `main`; nothing running, no infrastructure up.
-Debut stamps are now `portfolio-v36` / `checkpoint-v9` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`.
-The dev store still holds attempt 6 (not debut); attempt 7 re-wipes first (drop `web_source_state`, clear checkpoints and holdings, keep reports, vectors, baselines, `job_runs`).
-The §8.2 live admission read for this slice has NOT been run: `cd src-tauri && MARKET_SIGNAL_LOCAL_EVAL_REPEATS=3 cargo test fixed_evidence_live -- --ignored --nocapture` with Ollama up per the bring-up runbook; read accepted cores beside their sentences, downgrades by class, the rung across repeats and the tax / cost variants; admit per fix list 8.2.
-Owed, user-run: the BUILD §Built bullet and §What remains gate sentence, the INDEX row for the new record.
-Next slices in order: §3 interpretation (3.1–3.4), §4 synthesis fields, §5 dates, §6 gathering, §7 telemetry — each its own plan; their open entries are flags of that plan.
+Committed and pushed on `main`, tree clean.
+Ollama (one slot, model resident) and a `caffeinate -dims` were still up at session end — check with the runbook's step 0 before starting anything.
+Debut stamps: `portfolio-v37` / `checkpoint-v9` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`.
+The dev store still holds attempt 6; attempt 7 re-wipes first (drop `web_source_state`, clear checkpoints and holdings, keep reports, vectors, baselines, `job_runs`).
+Owed, user-run: BUILD §Built bullets for both 2026-09-16 records and the §What remains gate sentence; INDEX rows for both records.
+Next slices in order: §3 interpretation (3.1–3.4 plus 1.9 and 2.5), §4 synthesis fields, §5 dates, §6 gathering, §7 telemetry — each its own plan.
 
 ## Open questions
 
-- The fixture README's gain / loss parenthetical mirrors the real P/L signs (F8 as ruled); randomize, or leave?
-- Concentration: no rung trims a holding for dominating the account (the planner's by the 2026-08-14 ruling) — a product gap to rule on, or leave to the planner.
-- 3.2 carry: DIA's persisted summary and PGNY's self-assessment still carry account economics into the action packet until §3 lands.
-- Carried: the attempt-6 record erratum question; ARKF now prices (confirm intended); stop rule 1 unread; per-domain denied share and the SearXNG engine set at book scale; the deferred watches at the fix list's end.
+- Interpretation re-think is back at the v35 level and bimodal (TSLA's 4,500-word call: 27 markers, ten on the shape template's nested-versus-sibling ledger scenarios and the `probability_pct: 1` placeholder, three on the `price_target_rationale` sentence) — §3's exhibits, with the trace deriving the share count from the packet's market value (3.2).
+- Buffered thresholds persist on some calls despite the 1.7 contract sentence (all caught) — watch, no entry yet.
+- "breaches" / "breaks" are not comparison anchors, so "breaches $210 support" reads ambiguous — lexicon nit for §3.
+- Carried: the fixture README's gain / loss parenthetical (F8) — randomize or leave; concentration trimming is the planner's; the attempt-6 record erratum; ARKF now prices (confirm intended); stop rule 1 unread; per-domain denied share and the SearXNG engine set at book scale; the fix list's deferred watches.
 
 ## Where to start
 
-Run the §8.2 live read for the §1+§2 slice with Ollama up (the command above), read the table against fix list 8.2, and record the admission verdict on the slice record and the fix list.
-If it admits, `/metis-plan-task` the §3 slice (interpretation, entries 3.1–3.4) with the fixed evidence set as the substrate; surface every open §3 entry as a plan flag.
+`/metis-plan-task` the §3 slice (interpretation: fix list 3.1–3.4 plus 1.9 and 2.5) against the admitted fixed set; surface every open §3 entry and assumption through the selector before implementing.
+The check is `fixed_evidence_live` with thinking captured; the live re-read comes after the task review and Codex, and only when the user says.
 Do not launch or propose a book-scale attempt; attempt 7 re-wipes the dev store first.
