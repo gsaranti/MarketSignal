@@ -117,6 +117,7 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   Raised by the v37 re-read (L9).
   Ruled 2026-09-16: adopt; lands with the §3 slice, not its own.
   Landed 2026-09-16 as `portfolio-v38`: the contract's sentence names the unit per series kind (`2026-09-16-interpretation-slice.md`).
+  Live 2026-09-16: no levelless core authored on eighteen calls (the v37 re-read caught six); PSX and PGNY each recovered from one core to two, not four — the remaining conditions spend themselves on durations and, on PGNY, on over-wide margins (§Live admission read in `2026-09-16-interpretation-slice.md`).
 - 1.8 A relative margin cap per series kind on top of the magnitude bound.
   Check: DIA's margin of 489.5 on a $490 level downgrades; a $15 margin on $485 keeps.
   Raised by the live read (L5).
@@ -177,6 +178,7 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   Raised by the v37 re-read (L8).
   Ruled 2026-09-16: adopt; lands with the §3 slice, not its own.
   Ruled 2026-09-16 (F5): the ratified wording states the fact, the sunk-cost lean it feeds beside the forward read, and the same closing reach as the other three states; landed as `portfolio-v38`.
+  Live 2026-09-16: SPMO's and ARKF's capital-efficiency markers fell to 4.5 and 3.2 per action call (from 7.0 and 6.8), inside the reworded holdings' 1.5–3.7 band; every `fails` rationale reads the line as a fact — check met.
 
 ## 3. Interpretation call — one responsibility per field, no account economics
 
@@ -195,12 +197,14 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-16 (F1): the first form — the field is `model_target_rationale`, the
   model explaining its own bands against the engine's; the card moves it to the model
   column; `checkpoint-v9` → `checkpoint-v10` and portability format 6 → 7 (A1).
+  Live 2026-09-16: eighteen of eighteen rationales explain the model's own bands and their departure from the engine's base, each naming an own figure — check met.
 - 3.2 Remove purchase cost and position P/L from the intrinsic interpretation packet;
   spot stays.
   Check: no persisted financial summary carries a per-share cost figure.
   Ruled 2026-09-16 (F2, F3, the Codex review's point 2): one identity-and-spot header
   serves every model-facing packet, the research brief included; the position line
   states its direction only; the option overlay renders unsized on every packet.
+  Live 2026-09-16: no account-economics phrase in seventy-two prose fields (one issuer-losses false positive on ARKF); every tax, cost and fresh-interpretation variant landed inside its holding's repeat set — check met.
 - 3.3 Give funds a fund-specific ledger schema whose series enum is the fund-computable
   set, and let the app insert the debut continuity fields (`what_changed_entries = []`)
   deterministically instead of asking the model.
@@ -211,11 +215,45 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   holding (no prior verdict)." with an empty row set; the continuity contract states the
   two fields' relation once; the template gains notes for the ledger's numeric fields;
   the continuity shape is proven by offline tests and live continuity stays unverified.
+  Live 2026-09-16: the three fund holdings authored no stock-only series over nine calls; `what_changed` is mentioned zero times in fifty-four calls' thinking (ninety-three on the v37 re-read) — check met.
 - 3.4 Candidate, not adopted: a separate compact ledger-authoring call on the same
   evidence packet and accepted read.
   Test only if 3.1–3.3 leave interpretation slow or unreliable (Codex §9 step 6).
   Ruling: deferred by construction; re-tested only if the v38 fixed-set read leaves
   interpretation slow or unreliable.
+  Live 2026-09-16: interpretation ran 74–181 s per call at 7.1 markers, no failures — not triggered.
+- 3.5 A weekly, monthly or quarterly adjective on the duration unit defeats the cadence
+  exemption ("two consecutive weekly closes" is not the daily cadence).
+  Check: TSLA's "$300 for two consecutive weekly closes" downgrades as `qualifier`;
+  "two consecutive daily closes" keeps.
+  Raised by the v38 read (L10).
+  Ruled 2026-09-16: adopt; lands in the residue slice (`portfolio-v39`).
+- 3.6 The interpretation prompt's sub-score line glosses every axis, as the action
+  packet's polarity clause does (valuation = more attractive, risk = more resilient).
+  Check: the interpretation re-think's polarity re-checks fall on the fixed set.
+  Raised by the v38 read (L11).
+  Ruled 2026-09-16: adopt; residue slice.
+- 3.7 The shape contract's closing sentence states "with no code fence or surrounding
+  prose".
+  Check: fence deliberation in the interpretation thinking falls toward zero on the fixed set.
+  Raised by the v38 read (L12).
+  Ruled 2026-09-16: adopt; residue slice.
+- 3.8 The ledger prompt states that a key driver with no series in this holding's list
+  carries null, and most drivers will.
+  Check: the driver-mapping deliberation falls on the fixed set; the persisted driver
+  series are unchanged in kind.
+  Raised by the v38 read (L13).
+  Ruled 2026-09-16: adopt; residue slice.
+- 3.9 The ENGINE SET line, at thirty percent of the action call's re-think since 2.2:
+  an A/B on the fixed set — the live harness gains a variant that renders the set's
+  underlying facts (the new-money admission result, the hurdle state, the grade bar)
+  in place of the derived list, eighteen action calls each way, the contract unchanged
+  until the evidence is read.
+  Check: the ENGINE SET marker share and the rung table under both forms.
+  Raised by the v38 read (L15).
+  Ruled 2026-09-16: adopt the A/B; the form is ruled on its evidence.
+- Not adopted (L14, ruled 2026-09-16): rendering "keep the action firm run to run" on
+  continuity calls only — the debut check is accepted cost.
 
 ## 4. Synthesis fields — define what the model is asked to attribute
 
@@ -360,6 +398,12 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   wrong or levelless core admitted; the rung never moved with tax or cost — §1 ADMITTED
   (`2026-09-16-ledger-validator-follow-up.md` §The fixed-set re-read). §1 and §2 are
   both admitted; §3 planning starts from the admitted set.
+  Read 2026-09-16 on `portfolio-v38`: twenty-two kept cores, twenty-two matching; no
+  levelless core; the rung invariant under every variant; rationale ownership,
+  account isolation, the fund enum and the debut fields all clean — §3 ADMITTED
+  (`2026-09-16-interpretation-slice.md` §Live admission read); its six findings
+  L10–L15 ruled the same day: 3.5–3.9 land as one residue slice ahead of §4
+  (`portfolio-v39`); §4 planning follows it.
 - 8.3 Experiments, after 8.2: non-thinking synthesis on the frozen evidence, comparing
   claim retention, dates, citation resolution and partial-coverage accuracy as well as
   time, with repeats for variability; then non-thinking action separately on the
