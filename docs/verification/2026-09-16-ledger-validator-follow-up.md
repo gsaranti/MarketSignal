@@ -134,10 +134,10 @@ Interpretation is back at the v35 level and bimodal (TSLA's second call ran 4,52
 
 - L8 — The `fails` capital-efficiency line is the action call's remaining re-think hotspot: 86 of 126 capital-efficiency markers on the two failing holdings, reading "an exit input" as a mandate to sell everything.
   Proposed: state the fact and its reach on `fails` as the other three states now do (the bull case misses the hurdle; the line is a weighed exit input, not a rung).
-  Ruling: open (fix list 2.5).
+  Ruled 2026-09-17: adopt, landing with the §3 slice (fix list 2.5).
 - L9 — Levelless prose costs yield where the model writes it: PSX and PGNY each fell from four executable cores to one under `no-level`.
   Proposed: one contract sentence — a quantitative condition's statement names its level in the series' unit.
-  Ruling: open (fix list 1.9).
+  Ruled 2026-09-17: adopt, landing with the §3 slice (fix list 1.9).
 - Watches, no entry: buffered thresholds persist on some calls and are caught; "breaches" and "breaks" are not comparison anchors, so "breaches $210 support" reads as ambiguous.
 
 ### Verdict

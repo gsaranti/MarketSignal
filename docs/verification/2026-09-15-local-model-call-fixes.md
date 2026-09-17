@@ -114,7 +114,8 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   model writes levelless prose.
   Check: PSX and PGNY recover from one executable core over three repeats toward run 1's
   four on the fixed set.
-  Raised by the v37 re-read (L9); ruling: open.
+  Raised by the v37 re-read (L9).
+  Ruled 2026-09-17: adopt; lands with the §3 slice, not its own.
 - 1.8 A relative margin cap per series kind on top of the magnitude bound.
   Check: DIA's margin of 489.5 on a $490 level downgrades; a $15 margin on $485 keeps.
   Raised by the live read (L5).
@@ -172,7 +173,8 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   model reads as a mandate to sell everything.
   Check: on the fixed set with thinking captured, SPMO's and ARKF's capital-efficiency
   markers (38 and 48 over five action calls) fall toward the reworded holdings' share.
-  Raised by the v37 re-read (L8); ruling: open.
+  Raised by the v37 re-read (L8).
+  Ruled 2026-09-17: adopt; lands with the §3 slice, not its own.
 
 ## 3. Interpretation call — one responsibility per field, no account economics
 
