@@ -2,33 +2,29 @@
 
 ## What happened
 
-**The four distillation prompts were audited, drafted on the v40 frame, ruled, planned, implemented and landed as `portfolio-v44` / `checkpoint-v11`** (2026-09-17, `81870b1`, pushed) — the last pre-v40 shape on the Portfolio local-model surface, so the prompt-rewrite series that began with the interpretation call is complete.
-The audit read the rendered prompts beside attempt 6's persisted distillation output: claims rendered with retrieval timestamps only, so the model dated facts by retrieval (ARKF's "announced 2026-09-16, trading 2025-03-31"); every typed field was asked on every holding and filled regardless of support (invented driver ids on first analyses and funds, a capex fill the engine cannot recompute, a news-site fraud claim, confidence 1.0 throughout); `conflict_handling` changed only the rejection wording; backfill was asked without the obligation; one object per topic was never stated though an omission deletes the seed row.
-Eighteen prompt rulings and ten plan rulings through the selector, all the recommended option; task review approve-with-nits (nine taken); one Codex round (two fixed: the source-text framing must fit before anything renders, three stale doc tuples reconciled).
-Records: `docs/verification/2026-09-17-distillation-prompt-rewrite.md`; the draft, the pre-rewrite render and `prompts-v44.md` (section 10 = the seven distillation messages) under `~/Downloads/market-signal-fixed-evidence-2026-09-16/`; fix list 4.8.
+**Three rulings, no code change (2026-09-17, late).**
+The open local-model-call findings were consolidated into one work list, `docs/verification/2026-09-17-open-findings.md` — eleven flat-numbered entries (1–2 validator bugs, 3 the claim-date persisted shape, 4–6 the fetch layer, 7–8 telemetry, 9 the sampling A/B, 10 the non-thinking experiments, 11 success measures), the checks attempt 7 reads for every rewritten prompt (`portfolio-v40` through `v44`), the watches and the not-adopted list.
+The 2026-09-15 fix list and attempt-6 record carry a Superseded line and are history; a new finding appends to the work list as entry 12 on, never elsewhere.
+The fixed-evidence harness is deprecated: the v40 / v41 / v42 live read is cancelled, the next test after the remaining fixes is attempt 7 itself, and the harness is rebuilt after it only if the run shows a need (its code stays in the tree; removal is a separate decision).
+BUILD never tracks fixes or adjustments and INDEX never indexes verification records (they are temporary and referenced from this file only): INDEX §Verification records removed, BUILD §What remains item 1 trimmed to the decision, the eleven owed BUILD / INDEX rows cancelled.
 
 ## Current state
 
-Committed and pushed on `main`, tree clean; Ollama untouched this session.
-Debut stamps: `portfolio-v44` / `checkpoint-v11` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 7.
-The dev store still holds attempt 6; attempt 7 re-wipes first and must also clear `portfolio_runs` and the `portfolio` namespace of `vector_memory`.
-The v40, v41 and v42 fixed-set live read is one read, not run (three repeats, thinking captured, read against the three records' §Verification lists; the v42 half on the synthetic BND); the v43 research and v44 distillation prompts cannot run on the harness, and their admission is the next book-scale attempt's first holdings against each record's §Verification list.
-The harness reads its daemon roster from the environment (`MARKET_SIGNAL_LOCAL_DAEMON_ENDPOINT=http://localhost:11434 MARKET_SIGNAL_LOCAL_REASONER_MODEL=qwen3.5:122b-a10b MARKET_SIGNAL_LOCAL_EMBEDDER_MODEL=qwen3-embedding:4b` beside the eval variables); launch it detached and log under `~/Downloads/market-signal-fixed-evidence-<date>/`.
-Queued, each its own plan, in this order unless ruled otherwise: the seam-gap slice (1.10–1.11), then 8.6 after 7.2, then §4–§7.
-Owed, user-run: BUILD §Built bullets and INDEX rows for eleven records — 2026-09-15 (two), 2026-09-16 (three), 2026-09-17 (six) — and the §What remains gate sentence.
+Committed and pushed on `main`, tree clean; Ollama was found up at session start and left as found.
+Debut stamps unchanged: `portfolio-v44` / `checkpoint-v11` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 7.
+The dev store still holds attempt 6; attempt 7 re-wipes first (drop `web_source_state`, clear `portfolio_runs` and the `portfolio` namespace of `vector_memory`).
+Queue, from the work list: before attempt 7 — entries 1 and 2 as one validator slice, then 8, then 4 through 7 each its own plan, entry 11's measures set before launch; entry 3 is re-scoped on attempt 7's evidence; entries 9 and 10 follow attempt 7 on a rebuilt harness if needed.
+Every entry rules through the selector before implementation; plan flags are ruled with the code in view.
 
 ## Open questions
 
-- Whether the daemon's grammar honours the per-call enums at book scale — a topic-key enum of up to eight keys and the nullable condition-id enum; the ledger's nullable series enum is the precedent and the v40–v42 reads showed no grammar failure.
-- Whether the no-declaration path changes the Step-6e shadow record: every forward fact now enters as a supplement, so a present feed value rejects the fill and the supersede leg stays dormant.
-- Whether interpretation misses anything on a priced fund now that its distillation carries no typed field (none had a consumer on a fund).
-- Whether the synthesis's and distillation's empty-string placeholders and "one JSON object" line hold on the local model as they do on the interpretation call; read on the next attempt's first calls.
-- Whether live rationales still borrow "engine" once no prompt uses the word; the v35 fixture prose does, and the harness's banned-word diagnostic reads it.
-- Whether the v40 read's yield on PGNY-type holdings falls without the shown caps; a better example, not the caps, is the answer if it does.
-- Carried: the prose scan's issuer-losses false positive stays a diagnostic; the fixture README's gain / loss parenthetical (F8); concentration trimming is the planner's; the attempt-6 record erratum; ARKF prices; stop rule 1 unread; per-domain denied share and the SearXNG engine set at book scale; the summary text's ".." artifact; the six reconstructed fixtures carry no fund context; fix list 5.2 and 6.2 open.
+- Whether the harness code (the offline replay in `fixed_evidence.rs`, the attempt-6 fixtures, the ignored live and prompt-dump tests) stays in the tree now the harness is deprecated.
+- BUILD still carries about fifteen pointers to verification records for feature slices, several worded "canonical at" (the fresh-start-2 no-compat rule, the 2026-08-24 research-loop channel rulings); those contracts need re-homing into the app docs before the records can be treated as temporary — a docs slice of its own — and the §Built financial-correctness bullet sits against the new rule.
+- Validator-slice flags: which downgrade reason wins when one sentence trips both entries 1 and 2; whether entry 4's failed-URL record is run-scoped memory or rides `web_source_state`.
+- Entry 3's stamp (evidence-floor, checkpoint or both), decided after attempt 7's dating read.
 
 ## Where to start
 
-The v40 / v41 / v42 fixed-set live read, only on the user's word: bring Ollama up per the runbook, set the three daemon variables and the eval variables, run `cargo test fixed_evidence_live -- --ignored --nocapture` detached, read it against the three records' §Verification lists, and record the findings in each.
-Never start the read unasked, never restart it unasked.
-Otherwise the next slice is the seam gaps (fix list 1.10–1.11), through `/metis-plan-task` on the user's word; do not launch or propose a book-scale attempt.
+Read `docs/verification/2026-09-17-open-findings.md`; it is the only work list.
+On the user's word, `/metis-plan-task` the validator slice (entries 1 and 2), every flag and assumption through the selector before implementing.
+No harness run and no live read: attempt 7 is the next test, launched only when the user names the session and only after the pre-run entries land — do not propose it.
