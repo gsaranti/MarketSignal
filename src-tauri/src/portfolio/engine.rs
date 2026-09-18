@@ -2553,8 +2553,11 @@ pub struct ForwardAssumptionInput {
     /// the value may fill a driver (a bare `4.5` for "$4.5 billion" must never
     /// ride into `revenue_mid` unscaled).
     pub units: String,
-    /// The model's typed `conflict_handling` declaration — a claim this
-    /// policy validates, never a rule the model selects.
+    /// Whether the fact claims to supersede a present feed value. App-set
+    /// `false` since `portfolio-v44` (ruled 2026-09-17): the model declares no
+    /// conflict handling, every fact enters as a supplement, and this leg
+    /// stays dormant until the channel is promoted and the feed gains an
+    /// as-of date.
     pub supersede: bool,
     pub fact_type: String,
     pub as_of: String,

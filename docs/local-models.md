@@ -126,7 +126,7 @@ Governed prompt content is traceable to a canonical project contract: field mean
 Ungoverned prompt content does not belong: app or downstream-consumer architecture, meta-reasoning instructions, author-added financial preferences, or weighting and conclusion nudges without a canonical contract.
 Within the governed constraints, the model draws the inference from the supplied facts; the prompt does not add an unruled conclusion for it to reproduce (attempt-4 Finding 3).
 The research pass's gathering-degradation note holds this line: it states what coverage was lost and stops, leaving what the evidence establishes and leaves unanswered to the model's findings ([web-research.md §The research loop](web-research.md#the-research-loop-and-context-management)).
-The reviewed Portfolio Analysis prompt surface — the interpretation, role/risk, action, and research prompts with their evidence sections — keeps its governed contracts while cutting pipeline-architecture narration, meta-reasoning, and ungoverned how-to-weigh nudges (attempt-4 Finding 3 and its follow-ups).
+The reviewed Portfolio Analysis prompt surface — the interpretation, role/risk, action, research and distillation prompts with their evidence sections — keeps its governed contracts while cutting pipeline-architecture narration, meta-reasoning, and ungoverned how-to-weigh nudges (attempt-4 Finding 3 and its follow-ups).
 This is the same "informs, never dictates" stance the suite takes with values (§Context-memory discipline) and with source quality ([web-research.md §Source quality and evidence weighting](web-research.md#source-quality-and-evidence-weighting)): the app surfaces the fact and the model judges.
 
 ## Context-memory discipline

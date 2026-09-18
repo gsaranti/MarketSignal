@@ -1743,6 +1743,111 @@ fn research_messages_are_two_parts_with_no_app_concept() {
     }
 }
 
+/// The distillation messages the harness renders (`portfolio-v44`): the seven
+/// calls over hand-written research (`distill::samples`) on TSLA's header and
+/// the synthetic fund's — the prompts' shape, never a run's research.
+fn distillation_samples() -> Vec<super::distill::samples::Sample> {
+    let f = fixtures().into_iter().find(|f| f.symbol == "TSLA").expect("TSLA");
+    let d = dossier_of(&f, true);
+    let fx = synthetic_role_risk_fixture();
+    super::distill::samples::messages(
+        &pipeline::holding_header(&d),
+        &pipeline::holding_header(&fx.dossier),
+    )
+}
+
+/// Every distillation message is two marked parts in order behind a role-line
+/// system prompt, Part 1 carrying the input sections and no instruction, Part
+/// 2 the numbered task and the return shape — and neither part, nor the system
+/// prompt, carries a banned word, a routing word or a retrieval timestamp; a
+/// field nothing can fill on the call is asked for nowhere (`portfolio-v44`).
+#[test]
+fn distillation_messages_are_two_parts_with_no_app_concept() {
+    let samples = distillation_samples();
+    assert_eq!(samples.len(), 7, "three reduces, tier-1, pass, tree-level, hierarchical");
+    for s in &samples {
+        let (part1, part2) = s
+            .user
+            .split_once("======== PART 2: TASK ========")
+            .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{}", s.label, s.user));
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{}: {part1}", s.label);
+        assert!(part1.contains("\nDate: 2026-09-16.\n"), "{}: no date line\n{part1}", s.label);
+        assert!(part1.contains("\nTOPICS\n"), "{}: no TOPICS\n{part1}", s.label);
+        assert!(!part1.contains("2026-09-16T"), "{}: a retrieval timestamp rendered\n{part1}", s.label);
+        assert!(
+            !part1.contains("Return ") && !part1.to_lowercase().contains("your "),
+            "{}: Part 1 instructs\n{part1}",
+            s.label
+        );
+        for (label, text) in [("system", s.system.as_str()), ("user", s.user.as_str())] {
+            let hits = banned_hits(text);
+            assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", s.label);
+            assert_no_routing_words(&format!("{} {label}", s.label), text);
+        }
+        for word in [
+            "cached", "structured feeds", "the analysis reads", "reconciliation", "per-topic layer",
+            "ADVISORY", "tier-0", "merge per the rule", "orchestrator", "MERGE RULE", "LEDGER",
+            "DORMANT", "DISCONFIRMING", "Response shape template", "Field alternatives",
+            "conflict_handling", "untrusted", "retrieval date", "the feeds", "hard trigger",
+            "machine-read", "reaches no", "(condition ",
+        ] {
+            assert!(
+                !s.user.contains(word) && !s.system.contains(word),
+                "{}: {word} leaked\n{}",
+                s.label,
+                s.user
+            );
+        }
+        assert!(s.system.starts_with("You are an investment analyst consolidating "), "{}", s.system);
+        assert!(part2.starts_with("\nDetermine the following from the inputs and return them as one JSON object in the shape at the end, with no code fence and no surrounding text.\n"), "{}: {part2}", s.label);
+        let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
+        let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
+        let keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
+        if s.label.starts_with("reduce") {
+            assert!(part2.contains("\n1. combined_findings — ") && part2.contains("\n2. topics — exactly one object per topic under TOPICS, in that order"), "{}: {part2}", s.label);
+            assert!(s.system.contains("combined findings") && s.system.contains("findings per topic"), "{}", s.system);
+            assert!(keys.contains(&"combined_findings") && keys.contains(&"topics"), "{}", s.label);
+        } else {
+            assert!(part2.contains("\n1. summary — ") && part2.contains("\n2. claims — "), "{}: {part2}", s.label);
+            assert!(s.system.contains("a summary and claims"), "{}", s.system);
+            assert_eq!(keys, ["claims", "summary"], "{}", s.label);
+        }
+        if s.label.contains("continuity") {
+            for section in ["\nSTANDING CONDITIONS\n", "\nKEY DRIVERS\n", "Prior findings (analysis of 2026-09-01):\n", "\nTOPIC catalysts-risks (not searched this time)\n", "\nCONTRARY EVIDENCE\n", "\nSOURCE TEXT\n", " (published 2026-07-22) ===\n", "— bears on c-margin\n"] {
+                assert!(part1.contains(section), "{}: no {section:?}\n{part1}", s.label);
+            }
+            for item in ["\n3. forward_assumption — ", "\n4. leading_indicator — ", "\n5. forensic_event — ", "\n6. pre_profit_observations — ", "\n7. backfill — "] {
+                assert!(part2.contains(item), "{}: no {item:?}\n{part2}", s.label);
+            }
+            assert!(shape_line.contains(r#""topic_key":"<competitive-position|results-revisions|catalysts-risks>""#), "{shape_line}");
+            assert!(shape_line.contains(r#""related_condition_id":"<c-margin|c-price|null>""#), "{shape_line}");
+            assert!(shape_line.contains(r#""confirms_driver_id":"<d-robotaxi|d-energy>""#), "{shape_line}");
+            assert!(s.system.contains("a forward figure, a leading indicator, a fraud record, operating observations and a backfill record"), "{}", s.system);
+        }
+        if s.label.contains("first analysis") {
+            assert!(!part1.contains("STANDING CONDITIONS") && !part1.contains("KEY DRIVERS") && !part1.contains("Prior findings"), "{}: {part1}", s.label);
+            assert!(part2.contains("\n3. forward_assumption — ") && part2.contains("\n4. forensic_event — "), "{}: {part2}", s.label);
+            assert!(!s.user.contains("leading_indicator") && !s.user.contains("related_condition_id") && !s.user.contains("backfill"), "{}: {}", s.label, s.user);
+            assert!(part1.contains("\nSOURCE TEXT\n"), "{}", s.label);
+        }
+        if s.label.contains("fund") {
+            assert_eq!(keys, ["combined_findings", "topics"], "{}", s.label);
+            assert!(!s.user.contains("SOURCE TEXT") && !s.user.contains("forward_assumption"), "{}: {}", s.label, s.user);
+            assert!(part1.contains("\nSTANDING CONDITIONS\n") && shape_line.contains(r#""related_condition_id":"<c-dur|null>""#), "{}", s.label);
+        }
+        if s.label.contains("hierarchical") {
+            assert!(part1.contains("\nSummary:\n"), "{}: {part1}", s.label);
+            assert!(part2.contains("the claims shown under the topic"), "{}: {part2}", s.label);
+        }
+        if s.label.starts_with("tree") {
+            assert!(part1.contains("\nSearch 1 (summary):\n") && part1.contains("\nSearch 2 (summary):\n"), "{}: {part1}", s.label);
+        }
+        if s.label.starts_with("pass") {
+            assert!(part2.contains("what this search established"), "{}: {part2}", s.label);
+        }
+    }
+}
+
 /// Every rendered fixed-set prompt to one Markdown file for a human read
 /// (`MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP=<file>`): the system prompts once,
 /// then per holding the interpretation message, the action message, and the
@@ -1854,6 +1959,20 @@ fn fixed_evidence_prompt_dump() {
     for (label, text) in super::research::samples::tool_results() {
         out.push_str(&format!("### {n}{}. Tool result — {label}\n\n", letter as char));
         out.push_str(&fence(&text));
+        letter += 1;
+    }
+    // The distillation messages (`portfolio-v44`) over hand-written research.
+    let n = n + 1;
+    out.push_str(&format!(
+        "## {n}. Distillation messages (hand-written TSLA research: two topics, a follow-up search, the contrary-evidence pass, one prior topic object, one dormant prior, two standing conditions, two key drivers, three fetched pages; and the SYNTHETIC fund's one topic)\n\n"
+    ));
+    let mut letter = b'a';
+    for s in distillation_samples() {
+        out.push_str(&format!("### {n}{}. {} — system prompt\n\n", letter as char, s.label));
+        out.push_str(&fence(&s.system));
+        letter += 1;
+        out.push_str(&format!("### {n}{}. {} — message ({} chars)\n\n", letter as char, s.label, s.user.chars().count()));
+        out.push_str(&fence(&s.user));
         letter += 1;
     }
     std::fs::write(&path, out).expect("write prompt dump");

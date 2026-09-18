@@ -387,15 +387,22 @@ fn run_research_and_distill(
     let ledger_key_drivers: Vec<crate::portfolio::KeyDriver> = prior_ledger
         .map(|l| l.key_drivers.clone())
         .unwrap_or_default();
+    // The shared holding header opens every distillation message
+    // (`portfolio-v44`); a fund's distillation is pure consolidation like a
+    // role/risk holding's, since no consensus driver, narrative cap or overlay
+    // reads a fund's typed field (ruled 2026-09-17).
+    let brief = holding_header(dossier);
     let inputs = DistillInputs {
         symbol,
         company_name: dossier.company_name.as_deref(),
+        holding_brief: &brief,
         research: &research_out,
         priors: &priors,
         ledger_conditions: &ledger_conditions,
         ledger_key_drivers: &ledger_key_drivers,
-        role_risk,
+        consolidation_only: role_risk || dossier_is_fund(dossier),
         overlay_eligible: triggers.overlay_eligible,
+        backfill_required: triggers.pre_profit_backfill,
         input_budget_chars: analyst.distill_input_budget(),
         issue_budget_chars: analyst.distill_issue_budget(),
         now,
@@ -453,19 +460,51 @@ fn shadow_assumption_resolution(
     )
 }
 
-/// The research-fed forensic claim is **advisory by ruling (2026-08-24)** — it
-/// never merges into the hard-forensic producer state (the hard rule trips
-/// from the item-classified filing kinds alone; the retired merge returns only
-/// with an explicit promotion ruling or a source-specific adapter that reads
-/// the accused party from structured document fields). The validated claim
-/// rides the research audit record and reaches interpretation as this
-/// clearly-labeled attention-evidence block.
-fn render_forensic_advisory(claim: &crate::portfolio::distill::ForensicEventClaim) -> String {
+/// The validated fraud claim as one data line under RESEARCH SUMMARY: the
+/// document's host, its date, the issuer as the document names it and the
+/// address — and that whether it concerns this holding is not established
+/// (advisory by the 2026-08-24 ruling, stated in words since `portfolio-v44`).
+pub(crate) fn render_fraud_record(claim: &crate::portfolio::distill::ForensicEventClaim) -> String {
+    let host = reqwest::Url::parse(claim.source_url.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(crate::web_research::registry::normalize_host))
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "regulator or court".to_string());
     format!(
-        "RESEARCH-FED FRAUD CLAIM (advisory attention evidence — the citation is validated, \
-         but attribution to this issuer is unconfirmed; NOT a hard trigger, binds nothing): \
-         issuer {:?}, event date {}, source {} (confidence {:.2})",
-        claim.issuer, claim.event_date, claim.source_url, claim.confidence
+        "Fraud record: a {host} document dated {} names {} in a fraud matter; source {}. \
+         Whether it concerns this holding is not established.",
+        claim.event_date, claim.issuer, claim.source_url
+    )
+}
+
+/// The validated leading indicator as one data line under RESEARCH SUMMARY;
+/// the driver clause names the ledger's driver only where the cited id
+/// verified (`portfolio-v44`).
+pub(crate) fn render_leading_indicator(
+    ind: &crate::portfolio::distill::ValidatedLeadingIndicator,
+    prior_ledger: Option<&ThesisLedger>,
+) -> String {
+    let direction = match ind.direction {
+        crate::portfolio::distill::IndicatorDirection::InflectingUp => "inflecting up",
+        crate::portfolio::distill::IndicatorDirection::InflectingDown => "inflecting down",
+    };
+    let driver = ind
+        .driver_verified
+        .then(|| {
+            prior_ledger
+                .and_then(|l| {
+                    l.key_drivers
+                        .iter()
+                        .find(|d| d.driver_id == ind.confirms_driver_id.trim())
+                })
+                .map(|d| d.name.as_str())
+                .unwrap_or(ind.confirms_driver.as_str())
+        })
+        .map(|name| format!(", bearing on the driver \"{name}\""))
+        .unwrap_or_default();
+    format!(
+        "Leading indicator: {} = {} ({direction}, as of {}){driver}; source {}.",
+        ind.metric_name, ind.value, ind.as_of, ind.source_url
     )
 }
 
@@ -1300,8 +1339,12 @@ pub fn analyze_holding(
                     metric,
                     value: assumption.numeric_value,
                     units: assumption.units.clone(),
-                    supersede: assumption.conflict_handling
-                        == crate::portfolio::distill::ConflictHandling::Supersede,
+                    // The model declares no conflict handling since
+                    // `portfolio-v44` (ruled 2026-09-17: with a feed value
+                    // present both declarations rejected, without one both
+                    // filled): every fact reads as a supplement fill under
+                    // the app-owned policy.
+                    supersede: false,
                     fact_type: assumption.fact_type.clone(),
                     as_of: assumption.as_of.clone(),
                     source_url: assumption.source_url.clone(),
@@ -1361,33 +1404,19 @@ pub fn analyze_holding(
             ));
         }
     }
-    // The typed indicator reaches the model as ledger-driver evidence (its
-    // conviction-raise role is retired suite-wide with `portfolio-v7`).
+    // The typed indicator reaches the model as evidence on a driver it names
+    // (its conviction-raise role is retired suite-wide with `portfolio-v7`):
+    // one data line under RESEARCH SUMMARY, the driver clause only where the
+    // reference verified against the ledger (`portfolio-v44`).
     let distilled = match &distilled_research.leading_indicator {
-        Some(ind) => format!(
-            "{distilled}\n\nVALIDATED LEADING INDICATOR (typed, engine-unscored \
-             ledger-driver evidence): {} = {} ({}, as of {}) — confirms driver: {} [{}]{}",
-            ind.metric_name,
-            ind.value,
-            match ind.direction {
-                crate::portfolio::distill::IndicatorDirection::InflectingUp => "inflecting up",
-                crate::portfolio::distill::IndicatorDirection::InflectingDown => "inflecting down",
-            },
-            ind.as_of,
-            ind.confirms_driver,
-            ind.source_url,
-            if ind.driver_verified {
-                " — driver reference verified against the ledger"
-            } else {
-                " — driver reference UNVERIFIED (evidence only; no cap suppression)"
-            }
-        ),
+        Some(ind) => format!("{distilled}\n\n{}", render_leading_indicator(ind, prior_ledger)),
         None => distilled,
     };
-    // The advisory fraud claim reaches the model as cited attention evidence —
-    // clearly labeled: it is not a hard trigger and binds nothing.
+    // The advisory fraud claim reaches the model as a data line that states
+    // its attribution to this holding as not established (the 2026-08-24
+    // ruling, in words): it is not a hard trigger and binds nothing.
     let distilled = match &distilled_research.forensic_event {
-        Some(claim) => format!("{distilled}\n\n{}", render_forensic_advisory(claim)),
+        Some(claim) => format!("{distilled}\n\n{}", render_fraud_record(claim)),
         None => distilled,
     };
 
@@ -6893,10 +6922,17 @@ fn distill_request(
     model: &str,
     num_ctx: u32,
     num_predict: u32,
-    prompt: String,
+    prompt: &distill::DistillPrompt,
     schema: &serde_json::Value,
 ) -> ChatRequest {
-    let mut req = ChatRequest::new(model, vec![ChatMessage::user(prompt)]);
+    // The role line and the two-part message (`portfolio-v44`).
+    let mut req = ChatRequest::new(
+        model,
+        vec![
+            ChatMessage::system(prompt.system.clone()),
+            ChatMessage::user(prompt.user.clone()),
+        ],
+    );
     req.think = Some(false);
     req.format_schema = Some(schema.clone());
     req.options = Some(options::non_thinking_general(num_ctx, num_predict));
@@ -7087,14 +7123,15 @@ impl HoldingAnalyst for LocalAnalyst {
             fn distill_call(
                 &self,
                 stage: &str,
-                prompt: String,
+                prompt: &distill::DistillPrompt,
                 schema: &serde_json::Value,
             ) -> Result<String> {
-                // The issue guard: size the rendered prompt against its model's
-                // budget before any request exists (`distill_route`).
+                // The issue guard: size the rendered prompt — both messages —
+                // against its model's budget before any request exists
+                // (`distill_route`).
                 let (model, num_ctx) = distill_route(
                     stage,
-                    prompt.chars().count(),
+                    prompt.chars(),
                     &self.analyst.fast_model,
                     &self.analyst.reasoner_model,
                 )?;
@@ -7102,7 +7139,7 @@ impl HoldingAnalyst for LocalAnalyst {
                     model,
                     num_ctx,
                     NUM_PREDICT_DISTILL,
-                    prompt.clone(),
+                    prompt,
                     schema,
                 );
                 req.stage = Some(stage.to_string());
@@ -7622,7 +7659,7 @@ pub(crate) mod tests {
             routed,
             num_ctx,
             NUM_PREDICT_DISTILL,
-            "wide prompt".into(),
+            &distill::DistillPrompt { system: "s".into(), user: "wide prompt".into() },
             &serde_json::json!({"type": "object"}),
         );
         analyst.record_model_call(&distill);
@@ -10462,9 +10499,11 @@ pub(crate) mod tests {
         // rewrite — one message in two parts, no app narration, the caps unshown
         // — changes the interpretation prompts and their contract, so it moves
         // to v40. The checkpoint trail is unchanged. The action rewrite moved it
-        // to v41 and the role/risk rewrite to v42, the trail still unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v43");
-        assert_eq!(crate::portfolio::store::CHECKPOINT_FORMAT_VERSION, "checkpoint-v10");
+        // to v41 and the role/risk rewrite to v42, the trail still unchanged;
+        // the research rewrite to v43. The distillation rewrite moves it to v44
+        // and the trail to v11 (the audit's persisted typed shapes change).
+        assert_eq!(PROMPT_VERSION, "portfolio-v44");
+        assert_eq!(crate::portfolio::store::CHECKPOINT_FORMAT_VERSION, "checkpoint-v11");
     }
 
     #[test]
@@ -12411,7 +12450,7 @@ pub(crate) mod tests {
             "fast-model",
             NUM_CTX_DISTILL,
             NUM_PREDICT_DISTILL,
-            "prompt".into(),
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
             &schema,
         );
         assert_eq!(distill.think, Some(false));
@@ -12526,7 +12565,7 @@ pub(crate) mod tests {
             "fast-tier",
             NUM_CTX_DISTILL,
             NUM_PREDICT_DISTILL,
-            "prompt".into(),
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
             &schema,
         );
         let response = |eval_count| crate::local_model::ChatResponse {
@@ -12554,7 +12593,7 @@ pub(crate) mod tests {
             "reasoner",
             NUM_CTX_INTERPRET,
             NUM_PREDICT_DISTILL_RETRY,
-            "prompt".into(),
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
             &schema,
         );
         assert_eq!(
@@ -12789,8 +12828,10 @@ pub(crate) mod tests {
             priors: &[],
             ledger_conditions: &[],
             ledger_key_drivers: &[],
-            role_risk: false,
+            holding_brief: "HOLDING\nTEST (name unavailable).\nPrice: (gap)\nDate: 2026-09-16.\n",
+            consolidation_only: false,
             overlay_eligible: false,
+            backfill_required: false,
             input_budget_chars: analyst.distill_input_budget(),
             issue_budget_chars: analyst.distill_issue_budget(),
             now: chrono::Utc::now(),
@@ -13807,13 +13848,47 @@ pub(crate) mod tests {
             issuer: "ACME Motors".into(),
             event_date: "2026-08-01".into(),
             source_url: "https://www.sec.gov/litigation/acme".into(),
-            confidence: 0.9,
         };
-        let block = render_forensic_advisory(&claim);
-        assert!(block.contains("advisory attention evidence"), "{block}");
-        assert!(block.contains("NOT a hard trigger"), "{block}");
-        assert!(block.contains("attribution to this issuer is unconfirmed"), "{block}");
-        assert!(block.contains("https://www.sec.gov/litigation/acme"), "{block}");
+        let block = render_fraud_record(&claim);
+        assert_eq!(
+            block,
+            "Fraud record: a sec.gov document dated 2026-08-01 names ACME Motors in a fraud \
+             matter; source https://www.sec.gov/litigation/acme. Whether it concerns this \
+             holding is not established."
+        );
+        assert!(crate::portfolio::fixed_evidence::banned_hits(&block).is_empty(), "{block}");
+        // The indicator line names the ledger's driver only where the id verified.
+        use crate::portfolio::distill::{IndicatorDirection, ValidatedLeadingIndicator};
+        let mut ind = ValidatedLeadingIndicator {
+            metric_name: "EU BEV registrations".into(),
+            value: 21_400.0,
+            direction: IndicatorDirection::InflectingUp,
+            as_of: "2026-08".into(),
+            source_url: "https://www.acea.auto/august".into(),
+            confirms_driver: "the model's own wording".into(),
+            confirms_driver_id: "d-energy".into(),
+            driver_verified: false,
+        };
+        let ledger = ThesisLedger {
+            key_drivers: vec![crate::portfolio::KeyDriver {
+                driver_id: "d-energy".into(),
+                name: "Energy storage growth".into(),
+                series: None,
+            }],
+            ..test_ledger()
+        };
+        let unverified = render_leading_indicator(&ind, Some(&ledger));
+        assert_eq!(
+            unverified,
+            "Leading indicator: EU BEV registrations = 21400 (inflecting up, as of 2026-08); \
+             source https://www.acea.auto/august."
+        );
+        ind.driver_verified = true;
+        let verified = render_leading_indicator(&ind, Some(&ledger));
+        assert!(verified.contains(", bearing on the driver \"Energy storage growth\"; source"), "{verified}");
+        for line in [&unverified, &verified] {
+            assert!(crate::portfolio::fixed_evidence::banned_hits(line).is_empty(), "{line}");
+        }
     }
 
     #[test]

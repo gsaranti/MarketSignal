@@ -489,6 +489,24 @@ Docs that change: `web-research.md §The research loop and context management`,
   Ruled 2026-09-17: adopt; the sixteen prompt rulings and the ten plan rulings are recorded
   in `2026-09-17-research-prompt-rewrite.md` §Rulings.
   Landed 2026-09-17 as `portfolio-v43` (`2026-09-17-research-prompt-rewrite.md`).
+- 4.8 The distillation prompts name no app concept, on the 3.17 principle: the pass, tier-1,
+  tree-reduce and reduce calls each one message in two parts behind a role-line system
+  prompt — the holding header with its date, the standing conditions and key drivers with
+  their ids, the topics as searches, claims and dated prior findings with no retrieval
+  timestamp, the contrary-evidence pass and the pages' text with their publication dates;
+  then the task in output order with one object per topic required and a placeholder-only
+  shape whose alternatives ride the grammar — with the typed fields on a stock's call only,
+  the forward figure narrowed to EPS or revenue from guidance, a contract or a filing, the
+  leading indicator only where key drivers render, the backfill record only where the
+  obligation bound, and `conflict_handling` and the three side-channel confidences dropped.
+  Check: on the next attempt's first holdings, no distilled finding dates a fact by its
+  retrieval; every typed field returned cites a page under the message's source text; no
+  invented driver id; the two typed-field lines under RESEARCH SUMMARY carry no banned word.
+  Raised by the audit of the rendered distillation prompts against the v40 frame and
+  attempt 6's persisted distillation output (2026-09-17).
+  Ruled 2026-09-17: adopt; the eighteen prompt rulings and the ten plan rulings are recorded
+  in `2026-09-17-distillation-prompt-rewrite.md` §Rulings.
+  Landed 2026-09-17 as `portfolio-v44` (`2026-09-17-distillation-prompt-rewrite.md`).
 
 ## 5. Dates — an authoritative anchor on every stage
 
@@ -503,6 +521,7 @@ Docs that change: `web-research.md §The research loop and context management`,
   Ruled 2026-09-17: adopt for the shared holding header — "Date: <run date>." on every
   packet, the research messages included; the newest filed quarter is not shown.
   Landed 2026-09-17 as `portfolio-v43`; the check reads on the next attempt.
+  The distillation messages carry the header too since `portfolio-v44`.
 - 5.2 Carry publication date, fact period and retrieval time as distinct fields through
   claims and distillation; reconciliation orders on fact period and publication, not
   retrieval time, and the rule must say what wins when two sources cover the same
@@ -676,7 +695,8 @@ watch set rather than fixed here:
   establish whether null is the no-hype resting state or a missing input.
 - Source-registry coverage (CNBC landing as tier 4 unregistered).
 - Distillation original-source allocation and the 12,000-character page cap binding on
-  every fund — the evidence-selection follow-up already named in the record.
+  every stock — the evidence-selection follow-up already named in the record (a fund's
+  distillation carries no source section since `portfolio-v44`).
 - Schwab stock rows arriving without an issuer description, leaving the
   listing-resolution guard unverifiable — an account-data property to raise with the
   ingestion leg, not a model-call fix.

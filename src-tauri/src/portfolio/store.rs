@@ -223,7 +223,12 @@ pub struct CheckpointHeader {
 /// target bands, not the engine's (fix list 3.1, `portfolio-v38`), so a v9
 /// trail's completed holdings, whose rationales explain the engine's target,
 /// cannot resume under the new field.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v10";
+///
+/// `checkpoint-v11` (`portfolio-v44`): the audit's persisted typed research
+/// fields lose `conflict_handling` and their confidences, and the forward
+/// assumption's `fact_type` / `affects` narrow to the engine's alternatives,
+/// so a v10 trail's audit rows cannot resume under the new shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v11";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header

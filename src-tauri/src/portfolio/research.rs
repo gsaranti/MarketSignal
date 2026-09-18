@@ -775,7 +775,12 @@ pub struct HoldingResearch {
     /// The fetched pages' extracted text (normalized URL → capped text) — the
     /// Step-6e activation legs' corroboration base (transient run state; the
     /// audit record never carries it).
-    pub page_texts: std::collections::HashMap<String, String>
+    pub page_texts: std::collections::HashMap<String, String>,
+    /// The publication date the search (or the seed) reported for each
+    /// fetched page, by the same normalized URL, as the backend gave it and
+    /// capped — the distillation's SOURCE TEXT headers carry it (ruled
+    /// 2026-09-17, `portfolio-v44`); a page without one shows no date.
+    pub page_published: std::collections::HashMap<String, String>
 }
 
 /// Everything a holding's research needs, assembled deterministically by the
@@ -1427,6 +1432,16 @@ impl ResearchRunner<'_> {
 
         out.topics = worked;
         out.page_texts = page_texts;
+        out.page_published = page_meta
+            .iter()
+            .filter_map(|(url, meta)| {
+                meta.published.as_deref().map(|p| {
+                    let (published, _) =
+                        crate::data_sources::cap_chars(p, PUBLISHED_CAP_CHARS);
+                    (url.clone(), published)
+                })
+            })
+            .collect();
         out.fetches_spent = fetches_spent;
         out.elapsed_secs = self.budget.clock.elapsed().as_secs();
         Ok(out)
@@ -5646,7 +5661,7 @@ pub(crate) mod samples {
         ]
     }
 
-    fn claims() -> Vec<EvidenceClaim> {
+    pub(crate) fn claims() -> Vec<EvidenceClaim> {
         vec![
             EvidenceClaim {
                 claim: "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix.".into(),
@@ -5686,10 +5701,10 @@ pub(crate) mod samples {
         }
     }
 
-    const IR_URL: &str = "https://ir.tesla.com/press-release/tesla-second-quarter-2026-results";
-    const IR_TEXT: &str = "Tesla Second Quarter 2026 Update\n\nTotal revenues of $25.5B, up 3% YoY. Automotive gross margin excluding regulatory credits was 14.6% compared with 17.2% in Q2 2025, reflecting lower average selling prices and a higher Cybertruck mix. Energy generation and storage revenue grew 41% to $4.2B with record 12.4 GWh deployed. Free cash flow was $0.9B. We expect vehicle deliveries in 2026 to be roughly flat versus 2025 as we prioritize the Cybercab ramp and the launch of the lower-cost model in the second half. Capital expenditures for 2026 are expected to exceed $12B.";
-    const WSJ_URL: &str = "https://www.wsj.com/business/autos/tesla-europe-byd-august-2026";
-    const WSJ_TEXT: &str = "Sign in to continue reading. Subscribe for full access to The Wall Street Journal.";
+    pub(crate) const IR_URL: &str = "https://ir.tesla.com/press-release/tesla-second-quarter-2026-results";
+    pub(crate) const IR_TEXT: &str = "Tesla Second Quarter 2026 Update\n\nTotal revenues of $25.5B, up 3% YoY. Automotive gross margin excluding regulatory credits was 14.6% compared with 17.2% in Q2 2025, reflecting lower average selling prices and a higher Cybertruck mix. Energy generation and storage revenue grew 41% to $4.2B with record 12.4 GWh deployed. Free cash flow was $0.9B. We expect vehicle deliveries in 2026 to be roughly flat versus 2025 as we prioritize the Cybercab ramp and the launch of the lower-cost model in the second half. Capital expenditures for 2026 are expected to exceed $12B.";
+    pub(crate) const WSJ_URL: &str = "https://www.wsj.com/business/autos/tesla-europe-byd-august-2026";
+    pub(crate) const WSJ_TEXT: &str = "Sign in to continue reading. Subscribe for full access to The Wall Street Journal.";
 
     fn annotation(tier: u8, kinds: &[&str], quality: f64, thin: bool) -> SourceAnnotation {
         SourceAnnotation {

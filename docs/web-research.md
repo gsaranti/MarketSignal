@@ -31,6 +31,7 @@ Part 1 carries the holding header with the analysis date, the topic's questions,
 Each page's header states the tier (0 a primary source, 5 sentiment only), the publication date the search reported, the retrieval time, what the source is relied on for, the extraction quality and the stub flag, with the fields glossed once above the pages.
 Part 2 is the task in output order and the shape.
 It carries no prior findings, standing conditions, news leads or URL roster beyond the evidence, and no gathering-stage instruction: the write-up is of this pass's pages, and the distillation merges passes and priors.
+The distillation messages are the same frame (`portfolio-v44`, ruled 2026-09-17); their contract is canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation).
 Portfolio's gathering message is the same frame.
 Its Part 1 carries the holding header, the topic, on a follow-up pass the question it pursues and the claims so far, on the disconfirming pass the run's claims so far, on a continuity run the standing conditions and the prior findings, the news leads, and the tool results' fields glossed once.
 Its Part 2 states what to find, how to weigh a source (a lower tier number and a higher extraction quality preferred; a weak source lowers confidence, it does not exclude), the per-reply tool-call bound, and when to stop — a reply with no tool call.

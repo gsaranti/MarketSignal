@@ -2250,7 +2250,25 @@ pub struct HoldingAudit {
 /// 4.4). The pass record's shape changes in the audit JSON only: the
 /// checkpoint stamp stays `checkpoint-v10` and portability format 7 stands. A
 /// v42 trail cannot resume into v43 on the prompt axis.
-pub const PROMPT_VERSION: &str = "portfolio-v43";
+/// v44 (2026-09-17): the four distillation prompts — the pass, tier-1,
+/// tree-reduce and reduce calls, the last pre-v40 shape on the Portfolio
+/// local-model surface — are one message in two parts behind a role-line
+/// system prompt, with no app concept in them: the shared holding header
+/// with the date, STANDING CONDITIONS and KEY DRIVERS with their ids, TOPICS
+/// as searches, claims and dated prior findings with no retrieval timestamp,
+/// CONTRARY EVIDENCE, SOURCE TEXT with each page's publication date; the
+/// task in output order with one object per topic required and a
+/// placeholder-only shape whose alternatives — the topic keys, the condition
+/// ids, the driver ids — ride the grammar; the typed fields on a stock's
+/// call only, the forward figure narrowed to EPS or revenue from guidance, a
+/// contract or a filing, the leading indicator only where key drivers
+/// render, the backfill record only where the obligation bound, and
+/// `conflict_handling` and the three side-channel confidences dropped (the
+/// persisted audit's typed shapes change: `checkpoint-v11`; portability
+/// format 7 stands). The two lines a validated typed field puts under
+/// RESEARCH SUMMARY are data. A v43 trail cannot resume into v44 on the
+/// prompt axis.
+pub const PROMPT_VERSION: &str = "portfolio-v44";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2805,8 +2823,8 @@ const SHAPE_KEY_ORDER: [&str; 45] = [
 /// "", a number 0, a boolean false, an enum its alternatives as "<a|b|c>", a
 /// nullable enum null, an array one item — and no field notes, since every field
 /// is defined in the Part 2 item that produces it. The role/risk message closes
-/// with [`role_risk_return_shape`] on the same renderer since `portfolio-v42`;
-/// the distillation prompts keep [`response_shape_contract`].
+/// with [`role_risk_return_shape`] on the same renderer since `portfolio-v42`,
+/// and the distillation messages on it since `portfolio-v44` (`distill.rs`).
 pub fn interpretation_return_shape(is_fund: bool, debut: bool) -> String {
     placeholder_shape(&interpretation_schema(is_fund, debut), &SHAPE_KEY_ORDER)
 }
@@ -2824,7 +2842,7 @@ pub fn role_risk_return_shape(debut: bool) -> String {
 /// null among them, an array one item — written with each object's keys in
 /// `order` (unnamed keys after the named ones, alphabetically). The one
 /// renderer behind [`interpretation_return_shape`] and [`action_return_shape`].
-fn placeholder_shape(schema: &Value, order: &[&str]) -> String {
+pub(crate) fn placeholder_shape(schema: &Value, order: &[&str]) -> String {
     fn visit(schema: &Value) -> Value {
         if let Some(values) = schema.get("enum").and_then(Value::as_array) {
             // A nullable choice shows both halves — "<a|b|null>" — so null never
@@ -2878,9 +2896,10 @@ pub fn role_risk_response_contract(debut: bool) -> String {
     response_contract_line(&role_risk_keys(debut))
 }
 
-/// Show the same nested structure and enums that constrain decoding. Templates
-/// populate nullable objects and array items so neither shape is left implicit.
-/// An enum with no neutral member stays a placeholder, not a sample judgment.
+/// The pre-v44 template renderer, retired from every prompt with the
+/// distillation rewrite (`portfolio-v44`) and kept test-only as the source
+/// [`response_template_samples`] materializes its enum choices from.
+#[cfg(test)]
 pub(crate) fn response_shape_contract(schema: &Value) -> String {
     let mut enums = Vec::new();
     fn visit(schema: &Value, path: &str, enums: &mut Vec<String>) -> Value {
