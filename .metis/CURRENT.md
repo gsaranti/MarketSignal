@@ -1,23 +1,31 @@
 # Current session handoff
 
+## Active task
+
+The single big confirmation run
+
 ## What happened
 
-**The rendered-ledger slice landed (2026-09-18, `82f3dd7`, pushed).**
-The validator slice for work-list entries 1 and 2 (the "over" reader) went four Codex rounds without converging; the user asked why the prose parser exists at all and ruled the structural fix instead.
-A quantitative ledger condition is now authored as its core plus a short name (the `statement` schema key on a quantitative condition), the app renders the persisted statement from the core (`QuantCore::render`), the model's name persists as `LedgerCondition.label`, and the prose-versus-core parser with its ten classes is deleted.
-The replacement guard is `holds-at-authoring`: a new or superseding core that already holds on the value the prompt showed is refused; a carried-verbatim core is exempt, and an off-scale value skips the check through the evaluator's shared `LedgerSeries::admissible`.
-The continuity prompt shows a kept core raw beside its name and a refused row with one data phrase per class; the split re-basis and the quick check's transient re-basis re-render the sentence; import refuses format v7; the attempt-6 fixture outcomes were re-derived (PGNY's 300% growth floor now refuses).
-Task review was a narrow reject (two stale doc sentences), then clean; three Codex rounds followed, every finding and nit taken.
-The abandoned parser diff was dropped from the stash on the user's word.
-BUILD now carries the decision as a standing constraint — a quantitative condition's statement is the app's render of its core, never model prose — and names the renderer among the seams.
+**Entry 8's documentation task landed (2026-09-18, `b4b4e5f`, pushed to `origin/main`).**
+Archived attempt-6 logs already printed complete sampler blocks for both profiles at task launch, including inherited defaults; a model-load snapshot alone would miss later per-call profile changes.
+The user selected documentation-only capture of those existing blocks, with no code or stamp changes.
+The operations reference now specifies the capture procedure, and entry 8 requires fresh quotes for both profiles in attempt 7's configuration record, with missing evidence explicitly unverified.
+Metis task review approved with an empty scope report; Claude's subsequent documentation-hygiene nit was accepted and fixed by removing the machine-local artifact path and log offsets from the evergreen reference while preserving the findings link.
+Before commit, `cargo test`, `cargo clippy --all-targets --all-features`, `npm run build` and `git diff --check` passed; Rust mock-server tests required execution outside the sandbox.
 
 ## Current state
 
-Committed and pushed on `main` (the slice is `82f3dd7`, BUILD and this handoff follow it), tree clean, stash empty; Ollama was up at session start and left as found.
+The documentation change is committed and pushed on `main`; this session-end handoff is the only uncommitted change.
+Entry 8's pre-run documentation work is complete, but its fresh-evidence acceptance check remains pending on attempt 7.
+No harness, live model read, daemon restart or dev-store wipe occurred this session.
+Entry 12's rendered-ledger slice remains landed (`82f3dd7`): quantitative statements render from cores, labels persist separately, and new or superseding cores face the `holds-at-authoring` guard; entries 1 and 2 are superseded.
 Debut stamps: `portfolio-v45` / `checkpoint-v12` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 8; any further prompt or schema change lands as `portfolio-v46`.
-The dev store still holds attempt 6; attempt 7 re-wipes first (drop `web_source_state`, clear `portfolio_runs` and the `portfolio` namespace of `vector_memory`).
-Work list: entry 12 holds the slice with its rulings; entries 1 and 2 are superseded; the queue before attempt 7 is entry 8 (effective sampling parameters logged at model load), then entries 4 through 7 each its own plan, then entry 11's measures; entry 3 re-scopes on attempt 7's evidence; 9 and 10 follow attempt 7.
+The prior handoff records attempt 6 in the dev store, untouched here; attempt 7 re-wipes first (drop `web_source_state`, clear `portfolio_runs` and the `portfolio` namespace of `vector_memory`).
+The queue before attempt 7 is entries 4 through 7, each its own plan, then entry 11's measures; entry 4 (failed-URL memory with failure classes and host backoff) is next, not yet planned.
+Entry 4 already has the run-scoped ruling: URL and host memory spans all holdings of one run and is dropped at run end; `web_source_state` retains its telemetry role.
+Entry 3 re-scopes on attempt 7's evidence; entries 9 and 10 follow attempt 7.
 A conditions display slice (label, rendered statement and refusal reason under each holding's thesis) is named as separate work, unscheduled; the frontend still types `conditions` as `unknown[]`.
+BUILD stays unchanged: the confirmation-run item is still incomplete, and entry 8 is a prerequisite task rather than a separate BUILD item.
 
 ## Open questions
 
@@ -25,6 +33,6 @@ A conditions display slice (label, rendered statement and refusal reason under e
 
 ## Where to start
 
-Read `docs/verification/2026-09-17-open-findings.md`; entry 12 is landed, entry 8 is next.
-On the user's word, `/metis-plan-task` entry 8 (log the effective sampling parameters, inherited defaults included, at model load), every flag and assumption through the selector before implementing.
+Read `docs/verification/2026-09-17-open-findings.md`; entry 8's documentation is landed, entry 4 is next.
+On the user's word, `/metis-plan-task` entry 4 (failed-URL memory with failure classes and host backoff), every flag and assumption through the selector before implementing.
 No harness run and no live read: attempt 7 is the next test, launched only when the user names the session and only after the pre-run entries land — do not propose it.
