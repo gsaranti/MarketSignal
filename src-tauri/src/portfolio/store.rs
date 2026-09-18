@@ -228,7 +228,11 @@ pub struct CheckpointHeader {
 /// fields lose `conflict_handling` and their confidences, and the forward
 /// assumption's `fact_type` / `affects` narrow to the engine's alternatives,
 /// so a v10 trail's audit rows cannot resume under the new shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v11";
+///
+/// `checkpoint-v12` (`portfolio-v45`): every ledger condition gains `label`
+/// and a quantitative condition's `statement` is app-rendered from its core,
+/// so a v11 trail's conditions cannot resume under the new shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v12";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header

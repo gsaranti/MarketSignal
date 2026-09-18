@@ -875,6 +875,49 @@ pub struct QuantCore {
     pub margin: f64,
 }
 
+impl QuantCore {
+    /// The executable sentence the app renders from the core — the statement a
+    /// quantitative condition persists and every reader sees
+    /// (`docs/portfolio-analysis.md` §The position thesis ledger,
+    /// `portfolio-v45`): the model's short name, the series, its basis on a flow
+    /// series, the direction, the level in the series' unit, the confirmation
+    /// cadence and the margin. What the engine runs is exactly what the sentence
+    /// says, by construction, so no prose is ever read back against the core.
+    pub fn render(&self, label: Option<&str>, basis: Option<StatementBasis>) -> String {
+        let series = self.series;
+        let basis = basis
+            .filter(|_| series.flow_basis())
+            .map(|b| format!(" ({})", b.short()))
+            .unwrap_or_default();
+        let margin = if self.margin > 0.0 {
+            format!("margin ±{}", series.render_margin(self.margin))
+        } else {
+            "no margin".to_string()
+        };
+        let rule = format!(
+            "{}{basis} {} {}, {}; {margin}",
+            series.render_name(),
+            self.comparator.as_kebab(),
+            series.render_level(self.threshold),
+            series.confirmation_note()
+        );
+        match label.map(str::trim).filter(|l| !l.is_empty()) {
+            Some(label) => format!("{label} — {rule}"),
+            None => capitalize_first(&rule),
+        }
+    }
+}
+
+/// The first character upper-cased — a rendered statement with no name opens
+/// as a sentence.
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// Which statement window a holding's fundamentals were computed on
 /// (`docs/portfolio-analysis.md` §Starting parameters — the TTM statement basis and
 /// its annual fallback).
@@ -908,6 +951,15 @@ impl StatementBasis {
             StatementBasis::Annual => {
                 "SEC annual (latest full year — the quarterly window fell back)"
             }
+        }
+    }
+
+    /// The basis word a rendered ledger statement carries in parentheses on a
+    /// flow series ([`QuantCore::render`]).
+    pub fn short(&self) -> &'static str {
+        match self {
+            StatementBasis::Ttm => "TTM",
+            StatementBasis::Annual => "annual",
         }
     }
 }
@@ -1053,8 +1105,16 @@ pub struct LedgerCondition {
     pub role: ConditionRole,
     /// The trigger's action family (`None` on a falsifier).
     pub trigger_family: Option<TriggerFamily>,
-    /// The model's statement of the condition (prose).
+    /// The condition's statement. On a quantitative condition — kept or refused
+    /// — the app renders it from the core ([`QuantCore::render`]), so the
+    /// sentence is the rule the engine runs; on a qualitative condition it is
+    /// the model's own prose (`portfolio-v45`).
     pub statement: String,
+    /// The model's short name for a quantitative condition, kept or refused,
+    /// rendered into the statement's head; `None` on a qualitative condition,
+    /// whose statement is the model's. No serde default (the fresh-start-2
+    /// rule): every persisted condition carries the field.
+    pub label: Option<String>,
     /// The validated machine core — present only on a quantitative condition.
     pub quant: Option<QuantCore>,
     /// Logged when a claimed-quantitative condition failed executability validation
@@ -1073,6 +1133,18 @@ pub struct LedgerCondition {
     pub supersedes: Option<String>,
     /// Engine evaluation state (quantitative conditions only; app-owned).
     pub eval_state: Option<ConditionEvalState>,
+}
+
+impl LedgerCondition {
+    /// Re-render a quantitative condition's statement from its core — after the
+    /// split re-basis has moved a price-denominated core, so the sentence names
+    /// the level the core now carries.
+    pub fn rerender_statement(&mut self) {
+        if let Some(q) = &self.quant {
+            let basis = self.eval_state.as_ref().and_then(|s| s.authored_statement_basis);
+            self.statement = q.render(self.label.as_deref(), basis);
+        }
+    }
 }
 
 /// The three monitor scenarios.
@@ -2268,7 +2340,15 @@ pub struct HoldingAudit {
 /// format 7 stands). The two lines a validated typed field puts under
 /// RESEARCH SUMMARY are data. A v43 trail cannot resume into v44 on the
 /// prompt axis.
-pub const PROMPT_VERSION: &str = "portfolio-v44";
+///
+/// `portfolio-v45` (the rendered-ledger slice, 2026-09-18): a quantitative
+/// condition is authored as fields plus a short name and the app renders its
+/// statement from the core, so the prose-versus-core checks are gone; a new
+/// or superseding core that already holds on the authoring surface is refused
+/// (`holds-at-authoring`); the persisted condition gains `label`
+/// (`checkpoint-v12`, portability format 8). A v44 trail cannot resume into
+/// v45 on either axis.
+pub const PROMPT_VERSION: &str = "portfolio-v45";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -3708,6 +3788,7 @@ mod tests {
                 condition_id: "c-1".into(),
                 role: ConditionRole::Falsifier,
                 trigger_family: None,
+                label: None,
                 statement: "net margin below 15%".into(),
                 quant: Some(QuantCore {
                     series: engine::LedgerSeries::NetMargin,

@@ -10,8 +10,8 @@ A finding from attempt 7 is appended here as the next number, never in another f
 ## Standing rules
 
 - Pre-release, no data compatibility work: a persisted-shape change moves its stamp and the next attempt re-wipes.
-- The debut stamps are `portfolio-v44` / `checkpoint-v11` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability format 7.
-  Any prompt or schema change lands as `portfolio-v45`; the checkpoint and evidence-floor stamps move only where an entry says its persisted shape changes, confirmed at plan time.
+- The debut stamps are `portfolio-v45` / `checkpoint-v12` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability format 8.
+  Any prompt or schema change lands as `portfolio-v46`; the checkpoint and evidence-floor stamps move only where an entry says its persisted shape changes, confirmed at plan time.
 - Nothing is adopted on one holding's impression; each entry names the check that admits it.
 - Checks are behavioral where the finding was: a source-evidence input and an expected persisted outcome.
   Re-think marker counts stay a diagnostic, never the gate.
@@ -23,13 +23,13 @@ A finding from attempt 7 is appended here as the next number, never in another f
   The v40 / v41 / v42 fixed-set live read is not run; its checks read on attempt 7 instead (§Verification on attempt 7).
   The harness is rebuilt after attempt 7 if the run shows a need; an entry that needs repeats on byte-identical packets waits on that rebuild.
   Ruled 2026-09-18: the harness code stays in the tree whole.
-  The thirteen offline tests run in `cargo test` — the attempt-6 6g outcome regression is the validator slice's offline check, and the two-part / no-app-concept pins hold every prompt surface — and the two ignored tests cost nothing in the gate and seed the rebuild.
+  The thirteen offline tests run in `cargo test` — the attempt-6 6g outcome regression is the rendered-ledger slice's never-dropped witness, its expectations re-derived under the surviving classes, and the two-part / no-app-concept pins hold every prompt surface — and the two ignored tests cost nothing in the gate and seed the rebuild.
 - Attempt 7 follows the remaining fixes, and the user names the launch session.
   It re-wipes the dev store first, dropping `web_source_state` and clearing `portfolio_runs` and the `portfolio` namespace of `vector_memory`.
 
 ## Queue
 
-Before attempt 7, in this order unless ruled otherwise: entries 1 and 2 as one validator slice; then entry 8; then entries 4 through 7, each its own plan; entry 11's measures set before the launch.
+Before attempt 7, in this order unless ruled otherwise: entry 12 (landed 2026-09-18, superseding entries 1 and 2); then entry 8; then entries 4 through 7, each its own plan; entry 11's measures set before the launch.
 Entry 3 is re-scoped on attempt 7's evidence and planned after it.
 Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows the need.
 
@@ -43,6 +43,7 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 - Check, offline: that sentence on that core downgrades as `comparator-mismatch` instead of keeping.
 - Stamp: to confirm at plan time; a validator-only change moved no stamp of its own in the v37 slice.
 - Ruled 2026-09-17: a separate small validator slice, not a prompt change; one slice with entry 2.
+- Superseded 2026-09-18 by entry 12: the statement is rendered from the core, so no direction word is read.
 
 ### 2. "over N units" is not read as a duration
 
@@ -54,6 +55,7 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
   "over a rolling N-month window" describes the series and is never read as a duration.
 - Stamp: as entry 1.
 - Ruled 2026-09-17: the same validator slice as entry 1.
+- Superseded 2026-09-18 by entry 12: no duration is parsed; a duration the fields cannot express makes the condition qualitative by the model's own choice.
 
 ### 3. Claim dating — the persisted shape and the reconciliation rule
 
@@ -140,16 +142,29 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 - Needs entry 7 so the measures are honest.
 - Ruling: open; the measures are set before attempt 7 launches so the run is judged by them.
 
+### 12. The ledger statement is rendered from the core
+
+- Decision: a quantitative condition is authored as its core plus a short name; the app renders the statement the user reads and the engine runs from the core, and the prose-versus-core parser is deleted.
+  A new or superseding core that already holds on the authoring surface is refused as `holds-at-authoring`; a carried-verbatim core is exempt.
+- Rests on: four Codex rounds on entries 1 and 2 without convergence — reverse-parsing free English to reconcile two representations of one fact has no closed form — and the attempt-6 record, where the model's sentence and its core disagreed on about a quarter of its conditions.
+- Check, offline: the render pins one row per unit family; the stub's debut trigger at a spot past its level and PGNY's 300% growth floor refuse as `holds-at-authoring` on the authoring surface; the attempt-6 fixture outcomes are re-derived (`kept`, `qualitative`, `series-uncomputable`, `margin-implausible`, `holds-at-authoring`) and never dropped; a split re-basis re-renders the price sentence from the re-based core.
+  Check, on attempt 7: every kept core's statement is its render, the labels read as names without figures, and the `holds-at-authoring` refusals are read per holding with their shown values.
+- Stamp: `portfolio-v45` (prompt and contract), `checkpoint-v12` (`label` on the persisted condition, the statement's meaning), portability format 8.
+- Ruled 2026-09-18, with the code in view: the label is a separate persisted field; the guard tests new and superseding cores only; the three stamps move; the render carries name, metric, basis, direction, level, confirmation and margin; the continuity prompt shows a kept core raw beside its name; the fixture regression stays with re-derived expectations; a refused condition keeps its render from the draft core; no frontend change (a conditions list is a separate display slice).
+- Review rulings 2026-09-18: an off-scale value (negative equity, a non-positive P/E) skips the guard like a missing one, mirroring the evaluator's admissibility gate; a refused condition's continuity row carries one data phrase per class; the synthetic role/risk fixture passes fund metrics so the guard runs on the expense ratio offline; every reviewer nit taken.
+- Codex 2026-09-18, three P2 fixed: the import guard refuses format v7 with the other pre-release shapes (no compat rung, as the format note already claimed); the quick check re-renders a re-based price condition so the attention flag names the level it compared; the continuity prompt scopes the not-yet-crossed rule to a new condition and keeps a carried one unchanged even after a crossing.
+- Landed 2026-09-18.
+
 ## Verification on attempt 7
 
 Every check below reads on attempt 7, its first holdings read early, from the persisted rows, the tracker and the thought logs.
 The attempt-6 holdings in book order (TSLA, PSX, SPMO, ARKF, DIA, PGNY) are the comparison set; where a check names a fixed-set count, that count is the reference for the same holding, not a bar.
-A check that fails becomes an entry here, numbered on from 12.
+A check that fails becomes an entry here, numbered on from 13.
 
 Interpretation (`portfolio-v40`):
 
 - interpretation markers per call are counted beside attempt 6's per-holding values and the v39 fixed-set rate (10.2 per call), and the causes that remain are read;
-- the level-class downgrades — `price-level-mismatch`, `margin-implausible`, `no-level` — are read per holding beside the v39 counts (eight, five and three on eighteen calls), and every kept core matches its sentence;
+- the refusals — `margin-implausible`, `holds-at-authoring` — are read per holding beside the v39 level-class counts (eight, five and three on eighteen calls), every kept core's statement is its render, and the labels read as names without figures;
 - the kept cores' margin-to-level ratios do not sit at the unshown caps (v39 non-price max 40%);
 - every target rationale names one of the model's own figures, and no prose field carries account economics;
 - no rationale computes with a sentence the interpretation packet no longer carries.

@@ -27,7 +27,7 @@
     "threshold": 55.0,
     "margin": 3.0
    },
-   "expect": "downgraded:qualifier"
+   "expect": "kept"
   },
   {
    "role": "trigger",
@@ -48,7 +48,7 @@
     "threshold": 38.0,
     "margin": 0.15
    },
-   "expect": "downgraded:qualifier"
+   "expect": "kept"
   }
  ],
  "ledger_prose": {

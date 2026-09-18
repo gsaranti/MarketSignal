@@ -220,6 +220,17 @@ fn expected_class(expect: &str) -> Option<&str> {
     expect.strip_prefix("downgraded:")
 }
 
+/// The persisted condition whose model-authored text — the label on a
+/// quantitative condition, the statement on a qualitative one — starts with
+/// `prefix`.
+fn named<'a>(ledger: &'a ThesisLedger, prefix: &str) -> &'a super::LedgerCondition {
+    ledger
+        .conditions
+        .iter()
+        .find(|c| c.label.as_deref().unwrap_or(c.statement.as_str()).starts_with(prefix))
+        .unwrap_or_else(|| panic!("no condition named '{prefix}'"))
+}
+
 // ---- The synthetic role/risk fixture (`portfolio-v42`, ruled 2026-09-17) ----
 
 /// The one role/risk case the harness carries — synthetic, not reconstructed:
@@ -373,6 +384,7 @@ fn synthetic_role_risk_verdict(fx: &SyntheticRoleRisk) -> (super::RoleRiskVerdic
         true,
         None,
         fx.dossier.financials.current_price,
+        Some(&pipeline::fund_ledger_metrics(&fx.readout, &fx.dossier.financials)),
         &HashSet::new(),
         true,
         ContinuityStamps::NONE,
@@ -484,6 +496,7 @@ fn attempt_6_conditions_resolve_to_their_expected_6g_outcome() {
             f.is_fund,
             None,
             Some(f.spot),
+            Some(&f.engine_output.metrics),
             &HashSet::new(),
             true,
             stamps_of(&f),
@@ -493,7 +506,7 @@ fn attempt_6_conditions_resolve_to_their_expected_6g_outcome() {
             let cond = ledger
                 .conditions
                 .iter()
-                .find(|c| c.statement == expected.statement.trim())
+                .find(|c| c.label.as_deref().unwrap_or(c.statement.as_str()) == expected.statement.trim())
                 .unwrap_or_else(|| panic!("{}: '{}' persisted", f.symbol, expected.statement));
             match expected.expect.as_str() {
                 "kept" => {
@@ -766,6 +779,20 @@ fn synthetic_role_risk_fixture_scopes_the_contract_and_the_6g_checks_to_the_fund
         technology_class: false,
         tripped: false,
     });
+    // A cost ceiling the fund's 0.03% expense ratio already breaches — refused
+    // at authoring on the fund surface, as production's `fund_metrics` would.
+    draft.falsifiers.push(FalsifierDraft {
+        statement: "Cost ceiling".into(),
+        quant: Some(QuantCoreDraft {
+            series: "expense-ratio".into(),
+            comparator: "above".into(),
+            threshold: 0.0001,
+            margin: 0.00001,
+        }),
+        technology_class: false,
+        tripped: false,
+    });
+    let metrics = engine::ComputedMetrics { expense_ratio: Some(0.0003), ..Default::default() };
     let (ledger, audit) = validate_ledger_rewrite_with_research(
         &draft,
         None,
@@ -774,6 +801,7 @@ fn synthetic_role_risk_fixture_scopes_the_contract_and_the_6g_checks_to_the_fund
         true,
         None,
         Some(72.0),
+        Some(&metrics),
         &HashSet::new(),
         true,
         ContinuityStamps::NONE,
@@ -781,13 +809,19 @@ fn synthetic_role_risk_fixture_scopes_the_contract_and_the_6g_checks_to_the_fund
     let expense = ledger
         .conditions
         .iter()
-        .find(|c| c.statement.starts_with("Expense ratio"))
+        .find(|c| c.label.as_deref() == Some("Cost drift"))
         .expect("the fund-flavored falsifier persists");
     assert!(expense.quant.is_some(), "{:?}", expense.downgraded_reason);
+    let ceiling = named(&ledger, "Cost ceiling");
+    assert!(
+        ceiling.downgraded_reason.as_deref().is_some_and(|r| r.starts_with("holds-at-authoring:")),
+        "{:?}",
+        ceiling.downgraded_reason
+    );
     let stock_series = ledger
         .conditions
         .iter()
-        .find(|c| c.statement.starts_with("Net margin"))
+        .find(|c| c.label.as_deref().is_some_and(|l| l.starts_with("Net margin")))
         .expect("downgraded, never dropped");
     assert!(stock_series.quant.is_none());
     assert!(
@@ -798,7 +832,7 @@ fn synthetic_role_risk_fixture_scopes_the_contract_and_the_6g_checks_to_the_fund
         "{:?}",
         stock_series.downgraded_reason
     );
-    assert_eq!(audit.downgraded.len(), 1);
+    assert_eq!(audit.downgraded.len(), 2, "{:?}", audit.downgraded);
     let contract = pipeline::LedgerSeriesContract::build(true, None, None);
     assert!(contract.rows.iter().all(|r| r.series.computable_for(true)));
     assert!(!contract.rows.iter().any(|r| r.series == engine::LedgerSeries::NetMargin));
@@ -806,8 +840,9 @@ fn synthetic_role_risk_fixture_scopes_the_contract_and_the_6g_checks_to_the_fund
 
 /// Synthetic, not reconstructed: a second-run carry over DIA's kept conditions.
 /// A verbatim re-emission keeps its id and state; an edited threshold supersedes
-/// into a fresh id with the link; a re-emission whose sentence now disagrees
-/// with its core downgrades and loses its machine state rather than carrying it.
+/// into a fresh id with the link; an edited core that already holds at the spot
+/// is refused (`holds-at-authoring`) and its ancestor closes whole rather than
+/// lending its streak.
 #[test]
 fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades() {
     let dia = fixtures().into_iter().find(|f| f.symbol == "DIA").unwrap();
@@ -819,6 +854,7 @@ fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades()
         true,
         None,
         Some(dia.spot),
+        Some(&dia.engine_output.metrics),
         &HashSet::new(),
         true,
         stamps_of(&dia),
@@ -828,7 +864,7 @@ fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades()
         .conditions
         .iter()
         .filter(|c| c.quant.is_some())
-        .map(|c| (c.statement.clone(), c.condition_id.clone()))
+        .map(|c| (c.label.clone().unwrap_or_else(|| c.statement.clone()), c.condition_id.clone()))
         .collect();
     assert_eq!(kept_ids.len(), 2, "DIA's two price cores");
 
@@ -849,26 +885,19 @@ fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades()
         true,
         None,
         Some(dia.spot),
+        Some(&dia.engine_output.metrics),
         &HashSet::new(),
         true,
         stamps_of(&dia),
     );
-    let carried = ledger
-        .conditions
-        .iter()
-        .find(|c| c.statement.starts_with("Price sustains above $575"))
-        .unwrap();
+    let carried = named(&ledger, "Price sustains above $575");
     let (_, prior_id) = kept_ids
         .iter()
         .find(|(s, _)| s.starts_with("Price sustains above $575"))
         .unwrap();
     assert_eq!(&carried.condition_id, prior_id, "a verbatim core carries its id");
     assert!(carried.quant.is_some());
-    let superseding = ledger
-        .conditions
-        .iter()
-        .find(|c| c.statement.starts_with("Price reaches +30%"))
-        .unwrap();
+    let superseding = named(&ledger, "Price reaches +30%");
     let (_, old_id) = kept_ids
         .iter()
         .find(|(s, _)| s.starts_with("Price reaches +24%"))
@@ -877,14 +906,17 @@ fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades()
     assert_eq!(superseding.supersedes.as_deref(), Some(old_id.as_str()));
     assert_eq!(audit.superseded.len(), 1);
 
-    // Third run: the falsifier's sentence now contradicts its core.
+    // Third run: the falsifier's threshold moves below the spot, so the edited
+    // core already holds at authoring — it is refused, its statement still
+    // rendered from the draft, and the ancestor closes whole (the
+    // rendered-ledger slice, ruled 2026-09-18).
     let mut third = draft_of(&dia);
     for f in &mut third.falsifiers {
         if f.statement.starts_with("Price sustains above $575") {
-            f.statement = "Price falls below $575, losing the base-case multiple".into();
+            f.quant.as_mut().unwrap().threshold = 500.0;
         }
     }
-    let (ledger, _) = validate_ledger_rewrite_with_research(
+    let (ledger, audit) = validate_ledger_rewrite_with_research(
         &third,
         Some(&first),
         None,
@@ -892,25 +924,24 @@ fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades()
         true,
         None,
         Some(dia.spot),
+        Some(&dia.engine_output.metrics),
         &HashSet::new(),
         true,
         stamps_of(&dia),
     );
-    let flipped = ledger
-        .conditions
-        .iter()
-        .find(|c| c.statement.starts_with("Price falls below $575"))
-        .unwrap();
-    assert!(flipped.quant.is_none() && flipped.eval_state.is_none());
+    let refused = named(&ledger, "Price sustains above $575");
+    assert!(refused.quant.is_none() && refused.eval_state.is_none());
     assert!(
-        flipped
-            .downgraded_reason
-            .as_deref()
-            .is_some_and(|r| r.starts_with("comparator-mismatch:")),
+        refused.downgraded_reason.as_deref().is_some_and(|r| r.starts_with("holds-at-authoring:")),
         "{:?}",
-        flipped.downgraded_reason
+        refused.downgraded_reason
     );
-    assert_ne!(&flipped.condition_id, prior_id, "a downgraded condition never inherits the machine core's id");
+    assert!(refused.statement.contains("above $500.00"), "{}", refused.statement);
+    assert!(
+        audit.closed.iter().any(|c| c.condition.condition_id == *prior_id),
+        "the ancestor closes whole: {:?}",
+        audit.closed.iter().map(|c| &c.condition.condition_id).collect::<Vec<_>>()
+    );
 }
 
 /// The §8.2 admission harness: the interpretation and action calls issued live
@@ -1054,6 +1085,7 @@ fn fixed_evidence_live() {
             }
             let (ledger, audit) = validate_ledger_rewrite_with_research(
                 &interp.ledger, None, None, LedgerBranch::Priced, f.is_fund, None, Some(f.spot),
+                None,
                 &HashSet::new(), true, stamps_of(&f),
             );
             if fresh.is_none() {
@@ -1161,7 +1193,8 @@ fn fixed_evidence_live() {
             prose_diagnostics("role read", &interp.role_summary);
             let (ledger, audit) = validate_ledger_rewrite_with_research(
                 &interp.ledger, None, None, LedgerBranch::RoleRiskOnly, true, None,
-                fx.dossier.financials.current_price, &HashSet::new(), true, ContinuityStamps::NONE,
+                fx.dossier.financials.current_price,
+                None, &HashSet::new(), true, ContinuityStamps::NONE,
             );
             println!("    thesis: {}", ledger.current_thesis.replace('\n', " "));
             prose_diagnostics("thesis", &ledger.current_thesis);

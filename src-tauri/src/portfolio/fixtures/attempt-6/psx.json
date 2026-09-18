@@ -27,7 +27,7 @@
     "threshold": 0.03,
     "margin": 0.005
    },
-   "expect": "downgraded:basis-mismatch"
+   "expect": "kept"
   },
   {
    "role": "trigger",

@@ -181,34 +181,24 @@ Each gradable holding carries a ledger with:
   That contract is the materiality margin and consecutive-observation count, the observation-identity-keyed evaluation state that advances only on a new distinct print or filing, the acknowledgment transition that keeps a cleared flag from re-raising off an already-examined observation, and the stable app-assigned **`condition_id`** whose state survives a rewrite when the machine-evaluable core is unchanged and is superseded — fresh streak, `supersedes` link — when it isn't.
   Portfolio applies that contract at its own seams: **the app — not the model — decides what carries when the interpretation stage rewrites the ledger** ([§The per-holding pipeline](#the-per-holding-pipeline) Step 5), and the continuity check rejects carried-state claims that don't structurally match, like any other unvalidated rewrite (Step 6).
   A **newly written or rewritten quantitative condition is additionally executability-validated** there: it must resolve to a series the engine actually computes and refreshes, under the suite's shared resolution contract ([trade-opportunities-workflow.md §Step 3c](trade-opportunities-workflow.md#step-3c-carried-forward-watchlist-re-check)); one that doesn't resolve is **downgraded to qualitative, logged, never dropped**, and carries no machine evaluation state ([portfolio-workflow.md §Step 6g](portfolio-workflow.md#step-6g-continuity-check-and-checkpoint)).
-  Since `portfolio-v36` the same seam also validates **prose-versus-core agreement** (ruled 2026-09-16 off attempt-6 Finding 2): the executable core must mean what the sentence says, and a core that does not is downgraded to qualitative with a reason that opens with its class, never repaired or clamped toward the engine's view.
-  The checks run in a fixed order and the first disagreement wins.
-  A stated percent authored as its raw number on a fraction-unit series is `unit-mismatch`.
-  Direction words that all oppose the comparator are `comparator-mismatch`.
-  A metric or a statement basis the series is not is `metric-mismatch` or `basis-mismatch`.
-  A `price` core whose statement names no price is `no-price-level`.
-  A statement naming no figure in the series' unit is `no-level` on every series, since nothing in it can agree or disagree with the threshold (`portfolio-v37`).
-  A price statement naming a percent from current levels resolves that percent against the spot before the level check, the sign from the sentence when explicit and from the comparator otherwise.
-  A stated level that disagrees with the threshold is `price-level-mismatch` on the price and `level-mismatch` elsewhere.
-  When several figures are stated the level is the one attached to the comparison clause, and a statement with none attached keeps its condition qualitative as `ambiguous-level`.
-  The unit check uses that same associated level, never a starting value elsewhere in the statement.
-  Multiple comparison levels stay qualitative as `qualifier`, since one predicate cannot represent them all.
+  Since `portfolio-v45` a quantitative condition is authored as its core plus a short name, and the app renders the condition's statement from the core — the name, the series with its basis on a flow series, the direction, the level in the series' unit, the confirmation cadence and the margin — so the sentence the user reads is the rule the engine runs, by construction (the rendered-ledger slice, ruled 2026-09-18).
+  The name persists as `label`, `None` on a qualitative condition, whose statement is the model's own prose.
+  On the continuity prompt a kept core prints raw beside its name, and a refused condition prints its statement with one data phrase naming why it was refused.
+  No prose is read back against the core: the `portfolio-v36` prose-versus-core classes (unit, comparator, metric, basis, level, ambiguous level, qualifier) retired with the parser that read them.
+  A refused quantitative condition keeps its render from the draft core behind its name, with the reason beside it.
+  The checks run in a fixed order and the first disagreement wins: an unresolvable series is `series-unresolved`, a series the vehicle never computes is `series-uncomputable`, a comparator or number that does not parse is `malformed`.
   A margin at or beyond the threshold's magnitude is `margin-implausible`, a zero threshold exempt.
   A margin past a quarter of the level on the price, the multiples and debt / equity, or past half of it on a fraction-unit series, is `margin-implausible` too (`portfolio-v37`).
-  A duration, volume or second-condition clause the single-level predicate cannot carry is `qualifier`.
-  A duration naming the market-data cadence exactly — two days, sessions or closes — is what the predicate already carries and keeps its core (`portfolio-v37`).
-  A filing series never exempts a duration.
-  A weekly, monthly, quarterly, annual or yearly adjective on the unit defeats the exemption — two consecutive weekly closes are a week apart, not the daily cadence (fix list 3.5, `portfolio-v39`).
-  An interpretive "confirming …" clause and a parenthetical restating the level in another unit are not second conditions (`portfolio-v37`).
-  Levels compare with their signs intact within a tolerance (5% on a percent or multiple, 1% on a price).
-  Explicit signs are preserved; a narrow implicit-decline phrase on trailing return (such as "falls more than 40%") supplies a negative sign only when the figure has no explicit sign.
+  A new or superseding core that already holds on the authoring surface — the value the prompt showed is past the threshold by more than the margin, read through the evaluator's own predicate — is `holds-at-authoring`, since it is not a crossing ahead but a reversed direction, a unit slip or a present-tense claim.
+  A carried-verbatim core is exempt: it was authored earlier and may legitimately be in breach, its streak being the point.
+  A series the surface carries no value for, or a value the evaluator would call off-scale (negative equity on debt / equity, a non-positive P/E), skips that check and keeps its core.
   The margin guard rejects an impossible margin, not an unwise one.
   The margin stays model-authored (fix list 1.3, not adopted 2026-09-16).
   The model authors against a **holding-scoped authoring contract** rendered in both interpretation prompts: only the series the engine computes for the vehicle kind, each with its unit, statement basis, current observation and confirmation cadence, plus one worked quantitative and one worked qualitative example in the vehicle's own vocabulary ([portfolio-workflow.md §Step 6f](portfolio-workflow.md#step-6f-interpretation-and-grading)).
-  The contract states that the threshold is exactly the level the statement names and the margin the separate band around it (`portfolio-v37`).
+  The contract states that the threshold is the level in the metric's unit, the margin the separate band around it, and the statement a short name without a figure (`portfolio-v45`; the level-naming form was `portfolio-v37`).
   Since `portfolio-v40` the caps are enforced and not shown: the v39 read found the model sizing margins toward the shown cap and writing the threshold-plus-margin into the statement, so the contract now sizes the margin by three examples, one per unit family, and states its purpose in one clause (`docs/verification/2026-09-17-interpretation-prompt-rewrite.md`; the shown-caps form was fix list 3.14, `portfolio-v39`).
   It states as well that a key driver's series is one of the holding's labels where one fits and null where none does (fix list 3.8, `portfolio-v39`).
-  It also states that a quantitative condition's statement names its level in the series' unit — a percent on a fraction series, dollars on the price, a multiple on a ratio — since a statement naming no figure stays qualitative (fix list 1.9, `portfolio-v38`).
+  It also states that a new quantitative condition is one the metric has not already crossed, a kept condition staying as it is even after a crossing (`portfolio-v45`; the level-naming sentence of fix list 1.9, `portfolio-v38`, retired with the parser).
   Since `portfolio-v38` the ledger schema's series enum is scoped to the vehicle kind as well — a fund's grammar lists only the fund-computable series and a stock's omits the expense ratio — so the model never authors a series the seam would downgrade as uncomputable (fix list 3.3, ruled 2026-09-16); the seam's own check stays as defense in depth.
   Since `portfolio-v40` the priced message closes with a placeholder-only return shape and no field notes, every ledger field being defined in the task item that produces it.
   Since `portfolio-v42` the role/risk message closes the same way on the same renderer, its ledger item shared with the priced message and its trigger families reduced to trim and sell (the 2026-09-16 F4 field notes retired with the template; fix list 3.18).
@@ -553,9 +543,10 @@ They are recorded here so the spec matches the engine, not to pin them.
   Every stored price-denominated comparator converts through the factor before comparison: the sweep's ledger `price` thresholds **and their absolute margins**, the stored-multiple rescale's spot, the hurdle re-anchor's spot and same-sweep filing dividend, the frozen band targets, and every raw fiscal-period EPS row used by the revision preflight.
   The sweep's conversions are transient — the stored ledger is never rewritten.
   The full pass instead normalizes the **ingested prior ledger once, at ingestion**, so every compared, validated, and persisted machine value — the evaluation, 6g carry, and the rewrite — sits on one basis and the rewritten ledger lands on the persisting run's basis.
-  Since `portfolio-v37` that normalization also re-bases the dollar figures in a price condition's statement, so a verbatim re-emission names the level its converted core carries and the 6g level check keeps the carry (ruled 2026-09-16; latent since the v36 level check).
+  Since `portfolio-v45` that normalization re-renders a price condition's statement from its converted core, so the sentence names the level the core carries (the `portfolio-v37` dollar-figure rewrite retired with the parser).
   The 6c seed and 6d citation list read the same normalized instance but render statements only — no machine core reaches those prompts; rendering the core beside the statement there is a named, undecided candidate (a `PROMPT_VERSION` event).
-  A condition's **statement prose stays model-authored**, with one app rewrite: the dollar figures of a price condition's statement re-base with its core at ingestion (above), so no carried sentence quotes an old-basis number beside a new-basis core.
+  A quantitative condition's statement is app-rendered from its core, so no carried sentence quotes an old-basis number beside a new-basis core.
+  A qualitative condition's prose stays model-authored.
   The machine core is the authoritative comparator throughout.
   It bridges the prior spot and every matched prior consensus-EPS row **together** (their ratio — each prior matched-period multiple — is basis-free and must stay so).
   A detected re-basis writes its own input-delta entry so the what-changed audit can attribute the apparent price move.

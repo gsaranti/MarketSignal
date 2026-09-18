@@ -40,7 +40,7 @@
     "threshold": 3560.21,
     "margin": 3944589657.0
    },
-   "expect": "downgraded:no-price-level"
+   "expect": "downgraded:margin-implausible"
   },
   {
    "role": "falsifier",
@@ -53,7 +53,7 @@
     "threshold": 0.037,
     "margin": 0.04
    },
-   "expect": "downgraded:metric-mismatch"
+   "expect": "downgraded:margin-implausible"
   },
   {
    "role": "trigger",
@@ -66,7 +66,7 @@
     "threshold": 0.16,
     "margin": 0.02
    },
-   "expect": "downgraded:qualifier"
+   "expect": "kept"
   },
   {
    "role": "trigger",
@@ -92,7 +92,7 @@
     "threshold": 13.9,
     "margin": 70429518.0
    },
-   "expect": "downgraded:price-level-mismatch"
+   "expect": "downgraded:margin-implausible"
   }
  ],
  "ledger_prose": {

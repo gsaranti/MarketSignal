@@ -3015,6 +3015,7 @@ mod tests {
                     condition_id: id.to_string(),
                     role: ConditionRole::Falsifier,
                     trigger_family: None,
+                    label: None,
                     statement: s.to_string(),
                     quant: None,
                     downgraded_reason: None,

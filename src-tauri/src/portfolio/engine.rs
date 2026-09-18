@@ -1164,79 +1164,54 @@ impl LedgerSeries {
         }
     }
 
-    /// The statement vocabulary that names this series — the 6g agreement check's
-    /// metric lexicon (`docs/portfolio-workflow.md` §Step 6g). Matched as whole
-    /// phrases, case-insensitive. The price's vocabulary is the price-level
-    /// check's, listed here so the lexicon has one home.
-    pub fn statement_aliases(&self) -> &'static [&'static str] {
+    /// The admissible range for a threshold comparison — one predicate for the
+    /// evaluator's `on_scale` gate ([`resolve_series`]) and the authoring-surface
+    /// check: negative equity is off-scale for debt / equity, never "low
+    /// leverage"; a loss-maker's non-positive P/E is off-scale, never "cheap";
+    /// every other series compares as printed.
+    pub fn admissible(&self, value: f64) -> bool {
         match self {
-            LedgerSeries::NetMargin => &["net margin", "net profit margin", "net income margin"],
-            LedgerSeries::GrossMargin => &["gross margin", "gross profit margin"],
-            LedgerSeries::RevenueGrowth => &[
-                "revenue growth",
-                "sales growth",
-                "top-line growth",
-                "top line growth",
-                "revenue grows",
-                "revenue declines",
-            ],
-            LedgerSeries::DebtToEquity => &[
-                "debt/equity",
-                "debt-to-equity",
-                "debt to equity",
-                "d/e ratio",
-                "leverage ratio",
-            ],
-            LedgerSeries::ReturnVolatility => &[
-                "return volatility",
-                "realized volatility",
-                "daily volatility",
-                "volatility",
-            ],
-            LedgerSeries::TrailingReturn => &[
-                "trailing return",
-                "price return",
-                "total return",
-                "trailing price return",
-            ],
-            LedgerSeries::PeRatio => &[
-                "p/e",
-                "pe ratio",
-                "price/earnings",
-                "price-to-earnings",
-                "price to earnings",
-                "earnings multiple",
-            ],
-            LedgerSeries::PsRatio => &[
-                "p/s",
-                "ps ratio",
-                "price/sales",
-                "price-to-sales",
-                "price to sales",
-                "sales multiple",
-            ],
-            LedgerSeries::PbRatio => &[
-                "p/b",
-                "pb ratio",
-                "price/book",
-                "price-to-book",
-                "price to book",
-                "book multiple",
-            ],
-            LedgerSeries::ExpenseRatio => &["expense ratio", "expense", "fee"],
-            LedgerSeries::Price => &[
-                "price",
-                "prices",
-                "priced",
-                "stock",
-                "share",
-                "shares",
-                "trades",
-                "trade",
-                "closes",
-                "close",
-                "$",
-            ],
+            LedgerSeries::DebtToEquity => value >= 0.0,
+            LedgerSeries::PeRatio => value > 0.0,
+            _ => true,
+        }
+    }
+
+    /// The series' name in a rendered ledger statement — [`Self::describe`],
+    /// except the price, which reads as a bare "price" in a sentence.
+    pub fn render_name(&self) -> &'static str {
+        match self {
+            LedgerSeries::Price => "price",
+            other => other.describe(),
+        }
+    }
+
+    /// A level in the series' own unit as the rendered ledger statement states
+    /// it: a percent on the fraction family ("16%", "-40%", "0.75%"), dollars
+    /// on the price ("$38.00"), a multiple on the three ratios ("25x"), a bare
+    /// ratio on debt / equity ("1.5").
+    pub fn render_level(&self, v: f64) -> String {
+        match self {
+            LedgerSeries::Price => format!("${v:.2}"),
+            LedgerSeries::PeRatio | LedgerSeries::PsRatio | LedgerSeries::PbRatio => {
+                format!("{}x", trim_places(v, 2))
+            }
+            LedgerSeries::DebtToEquity => trim_places(v, 2),
+            _ => format!("{}%", trim_places(v * 100.0, 3)),
+        }
+    }
+
+    /// A margin in the series' own unit: percentage points on the fraction
+    /// family ("0.5pp"), dollars on the price, a multiple on the ratios, a bare
+    /// ratio on debt / equity.
+    pub fn render_margin(&self, m: f64) -> String {
+        match self {
+            LedgerSeries::Price => format!("${m:.2}"),
+            LedgerSeries::PeRatio | LedgerSeries::PsRatio | LedgerSeries::PbRatio => {
+                format!("{}x", trim_places(m, 2))
+            }
+            LedgerSeries::DebtToEquity => trim_places(m, 2),
+            _ => format!("{}pp", trim_places(m * 100.0, 3)),
         }
     }
 
@@ -1281,6 +1256,24 @@ impl LedgerSeries {
             LedgerSeries::Price => "the holding's price (account currency)",
         }
     }
+}
+
+/// A number at up to `places` decimals with trailing zeros trimmed ("16",
+/// "2.67", "0.75"). A nonzero value that rounds to zero at `places` extends one
+/// place at a time to six and prints at six if it still rounds to zero; a zero
+/// of either sign prints "0".
+fn trim_places(v: f64, places: usize) -> String {
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    for p in places..=6 {
+        let s = format!("{v:.p$}");
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        if s != "0" && s != "-0" {
+            return s.to_string();
+        }
+    }
+    format!("{v:.6}")
 }
 
 /// One resolved series observation: the value plus the distinct observation identity
@@ -1371,12 +1364,12 @@ pub fn resolve_series(
     // (`RISK_DEBT_EQUITY_BAND`). Resolving unevaluable moves no state at all, so
     // it can neither fabricate a crossing nor clear one, and the typed
     // `unevaluable_series` channel downgrades the family's claimed clear.
-    // `on_scale` names the admissible range per series rather than inferring it:
-    // zero debt is a real debt/equity reading, zero is degenerate for a P/E.
-    let on_scale =
-        |v: Option<f64>, label: &str, admissible: fn(f64) -> bool| -> Result<f64, String> {
+    // `on_scale` reads the admissible range per series ([`LedgerSeries::admissible`])
+    // rather than inferring it: zero debt is a real debt/equity reading, zero is
+    // degenerate for a P/E.
+    let on_scale = |v: Option<f64>, label: &str, series: LedgerSeries| -> Result<f64, String> {
             let value = metric(v, label)?;
-            if !admissible(value) {
+            if !series.admissible(value) {
                 return Err(format!(
                     "{label} is {value} — off-scale for a threshold comparison, so this \
                      condition is unevaluable rather than compared"
@@ -1400,7 +1393,7 @@ pub fn resolve_series(
         }),
         // Negative equity is off-scale, never "low leverage" — see `on_scale`.
         LedgerSeries::DebtToEquity => Ok(ResolvedObservation {
-            value: on_scale(metrics.debt_to_equity, "debt/equity", |d| d >= 0.0)?,
+            value: on_scale(metrics.debt_to_equity, "debt/equity", LedgerSeries::DebtToEquity)?,
             observation_id: filing_obs()?,
         }),
         LedgerSeries::ExpenseRatio => {
@@ -1421,7 +1414,7 @@ pub fn resolve_series(
         // A loss-maker's negative P/E is off-scale, never "cheap" — see
         // `on_scale`. Zero is degenerate on the same scale and goes with it.
         LedgerSeries::PeRatio => Ok(ResolvedObservation {
-            value: on_scale(metrics.pe_ratio, "P/E", |p| p > 0.0)?,
+            value: on_scale(metrics.pe_ratio, "P/E", LedgerSeries::PeRatio)?,
             observation_id: market_obs()?,
         }),
         LedgerSeries::PsRatio => Ok(ResolvedObservation {
@@ -6270,6 +6263,7 @@ mod tests {
             condition_id: id.into(),
             role: ConditionRole::Falsifier,
             trigger_family: None,
+            label: None,
             statement: format!("{id} statement"),
             quant: Some(QuantCore {
                 series,
@@ -7004,6 +6998,7 @@ mod tests {
             condition_id: id.into(),
             role: ConditionRole::Falsifier,
             trigger_family: None,
+            label: None,
             statement: format!(
                 "{} {} {threshold}",
                 series.as_kebab(),

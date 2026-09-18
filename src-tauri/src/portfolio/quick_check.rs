@@ -1455,14 +1455,23 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         // convert onto the fresh basis before evaluation, so both sides of every
         // comparison share one basis; the streak semantics are invariant under
         // the conversion. Transient only — the sweep never rewrites the stored
-        // ledger. An unresolvable bridge excludes these conditions below.
+        // ledger. The statement re-renders from the converted core, so an
+        // attention flag names the level the comparison ran at
+        // (`portfolio-v45`). An unresolvable bridge excludes these conditions
+        // below.
         if let Some(f) = bridge.filter(|f| *f != 1.0) {
             for cond in &mut overlaid.conditions {
-                if let Some(q) = &mut cond.quant {
+                let rebased = cond.quant.as_mut().is_some_and(|q| {
                     if q.series.price_denominated() {
                         q.threshold *= f;
                         q.margin *= f;
+                        true
+                    } else {
+                        false
                     }
+                });
+                if rebased {
+                    cond.rerender_statement();
                 }
             }
         }
@@ -2053,6 +2062,7 @@ mod tests {
             role,
             trigger_family: (role == ConditionRole::Trigger)
                 .then_some(crate::portfolio::TriggerFamily::Trim),
+            label: None,
             statement: format!("price below {threshold}"),
             quant: Some(QuantCore {
                 series: LedgerSeries::Price,
@@ -2709,6 +2719,9 @@ mod tests {
         let s2 = run_quick_check(&split_stub(44.5, "2026-08-02"), &conn, &noop_ctx()).unwrap();
         let flag = s2.holdings[0].flag.as_ref().expect("a real breach still confirms");
         assert_eq!(flag.trigger, FlagTrigger::ConfirmedFalsifierBreach);
+        // The flag names the level the comparison ran at, not the stored scale.
+        assert!(flag.detail.contains("$45.00"), "{}", flag.detail);
+        assert!(!flag.detail.contains("$180"), "{}", flag.detail);
     }
 
     #[test]
@@ -3303,6 +3316,7 @@ mod tests {
             condition_id: "c-exp".into(),
             role: ConditionRole::Falsifier,
             trigger_family: None,
+            label: None,
             statement: "expense ratio above 20 bps".into(),
             quant: Some(QuantCore {
                 series: LedgerSeries::ExpenseRatio,

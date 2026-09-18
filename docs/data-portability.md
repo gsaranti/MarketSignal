@@ -29,7 +29,7 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | `reports` | The report records — id, regime metadata, summary JSON, the pointer to the Markdown body. |
 | `baseline_snapshots` | Past market-scan states (retention 14). **Irreproducible** — they capture a market moment; they anchor the cadence-honest change view on the next report. |
 | `vector_memory` | Report summaries, the local jobs' per-record continuity summaries, **and durable learnings** — the long-term semantic memory. Durable learnings are the point: they survive report deletion and are the accumulated edge. |
-| `portfolio_runs` | Local-suite run history (retention 30; the priced verdict's target-rationale field renamed with its meaning in format v7). Nascent today, but durable once the suite runs live. |
+| `portfolio_runs` | Local-suite run history (retention 30; the priced verdict's target-rationale field renamed with its meaning in format v7; each ledger condition carries the model's `label` beside an app-rendered statement since format v8). Nascent today, but durable once the suite runs live. |
 | `holdings_pulls` | The single latest view-only holdings snapshot. |
 | `portfolio_quick_checks` | The quick check's between-run state (format v2) — attention flags, unexamined evidence events, condition evaluation streaks. Durable analytical state: flags and breach streaks do not regenerate on the next sweep. |
 | `portfolio_outcome_episodes` | Outcome-learning decision episodes (format v3) — calibration state that outlives the 30-run retention; an aged-out anchor run cannot regenerate its episodes. |

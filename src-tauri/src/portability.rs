@@ -65,10 +65,14 @@ use crate::storage;
 /// `portfolio_runs.run_json` renamed `price_target_rationale` to
 /// `model_target_rationale` with its meaning (fix list 3.1, `checkpoint-v10`),
 /// so a v6 archive's runs would not decode under the current verdict shape.
-/// Every pre-release shape below the current one — v2 through v6, none of which
+/// v8 (the rendered-ledger slice): every ledger condition inside
+/// `portfolio_runs.run_json` gained the model's `label` beside an app-rendered
+/// statement (`checkpoint-v12`), so a v7 archive's runs would not decode under
+/// the current condition shape.
+/// Every pre-release shape below the current one — v2 through v7, none of which
 /// a shipped build wrote — is refused outright (`check_format_version`, the
 /// 2026-08-29 no-compat ruling).
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -1206,7 +1210,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 2..=6) {
+    if matches!(manifest.format_version, 2..=7) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -2270,19 +2274,20 @@ mod tests {
     }
 
     #[test]
-    fn v4_v5_and_v6_stamps_are_refused_as_pre_release_formats() {
-        // The single-URL (v4), pre-counter (v5) and pre-rename (v6, the priced
-        // verdict's `price_target_rationale`) shapes were pre-release formats
-        // no shipped build wrote (ruled 2026-08-29): a complete current export
-        // re-stamped any of these ways is refused outright, never read through
-        // a compat rung.
+    fn v4_through_v7_stamps_are_refused_as_pre_release_formats() {
+        // The single-URL (v4), pre-counter (v5), pre-rename (v6, the priced
+        // verdict's `price_target_rationale`) and pre-label (v7, the ledger
+        // condition's `label` and app-rendered statement) shapes were
+        // pre-release formats no shipped build wrote (ruled 2026-08-29): a
+        // complete current export re-stamped any of these ways is refused
+        // outright, never read through a compat rung.
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None, None).unwrap();
         let mut entries = read_archive_entries(&dest);
         let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        for version in [4, 5, 6] {
+        for version in [4, 5, 6, 7] {
             manifest.format_version = version;
             entries.insert(
                 "manifest.json".to_string(),
