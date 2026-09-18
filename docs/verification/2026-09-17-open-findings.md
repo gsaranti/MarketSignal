@@ -3,6 +3,7 @@
 This is the single work list for the Portfolio local-model surface from 2026-09-17.
 It supersedes the attempt-6 fix list and the per-slice records as the list of open findings; those files are history and are not consulted for what is open.
 Every entry the prompt-rewrite series closed (`portfolio-v40` through `portfolio-v44`) is omitted.
+Entry 12, the rendered ledger (`portfolio-v45`), is landed and kept for its rulings and the checks attempt 7 reads; entries 1 and 2 stay as the history it superseded.
 What remains is app-side work the prompts never touched, the checks attempt 7 reads for the landed prompts, and the watches for that attempt.
 Each entry is a decision, the evidence it rests on, the acceptance check and the stamp it moves; its ruling status is on the entry.
 A finding from attempt 7 is appended here as the next number, never in another file.
@@ -29,7 +30,8 @@ A finding from attempt 7 is appended here as the next number, never in another f
 
 ## Queue
 
-Before attempt 7, in this order unless ruled otherwise: entry 12 (landed 2026-09-18, superseding entries 1 and 2); then entry 8; then entries 4 through 7, each its own plan; entry 11's measures set before the launch.
+Before attempt 7, in this order unless ruled otherwise: entry 8; then entries 4 through 7, each its own plan; entry 11's measures set before the launch.
+Entries 1, 2 and 12 are closed (12 landed 2026-09-18, superseding 1 and 2).
 Entry 3 is re-scoped on attempt 7's evidence and planned after it.
 Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows the need.
 
@@ -67,7 +69,7 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
   What remains is the persisted half: `DistilledClaim` carries a single `vintage` field, so the three dates are not distinguishable in the persisted record and no app-side ordering can prefer publication over retrieval.
 - Rests on: attempt 6 — ARKF's "announced September 16, 2026, trading March 31, 2025" contradiction and TSLA's "July CY25", both dated by retrieval.
 - Check: neither can persist; a claim's persisted record names its publication date and its fact period apart from when it was retrieved.
-- Stamp, ruled 2026-09-18: the shape half (new fields on the persisted claim) moves `checkpoint`, plus portability's format if the archive carries the topic layer, which the plan confirms; the basis half (the freshness window reading publication instead of retrieval) moves `evidence-floor`.
+- Stamp, ruled 2026-09-18: the shape half (new fields on the persisted claim) moves `checkpoint` (to v13, past the landed v12), plus portability's format if the archive carries the topic layer, which the plan confirms; the basis half (the freshness window reading publication instead of retrieval) moves `evidence-floor`.
   The entry as scoped does both.
 - Ruling: open.
   Re-scoped on attempt 7's dating checks (§Verification on attempt 7) before planning: if no distilled finding dates a fact by retrieval, the entry narrows to the persisted shape alone.
@@ -86,9 +88,9 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 
 - Decision: reuse successfully fetched evidence across a holding's topics before searching again; expose the remaining turns and the topic's unanswered questions to gathering.
 - Note: the `portfolio-v43` gathering message states the per-reply tool-call bound and the stopping rule; it shows no remaining-turn count and reuses nothing across topics.
-  Any line this adds to the message lands as `portfolio-v45` and is data, never an app concept.
+  Any line this adds to the message lands as `portfolio-v46` and is data, never an app concept.
 - Check, on attempt 7: the cap-hit share falls beside attempt 6's without raising the cap.
-- Stamp: `portfolio-v45` if the message changes.
+- Stamp: `portfolio-v46` if the message changes.
 - Ruling: open.
 
 ### 6. The fetcher declares the SEC User-Agent and names its failure cause
@@ -122,7 +124,7 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
   A debut-only exposure, since a continuity run renders the prior model-chosen action as its baseline; sampling is a plausible cause no observation yet isolates.
 - Requires entry 8 first, so each run's effective options are on the record and the comparison is attributable.
   Requires repeats on byte-identical packets, so it needs a harness.
-- Check, judged in this order: no wrong core admitted and every rung inside its holding's repeat set under both profiles; then the between-repeat rung agreement per holding; then elapsed time; re-think markers diagnostic only.
+- Check, judged in this order: no core refused on re-authoring (`holds-at-authoring`, `margin-implausible`; the sentence is the app's render since entry 12, so there is no wrong core to admit) and every rung inside its holding's repeat set under both profiles; then the between-repeat rung agreement per holding; then elapsed time; re-think markers diagnostic only.
 - The precise row is adopted for the action call only if correctness holds and rung agreement rises.
   An adoption updates the ops doc's stage mapping and is a per-call option, never a load-time change.
   The interpretation call is a second leg only if the first shows an effect.
@@ -217,7 +219,7 @@ Kept, not scheduled; read at scale rather than fixed here.
 - Distillation original-source allocation and the 12,000-character page cap binding on every stock (a fund's distillation carries no source section since `portfolio-v44`).
 - Schwab stock rows arriving without an issuer description, leaving the listing-resolution guard unverifiable — an account-data property to raise with the ingestion leg, not a model-call fix.
 - Whether interpretation misses anything on a priced fund now that its distillation carries no typed field.
-- Whether the v40 read's yield on PGNY-type holdings falls without the shown caps; a better example, not the caps, is the answer if it does.
+- Retired 2026-09-18: the v40 read's `no-level` yield on PGNY-type holdings — the class went with the parser (entry 12); read instead whether such holdings' cores refuse as `holds-at-authoring`, a better example being the answer if they do.
 - Rung flips between adjacent rungs on the same holding across attempts 6 and 7, the evidence entry 9 waits on.
 - Stop rule 1 — the unit and overlay exclusion rate, unread on attempt 6's six holdings.
 - The per-domain denied share and the SearXNG engine set at book scale.
@@ -239,3 +241,4 @@ Ratified 2026-09-15 unless dated otherwise; none is re-raised in a plan.
 - "Keep the action firm run to run" on continuity calls only: the debut check is accepted cost.
 - The Facts form of the engine-set line: it steered harder on both admission outcomes; the set is one data line with no permission sentence.
 - A fixed-evidence read before attempt 7 (ruled 2026-09-17): the harness is deprecated; the rewritten prompts are read on the run.
+- A prose check on a ledger statement, in any form (2026-09-18): the statement is the app's render of the core (entry 12; BUILD §Standing constraints), so a field the model must convey goes in the schema, never in the sentence.
