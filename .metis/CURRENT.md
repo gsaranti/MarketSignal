@@ -7,6 +7,7 @@ The open local-model-call findings were consolidated into one work list, `docs/v
 The 2026-09-15 fix list and attempt-6 record carry a Superseded line and are history; a new finding appends to the work list as entry 12 on, never elsewhere.
 The fixed-evidence harness is deprecated: the v40 / v41 / v42 live read is cancelled, the next test after the remaining fixes is attempt 7 itself, and the harness is rebuilt after it only if the run shows a need (its code stays in the tree; removal is a separate decision).
 BUILD never tracks fixes or adjustments and INDEX never indexes verification records (they are temporary and referenced from this file only): INDEX §Verification records removed, BUILD §What remains item 1 trimmed to the decision, the eleven owed BUILD / INDEX rows cancelled.
+BUILD was then restructured to the rule: a compressed spine, the suite decisions with §Seams and §Standing constraints kept whole, §Built collapsed to one paragraph, the changelog section dropped, and every verification-record pointer re-homed to an app doc or removed (zero remain).
 
 ## Current state
 
@@ -19,7 +20,6 @@ Every entry rules through the selector before implementation; plan flags are rul
 ## Open questions
 
 - Whether the harness code (the offline replay in `fixed_evidence.rs`, the attempt-6 fixtures, the ignored live and prompt-dump tests) stays in the tree now the harness is deprecated.
-- BUILD still carries about fifteen pointers to verification records for feature slices, several worded "canonical at" (the fresh-start-2 no-compat rule, the 2026-08-24 research-loop channel rulings); those contracts need re-homing into the app docs before the records can be treated as temporary — a docs slice of its own — and the §Built financial-correctness bullet sits against the new rule.
 - Validator-slice flags: which downgrade reason wins when one sentence trips both entries 1 and 2; whether entry 4's failed-URL record is run-scoped memory or rides `web_source_state`.
 - Entry 3's stamp (evidence-floor, checkpoint or both), decided after attempt 7's dating read.
 

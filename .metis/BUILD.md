@@ -1,283 +1,170 @@
 # BUILD — Market Signal
 
-*Architecture brief for the app: the load-bearing decisions and their rationale —
-the durable shape future work builds on — not the construction history
-(commit-by-commit detail lives in git; per-feature specifics live in `docs/`).
-The body is as-built unless marked planned/designed; §What remains lists the
-build queue.*
+*Architecture brief: the load-bearing decisions and their rationale — the
+durable shape future work builds on. The body is as-built unless marked
+planned or designed. Construction history lives in git and the verification
+records, per-feature specifics live in `docs/`, and the open work list is
+named in `CURRENT.md`. §Seams and §Standing constraints are what a plan reads
+before it touches the local suite; §What remains is the build queue.*
 
 ## What it is
 
 Market Signal is a local-first macOS desktop app (Tauri 2 / Rust backend, Vue 3
 frontend) that generates a **Market Signal Report on demand** — a professional,
-evolving market *thesis* rather than reactive daily commentary. A deterministic
-Rust pipeline gathers market data, macro data, and news; a constrained set of
-LLM agents reason over a curated packet to produce a Markdown report; the app
-renders it to HTML for display and PDF, and keeps long-term continuity through
-vector memory. Everything runs on the user's machine except external API and
-model calls. The full 18-step control flow is specified in
-`docs/report-workflow.md`.
+evolving market *thesis* rather than reactive daily commentary — and, beside
+it, a **local analysis suite** that grades the user's own holdings with local
+models. A deterministic Rust pipeline gathers market data, macro data and news;
+a constrained set of LLM agents reason over a curated packet; the app renders
+Markdown to HTML for display and PDF and keeps continuity through vector
+memory. Everything runs on the user's machine except external API and model
+calls. The 18-step report flow is `docs/report-workflow.md`.
 
-## The load-bearing decision: the app layer orchestrates; agents are pure stages
+## The spine: the app layer orchestrates; agents are pure stages
 
-The boundary the rest of the architecture is most sensitive to is the line
-between the deterministic Rust application layer and the agents. The app layer
-owns the entire control flow, all I/O, all limits, and all persistence; agents
-never touch the network, the database, or the filesystem. Each agent stage is a
-pure function — structured input → schema-validated output — behind a Rust trait
-(`MainAgent`, `AnalystAgent`, `HeadlineFilter`, `ResearchRouter`), swappable for
-a deterministic stub. The model HTTP call is an implementation detail of the
-adapter. **The trait methods are synchronous**: the blocking provider call
-(`reqwest::blocking`) is offloaded via `spawn_blocking` at the Tauri-command
-seam, so `tokio`/async lives only in app-layer I/O, never in an agent. Analyst
-concurrency is likewise off `tokio` — the Bull/Bear/Balanced trio runs over the
-same packet via scoped OS threads, holding the sync-trait discipline.
+The deterministic Rust application layer owns the control flow, all I/O, all
+limits and all persistence; agents never touch the network, the database or
+the filesystem. Each agent stage is a pure function — structured input →
+schema-validated output — behind a Rust trait (`MainAgent`, `AnalystAgent`,
+`HeadlineFilter`, `ResearchRouter`), swappable for a deterministic stub. **The
+trait methods are synchronous**: the blocking provider call is offloaded via
+`spawn_blocking` at the Tauri-command seam, so `tokio` lives only in app-layer
+I/O; the Bull/Bear/Balanced trio runs over the same packet on scoped OS
+threads, holding the same discipline.
 
-Three consequences fall out of this spine:
+Three consequences:
 
 - **Research planning is the router's job, not the main agent's.** The fixed
-  routing model emits the executable plan (Step 8); the app layer executes it
-  (Step 9) and assembles the Step-11 condensed packet *deterministically*
-  (`research_packet::build_condensed_packet`). By Step 11 the funnel (~500
-  headlines → ~10 stories → ~5 routed topics → bounded evidence) has already
-  condensed, so packet-building is plumbing, not reasoning — and it keeps faith
-  with the pure-stage spine. The main agent gets no live tool loop.
+  routing model emits the executable plan (Step 8); the app executes it (Step
+  9) and assembles the condensed packet deterministically (Step 11). The main
+  agent gets no live tool loop.
 - **Research execution is hard-bounded in the executor, not the model** — ≤50
-  requests, ≤30 minutes, dynamic-branching depth ≤2 (`docs/report-workflow.md
-  §Step 9`), polled at each request boundary against an injectable `Clock`.
-  Dynamic follow-ups ship as deterministic delta-rules (`DeltaBranchPolicy`)
-  keyed off the per-report change view, with thresholds time-normalized to the
-  run's actual elapsed interval rather than an assumed week.
-- **Failure posture splits by stage role.** The research half is *fully
-  fail-soft* — a flaky news gather, headline filter, router, or executor call
-  degrades to a thinner packet, and the run always reaches the agent with
-  whatever landed; only the Step-3 coverage floor gates a run. The analyst layer
-  is *deliberately fail-hard* — a failing or blank-summary review fails the run,
-  because the analysts are fixed single-pass stages, not the loopable research
-  phase. A degraded research run surfaces only through the run tracker's
-  per-request rows, not a failed-job warning.
+  requests, ≤30 minutes, branching depth ≤2, polled against an injectable
+  `Clock`; dynamic follow-ups are deterministic delta-rules with thresholds
+  normalized to the run's actual elapsed interval, never an assumed week.
+- **Failure posture splits by stage role.** The research half is fully
+  fail-soft — a thinner packet, never a failed run; only the Step-3 coverage
+  floor gates a run — and the analyst layer is deliberately fail-hard.
 
-Why it's load-bearing: this boundary decides the module graph, the testing
-strategy (agents become offline-stubbable pure functions), the data contracts
-(the research packet and each analyst's output schema are the API between
-halves), and the safety model (no unbounded agent I/O).
+Why it is load-bearing: this boundary decides the module graph, the testing
+strategy (agents are offline-stubbable), the data contracts (the packet and
+each output schema are the API between halves) and the safety model (no
+unbounded agent I/O).
 
 ## Data model & storage
 
-Three stores, by responsibility (`docs/storage.md`):
+Three stores by responsibility (`docs/storage.md`): the **filesystem** for
+canonical Markdown reports (`YYYY-MM-DD-market-signal-report-<id8>.md`) and
+the research inbox / archive; **SQLite** for report records, job history,
+warning state, baseline snapshots and the vector table — structured blobs as
+serde_json text under the load-bearing `float_roundtrip` feature, so carried
+numerics compare bit-exactly; and **vector memory** as a `vector_memory` table
+in the same database with exact brute-force cosine in Rust, chosen over
+LanceDB because at this corpus's scale an unindexed vector DB runs the same
+scan while costing an async-only dependency tree against the synchronous
+spine. Two seams contain that choice: the `vector_memory` module owns store
+access and the `Embedder` trait owns text → vector.
 
-- **Filesystem** — canonical Markdown reports named
-  `YYYY-MM-DD-market-signal-report-<id8>.md` (the `report_id` prefix keeps
-  same-day reruns distinct; exports drop the suffix), plus the `/research-inbox`
-  and `/research-archive` folders.
-- **SQLite** — report records, metadata, job history, warning state, per-report
-  baseline snapshots, and the vector-memory table. Structured blobs persist as
-  serde_json text, and the crate's **`float_roundtrip` feature is load-bearing** —
-  round-trips are bit-exact, so carried numerics compare exactly
-  (a store test pins the guarantee against a silent dependency edit).
-- **Vector memory** — one embedding per report summary and per durable learning
-  (`text-embedding-3-large`), each an atomic unit (no chunking). It lives as a
-  `vector_memory` table inside the same SQLite database, with exact brute-force
-  cosine in Rust — a deliberate engine choice over LanceDB: at this corpus's
-  scale (≤30 retained summaries plus low-thousands of learnings) an unindexed
-  vector DB runs the same exhaustive scan, while LanceDB would cost a heavy,
-  async-only dependency tree against the deliberately synchronous spine. Two
-  seams contain the choice: the `vector_memory` module owns all store access,
-  and the `embedding::Embedder` trait owns text→vector.
+Report-summary metadata is app-owned identity plus model-authored judgment,
+with `risk_posture` and `market_cycle` as two orthogonal axes, never one
+regime field. The Step-3 baseline packet carries a `gaps` manifest — a series
+an adapter cannot resolve rides into the prompt as a tagged `DataGap` rather
+than aborting the run — and persists per run so the next run computes a
+cadence-honest change view over the actual elapsed interval. **Retention is
+asymmetric**: the most recent 30 reports (a delete cascades Markdown, metadata
+and the summary vector; HTML is never persisted), but durable learnings
+survive report deletion by `kind`; baseline snapshots keep their own cap of
+14.
 
-The **report-summary metadata** is a JSON object stored with each report: the
-application owns the identity fields (`report_id`, `report_type`, `created_at`)
-while the main agent authors the judgment fields — title, stance, header
-bullets, and **`risk_posture`** / **`market_cycle`** as two **orthogonal axes**,
-not a single regime field (full schema in `docs/storage.md §Report Summary
-Metadata Schema`).
+The on-disk home is the Tauri app-data dir keyed by bundle identifier (debug
+builds nest under `dev/`, `MARKET_SIGNAL_DATA_DIR` overrides). The macOS
+Keychain sits outside that split — app-scoped, shared by debug and release —
+and its ACL re-prompt on ad-hoc rebuilds can block first paint. The Light/Dark
+preference is the one config in webview `localStorage`, read pre-mount.
 
-The **Step-3 baseline scan** produces an in-memory `BaselineMarketData` packet
-(13 groups, indices through CFTC positioning) plus a **`gaps` missing-data
-manifest**: partial failures degrade rather than abort — each series an adapter
-can't resolve rides into the prompt as a tagged `DataGap`, so the model reasons
-over what's absent rather than inferring it. The **single coverage floor** lives
-in the app layer (`enforce_coverage`). Each run's baseline persists to
-`baseline_snapshots`; the next run computes a deterministic, **cadence-honest
-per-report change view** — level deltas anchored on the *actual* elapsed
-interval since the prior snapshot, never an assumed week (positioning excluded —
-it carries its own native week-over-week change).
-
-*Planned:* the paid FMP key unlocks three additive baseline signals — calendar
-consensus+surprise, historical valuation percentile/band + performance trend,
-and IPO/M&A froth — all engine-derived and outside the level-delta engine
-(`docs/data-sources.md §Planned report enrichment`). True index breadth was
-ruled out (FMP exposes no breadth metric), so the movers group stays the proxy.
-
-**Retention** is deliberately asymmetric and must be honored in deletion code:
-only the most recent **30 reports** are kept (deleting one cascades its Markdown,
-metadata, and vector *summary* row together — there is no HTML leg, since HTML is
-rendered on demand and never persisted), **but durable learnings survive report
-deletion**, guaranteed by the row's `kind` rather than its `report_id`. Baseline
-snapshots keep their own cap (14), decoupled from report retention.
-
-The on-disk home for all stores is resolved from the Tauri app-data dir keyed by
-the **bundle identifier**, so it is stable across versions; debug builds nest
-under a `dev/` subdir, `MARKET_SIGNAL_DATA_DIR` overrides both. The **macOS
-Keychain rail sits outside this split** — app-scoped, not data-dir-scoped, so
-debug and release builds read the same Schwab entries; its ACL re-prompts on
-ad-hoc rebuilds can block first paint, and a denied read errors the whole
-local-config report (fail-softing that to not-connected is a named, unbuilt
-candidate). One deliberate exception to *persisted config lives in SQLite*:
-the Light/Dark appearance preference lives in webview `localStorage` — pure
-presentation, read pre-mount to avoid a first-paint flash.
-
-**Data portability (built — `portability.rs`).** A whole-corpus
-backup/restore — distinct from per-report export — carrying the accumulated
-analytical history as one structured, versioned, checksummed archive
-(`docs/data-portability.md` owns the format, encryption, and flow details).
-The load-bearing lines: **durable analytical data moves; secrets and
-machine-local operational state stay behind** (the archive cannot leak a
-credential); it is deliberately **not** a raw DB-file copy; and import
-**validates everything before its destructive phase**. Both directions hold
-the single run slot. Accepted residue: a mid-import I/O failure can leave
-partial *files* — stage-and-swap is a named, unscheduled hardening.
+**Data portability** (`portability.rs`; `docs/data-portability.md`): a
+whole-corpus, versioned, checksummed archive. Durable analytical data moves,
+secrets and machine-local state stay behind, it is never a raw DB copy, import
+validates everything before its destructive phase, and both directions hold
+the run slot. Accepted residue: a mid-import I/O failure can leave partial
+files; stage-and-swap is unscheduled.
 
 ## Module boundaries
 
-- **`app` (Rust orchestrator)** — the pipeline, the bounded research executor,
-  validation/gating, warning-state management, baseline-snapshot persistence and
-  the deterministic per-report delta computation, and the `progress`
-  run-observability + cancellation seam. This is where determinism lives.
-- **`adapters` (Rust)** — `data_sources` (FMP/FRED/BLS/CFTC REST via `reqwest`;
-  Tavily + GDELT + FMP Articles for news) and `models` (OpenAI + Anthropic
-  HTTP); the full series catalog is in `docs/data-sources.md`. Provider tiering
-  is live-verified and load-bearing: FMP's free tier gates the dollar index,
-  oil, gas, and the economic calendar behind premium, so those moved to FRED,
-  and the calendar carries **names + dates only** today (no API serves US analyst
-  consensus *free*, so consensus reaches the report through the agents' research
-  synthesis). Data honesty is a consistent stance: a stale FRED observation or
-  an out-of-band FMP P/E aggregate **drops to a gap / `None`** rather than
-  feeding a fabricated level into the baseline. **CFTC** (keyless, like BLS)
-  adds Commitments-of-Traders positioning — the one signal the price /
-  valuation / macro / credit groups can't give (how crowded the speculative
-  cohort is) — as a fail-soft, additive group. Gated adapters share a bounded,
-  `Retry-After`-aware retry/backoff, parameterized per provider — FMP rides a
-  minute-crossing 429 ladder, every other adapter keeps the short default,
-  and GDELT stays single-shot fail-soft (its IP lockout makes retrying
-  harmful); the schedules live in `docs/data-sources.md` (intro retry
-  paragraph). **Fixed
-  internal models** are non-configurable and distinct from the four
-  user-selectable agent models: GPT-5 mini (headline filtering), Claude Sonnet
-  (research routing), `text-embedding-3-large` (embeddings). Inbox document
-  parsing runs **no model** — it is deterministic excerpting, so a model summary
-  can't omit or fabricate over the user's own source material.
-- **`agents` (prompt + schema contracts)** — the main agent and the
-  Bull/Bear/Balanced analysts (run concurrently, no ordering dependency), plus a
-  **16-lens analytical skills library** supplied in full to both. Skills are
-  **forcing-function-only**: each lens's verdict disciplines the report/review
-  prose but is never parsed back or persisted (a rare keep-worthy verdict exits
-  via a `durable_learning`). Analyst reviews are ephemeral — never persisted.
-  The main agent's editorial posture is **conviction-first**: the thesis commits
-  to a directional base case and weights the alternatives around it, so the
-  report reads as a *call* rather than a summary of the packet. A `mixed` /
-  `uncertain` `thesis_stance` is the earned exception, not a safe default; the
-  base case carries forward across reports and pivots only when the evidence has
-  materially changed (`docs/thesis-continuity.md`) — the conviction and the
-  rare-pivot doctrine are the same stance, not opposites.
-- **`frontend` (Vue 3)** — Latest Report View, the **Run Tracker**, the
-  **shared-history sidebar**, Research Documents, the Persistent Warning
-  Area, Settings, and the **Portfolio page** (`docs/interface.md`).
-  Markdown→HTML rendering uses **markdown-it** on the webview side, on
-  demand for display and PDF export, **never persisted** — agents never see
-  HTML; PDF export is the webview's native print-to-PDF (the `@page`-margin
-  constraint is canonical at `docs/export.md §PDF Export`). Embedded charts
-  enter a report exactly one way: a fenced `chart` JSON block validated and
-  rendered by `src/renderChart.ts`, falling back to the raw code block on
-  anything malformed. All UI is built against
-  `market-signal-design-system/`, which defines **two registers** — the
-  report's reading register (serif, monochrome, unchanged) and the denser
-  instrument-grade analytical register the local-suite surfaces adopt —
-  bridged by shared chrome; all suite sorting/view controls are
-  **display-only**, reordering already-computed fields (specifics in the
-  design package and `docs/interface.md`).
+- **`app`** — the pipeline, the bounded executor, gating, warning state,
+  baseline persistence and delta computation, and the `progress` seam.
+  Determinism lives here.
+- **`adapters`** — `data_sources` (FMP / FRED / BLS / CFTC; Tavily, GDELT and
+  FMP Articles for news) and `models` (OpenAI + Anthropic); the series catalog
+  is `docs/data-sources.md`. Provider tiering is live-verified: FMP's free tier
+  gates the dollar index, oil, gas and the calendar, so those moved to FRED and
+  the calendar carries names + dates only. Data honesty is the stance — a stale
+  or out-of-band value drops to a gap, never a fabricated level. Gated adapters
+  share a bounded `Retry-After`-aware backoff parameterized per provider;
+  GDELT stays single-shot because its IP lockout makes retrying harmful. Fixed
+  internal models (GPT-5 mini headline filtering, Claude Sonnet routing,
+  `text-embedding-3-large`) are non-configurable and distinct from the four
+  user-selectable agent models; inbox document parsing runs no model.
+- **`agents`** — the main agent and the three analysts, run concurrently, plus
+  a 16-lens skills library that is **forcing-function-only** (never parsed or
+  persisted). Analyst reviews are ephemeral. The main agent is
+  **conviction-first**: a directional base case that carries forward and
+  pivots only on materially changed evidence (`docs/thesis-continuity.md`);
+  `mixed` / `uncertain` is the earned exception, not a safe default.
+- **`frontend`** — the report view, the run tracker, the shared-history
+  sidebar, research documents, the warning area, Settings and the Portfolio
+  page (`docs/interface.md`). markdown-it renders on demand and is never
+  persisted; PDF is the webview's print-to-PDF; charts enter only as a
+  validated fenced `chart` block. All UI is built against
+  `market-signal-design-system/` — the report's reading register and the
+  suite's instrument-grade register, bridged by shared chrome — and suite
+  sorting / view controls are display-only.
 
 ## Runtime, observability & failure posture
 
-Report generation is **on demand only** — there is no scheduler, timer, or tray.
-The app is an ordinary windowed app; closing it quits it and nothing runs in the
-background, so a report is never "due" while unattended. A run ends in one of
-**four** terminal states (`docs/scheduling.md`): **successful**; **failed**
-(unreachable provider, a too-thin baseline, or a stuck/failing model call —
-recorded with a failed-job warning); **skipped** (a second concurrent run —
-single workflow at a time); or **cancelled** (user-stopped from the run tracker
-— no report and no warning, since it was intentional). Network reachability is
-**not** a pre-run gate: an unreachable provider fails the run rather than
-blocking it, since the user is present to see and retry.
+Generation is on demand only — no scheduler, timer or tray; closing the app
+quits it. A run ends **successful**, **failed** (with a failed-job warning),
+**skipped** (a second concurrent run) or **cancelled** (no report, no
+warning). Reachability is not a pre-run gate. The **execution gate** requires
+all four agent models, both provider tokens and the Tavily / FMP / FRED
+credentials; failures surface in the Persistent Warning Area's four
+de-duplicating categories, only failed-jobs dismissible, and a dismiss targets
+the **rendered** failure identity, never a click-time re-derived one.
 
-The **execution gate** blocks any run until all four agent models are
-configured, **both** OpenAI and Anthropic tokens exist (the fixed internal
-stages span both providers), and the Tavily/FMP/FRED credentials are present.
-Failures surface in the **Persistent Warning Area**, which has four
-de-duplicating categories — missing agent configuration, missing API tokens,
-missing provider credentials, failed jobs. Only the non-blocking failed-jobs
-category is dismissible, and a dismiss targets the **rendered** failure identity
-(echoed back to the command), not a click-time re-derived "current" one, so a
-stale click can't silently hide a newer, unseen failure.
-
-Run observability rides a **Tauri-free `progress` seam** so the deterministic
-spine stays unit-testable: a `ProgressReporter` trait plus a per-run
-`RunContext` threaded via `with_context` builders — **no trait signature
-changes** for the seam. While a job runs the app streams per-step progress,
-one **request row per actual HTTP call**, the main agent's report
-token-by-token, and the models' extended-thinking reasoning (thoughts-only —
-a review body or structured verdict never streams); the streamed tokens are a
-side-channel that can't corrupt the report. A **debug-gated thought-log
-sink** is the deliberate, bounded exception to reasoning staying ephemeral —
-opt-in, best-effort, outside every store retention rule
-(`docs/run-tracking.md §Thought-log capture`). The frontend renders this as
-the run tracker on the **running job's own page** (latest-run-only).
-Cancellation is cooperative — a shared flag polled at step/request boundaries
-and mid-stream, never interrupting an in-flight request. Two load-bearing UI
-invariants: a **run is never a report** (a cancel/fail removes nothing that
-was shown — exception-free since the fresh-start slice removed the
-degraded-run legacy;
-`docs/verification/2026-08-17-fresh-start-legacy-removal.md`), and the
-terminal `run-finished` event is emitted **before** any job-history write
-error can propagate, so a DB failure can't strand the UI mid-run. The
-read-time posture: a corrupt run is a loud skip — its own surface only, never
-the history listing or the next run's baseline.
-The full runtime contract is in `docs/run-tracking.md`.
+Observability rides a **Tauri-free `progress` seam** (`ProgressReporter` plus a
+per-run `RunContext` via `with_context`, no trait-signature changes): per-step
+progress, one request row per HTTP call stamped with its owning step at the
+seam's single choke point, the report token-by-token and thoughts-only
+reasoning — all a side-channel that cannot corrupt the report; a debug-gated
+thought-log sink is the bounded exception (`docs/run-tracking.md`).
+Cancellation is cooperative at step and request boundaries. Two UI
+invariants: **a run is never a report** (a cancel or fail removes nothing
+that was shown), and `run-finished` is emitted before any job-history write
+error can propagate. A corrupt run is a loud skip on its own surface only.
 
 ## Testing approach
 
-The spine makes the pipeline testable offline: agents and adapters are traits,
-so the orchestrator runs end-to-end against deterministic stubs and fixture
-packets with no live keys, coverage spanning every limit, retention, gating,
-and failure-posture contract. The `progress` seam stays out of other tests via
-a no-op `RunContext`; its own streaming logic is fixture-tested. Each gated
-adapter has a test-only base-URL seam so a localhost mock exercises the full
-URL-build → retry → parse → output path offline; live smokes are `#[ignore]`d.
-The **frontend gate is two runners under `npm test`**: pure modules on Node's
-runner and Vue SFC tests on Vitest mounting real components (the split is
-specified in `CLAUDE.md`).
-
-The same trait spine powers a **dev-only demo-run mode** (`src-tauri/src/demo.rs`,
-behind a `demo-run` Cargo feature, out of `default`/`tauri build`): "Generate now"
-drives the *real* `run_job` pipeline through the live GUI against paced streaming
-stand-ins — run tracker and report rendering end-to-end with no network, keys, or
-cost (`npm run tauri:demo`).
+Agents and adapters are traits, so the orchestrator runs end-to-end against
+stubs and fixtures with no keys, covering every limit, retention, gating and
+failure-posture contract; each gated adapter has a test-only base-URL seam for
+a localhost mock; live smokes are `#[ignore]`d. The frontend gate is two
+runners under `npm test` (`CLAUDE.md`). A dev-only **demo-run mode**
+(`demo-run` feature, `npm run tauri:demo`) drives the real `run_job` through
+the GUI against paced stand-ins.
 
 ## Local analysis suite
 
 A second capability set: two on-demand, **local-model-only**, deliberately
 **prescriptive** features (grades, actions, targets — a departure from the
 report's no-buy/sell stance). **Portfolio Analysis** grades the user's Schwab
-holdings and recommends actions + price targets, typing a role/risk read where a
-vehicle class is structurally unpriceable. **Trade Opportunities** (designed, not
-built) researches new ideas across a 3×3 risk×horizon matrix. A future
-**portfolio planner** — the whole-book reasoning the tunnel-vision ruling moved
-out of Portfolio Analysis, reading its report beside the market report and
-Trade Opportunities — is the suite's named fourth job, not yet designed. Full
-design lives in
-`docs/local-models.md`, `web-research.md`, `schwab-integration.md`,
-`portfolio-analysis.md`, `portfolio-workflow.md` and `trade-opportunities.md`;
-this section carries only the decisions a plan must not work against.
+holdings and recommends actions + price targets, typing a role/risk read where
+a vehicle class is structurally unpriceable. **Trade Opportunities** (designed,
+not built) researches new ideas across a 3×3 risk×horizon matrix. A future
+**portfolio planner** — the whole-book reasoning the tunnel-vision ruling
+moved out of Portfolio Analysis — is the suite's named fourth job, not yet
+designed. Full design lives in `docs/local-models.md`, `web-research.md`,
+`schwab-integration.md`, `portfolio-analysis.md`, `portfolio-workflow.md` and
+`trade-opportunities.md`; this section carries only the decisions a plan must
+not work against.
 
 - **A local-only model layer, distinct from the cloud report (built).** A
   flexible local-model adapter calls one **user-installed, app-supervised**
@@ -285,14 +172,13 @@ this section carries only the decisions a plan must not work against.
   `reqwest::blocking` / `spawn_blocking` seam the cloud agents use — **added
   rather than extending the closed cloud `AgentModel` enum**, so the roster
   changes through configuration rather than code. The app **bundles neither the
-  daemon nor the models**; it makes setup turnkey *around* a user-installed
-  Ollama. The suite gate holds the report's **presence-not-connectivity**
-  posture: *presence* of config gates **proactively** (locked Run buttons + a
-  persistent warning) while *connectivity* is checked only at the **run-gate**
-  and on a manual Test Connection, **never at startup** — a
-  config-set-but-daemon-down state is blind on re-open, the deliberate cost of
-  no startup probe. A `LocalEmbedder` reuses the existing `Embedder` trait so
-  `vector_memory` is unchanged. The roster default is settled: one frontier
+  daemon nor the models**. The suite gate holds the report's
+  **presence-not-connectivity** posture: *presence* of config gates
+  **proactively** (locked Run buttons + a persistent warning) while
+  *connectivity* is checked only at the **run-gate** and on a manual Test
+  Connection, **never at startup** — a config-set-but-daemon-down state is
+  blind on re-open, the deliberate cost of no startup probe. A `LocalEmbedder`
+  reuses the `Embedder` trait so `vector_memory` is unchanged. One frontier
   reasoner plus the embedder stay resident, that reasoner filling *every*
   reasoning role by thinking mode. Model identities, the serving path and the
   Ollama pin live in `docs/local-model-operations.md` — a version bump is a
@@ -308,18 +194,17 @@ this section carries only the decisions a plan must not work against.
   fetch/readability-extract layer — **SearXNG-only** (Tavily is reserved for the
   report job, so a local job never spends that quota; a blocked SearXNG degrades
   to thinner research, never a fallback call); the orchestrator runs the tool,
-  the model only requests it — holding the pure-stage boundary. SearXNG
-  isn't bundled: the app *ships configuration, not the server*. Thin extraction
-  trips a **selective rendered-retrieval tier reusing the already-embedded Tauri
-  webview** — not a bundled browser or Python sidecar — gated on telemetry so
-  rendering stays **measured, never blanket** (the tier is **deferred to its
-  own slice** — ruled 2026-08-23 with the research loop; its gating telemetry
-  landed). SearXNG sits **off the execution
-  gate**: unreachable means a degraded run behind a pre-run notice, never a
-  block. The per-item research loop is bounded and SSRF-guarded, every finding
-  keeping its source URL + timestamp, and consolidation is one shared
-  **distillation primitive** whose mode is chosen deterministically by the
-  full consolidation input's size. Optional **Connected Sources** (in-app login → Keychain
+  the model only requests it. SearXNG isn't bundled: the app *ships
+  configuration, not the server*. Thin extraction trips a **selective rendered-
+  retrieval tier reusing the already-embedded Tauri webview** — not a bundled
+  browser or Python sidecar — gated on telemetry so rendering stays
+  **measured, never blanket** (the tier is deferred to its own slice; its
+  gating telemetry landed). SearXNG sits **off the execution gate**:
+  unreachable means a degraded run behind a pre-run notice, never a block. The
+  per-item research loop is bounded and SSRF-guarded, every finding keeping its
+  source URL + timestamp, and consolidation is one shared **distillation
+  primitive** whose mode is chosen deterministically by the full consolidation
+  input's size. Optional **Connected Sources** (in-app login → Keychain
   session, on the Schwab credential rails) enrich fetching and are **never part
   of the execution gate** (likewise deferred to their own slice).
 - **Holdings & options ingestion (built).** Schwab Trader API via an OAuth
@@ -333,70 +218,103 @@ this section carries only the decisions a plan must not work against.
   (`docs/schwab-integration.md §What is pulled`), and a net-short book-level
   equity takes the not-rated treatment. The surface is **read-only by
   construction** — the adapter implements only holdings / positions /
-  option-chain `GET`s, a code-enforced guarantee rather than a token scope
-  (the Trader API has no read-only scope), bounding a leaked credential's
-  blast radius to in-account trades the app never issues. Tokens ride the
-  Keychain and **never enter logs or the run tracker**; the loopback's
-  one-shot rustls acceptor rides the stack outbound HTTP already uses.
+  option-chain `GET`s, a code-enforced guarantee rather than a token scope,
+  bounding a leaked credential's blast radius to in-account trades the app
+  never issues. Tokens ride the Keychain and **never enter logs or the run
+  tracker**; the loopback's one-shot rustls acceptor rides the stack outbound
+  HTTP already uses.
 - **Reuses the spine.** Each feature is a new Tauri command + job under the
   **single global run slot** (report + both local jobs are mutually exclusive,
-  matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
-  and the `vector_memory` / `Embedder` modules. The slot is claimed **before
-  any external fetch** — the SEC CIK map loads lazily inside it — so the
-  local-only daemon probe is the one pre-slot check (2026-08-18; the eager
-  load had also bailed on a stale cancel flag). Local-gate failures get their
-  own warning categories, kept **off the cloud `validate` gate** — a
+  matching the latest-run-only tracker), reusing the `progress` / run-tracker
+  seam and the `vector_memory` / `Embedder` modules. The slot is claimed
+  **before any external fetch** — the SEC CIK map loads lazily inside it — so
+  the local-only daemon probe is the one pre-slot check. Local-gate failures
+  get their own warning categories, kept **off the cloud `validate` gate** — a
   disconnected account blocks only the local jobs, never the report. Both jobs
   are personalized by a **fixed default investor-profile preset** (user config
   deferred) that frames the prescription, never which holdings or ideas qualify
   — nor the intrinsic verdict, whose profile-independence is declared **and
   input-isolation-enforced**: the intrinsic prompt carries no profile, which
   reaches the model at the per-holding action call only.
-- **Invariants governing the suite** (full specs in the docs; a plan must not
-  work against these; each states its own reach):
+- **Invariants governing the suite** (full specs in the docs; each states its
+  own reach):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
-    over FMP + keyless SEC EDGAR / FINRA / CBOE (the FINRA short-interest
-    leg and the CBOE venue-level backdrop are both built — CBOE serves
-    venue-level data only, the per-stock options read being Schwab chains;
-    Stooq removed 2026-08-12 — FMP dated-EOD is the only price rung)
-    computes the engine arm for both jobs. Both are **two-arm**: the
-    engine's values are the incorruptible baseline beside an **unrestricted
-    model arm** — validated structurally and on each field's declared domain,
-    never against the engine (ruled 2026-08-29, Codex I6) — the two scored
-    head-to-head by a deterministic scoreboard. The per-job field schemas differ — BUILD does not
-    restate them; they are enumerated once at `docs/local-models.md`. The
-    boundary — **model-arm judgment values never alter or bind the engine
-    baseline** — is single-homed per job at `docs/portfolio-analysis.md §The
-    holding verdict` and `docs/trade-opportunities.md §The opportunity`. Both
-    jobs hold an **evidence floor** that returns insufficient evidence over a
-    low-conviction guess, but each specifies its own —
-    `docs/portfolio-analysis.md §Evidence floor` and
-    `docs/trade-opportunities.md §Evidence floor` — and their exit semantics
-    differ, so read the one for the job in hand.
+    over FMP + keyless SEC EDGAR / FINRA / CBOE (CBOE serves venue-level data
+    only, the per-stock options read being Schwab chains; FMP dated-EOD is the
+    only price rung and `^GSPC` the market benchmark since Stooq's removal)
+    computes the engine arm for both jobs. Both are **two-arm**: the engine's
+    values are the incorruptible baseline beside an **unrestricted model arm**
+    — validated structurally and on each field's declared domain, never
+    against the engine — the two scored head-to-head by a deterministic
+    scoreboard. The per-job field schemas are enumerated once at
+    `docs/local-models.md`. The boundary — **model-arm judgment values never
+    alter or bind the engine baseline** — is single-homed per job at
+    `docs/portfolio-analysis.md §The holding verdict` and
+    `docs/trade-opportunities.md §The opportunity`. Both jobs hold an
+    **evidence floor** that returns insufficient evidence over a
+    low-conviction guess, each specified in its own doc with its own exit
+    semantics.
   - **Anti-reflexivity / no-double-count** — conviction is the model's own, so
     the cap-only since-flagged stance is prompt-side discipline, and the guard
     binds only where it has deterministic consumers: the confirmed-crossing
     validation over each job's own stored conditions, and the cheap
-    re-derivation's tripwires. Which conditions each job stores is specified in
-    that job's doc, not here. Trade Opportunities adds one rule of its own —
+    re-derivation's tripwires. Trade Opportunities adds one rule of its own —
     re-entry is a fresh start, and the archive never promotes itself.
   - **Source quality informs conviction, never gates discovery** — tiers grade;
     only the explicit deny list drops.
   - **Model prompts inform within governed contracts, never add an ungoverned
-    conclusion** — governed content is traceable to a canonical project contract:
-    field meanings, output requirements, source-provenance policy, continuity
-    rules, and explicitly ruled decision frameworks such as Portfolio action
-    precedence. App or downstream-consumer architecture, meta-reasoning,
-    author-added financial preferences, and weighting or conclusion nudges with
-    no canonical contract stay out. The research pass's gathering-degradation
-    note therefore states the loss and stops; the reviewed Portfolio prompt
-    surface keeps its governed contracts while applying the same exclusion.
+    conclusion** — governed content is traceable to a canonical project
+    contract; app or downstream-consumer architecture, meta-reasoning,
+    author-added financial preferences, and weighting or conclusion nudges
+    with no canonical contract stay out. Since the 2026-09-17 prompt rewrites
+    no Portfolio prompt names an app concept: one message in two parts, data
+    with its glosses and then the task, and a placeholder-only return shape.
     Canonical at `docs/local-models.md §Prompt posture`.
   - **Only a deep re-evaluation can archive an opportunity; the cheap
-    re-derivation never does** — it refreshes the quant read and raises a
-    non-destructive attention warning. This one is Trade Opportunities' framing
-    invariant. Portfolio holds the analog rather than the rule: its quick check
-    borrows the same warn-don't-decide split, having no archive to write to.
+    re-derivation never does** — Trade Opportunities' framing invariant.
+    Portfolio's quick check borrows the same warn-don't-decide split, having
+    no archive to write to.
+
+**Portfolio Analysis is built in full and is tunnel-vision by contract**
+(`portfolio-v9`, ruled 2026-08-14): it never compares holdings — each action
+is a rung plus a one-line rationale from the finished verdict, the holding's
+own evidence and the investor profile (the profile's only entry point; 6f
+interpretation stays profile-blind) — and whole-book questions, sizing and any
+optimizer belong to the future portfolio planner. A selective run analyzes
+**strictly the selection**, safety triggers surfacing as non-blocking card
+badges, never force-includes; a selective request with no readable prior run
+runs the whole book. The intrinsic verdict is a **discriminated union** —
+`priced`, and `role_risk_only` for structurally unpriceable vehicle classes,
+so no fabricated number rides an unpriceable fund — kept separate from the
+portfolio action. A hard per-holding model or grade failure **isolates** into
+a run-level `failed_holdings` list and a failed card (the prior verdict
+carried vintage-stamped where one exists) while the run continues; the run
+fails outright only run-level or when every attempted holding fails. This
+flips the cloud report's posture for the Portfolio job alone — the analyst
+layer stays fail-hard. Deliberate reductions in the **quick check**, surfaced
+so they are not mistaken for defects: FMP quote plus dated-EOD only (never the
+shared price-bar cache), no cash-flow re-pull, no breadth-flip sub-leg,
+material filings are the 10-K / 10-Q / 8-K prefix, and the FINRA sweep leg is
+structurally unreachable from the closed ledger series surface.
+
+**Trade Opportunities is designed, not built** (`docs/trade-opportunities.md`,
+`trade-opportunities-workflow.md`, and the logic-flow doc whose inline markers
+name the constants still to draft). Discovery runs through three feeders —
+model-led hypothesis research (hypothesis cards scored *before any ticker*),
+stratified structured feeders (stratification is the breadth mechanism), and a
+persisted opportunity-graph watchlist — with per-candidate validation under an
+archetype lens, a mandatory bear case and a leading-metric hard gate. It runs
+as two jobs sharing one page (Discover / Audit) under **one
+`trade_opportunities` job identity**, every run record mode-labeled. Judgment
+fields carry in the same **two arms** as Portfolio; **admission is
+either-arm** (both gate vectors persisted), the evidence floor and forensic
+hard triggers binding absolutely on both; placement is **model-authored**,
+the engine's derivations staying the baseline and the gate's shared legs.
+Deterministic outcome labels plus a shadow scorecard over every turned-away
+name feed a **propose-only, never auto-applied** calibration. Its grade slice
+(value-creation quality reads, sector-adjusted bands, sector-appropriate
+metric selection, the soft-forensic cap) inherits TO's Step-5c shared engine
+and lands with TO, never as independent Portfolio work.
 
 ### Seams a plan builds on
 
@@ -418,8 +336,7 @@ rather than re-deriving:
   read sees the same sorted, period-deduped vectors and a served-twice
   restatement resolves to the latest filing rather than wire order.
 - `market_clock::et_session_date` / `et_date_of` — the ET dating seam. The
-  frontend mirror `src/etDate.ts` is a separate implementation (a hand-rolled
-  RFC3339 regex plus calendar validation against Chrono's strict parser),
+  frontend mirror `src/etDate.ts` is a separate implementation,
   **behaviorally equivalent on the pinned contract** rather than a port; its two
   known divergences are unreachable. Change one side and re-pin both case
   tables.
@@ -431,7 +348,12 @@ rather than re-deriving:
   and the stored prior-run comparator; Trade Opportunities' Step-5c forms
   reuse them when built, never a second implementation.
 - `store::load_episodes` / `prune_matured_episodes` — episode identity and
-  lifecycle.
+  lifecycle; the episode store and the `HoldingAudit.hurdle` snapshot are what
+  the calibration-proposal slice will consume.
+- The selective machinery's triggering surface: validated ledger conditions
+  with eval state and cadence tags, app-stamped monitor bands, the
+  acknowledgment transition, per-holding vintages (`effective_vintage`), the
+  persisted `action_source` vocabulary and the subset sweep.
 
 BUILD cites version constants rather than duplicating their current values,
 so this brief cannot go stale as they move:
@@ -480,7 +402,8 @@ Each is easy to break by accident, so a plan should say how it honors them:
   research-fed fraud claim is **advisory** (the hard-forensic state reads the
   item-classified filing kinds alone), and a leading indicator suppresses the
   narrative cap only through an app-verified ledger `driver_id`
-  (`docs/verification/2026-08-24-research-loop-rulings.md`).
+  (canonical at `docs/portfolio-workflow.md §Step 6e` and `§Step 6g` and
+  `docs/portfolio-analysis.md §The position thesis ledger`).
 - **The Schwab adapter implements no order or trading endpoint.** The read-only
   boundary is code-enforced, not scope-enforced, so it survives a token scope
   change.
@@ -511,7 +434,7 @@ Each is easy to break by accident, so a plan should say how it honors them:
   sub-distillation cap. The budget is a chars-per-token estimate, so
   data-health's likely-front-truncation read stays the runtime witness.
   Canonical at `docs/local-models.md §The local-model adapter seam` (ruled
-  2026-08-28 off the 2026-08-24 review's reduce-prompt minor).
+  2026-08-28).
 - **The research gathering loop is bounded before every request, never by the
   server's own truncation.** The 6c gathering conversation grows across tool
   turns, so it is sized against the shared interpret input guard before every
@@ -523,9 +446,8 @@ Each is easy to break by accident, so a plan should say how it honors them:
   every page. The two phases also keep one output protocol per request — tools
   and no grammar while gathering, grammar and no tools/history while
   synthesizing, the synthesis prompt showing the object's shape since the
-  grammar never reaches the model (attempt-5 Finding 5; since the 2026-09-14
-  prompt-clarity bundle every schema-constrained Portfolio call shows a
-  schema-derived shape template, and the synthesis cites sources by
+  grammar never reaches the model (every schema-constrained Portfolio call
+  shows a schema-derived shape template, and the synthesis cites sources by
   pass-local id, resolved app-side to the persisted URL) — and the app
   re-validates the grammar-required fields and nonblank prose/claim semantics
   before a pass can complete. Every research gap
@@ -534,9 +456,8 @@ Each is easy to break by accident, so a plan should say how it honors them:
   message-and-tool serializer.
   This extends the never-rely-on-front-truncation posture from the
   distillation/synthesis prefix to the gathering half — a future edit adding a
-  content source to the loop must size it the same way (attempt-4 Finding 4,
-  fix B and its post-landing sweeps; canonical at `docs/web-research.md §The
-  research loop and context management`).
+  content source to the loop must size it the same way (canonical at
+  `docs/web-research.md §The research loop and context management`).
 - **Stored price-denominated values never compare against fresh prices
   without the split-adjustment bridge.** FMP dated EOD re-bases
   retroactively, so a slice that stores a price (a threshold, target, entry,
@@ -550,14 +471,13 @@ Each is easy to break by accident, so a plan should say how it honors them:
   read a prior's boundary from that history — on the prior record's own
   branch, only over a priced prior, silent where nothing changed — and a
   generic "letters can move" row is citable evidence the validator accepts
-  (ruled 2026-08-27, off the fund-momentum slice's Codex rounds; canonical at
+  (ruled 2026-08-27; canonical at
   `docs/portfolio-analysis.md §Starting parameters`). The scenario-target
   stamp holds the same rule since `portfolio-v23`:
   `engine::SCENARIO_TARGET_PARAMETER_VERSION` moves only with a row appended
   to `engine::SCENARIO_TARGET_PARAMETER_HISTORY` naming the horizons the bump
   can have moved on each branch — a single `targets-v5` anchor row today, so
-  the attribution is dormant until the next bump (ruled 2026-08-29, Codex
-  I11).
+  the attribution is dormant until the next bump (ruled 2026-08-29).
 - **A condition's continuity stamps are written at authoring.** Step 6g
   writes the prompt's statement basis and, on the two balance-sheet
   instants, the equity source onto every new or superseding quantitative
@@ -566,18 +486,17 @@ Each is easy to break by accident, so a plan should say how it honors them:
   a flip between authoring and that evaluation — and the between-run sweep,
   never the authority on either stamp, evaluates debt/equity only when its
   streak is stamped with the sweep's own FMP-quarterly source, withholding
-  another source or none (ruled off group 4's Codex rounds 1–2, 2026-08-29;
-  canonical at `docs/portfolio-analysis.md` §The position thesis ledger).
+  another source or none (ruled 2026-08-29; canonical at
+  `docs/portfolio-analysis.md` §The position thesis ledger).
 - **A price or NAV is usable only when finite and strictly positive.** The
   evidence floor tests usability, never presence — at the FMP quote parse
   (the one seam every quote consumer rides, the quick check's price refresh
-  and the commodity quote included), at the dated-EOD parse (both pulls,
-  2026-08-29) and again at both engine floors, an unusable fund quote
+  and the commodity quote included), at the dated-EOD parse (both pulls)
+  and again at both engine floors, an unusable fund quote
   falling to a usable NAV — and the floor rule is
   stamped (`engine::EVIDENCE_FLOOR_VERSION`) on the checkpoint header and
   every audit record, so a resume never crosses a floor-rule change (ruled
-  2026-08-28 off the review's Codex I1; canonical at
-  `docs/portfolio-analysis.md §Evidence floor`).
+  2026-08-28; canonical at `docs/portfolio-analysis.md §Evidence floor`).
 - **A research-fed observation row is admitted on syntax, never on meaning.**
   The pre-profit producer's typed rows — the one model→engine channel that
   feeds a deterministic rule from prose — enter only through a verbatim,
@@ -589,199 +508,43 @@ Each is easy to break by accident, so a plan should say how it honors them:
   to another clause's number. The filter is a syntactic admission test that
   cannot tell what the one number it admits means, and it loses an
   untrimmable row rather than admitting a wrong one; the contract rides the
-  prompt stamp (`portfolio::PROMPT_VERSION`) (ruled 2026-08-28 off Codex I3
-  across five Codex rounds, the semantic classifiers of the first two rounds
-  each leaking by ordering). One residual shape is closed syntactically — a
-  value that is itself the period, a 1900–2099 year printed without a
-  thousands separator right after `for / in / of / by / through / fiscal /
-  fy`, rejects — while the competing-noun shape stays with the persisted
-  excerpt for audit and the stem table's post-run calibration, a negative
-  lexicon declined (ruled 2026-08-29 off the review's I19; canonical at
+  prompt stamp (`portfolio::PROMPT_VERSION`) (ruled 2026-08-28, the semantic
+  classifiers of earlier rounds each leaking by ordering). One residual shape
+  is closed syntactically — a value that is itself the period, a 1900–2099
+  year printed without a thousands separator right after `for / in / of / by
+  / through / fiscal / fy`, rejects — while the competing-noun shape stays
+  with the persisted excerpt for audit and the stem table's post-run
+  calibration, a negative lexicon declined (ruled 2026-08-29; canonical at
   `docs/portfolio-workflow.md §Step 6e`). Each accepted row carries the
   prompt stamp it was admitted under (`admitted_under`), and the history is
   never re-admitted through a later filter — a stricter contract reads the
-  stamp to tell old rows apart, never re-filters them (ruled 2026-08-29 off
-  Codex I20; the trail's shape stamp moved to `checkpoint-v3` with the row).
+  stamp to tell old rows apart, never re-filters them (ruled 2026-08-29).
 - **No local-suite data compat pre-release.** The dev store is wiped before
   a run, so a new persisted field is required and always written — no serde
   default, no "a record persisted before the field reads as X" branch, no
   archive rung for a format no shipped build wrote; only model-written and
   provider-written JSON stays lenient, and only shipped-report compat and the
   loud-skip stay (ruled 2026-08-29, superseding the 2026-08-17 kept class;
-  canonical at `docs/verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md`).
-
-### What each built slice left for the next
-
-The ledger and sweep supply the selective machinery's triggering surface —
-validated conditions with eval state and cadence tags, app-stamped monitor
-bands, and the acknowledgment transition. Selective re-analysis adds the seams
-later slices consume: per-holding vintages (`effective_vintage`), the persisted
-`action_source` vocabulary, and the subset sweep. Outcome learning adds the
-episode store and the `HoldingAudit.hurdle` snapshot the calibration-proposal
-slice will consume.
-
-Deliberate reductions in the quick check, surfaced rather than latent so they
-are not mistaken for defects: FMP quote plus dated-EOD only (never the shared
-price-bar cache), no cash-flow re-pull, no breadth-flip sub-leg, material
-filings are the 10-K/10-Q/8-K prefix, and the FINRA leg is structurally
-unreachable from the closed ledger series surface.
-
-**Portfolio Analysis — built in full.** Built: the
-per-holding spine and fund path (the closed-end leg included), the persisted
-**thesis ledger** with machine-evaluable falsifiers over a closed engine
-series surface, the engine-only **quick check**, **selective re-analysis**
-with vintage-stamped carries, the **pre-profit overlay** (producer active;
-§Standing constraints), **outcome learning**, the **metric-level 6g
-validator**, **Step-6a semantic recall**, **per-holding checkpoint/resume**,
-the per-holding **action call**, the **live research loop**, and the
-**two-arm verdict** across all of it. The job is **tunnel-vision by contract** (`portfolio-v9`, ruled
-2026-08-14; `docs/verification/2026-08-14-tunnel-vision-slice.md`): it never
-compares holdings — the construction stage is removed whole, each action a
-rung + one-line rationale from the finished verdict, the holding's own
-evidence, and the investor profile (the profile's only entry point; 6f
-interpretation stays profile-blind) — and whole-book questions are the
-future portfolio planner's. Under the **2026-08-16 badge ruling** a
-selective run analyzes **strictly the selection** — safety triggers surface
-as non-blocking card badges, never force-includes — while a selective
-request with no readable prior run runs the whole book (ruled 2026-08-18;
-`docs/verification/2026-08-16-selective-badges-ruling.md`). The intrinsic
-verdict is a **discriminated union** — `priced`, and `role_risk_only` for
-structurally unpriceable vehicle classes, so no fabricated number rides an
-unpriceable fund — and stays separated from the portfolio action
-(`docs/portfolio-analysis.md §Intrinsic verdict`). The **live research loop**
-landed as the job's final slice
-(`docs/verification/2026-08-24-research-loop-rulings.md`; the held-name
-refresh lane was retired by the badge ruling).
-
-**Trade Opportunities — designed, not built** (`docs/trade-opportunities.md`,
-`trade-opportunities-workflow.md`). Discovery runs through three feeders —
-model-led hypothesis research (the edge: hypothesis cards scored *before any
-ticker*), stratified structured feeders (stratification IS the breadth
-mechanism), and a persisted opportunity-graph watchlist — with per-candidate
-validation under an archetype lens, a mandatory bear case, and a
-leading-metric hard gate. It runs as two jobs sharing one page (Discover /
-Audit) under **one `trade_opportunities` job identity**, every run record
-mode-labeled. Judgment fields carry in the same **two arms** as Portfolio;
-**admission is either-arm** (both gate vectors persisted), the evidence floor
-and forensic hard triggers binding absolutely on both arms; placement is
-**model-authored** (the placement ruling — the engine's derivations stay the
-baseline and the gate's shared legs, so the model never sets its own
-admission bar). Deterministic outcome labels on prior picks plus a shadow
-scorecard over every turned-away name feed a **propose-only, never
-auto-applied** calibration; persistence separates six structures.
+  this brief states the rule, and the refused pre-release archive rungs it
+  implies are at `docs/data-portability.md`).
 
 ## What remains
 
 The queue is governed by the **pre-run completion bar** (standing user
-decision; widened 2026-08-14 from the original locked pre-test block, which was
-fully built, and again 2026-08-20 to fold the live research loop inside it):
-no further live runs until **the entire Portfolio Analysis job is built** —
-every designed leg except work gated on realized-outcome evidence (grade
-normalization, the calibration proposals, the derive-reads strata), which can
-only come from a run — after which one **single big confirmation run** banks
-every stacked runtime confirmation at once.
+decision): no further live runs until **the entire Portfolio Analysis job is
+built** — every designed leg except work gated on realized-outcome evidence
+(grade normalization, the calibration proposals, the derive-reads strata),
+which can only come from a run — after which one **single big confirmation
+run** banks every stacked runtime confirmation at once.
 
 ### Built
 
-- **The cloud Market Signal Report** — the full 18-step pipeline, the agent
-  layer, vector memory and continuity, the run tracker, and whole-corpus data
-  portability.
-- **The local suite's shared substrate** — the local-model layer and its
-  Settings section, Schwab OAuth with holdings and options ingestion, the
-  deterministic holdings-snapshot diff, the Portfolio page, and the
-  Portfolio-runs history.
-- **Portfolio Analysis** — the per-holding spine, the fund path (the CEF
-  closed-end leg included), the thesis ledger, the quick check, selective
-  re-analysis, the pre-profit overlay, outcome learning, the per-holding
-  action call (tunnel vision — the construction stage is removed), the
-  metric-level 6g validator, Step-6a semantic recall + per-holding summary
-  embeddings, per-holding checkpoint/resume, and the two-arm verdict.
-- **The calibration tier** — adapter options wiring, the target function, the
-  grade bands, and the interpretation-prompt contract, each tuned against the
-  first live run's persisted dataset.
-- **The pre-run correctness program** — the conformance walks and ruling
-  rounds (the tunnel-vision doc↔code walk is
-  `docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`), the
-  per-doc sweeps, the logic-flow as-built walk, and the closing doc/code
-  audit (21 findings, all addressed;
-  `docs/verification/2026-08-18-portfolio-analysis-doc-code-audit.md`).
-- **The progress step-ownership contract** — request events stamped with
-  their owning step at the seam's single choke point, the tracker attaching
-  rows by the stamp; every FMP suite row carries its shaped
-  ok / empty / malformed outcome with the cause (`docs/run-tracking.md`).
-- **The Stooq-removal slice** — FMP dated-EOD is the suite's only deep-price
-  rung and `^GSPC` the market benchmark; the decision, evidence, and removal
-  inventory are `docs/verification/2026-08-12-stooq-removal-decision.md`, the
-  identity table at `docs/data-sources.md §Financial Modeling Prep`.
-- **The evidence-legs slice** — the four remaining dossier evidence legs:
-  the FINRA short-interest leg, the implied-expectations range, the
-  narrative-vs-reality read (its hype cap the engine arm's soft Medium
-  ceiling), and the same-underlying option overlay; each contract is
-  single-homed in the docs (`data-sources.md` §FINRA and the chains row,
-  `portfolio-analysis.md` §Starting parameters), and the quick check's
-  FINRA sweep leg stays dormant.
-- **The run-evidence slice** (`portfolio-v10`) — the Step-5 run-level
-  context loads with their consumers: commodity / metals / gold context into
-  dossier evidence, CFTC positioning into the fund read, the
-  sector-benchmark legs, the CBOE venue-level put/call backdrop
-  (`docs/data-sources.md §CBOE` is canonical), the technology-event
-  pre-flag, and the hard-forensic producer with its consumer seam (the
-  research `forensic_event` channel joins with the research loop).
-- **The Infrastructure slice** (`portfolio-v11`) — the metric-level 6g
-  validator, Step-6a semantic retrieval + per-holding summary embeddings,
-  and per-holding checkpoint/resume; the contracts, 2026-08-21 rulings, and
-  accepted residue are single-homed at `docs/portfolio-workflow.md` §Step 6a
-  / §Step 6g, `docs/portfolio-analysis.md` §Failure posture, and
-  `docs/storage.md §Local Vector Memory`.
-- **The fund-depth slice** — the flat-driver fund target form ruled the
-  settled design (closing conformance-walk R27; a scenario-differentiated
-  formula returns only on realized-outcome evidence), N-PORT still
-  deferred, and the CEF leg built as detection + the gap-honest
-  price-vs-NAV seam; the rulings, probe findings, and six review rounds are
-  `docs/verification/2026-08-21-fund-depth-rulings.md`, the contract
-  canonical at `portfolio-analysis.md §Asset eligibility`.
-- **The research-loop slice** (`portfolio-v12`) — the live per-holding web
-  research: the SSRF-guarded web tool (SearXNG-only — Tavily reserved for the
-  report job — source registry + tiers), the 6c per-topic pass loop with always-run
-  seed-and-merge caching, schema-constrained 6d with the typed side-channels,
-  the 6e overlay finalization (the pre-profit producer activated), Settings
-  §Web Research + the pre-run notice, and portability format v4. The
-  2026-08-24 rulings bound the channels — forward assumption shadow-only,
-  research-fed fraud advisory, the indicator anchor driver-id-gated
-  (§Standing constraints); rendered retrieval and Connected Sources are
-  deferred to their own slices (gating telemetry landed); the record and
-  eight review rounds are
-  `docs/verification/2026-08-24-research-loop-rulings.md`.
-- **The fresh-start-2 slice** — the local-suite data-compat layer that had
-  regrown since 2026-08-17 removed whole (148 decode defaults, the pre-stamp
-  branches, portability's pre-release v2/v3 rungs), the persisted contracts
-  tightened to what the producer always writes, no stamp moving; the ruling,
-  the writer test and the review rounds are
-  `docs/verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md`.
-- **The failure-isolation slice** — a hard per-holding model / grade failure
-  no longer fails the Portfolio run: it is isolated into a run-level
-  `failed_holdings` list rendering a failed card (the prior verdict carried
-  vintage-stamped where one exists, an empty debut card where none does), the
-  run continuing; the run fails outright only run-level (persistence, the rate
-  anchors) or when every attempted holding fails (no snapshot, the prior run
-  stays latest). The posture change flips a documented contract — the cloud
-  report's analyst layer stays fail-hard; only the Portfolio job's per-holding
-  half changed. The ruling, the user decisions (list-not-variant, all-failed →
-  Failed, concise stage+root cause, carry-not-empty), the accessible failed
-  card, and the design-package failed-tag are
-  `docs/verification/2026-08-31-portfolio-failure-isolation.md`, the contract
-  canonical at `docs/portfolio-analysis.md §Failure posture`. No stamp moved.
-
-- **Portfolio financial-correctness sweep** — the four financial fixes and
-  review corrections are approved (2026-09-15).
-  The dated rulings and verification are
-  `docs/verification/2026-09-15-portfolio-financial-correctness.md`.
-  Eligibility rules live only at `docs/portfolio-analysis.md §Asset
-  eligibility`.
-  The ledger section owns flow-basis withholding and Outcome learning owns
-  matching-horizon scoring.
-  The priced structural flag and pre-release quick-state migration branches
-  were removed under the existing keep-versus-cut rule.
+The cloud Market Signal Report in full; the local suite's shared substrate
+(the local-model layer and its Settings section, Schwab OAuth with holdings
+and options ingestion, the deterministic snapshot diff, the Portfolio page and
+the runs history); and Portfolio Analysis in full — its calibration tier tuned
+against the first live run's persisted dataset and its pre-run correctness
+program closed. Trade Opportunities is designed, not built.
 
 ### Remaining, in order
 
@@ -797,16 +560,11 @@ every stacked runtime confirmation at once.
    brief, which records features and load-bearing decisions only.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire
    Portfolio job and its confirmation run. The design is settled against
-   live-verified paid FMP shapes and grounded end-to-end by the 2026-08-19
-   program — the rewritten
-   `logic-flow-docs/trade-opportunities-logic-flow.md`, the placement ruling
-   (tier / horizon / runway two-arm; the model's authored tier × horizon
-   places the card), and the full-corpus documentation audit with its seven
-   rulings — every contract single-homed in the TO docs and indexed; the
-   record is
-   `docs/verification/2026-08-19-trade-opportunities-documentation-audit.md`.
-   The not-yet-drafted constants (screener floors, archetype weight vectors,
-   per-sector factor bands, the commodity-turn threshold, the
+   live-verified paid FMP shapes and grounded end-to-end by the logic-flow
+   doc and the placement ruling (tier / horizon / runway two-arm; the model's
+   authored tier × horizon places the card), every contract single-homed in
+   the TO docs. The not-yet-drafted constants (screener floors, archetype
+   weight vectors, per-sector factor bands, the commodity-turn threshold, the
    diversity-allocation mechanics, the `illiquid` / event-exposure tier
    predicates) are marked inline in the logic-flow doc for the
    implementation plan to sweep. Five hard-trigger acceptance cases are
@@ -832,7 +590,8 @@ each is unbuilt work that no scheduled slice will pick up on its own.
 - **Paid-FMP baseline enrichment** — three additive report signals the paid key
   unlocks (calendar consensus + surprise, historical valuation percentile/band +
   performance trend, IPO/M&A froth), all engine-derived and outside the
-  level-delta engine.
+  level-delta engine; true index breadth was ruled out (FMP exposes no breadth
+  metric), so the movers group stays the proxy.
 - **Keychain fail-soft** — a denied Keychain read currently errors the whole
   local-config report, which the frontend fail-safes to locked triggers with no
   local warning categories for that session. Fail-softing a failed token read to
@@ -875,26 +634,23 @@ Recorded rather than absorbed, each needing a decision before it becomes work:
 ### Deferred by decision
 
 Manual CSV/paste import supplements holdings but is not built. The
-**sector-aware grade normalization slice** was retired by ruling (2026-08-13,
-off attempt 2's letters): the no-A distribution is honest — quality and
-valuation sub-scores anticorrelate structurally — so normalization returns
-only on realized-outcome evidence, never on a letter distribution. That
-grade slice — the value-creation quality reads, sector-adjusted bands +
-own-history normalization, sector-appropriate metric selection, and the
-soft-forensic conviction cap (Altman/Piotroski) — is additionally a
-build-order dependent of Trade Opportunities: it inherits TO's Step-5c
-shared engine, so it lands with TO rather than as independent Portfolio
-work (`docs/portfolio-analysis.md` §Starting parameters is canonical). An
-**allocation optimizer** is deferred, not adopted — sizing and the optimizer
-question are the portfolio planner's domain since the tunnel-vision ruling. The FINRA and CBOE evidence legs' deferral was reversed 2026-08-14 — they
-landed with the Portfolio completion block (§Built). Trade Opportunities' blind-first
-diagnostic is reserved diagnostic-only, its execution deliberately unspecified
-until built. The fund slice's remaining drafted constants — the coverage and US
-guards, tier premiums, add floors, and CIK-cache staleness — stay pinned until
-the run supplies evidence to move them. The **engine stand-in arm** rides the
-same rule: its outlook windows and flat thresholds, the conviction
+**sector-aware grade normalization slice** was retired by ruling (2026-08-13):
+the no-A distribution is honest — quality and valuation sub-scores
+anticorrelate structurally — so normalization returns only on
+realized-outcome evidence, never on a letter distribution; that grade slice
+lands with Trade Opportunities (§Local analysis suite). An **allocation
+optimizer** is deferred, not adopted — sizing and the optimizer question are
+the portfolio planner's domain since the tunnel-vision ruling. The
+**flat-driver fund target form** is the settled design — a
+scenario-differentiated formula returns only on realized-outcome evidence —
+and **N-PORT** stays deferred; the CEF leg is detection plus the gap-honest
+price-vs-NAV seam. Trade Opportunities' blind-first diagnostic is reserved
+diagnostic-only, its execution deliberately unspecified until built. The fund
+slice's remaining drafted constants — the coverage and US guards, tier
+premiums, add floors, and CIK-cache staleness — stay pinned until the run
+supplies evidence to move them. The **engine stand-in arm** rides the same
+rule: its outlook windows and flat thresholds, the conviction
 degradation-count mapping and the action rung rule are drafted, calibratable,
-and none yet calibrated against live evidence.
-The scoreboard must score each forecast at its authored horizon; that matching
-contract is fixed at `docs/portfolio-analysis.md §Outcome learning`, not a
-calibration parameter.
+and none yet calibrated against live evidence. The scoreboard must score each
+forecast at its authored horizon; that matching contract is fixed at
+`docs/portfolio-analysis.md §Outcome learning`, not a calibration parameter.
