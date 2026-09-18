@@ -2,12 +2,12 @@
 
 ## What happened
 
-**Three rulings, no code change (2026-09-17, late).**
+**Four rulings, no code change (2026-09-17, late).**
 The open local-model-call findings were consolidated into one work list, `docs/verification/2026-09-17-open-findings.md` — eleven flat-numbered entries (1–2 validator bugs, 3 the claim-date persisted shape, 4–6 the fetch layer, 7–8 telemetry, 9 the sampling A/B, 10 the non-thinking experiments, 11 success measures), the checks attempt 7 reads for every rewritten prompt (`portfolio-v40` through `v44`), the watches and the not-adopted list.
 The 2026-09-15 fix list and attempt-6 record carry a Superseded line and are history; a new finding appends to the work list as entry 12 on, never elsewhere.
 The fixed-evidence harness is deprecated: the v40 / v41 / v42 live read is cancelled, the next test after the remaining fixes is attempt 7 itself, and the harness is rebuilt after it only if the run shows a need (its code stays in the tree; removal is a separate decision).
-BUILD never tracks fixes or adjustments and INDEX never indexes verification records (they are temporary and referenced from this file only): INDEX §Verification records removed, BUILD §What remains item 1 trimmed to the decision, the eleven owed BUILD / INDEX rows cancelled.
-BUILD was then restructured to the rule: a compressed spine, the suite decisions with §Seams and §Standing constraints kept whole, §Built collapsed to one paragraph, the changelog section dropped, and every verification-record pointer re-homed to an app doc or removed (zero remain).
+BUILD never tracks fixes or adjustments and INDEX never indexes verification records (they are temporary and referenced from this file only): INDEX §Verification records removed, the eleven owed BUILD / INDEX rows cancelled.
+BUILD was then restructured to that rule — a compressed spine, the suite decisions with §Seams and §Standing constraints kept whole, §Built one paragraph, the changelog section dropped, zero verification-record pointers — and that is its shape going forward.
 
 ## Current state
 
