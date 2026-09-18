@@ -110,12 +110,15 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 - Stamp: the prompt-usage row is persisted; the plan confirms whether the checkpoint stamp moves.
 - Ruling: open.
 
-### 8. Effective sampling parameters logged at model load
+### 8. Effective sampling parameters captured from the serve log
 
-- Decision: log the effective sampling parameters, inherited defaults included (the observed `repeat_penalty 1.1` beside the app's own), at model load.
-- Check: the serve-log line is quoted in attempt 7's run record under its configuration section.
+- Decision: capture the existing runtime sampler blocks for thinking-general and non-thinking-general, including inherited defaults, following [the operational capture procedure](../local-model-operations.md#capturing-effective-sampling-parameters).
+  The archived attempt-6 log already prints these blocks at task launch; a model-load snapshot alone misses subsequent per-call profile changes.
+- Check: attempt 7's configuration section quotes fresh, complete `sampler chain` and `sampler params` blocks for both profiles from its own serve log, identifying the runtime version, model, profile and task with source log locations and timestamped context alongside the app-requested settings.
+  Missing evidence remains explicitly unverified; attempt-6 values such as `repeat_penalty = 1.100` are historical evidence, not substitutes for fresh capture.
 - Stamp: none.
-- Ruling: open; lands before attempt 7 so the run's effective options are on the record.
+- Ruled 2026-09-18: documentation only, using the existing sampler blocks for both profiles; no code or stamp changes.
+  The capture procedure is documented; the attempt-7 evidence check remains pending until the user-authorized run.
 
 ### 9. Sampling-profile comparison on the action call
 

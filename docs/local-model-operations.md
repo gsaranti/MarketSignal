@@ -114,6 +114,18 @@ Greedy decoding is **explicitly warned against** — temperature 0 / disabled sa
 - Default mapping for our stages: **research / interpretation → thinking-general**; **consolidation / distillation → non-thinking-general** (wired 2026-08-01 — the #14645 fix is verified on the pinned v0.32.5, so distillation sends an explicit `think: false`; the version-discipline rule above still re-locks a `format`-carrying `think: false` call on any unverified Ollama bump).
   The two rows ship as adapter option profiles (`local_model::options`), so stages never hand-roll sampling literals.
 
+### Capturing effective sampling parameters
+
+Preserve the Ollama serve log covering the run and quote its complete `sampler chain` and `sampler params` blocks for both thinking-general and non-thinking-general in the run record's configuration section.
+Use the surrounding runtime context to identify the model and task for each block, name the profile, and retain the source log path and line numbers with the nearest timestamped context.
+Record the runtime version and model identity alongside the app-requested settings so the resolved values, including inherited defaults, can be compared with the request.
+The archived attempt-6 log on the pinned v0.32.5 prints these blocks at task launch, including launches while the model remains resident; a model-load snapshot alone cannot establish the options used by both per-call profiles.
+
+The attempt-6 blocks include `repeat_penalty = 1.100`, `repeat_last_n = 64` and `frequency_penalty = 0.000` alongside the app's sampling values; these are historical observations, not guaranteed defaults for a later run.
+Historical sampling evidence is recorded in [the attempt-6 findings](verification/2026-09-15-big-run-attempt-6-findings.md#8-token-telemetry-needs-a-runtime-specific-correction).
+Attempt 7 requires fresh quotes for both profiles from its own serve log; an absent block or an unresolved association remains explicitly unverified, never filled from the vendor table, app options or an earlier run.
+This capture procedure changes no sampling setting; profile comparisons remain separate experiments.
+
 ## Serving & memory (Apple Silicon, 128 GB)
 
 The suite serves through **Ollama** ([local-models.md §Serving runtime](local-models.md#serving-runtime)).
