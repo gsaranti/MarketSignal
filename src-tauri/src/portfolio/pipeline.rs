@@ -946,7 +946,7 @@ pub fn analyze_holding(
                 // engine arm's reduced set (sell-all / trim / hold) rides as
                 // annotated evidence (`docs/portfolio-analysis.md` §Portfolio
                 // action).
-                house_view_consulted.set(role_risk_prompt_renders_house_view(dossier));
+                house_view_consulted.set(prompt_renders_house_view(dossier));
                 backdrop_consulted.set(dossier.put_call_backdrop.is_some());
                 positioning_consulted
                     .set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
@@ -1020,27 +1020,7 @@ pub fn analyze_holding(
                 );
                 // The action placeholder is overwritten by the decision below and
                 // never rendered into its prompt.
-                let mut rr = RoleRiskVerdict {
-                    class_label: readout.class_label.clone(),
-                    role_summary: interpretation.role_summary,
-                    exposure_tilt: readout
-                        .exposure_tilt
-                        .iter()
-                        .map(|(label, weight)| ExposureWeight {
-                            label: label.clone(),
-                            weight: *weight,
-                        })
-                        .collect(),
-                    expense_drag: readout.expense_ratio,
-                    observable_risk: readout.observable_risk,
-                    structural_flag: readout.structural_flag(),
-                    is_cef: readout.is_cef,
-                    nav_premium: readout.nav_premium,
-                    evidence_gaps: readout.evidence_gaps.clone(),
-                    action: Action::Hold,
-                    action_rationale: String::new(),
-                    what_changed: interpretation.what_changed,
-                };
+                let mut rr = role_risk_verdict_from_interpretation(&readout, interpretation);
                 let decision = analyst
                     .decide_action(&ActionInput {
                         dossier,
@@ -1217,7 +1197,7 @@ pub fn analyze_holding(
     };
     // Research (the live 6c loop, or the analyst's offline default) → distill
     // → interpret.
-    house_view_consulted.set(priced_prompt_renders_house_view(dossier));
+    house_view_consulted.set(prompt_renders_house_view(dossier));
     backdrop_consulted.set(dossier.put_call_backdrop.is_some());
     positioning_consulted.set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
     commodity_consulted.set(!dossier.commodity_context.is_empty());
@@ -3699,28 +3679,6 @@ fn input_delta_prompt_section(entries: &[crate::portfolio::DeltaEntry]) -> Strin
 /// the interpretation projection's filter.
 const CAPITAL_EFFICIENCY_DELTA_PREFIX: &str = "capital-efficiency read: ";
 
-/// The what-changed authoring instructions the role/risk prompt appends after
-/// its changes list; the priced message states the same requirements in its
-/// Part 2 item instead (`portfolio-v40`).
-fn what_changed_instructions() -> String {
-    let mut s = String::new();
-    s.push_str(
-        "WHAT_CHANGED_ENTRIES: author one typed row per moved intrinsic value — each row \
-         carries kind (which kind of value moved, from the schema's enum), detail (which \
-         specific one — e.g. the named sub-score or target horizon), old and new (the value \
-         before -> after), attribution, and evidence. Every external attribution (market-data / \
-         company-information / research-narrative) must cite one id above (e.g. \
-         \"D2\") — or the entry's label verbatim — in `evidence`; a row whose \
-         evidence resolves to no entry is downgraded to self-correction with a \
-         logged reason. A row whose old and new are identical, or a duplicate \
-         of another row, is dropped. Use attribution `self-correction` \
-         (evidence empty) when you are revising your own prior read without new \
-         facts. Author a `thesis` or `scenario-weights` row ONLY when the \
-         standing thesis itself materially changed — never for a rephrasing.\n",
-    );
-    s
-}
-
 /// The 6g **what-changed attribution validator**
 /// (`docs/portfolio-workflow.md` §Step 6g): every row the model labels external
 /// must resolve to a concrete entry in the rendered input delta — by bracketed id
@@ -3826,24 +3784,17 @@ pub fn interpretation_system_prompt(_is_fund: bool, debut: bool) -> String {
     )
 }
 
-/// The system prompt for the `role_risk_only` interpretation — the union's other
-/// branch: role and risk only, no letter, no targets, no conviction. The
-/// contract's key list follows the debut / continuity shape (`portfolio-v38`).
+/// The system prompt for the `role_risk_only` interpretation (`portfolio-v42`):
+/// the role line, the two-part shape of the message and the output names — the
+/// same footing as [`interpretation_system_prompt`], the vehicle named as a fund
+/// since this branch is a fund by construction (ruled 2026-09-17). The
+/// output-name line is [`crate::portfolio::role_risk_response_contract`], built
+/// from the same key list as the schema's required set.
 pub fn role_risk_system_prompt(debut: bool) -> String {
     format!(
-        "You are a disciplined portfolio analyst assessing one holding whose vehicle \
-     class this pipeline is structurally unable to price (a bond or commodity fund, \
-     an equity fund below the US-exposure guard, a leveraged/inverse or option-overlay vehicle, or a \
-     fund without usable weightings). \
-     Do NOT produce a grade, price target, conviction, or action — none exists for \
-     this branch here. Your job: \
-     describe the vehicle's role — the mandate and the exposure it exists to supply, \
-     read in isolation — and write the continuity note. Read the engine's exposure, \
-     expense, and risk figures; never invent one. \
-     You also maintain the holding's THESIS LEDGER (fund-flavored drivers; \
-     condition-only monitor; trim/sell triggers only) — test the prior ledger against \
-     this run's evidence and rewrite it per the instructions in the prompt. \
-     {}",
+        "You are an investment analyst producing an independent read of one fund holding \
+         for a portfolio review. Part 1 of the message gives the inputs. Part 2 states what \
+         to determine from them and the shape to return. {}",
         crate::portfolio::role_risk_response_contract(debut)
     )
 }
@@ -3859,16 +3810,16 @@ pub(crate) fn dossier_is_fund(d: &HoldingDossier) -> bool {
     )
 }
 
-/// The user prompt for the `role_risk_only` interpretation: the engine's typed
-/// readout rendered for the model.
-/// Whether [`role_risk_user_prompt`] will render any house-view content for this
-/// dossier — the **latest sections only**. Defined here, beside the render below, so
-/// the audit's house-view source claim cannot drift from what the prompt actually
-/// carries: this branch never renders the recent stances, so a summary-only house view
-/// (reachable whenever the latest report's Markdown is missing or unreadable, which
-/// `load_house_view` degrades to deliberately) reaches a role/risk verdict as nothing.
-pub(crate) fn role_risk_prompt_renders_house_view(d: &HoldingDossier) -> bool {
-    d.house_view.latest_sections.is_some()
+/// Whether an interpretation message will render any market-analysis content —
+/// the latest sections or the recent stances. Both branches render the house
+/// view through one [`market_analysis_section`] since `portfolio-v42` (ruled
+/// 2026-09-17: the role/risk message gains the stances), so the audit's
+/// house-view source claim reads the one predicate the render reads; a
+/// summary-only house view (reachable whenever the latest report's Markdown is
+/// missing or unreadable, which `load_house_view` degrades to deliberately)
+/// reaches both verdicts as the stance lines.
+pub(crate) fn prompt_renders_house_view(d: &HoldingDossier) -> bool {
+    d.house_view.latest_sections.is_some() || !d.house_view.recent_summaries.is_empty()
 }
 
 /// The prompt's holding header — the identity and per-share quote every
@@ -3953,96 +3904,191 @@ pub(crate) fn fund_ledger_metrics(
     }
 }
 
+/// The role/risk message (`portfolio-v42`, ruled 2026-09-17 on the `portfolio-v40`
+/// frame; `docs/verification/2026-09-17-role-risk-prompt-rewrite.md`): one
+/// message in two marked parts. Part 1 is inputs only — HOLDING, CLASS (the
+/// label, the reported asset class and the structure line), EXPOSURE TILT with
+/// the closed-end line and the positioning line, RISK PROFILE with the
+/// market-wide options backdrop, EVIDENCE GAPS, the shared FINANCIAL METRICS,
+/// RESEARCH SUMMARY, the shared MARKET ANALYSIS, and on a continuity call PRIOR
+/// ANALYSIS (the prior class and role read), the recall notes and the changes
+/// since; then the shared prior-ledger data and crossings — each section
+/// explained once and then its values, with no instruction in it. Part 2 is
+/// the task only: the role read, the shared ledger item with trim and sell
+/// families, on continuity the shared what-changed items, and the
+/// placeholder-only return shape. The model receives data, never a description
+/// of the app that produced it. The section names match the action packet's
+/// role/risk branch so the two packets read the holding the same way.
 pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     let d = input.dossier;
     let r = input.readout;
-    let mut p = String::new();
+    let debut = d.prior_verdict.is_none();
+    let mut p = String::from("======== PART 1: INPUTS ========\n");
+
+    // HOLDING
     p.push_str(&holding_header(d));
-    p.push_str(&format!(
-        "Position change since last run: {}\n",
-        describe_position_change(&d.position_delta)
-    ));
-    p.push_str(&format!("\nCLASSIFICATION: {}\n", r.class_label));
+    p.push_str(&format!("{}\n", describe_position_change(&d.position_delta)));
+
+    // CLASS: the label, the fund's reported asset class where the metadata
+    // carries one (ruled 2026-09-17), and the structure line where it applies.
+    p.push_str(&format!("\nCLASS\n{}.", r.class_label));
+    if let Some(class) = d.fund.as_ref().and_then(|f| f.fund.asset_class.as_deref()) {
+        p.push_str(&format!(" Reported asset class: {class}."));
+    }
+    p.push('\n');
     if let Some(kind) = r.structural_kind {
-        let description = match kind {
+        p.push_str(match kind {
             FundStructuralKind::LeveragedInverse => {
-                "leveraged/inverse daily-reset path dependency"
+                "Structure: leveraged / inverse, resetting daily.\n"
             }
             FundStructuralKind::OptionOverlay => {
-                "option-overlay path dependency (the options reshape the return path)"
+                "Structure: option overlay; the options reshape the return path.\n"
             }
-        };
-        p.push_str(&format!("STRUCTURAL FLAG: {description}\n"));
+        });
     }
-    if !r.exposure_tilt.is_empty() {
-        p.push_str("EXPOSURE TILT:\n");
+
+    // EXPOSURE TILT: the readout's rows as computed, the basis glossed once.
+    let has_tilt = !r.exposure_tilt.is_empty();
+    if has_tilt {
+        p.push_str(
+            "\nEXPOSURE TILT\nThe fund's largest weights, by sector where reported and \
+             otherwise by country.\n",
+        );
         for (label, weight) in &r.exposure_tilt {
             p.push_str(&format!("- {label}: {:.1}%\n", weight * 100.0));
         }
     }
-    p.push_str(&format!(
-        "EXPENSE RATIO (decimal fraction of assets per year; 0.0075 = 0.75%/yr): {}\n\
-         OBSERVABLE RISK (annualized volatility; deep history when available): {}\n",
-        fmt_expense_ratio(r.expense_ratio),
-        opt(r.observable_risk),
-    ));
-    p.push_str(&format!(
-        "LEDGER OBSERVATION return-volatility (daily decimal; short price-history window): {}\n",
-        engine::compute_metrics(&d.financials).return_volatility
-            .map(|v| v.to_string()).unwrap_or_else(|| "(gap)".into()),
-    ));
     // The closed-end read renders only where the vehicle makes it meaningful
     // (`docs/portfolio-analysis.md` §Asset eligibility); its absence is a named
     // gap already in the evidence-gap manifest, never a fabricated number.
     if r.is_cef {
         if let Some(prem) = r.nav_premium {
+            p.push('\n');
             p.push_str(&nav_premium_line(prem));
         }
     }
-    if !r.evidence_gaps.is_empty() {
-        p.push_str(&format!("EVIDENCE GAPS: {}\n", r.evidence_gaps.join("; ")));
-    }
-    // The fund agenda's distilled research — pure consolidation on this branch
-    // (`docs/portfolio-workflow.md` §Step 6d).
-    p.push_str(&format!("\nDISTILLED RESEARCH:\n{}\n", input.distilled));
     // The commodity / macro classes this branch types are exactly where the
     // underlying-positioning read carries signal (`docs/data-sources.md §CFTC`).
     if let Some(f) = &d.fund {
         p.push_str(&positioning_prompt_section(f));
     }
+
+    // RISK PROFILE: the annualized read with its unit, and the market-wide
+    // backdrop. The daily volatility the ledger evaluates is a FINANCIAL
+    // METRICS line, so it renders once.
+    p.push_str(&format!(
+        "\nRISK PROFILE\nAnnualized realized volatility: {} (a fraction; 0.14 means 14% a \
+         year).\n",
+        opt(r.observable_risk),
+    ));
     p.push_str(&put_call_backdrop_prompt_section(d));
-    if let Some(sections) = &d.house_view.latest_sections {
-        p.push_str(&format!(
-            "\nMARKET SIGNAL HOUSE VIEW (latest report — scope: market-setup context \
-             only, never by itself a reason to exit this holding):\n{sections}\n"
-        ));
+
+    // EVIDENCE GAPS
+    let has_gaps = !r.evidence_gaps.is_empty();
+    if has_gaps {
+        p.push_str(&format!("\nEVIDENCE GAPS\n{}\n", r.evidence_gaps.join("; ")));
     }
-    p.push_str("\nACTION: author none here — this branch's read carries no action.\n");
-    match &d.prior_verdict {
-        Some(_) => {
-            p.push_str(
-                "\nCONTINUITY: a prior verdict for this holding exists. Keep the read firm; \
-                 say what changed.\n",
-            );
-            p.push_str(&semantic_recall_prompt_section(d));
-            // The rendered input delta — the what_changed_entries evidence ids
-            // the 6g attribution validator resolves against.
-            p.push_str(&input_delta_prompt_section(input.input_delta));
-            p.push_str(&what_changed_instructions());
-        }
-        // A debut requests no continuity fields — the app writes them
-        // (fix list 3.3, `portfolio-v38`).
-        None => p.push_str("\nCONTINUITY: new holding (no prior verdict).\n"),
-    }
+
+    // FINANCIAL METRICS: the branch's computed surface, each line with its
+    // ledger label, unit and confirmation rule — the shared section.
     let fund_metrics = fund_ledger_metrics(r, &d.financials);
-    p.push_str(&ledger_prompt_section(
+    let contract = LedgerSeriesContract::build(true, Some(&fund_metrics), Some(&d.financials));
+    p.push_str(&financial_metrics_section(&contract, d, true));
+
+    // RESEARCH SUMMARY: the fund agenda's distilled research — pure
+    // consolidation on this branch (`docs/portfolio-workflow.md` §Step 6d).
+    p.push_str(&format!("\nRESEARCH SUMMARY\n{}\n", input.distilled));
+
+    // MARKET ANALYSIS
+    p.push_str(&market_analysis_section(d));
+
+    // Continuity inputs: the prior read, the prior notes, the changes since,
+    // then the prior ledger and its crossings.
+    if let Some(prior) = &d.prior_verdict {
+        p.push_str(&prior_role_read_section(prior, d.prior_vintage.as_deref()));
+        p.push_str(&semantic_recall_prompt_section(d));
+        p.push_str(&input_delta_prompt_section(input.input_delta));
+    }
+    p.push_str(&prior_ledger_data_section(
         input.prior_ledger,
         input.ledger_eval,
-        true,
-        &LedgerSeriesContract::build(true, Some(&fund_metrics), Some(&d.financials)),
         input.input_delta,
-        input.dossier.financials.statement_basis,
-        input.dossier.financials.equity_source,
+    ));
+
+    // PART 2
+    p.push_str(&role_risk_task_section(
+        &contract,
+        debut,
+        input.prior_ledger.is_some(),
+        has_tilt,
+        has_gaps,
+    ));
+    p
+}
+
+/// PRIOR ANALYSIS on the role/risk branch (`portfolio-v42`, ruled 2026-09-17):
+/// the prior class and the prior role read verbatim, with the prior read's
+/// vintage, so a role-read change row has an old value to cite and the read is
+/// tested against something the model can see. A prior that was not a role and
+/// risk read (a priced read, or an abstention) says only that, as data — no
+/// sentence explains the line's reach (task review, 2026-09-17).
+fn prior_role_read_section(prior: &HoldingVerdict, vintage: Option<&str>) -> String {
+    let since = vintage
+        .map(|t| format!(" (prior read {t})"))
+        .unwrap_or_default();
+    match &prior.disposition {
+        VerdictDisposition::RoleRiskOnly(rr) => format!(
+            "\nPRIOR ANALYSIS{since}\n- prior class: {}.\n- prior role read: {}\n",
+            rr.class_label, rr.role_summary
+        ),
+        _ => format!("\nPRIOR ANALYSIS{since}\nThe prior analysis was not a role and risk read.\n"),
+    }
+}
+
+/// Part 2 of the role/risk message (`portfolio-v42`): the role read from the
+/// sections that rendered, the shared ledger item with trim and sell families,
+/// on a continuity call the shared what-changed items with this branch's detail
+/// gloss and no parameter-boundary sentence (no grade or target parameter exists
+/// here), and the placeholder-only return shape.
+fn role_risk_task_section(
+    contract: &LedgerSeriesContract,
+    debut: bool,
+    has_prior_ledger: bool,
+    has_tilt: bool,
+    has_gaps: bool,
+) -> String {
+    let mut p = String::from(
+        "\n======== PART 2: TASK ========\n\n\
+         Determine the following from the inputs and return them as one JSON object in the \
+         shape at the end, with no code fence and no surrounding text.\n",
+    );
+    let mut sections = vec!["CLASS"];
+    if has_tilt {
+        sections.push("EXPOSURE TILT");
+    }
+    sections.push("RISK PROFILE");
+    if has_gaps {
+        sections.push("EVIDENCE GAPS");
+    }
+    sections.push("FINANCIAL METRICS");
+    let (last, head) = sections.split_last().expect("at least two sections");
+    p.push_str(&format!(
+        "\n1. role_summary — a few sentences on the vehicle's mandate, the exposure it exists \
+         to supply, and the cost and risk of holding it, from {}, {last} and RESEARCH \
+         SUMMARY.\n",
+        head.join(", ")
+    ));
+    p.push_str(&ledger_task_item(2, contract, LedgerItemBranch::RoleRisk, has_prior_ledger));
+    if !debut {
+        p.push_str(&what_changed_task_items(
+            3,
+            "the role read, the scenario or the condition",
+            false,
+        ));
+    }
+    p.push_str(&format!(
+        "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
+        crate::portfolio::role_risk_return_shape(debut)
     ));
     p
 }
@@ -4226,18 +4272,6 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
         }
     }
     p
-}
-
-/// The user prompt: the holding's evidence packet rendered for the model — the
-/// position, the computed metrics/sub-scores/grade/targets, the options-activity
-/// signal (an activity proxy, not a grade input), the gaps, the distilled research,
-/// the house view, and the prior verdict for continuity.
-/// Whether [`interpretation_user_prompt`] will render any house-view content — the
-/// latest sections **or** the recent stances, both of which this branch renders. The
-/// counterpart of [`role_risk_prompt_renders_house_view`], and deliberately a wider
-/// predicate, because the two prompts carry different parts of the house view.
-pub(crate) fn priced_prompt_renders_house_view(d: &HoldingDossier) -> bool {
-    d.house_view.latest_sections.is_some() || !d.house_view.recent_summaries.is_empty()
 }
 
 /// The COT underlying-positioning line for a commodity / macro fund
@@ -4621,20 +4655,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     // FINANCIAL METRICS — the values, each with its ledger label, unit and
     // confirmation rule, so the ledger item in Part 2 points here by name.
     let contract = LedgerSeriesContract::build(is_fund, Some(&e.metrics), Some(&d.financials));
-    p.push_str("\nFINANCIAL METRICS\n");
-    p.push_str(&statement_basis_line(
-        d.financials.statement_basis,
-        d.financials.equity_source,
-        is_fund,
-    ));
-    p.push_str(
-        "Each metric has a label in brackets and a confirmation rule, the number of prints \
-         past a level that count as a crossing; both are used by the ledger in Part 2.\n",
-    );
-    p.push_str(&contract.metric_lines());
-    if !d.financials.gaps.is_empty() {
-        p.push_str(&format!("Data gaps: {}\n", d.financials.gaps.join("; ")));
-    }
+    p.push_str(&financial_metrics_section(&contract, d, is_fund));
 
     // COMPUTED SCORES
     p.push_str(&format!(
@@ -4928,85 +4949,19 @@ fn interpretation_task_section(
         window(HORIZON_MID),
         window(HORIZON_LONG),
     ));
-    // 5. ledger
-    let labels = contract
-        .rows
-        .iter()
-        .map(|r| r.series.as_kebab())
-        .collect::<Vec<_>>()
-        .join(", ");
-    if has_prior_ledger {
-        p.push_str(
-            "\n5. ledger — the position's thesis ledger, rewritten from PRIOR THESIS LEDGER \
-             against this analysis's inputs. Keep a condition's series, comparator, threshold \
-             and margin unless the condition itself has changed. The thesis is the current \
-             thesis; the original is kept separately.\n",
-        );
-    } else {
-        p.push_str("\n5. ledger — the position's initial thesis ledger:\n");
-    }
-    p.push_str(&format!(
-        "   - thesis: the standing thesis, in a few sentences.\n   \
-         - key_drivers: what the thesis depends on. Where a driver is one of the labelled \
-         metrics in FINANCIAL METRICS, series is its label; otherwise series is null.\n   \
-         - base, bear, bull: the conditions that define each case, with a probability in \
-         percent; the three sum to about 100.\n   \
-         - what_must_improve: what has to improve for the bull case. what_must_not_break: \
-         what has to hold for the base case.\n   \
-         - falsifiers: the observations that would show the thesis wrong. technology_class \
-         is true only for a third party's technology event (a competitor's or supplier's \
-         product or standard) and false otherwise.{}\n   \
-         - triggers: pre-committed conditions for adding, trimming or selling, with family \
-         \"add\", \"trim\" or \"sell\".{}\n\n   \
-         Every falsifier and trigger has a quant field.\n   \
-         A condition on one labelled metric is quantitative: quant holds series (one of {labels}), \
-         comparator (\"below\" or \"above\"), threshold and margin, and the statement names the \
-         same metric, direction and level. It is a single level on a single metric, with no \
-         duration, volume or second condition (\"for two weeks\", \"on elevated volume\", \
-         \"unless …\").\n   \
-         Any other condition is qualitative: quant is null, and the statement is specific enough \
-         to be researched. A condition that needs a duration, volume or second condition is \
-         qualitative.\n   \
-         threshold: the level the statement names, in the metric's unit (\"below 16%\" on \
-         gross-margin is 0.16).\n   \
-         margin: the noise around the threshold that a crossing must clear, in the same unit — \
-         small relative to the level, for example {}.\n   \
-         {}\n",
-        if has_prior_ledger {
-            " tripped is true only where CONDITION CROSSINGS THIS RUN shows a confirmed crossing for \
-             that condition, or, for a qualitative condition, where a finding in CHANGES SINCE \
-             THE PRIOR ANALYSIS marked research-supported evidences it; otherwise false."
-        } else {
-            " tripped is false."
-        },
-        if has_prior_ledger {
-            " fired follows the same rule as tripped."
-        } else {
-            " fired is false."
-        },
-        if is_fund {
-            "2 on a price of 100, 0.002 on a daily volatility of 0.02, or 0.0005 on an \
-             expense ratio of 0.0075"
-        } else {
-            "2 on a price of 100, 0.005 on a net margin of 0.16, or 1 on a P/E of 25"
-        },
-        contract.examples(),
+    // 5. ledger — the shared item, the full trigger ladder on this branch.
+    p.push_str(&ledger_task_item(
+        5,
+        contract,
+        LedgerItemBranch::priced(is_fund),
+        has_prior_ledger,
     ));
     if !debut {
-        p.push_str(
-            "\n6. what_changed_entries — one row per intrinsic value that moved since the prior \
-             analysis: kind (which kind of value, from the alternatives in the shape), detail \
-             (which one — the named score or target horizon), old and new (the value before and \
-             after), attribution, and evidence. An attribution of market-data, \
-             company-information or research-narrative cites one bracketed id from CHANGES \
-             SINCE THE PRIOR ANALYSIS, or that entry's text verbatim, in evidence; a revision of \
-             your own prior read with no new fact is attribution self-correction with evidence \
-             empty. A move noted in PRIOR ANALYSIS as caused by a parameter change is attributed \
-             to that change, not to the company or to a self-correction. A thesis or \
-             scenario-weights row is for a material change to the standing thesis, never a \
-             rephrasing. No row repeats another, and no row has old equal to new.\n   \
-             what_changed — one sentence summarizing those rows.\n",
-        );
+        p.push_str(&what_changed_task_items(
+            6,
+            "the named score or target horizon",
+            true,
+        ));
         p.push_str(
             "\n7. conviction — your confidence in this read as a whole: \"low\", \"medium\" or \
              \"high\".\n",
@@ -5030,6 +4985,204 @@ fn interpretation_task_section(
         "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
         crate::portfolio::interpretation_return_shape(is_fund, debut)
     ));
+    p
+}
+
+/// The message a ledger item is rendered for — the priced stock, the priced
+/// fund or the role/risk fund — which fixes the threshold example and the
+/// driver clause (a fund's on both fund variants, ruled 2026-09-17), the
+/// trigger families (trim and sell on the role/risk branch, whose schema enum
+/// drops the add family — `docs/portfolio-analysis.md` §The position thesis
+/// ledger), and whether the thesis line cites MARKET ANALYSIS (the priced
+/// message's outlook item cites it instead).
+#[derive(Clone, Copy)]
+enum LedgerItemBranch {
+    PricedStock,
+    PricedFund,
+    RoleRisk,
+}
+
+impl LedgerItemBranch {
+    /// The priced message's branch for its vehicle kind.
+    fn priced(is_fund: bool) -> Self {
+        if is_fund {
+            Self::PricedFund
+        } else {
+            Self::PricedStock
+        }
+    }
+
+    fn is_fund(self) -> bool {
+        !matches!(self, Self::PricedStock)
+    }
+
+    fn thesis_draws_on_market(self) -> bool {
+        matches!(self, Self::RoleRisk)
+    }
+
+    fn triggers(self) -> &'static str {
+        match self {
+            Self::RoleRisk => {
+                "pre-committed conditions for trimming or selling, with family \"trim\" or \
+                 \"sell\""
+            }
+            Self::PricedStock | Self::PricedFund => {
+                "pre-committed conditions for adding, trimming or selling, with family \"add\", \
+                 \"trim\" or \"sell\""
+            }
+        }
+    }
+}
+
+/// The ledger item of Part 2, shared by the priced and role/risk messages
+/// (`portfolio-v42`): the parts in output order, the quant contract as
+/// requirements on the output — the label, comparator, threshold and margin;
+/// the statement agreeing with the core; one level, no qualifier; null
+/// otherwise — with threshold and margin in one clause each, the margin sized
+/// by example and its caps unshown (`portfolio-v40`), and the two worked
+/// examples in the vehicle's vocabulary; the branch fixes the fund form, the
+/// families and the market-analysis reference. Every rule the text no longer
+/// explains is still enforced at the 6g seam.
+fn ledger_task_item(
+    number: u8,
+    contract: &LedgerSeriesContract,
+    branch: LedgerItemBranch,
+    has_prior_ledger: bool,
+) -> String {
+    let is_fund = branch.is_fund();
+    let mut p = String::new();
+    let labels = contract
+        .rows
+        .iter()
+        .map(|r| r.series.as_kebab())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if has_prior_ledger {
+        p.push_str(&format!(
+            "\n{number}. ledger — the position's thesis ledger, rewritten from PRIOR THESIS LEDGER \
+             against this analysis's inputs. Keep a condition's series, comparator, threshold \
+             and margin unless the condition itself has changed. The thesis is the current \
+             thesis; the original is kept separately.\n",
+        ));
+    } else {
+        p.push_str(&format!("\n{number}. ledger — the position's initial thesis ledger:\n"));
+    }
+    p.push_str(&format!(
+        "   - thesis: the standing thesis, in a few sentences{}.\n   \
+         - key_drivers: what the thesis depends on{}. Where a driver is one of the labelled \
+         metrics in FINANCIAL METRICS, series is its label; otherwise series is null.\n   \
+         - base, bear, bull: the conditions that define each case, with a probability in \
+         percent; the three sum to about 100.\n   \
+         - what_must_improve: what has to improve for the bull case. what_must_not_break: \
+         what has to hold for the base case.\n   \
+         - falsifiers: the observations that would show the thesis wrong. technology_class \
+         is true only for a third party's technology event (a competitor's or supplier's \
+         product or standard) and false otherwise.{}\n   \
+         - triggers: {}.{}\n\n   \
+         Every falsifier and trigger has a quant field.\n   \
+         A condition on one labelled metric is quantitative: quant holds series (one of {labels}), \
+         comparator (\"below\" or \"above\"), threshold and margin, and the statement names the \
+         same metric, direction and level. It is a single level on a single metric, with no \
+         duration, volume or second condition (\"for two weeks\", \"on elevated volume\", \
+         \"unless …\").\n   \
+         Any other condition is qualitative: quant is null, and the statement is specific enough \
+         to be researched. A condition that needs a duration, volume or second condition is \
+         qualitative.\n   \
+         threshold: the level the statement names, in the metric's unit ({}).\n   \
+         margin: the noise around the threshold that a crossing must clear, in the same unit — \
+         small relative to the level, for example {}.\n   \
+         {}\n",
+        if branch.thesis_draws_on_market() {
+            ", drawing on MARKET ANALYSIS for the market setup"
+        } else {
+            ""
+        },
+        if is_fund {
+            " — for a fund, the exposure it supplies, its cost and its fidelity to its mandate"
+        } else {
+            ""
+        },
+        if has_prior_ledger {
+            " tripped is true only where CONDITION CROSSINGS THIS RUN shows a confirmed crossing for \
+             that condition, or, for a qualitative condition, where a finding in CHANGES SINCE \
+             THE PRIOR ANALYSIS marked research-supported evidences it; otherwise false."
+        } else {
+            " tripped is false."
+        },
+        branch.triggers(),
+        if has_prior_ledger {
+            " fired follows the same rule as tripped."
+        } else {
+            " fired is false."
+        },
+        if is_fund {
+            "\"above 0.75%\" on expense-ratio is 0.0075"
+        } else {
+            "\"below 16%\" on gross-margin is 0.16"
+        },
+        if is_fund {
+            "2 on a price of 100, 0.002 on a daily volatility of 0.02, or 0.0005 on an \
+             expense ratio of 0.0075"
+        } else {
+            "2 on a price of 100, 0.005 on a net margin of 0.16, or 1 on a P/E of 25"
+        },
+        contract.examples(),
+    ));
+    p
+}
+
+/// The two continuity items of Part 2, shared by both messages (`portfolio-v42`):
+/// what_changed_entries and what_changed, numbered from `first`. `detail` is the
+/// branch's gloss on which value a row names; `parameter_sentence` adds the
+/// priced branch's parameter-boundary attribution, which the role/risk branch
+/// has no source for. The requirements stand on the output — no validator
+/// behaviour is described.
+fn what_changed_task_items(first: u8, detail: &str, parameter_sentence: bool) -> String {
+    format!(
+        "\n{first}. what_changed_entries — one row per intrinsic value that moved since the prior \
+         analysis: kind (which kind of value, from the alternatives in the shape), detail \
+         (which one — {detail}), old and new (the value before and \
+         after), attribution, and evidence. An attribution of market-data, \
+         company-information or research-narrative cites one bracketed id from CHANGES \
+         SINCE THE PRIOR ANALYSIS, or that entry's text verbatim, in evidence; a revision of \
+         your own prior read with no new fact is attribution self-correction with evidence \
+         empty.{} A thesis or \
+         scenario-weights row is for a material change to the standing thesis, never a \
+         rephrasing. No row repeats another, and no row has old equal to new.\n   \
+         what_changed — one sentence summarizing those rows.\n",
+        if parameter_sentence {
+            " A move noted in PRIOR ANALYSIS as caused by a parameter change is attributed \
+             to that change, not to the company or to a self-correction."
+        } else {
+            ""
+        }
+    )
+}
+
+/// FINANCIAL METRICS, shared by the priced and role/risk messages
+/// (`portfolio-v42`): the basis line, the label-and-confirmation sentence, one
+/// line per computable series with its ledger label, unit gloss and confirmation
+/// rule, and the data gaps — so the ledger item in Part 2 points here by name
+/// and no metric renders twice.
+fn financial_metrics_section(
+    contract: &LedgerSeriesContract,
+    d: &HoldingDossier,
+    is_fund: bool,
+) -> String {
+    let mut p = String::from("\nFINANCIAL METRICS\n");
+    p.push_str(&statement_basis_line(
+        d.financials.statement_basis,
+        d.financials.equity_source,
+        is_fund,
+    ));
+    p.push_str(
+        "Each metric has a label in brackets and a confirmation rule, the number of prints \
+         past a level that count as a crossing; both are used by the ledger in Part 2.\n",
+    );
+    p.push_str(&contract.metric_lines());
+    if !d.financials.gaps.is_empty() {
+        p.push_str(&format!("Data gaps: {}\n", d.financials.gaps.join("; ")));
+    }
     p
 }
 
@@ -5132,9 +5285,11 @@ fn nav_premium_line(premium: f64) -> String {
             if rounded > 0.0 { "premium" } else { "discount" },
         )
     };
+    // A unit gloss only, on every packet that renders the line (ruled
+    // 2026-09-17, `portfolio-v42`): what the number is, not what it means.
     format!(
-        "PRICE VS NAV: {value} ({word}) — the closed-end read; a structural \
-         discount or premium, not a transient ETF spread.\n",
+        "PRICE VS NAV: {value} ({word}): the closed-end fund's market price against its \
+         net asset value.\n",
     )
 }
 
@@ -5754,25 +5909,6 @@ impl LedgerSeriesContract {
         p
     }
 
-    /// The role/risk prompt's series block — the same metric lines under a
-    /// heading, with the level and key-driver rules the priced message states
-    /// in its Part 2 (`portfolio-v40`; the caps are enforced, not shown).
-    fn render(&self) -> String {
-        let mut p = String::from(
-            "\nMETRICS AVAILABLE FOR QUANTITATIVE LEDGER CONDITIONS (the label in brackets is \
-             the series name; a condition on any other metric is qualitative):\n",
-        );
-        p.push_str(&self.metric_lines());
-        p.push_str(
-            "A quantitative condition's statement names its level in the series' unit — a \
-             percent on a fraction series, dollars on the price, a multiple on a ratio — and the \
-             threshold is exactly that level; the margin is the separate noise band around it, \
-             small relative to the level. A key driver's series is one of the labels above \
-             where one fits and null where none does.\n",
-        );
-        p
-    }
-
     /// Two branch-scoped worked examples — illustrative shapes in the vehicle's
     /// own vocabulary, never findings.
     fn examples(&self) -> &'static str {
@@ -5791,39 +5927,14 @@ impl LedgerSeriesContract {
     }
 }
 
-/// Render the thesis-ledger block for either interpretation prompt: the
-/// holding-scoped series contract, the prior ledger with its condition states,
-/// the engine's crossings this run, and the rewrite instructions
-/// (`docs/portfolio-analysis.md` §The position thesis ledger). This is the first
-/// prior-run *content* the prompt carries — the standing view the model tests
-/// against fresh evidence rather than re-deriving from scratch.
-/// `statement_basis` is the holding's stamped basis this run and `equity_source`
-/// which balance sheet supplied the two instants' equity — rendered once beside
-/// the vocabulary by [`statement_basis_line`].
-pub fn ledger_prompt_section(
-    prior: Option<&ThesisLedger>,
-    eval: Option<&LedgerEvaluation>,
-    role_risk: bool,
-    contract: &LedgerSeriesContract,
-    input_delta: &[crate::portfolio::DeltaEntry],
-    statement_basis: Option<crate::portfolio::StatementBasis>,
-    equity_source: Option<crate::portfolio::EquitySource>,
-) -> String {
-    let mut p = String::new();
-    p.push_str(&contract.render());
-    p.push_str(&statement_basis_line(statement_basis, equity_source, contract.is_fund));
-    p.push_str(contract.examples());
-    p.push('\n');
-    p.push_str(&prior_ledger_data_section(prior, eval, input_delta));
-    p.push_str(&ledger_rewrite_instructions(role_risk));
-    p
-}
-
 /// The prior ledger and this run's crossings as data (`portfolio-v40`): the
 /// standing thesis, drivers, monitor, conditions with their cores and streaks,
-/// the research-supported marks, and the crossings — rendered into Part 1 of the
-/// priced message and into the role/risk prompt's ledger block. On a first
-/// analysis it says there is no prior ledger and nothing else.
+/// the research-supported marks, and the crossings — rendered into Part 1 of
+/// both interpretation messages (`docs/portfolio-analysis.md` §The position
+/// thesis ledger). This is the first prior-run *content* the message carries —
+/// the standing view the model tests against fresh evidence rather than
+/// re-deriving from scratch. On a first analysis it says there is no prior
+/// ledger and nothing else.
 pub(crate) fn prior_ledger_data_section(
     prior: Option<&ThesisLedger>,
     eval: Option<&LedgerEvaluation>,
@@ -5957,70 +6068,6 @@ pub(crate) fn prior_ledger_data_section(
     p
 }
 
-/// The role/risk prompt's ledger-rewrite instructions — the priced message
-/// states the same requirements in its Part 2 ledger item (`portfolio-v40`).
-fn ledger_rewrite_instructions(role_risk: bool) -> String {
-    let mut p = String::new();
-    p.push_str(
-        "\nREWRITE THE THESIS LEDGER in `ledger`: the current thesis (the app carries \
-         the original thesis unchanged); the key drivers the thesis actually depends \
-         on, each tied to an engine series where one fits and carrying null where none \
-         does; the bear/base/bull monitor \
-         conditions with rough probability leans (percent, roughly summing to 100); \
-         what must improve to migrate toward the bull case and what must not break to \
-         stay in the base case; the key falsifiers; and the action triggers. \
-         Every falsifier and trigger carries a `quant` field: an object {series, comparator, \
-         threshold, margin} for an engine-series condition, or null for a qualitative condition. \
-         Observed values come from the supplied evidence; a new monitoring threshold and its \
-         margin are your authored condition, not a claim about an observed value. \
-         A falsifier additionally carries a `technology_class` flag, \
-         and a trigger a `family` (the add / trim / sell family it pre-commits — the \
-         final action rung is the later action call's, not the trigger's). \
-         Whenever the condition \
-         rests on a numeric level of an engine series, populate `quant`: the series \
-         (exactly one label from the list above), below/above, the threshold as a \
-         number in that series' own units per the unit shown above — gross margin \
-         below 16% is threshold 0.16, not 16 — and a materiality margin in those same \
-         units, a positive noise band well inside a nonzero level's magnitude (the noise \
-         guard: moves inside the margin don't count; typically a few percent of a nonzero level; \
-         a margin at or beyond a nonzero level's magnitude downgrades the condition to \
-         qualitative, and a zero level has no cap). \
-         Put the number in `quant`, not only in the statement text: a statement that \
-         asserts a numeric threshold on an engine series while leaving `quant` null \
-         cannot be machine-evaluated and silently degrades to a prose-only condition. \
-         Set `quant` to null ONLY when no engine series fits the condition — then it \
-         is qualitative; state it precisely enough to be researched. \
-         The statement and `quant` must agree — the same metric, the same direction, \
-         and the same level (a percent in the statement is the fraction in `quant`); \
-         the app downgrades a disagreeing condition to qualitative rather than \
-         repairing it. State exactly one level per quantitative condition and no \
-         duration, volume, or second condition (\"for two weeks\", \"on elevated \
-         volume\", \"without X\"): the app confirms a breach on the prints shown per \
-         series, and a condition that needs such a qualifier is qualitative (`quant` \
-         null). On a falsifier, set \
-         `technology_class` true only for a third-party technology-event falsifier — a \
-         competitor's or supplier's product or standard announcement that threatens \
-         the thesis — and false for every ordinary financial-metric condition. \
-         Mark tripped/fired ONLY where CONDITION CROSSINGS THIS RUN shows a confirmed \
-         crossing for that same condition, or — for a qualitative condition — where the \
-         ledger above marks it research-supported and the cited finding actually \
-         evidences the trip; a qualitative claim with no such fresh finding is \
-         unsupported. Unsupported claims are cleared by the app. \
-         Keep a condition's series/comparator/threshold/margin unchanged unless the \
-         condition itself has genuinely changed — an edit to that core resets its \
-         tracked breach history.\n",
-    );
-    if role_risk {
-        p.push_str(
-            "This is a role/risk-only holding: its ledger drivers are fund-flavored — \
-             exposure tilt, expense drag, mandate/tracking fidelity, role in the \
-             portfolio, house-view fit — its monitor scenarios carry no price targets, \
-             and its triggers are trim/sell only (no add family).\n",
-        );
-    }
-    p
-}
-
 /// The ledger section's statement-basis line — the one place the prompt says
 /// which basis the flow series stand on this run, so a flow-series threshold is
 /// authored on the basis it will be evaluated against. The flow family is read off
@@ -6095,6 +6142,39 @@ fn own_debut_continuity_role_risk(
         interpretation.what_changed_entries.clear();
     }
     interpretation
+}
+
+/// The role/risk verdict assembled from a fresh interpretation: the readout's
+/// computed surface app-stamped, the model's role read and continuity line as
+/// authored, the action fields placeholders the per-holding action call
+/// overwrites (never rendered into that call's prompt). One assembly serves the
+/// pipeline and the fixed-evidence harness's synthetic role/risk case
+/// (`portfolio-v42`), beside [`graded_verdict_from_interpretation`].
+pub(crate) fn role_risk_verdict_from_interpretation(
+    readout: &RoleRiskReadout,
+    interpretation: RoleRiskInterpretation,
+) -> RoleRiskVerdict {
+    RoleRiskVerdict {
+        class_label: readout.class_label.clone(),
+        role_summary: interpretation.role_summary,
+        exposure_tilt: readout
+            .exposure_tilt
+            .iter()
+            .map(|(label, weight)| ExposureWeight {
+                label: label.clone(),
+                weight: *weight,
+            })
+            .collect(),
+        expense_drag: readout.expense_ratio,
+        observable_risk: readout.observable_risk,
+        structural_flag: readout.structural_flag(),
+        is_cef: readout.is_cef,
+        nav_premium: readout.nav_premium,
+        evidence_gaps: readout.evidence_gaps.clone(),
+        action: Action::Hold,
+        action_rationale: String::new(),
+        what_changed: interpretation.what_changed,
+    }
 }
 
 /// The priced verdict assembled from a fresh interpretation: the engine arm's
@@ -7345,23 +7425,25 @@ pub(crate) mod tests {
         assert!(s.contains("[D1] spot: 100.00 -> 92.00"), "{s}");
         assert!(s.contains("[D2] metric gross margin"), "{s}");
         // The section is data only (`portfolio-v40`): the attribution rules live
-        // in the priced message's Part 2 item and in the role/risk prompt's
-        // instruction block, never beside the ids.
+        // in each message's Part 2 items, never beside the ids.
         for narration in ["downgraded", "self-correction", "WHAT_CHANGED_ENTRIES"] {
             assert!(!s.contains(narration), "`{narration}` leaked: {s}");
         }
         let empty = input_delta_prompt_section(&[]);
         assert!(empty.contains("None recorded.\n"), "{empty}");
         assert!(!empty.contains("No input-delta entries are available"), "{empty}");
-        // The role/risk instruction block names the row's six fields and the
-        // rules (`portfolio-v31`).
-        let rules = what_changed_instructions();
+        // The role/risk message states the same requirements as its own Part 2
+        // items, with this branch's detail gloss and no parameter sentence
+        // (`portfolio-v42`).
+        let rules = what_changed_task_items(3, "the role read, the scenario or the condition", false);
         assert!(
-            rules.contains("kind (which kind of value moved") && rules.contains("detail (which"),
+            rules.contains("\n3. what_changed_entries — one row per intrinsic value that moved")
+                && rules.contains("detail (which one — the role read, the scenario or the condition)"),
             "{rules}"
         );
-        assert!(rules.contains("downgraded to self-correction"), "{rules}");
-        assert!(rules.contains("never for a rephrasing"), "{rules}");
+        assert!(!rules.contains("downgraded") && !rules.contains("parameter change"), "{rules}");
+        assert!(rules.contains("never a rephrasing"), "{rules}");
+        assert!(rules.contains("\n   what_changed — one sentence summarizing those rows.\n"), "{rules}");
         // The priced continuity item states the same requirements on the output,
         // citing the section by name, with no validator narration; a debut
         // requests no rows at all.
@@ -7974,31 +8056,34 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_summary_only_house_view_is_claimed_only_by_the_prompt_that_renders_it() {
-        // The two prompts render DIFFERENT parts of the house view: the priced prompt
-        // renders the latest sections and the recent stances, the role/risk prompt only
-        // the latest sections. And `load_house_view` deliberately keeps the summaries
-        // when the latest report's Markdown is missing or unreadable — so a
-        // summary-only house view is reachable, and reaches a role/risk verdict as
-        // nothing at all while its audit claimed the source.
-        assert!(
-            !role_risk_prompt_renders_house_view(&{
+    fn a_summary_only_house_view_is_claimed_by_both_prompts_since_both_render_the_stances() {
+        // Both messages render the house view through one MARKET ANALYSIS
+        // section — the latest sections and the recent stances (`portfolio-v42`;
+        // through v41 the role/risk message rendered the sections only). And
+        // `load_house_view` deliberately keeps the summaries when the latest
+        // report's Markdown is missing or unreadable, so a summary-only house
+        // view is reachable and reaches both verdicts as the stance lines — which
+        // the one predicate the audit reads says.
+        for d in [
+            {
                 let mut d = fund_dossier(us_equity_fund());
                 d.house_view = house_view_of(None, 2);
                 d
-            }),
-            "the role/risk prompt renders no summaries, so it receives nothing"
-        );
-        assert!(
-            priced_prompt_renders_house_view(&{
+            },
+            {
                 let mut d = dossier(AssetClass::Stock, strong_financials());
                 d.house_view = house_view_of(None, 2);
                 d
-            }),
-            "the priced prompt does render the stances, so it does receive them"
+            },
+        ] {
+            assert!(prompt_renders_house_view(&d), "the stances render, so the source is consulted");
+        }
+        assert!(
+            !prompt_renders_house_view(&fund_dossier(us_equity_fund())),
+            "no house view at all: nothing renders, nothing is claimed"
         );
 
-        // End to end on the role/risk branch, which the earlier pin never covered.
+        // End to end on the role/risk branch.
         let mut bond = us_equity_fund();
         bond.symbol = "BND".into();
         bond.asset_class = Some("Fixed Income".into());
@@ -8016,12 +8101,16 @@ pub(crate) mod tests {
         };
         let claims = |sources: Vec<String>| sources.iter().any(|s| s.contains("house view"));
         assert!(
-            !claims(role_risk_sources(house_view_of(None, 2))),
-            "summary-only: the role/risk audit must not claim what its prompt omits"
+            claims(role_risk_sources(house_view_of(None, 2))),
+            "summary-only: the stances render on the role/risk message, so the claim is earned"
         );
         assert!(
             claims(role_risk_sources(house_view_of(Some("## Thesis\nrisk-on."), 0))),
             "sections present: it does render them, so the claim is earned"
+        );
+        assert!(
+            !claims(role_risk_sources(HouseView::default())),
+            "no house view: nothing renders, so the claim is not made"
         );
     }
 
@@ -10070,8 +10159,25 @@ pub(crate) mod tests {
             input_delta: &[], distilled: "research",
         });
         let daily = engine::compute_metrics(&d.financials).return_volatility.unwrap();
-        assert!(prompt.contains(&format!("daily decimal; short price-history window): {daily}")));
-        assert!(prompt.contains("OBSERVABLE RISK (annualized volatility; deep history when available): 0.417"));
+        // The daily figure renders once, as the FINANCIAL METRICS line the
+        // ledger evaluates; the annualized read sits under RISK PROFILE with
+        // its unit gloss (`portfolio-v42`).
+        assert!(
+            prompt.contains(&format!(
+                "- daily realized return volatility [return-volatility]: {daily:.4} — a daily fraction"
+            )),
+            "{prompt}"
+        );
+        assert_eq!(prompt.matches("[return-volatility]").count(), 1, "{prompt}");
+        assert!(
+            prompt.contains(
+                "\nRISK PROFILE\nAnnualized realized volatility: 0.417 (a fraction; 0.14 means 14% a year).\n"
+            ),
+            "{prompt}"
+        );
+        for narration in ["short price-history window", "LEDGER OBSERVATION", "OBSERVABLE RISK", "deep history"] {
+            assert!(!prompt.contains(narration), "`{narration}` leaked: {prompt}");
+        }
         assert!(prompt.contains("Price: $195.00 per share.\n"), "{prompt}");
         assert!(!prompt.contains("Current price"), "{prompt}");
         assert!((daily - 0.417 / 15.87).abs() > 0.001);
@@ -10350,8 +10456,9 @@ pub(crate) mod tests {
         // The residue slice (3.5–3.9) moved it to v39; the interpretation
         // rewrite — one message in two parts, no app narration, the caps unshown
         // — changes the interpretation prompts and their contract, so it moves
-        // to v40. The checkpoint trail is unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v41");
+        // to v40. The checkpoint trail is unchanged. The action rewrite moved it
+        // to v41 and the role/risk rewrite to v42, the trail still unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v42");
         assert_eq!(crate::portfolio::store::CHECKPOINT_FORMAT_VERSION, "checkpoint-v10");
     }
 
@@ -11395,7 +11502,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn house_view_renders_as_market_analysis_on_the_priced_prompt_and_keeps_its_scope_line_on_the_role_prompt() {
+    fn house_view_renders_as_market_analysis_on_both_interpretation_messages() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.house_view.latest_sections = Some("Thesis: risk-off.".into());
         let engine_output = match engine::analyze(&d.financials, &rates()) {
@@ -11439,7 +11546,9 @@ pub(crate) mod tests {
         });
         assert!(!bare_user.contains("\nMARKET ANALYSIS\n"), "{bare_user}");
 
-        // The role/risk prompt keeps the scope on its house-view header.
+        // The role/risk message renders the same section through the same
+        // renderer (`portfolio-v42`): no product name, no scope clause, and the
+        // thesis line of its ledger item draws on it by name.
         let readout = RoleRiskReadout {
             class_label: "equity fund below the US-exposure guard".into(),
             structural_kind: None,
@@ -11458,15 +11567,14 @@ pub(crate) mod tests {
             ledger_eval: None,
             distilled: "No research findings.",
         });
-        let hv_block = role
-            .split("MARKET SIGNAL HOUSE VIEW")
-            .nth(1)
-            .expect("house-view block present");
         assert!(
-            hv_block.starts_with(" (latest report — scope:"),
-            "scope on the header: {hv_block}"
+            role.contains("\nMARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
+            "{role}"
         );
-        assert!(role.contains("never by itself a reason to exit"), "{role}");
+        assert!(role.contains("drawing on MARKET ANALYSIS for the market setup"), "{role}");
+        for narration in ["MARKET SIGNAL", "HOUSE VIEW", "never by itself a reason to exit", "scope:"] {
+            assert!(!role.contains(narration), "`{narration}` leaked: {role}");
+        }
     }
 
     #[test]
@@ -11488,19 +11596,30 @@ pub(crate) mod tests {
             })
         };
 
+        // CLASS carries the label, the fund's reported asset class and the
+        // structure line where one applies (`portfolio-v42`, ruled 2026-09-17).
         let overlay = prompt_for(Some(FundStructuralKind::OptionOverlay));
         assert!(
-            overlay.contains("STRUCTURAL FLAG: option-overlay path dependency"),
+            overlay.contains(
+                "\nCLASS\nequity fund below the US-exposure guard. Reported asset class: Equity.\n\
+                 Structure: option overlay; the options reshape the return path.\n"
+            ),
             "{overlay}"
         );
-        assert!(!overlay.contains("leveraged/inverse"), "{overlay}");
+        assert!(!overlay.contains("leveraged"), "{overlay}");
 
         let daily_reset = prompt_for(Some(FundStructuralKind::LeveragedInverse));
         assert!(
-            daily_reset.contains("STRUCTURAL FLAG: leveraged/inverse daily-reset"),
+            daily_reset.contains("\nStructure: leveraged / inverse, resetting daily.\n"),
             "{daily_reset}"
         );
-        assert!(!daily_reset.contains("option-overlay"), "{daily_reset}");
+        assert!(!daily_reset.contains("option overlay"), "{daily_reset}");
+
+        let plain = prompt_for(None);
+        assert!(!plain.contains("Structure:"), "{plain}");
+        for narration in ["STRUCTURAL FLAG", "CLASSIFICATION:", "path dependency"] {
+            assert!(!overlay.contains(narration), "`{narration}` leaked: {overlay}");
+        }
     }
 
     #[test]
@@ -11518,7 +11637,7 @@ pub(crate) mod tests {
             observable_risk: None,
             is_cef,
             nav_premium,
-            evidence_gaps: vec!["price-vs-NAV unavailable — no NAV".into()],
+            evidence_gaps: vec!["price-vs-NAV unavailable: no NAV".into()],
         };
         let prompt = |r: &RoleRiskReadout| {
             role_risk_user_prompt(&RoleRiskInput {
@@ -11532,6 +11651,17 @@ pub(crate) mod tests {
         };
         let discount = prompt(&readout(true, Some(-0.072)));
         assert!(discount.contains("PRICE VS NAV: -7.2% (discount)"), "{discount}");
+        // A unit gloss only, on every packet (`portfolio-v42`).
+        assert!(
+            discount.contains(
+                "\nPRICE VS NAV: -7.2% (discount): the closed-end fund's market price against its \
+                 net asset value.\n"
+            ),
+            "{discount}"
+        );
+        for narration in ["the closed-end read", "transient ETF spread", "structural discount"] {
+            assert!(!discount.contains(narration), "`{narration}` leaked: {discount}");
+        }
         let premium = prompt(&readout(true, Some(0.031)));
         assert!(premium.contains("PRICE VS NAV: +3.1% (premium)"), "{premium}");
         // Boundary: a value that renders as 0.0% reads "at par" — never a
@@ -12006,7 +12136,7 @@ pub(crate) mod tests {
             unevaluable_series: vec![],
             updated_states: vec![],
         };
-        let section = ledger_prompt_section(Some(&prior), Some(&eval), false, &LedgerSeriesContract::build(false, None, None), &[], None, None);
+        let section = prior_ledger_data_section(Some(&prior), Some(&eval), &[]);
         let d = fund_dossier(us_equity_fund());
         let mut entries = Vec::new();
         append_shared_delta(&mut entries, &d, PositionChange::Unchanged, Some(&eval), Some(1.0));
@@ -12108,13 +12238,17 @@ pub(crate) mod tests {
             ledger_eval: None,
             distilled: "No research findings.",
         });
+        // The role/risk message renders the ratio once, as its FINANCIAL
+        // METRICS line (`portfolio-v42`).
         assert!(
             role.contains(
-                "EXPENSE RATIO (decimal fraction of assets per year; 0.0075 = 0.75%/yr): \
-                 0.0003 (0.03%/yr)\n"
+                "- fund expense ratio [expense-ratio]: 0.0003 (0.03%/yr) — a fraction of assets \
+                 per year, never a percent (0.0075 means 0.75%); confirmed by one filing\n"
             ),
             "{role}"
         );
+        assert_eq!(role.matches("0.0003 (0.03%/yr)").count(), 1, "renders once: {role}");
+        assert!(!role.contains("EXPENSE RATIO ("), "{role}");
 
         let engine_output = match engine::analyze(&strong_financials(), &rates()) {
             EngineVerdict::Analyzed(o) => o,
@@ -13804,37 +13938,56 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn ledger_section_renders_debut_prior_and_crossings() {
-        // Debut: the vocabulary and the authoring instruction.
-        let s = ledger_prompt_section(None, None, false, &LedgerSeriesContract::build(false, None, None), &[], None, None);
-        assert!(s.contains("\nMETRICS AVAILABLE FOR QUANTITATIVE LEDGER CONDITIONS"), "{s}");
-        assert!(s.contains("[net-margin]"), "{s}");
-        assert!(s.contains("\nPRIOR THESIS LEDGER\nNone: this is the first analysis.\n"), "{s}");
-        assert!(!s.contains("ENGINE SERIES"), "{s}");
-        assert!(s.contains("REWRITE THE THESIS LEDGER"), "{s}");
-        // The `quant`-authoring instruction names the object and the anti-pattern
-        // (a numeric threshold left only in prose), and describes `technology_class`
-        // — the prose gaps behind the 2026-08-30 big-run ledger under-population
-        // finding (`portfolio-v31`).
-        assert!(s.contains("`quant` field: an object"), "{s}");
+    fn ledger_data_and_task_item_render_debut_prior_and_crossings() {
+        // Debut: the data section says none; the shared task item carries the
+        // authoring contract as requirements on the output (`portfolio-v42`).
+        let none = prior_ledger_data_section(None, None, &[]);
+        assert!(none.contains("\nPRIOR THESIS LEDGER\nNone: this is the first analysis.\n"), "{none}");
+        let stock = LedgerSeriesContract::build(false, None, None);
+        let item = ledger_task_item(5, &stock, LedgerItemBranch::PricedStock, false);
+        assert!(item.starts_with("\n5. ledger — the position's initial thesis ledger:\n"), "{item}");
+        assert!(item.contains("Every falsifier and trigger has a quant field."), "{item}");
+        assert!(item.contains("technology_class is true only for a third party's technology event"), "{item}");
+        assert!(item.contains("with family \"add\", \"trim\" or \"sell\". fired is false."), "{item}");
+        assert!(item.contains("(\"below 16%\" on gross-margin is 0.16)"), "{item}");
+        assert!(!item.contains("for a fund, the exposure it supplies"), "{item}");
+        for narration in ["REWRITE THE THESIS LEDGER", "the app", "engine", "downgrades", "machine-evaluated", "action call"] {
+            assert!(!item.contains(narration), "`{narration}` leaked: {item}");
+        }
+        // The fund form on both fund variants (ruled 2026-09-17): the fund
+        // threshold example and the driver clause; on the role/risk branch the
+        // trim / sell families and the market-analysis reference on the thesis
+        // line, which the priced fund message's outlook item carries instead.
+        let fund = LedgerSeriesContract::build(true, None, None);
+        let rr = ledger_task_item(2, &fund, LedgerItemBranch::RoleRisk, false);
+        assert!(rr.starts_with("\n2. ledger — the position's initial thesis ledger:\n"), "{rr}");
         assert!(
-            s.contains("Put the number in `quant`, not only in the statement text"),
-            "{s}"
+            rr.contains("- thesis: the standing thesis, in a few sentences, drawing on MARKET ANALYSIS for the market setup.\n"),
+            "{rr}"
         );
-        assert!(s.contains("threshold 0.16, not 16"), "{s}");
-        assert!(s.contains("third-party technology-event falsifier"), "{s}");
-        // `technology_class` is a falsifier-only schema field — the prose must not
-        // attribute it to triggers (the mismatch Codex caught on the first cut).
         assert!(
-            s.contains("A falsifier additionally carries a `technology_class`"),
-            "{s}"
+            rr.contains("- key_drivers: what the thesis depends on — for a fund, the exposure it supplies, its cost and its fidelity to its mandate. Where a driver"),
+            "{rr}"
         );
-        // `family` is a trigger-only field and is the add/trim/sell family, not an
-        // action-ladder rung — the later action call sets the rung (Codex round 2).
         assert!(
-            s.contains("the final action rung is the later action call's"),
-            "{s}"
+            rr.contains("- triggers: pre-committed conditions for trimming or selling, with family \"trim\" or \"sell\". fired is false.\n"),
+            "{rr}"
         );
+        assert!(!rr.contains("\"add\""), "{rr}");
+        assert!(rr.contains("(\"above 0.75%\" on expense-ratio is 0.0075)"), "{rr}");
+        assert!(rr.contains("0.0005 on an expense ratio of 0.0075"), "{rr}");
+        assert!(rr.contains("Price closes below $38"), "{rr}");
+        let priced_fund = ledger_task_item(5, &fund, LedgerItemBranch::PricedFund, false);
+        assert!(priced_fund.contains("for a fund, the exposure it supplies"), "{priced_fund}");
+        assert!(priced_fund.contains("(\"above 0.75%\" on expense-ratio is 0.0075)"), "{priced_fund}");
+        assert!(priced_fund.contains("with family \"add\", \"trim\" or \"sell\"."), "{priced_fund}");
+        assert!(!priced_fund.contains("drawing on MARKET ANALYSIS"), "{priced_fund}");
+        // On continuity the carry rule and the tripped / fired rule.
+        let cont = ledger_task_item(5, &stock, LedgerItemBranch::PricedStock, true);
+        assert!(cont.contains("rewritten from PRIOR THESIS LEDGER"), "{cont}");
+        assert!(cont.contains("tripped is true only where CONDITION CROSSINGS THIS RUN shows a confirmed"), "{cont}");
+        assert!(cont.contains("marked research-supported evidences it"), "{cont}");
+        assert!(cont.contains("fired follows the same rule as tripped."), "{cont}");
 
         // A prior ledger renders whole — the first prior-run content in the prompt —
         // with the engine's crossings and typed unevaluable notes beside it.
@@ -13856,7 +14009,7 @@ pub(crate) mod tests {
             unevaluable_series: vec![engine::LedgerSeries::NetMargin],
             updated_states: vec![],
         };
-        let s = ledger_prompt_section(Some(&prior), Some(&eval), false, &LedgerSeriesContract::build(false, None, None), &[], None, None);
+        let s = prior_ledger_data_section(Some(&prior), Some(&eval), &[]);
         assert!(s.contains("the debut thesis"), "original thesis renders: {s}");
         assert!(s.contains("the standing thesis"), "{s}");
         assert!(s.contains("CONFIRMED BREACH"), "{s}");
@@ -13870,25 +14023,19 @@ pub(crate) mod tests {
         // contract — a weight is a book fact, retired from the per-holding loop.
         assert!(!s.contains("Target weight range"), "{s}");
 
-        // The role_risk variant names the branch reductions.
-        let rr = ledger_prompt_section(Some(&prior), None, true, &LedgerSeriesContract::build(true, None, None), &[], None, None);
-        assert!(rr.contains("trim/sell only"), "{rr}");
-
         // The research-supported mark (2026-08-24 review F3): a fresh research
         // entry tied to a condition marks that row — by statement, the id held
-        // out — and the rewrite instruction names the mark as the qualitative
-        // leg; without a tied entry no row is marked and the retired
-        // "none are available this run" sentence is gone for good.
+        // out — and the task item names the mark as the qualitative leg;
+        // without a tied entry no row is marked and the retired "none are
+        // available this run" sentence is gone for good.
         assert!(!s.contains("RESEARCH-SUPPORTED THIS RUN:"), "{s}");
         assert!(!s.contains("none are available this run"), "{s}");
-        assert!(s.contains("marks it research-supported"), "{s}");
-        assert!(s.contains("CONDITION CROSSINGS THIS RUN shows a confirmed"), "{s}");
         let tied = vec![crate::portfolio::DeltaEntry {
             id: "research-1".into(),
             label: "research finding (t): a claim [https://x.example/a]".into(),
             related_condition_id: Some("keep-1".into()),
         }];
-        let marked = ledger_prompt_section(Some(&prior), Some(&eval), false, &LedgerSeriesContract::build(false, None, None), &tied, None, None);
+        let marked = prior_ledger_data_section(Some(&prior), Some(&eval), &tied);
         assert!(
             marked.contains(
                 " — research-supported: a finding in CHANGES SINCE THE PRIOR ANALYSIS bears on \
@@ -13898,13 +14045,8 @@ pub(crate) mod tests {
         );
         assert!(!marked.contains("RESEARCH-SUPPORTED THIS RUN:"), "{marked}");
         assert!(!marked.contains("keep-1"), "condition ids stay out of the prompt: {marked}");
-        let rr_marked = ledger_prompt_section(Some(&prior), None, true, &LedgerSeriesContract::build(true, None, None), &tied, None, None);
-        assert!(
-            rr_marked.contains("research-supported: a finding in CHANGES SINCE THE PRIOR ANALYSIS"),
-            "{rr_marked}"
-        );
 
-        // Both interpretation prompts carry the section.
+        // Both interpretation messages carry the section and the item.
         let d = dossier(AssetClass::Stock, strong_financials());
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
@@ -13921,15 +14063,26 @@ pub(crate) mod tests {
             tech_pre_flag: None,
             narrative: None,
         });
-        // The priced message states the ledger as a Part 2 item over the prior
-        // ledger rendered as data (`portfolio-v40`); the role/risk prompt keeps
-        // the instruction block.
+        // Both messages state the ledger as a Part 2 item over the prior ledger
+        // rendered as data (`portfolio-v40`; the role/risk message since
+        // `portfolio-v42`).
         assert!(user.contains("\n5. ledger — the position's initial thesis ledger:\n"), "{user}");
         assert!(user.contains("\nPRIOR THESIS LEDGER\nNone: this is the first analysis.\n"), "{user}");
         assert!(!user.contains("REWRITE THE THESIS LEDGER"), "{user}");
-        assert!(interpretation_system_prompt(false, false).contains("ledger"));
-        assert!(!interpretation_system_prompt(false, false).contains("THESIS LEDGER"));
-        assert!(role_risk_system_prompt(false).contains("THESIS LEDGER"));
+        for system in [interpretation_system_prompt(false, false), role_risk_system_prompt(false)] {
+            assert!(system.contains("ledger") && !system.contains("THESIS LEDGER"), "{system}");
+        }
+        let rr = role_risk_user_prompt(&RoleRiskInput {
+            input_delta: &[],
+            dossier: &d,
+            prior_ledger: None,
+            readout: &RoleRiskReadout::default(),
+            ledger_eval: None,
+            distilled: "",
+        });
+        assert!(rr.contains("\n2. ledger — the position's initial thesis ledger:\n"), "{rr}");
+        assert!(rr.contains("\nPRIOR THESIS LEDGER\nNone: this is the first analysis.\n"), "{rr}");
+        assert!(!rr.contains("REWRITE THE THESIS LEDGER"), "{rr}");
     }
 
     /// The 2026-08-24 large-scale review's Priority-1 minor: the vocabulary said
@@ -13944,16 +14097,11 @@ pub(crate) mod tests {
         // (Codex round 1: the gate's whole family is not basis-homogeneous).
         const FLOW: &str = "Flow metrics (net margin, gross margin, revenue growth, P/E, P/S)";
         const INSTANTS: &str = "Balance-sheet metrics (debt / equity, P/B)";
+        // The basis line and the metric lines, as FINANCIAL METRICS renders them
+        // on both messages (`portfolio-v42`).
         let section = |basis: Option<StatementBasis>, equity: Option<EquitySource>| {
-            ledger_prompt_section(
-                None,
-                None,
-                false,
-                &LedgerSeriesContract::build(false, None, None),
-                &[],
-                basis,
-                equity,
-            )
+            statement_basis_line(basis, equity, false)
+                + &LedgerSeriesContract::build(false, None, None).metric_lines()
         };
 
         let ttm = section(Some(StatementBasis::Ttm), Some(EquitySource::FmpQuarterly));
@@ -14027,15 +14175,7 @@ pub(crate) mod tests {
 
         // A fund has no statement series: its line names the market metrics'
         // cadence and the expense ratio's source instead.
-        let rr = ledger_prompt_section(
-            None,
-            None,
-            true,
-            &LedgerSeriesContract::build(true, None, None),
-            &[],
-            None,
-            None,
-        );
+        let rr = statement_basis_line(None, None, true);
         assert!(
             rr.contains("The market metrics are daily; the expense ratio is the fund's published figure.\n"),
             "{rr}"
@@ -14257,8 +14397,21 @@ pub(crate) mod tests {
                 keys: pf::role_risk_keys(debut),
                 contract: pf::role_risk_response_contract(debut),
                 prompt: role_risk_system_prompt(debut),
-                return_shape: None,
+                return_shape: Some(pf::role_risk_return_shape(debut)),
             });
+            // The role/risk message closes on its shape, verbatim (`portfolio-v42`).
+            let task = role_risk_task_section(
+                &LedgerSeriesContract::build(true, None, None),
+                debut,
+                !debut,
+                true,
+                true,
+            );
+            let expected = format!(
+                "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
+                pf::role_risk_return_shape(debut)
+            );
+            assert!(task.ends_with(&expected), "role/risk debut {debut}: {task}");
         }
 
         for c in cases {
@@ -15516,15 +15669,11 @@ pub(crate) mod tests {
     #[test]
     fn the_ledger_contract_scopes_series_by_vehicle_and_shows_observations() {
         // A fund never sees a stock-only series; a stock's current value renders
-        // beside each series it may threshold (1.1's checks). The role/risk block
-        // and the priced message's FINANCIAL METRICS share one set of metric
-        // lines (`portfolio-v40`).
-        let fund = LedgerSeriesContract::build(true, None, None)
-            .render();
-        assert!(
-            fund.starts_with("\nMETRICS AVAILABLE FOR QUANTITATIVE LEDGER CONDITIONS"),
-            "{fund}"
-        );
+        // beside each series it may threshold (1.1's checks). Both messages
+        // render one set of metric lines under FINANCIAL METRICS through one
+        // section (`portfolio-v42`).
+        let fund_contract = LedgerSeriesContract::build(true, None, None);
+        let fund = fund_contract.metric_lines();
         for absent in ["[net-margin]", "[gross-margin]", "[revenue-growth]", "[pe-ratio]", "[debt-to-equity]"] {
             assert!(!fund.contains(absent), "{absent}: {fund}");
         }
@@ -15537,7 +15686,7 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         };
         let stock = LedgerSeriesContract::build(false, Some(&engine_output.metrics), Some(&d.financials));
-        let rendered = stock.render();
+        let rendered = stock.metric_lines();
         assert!(!rendered.contains("[expense-ratio]"), "{rendered}");
         let net = engine_output.metrics.net_margin.unwrap();
         assert!(
@@ -15550,21 +15699,26 @@ pub(crate) mod tests {
             rendered.contains("- the holding's price (account currency) [price]: 195.00 — dollars per share; confirmed by two consecutive daily closes\n"),
             "{rendered}"
         );
-        // The block's authoring sentences (1.7, 1.9 and 3.8): the level in the
-        // sentence, the threshold exactly it, the margin the separate band, and
-        // the key-driver null rule — with the margin caps enforced, not shown
-        // (`portfolio-v40`).
-        for (contract, label) in [(&rendered, "stock"), (&fund, "fund")] {
-            assert!(contract.contains("A quantitative condition's statement names its level in the series' unit"), "{label}: {contract}");
-            assert!(contract.contains("the threshold is exactly that level; the margin is the separate noise band around it, small relative to the level"), "{label}: {contract}");
-            assert!(contract.contains("A key driver's series is one of the labels above where one fits and null where none does."), "{label}: {contract}");
-            for narration in ["at most", "A zero level has no cap", "current observation", "confirms on", "ENGINE SERIES"] {
-                assert!(!contract.contains(narration), "{label}: `{narration}` leaked: {contract}");
+        // The item's authoring sentences (1.7, 1.9 and 3.8) on both vehicles:
+        // the level in the sentence, the threshold exactly it, the margin the
+        // separate band, and the key-driver null rule — with the margin caps
+        // enforced, not shown (`portfolio-v40`).
+        for (contract, branch, label) in [
+            (&stock, LedgerItemBranch::PricedStock, "stock"),
+            (&fund_contract, LedgerItemBranch::PricedFund, "fund"),
+        ] {
+            let item = ledger_task_item(5, contract, branch, false);
+            assert!(item.contains("the statement names the same metric, direction and level"), "{label}: {item}");
+            assert!(item.contains("threshold: the level the statement names, in the metric's unit"), "{label}: {item}");
+            assert!(item.contains("margin: the noise around the threshold that a crossing must clear, in the same unit — small relative to the level"), "{label}: {item}");
+            assert!(item.contains("otherwise series is null."), "{label}: {item}");
+            for narration in ["at most", "A zero level has no cap", "current observation", "confirms on", "ENGINE SERIES", "METRICS AVAILABLE"] {
+                assert!(!item.contains(narration), "{label}: `{narration}` leaked: {item}");
             }
         }
-        // Both prompts carry the worked examples in the vehicle's vocabulary.
+        // Both messages carry the worked examples in the vehicle's vocabulary.
         assert!(stock.examples().contains("gross-margin"), "{}", stock.examples());
-        assert!(LedgerSeriesContract::build(true, None, None).examples().contains("Price closes below $38"));
+        assert!(fund_contract.examples().contains("Price closes below $38"));
         let user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,

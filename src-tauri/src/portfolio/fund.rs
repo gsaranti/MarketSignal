@@ -258,11 +258,11 @@ pub fn classify(fund: &FundData) -> FundClassification {
             structural_kind: Some(FundStructuralKind::LeveragedInverse),
             us_share: us_share(fund),
             class_label: cef_suffix("leveraged / inverse vehicle"),
-            role_reason: Some(
-                "structurally path-dependent (leveraged / inverse daily reset) — a \
-                 buy-and-hold read is structurally unsound"
-                    .to_string(),
-            ),
+            // Every role reason is a data statement — what is absent or what
+            // the structure is — never the app explaining its own routing
+            // (`portfolio-v42`, ruled 2026-09-17): the strings render on the
+            // interpretation packet, the action packet and the card.
+            role_reason: Some("leveraged / inverse exposure with a daily reset".to_string()),
             is_cef,
         };
     }
@@ -298,9 +298,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             structural_kind,
             us_share: us_share(fund),
             class_label: cef_suffix("option-overlay fund"),
-            role_reason: Some(
-                "option-overlay fund — the exposure composite does not model option payoffs, capped upside or downside buffers; price targets and the capital-efficiency hurdle are unavailable".into(),
-            ),
+            role_reason: Some("the option overlay's payoff is not in the exposure data".into()),
             is_cef,
         };
     }
@@ -312,11 +310,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             structural_kind,
             us_share: us,
             class_label: cef_suffix("bond fund"),
-            role_reason: Some(
-                "bond fund — the on-plan surface carries no duration / credit / curve \
-                 data to price it honestly (valuation recorded as a gap)"
-                    .to_string(),
-            ),
+            role_reason: Some("no duration, credit or yield-curve data for this fund".to_string()),
             is_cef,
         },
         FundStrategyClass::Commodity => FundClassification {
@@ -324,11 +318,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             structural_kind,
             us_share: us,
             class_label: cef_suffix("commodity fund"),
-            role_reason: Some(
-                "commodity fund — no honest exposure-priced valuation on the on-plan \
-                 surface (valuation recorded as a gap)"
-                    .to_string(),
-            ),
+            role_reason: Some("no exposure-priced valuation for a commodity fund".to_string()),
             is_cef,
         },
         // The one branch a real CEF reaches today: `etf/info` serves closed-end
@@ -341,9 +331,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             us_share: us,
             class_label: "closed-end fund".to_string(),
             role_reason: Some(
-                "closed-end fund — the current data surface serves no fund metadata \
-                 for CEFs (`etf/info` is empty), so the exposure-priced valuation \
-                 has no input"
+                "no fund metadata for the closed-end fund: class and weightings unavailable"
                     .to_string(),
             ),
             is_cef,
@@ -359,14 +347,11 @@ pub fn classify(fund: &FundData) -> FundClassification {
             },
             role_reason: Some(if let Some(asset_class) = fund.asset_class.as_deref() {
                 format!(
-                    "strategy class {asset_class:?} is not an equity, bond, or commodity class \
-                     this pipeline can price — any served sector weightings remain exposure \
-                     context only and cannot establish an equity-only mandate"
+                    "reported asset class {asset_class:?} is not an equity, bond or commodity \
+                     class; any sector weightings are exposure context only"
                 )
             } else {
-                "strategy class unresolved and no usable sector weightings — the \
-                 exposure-priced valuation has no input"
-                    .to_string()
+                "no reported asset class and no usable sector weightings".to_string()
             }),
             is_cef,
         },
@@ -377,11 +362,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
                     structural_kind,
                     us_share: us,
                     class_label: cef_suffix("equity fund without usable weightings"),
-                    role_reason: Some(
-                        "no usable sector weighting set — the exposure-priced \
-                         valuation has no input (the mutual-fund degrade)"
-                            .to_string(),
-                    ),
+                    role_reason: Some("no usable sector weightings".to_string()),
                     is_cef,
                 }
             } else if us.map(|s| s < US_EXPOSURE_GUARD).unwrap_or(false) {
@@ -395,9 +376,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
                     // `docs/verification/2026-08-13-big-run-attempt-2.md`).
                     class_label: cef_suffix("equity fund below the US-exposure guard"),
                     role_reason: Some(format!(
-                        "US exposure {:.0}% below the ≥ {:.0}% guard — an \
-                         exchange-tagged US sector P/E is not an honest read on an \
-                         international fund",
+                        "US exposure {:.0}%, below the {:.0}% floor for a US sector read",
                         us.unwrap_or(0.0) * 100.0,
                         US_EXPOSURE_GUARD * 100.0
                     )),
@@ -827,8 +806,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         if classification.is_cef {
             if !info_present {
                 gaps.push(
-                    "fund metadata (etf/info) is empty for closed-end funds on the \
-                     current data surface — expense ratio and exposure unavailable"
+                    "fund metadata (etf/info) is empty for the closed-end fund: expense ratio \
+                     and exposure unavailable"
                         .to_string(),
                 );
             }
@@ -845,13 +824,13 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
                     engine::usable_price(fund.nav),
                     engine::usable_price(fin.current_price),
                 ) {
-                    (None, _) => "no usable NAV for closed-end funds on the current data surface",
+                    (None, _) => "no usable NAV for the closed-end fund",
                     (Some(_), None) => "no usable market quote to read against the reported NAV",
                     // Both legs usable, yet no read: the quotient did not come
                     // out finite — neither leg is the thing missing.
                     (Some(_), Some(_)) => "the price-vs-NAV read did not come out finite",
                 };
-                gaps.push(format!("price-vs-NAV unavailable — {cause}"));
+                gaps.push(format!("price-vs-NAV unavailable: {cause}"));
             }
         }
         gaps.push(reason.clone());
@@ -1904,12 +1883,14 @@ mod tests {
         let c = classify(&allocation);
         assert_eq!(c.class, FundStrategyClass::Unknown);
         assert_eq!(c.class_label, "fund with unsupported strategy class");
-        assert!(
-            c.role_reason
-                .as_deref()
-                .is_some_and(|r| r.contains("cannot establish an equity-only mandate")),
-            "{:?}",
-            c.role_reason
+        // The reason is a data statement (`portfolio-v42`): the reported class
+        // and what the sector rows are, never the app's routing rule.
+        assert_eq!(
+            c.role_reason.as_deref(),
+            Some(
+                "reported asset class \"Allocation / Multi-Asset\" is not an equity, bond or \
+                 commodity class; any sector weightings are exposure context only"
+            )
         );
         let fin = financials(100.0);
         let inputs = FundEngineInputs {

@@ -2218,7 +2218,20 @@ pub struct HoldingAudit {
 /// clauses; the firmness clause with a chosen prior only; the harness's
 /// Facts form removed. No persisted shape changes: the checkpoint stamp stays
 /// `checkpoint-v10`. A v40 trail cannot resume into v41 on the prompt axis.
-pub const PROMPT_VERSION: &str = "portfolio-v41";
+/// `portfolio-v42` is the role/risk interpretation-prompt rewrite on the same
+/// principle (ruled 2026-09-17;
+/// `docs/verification/2026-09-17-role-risk-prompt-rewrite.md`): one message in
+/// two parts on the interpretation's frame, the system prompt the role line and
+/// the output names; CLASS with the reported asset class, EXPOSURE TILT, RISK
+/// PROFILE, EVIDENCE GAPS, the shared FINANCIAL METRICS and MARKET ANALYSIS
+/// with the stances, and on continuity PRIOR ANALYSIS with the prior role read;
+/// the shared ledger item with trim and sell families and the fund threshold
+/// example and driver clause on both fund variants; a placeholder-only return
+/// shape; the engine's evidence-gap strings and the shared PRICE VS NAV line
+/// reworded as data on every surface that renders them. No persisted shape
+/// changes: the checkpoint stamp stays `checkpoint-v10`. A v41 trail cannot
+/// resume into v42 on the prompt axis.
+pub const PROMPT_VERSION: &str = "portfolio-v42";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2687,9 +2700,10 @@ pub const INTERPRETATION_KEYS: [&str; 10] = [
 ];
 
 /// The `role_risk_only` branch's fields on a continuity call, on the same
-/// shared-constant footing — `ledger` is shadowed by that prompt's prose too.
+/// shared-constant footing, in the message's output order (`portfolio-v42`) so
+/// the contract line and the return shape agree.
 pub const ROLE_RISK_KEYS: [&str; 4] =
-    ["role_summary", "what_changed", "what_changed_entries", "ledger"];
+    ["role_summary", "ledger", "what_changed_entries", "what_changed"];
 
 /// The two continuity fields the app writes itself on a debut (fix list 3.3,
 /// `portfolio-v38`, ruled 2026-09-16): with no prior verdict there is nothing to
@@ -2738,34 +2752,52 @@ pub(crate) fn complete_debut_response(body: &mut Value) {
 /// schema's `required` set and this line are built from the same list, so the
 /// enforced grammar and the stated contract cannot diverge.
 pub fn interpretation_response_contract(debut: bool) -> String {
-    let keys = interpretation_keys(debut);
+    response_contract_line(&interpretation_keys(debut))
+}
+
+/// The output-name sentence every two-part message's system prompt closes
+/// with, from the call's declared key list — one form for the priced,
+/// role/risk and action contracts.
+fn response_contract_line(keys: &[&str]) -> String {
     let (last, head) = keys.split_last().expect("the key list is never empty");
     format!("You will return {} and {last}, as one JSON object.", head.join(", "))
 }
+
+/// Every object's keys in the order the task items state them, for both
+/// interpretation shapes; a key the table does not name sorts after the named
+/// ones, alphabetically.
+const SHAPE_KEY_ORDER: [&str; 45] = [
+    "role_summary",
+    "conviction", "horizon_outlook", "financial_summary", "model_sub_scores",
+    "model_price_targets", "model_target_rationale", "ledger", "what_changed_entries",
+    "what_changed", "self_assessment",
+    "short", "mid", "long",
+    "quality", "valuation", "momentum", "risk",
+    "one_month", "twelve_month",
+    "thesis", "key_drivers", "base", "bear", "bull",
+    "what_must_improve", "what_must_not_break", "falsifiers",
+    "triggers", "name", "statement", "family", "quant", "series",
+    "comparator", "threshold", "margin", "technology_class", "tripped", "fired",
+    "kind", "detail", "old", "new", "attribution",
+];
 
 /// The placeholder-only return shape the interpretation message closes with
 /// (`portfolio-v40`): the schema's nesting with every value blank — a string is
 /// "", a number 0, a boolean false, an enum its alternatives as "<a|b|c>", a
 /// nullable enum null, an array one item — and no field notes, since every field
-/// is defined in the Part 2 item that produces it. Interpretation-only; the
-/// distillation and role/risk prompts keep [`response_shape_contract`].
+/// is defined in the Part 2 item that produces it. The role/risk message closes
+/// with [`role_risk_return_shape`] on the same renderer since `portfolio-v42`;
+/// the distillation prompts keep [`response_shape_contract`].
 pub fn interpretation_return_shape(is_fund: bool, debut: bool) -> String {
-    // Every object's keys in the order the task items state them; a key the
-    // table does not name sorts after the named ones, alphabetically.
-    const KEY_ORDER: [&str; 44] = [
-        "conviction", "horizon_outlook", "financial_summary", "model_sub_scores",
-        "model_price_targets", "model_target_rationale", "ledger", "what_changed_entries",
-        "what_changed", "self_assessment",
-        "short", "mid", "long",
-        "quality", "valuation", "momentum", "risk",
-        "one_month", "twelve_month",
-        "thesis", "key_drivers", "base", "bear", "bull",
-        "what_must_improve", "what_must_not_break", "falsifiers",
-        "triggers", "name", "statement", "family", "quant", "series",
-        "comparator", "threshold", "margin", "technology_class", "tripped", "fired",
-        "kind", "detail", "old", "new", "attribution",
-    ];
-    placeholder_shape(&interpretation_schema(is_fund, debut), &KEY_ORDER)
+    placeholder_shape(&interpretation_schema(is_fund, debut), &SHAPE_KEY_ORDER)
+}
+
+/// The placeholder-only return shape the role/risk message closes with
+/// (`portfolio-v42`, ruled 2026-09-17): the branch's schema through the one
+/// renderer, its keys in the task's order — role_summary, ledger, then on a
+/// continuity call what_changed_entries and what_changed.
+pub fn role_risk_return_shape(debut: bool) -> String {
+    placeholder_shape(&role_risk_interpretation_schema(debut), &SHAPE_KEY_ORDER)
 }
 
 /// A schema's nesting with every value blank — a string is "", a number 0, a
@@ -2819,20 +2851,12 @@ fn placeholder_shape(schema: &Value, order: &[&str]) -> String {
     write(&visit(schema), order)
 }
 
-/// The `role_risk_only` branch's contract, generated from [`role_risk_keys`].
+/// The `role_risk_only` branch's response-contract line, generated from
+/// [`role_risk_keys`] on the priced branch's footing (`portfolio-v42`): the
+/// output names alone; field meanings live in the message's Part 2 and the
+/// shape is [`role_risk_return_shape`].
 pub fn role_risk_response_contract(debut: bool) -> String {
-    let continuity = if debut {
-        String::new()
-    } else {
-        " what_changed is the one-line summary of what_changed_entries, the typed \
-         rows (kind, detail, old, new, attribution, evidence) — one per moved value — \
-         and both are required."
-            .to_string()
-    };
-    format!(
-        "Respond with a single JSON object carrying exactly these keys: {}.{continuity}",
-        role_risk_keys(debut).join(", ")
-    ) + &response_shape_contract(&role_risk_interpretation_schema(debut))
+    response_contract_line(&role_risk_keys(debut))
 }
 
 /// Show the same nested structure and enums that constrain decoding. Templates
@@ -3317,15 +3341,54 @@ mod tests {
                 assert!(!contract.contains(narration) && !shape_text.contains(narration), "`{narration}`: {contract} {shape_text}");
             }
         }
-        // The role/risk contract keeps the template form: the ledger's numeric
-        // notes (F4), and the closing sentence naming the surface the grammar
-        // never shows the model (fix list 3.7, portfolio-v39).
-        for c in [role_risk_response_contract(false), role_risk_response_contract(true)] {
-            assert!(c.contains("Field notes (the ledger's numeric fields"), "{c}");
-            assert!(c.contains("three sibling scenario objects"), "{c}");
-            assert!(c.contains("exactly the level the statement names"), "{c}");
-            assert!(c.contains("a fraction of a nonzero level (a zero level has no cap), never folded into the threshold"), "{c}");
-            assert!(c.contains("beginning with {, with no code fence or surrounding prose."), "{c}");
+        // The role/risk contract is the output-name sentence too, and its shape
+        // the placeholder-only return shape on the same renderer
+        // (`portfolio-v42`): the keys in the task's order, the trim / sell
+        // families, the fund series, no field notes or template narration.
+        for debut in [false, true] {
+            let contract = role_risk_response_contract(debut);
+            assert_eq!(
+                contract,
+                if debut {
+                    "You will return role_summary and ledger, as one JSON object."
+                } else {
+                    "You will return role_summary, ledger, what_changed_entries and what_changed, \
+                     as one JSON object."
+                }
+            );
+            assert_eq!(contract.contains("what_changed"), !debut, "{contract}");
+            let shape_text = role_risk_return_shape(debut);
+            assert!(!shape_text.contains('\n'), "{shape_text}");
+            let shape: Value = serde_json::from_str(&shape_text).unwrap();
+            let mut top: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
+            top.sort_unstable();
+            let mut declared = role_risk_keys(debut);
+            declared.sort_unstable();
+            assert_eq!(top, declared, "debut {debut}");
+            assert!(shape_text.starts_with("{\"role_summary\":\"\",\"ledger\":{\"thesis\":\"\""), "{shape_text}");
+            assert_eq!(shape["ledger"]["triggers"][0]["family"], "<trim|sell>");
+            let series = shape["ledger"]["falsifiers"][0]["quant"]["series"].as_str().unwrap().to_string();
+            assert!(series.contains("expense-ratio") && !series.contains("net-margin"), "{series}");
+            if debut {
+                assert!(shape.get("what_changed").is_none() && shape.get("what_changed_entries").is_none());
+            } else {
+                assert_eq!(shape["what_changed_entries"][0]["kind"], "<role-read|scenario-weights|thesis|condition>");
+                let i_entries = shape_text.find("\"what_changed_entries\"").unwrap();
+                let i_line = shape_text.find("\"what_changed\":\"\"").unwrap();
+                assert!(i_entries < i_line, "the rows before their summary: {shape_text}");
+            }
+            placeholders_only(&shape, "");
+            for narration in [
+                "Field notes",
+                "Field alternatives",
+                "never the literal placeholder",
+                "code fence",
+                "three sibling",
+                "both are required",
+                "<role_summary>",
+            ] {
+                assert!(!contract.contains(narration) && !shape_text.contains(narration), "`{narration}`: {contract} {shape_text}");
+            }
         }
         // The action contract is the output names alone (`portfolio-v41`); the
         // fence sentence (fix list 3.13) and the field meanings live in the
@@ -3333,10 +3396,6 @@ mod tests {
         // inline.
         assert_eq!(action_response_contract(), "You will return action and rationale, as one JSON object.");
         assert_eq!(action_return_shape(), "{\"action\":\"<sell-all|trim|hold|add|add-aggressively>\",\"rationale\":\"\"}");
-        let role_contract = role_risk_response_contract(false);
-        assert!(role_contract.contains("\"expense-ratio\"") && !role_contract.contains("\"net-margin\""), "{role_contract}");
-        assert!(role_contract.contains("both are required"));
-        assert!(!role_risk_response_contract(true).contains("what_changed"));
     }
 
     #[test]

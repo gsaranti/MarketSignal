@@ -396,6 +396,23 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-17: adopt; the action, role/risk and distillation prompts follow the same
   principle in their own slices.
   Landed 2026-09-17 as `portfolio-v40` (`2026-09-17-interpretation-prompt-rewrite.md`).
+- 3.18 The role/risk interpretation prompt names no app concept, on the 3.17 principle: one
+  message in two parts on the interpretation's frame — CLASS with the reported asset class,
+  EXPOSURE TILT, RISK PROFILE, EVIDENCE GAPS, the shared FINANCIAL METRICS and MARKET
+  ANALYSIS with the stances, on continuity PRIOR ANALYSIS with the prior role read; then the
+  role read, the shared ledger item with trim and sell families, the shared what-changed
+  items and a placeholder-only shape — the system prompt the role line and the output names,
+  the engine's evidence-gap strings and the PRICE VS NAV line reworded as data on every
+  surface, and the fund threshold example and driver clause on both fund variants.
+  Check: on the synthetic bond fund with thinking captured, no role read or rationale carries
+  a banned word or an account-economics phrase, the ledger stays on the fund series with trim
+  and sell families, the role/risk action rationale reads from the packet, and the markers
+  per call are counted for the record.
+  Raised by the audit of the rendered role/risk prompt against the v40 and v41 frames
+  (2026-09-17).
+  Ruled 2026-09-17: adopt; the eleven prompt rulings and the seven plan rulings are recorded
+  in `2026-09-17-role-risk-prompt-rewrite.md` §Rulings.
+  Landed 2026-09-17 as `portfolio-v42` (`2026-09-17-role-risk-prompt-rewrite.md`).
 - Not adopted (L14, ruled 2026-09-16): rendering "keep the action firm run to run" on
   continuity calls only — the debut check is accepted cost.
 

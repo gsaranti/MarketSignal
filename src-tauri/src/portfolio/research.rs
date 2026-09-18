@@ -713,8 +713,8 @@ pub fn offline_stub(plan: &ResearchPlan) -> HoldingResearch {
             seeded_vintage: None,
             passes: if i == 0 {
                 vec![PassFindings {
-                    findings: "Web research unavailable (offline analyst); grading on the \
-                               deterministic financials and the Market Signal house view only."
+                    findings: "Web research unavailable (offline analyst); the read rests on the \
+                               computed financials and the market analysis only."
                         .to_string(),
                     claims: Vec::new(),
                     followup: None,
