@@ -5074,7 +5074,7 @@ fn interpretation_task_section(
         );
     }
     p.push_str(&format!(
-        "\nRETURN SHAPE (every value is a placeholder)\n{}\n",
+        "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
         crate::portfolio::interpretation_return_shape(is_fund, debut)
     ));
     p
@@ -14162,7 +14162,7 @@ pub(crate) mod tests {
                 !debut,
             );
             let expected = format!(
-                "\nRETURN SHAPE (every value is a placeholder)\n{}\n",
+                "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
                 pf::interpretation_return_shape(is_fund, debut)
             );
             assert!(task.ends_with(&expected), "fund {is_fund} debut {debut}: {task}");

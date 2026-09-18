@@ -45,7 +45,7 @@ Fix list 3.17 is the entry; this record carries the rulings, the inventory and, 
 - The holding header reads `HOLDING / SYM (name). / Price: $358.97 per share.` on every packet.
   The position-change line is a sentence.
 - The optional sub-sections keep their values and lose their narration (D2); the pre-profit consequence lines read the same on both stages.
-- `interpretation_return_shape` in `mod.rs`: strings "", numbers 0, booleans false, enums "<a|b|c>", a nullable enum null, arrays one item.
+- `interpretation_return_shape` in `mod.rs`: strings "", numbers 0, booleans false, enums "<a|b|c>", a nullable enum "<a|b|null>", arrays one item, every object's keys in the order the task items state them, and the heading saying an array holds as many items as apply (the last three ruled 2026-09-17 after the commit, off the user's read of the rendered shape).
 - Stamp: `PROMPT_VERSION` → `portfolio-v40`.
 - Docs: `portfolio-workflow.md` §Step 6f (the interpretation-call paragraphs and the prompt-input paragraph), `portfolio-analysis.md` §The position thesis ledger (the authoring-contract sentences) and §Intrinsic verdict; fix list 3.17, 1.10, 1.11 and the live lines on 1.9, 3.5–3.14 and 8.5.
 - The fixed-evidence harness gains `fixed_evidence_prompt_dump` (ignored; `MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP=<file>`), which writes every rendered fixed-set prompt to one Markdown file for a human read.

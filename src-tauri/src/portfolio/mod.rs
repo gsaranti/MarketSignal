@@ -2696,10 +2696,12 @@ pub fn interpretation_response_contract(debut: bool) -> String {
 pub fn interpretation_return_shape(is_fund: bool, debut: bool) -> String {
     fn visit(schema: &Value) -> Value {
         if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+            // A nullable choice shows both halves — "<a|b|null>" — so null never
+            // reads as the expected value (the 3.8 skip).
+            let mut names: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
             if values.iter().any(Value::is_null) {
-                return Value::Null;
+                names.push("null");
             }
-            let names: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
             return json!(format!("<{}>", names.join("|")));
         }
         if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
@@ -2718,20 +2720,44 @@ pub fn interpretation_return_shape(is_fund: bool, debut: bool) -> String {
             _ => Value::Null,
         }
     }
-    let shape = visit(&interpretation_schema(is_fund, debut));
-    // Top-level keys in the output order the task states them — the map type
-    // sorts alphabetically, so the object is written key by key.
-    let fields: Vec<String> = interpretation_keys(debut)
-        .iter()
-        .map(|k| {
-            format!(
-                "{}:{}",
-                serde_json::to_string(k).expect("a key serializes"),
-                serde_json::to_string(&shape[k]).expect("a JSON value serializes")
-            )
-        })
-        .collect();
-    format!("{{{}}}", fields.join(","))
+    // Every object's keys in the order the task items state them; the map type
+    // sorts alphabetically, so the object is written key by key. A key the
+    // table does not name sorts after the named ones, alphabetically.
+    const KEY_ORDER: [&str; 33] = [
+        "conviction", "horizon_outlook", "financial_summary", "model_sub_scores",
+        "model_price_targets", "model_target_rationale", "ledger", "what_changed_entries",
+        "what_changed", "self_assessment",
+        "short", "mid", "long",
+        "quality", "valuation", "momentum", "risk",
+        "one_month", "twelve_month",
+        "thesis", "key_drivers", "base", "bear", "bull",
+        "what_must_improve", "what_must_not_break", "falsifiers",
+        "triggers", "name", "statement", "family", "quant", "series",
+    ];
+    fn rank(key: &str) -> (usize, &str) {
+        const TAIL: [&str; 11] = [
+            "comparator", "threshold", "margin", "technology_class", "tripped", "fired",
+            "kind", "detail", "old", "new", "attribution",
+        ];
+        let named = KEY_ORDER.iter().chain(TAIL.iter()).position(|k| *k == key);
+        (named.unwrap_or(usize::MAX), key)
+    }
+    fn write(v: &Value) -> String {
+        match v {
+            Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort_by_key(|k| rank(k));
+                let fields: Vec<String> = keys
+                    .into_iter()
+                    .map(|k| format!("{}:{}", serde_json::to_string(k).expect("a key serializes"), write(&map[k])))
+                    .collect();
+                format!("{{{}}}", fields.join(","))
+            }
+            Value::Array(items) => format!("[{}]", items.iter().map(write).collect::<Vec<_>>().join(",")),
+            other => serde_json::to_string(other).expect("a JSON value serializes"),
+        }
+    }
+    write(&visit(&interpretation_schema(is_fund, debut)))
 }
 
 /// The `role_risk_only` branch's contract, generated from [`role_risk_keys`].
@@ -3144,7 +3170,7 @@ mod tests {
         // The priced branch's contract is the output-name sentence, and its
         // shape is the placeholder-only return shape (`portfolio-v40`): exactly
         // the declared keys, every enum its alternatives as "<a|b|c>", a
-        // nullable enum null, and no field notes or template narration.
+        // nullable enum "<…|null>", and no field notes or template narration.
         fn placeholders_only(v: &Value, path: &str) {
             match v {
                 Value::String(s) => assert!(
@@ -3189,7 +3215,15 @@ mod tests {
             }
             assert_eq!(shape["ledger"]["triggers"][0]["family"], "<add|trim|sell>");
             assert_eq!(shape["ledger"]["triggers"][0]["quant"]["comparator"], "<below|above>");
-            assert_eq!(shape["ledger"]["key_drivers"][0]["series"], Value::Null, "a nullable enum is null");
+            let driver_series = shape["ledger"]["key_drivers"][0]["series"].as_str().unwrap().to_string();
+            assert!(driver_series.starts_with('<') && driver_series.ends_with("|null>"), "a nullable enum names null: {driver_series}");
+            // Nested keys follow the task's order, not the alphabet.
+            let horizon_keys: Vec<&str> = shape_text.split("\"horizon_outlook\":{").nth(1).unwrap().split('}').next().unwrap().split(',').map(|f| f.split(':').next().unwrap().trim_matches('"')).collect();
+            assert_eq!(horizon_keys, ["short", "mid", "long"], "{shape_text}");
+            let ledger_start = shape_text.find("\"ledger\":{").unwrap();
+            let after = &shape_text[ledger_start..];
+            let (i_thesis, i_base, i_bear, i_falsifiers) = (after.find("\"thesis\"").unwrap(), after.find("\"base\"").unwrap(), after.find("\"bear\"").unwrap(), after.find("\"falsifiers\"").unwrap());
+            assert!(i_thesis < i_base && i_base < i_bear && i_bear < i_falsifiers, "{shape_text}");
             assert_eq!(shape["ledger"]["base"]["probability_pct"], 0);
             // The series enum scoped to the vehicle (3.3a).
             let series = shape["ledger"]["falsifiers"][0]["quant"]["series"].as_str().unwrap().to_string();
