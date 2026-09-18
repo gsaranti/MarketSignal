@@ -2,12 +2,12 @@
 
 ## What happened
 
-**Four rulings, no code change (2026-09-17, late).**
+**Rulings only, no code change (2026-09-17 late through 2026-09-18).**
 The open local-model-call findings were consolidated into one work list, `docs/verification/2026-09-17-open-findings.md` — eleven flat-numbered entries (1–2 validator bugs, 3 the claim-date persisted shape, 4–6 the fetch layer, 7–8 telemetry, 9 the sampling A/B, 10 the non-thinking experiments, 11 success measures), the checks attempt 7 reads for every rewritten prompt (`portfolio-v40` through `v44`), the watches and the not-adopted list.
-The 2026-09-15 fix list and attempt-6 record carry a Superseded line and are history; a new finding appends to the work list as entry 12 on, never elsewhere.
-The fixed-evidence harness is deprecated: the v40 / v41 / v42 live read is cancelled, the next test after the remaining fixes is attempt 7 itself, and the harness is rebuilt after it only if the run shows a need (its code stays in the tree; removal is a separate decision).
-BUILD never tracks fixes or adjustments and INDEX never indexes verification records (they are temporary and referenced from this file only): INDEX §Verification records removed, the eleven owed BUILD / INDEX rows cancelled.
-BUILD was then restructured to that rule — a compressed spine, the suite decisions with §Seams and §Standing constraints kept whole, §Built one paragraph, the changelog section dropped, zero verification-record pointers — and that is its shape going forward.
+The 2026-09-15 fix list and attempt-6 record are superseded history; a new finding appends to the work list as entry 12 on, never elsewhere.
+The fixed-evidence harness is deprecated: the v40 / v41 / v42 live read is cancelled, the next test after the remaining fixes is attempt 7 itself, the harness is rebuilt after it only if the run shows a need, and its code stays in the tree whole (its thirteen offline tests are the validator slice's offline check).
+BUILD never tracks fixes or adjustments and INDEX never indexes verification records (temporary, referenced from this file only); BUILD was restructured to that rule — compressed spine, suite decisions with §Seams and §Standing constraints whole, §Built one paragraph, no changelog, zero verification pointers — and that is its shape going forward.
+The remaining flags were ruled 2026-09-18 and are on the work list: the 6g checker's existing short-circuit order names a downgrade's reason (a wrong direction outranks a duration; a rolling-window phrase is never a duration); entry 4's failed-URL record is run-scoped memory with no stamp; entry 3's shape half moves `checkpoint` and its freshness-basis half moves `evidence-floor`.
 
 ## Current state
 
@@ -19,9 +19,7 @@ Every entry rules through the selector before implementation; plan flags are rul
 
 ## Open questions
 
-- Whether the harness code (the offline replay in `fixed_evidence.rs`, the attempt-6 fixtures, the ignored live and prompt-dump tests) stays in the tree now the harness is deprecated.
-- Validator-slice flags: which downgrade reason wins when one sentence trips both entries 1 and 2; whether entry 4's failed-URL record is run-scoped memory or rides `web_source_state`.
-- Entry 3's stamp (evidence-floor, checkpoint or both), decided after attempt 7's dating read.
+- None open; the next flags arise at plan time.
 
 ## Where to start
 
