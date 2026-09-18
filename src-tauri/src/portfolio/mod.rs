@@ -2348,7 +2348,12 @@ pub struct HoldingAudit {
 /// (`holds-at-authoring`); the persisted condition gains `label`
 /// (`checkpoint-v12`, portability format 8). A v44 trail cannot resume into
 /// v45 on either axis.
-pub const PROMPT_VERSION: &str = "portfolio-v45";
+/// `portfolio-v46` (2026-09-18): gathering sees bounded raw pages already
+/// retrieved for the holding and a remaining-reply count refreshed per turn.
+/// The model judges unanswered questions; no question-status wire is added.
+/// Source snapshots remain transient; checkpoint-v12 and portability 8 stand.
+/// A v45 trail cannot resume into v46 on the prompt axis.
+pub const PROMPT_VERSION: &str = "portfolio-v46";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

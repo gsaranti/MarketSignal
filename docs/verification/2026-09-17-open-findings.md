@@ -11,8 +11,8 @@ A finding from attempt 7 is appended here as the next number, never in another f
 ## Standing rules
 
 - Pre-release, no data compatibility work: a persisted-shape change moves its stamp and the next attempt re-wipes.
-- The debut stamps are `portfolio-v45` / `checkpoint-v12` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability format 8.
-  Any prompt or schema change lands as `portfolio-v46`; the checkpoint and evidence-floor stamps move only where an entry says its persisted shape changes, confirmed at plan time.
+- The debut stamps are `portfolio-v46` / `checkpoint-v12` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability format 8.
+  Any further prompt or schema change lands as `portfolio-v47`; the checkpoint and evidence-floor stamps move only where an entry says its persisted shape changes, confirmed at plan time.
 - Nothing is adopted on one holding's impression; each entry names the check that admits it.
 - Checks are behavioral where the finding was: a source-evidence input and an expected persisted outcome.
   Re-think marker counts stay a diagnostic, never the gate.
@@ -100,12 +100,22 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 
 ### 5. Evidence reuse across a holding's topics and a visible remaining budget
 
-- Decision: reuse successfully fetched evidence across a holding's topics before searching again; expose the remaining turns and the topic's unanswered questions to gathering.
-- Note: the `portfolio-v43` gathering message states the per-reply tool-call bound and the stopping rule; it shows no remaining-turn count and reuses nothing across topics.
-  Any line this adds to the message lands as `portfolio-v46` and is data, never an app concept.
+- Decision: reuse successfully fetched raw evidence across a holding's topics before searching again; expose remaining replies and keep the topic questions visible so gathering judges what is still unanswered.
+- Ruled through the selector 2026-09-18: show bounded page text before searching; the model judges unanswered questions from the shown pages with no question-status reporting; show replies left in this pass, including the current reply, refreshed before each gathering request.
+  Existing limits remain unchanged.
+- Implementation: a transient holding-scoped inventory supplies ordinary topics and follow-up passes in first-retrieval order within the existing initial-message allowance, preserving original source dates, annotation and redirect lineage.
+  Explicitly requested pages precede reused pages in the synthesis admission path; current URL policy, usable-body admission and shown-source citation validation still bind.
+  Other topics' findings and transcripts stay out, and the disconfirming pass retains its dedicated contrary-search behavior without automatic page injection.
+  The canonical contract is `docs/web-research.md` §The research loop and context management.
+- Check, offline: a two-topic and follow-up script reuses source bodies without another search or fetch, with original dates and redirected seed lineage; the countdown reads 8 through 1 with unchanged retries; bounds, policy refusals, explicit source replacement and omitted-source citation rejection remain under test.
 - Check, on attempt 7: the cap-hit share falls beside attempt 6's without raising the cap.
-- Stamp: `portfolio-v46` if the message changes.
-- Ruling: open.
+  Compare the same completed holdings' topic-pass population used for attempt 6's recorded 24/33 baseline, report the denominator and skipped or failed passes separately, and read evidence coverage alongside the rate so empty passes or a different earlier bound cannot count as success.
+  The full-book rate is reported separately; this is an observational comparison with the other pre-run fixes also present, not an isolated attribution to entry 5.
+- Stamp: `portfolio-v46`; no persisted-shape change, so `checkpoint-v12` and portability format 8 remain unchanged.
+- Verification (2026-09-18): `cargo test` passed (1,510 library tests and 32 integration tests; 33 ignored), including five entry-5 regressions; `cargo clippy --all-targets --all-features` passed without warnings, `npm run build` passed, and `git diff --check` passed.
+  The full mock-HTTP suite required execution outside the sandbox to bind local ports; no live-source or model run was performed.
+- Independent review is complete: Metis approved, and Claude's separate review agreed and reported passing full gates.
+  Attempt-7 live-effectiveness acceptance remains pending until the user-authorized run.
 
 ### 6. The fetcher declares the SEC User-Agent and names its failure cause
 

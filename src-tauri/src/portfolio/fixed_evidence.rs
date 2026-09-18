@@ -1706,7 +1706,7 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
 #[test]
 fn research_messages_are_two_parts_with_no_app_concept() {
     let samples = research_samples();
-    assert_eq!(samples.len(), 8, "four gathering, three synthesis, one fund gathering");
+    assert_eq!(samples.len(), 9, "five gathering, three synthesis, one fund gathering");
     for s in &samples {
         let (part1, part2) = s
             .user
@@ -1740,6 +1740,14 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             );
         }
         if s.label.starts_with("gathering") {
+            let remaining = if s.label.contains("three replies left") { 3 } else { 8 };
+            assert!(part1.contains(&format!("Replies remaining, including this one: {remaining}.")), "{}: {part1}", s.label);
+            if s.label.contains("previously retrieved pages") {
+                assert!(part1.contains("PAGES ALREADY RETRIEVED") && part1.contains("BEGIN PAGE TEXT"));
+            }
+            if !s.label.contains("disconfirming") {
+                assert!(part2.contains("Search for what remains unanswered"), "{}: {part2}", s.label);
+            }
             assert!(part2.contains("2. At most 8 tool calls in one reply."), "{}: {part2}", s.label);
             assert!(part2.contains("3. Stop when the questions are answered"), "{}: {part2}", s.label);
             assert!(part2.contains("a weak source lowers confidence"), "{}: {part2}", s.label);

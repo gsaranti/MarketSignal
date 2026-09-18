@@ -23,8 +23,8 @@
 //! Context stays bounded by extraction and an evidence ledger, never by
 //! re-distilling findings mid-loop: each pass ends with a schema-constrained
 //! findings turn whose claims (claim + source URL + timestamp) append to the
-//! per-holding ledger, app-validated so a claim can only cite a URL the pass
-//! actually fetched (or a deep-read seed). Seeds are leads, never evidence —
+//! per-holding ledger, app-validated so a claim can only cite a source body actually shown to synthesis,
+//! whether fetched in this pass or reused from this holding. Seeds are leads, never evidence —
 //! a seed never enters the ledger as a claim; `surfaced_by` lineage is
 //! stamped deterministically when a seed's URL is deep-read (the
 //! model-attributed leg was retired with `portfolio-v43`: nothing read it).
@@ -1521,6 +1521,130 @@ pub struct PageMeta {
     pub published: Option<String>
 }
 
+/// Successful source snapshots for this holding only. Text and provenance move
+/// together; reusing a snapshot never changes its retrieval vintage or charges
+/// a fetch. Stable vector order is the first retrieval order.
+#[derive(Clone)]
+struct ReusablePage {
+    page: FetchedPage,
+    requested_urls: Vec<String>,
+    published: Option<String>,
+    annotation: Option<SourceAnnotation>,
+    truncated: bool,
+}
+
+impl ReusablePage {
+    fn key(&self) -> String {
+        crate::web_research::store::normalize_url(&self.page.final_url)
+    }
+
+    fn permitted(&self) -> bool {
+        use crate::web_research::fetch::check_url_policy;
+        check_url_policy(&self.page.final_url).is_ok()
+            && self
+                .requested_urls
+                .iter()
+                .all(|url| check_url_policy(url).is_ok())
+    }
+
+    fn alias(&self, seeds: &[ResearchSeed]) -> Option<String> {
+        let normalize = crate::web_research::store::normalize_url;
+        self.requested_urls
+            .iter()
+            .find(|url| {
+                seeds
+                    .iter()
+                    .any(|seed| normalize(&seed.url) == normalize(url))
+            })
+            .or_else(|| self.requested_urls.first())
+            .map(|url| normalize(url))
+    }
+
+    fn render(&self, body_chars: usize) -> String {
+        let mut page = self.page.clone();
+        page.text = page.text.chars().take(body_chars).collect();
+        let mut rendered = render_page(&page, self.annotation.as_ref(), self.published.as_deref());
+        if self.truncated || body_chars < self.page.text.chars().count() {
+            let end = "\n--- END PAGE TEXT ---";
+            rendered.truncate(rendered.len() - end.len());
+            rendered.push_str(PAGE_CONTINUES_MARKER);
+            rendered.push_str(end);
+        }
+        rendered
+    }
+}
+
+/// Select quoted bodies under the existing initial-message allowance. The
+/// questions, task and countdown are reserved first. No relevance judgment is
+/// inferred from a URL, title, or another topic's findings.
+fn reuse_pages(
+    ctx: &PassContext<'_>,
+    inventory: &[ReusablePage],
+    gaps: &mut Vec<String>,
+) -> (String, Vec<ReusablePage>) {
+    if ctx.disconfirming || inventory.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    let prefix_cap = crate::portfolio::distill::input_budget_chars(
+        crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+    ) / 3;
+    let heading = "\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding.\n";
+    // Reserve the omission line even when no omission is ultimately needed.
+    let mut room = prefix_cap.saturating_sub(pass_brief(ctx).chars().count() + heading.len() + 200);
+    let mut block = String::from(heading);
+    let mut selected = Vec::new();
+    let mut omitted = 0;
+    let mut truncated = 0;
+    for source in inventory {
+        if source.page.text.trim().is_empty() || !source.permitted() {
+            omitted += 1;
+            continue;
+        }
+        let full = source.render(source.page.text.chars().count());
+        let rendered = if full.chars().count() < room {
+            full
+        } else {
+            let frame = source.render(0).chars().count() + 1;
+            let body_chars = room.saturating_sub(frame);
+            if body_chars == 0 {
+                omitted += 1;
+                continue;
+            }
+            let rendered = source.render(body_chars);
+            if rendered.chars().count() + 1 > room
+                || source
+                    .page
+                    .text
+                    .chars()
+                    .take(body_chars)
+                    .all(char::is_whitespace)
+            {
+                omitted += 1;
+                continue;
+            }
+            truncated += 1;
+            rendered
+        };
+        room -= rendered.chars().count() + 1;
+        block.push_str(&rendered);
+        block.push('\n');
+        selected.push(source.clone());
+    }
+    if omitted > 0 {
+        block.push_str(&format!(
+            "{omitted} previously retrieved page(s) are not shown.\n"
+        ));
+        gaps.push(format!("topic {}: {omitted} previously retrieved page(s) omitted from gathering (input allowance, empty text or current URL policy)", ctx.topic.key));
+    }
+    if truncated > 0 {
+        gaps.push(format!(
+            "topic {}: {truncated} previously retrieved page(s) shortened to fit gathering",
+            ctx.topic.key
+        ));
+    }
+    (block, selected)
+}
+
 /// Everything a pass needs beyond the runner: the holding brief, the topic,
 /// the cross-run seed, and the news leads.
 struct PassContext<'a> {
@@ -1552,6 +1676,7 @@ impl ResearchRunner<'_> {
             ..Default::default()
         };
         let mut page_texts = std::collections::HashMap::new();
+        let mut inventory = Vec::new();
         // Titles and publication dates ride a parallel per-holding map (like
         // `page_texts`) so the fresh synthesis conversation can render the
         // headline the discarded gathering transcript used to carry
@@ -1641,6 +1766,7 @@ impl ResearchRunner<'_> {
                     &mut page_texts,
                     &mut page_meta,
                     &mut published_by_url,
+                    &mut inventory,
                 )?;
                 topic_claims.extend(pass.claims.iter().cloned());
                 // The follow-up is the model's proposal; the orchestrator
@@ -1697,6 +1823,7 @@ impl ResearchRunner<'_> {
                     &mut page_texts,
                     &mut page_meta,
                     &mut published_by_url,
+                    &mut inventory,
                 )?;
                 out.disconfirming = Some(pass);
             }
@@ -1727,6 +1854,7 @@ impl ResearchRunner<'_> {
     /// tool-history-free conversation carrying the grammar and no tools, so the
     /// two never share a request (attempt-4 Finding 4, fix B) — a
     /// budget-interrupted pass still synthesizes from what landed, never nothing.
+    #[allow(clippy::too_many_arguments)] // transient holding stores plus this pass's budget and gaps
     fn run_pass(
         &self,
         ctx: &PassContext<'_>,
@@ -1735,19 +1863,29 @@ impl ResearchRunner<'_> {
         page_texts: &mut std::collections::HashMap<String, String>,
         page_meta: &mut std::collections::HashMap<String, PageMeta>,
         published_by_url: &mut std::collections::HashMap<String, String>,
+        inventory: &mut Vec<ReusablePage>,
     ) -> Result<PassFindings> {
         let tools = research_tools();
+        let (reuse_block, reused) = reuse_pages(ctx, inventory, gaps);
         let mut messages = vec![
             ChatMessage::system(research_system_prompt()),
-            ChatMessage::user(pass_brief(ctx)),
+            ChatMessage::user(pass_brief_with_reuse(ctx, &reuse_block, MAX_TURNS_PER_PASS)),
         ];
-        // The URLs this pass actually fetched — the claim validator's ground —
+        // Explicitly fetched URLs (reused sources join after gathering) —
         // plus a final→requested alias so a redirecting seed URL keeps its
         // lineage (the claim cites the final URL; the seed stored the
         // requested one).
         let mut fetched: Vec<(String, String, Option<SourceAnnotation>)> = Vec::new();
         let mut url_aliases: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        for source in &reused {
+            let key = source.key();
+            // Prefer a seed's requested alias when several aliases reached the
+            // same page. The source retains all aliases across explicit reads.
+            if let Some(url) = source.alias(ctx.seeds) {
+                url_aliases.insert(key, url);
+            }
+        }
         // The gathering phase's degradation, accumulated across turns — the
         // synthesis call reads it (as a brief note) since the tool-call history
         // that carried these failures is discarded (attempt-4 review, Finding 2).
@@ -1790,6 +1928,9 @@ impl ResearchRunner<'_> {
             // call. Unlike the fresh synthesis request, this conversation grows
             // across turns; no cache-hit or search-result path may let it cross
             // the shared portfolio input ceiling.
+            messages[1] = ChatMessage::user(pass_brief_with_reuse(
+                ctx, &reuse_block, MAX_TURNS_PER_PASS - turns,
+            ));
             if !gathering_packet_fits(&messages, &tools) {
                 degradation.history_budget_exhausted = true;
                 break;
@@ -1872,6 +2013,7 @@ impl ResearchRunner<'_> {
                         page_meta,
                         published_by_url,
                         &mut degradation,
+                        inventory,
                     ),
                     ToolCall::Unknown { name } => {
                         degradation.malformed_calls += 1;
@@ -1897,6 +2039,15 @@ impl ResearchRunner<'_> {
                 // bounded head now instead of asking for another tool batch and
                 // silently losing continuity with the omitted calls.
                 break;
+            }
+        }
+
+        // Explicit requests have first claim on synthesis space. Reused pages
+        // enter the same admission planner, once per final URL, after them.
+        for source in reused {
+            let key = source.key();
+            if !fetched.iter().any(|(url, _, _)| *url == key) {
+                fetched.push((key, source.page.retrieved_at, source.annotation));
             }
         }
 
@@ -2213,6 +2364,7 @@ impl ResearchRunner<'_> {
         page_meta: &mut std::collections::HashMap<String, PageMeta>,
         published_by_url: &std::collections::HashMap<String, String>,
         degradation: &mut PassDegradation,
+        inventory: &mut Vec<ReusablePage>,
     ) -> String {
         let attempt = self.fetch_with_retry(url, ctx, fetches_spent);
         match attempt.result {
@@ -2252,12 +2404,43 @@ impl ResearchRunner<'_> {
                 let published = published_by_url
                     .get(&normalized)
                     .or_else(|| published_by_url.get(&requested))
+                    // A later explicit read may use the final URL rather than
+                    // the alias whose search/seed supplied the publication date.
+                    .or_else(|| page_meta.get(&normalized).and_then(|meta| meta.published.as_ref()))
                     .cloned();
                 page_meta.insert(
                     normalized.clone(),
                     PageMeta { title: page.title.clone(), published: published.clone() },
                 );
-                fetched.push((normalized, page.retrieved_at.clone(), annotation.clone()));
+                let mut snapshot = page.clone();
+                snapshot.text = page_texts[&normalized].clone();
+                let mut source = ReusablePage {
+                    page: snapshot,
+                    requested_urls: vec![url.to_string()],
+                    published: published.clone(),
+                    annotation: annotation.clone(),
+                    truncated: page_text_chars > PAGE_TEXT_CAP_CHARS,
+                };
+                if let Some(old) = inventory.iter_mut().find(|old| old.key() == normalized) {
+                    for alias in &old.requested_urls {
+                        if !source.requested_urls.contains(alias) {
+                            source.requested_urls.push(alias.clone());
+                        }
+                    }
+                    *old = source.clone();
+                } else {
+                    inventory.push(source.clone());
+                }
+                if let Some(alias) = source.alias(ctx.seeds) {
+                    url_aliases.insert(normalized.clone(), alias);
+                }
+                // A repeated explicit read replaces body and provenance as one
+                // snapshot; first-source dedup must not retain an older date.
+                if let Some(old) = fetched.iter_mut().find(|(key, _, _)| *key == normalized) {
+                    *old = (normalized, page.retrieved_at.clone(), annotation.clone());
+                } else {
+                    fetched.push((normalized, page.retrieved_at.clone(), annotation.clone()));
+                }
                 render_page(&page, annotation.as_ref(), published.as_deref())
             }
             Err(e) => {
@@ -2267,7 +2450,7 @@ impl ResearchRunner<'_> {
         }
     }
 
-    /// Validate the findings turn: claims must cite a URL this pass fetched
+    /// Validate the findings turn: claims must cite a source shown to synthesis
     /// (dropped-and-logged otherwise, capped), and the deterministic
     /// `surfaced_by` lineage is stamped where a claim's source resolves to a
     /// seed URL (the model-attributed leg is gone since `portfolio-v43`).
@@ -2379,7 +2562,7 @@ them and the shape to return. You will return {names}, as one JSON object."
 /// against a full article's worth, clamped — and the stub flag as too little
 /// text to stand as the page (`web_research::fetch::quality_of`; Codex,
 /// `portfolio-v43` round 1).
-const EVIDENCE_GLOSS: &str = "The pages retrieved for this topic. Each has an id, its address, its \
+const EVIDENCE_GLOSS: &str = "The pages shown for this topic. Each has an id, its address, its \
 publication date where the search reported one, when it was retrieved, its tier (0 is a primary \
 source — a filing, the issuer, a regulator — and 5 is sentiment only), what its source is relied on \
 for, and its extraction quality, how much article text was recovered (1 is a full article's \
@@ -2595,7 +2778,7 @@ fn synthesis_brief(
         ));
     }
     if kept.is_empty() {
-        out.push_str("The pages retrieved for this topic carried no usable text.\n");
+        out.push_str("The pages selected for this topic carried no usable text.\n");
         out.push_str(&synthesis_task(ctx, has_note, &[]));
         return out;
     }
@@ -2729,7 +2912,7 @@ fn synthesis_brief(
             "topic {}: {omitted} evidence page(s) omitted entirely to fit the model's input budget",
             ctx.topic.key
         ));
-        out.push_str("The pages retrieved for this topic are too long to show.\n");
+        out.push_str("The pages selected for this topic are too long to show.\n");
         out.push_str(&synthesis_task(ctx, has_note, &[]));
         return out;
     }
@@ -2966,6 +3149,10 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
 /// Part 1 is capped so the task always renders whole under the input guard
 /// (Finding 1).
 fn pass_brief(ctx: &PassContext<'_>) -> String {
+    pass_brief_with_reuse(ctx, "", MAX_TURNS_PER_PASS)
+}
+
+fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, remaining: u32) -> String {
     let mut inputs = String::from("======== PART 1: INPUTS ========\n");
     inputs.push_str(ctx.holding_brief);
     inputs.push_str(&topic_section(ctx.topic));
@@ -3055,11 +3242,15 @@ fn pass_brief(ctx: &PassContext<'_>) -> String {
     let prefix_cap = crate::portfolio::distill::input_budget_chars(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
     ) / 3;
-    let inputs_cap = prefix_cap.saturating_sub(task.chars().count());
+    let countdown = format!("\nSEARCHING\nReplies remaining, including this one: {remaining}.\n");
+    let inputs_cap = prefix_cap.saturating_sub(task.chars().count() + countdown.chars().count()
+        + reuse.chars().count());
     let (mut out, cut) = crate::data_sources::cap_chars(&inputs, inputs_cap);
     if cut {
         out.push_str("\n[the inputs continue beyond what is shown]\n");
     }
+    out.push_str(&countdown);
+    out.push_str(reuse);
     out.push_str(&task);
     out
 }
@@ -3088,9 +3279,11 @@ fn gathering_task(ctx: &PassContext<'_>) -> String {
          under HOLDING."
             .to_string()
     };
-    let mut item1 = String::from(
-        "1. Search, then fetch the results most likely to answer a question and read them.",
-    );
+    let mut item1 = String::from(if ctx.disconfirming {
+        "1. Search, then fetch the results most likely to answer a question and read them."
+    } else {
+        "1. Read the pages already shown against the questions. Search for what remains unanswered, then fetch and read the results most likely to answer it."
+    });
     if !ctx.seeds.is_empty() {
         item1.push_str(" A lead under NEWS LEADS is worth fetching when it bears on a question.");
     }
@@ -4367,6 +4560,418 @@ mod tests {
             source: "fmp-news".into(),
             published: Some("2026-08-20".into())
         }]
+    }
+
+    struct Entry5RecordingModel {
+        inner: ScriptModel,
+        calls: Mutex<Vec<(String, Vec<ChatMessage>, bool)>>,
+    }
+
+    impl ResearchModel for Entry5RecordingModel {
+        fn research_turn(
+            &self,
+            stage: &str,
+            messages: &[ChatMessage],
+            tools: Option<&Value>,
+            format: Option<&Value>,
+        ) -> Result<ChatResponse> {
+            assert_ne!(tools.is_some(), format.is_some());
+            self.calls
+                .lock()
+                .unwrap()
+                .push((stage.into(), messages.to_vec(), tools.is_some()));
+            self.inner.research_turn(stage, messages, tools, format)
+        }
+    }
+
+    struct Entry5Web {
+        calls: Mutex<usize>,
+    }
+
+    impl ResearchWeb for Entry5Web {
+        fn search(&self, _: &str) -> Result<Vec<SearchHit>> {
+            panic!("the shown evidence should answer the scripted questions without searching")
+        }
+        fn fetch(&self, _: &str, _: bool) -> FetchAttempt {
+            *self.calls.lock().unwrap() += 1;
+            FetchAttempt::scripted(Ok((
+                FetchedPage {
+                    final_url: "https://reuters.com/final".into(),
+                    host: "reuters.com".into(),
+                    title: "Original headline".into(),
+                    text: "Revenue was $1.2 billion. Costs declined.".into(),
+                    extraction_quality: 0.9,
+                    thin_stub: false,
+                    retrieved_at: "2026-08-22T10:00:00+00:00".into(),
+                },
+                false,
+            )))
+        }
+    }
+
+    #[test]
+    fn entry5_topics_and_followups_reuse_bodies_with_original_provenance() {
+        let mut root = simple_findings();
+        root["findings"] = json!("ROOT FINDINGS MUST NOT SEED ANOTHER TOPIC");
+        root["followup_question"] = json!("What happened to costs?");
+        let script = || {
+            vec![
+                turn_with_tools(
+                    json!([{"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}]),
+                ),
+                gather_done(),
+                findings_turn(root.clone()),
+                gather_done(),
+                findings_turn(simple_findings()), // follow-up, reuse only
+                gather_done(),
+                findings_turn(simple_findings()), // second topic, reuse only
+                gather_done(), // contrary search gets no automatic evidence or synthesis
+            ]
+        };
+        let web = Entry5Web {
+            calls: Mutex::new(0),
+        };
+        let clock = FrozenClock(Duration::from_secs(10));
+        let progress = RunContext::noop();
+        let agenda = vec![
+            topic("a", "Revenue", &["What was revenue?"]),
+            topic("b", "Costs", &["Did costs decline?"]),
+        ];
+        // Two holdings using the same web seam must each start without sources.
+        for _ in 0..2 {
+            let model = Entry5RecordingModel {
+                inner: ScriptModel::new(script()),
+                calls: Mutex::new(Vec::new()),
+            };
+            let r = ResearchRunner {
+                model: &model,
+                web: &web,
+                budget: ResearchBudget {
+                    max_fetches: 10,
+                    max_wall: Duration::from_secs(3600),
+                    clock: &clock,
+                },
+                progress: &progress,
+                step_label: "research TEST".into(),
+            };
+            let out = r
+                .run_holding("HOLDING: WID", &agenda, &seeds(), &|_| None)
+                .unwrap();
+            assert_eq!(out.fetches_spent, 1);
+            assert_eq!(out.topics[0].passes.len(), 2);
+            let original = &out.topics[0].passes[0].claims[0];
+            let reused = &out.topics[1].passes[0].claims[0];
+            assert_eq!(original, reused);
+            assert_eq!(reused.surfaced_by.as_deref(), Some("seed-1"));
+            assert_eq!(reused.retrieved_at, "2026-08-22T10:00:00+00:00");
+            assert_eq!(reused.source_url, "https://reuters.com/final");
+            assert_eq!(
+                out.topics[1].passes[0].claims.len(),
+                1,
+                "unknown S999 stays rejected"
+            );
+            assert_eq!(out.page_published[&reused.source_url], "2026-08-20");
+            assert!(out.disconfirming.as_ref().unwrap().claims.is_empty());
+            let calls = model.calls.lock().unwrap();
+            assert!(!calls[0].1[1].content.contains("PAGES ALREADY RETRIEVED"));
+            let followup = &calls[3].1[1].content;
+            assert!(
+                followup.contains("PAGES ALREADY RETRIEVED")
+                    && followup.contains("including this one: 8.")
+            );
+            let topic_b = &calls[5].1[1].content;
+            for value in [
+                "Did costs decline?",
+                "Revenue was $1.2 billion",
+                "published 2026-08-20",
+                "retrieved 2026-08-22",
+                "extraction quality 0.90",
+            ] {
+                assert!(topic_b.contains(value), "missing {value}: {topic_b}");
+            }
+            assert!(!topic_b.contains("ROOT FINDINGS MUST NOT SEED"));
+            assert_eq!(calls[5].1.len(), 2, "new topic has a clean conversation");
+            assert!(!calls[7].1[1].content.contains("PAGES ALREADY RETRIEVED"));
+            assert!(calls[7].1[1]
+                .content
+                .contains("Search for evidence against"));
+            assert!(model.inner.turns.lock().unwrap().borrow().is_empty());
+        }
+        assert_eq!(*web.calls.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn entry5_explicit_refetch_replaces_the_snapshot_and_precedes_reused_sources() {
+        struct VersionedWeb {
+            reads: Mutex<usize>,
+        }
+        impl ResearchWeb for VersionedWeb {
+            fn search(&self, _: &str) -> Result<Vec<SearchHit>> {
+                panic!("no search expected")
+            }
+            fn fetch(&self, url: &str, _: bool) -> FetchAttempt {
+                let mut reads = self.reads.lock().unwrap();
+                *reads += 1;
+                let (final_url, text) = if url.ends_with("other") {
+                    (url, "Other source text")
+                } else if *reads == 2 {
+                    ("https://reuters.com/final", "Original version")
+                } else {
+                    ("https://reuters.com/final", "Revised version")
+                };
+                FetchAttempt::scripted(Ok((
+                    FetchedPage {
+                        final_url: final_url.into(),
+                        host: "reuters.com".into(),
+                        title: text.into(),
+                        text: text.into(),
+                        extraction_quality: 0.9,
+                        thin_stub: false,
+                        retrieved_at: format!("2026-08-22T10:00:0{}+00:00", *reads),
+                    },
+                    false,
+                )))
+            }
+        }
+        let model = Entry5RecordingModel {
+            inner: ScriptModel::new(vec![
+                turn_with_tools(json!([
+                    {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/other"}}},
+                    {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
+                ])),
+                gather_done(),
+                findings_turn(simple_findings()),
+                turn_with_tools(
+                    json!([{"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/final"}}}]),
+                ),
+                gather_done(),
+                findings_turn(simple_findings()),
+                gather_done(),
+            ]),
+            calls: Mutex::new(Vec::new()),
+        };
+        let web = VersionedWeb {
+            reads: Mutex::new(0),
+        };
+        let clock = FrozenClock(Duration::from_secs(10));
+        let progress = RunContext::noop();
+        let r = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 10,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &progress,
+            step_label: "research TEST".into(),
+        };
+        let agenda = vec![topic("a", "A", &["q1"]), topic("b", "B", &["q2"])];
+        let out = r
+            .run_holding("HOLDING: WID", &agenda, &seeds(), &|_| None)
+            .unwrap();
+        assert_eq!(out.fetches_spent, 3);
+        let claim = &out.topics[1].passes[0].claims[0];
+        assert_eq!(claim.source_url, "https://reuters.com/final");
+        assert_eq!(claim.retrieved_at, "2026-08-22T10:00:03+00:00");
+        assert_eq!(claim.surfaced_by.as_deref(), Some("seed-1"));
+        assert_eq!(out.page_texts[&claim.source_url], "Revised version");
+        assert_eq!(out.page_published[&claim.source_url], "2026-08-20");
+        let calls = model.calls.lock().unwrap();
+        let synthesis = &calls[5].1[1].content;
+        assert!(synthesis.contains("=== S1: https://reuters.com/final"));
+        assert!(synthesis.contains("=== S2: https://reuters.com/other"));
+        assert_eq!(synthesis.matches("=== S1:").count(), 1);
+        assert!(!synthesis.contains("Original version"));
+        assert!(synthesis.contains("Revised version") && synthesis.contains("10:00:03+00:00"));
+    }
+
+    #[test]
+    fn entry5_reused_body_omitted_by_synthesis_cannot_support_a_claim() {
+        let agenda = one_topic_agenda();
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &agenda[0],
+            seed: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let long_url = format!("https://reuters.com/{}", "x".repeat(600_000));
+        let page = ReusablePage {
+            page: FetchedPage {
+                final_url: long_url.clone(),
+                host: "reuters.com".into(),
+                title: "Long address".into(),
+                text: "Some retrieved evidence".into(),
+                extraction_quality: 0.9,
+                thin_stub: false,
+                retrieved_at: "2026-08-22T10:00:00+00:00".into(),
+            },
+            requested_urls: vec![long_url.clone()],
+            published: None,
+            annotation: None,
+            truncated: false,
+        };
+        let mut inventory = vec![page];
+        let model = ScriptModel::new(vec![gather_done(), findings_turn(simple_findings())]);
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(10));
+        let progress = RunContext::noop();
+        let r = runner(&model, &web, &clock, &progress, 10);
+        let mut texts = [(long_url.clone(), "Some retrieved evidence".into())].into();
+        let mut metadata = [(long_url, PageMeta::default())].into();
+        let mut gaps = Vec::new();
+        let mut spent = 0;
+        let out = r
+            .run_pass(
+                &ctx,
+                &mut spent,
+                &mut gaps,
+                &mut texts,
+                &mut metadata,
+                &mut Default::default(),
+                &mut inventory,
+            )
+            .unwrap();
+        assert!(out.claims.is_empty());
+        assert_eq!(spent, 0);
+        assert_eq!(web.fetch_count(), 0);
+        assert!(
+            gaps.iter().any(|g| g.contains("omitted entirely")),
+            "{gaps:?}"
+        );
+        assert!(
+            gaps.iter().any(|g| g.contains("claim(s) dropped")),
+            "{gaps:?}"
+        );
+    }
+
+    #[test]
+    fn entry5_countdown_includes_current_reply_and_retries_keep_the_same_packet() {
+        struct CountingModel {
+            calls: Mutex<Vec<String>>,
+        }
+        impl ResearchModel for CountingModel {
+            fn research_turn(
+                &self,
+                stage: &str,
+                messages: &[ChatMessage],
+                tools: Option<&Value>,
+                format: Option<&Value>,
+            ) -> Result<ChatResponse> {
+                assert!(tools.is_some() && format.is_none());
+                let mut calls = self.calls.lock().unwrap();
+                calls.push(serde_json::to_string(messages).unwrap());
+                if calls.len() == 2 {
+                    bail!("one scripted retry");
+                }
+                if stage.contains("disconfirm") {
+                    return Ok(gather_done());
+                }
+                Ok(turn_with_tools(
+                    json!([{"function": {"name": "web_search", "arguments": {"query": "q"}}}]),
+                ))
+            }
+            fn retry_permitted(&self, _: &str, _: &anyhow::Error) -> bool {
+                true
+            }
+        }
+        let model = CountingModel {
+            calls: Mutex::new(Vec::new()),
+        };
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(10));
+        let progress = RunContext::noop();
+        let r = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 40,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &progress,
+            step_label: "research TEST".into(),
+        };
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+        assert!(out.gaps.iter().any(|g| g.contains("8-turn cap")));
+        let calls = model.calls.lock().unwrap();
+        assert_eq!(calls.len(), 10);
+        assert_eq!(calls[1], calls[2], "a retry is the identical turn");
+        for (packet, remaining) in calls.iter().zip([8, 7, 7, 6, 5, 4, 3, 2, 1, 8]) {
+            assert_eq!(packet.matches("Replies remaining").count(), 1);
+            assert!(packet.contains(&format!("including this one: {remaining}.")));
+        }
+    }
+
+    #[test]
+    fn entry5_reuse_is_bounded_and_policy_checked_with_truncation_visible() {
+        let agenda = one_topic_agenda();
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &agenda[0],
+            seed: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let source = ReusablePage {
+            page: FetchedPage {
+                final_url: "https://reuters.com/a".into(),
+                host: "reuters.com".into(),
+                title: "large title ".repeat(1000),
+                text: "é\\\"\n".repeat(PAGE_TEXT_CAP_CHARS / 4),
+                extraction_quality: 0.9,
+                thin_stub: false,
+                retrieved_at: "2026-08-22T10:00:00+00:00".into(),
+            },
+            requested_urls: vec!["https://reuters.com/a".into()],
+            published: Some("date ".repeat(1000)),
+            annotation: None,
+            truncated: true,
+        };
+        let mut inventory = vec![source.clone(); 100];
+        for (i, page) in inventory.iter_mut().enumerate() {
+            page.page.final_url = format!("https://reuters.com/{i}");
+        }
+        let mut blocked = source.clone();
+        blocked.page.final_url = "http://127.0.0.1/private".into();
+        inventory.insert(0, blocked);
+        let mut blocked_request = source.clone();
+        blocked_request.requested_urls = vec!["file:///private/secret".into()];
+        inventory.insert(0, blocked_request);
+        let mut empty = source;
+        empty.page.text = "   ".into();
+        inventory.insert(0, empty);
+        let mut gaps = Vec::new();
+        let (block, selected) = reuse_pages(&ctx, &inventory, &mut gaps);
+        assert!(!selected.is_empty() && selected.len() < 100);
+        assert_eq!(selected[0].page.final_url, "https://reuters.com/0");
+        assert!(selected.iter().all(ReusablePage::permitted));
+        assert!(!block.contains("127.0.0.1") && !block.contains("file:///"));
+        assert!(block.contains(PAGE_CONTINUES_MARKER));
+        assert!(gaps.iter().any(|g| g.contains("omitted from gathering")));
+        let brief = pass_brief_with_reuse(&ctx, &block, 8);
+        let cap = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        ) / 3;
+        assert!(
+            brief.chars().count() <= cap,
+            "{} > {cap}",
+            brief.chars().count()
+        );
+        assert!(gathering_packet_fits(
+            &[
+                ChatMessage::system(research_system_prompt()),
+                ChatMessage::user(brief)
+            ],
+            &research_tools()
+        ));
     }
 
     #[test]
@@ -6454,7 +7059,7 @@ mod tests {
         );
         assert!(part2.starts_with("Find what the web shows on each question under TOPIC"), "{part2}");
         for item in [
-            "1. Search, then fetch",
+            "1. Read the pages already shown against the questions.",
             "A lead under NEWS LEADS",
             "a weak source lowers confidence",
             "still holds and for what is newer",
@@ -6617,7 +7222,7 @@ mod tests {
         let mut meta = std::collections::HashMap::new();
         let mut published = std::collections::HashMap::new();
         let pass = r
-            .run_pass(&pctx, &mut spent, &mut gaps, &mut texts, &mut meta, &mut published)
+            .run_pass(&pctx, &mut spent, &mut gaps, &mut texts, &mut meta, &mut published, &mut Vec::new())
             .unwrap();
         assert_eq!(
             pass.findings,
@@ -6803,7 +7408,7 @@ pub(crate) mod samples {
         ]
     }
 
-    /// The four gathering passes on one topic, with the leads given.
+    /// Gathering samples, including a later topic with already retrieved text.
     pub(crate) fn gathering_messages(
         holding_brief: &str,
         topic: &AgendaTopic,
@@ -6820,11 +7425,20 @@ pub(crate) mod samples {
             system: system.clone(),
             user
         };
+        let reuse_ctx = ctx(holding_brief, topic, None, &leads, None, &[], false);
+        let source = ReusablePage {
+            page: page(IR_URL, "Tesla Second Quarter 2026 Update", IR_TEXT, 0.92, false),
+            requested_urls: vec![IR_URL.into()], published: Some("2026-07-22".into()),
+            annotation: Some(annotation(0, &["filings", "financials"], 0.92, false)),
+            truncated: false,
+        };
+        let (reuse, _) = reuse_pages(&reuse_ctx, &[source], &mut Vec::new());
         vec![
             sample("root pass, first analysis, two news leads", pass_brief(&ctx(holding_brief, topic, None, &leads, None, &[], false))),
             sample("follow-up pass, the approved question and the topic's claims so far", pass_brief(&ctx(holding_brief, topic, None, &leads, Some(&fu), &claims, false))),
             sample("root pass on a continuity run, the standing conditions and prior findings", pass_brief(&ctx(holding_brief, topic, Some(&seed), &leads, None, &[], false))),
             sample("the disconfirming pass, the run's claims so far", pass_brief(&ctx(holding_brief, &disc, None, &leads, None, &claims, true))),
+            sample("later topic, previously retrieved pages and three replies left", pass_brief_with_reuse(&reuse_ctx, &reuse, 3)),
         ]
     }
 
