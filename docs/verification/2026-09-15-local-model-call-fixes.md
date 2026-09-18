@@ -167,6 +167,7 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   model's sampling variance.
   Thinking 2026-09-16: the ENGINE SET clause fell from 43% of the action call's re-think
   markers to 7% on the fixed set; the capital-efficiency line replaced it at 35% (2.4).
+  Superseded 2026-09-17 by 2.6: the set is one data line with no permission sentence under `portfolio-v41`.
 - 2.3 State every sub-score's polarity in the action prompt's verdict block ("0–100,
   higher better on every axis"), as the interpretation prompt already does.
   Check: on PSX and SPMO the rationale's reading of the valuation score matches the
@@ -175,6 +176,7 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   `portfolio-v36`.
   Live 2026-09-16: PSX's momentum and DIA's valuation readings carry the stated
   polarity in every rationale that names them.
+  Carried into `portfolio-v41` as the SCORES section's one gloss (2.6).
 - 2.4 The packet's capital-efficiency line states the fact and its reach — what the
   three-state read found (even the bear case clears; the bear case misses and the bull
   case clears; no assessment available), and that the line neither requires nor forbids
@@ -185,6 +187,7 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   Ruled 2026-09-16: adopt; landed as `portfolio-v37`.
   Re-read 2026-09-16: the per-call capital-efficiency markers fell on every holding whose
   line changed (TSLA 4.3 → 3.4, PSX 1.3 → 0.6, DIA 5.3 → 1.6, PGNY 6.7 → 2.4).
+  Superseded 2026-09-17 by 2.6: the capital-efficiency section is numbers alone under `portfolio-v41`.
 - 2.5 The `fails` capital-efficiency line states the fact and its reach as the other
   three states do — the bull case misses the hurdle; a weighed exit input, not a rung —
   instead of "an exit input when forward prospects are independently poor", which the
@@ -195,6 +198,25 @@ Docs that change: `portfolio-analysis.md §Portfolio action`.
   Ruled 2026-09-16: adopt; lands with the §3 slice, not its own.
   Ruled 2026-09-16 (F5): the ratified wording states the fact, the sunk-cost lean it feeds beside the forward read, and the same closing reach as the other three states; landed as `portfolio-v38`.
   Live 2026-09-16: SPMO's and ARKF's capital-efficiency markers fell to 4.5 and 3.2 per action call (from 7.0 and 6.8), inside the reworded holdings' 1.5–3.7 band; every `fails` rationale reads the line as a fact — check met.
+  Superseded 2026-09-17 by 2.6: the capital-efficiency section is numbers alone under `portfolio-v41`.
+- 2.6 The action prompt names no app concept, on the 3.17 principle: one message in two parts
+  — inputs, each section explained once and then its values, labelled computed or analyst;
+  then the task in output order — the system prompt the role line and the output names, the
+  capital-efficiency read as the three tested returns and the hurdle rate with no state word,
+  the set as one data line with no permission sentence, the analyst's target rationale, thesis
+  and scenario rows added, the computed bands' method clauses in place of the provenance label,
+  the overlay's and the forensic sweep's consequence lines off the packet, the weighing order,
+  the profile tie-break and the sunk-cost rule as task clauses, the firmness clause with a
+  chosen prior only, and a placeholder-only return shape.
+  Check: on the fixed set with thinking captured, no rationale cites a hurdle state word or
+  computes the hurdle test from a prefix, no rationale argues from what the computed read
+  permits, the rung table stays inside the fixed set's repeat behaviour, and the action fence
+  markers fall from forty-two on forty-seven calls.
+  Raised by the user's reading of the rendered v39 and v40 prompts and the v39 read's L19 and
+  L20 (2026-09-17).
+  Ruled 2026-09-17: adopt; the nine prompt rulings and the eight plan rulings are recorded in
+  `2026-09-17-action-prompt-rewrite.md` §Rulings.
+  Landed 2026-09-17 as `portfolio-v41` (`2026-09-17-action-prompt-rewrite.md`).
 
 ## 3. Interpretation call — one responsibility per field, no account economics
 
@@ -284,6 +306,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   The marker share and the rung table alone do not decide the form (Codex churn analysis S3; DIA call 44 concluded three times that the set excludes add while quoting "the full ladder is yours").
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
   Live 2026-09-17 (fifteen Facts calls against thirty-two List): the Facts form steers harder on both admission outcomes — PSX's passing admission read as a buy signal (List trim ×3, Facts add, add, hold; engine-set markers 1.0 to 7.7 per call) and DIA's failing admission as a prohibition ("explicitly prohibits increasing exposure"; the permission scan hit "prohibit"); the Facts form is not adopted, the List form stays production, and the entry's ruling on the line itself is open (§Live read in `2026-09-17-residue-slice.md`).
+  Ruled 2026-09-17 (the line): one data line naming the rungs the computed read supports, no permission sentence; the Facts form and its harness variant removed; landed as `portfolio-v41` (2.6).
 - 3.10 The action packet's capital-efficiency line names its owner, horizon and rate: the
   engine's twelve-month total-return test against the stated hurdle rate, each of the four
   states saying what it establishes and no more.
@@ -296,6 +319,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
   Live 2026-09-17: the prefix's rate and test gave the model a computation to run itself — on TSLA (indeterminate) one rationale asserts the position "fails capital efficiency tests" from a self-run point test; the failing holdings' rationales quote the rate correctly.
   Read as a regression on the indeterminate holdings (§Live read in `2026-09-17-residue-slice.md`).
+  Superseded 2026-09-17 by 2.6: the section is the three tested returns and the hurdle rate as numbers under `portfolio-v41`.
 - 3.11 The action packet distinguishes the grade's low-confidence marker (an imputed
   sub-score) from conviction (the degradation count), and states what the grade is: the
   backward composite of the quality, valuation and risk sub-scores, distinct from the
@@ -309,6 +333,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   convention directly (PGNY calls 51 and 53).
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
   Live 2026-09-17: no rationale called a low-confidence grade "low conviction"; four rationales across TSLA and DIA cite "indeterminate capital efficiency" as their reason, so the entry's second check is not met (§Live read in `2026-09-17-residue-slice.md`).
+  Carried into `portfolio-v41` as the SCORES gloss and the grade line's imputed-score gloss; the state word the second check watched no longer renders (2.6).
 - 3.12 The action packet labels the financial summary as model-authored, so its provenance
   reads beside the engine's.
   Check: no action thinking attributes the financial summary to the engine.
@@ -316,6 +341,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-17: adopt; residue slice.
   Forwarding the model's target rationale is 3.16.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Carried into `portfolio-v41` as the analyst / computed labels with one defining sentence (2.6).
 - 3.13 The action response contract states "with no code fence or surrounding prose",
   the 3.7 sentence, since the two contracts are separate strings.
   Check: fence deliberation in the action thinking falls toward zero on the fixed set (SPMO
@@ -324,6 +350,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-17: adopt; residue slice.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
   Live 2026-09-17: action fence markers forty-two on forty-seven calls (v38 seventeen on thirty-six); not met; rides into `portfolio-v40` unchanged pending the action-prompt rewrite.
+  Carried into `portfolio-v41` as the task's opening sentence; the check rides 2.6's read.
 - 3.14 The ledger prompt states what the margin is for — the noise band that keeps a print
   inside the series' ordinary variation from confirming a breach — and then the relative
   and magnitude caps the 6g seam applies (the ruled 1.8 rule), where the margin is authored,
@@ -346,6 +373,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Raised by the Codex churn analysis (S1, the numeric half).
   Ruled 2026-09-17: a follow-on after the 3.9 A/B is read, its own plan; not in the residue
   slice.
+  Absorbed 2026-09-17 by 2.6: the three tested returns render beside the hurdle rate under `portfolio-v41`.
 - 3.16 The action packet forwards `model_target_rationale` and a compact statement of the
   engine's valuation and target basis, so a disagreement between the arms reaches the rung
   with both explanations and no governing arm.
@@ -355,6 +383,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   words on it).
   Raised by the Codex churn analysis (S4, the forwarding half).
   Ruled 2026-09-17: follow-on after the 3.9 A/B; not in the residue slice.
+  Absorbed 2026-09-17 by 2.6: the analyst's target rationale and the computed bands' method clauses render in the packet under `portfolio-v41`.
 - 3.17 The interpretation prompt names no app concept: one message in two parts — inputs,
   each section explained once and then its values; then the task in output order — with no
   arm, baseline, stage, seam, validator behaviour, stamp or product name, the caps unshown

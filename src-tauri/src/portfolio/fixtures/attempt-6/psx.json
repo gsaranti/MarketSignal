@@ -43,6 +43,28 @@
    "expect": "kept"
   }
  ],
+ "ledger_prose": {
+  "current_thesis": "PSX leverages high oil volatility via asset-backed trading and strong refining utilization, but faces peak-cycle risks as structural advantages narrow. Current valuation reflects sustained historic margins rather than mean reversion.",
+  "monitor": [
+   {
+    "scenario": "bear",
+    "conditions": "Net margin compresses below 3.5% as spreads normalize; Price reverts to fair value ($192).",
+    "probability_pct": 30.0
+   },
+   {
+    "scenario": "base",
+    "conditions": "Refining margins hold >4.5% amid oil $80-$100 range; P/E <16x sustained.",
+    "probability_pct": 50.0
+   },
+   {
+    "scenario": "bull",
+    "conditions": "WTI sustains >$105 expanding downstream margins; P/E holds above 18x on multiple compression.",
+    "probability_pct": 20.0
+   }
+  ],
+  "what_must_improve": "Gross margin stability despite narrowing WCS discount; successful midstream EBITDA target execution ($4.5B run-rate).",
+  "what_must_not_break": "Refining utilization >90%; Net margin >3% to sustain cash distribution."
+ },
  "disposition": {
   "status": "priced",
   "grade": "D",

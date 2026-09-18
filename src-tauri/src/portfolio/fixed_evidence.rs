@@ -14,13 +14,14 @@
 
 use super::engine::{self, CompanyFinancials, EngineOutput};
 use super::pipeline::{
-    self, action_user_prompt, action_user_prompt_with_form, interpretation_user_prompt,
-    role_risk_user_prompt, tax_caveat, validate_ledger_rewrite_with_research, ActionInput,
-    ActionSubject, EngineSetForm, InterpretationInput, RoleRiskInput,
+    self, action_user_prompt, interpretation_user_prompt, role_risk_user_prompt, tax_caveat,
+    validate_ledger_rewrite_with_research, ActionInput, ActionSubject, InterpretationInput,
+    RoleRiskInput,
 };
 use super::{
-    Action, AssetClass, ContinuityStamps, FalsifierDraft, LedgerDraft, QuantCoreDraft,
-    LedgerBranch, StatementBasis, TriggerDraft, VerdictDisposition,
+    Action, AssetClass, ContinuityStamps, FalsifierDraft, LedgerDraft, MonitorScenario,
+    QuantCoreDraft, LedgerBranch, ScenarioKind, StatementBasis, ThesisLedger, TriggerDraft,
+    VerdictDisposition,
 };
 use crate::portfolio::dossier::HouseView;
 use serde::Deserialize;
@@ -46,6 +47,11 @@ struct Fixture {
     authoring_close: engine::DatedValue,
     synthetic_position: SyntheticPosition,
     conditions: Vec<FixtureCondition>,
+    /// The ledger's prose as the run persisted it — the current thesis, the
+    /// three monitor rows and the two must-lines — so the action packet's
+    /// THESIS and SCENARIOS sections render on the harness (`portfolio-v41`,
+    /// ruled 2026-09-17; extracted from the same rows on 2026-09-17).
+    ledger_prose: LedgerProse,
     disposition: VerdictDisposition,
     engine_output: EngineOutput,
     research_combined: String,
@@ -56,6 +62,21 @@ struct SyntheticPosition {
     quantity: f64,
     cost_basis: f64,
     market_value: f64,
+}
+
+#[derive(Deserialize)]
+struct LedgerProse {
+    current_thesis: String,
+    monitor: Vec<ProseScenario>,
+    what_must_improve: String,
+    what_must_not_break: String,
+}
+
+#[derive(Deserialize)]
+struct ProseScenario {
+    scenario: ScenarioKind,
+    conditions: String,
+    probability_pct: f64,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +139,34 @@ fn draft_of(f: &Fixture) -> LedgerDraft {
         })
         .collect();
     draft
+}
+
+/// The holding's ledger as the action packet reads it: the persisted prose
+/// with no conditions or drivers (the packet renders neither), the original
+/// thesis standing in for the current one, the scenario targets and the band
+/// relation absent — the fields the packet does not read.
+fn ledger_of(f: &Fixture) -> ThesisLedger {
+    ThesisLedger {
+        branch: LedgerBranch::Priced,
+        original_thesis: f.ledger_prose.current_thesis.clone(),
+        current_thesis: f.ledger_prose.current_thesis.clone(),
+        key_drivers: vec![],
+        monitor: f
+            .ledger_prose
+            .monitor
+            .iter()
+            .map(|s| MonitorScenario {
+                scenario: s.scenario,
+                conditions: s.conditions.clone(),
+                probability_pct: s.probability_pct,
+                engine_target: None,
+            })
+            .collect(),
+        what_must_improve: f.ledger_prose.what_must_improve.clone(),
+        what_must_not_break: f.ledger_prose.what_must_not_break.clone(),
+        conditions: vec![],
+        authored_band_relation: None,
+    }
 }
 
 fn stamps_of(f: &Fixture) -> ContinuityStamps {
@@ -255,55 +304,33 @@ fn attempt_6_action_packets_carry_no_account_economics_and_are_tax_invariant() {
             panic!("{}: every attempt-6 holding priced", f.symbol)
         };
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        // Both engine-set forms (fix list 3.9): the isolation holds on each, and
-        // the production form is the plain prompt byte for byte.
-        for form in [EngineSetForm::List, EngineSetForm::Facts] {
-            let render = |d: &super::dossier::HoldingDossier| {
-                action_user_prompt_with_form(
-                    &ActionInput {
-                        dossier: d,
-                        subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
-                        engine_set: &engine_set,
-                        changes: None,
-                        profile: &d.profile,
-                    },
-                    form,
-                )
-            };
-            let taxable = render(&dossier_of(&f, true));
-            let exempt = render(&dossier_of(&f, false));
-            assert_eq!(taxable, exempt, "{}: the tax posture must not change the packet", f.symbol);
-            let mut repriced = dossier_of(&f, true);
-            repriced.position.cost_basis *= 3.0;
-            repriced.position.quantity *= 2.0;
-            repriced.position.market_value *= 2.0;
-            assert_eq!(taxable, render(&repriced), "{}: account economics must not change the packet", f.symbol);
-            // Case-insensitive on the whole packet: the app-rendered lines never carry
-            // these, and the fixture's model-authored summaries are scrubbed of them.
-            let lower = taxable.to_lowercase();
-            for absent in ["cost basis", "unrealized", "quantity:", "market value", "p/l", "- tax", "share-equivalents"] {
-                assert!(!lower.contains(absent), "{}: {absent} leaked: {taxable}", f.symbol);
-            }
-            match form {
-                EngineSetForm::List => {
-                    let d = dossier_of(&f, true);
-                    let plain = action_user_prompt(&ActionInput {
-                        dossier: &d,
-                        subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
-                        engine_set: &engine_set,
-                        changes: None,
-                        profile: &d.profile,
-                    });
-                    assert_eq!(taxable, plain, "{}", f.symbol);
-                    assert_eq!(taxable.matches("ENGINE SET").count(), 1, "{}", f.symbol);
-                }
-                EngineSetForm::Facts => {
-                    assert!(!taxable.contains("ENGINE SET"), "{}: {taxable}", f.symbol);
-                    assert_eq!(taxable.matches("ENGINE ADMISSION FACTS").count(), 1, "{}", f.symbol);
-                }
-            }
-            assert!(taxable.contains("higher is better on every axis"), "{}", f.symbol);
+        let ledger = ledger_of(&f);
+        let render = |d: &super::dossier::HoldingDossier| {
+            action_user_prompt(&ActionInput {
+                dossier: d,
+                subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None, ledger: &ledger },
+                engine_set: &engine_set,
+                changes: None,
+                profile: &d.profile,
+            })
+        };
+        let taxable = render(&dossier_of(&f, true));
+        let exempt = render(&dossier_of(&f, false));
+        assert_eq!(taxable, exempt, "{}: the tax posture must not change the packet", f.symbol);
+        let mut repriced = dossier_of(&f, true);
+        repriced.position.cost_basis *= 3.0;
+        repriced.position.quantity *= 2.0;
+        repriced.position.market_value *= 2.0;
+        assert_eq!(taxable, render(&repriced), "{}: account economics must not change the packet", f.symbol);
+        // Case-insensitive on the whole packet: the app-rendered lines never carry
+        // these, and the fixture's model-authored prose is scrubbed of them.
+        let lower = taxable.to_lowercase();
+        for absent in ACCOUNT_ECONOMICS_PHRASES.iter().copied().chain(["- tax", "quantity:"]) {
+            assert!(!lower.contains(absent), "{}: {absent} leaked: {taxable}", f.symbol);
         }
+        // The set once as one data line, the polarity gloss once (`portfolio-v41`).
+        assert_eq!(taxable.matches("\nSUPPORTED ACTIONS (computed)\n").count(), 1, "{}", f.symbol);
+        assert_eq!(taxable.matches("higher is better on every axis").count(), 1, "{}", f.symbol);
         // The app-appended caveat for the rung the run chose, on the synthetic P/L.
         let d = dossier_of(&f, true);
         let caveat = tax_caveat(&d.profile, &d.position, graded.action);
@@ -313,6 +340,21 @@ fn attempt_6_action_packets_carry_no_account_economics_and_are_tax_invariant() {
             Action::Trim | Action::SellAll => assert_eq!(caveat, Some(pipeline::TAX_CAVEAT_LOSS), "{}", f.symbol),
             _ => assert_eq!(caveat, None, "{}", f.symbol),
         }
+    }
+}
+
+/// The live read's prose diagnostics, printed beside a model-authored field and
+/// never a gate: an account-economics phrase (fix list 3.2) and any banned
+/// word (`portfolio-v41`, ruled 2026-09-17 F3 — the offline pin scans the app's
+/// own sentences, so the model's prose is read here).
+fn prose_diagnostics(label: &str, text: &str) {
+    let lower = text.to_lowercase();
+    if let Some(phrase) = ACCOUNT_ECONOMICS_PHRASES.iter().find(|p| lower.contains(**p)) {
+        println!("    !! account-economics phrase in {label}: \"{phrase}\"");
+    }
+    let hits = banned_hits(text);
+    if !hits.is_empty() {
+        println!("    !! banned word in {label}: {hits:?}");
     }
 }
 
@@ -660,10 +702,6 @@ fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades()
 /// Requires the local Ollama daemon up with the configured roster present. Run:
 ///   `MARKET_SIGNAL_LOCAL_EVAL_REPEATS=3 cargo test fixed_evidence_live -- --ignored --nocapture`
 /// `MARKET_SIGNAL_LOCAL_EVAL_SYMBOLS=TSLA,PGNY` narrows the set.
-/// `MARKET_SIGNAL_LOCAL_EVAL_ENGINE_SET=list|facts|both` (default `list`) picks
-/// the engine-set form the plain action repeats run under — `both` runs the
-/// `Facts` repeats after the `List` repeats on each holding, the fix list 3.9
-/// A/B in one pass; the tax, cost and fresh-interpretation calls stay on `List`.
 /// `MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR=<dir>` also captures every call's
 /// thinking, fenced, into `<dir>/<stamp>-fixedevi/holding-<SYM>.txt` through
 /// the same [`crate::thought_log::ThoughtLogSink`] the dev app's debug capture
@@ -692,16 +730,6 @@ fn fixed_evidence_live() {
     let cfg = AppConfig::from_env();
     let endpoint = local_model::endpoint_from_config(&cfg).expect("MARKET_SIGNAL_LOCAL_DAEMON_ENDPOINT set");
     let roster = local_model::roster_from_config(&cfg);
-    let engine_set_forms: Vec<EngineSetForm> = match std::env::var("MARKET_SIGNAL_LOCAL_EVAL_ENGINE_SET")
-        .ok()
-        .as_deref()
-        .map(str::trim)
-    {
-        None | Some("") | Some("list") => vec![EngineSetForm::List],
-        Some("facts") => vec![EngineSetForm::Facts],
-        Some("both") => vec![EngineSetForm::List, EngineSetForm::Facts],
-        Some(other) => panic!("MARKET_SIGNAL_LOCAL_EVAL_ENGINE_SET={other}: expected list, facts or both"),
-    };
     let thought_dir = std::env::var("MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR")
         .ok()
         .filter(|v| !v.trim().is_empty());
@@ -723,7 +751,7 @@ fn fixed_evidence_live() {
     let analyst = LocalAnalyst::new(client, roster.reasoner.clone(), roster.fast.clone());
 
     println!(
-        "\n== fixed evidence, live (RECONSTRUCTED packets, not a replay of attempt 6) — {repeats} repeat(s); engine-set forms {engine_set_forms:?} =="
+        "\n== fixed evidence, live (RECONSTRUCTED packets, not a replay of attempt 6) — {repeats} repeat(s) =="
     );
     if let Some(dir) = &thought_dir {
         println!("  thinking captured under {dir} (newest folder; one fenced holding-<SYM>.txt per holding)");
@@ -754,7 +782,7 @@ fn fixed_evidence_live() {
         // also feeds a fresh-verdict action call below (the §3 slice's Codex
         // plan review): the action reads the summary this interpretation wrote,
         // not the fixture's persisted one.
-        let mut fresh: Option<super::Interpretation> = None;
+        let mut fresh: Option<(super::Interpretation, ThesisLedger)> = None;
         for r in 1..=repeats {
             let input = InterpretationInput {
                 input_delta: &[],
@@ -793,26 +821,35 @@ fn fixed_evidence_live() {
                     mt.twelve_month.base, mt.twelve_month.bear, mt.twelve_month.bull, if names_own { "yes" } else { "NO" }
                 );
                 for (label, text) in [
-                    ("target rationale", &interp.model_target_rationale),
-                    ("financial summary", &interp.financial_summary),
-                    ("self-assessment", &interp.self_assessment),
-                    ("what changed", &interp.what_changed),
+                    ("target rationale", interp.model_target_rationale.as_str()),
+                    ("financial summary", interp.financial_summary.as_str()),
+                    ("self-assessment", interp.self_assessment.as_str()),
+                    ("what changed", interp.what_changed.as_str()),
                 ] {
                     println!("    {label}: {}", text.replace('\n', " "));
-                    let lower = text.to_lowercase();
-                    if let Some(phrase) = ACCOUNT_ECONOMICS_PHRASES.iter().find(|p| lower.contains(**p)) {
-                        println!("    !! account-economics phrase in {label}: \"{phrase}\"");
-                    }
+                    prose_diagnostics(label, text);
                 }
                 println!("    what_changed_entries: {} (debut: app-written)", interp.what_changed_entries.len());
-            }
-            if fresh.is_none() {
-                fresh = Some(interp.clone());
             }
             let (ledger, audit) = validate_ledger_rewrite_with_research(
                 &interp.ledger, None, None, LedgerBranch::Priced, f.is_fund, None, Some(f.spot),
                 &HashSet::new(), true, stamps_of(&f),
             );
+            if fresh.is_none() {
+                fresh = Some((interp.clone(), ledger.clone()));
+            }
+            // The prose the action packet forwards (Codex 2026-09-17, finding 3):
+            // the validated ledger's thesis and scenario rows, printed so the
+            // fresh-interpretation action rationale can be read against them.
+            println!("    thesis: {}", ledger.current_thesis.replace('\n', " "));
+            prose_diagnostics("thesis", &ledger.current_thesis);
+            for s in &ledger.monitor {
+                println!(
+                    "    scenario {} ({:.0}%): {}",
+                    s.scenario.as_str(), s.probability_pct, s.conditions.replace('\n', " ")
+                );
+                prose_diagnostics("scenario conditions", &s.conditions);
+            }
             let kept = ledger.conditions.iter().filter(|c| c.quant.is_some()).count();
             let qualitative = ledger.conditions.iter().filter(|c| c.quant.is_none() && c.downgraded_reason.is_none()).count();
             println!(
@@ -846,50 +883,50 @@ fn fixed_evidence_live() {
         // (the pipeline's own assembly), so clean interpretation prose is seen
         // reaching the rung.
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        let decide = |d: &super::dossier::HoldingDossier, subject: &super::GradedVerdict, form: EngineSetForm, label: &str| {
+        let ledger = ledger_of(&f);
+        let decide = |d: &super::dossier::HoldingDossier, subject: &super::GradedVerdict, ledger: &ThesisLedger, label: &str| {
             let started = std::time::Instant::now();
-            match analyst.decide_action_under(&ActionInput {
+            match analyst.decide_action(&ActionInput {
                 dossier: d,
-                subject: ActionSubject::Priced { graded: subject, engine: &f.engine_output, pre_profit: None },
+                subject: ActionSubject::Priced { graded: subject, engine: &f.engine_output, pre_profit: None, ledger },
                 engine_set: &engine_set,
                 changes: None,
                 profile: &d.profile,
-            }, form) {
+            }) {
                 Ok(decision) => {
                     println!(
-                        "  action {label} [{form:?}]: {} ({:.0}s; set [{}]; run chose {}) — {}",
+                        "  action {label}: {} ({:.0}s; set [{}]; run chose {}) — {}",
                         decision.action.as_kebab(), started.elapsed().as_secs_f64(),
                         engine_set.iter().map(Action::as_kebab).collect::<Vec<_>>().join(", "),
                         graded.action.as_kebab(), decision.rationale
                     );
                     // The 3.9 read's permission scan (a diagnostic, never a gate):
-                    // a rationale that argues from what the engine permits rather
-                    // than from the evidence names itself here.
+                    // a rationale that argues from what the computed read permits
+                    // rather than from the evidence names itself here.
                     let lower = decision.rationale.to_lowercase();
                     if let Some(phrase) = PERMISSION_PHRASES.iter().find(|p| lower.contains(**p)) {
                         println!("    !! permission phrase in rationale: \"{phrase}\"");
                     }
+                    prose_diagnostics("rationale", &decision.rationale);
                 }
-                Err(e) => println!("  action {label} [{form:?}]: FAILED — {e:#}"),
+                Err(e) => println!("  action {label}: FAILED — {e:#}"),
             }
         };
-        for form in &engine_set_forms {
-            for r in 1..=repeats {
-                decide(&d, graded, *form, &format!("#{r}"));
-            }
+        for r in 1..=repeats {
+            decide(&d, graded, &ledger, &format!("#{r}"));
         }
-        decide(&dossier_of(&f, false), graded, EngineSetForm::List, "tax-exempt variant");
+        decide(&dossier_of(&f, false), graded, &ledger, "tax-exempt variant");
         let mut costly = dossier_of(&f, true);
         costly.position.cost_basis *= 3.0;
-        decide(&costly, graded, EngineSetForm::List, "cost-basis ×3 variant");
-        if let Some(interp) = fresh {
+        decide(&costly, graded, &ledger, "cost-basis ×3 variant");
+        if let Some((interp, fresh_ledger)) = fresh {
             let assembled = pipeline::graded_verdict_from_interpretation(
                 &f.engine_output,
                 d.options_signal.clone(),
                 interp,
                 graded.engine_view.clone(),
             );
-            decide(&d, &assembled, EngineSetForm::List, "fresh-interpretation verdict");
+            decide(&d, &assembled, &fresh_ledger, "fresh-interpretation verdict");
         }
         ctx.step_finished(step_key, "ok", None);
     }
@@ -982,10 +1019,102 @@ fn attempt_6_interpretation_messages_are_two_parts_with_no_app_concept() {
     }
 }
 
+/// Every action message on the fixed set is two marked parts in order, Part 1
+/// the input sections and no instruction, Part 2 the two items and the return
+/// shape — and neither part, nor the system prompt, carries a banned word
+/// (`portfolio-v41`). The analyst prose — the summary, the target rationale,
+/// the thesis and the scenario conditions — is blanked for the lexicon scan
+/// (ruled 2026-09-17, F3): the persisted v35 rationale legitimately says "the
+/// engine's base case", and the pin tests the app's own sentences; the live
+/// harness prints prose hits as a diagnostic.
+#[test]
+fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
+    for f in fixtures() {
+        let VerdictDisposition::Priced(graded) = &f.disposition else { panic!("{}: priced", f.symbol) };
+        let d = dossier_of(&f, true);
+        let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
+        let ledger = ledger_of(&f);
+        let render = |graded: &super::GradedVerdict, ledger: &ThesisLedger| {
+            action_user_prompt(&ActionInput {
+                dossier: &d,
+                subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None, ledger },
+                engine_set: &engine_set,
+                changes: None,
+                profile: &d.profile,
+            })
+        };
+        let user = render(graded, &ledger);
+        let system = pipeline::action_system_prompt();
+        let (part1, part2) = user
+            .split_once("\n======== PART 2: TASK ========\n")
+            .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{user}", f.symbol));
+        assert!(part1.starts_with(&format!("======== PART 1: INPUTS ========\nHOLDING\n{} (", f.symbol)), "{}: {part1}", f.symbol);
+        for section in [
+            "SCORES\n", "PRICE TARGETS (USD, with the move each implies from the current price)\n",
+            "TARGET RATIONALE (analyst)\n", "CAPITAL EFFICIENCY\n", "CONVICTION AND OUTLOOK (analyst)\n",
+            "FINANCIAL SUMMARY (analyst)\n", "THESIS (analyst)\n", "SCENARIOS (analyst)\n",
+            "SUPPORTED ACTIONS (computed)\n", "INVESTOR PROFILE\n",
+        ] {
+            assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "{}: Part 1 lacks {section}\n{part1}", f.symbol);
+        }
+        // The thesis and the three scenario rows, as persisted.
+        assert!(part1.contains(&format!("\nTHESIS (analyst)\n{}\n", f.ledger_prose.current_thesis)), "{}", f.symbol);
+        assert_eq!(f.ledger_prose.monitor.len(), 3, "{}", f.symbol);
+        for s in &f.ledger_prose.monitor {
+            assert!(part1.contains(&format!(" ({:.0}%): {}\n", s.probability_pct, s.conditions)), "{}: {part1}", f.symbol);
+        }
+        // The hurdle as numbers: the three tested returns and the rate, no state word.
+        let h = &f.engine_output.hurdle;
+        assert!(part1.contains(&format!(
+            "\nbear {:+.1}% / base {:+.1}% / bull {:+.1}%; hurdle {:.1}%.\n",
+            h.tr_bear.unwrap() * 100.0, h.tr_base.unwrap() * 100.0, h.tr_bull.unwrap() * 100.0, h.hurdle_rate.unwrap() * 100.0
+        )), "{}: {part1}", f.symbol);
+        // Part 1 instructs nothing; Part 2 carries the two items and the shape.
+        assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
+        for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "RETURN SHAPE (every value is a placeholder)"] {
+            assert!(part2.contains(item), "{}: Part 2 lacks {item}\n{part2}", f.symbol);
+        }
+        for absent in [
+            "ENGINE SET", "ENGINE ARM", "MODEL ARM", "THE VERDICT", "ACTION BASIS", "IMPLIED ",
+            "TARGET PROVENANCE", "its own pick", "full ladder", "neither requires nor forbids",
+            "indeterminate", "dead money", "PRIOR ACTION", "Move from PRIOR ACTION", "Keep the action firm",
+        ] {
+            assert!(!user.contains(absent), "{}: `{absent}`\n{user}", f.symbol);
+        }
+        // The lexicon over the app's own sentences: the analyst prose blanked.
+        let mut blank = (**graded).clone();
+        blank.financial_summary.clear();
+        blank.model_target_rationale.clear();
+        let mut blank_ledger = ledger.clone();
+        blank_ledger.current_thesis.clear();
+        for s in &mut blank_ledger.monitor {
+            s.conditions.clear();
+        }
+        let blanked = render(&blank, &blank_ledger);
+        for (label, text) in [("system", system.as_str()), ("user", blanked.as_str())] {
+            let hits = banned_hits(text);
+            assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", f.symbol);
+        }
+        let (blank_part1, _) = blanked.split_once("\n======== PART 2: TASK ========\n").unwrap();
+        assert!(!blank_part1.to_lowercase().contains("your "), "{}: Part 1 addresses the model\n{blank_part1}", f.symbol);
+        // The shape is JSON with exactly the declared keys; the system prompt names them.
+        let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
+        let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
+        let mut keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut declared = crate::portfolio::ACTION_KEYS.to_vec();
+        declared.sort_unstable();
+        assert_eq!(keys, declared, "{}", f.symbol);
+        for k in &declared {
+            assert!(system.contains(k), "{}: system prompt does not name {k}\n{system}", f.symbol);
+        }
+    }
+}
+
 /// Every rendered fixed-set prompt to one Markdown file for a human read
 /// (`MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP=<file>`): the system prompts once,
-/// then per holding the interpretation message, the List-form action prompt,
-/// and the lines the Facts form and the tax and cost variants change.
+/// then per holding the interpretation message, the action message, and the
+/// lines the tax and cost variants change.
 #[test]
 #[ignore = "writes the rendered fixed-set prompts to MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP"]
 fn fixed_evidence_prompt_dump() {
@@ -1018,31 +1147,29 @@ fn fixed_evidence_prompt_dump() {
         };
         let interp = interpretation_user_prompt(&input);
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
+        let ledger = ledger_of(&f);
         macro_rules! action_input { ($dd:expr) => { ActionInput {
             dossier: $dd,
-            subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
+            subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None, ledger: &ledger },
             engine_set: &engine_set, changes: None, profile: &$dd.profile,
         } } }
-        let list = action_user_prompt_with_form(&action_input!(&d), EngineSetForm::List);
-        let facts = action_user_prompt_with_form(&action_input!(&d), EngineSetForm::Facts);
+        let list = action_user_prompt(&action_input!(&d));
         let dt = dossier_of(&f, false);
-        let tax = action_user_prompt_with_form(&action_input!(&dt), EngineSetForm::List);
+        let tax = action_user_prompt(&action_input!(&dt));
         let mut costly = dossier_of(&f, true);
         costly.position.cost_basis *= 3.0;
-        let cost = action_user_prompt_with_form(&action_input!(&costly), EngineSetForm::List);
+        let cost = action_user_prompt(&action_input!(&costly));
         out.push_str(&format!("## {n}. {} ({}; engine set [{}]; hurdle {:?})\n\n", f.symbol,
             if f.is_fund { "fund" } else { "stock" },
             engine_set.iter().map(Action::as_kebab).collect::<Vec<_>>().join(", "),
             f.engine_output.hurdle.state));
         out.push_str(&format!("### {n}a. Interpretation message ({} chars)\n\n", interp.len()));
         out.push_str(&fence(&interp));
-        out.push_str(&format!("### {n}b. Action user prompt — List form, production ({} chars)\n\n", list.len()));
+        out.push_str(&format!("### {n}b. Action message ({} chars)\n\n", list.len()));
         out.push_str(&fence(&list));
-        out.push_str(&format!("### {n}c. Action user prompt — Facts form: lines that differ from the List form\n\n"));
-        out.push_str(&fence(&diff_lines(&list, &facts)));
-        out.push_str(&format!("### {n}d. Tax-exempt variant: lines that differ from the List form\n\n"));
+        out.push_str(&format!("### {n}c. Tax-exempt variant: lines that differ from the action message\n\n"));
         out.push_str(&fence(&diff_lines(&list, &tax)));
-        out.push_str(&format!("### {n}e. Cost-basis ×3 variant: lines that differ from the List form\n\n"));
+        out.push_str(&format!("### {n}d. Cost-basis ×3 variant: lines that differ from the action message\n\n"));
         out.push_str(&fence(&diff_lines(&list, &cost)));
         n += 1;
     }

@@ -95,6 +95,28 @@
    "expect": "downgraded:price-level-mismatch"
   }
  ],
+ "ledger_prose": {
+  "current_thesis": "Investment thesis rests on Robotaxi monetization within 12-24 months justifying premium multiple, with safety scandal resolution and margin stabilization as near-term catalysts; core EV business provides downside floor at ~$180/share (base case earnings power) but offers limited upside without autonomous revenue validation.",
+  "monitor": [
+   {
+    "scenario": "bear",
+    "conditions": "Gross margins breach floor at ≤16%, NHTSA mandates vehicle restrictions/recall, FSD crashes increase >25%, or Robotaxi commercialization delayed beyond CY27.",
+    "probability_pct": 35.0
+   },
+   {
+    "scenario": "base",
+    "conditions": "Robotaxi commercialization begins Q4-Q1 CY26 without NHTSA enforcement action; gross margin stabilizes above 17%; regulatory credits decline to <35% of operating income over 8 quarters.",
+    "probability_pct": 40.0
+   },
+   {
+    "scenario": "bull",
+    "conditions": "Robotaxi fleet achieves profitable unit economics by Q2-CY26 with regulatory approval; gross margins re-expand to >24%; Energy/storage revenue doubles within 18 months.",
+    "probability_pct": 25.0
+   }
+  ],
+  "what_must_improve": "Robotaxi deployment with regulatory approval by Q1-CY26; gross margins must re-expand toward mid-20s through cost reductions and volume leverage; FSD safety metrics need to demonstrably improve vs human baseline.",
+  "what_must_not_break": "Gross margin floor at 17%+ over next four quarters; NHTSA investigation remains non-actionable without vehicle restrictions or recall; regulatory credits remain ≥30% of operating income until Robotaxi revenue materializes."
+ },
  "disposition": {
   "status": "priced",
   "grade": "F",

@@ -72,6 +72,28 @@
    "expect": "downgraded:margin-implausible"
   }
  ],
+ "ledger_prose": {
+  "current_thesis": "SPMO delivers momentum-alpha by rotating S&P 500 into price-momentum leaders, providing tactical outperformance during trending markets but vulnerable to factor mean-reversion in rotation regimes or valuation compression from rising rates.",
+  "monitor": [
+   {
+    "scenario": "bear",
+    "conditions": "Momentum factor mean-reverts as market leadership rotates to value/defensives; HY OAS breaches 3.0%; Fed signals extended tightening series (2Y >4.8%); WTI sustained above $105 with breakevens past 2.5%",
+    "probability_pct": 25.0
+   },
+   {
+    "scenario": "base",
+    "conditions": "Momentum factor continues to work without significant mean reversion; credit conditions remain tight (HY OAS <3.0%); Fed delivers controlled one-and-done tightening cycle with 10Y stabilization below 5.2%",
+    "probability_pct": 55.0
+   },
+   {
+    "scenario": "bull",
+    "conditions": "AI capex cycle accelerates beyond expectations; Fed pivots to one-and-done within next meeting; oil supply shock reverses (WTI <90); net-short squeeze forces rapid momentum re-rating",
+    "probability_pct": 20.0
+   }
+  ],
+  "what_must_improve": "Momentum factor persistence through Q4; top-10 outperformance must justify concentration risk with material relative gains vs broad S&P 500",
+  "what_must_not_break": "HY credit spreads sub-3.0%; Fed one-and-done tightening trajectory; tech/semiconductor earnings growth sustaining >15% YoY"
+ },
  "disposition": {
   "status": "priced",
   "grade": "C",

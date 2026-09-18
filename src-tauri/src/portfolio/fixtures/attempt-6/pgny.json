@@ -69,6 +69,28 @@
    "expect": "downgraded:unit-mismatch"
   }
  ],
+ "ledger_prose": {
+  "current_thesis": "Progyny holds a dominant market share in fertility benefits management with proprietary 'Smart Cycles' design that improves efficacy. Long-term growth is supported by rising infertility rates and expanding employer mandates (potential DOL May 2026 proposal). However, near-term headwinds include slow revenue expansion (<5%), thin margins (~6% net), and a valuation (P/E ~27x) vulnerable to multiple compression in the current stagflation/rate-hike macro regime.",
+  "monitor": [
+   {
+    "scenario": "bear",
+    "conditions": "Revenue growth slows below 3%; Net margin compresses to <4%; Price breaches support at $22.",
+    "probability_pct": 45.0
+   },
+   {
+    "scenario": "base",
+    "conditions": "Revenue growth remains >5% YoY; Net margin stabilizes above 6%; Debt-to-equity <0.1.",
+    "probability_pct": 40.0
+   },
+   {
+    "scenario": "bull",
+    "conditions": "Growth re-accelerates >10% YoY; Multiple expansion driven by rates falling or guidance hikes on fertility mandate adoption.",
+    "probability_pct": 15.0
+   }
+  ],
+  "what_must_improve": "Revenue growth rate must re-accelerate above 10% and net margins expand via mix shift toward Smart Cycles/Rx pharmacy solutions.",
+  "what_must_not_break": "Debt-to-equity ratio below 0.20; Price floor at $20-22 range on valuation contraction protection."
+ },
  "disposition": {
   "status": "priced",
   "grade": "D",

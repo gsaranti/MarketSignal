@@ -51,6 +51,28 @@
    "expect": "downgraded:qualifier"
   }
  ],
+ "ledger_prose": {
+  "current_thesis": "ARKF captures high-beta exposure to disruptive fintech innovation but carries significant structural drag from active management fees and thematic concentration. Short-term risk is elevated due to multiple compression in a rate-hike/inflation shock regime (risk-off pivot). Position remains viable only if rates stabilize or crypto-adjacent growth resumes dominance over cash yields.",
+  "monitor": [
+   {
+    "scenario": "bear",
+    "conditions": "HY OAS widens past 3% signaling funding stress; 10Y yield sustains above 5.20%; oil sustained >$110 breaking inflation expectations; ARKF net outflows accelerate.",
+    "probability_pct": 30.0
+   },
+   {
+    "scenario": "base",
+    "conditions": "Fed stabilizes at current rates; oil prices remain sub-$105 without sustained breakeven inflation shock; thematic tech earnings hold above consensus. Base implies controlled multiple derate or stabilization with fee drag on net assets.",
+    "probability_pct": 50.0
+   },
+   {
+    "scenario": "bull",
+    "conditions": "Fed pivots to one-and-done rate cut stance with 2Y rolling back <4.50%; Bitcoin/BTC-adjacent assets rally >15% lifting Coinbase/Block proxies; VIX compresses below 16.",
+    "probability_pct": 20.0
+   }
+  ],
+  "what_must_improve": "Fed guidance clarity stabilizing the yield curve; a sustained rally in underlying fintech/Crypto proxies to offset valuation compression.",
+  "what_must_not_break": "Credit conditions (HY spreads) must not widen beyond funding stress levels (~3% OAS); expense ratio management relative to performance drag."
+ },
  "disposition": {
   "status": "priced",
   "grade": "C",

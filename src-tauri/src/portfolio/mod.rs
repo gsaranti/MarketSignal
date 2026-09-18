@@ -498,6 +498,17 @@ pub enum Conviction {
     Low,
 }
 
+impl Conviction {
+    /// The word the prompts print — the serde form ("low").
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+}
+
 /// A directional read for one horizon window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -505,6 +516,17 @@ pub enum HorizonRead {
     Bullish,
     Neutral,
     Bearish,
+}
+
+impl HorizonRead {
+    /// The word the prompts print — the serde form ("bearish").
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bullish => "bullish",
+            Self::Neutral => "neutral",
+            Self::Bearish => "bearish",
+        }
+    }
 }
 
 /// Separate short-, mid-, and long-term reads (`docs/portfolio-analysis.md`).
@@ -1060,6 +1082,17 @@ pub enum ScenarioKind {
     Bear,
     Base,
     Bull,
+}
+
+impl ScenarioKind {
+    /// The word the prompts print — the serde form ("bear").
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bear => "bear",
+            Self::Base => "base",
+            Self::Bull => "bull",
+        }
+    }
 }
 
 /// One bear / base / bull monitor scenario (`docs/portfolio-analysis.md` §The
@@ -2172,7 +2205,20 @@ pub struct HoldingAudit {
 /// their narration on every packet they render into. No persisted shape
 /// changes: the checkpoint stamp stays `checkpoint-v10`. A v39 trail cannot
 /// resume into v40 on the prompt axis.
-pub const PROMPT_VERSION: &str = "portfolio-v40";
+/// `portfolio-v41` is the action-prompt rewrite on the same principle (ruled
+/// 2026-09-17; `docs/verification/2026-09-17-action-prompt-rewrite.md`): one
+/// message in two parts, the system prompt the role line and the output
+/// names; SCORES, PRICE TARGETS and SUPPORTED ACTIONS as computed / analyst
+/// data with no arm, evidence or permission sentence; the capital-efficiency
+/// read as the three tested returns and the hurdle rate with no state word;
+/// the analyst's target rationale, thesis and scenario rows added; the
+/// targets' method clauses in place of the provenance label; the overlay's
+/// and the forensic sweep's consequence lines off the action packet; the
+/// weighing order, the profile tie-break and the sunk-cost rule as task
+/// clauses; the firmness clause with a chosen prior only; the harness's
+/// Facts form removed. No persisted shape changes: the checkpoint stamp stays
+/// `checkpoint-v10`. A v40 trail cannot resume into v41 on the prompt axis.
+pub const PROMPT_VERSION: &str = "portfolio-v41";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2377,6 +2423,16 @@ impl ChangeAttribution {
             Self::MarketData => "market-data",
             Self::CompanyInformation => "company-information",
             Self::ResearchNarrative => "research-narrative",
+            Self::SelfCorrection => "self-correction",
+        }
+    }
+
+    /// The attribution as the action packet prints it, in words.
+    pub fn as_words(self) -> &'static str {
+        match self {
+            Self::MarketData => "market data",
+            Self::CompanyInformation => "company information",
+            Self::ResearchNarrative => "research narrative",
             Self::SelfCorrection => "self-correction",
         }
     }
@@ -2694,6 +2750,30 @@ pub fn interpretation_response_contract(debut: bool) -> String {
 /// is defined in the Part 2 item that produces it. Interpretation-only; the
 /// distillation and role/risk prompts keep [`response_shape_contract`].
 pub fn interpretation_return_shape(is_fund: bool, debut: bool) -> String {
+    // Every object's keys in the order the task items state them; a key the
+    // table does not name sorts after the named ones, alphabetically.
+    const KEY_ORDER: [&str; 44] = [
+        "conviction", "horizon_outlook", "financial_summary", "model_sub_scores",
+        "model_price_targets", "model_target_rationale", "ledger", "what_changed_entries",
+        "what_changed", "self_assessment",
+        "short", "mid", "long",
+        "quality", "valuation", "momentum", "risk",
+        "one_month", "twelve_month",
+        "thesis", "key_drivers", "base", "bear", "bull",
+        "what_must_improve", "what_must_not_break", "falsifiers",
+        "triggers", "name", "statement", "family", "quant", "series",
+        "comparator", "threshold", "margin", "technology_class", "tripped", "fired",
+        "kind", "detail", "old", "new", "attribution",
+    ];
+    placeholder_shape(&interpretation_schema(is_fund, debut), &KEY_ORDER)
+}
+
+/// A schema's nesting with every value blank — a string is "", a number 0, a
+/// boolean false, an enum its alternatives as "<a|b|c>", a nullable enum with
+/// null among them, an array one item — written with each object's keys in
+/// `order` (unnamed keys after the named ones, alphabetically). The one
+/// renderer behind [`interpretation_return_shape`] and [`action_return_shape`].
+fn placeholder_shape(schema: &Value, order: &[&str]) -> String {
     fn visit(schema: &Value) -> Value {
         if let Some(values) = schema.get("enum").and_then(Value::as_array) {
             // A nullable choice shows both halves — "<a|b|null>" — so null never
@@ -2720,44 +2800,23 @@ pub fn interpretation_return_shape(is_fund: bool, debut: bool) -> String {
             _ => Value::Null,
         }
     }
-    // Every object's keys in the order the task items state them; the map type
-    // sorts alphabetically, so the object is written key by key. A key the
-    // table does not name sorts after the named ones, alphabetically.
-    const KEY_ORDER: [&str; 33] = [
-        "conviction", "horizon_outlook", "financial_summary", "model_sub_scores",
-        "model_price_targets", "model_target_rationale", "ledger", "what_changed_entries",
-        "what_changed", "self_assessment",
-        "short", "mid", "long",
-        "quality", "valuation", "momentum", "risk",
-        "one_month", "twelve_month",
-        "thesis", "key_drivers", "base", "bear", "bull",
-        "what_must_improve", "what_must_not_break", "falsifiers",
-        "triggers", "name", "statement", "family", "quant", "series",
-    ];
-    fn rank(key: &str) -> (usize, &str) {
-        const TAIL: [&str; 11] = [
-            "comparator", "threshold", "margin", "technology_class", "tripped", "fired",
-            "kind", "detail", "old", "new", "attribution",
-        ];
-        let named = KEY_ORDER.iter().chain(TAIL.iter()).position(|k| *k == key);
-        (named.unwrap_or(usize::MAX), key)
-    }
-    fn write(v: &Value) -> String {
+    fn write(v: &Value, order: &[&str]) -> String {
         match v {
             Value::Object(map) => {
+                let rank = |key: &str| (order.iter().position(|k| *k == key).unwrap_or(usize::MAX), key.to_string());
                 let mut keys: Vec<&String> = map.keys().collect();
                 keys.sort_by_key(|k| rank(k));
                 let fields: Vec<String> = keys
                     .into_iter()
-                    .map(|k| format!("{}:{}", serde_json::to_string(k).expect("a key serializes"), write(&map[k])))
+                    .map(|k| format!("{}:{}", serde_json::to_string(k).expect("a key serializes"), write(&map[k], order)))
                     .collect();
                 format!("{{{}}}", fields.join(","))
             }
-            Value::Array(items) => format!("[{}]", items.iter().map(write).collect::<Vec<_>>().join(",")),
+            Value::Array(items) => format!("[{}]", items.iter().map(|v| write(v, order)).collect::<Vec<_>>().join(",")),
             other => serde_json::to_string(other).expect("a JSON value serializes"),
         }
     }
-    write(&visit(&interpretation_schema(is_fund, debut)))
+    write(&visit(schema), order)
 }
 
 /// The `role_risk_only` branch's contract, generated from [`role_risk_keys`].
@@ -3093,12 +3152,21 @@ pub struct ActionDecision {
 /// cannot diverge.
 pub const ACTION_KEYS: [&str; 2] = ["action", "rationale"];
 
-/// The action call's response-contract sentence, generated from [`ACTION_KEYS`].
+/// The action call's response-contract line, generated from [`ACTION_KEYS`]:
+/// the output names the system prompt states once (`portfolio-v41`), on the
+/// same footing as [`interpretation_response_contract`]. The fence rule and
+/// the field meanings live in the message's Part 2; the shape is
+/// [`action_return_shape`].
 pub fn action_response_contract() -> String {
-    format!(
-        "Respond with a single JSON object carrying exactly these keys: {}, with no code fence or surrounding prose.",
-        ACTION_KEYS.join(", ")
-    ) + " Example shape: {\"action\": \"hold\", \"rationale\": \"<the single investment reason for the rung>\"}; the example action is illustrative."
+    let (last, head) = ACTION_KEYS.split_last().expect("the key list is never empty");
+    format!("You will return {} and {last}, as one JSON object.", head.join(", "))
+}
+
+/// The placeholder-only return shape the action message closes with
+/// (`portfolio-v41`): the rung enum inline, the rationale blank — rendered from
+/// [`action_decision_schema`] by the same visitor as the interpretation shape.
+pub fn action_return_shape() -> String {
+    placeholder_shape(&action_decision_schema(), &ACTION_KEYS)
 }
 
 /// The JSON Schema for [`ActionDecision`] — the action enum lists the full
@@ -3259,8 +3327,12 @@ mod tests {
             assert!(c.contains("a fraction of a nonzero level (a zero level has no cap), never folded into the threshold"), "{c}");
             assert!(c.contains("beginning with {, with no code fence or surrounding prose."), "{c}");
         }
-        // The action contract carries the same sentence (fix list 3.13).
-        assert!(action_response_contract().contains(", with no code fence or surrounding prose."), "{}", action_response_contract());
+        // The action contract is the output names alone (`portfolio-v41`); the
+        // fence sentence (fix list 3.13) and the field meanings live in the
+        // message's Part 2, and the shape is placeholder-only with the ladder
+        // inline.
+        assert_eq!(action_response_contract(), "You will return action and rationale, as one JSON object.");
+        assert_eq!(action_return_shape(), "{\"action\":\"<sell-all|trim|hold|add|add-aggressively>\",\"rationale\":\"\"}");
         let role_contract = role_risk_response_contract(false);
         assert!(role_contract.contains("\"expense-ratio\"") && !role_contract.contains("\"net-margin\""), "{role_contract}");
         assert!(role_contract.contains("both are required"));

@@ -109,8 +109,14 @@ pub enum ActionSubject<'a> {
         graded: &'a GradedVerdict,
         engine: &'a EngineOutput,
         pre_profit: Option<&'a PreProfitOverlay>,
+        /// The holding's ledger as validated this run — the packet renders its
+        /// thesis and scenario rows (ruled 2026-09-17).
+        ledger: &'a ThesisLedger,
     },
-    RoleRisk { verdict: &'a RoleRiskVerdict },
+    RoleRisk {
+        verdict: &'a RoleRiskVerdict,
+        ledger: &'a ThesisLedger,
+    },
 }
 
 /// What the **per-holding action call** reads (`docs/portfolio-analysis.md`
@@ -129,52 +135,6 @@ pub struct ActionInput<'a> {
     pub profile: &'a crate::portfolio::InvestorProfile,
     /// Validated attribution from this run's interpretation, before action.
     pub changes: Option<&'a crate::portfolio::WhatChangedAudit>,
-}
-
-/// How the engine's per-holding action set renders in the action packet (fix
-/// list 3.9, `portfolio-v39`): `List` is the production form — the admitted
-/// rungs stated once as evidence — and `Facts` the harness-only A/B variant
-/// that renders, in the set's place, the admission facts the set derives from
-/// that the packet does not already carry (the new-money admission point test
-/// and the letter's bar; the hurdle state, the overlay bars and a forensic trip
-/// render in their own sections). The contract is unchanged until the A/B is
-/// read; the pipeline always decides under `List`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngineSetForm {
-    List,
-    Facts,
-}
-
-/// The `Facts` form's line: engine evidence with no rung named. A role/risk
-/// vehicle has no return evidence, which is the one fact its set rests on.
-fn engine_admission_facts_line(subject: &ActionSubject) -> String {
-    match subject {
-        ActionSubject::Priced { engine, .. } => {
-            let admission = if engine.hurdle.admits_new_money {
-                "passes — the base-case total return clears the hurdle as a point test"
-            } else {
-                "fails — the base-case total return misses the hurdle as a point test"
-            };
-            let letter = match engine.grade {
-                crate::portfolio::Grade::F => "F, which bars the add family in the engine's own rule".to_string(),
-                crate::portfolio::Grade::A | crate::portfolio::Grade::B => format!(
-                    "{}, which supports add-aggressively in the engine's own rule",
-                    engine.grade.as_str()
-                ),
-                g => format!(
-                    "{}, which neither bars the add family nor supports add-aggressively in the engine's own rule",
-                    g.as_str()
-                ),
-            };
-            format!(
-                "\nENGINE ADMISSION FACTS (engine evidence; the full ladder is yours): new-money \
-                 admission {admission}; the letter is {letter}.\n"
-            )
-        }
-        ActionSubject::RoleRisk { .. } => "\nENGINE ADMISSION FACTS (engine evidence; the full ladder is yours): this \
-             branch carries no return evidence, so the add family has no engine support here.\n"
-            .to_string(),
-    }
 }
 
 /// The app-stamped annotation for a chosen rung outside the engine's per-holding
@@ -198,12 +158,6 @@ fn outside_set_annotation(action: Action, engine_set: &[Action]) -> Option<Strin
 /// no-model exit or the role/risk branch, which compute nothing from them.
 pub const RATE_ANCHORS_SOURCE: &str =
     "FRED rate anchors (DGS10 / DGS2 + anchor-window history)";
-
-/// The polarity clause both arms' score lines carry in the action packet (2.3,
-/// ruled 2026-09-16): attempt 6's PSX trace read a valuation of 97 as expensive
-/// and as cheap in turn because only the risk axis was labelled.
-const SCORE_POLARITY: &str = "(0-100, higher is better on every axis: quality, valuation = \
-more attractive, momentum, risk = more resilient)";
 
 /// The app-composed tax caveat appended to the rationale after the rung is
 /// fixed (`docs/portfolio-analysis.md` §Portfolio action, ruled 2026-09-16): the
@@ -1090,7 +1044,7 @@ pub fn analyze_holding(
                 let decision = analyst
                     .decide_action(&ActionInput {
                         dossier,
-                        subject: ActionSubject::RoleRisk { verdict: &rr },
+                        subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
                         engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
                         profile: &dossier.profile,
                         changes: what_changed_audit.as_ref(),
@@ -1570,6 +1524,7 @@ pub fn analyze_holding(
                 graded: &graded,
                 engine: &engine_output,
                 pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
+                ledger: &ledger,
             },
             engine_set: &engine_set,
             profile: &dossier.profile,
@@ -4574,7 +4529,7 @@ fn commodity_prompt_section(d: &HoldingDossier) -> String {
 /// names the engine-matched rule — evidence and an engine-arm bound, never a
 /// clamp on the model's own values. Empty where the sweep never ran (the audit's
 /// gap manifest carries the reason there).
-fn forensic_prompt_section(d: &HoldingDossier) -> String {
+fn forensic_prompt_section(d: &HoldingDossier, stage: PromptStage) -> String {
     use crate::portfolio::ForensicFilingState;
     match &d.filing_events {
         None => String::new(),
@@ -4597,10 +4552,12 @@ fn forensic_prompt_section(d: &HoldingDossier) -> String {
                     ev.confidence
                 ));
             }
-            s.push_str(
-                "By rule: the computed conviction is capped at low and the computed action \
-                 set excludes adding; the grade is unchanged.\n",
-            );
+            if stage == PromptStage::Interpretation {
+                s.push_str(
+                    "By rule: the computed conviction is capped at low and the computed action \
+                     set excludes adding; the grade is unchanged.\n",
+                );
+            }
             s
         }
     }
@@ -4690,11 +4647,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         e.sub_scores.momentum,
         e.sub_scores.risk,
         e.grade.as_str(),
-        if e.low_confidence_grade {
-            " (low-confidence: one score is imputed)"
-        } else {
-            ""
-        },
+        if e.low_confidence_grade { LOW_CONFIDENCE_GLOSS } else { "" },
         e.risk_tier.as_str(),
     ));
 
@@ -4741,7 +4694,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     p.push_str(&put_call_backdrop_prompt_section(d));
     p.push_str(&short_interest_prompt_section(d));
     p.push_str(&option_overlay_prompt_section(d));
-    p.push_str(&forensic_prompt_section(d));
+    p.push_str(&forensic_prompt_section(d, PromptStage::Interpretation));
     p.push_str(&commodity_prompt_section(d));
 
     // RESEARCH SUMMARY
@@ -5185,288 +5138,77 @@ fn nav_premium_line(premium: f64) -> String {
     )
 }
 
-/// The action prompt's implied-moves block — **both arms, both horizons**
-/// (`docs/portfolio-analysis.md` §Portfolio action; the 2026-08-24 review's
-/// Codex I5). Each line is bear / base / bull as a percentage move from spot.
-/// An engine leg the scenario function could not derive prints `(gap)`. A
-/// model leg outside the declared domain (non-finite or non-positive), or one
-/// whose move from spot overflows to a non-finite percentage, prints as
-/// authored with an `(off-scale as authored)` tag in place of a percentage,
-/// and a band authored bear above bull carries `(band inverted as authored)` —
-/// the frontend's posture: annotate, never reorder, never drop. I6 owns the
-/// upstream domain validation; this is the render's fail-closed read.
-fn implied_moves_section(spot: f64, graded: &GradedVerdict) -> String {
-    let mv = |v: f64| (v / spot - 1.0) * 100.0;
-    let pct = |v: f64| format!("{:+.1}%", mv(v));
-    let engine_line = |label: &str, t: Option<&PriceTarget>| match t {
-        Some(t) => format!(
-            "IMPLIED {label} MOVES vs spot {spot:.2} (engine targets): bear {} / base {} / \
-             bull {}.\n",
-            pct(t.bear),
-            pct(t.base),
-            pct(t.bull),
-        ),
-        None => format!("IMPLIED {label} MOVES vs spot {spot:.2} (engine targets): (gap).\n"),
-    };
-    let model_leg = |v: f64| {
-        if v.is_finite() && v > 0.0 && mv(v).is_finite() {
-            pct(v)
-        } else {
-            format!("{v} (off-scale as authored)")
-        }
-    };
-    let model_line = |label: &str, t: &ModelPriceTarget| {
-        format!(
-            "IMPLIED {label} MOVES vs spot {spot:.2} (model targets — your own band authored \
-             at interpretation on its declared domain, never validated against the engine, no \
-             provenance to discount): bear {} / base {} / \
-             bull {}{}.\n",
-            model_leg(t.bear),
-            model_leg(t.base),
-            model_leg(t.bull),
-            if t.bear > t.bull {
-                " (band inverted as authored)"
-            } else {
-                ""
-            },
-        )
-    };
-    let e = &graded.price_targets;
-    let m = &graded.model_view.price_targets;
-    format!(
-        "{}{}{}{}",
-        engine_line("1-MONTH", e.one_month.as_ref()),
-        engine_line("12-MONTH", e.twelve_month.as_ref()),
-        model_line("1-MONTH", &m.one_month),
-        model_line("12-MONTH", &m.twelve_month),
-    )
-}
-
-/// The system prompt for the **per-holding action call** — the profile's one
-/// entry point into the job (`docs/portfolio-analysis.md` §Portfolio action).
-/// The decision weighs this holding and the profile alone; tunnel vision is
-/// enforced by input isolation — the whole-book inputs are simply never rendered
-/// — so the prompt scopes the task in a clause rather than narrating the app's
-/// planning architecture to the model.
+/// The system prompt for the **per-holding action call** (`portfolio-v41`):
+/// the role, the two-part shape of the message and the output names — the
+/// same footing as [`interpretation_system_prompt`]. The ladder, the
+/// one-sentence rationale and the profile tie-break are the message's Part 2;
+/// the app's words about arms, evidence and departures are gone
+/// (`docs/portfolio-analysis.md` §Portfolio action).
 pub fn action_system_prompt() -> String {
     format!(
-        "You are deciding the portfolio action for ONE holding, from its verdict \
-     (given below as the evidence you act on) and the investor profile alone.\n\
-     \n\
-     OUTPUT: exactly ONE rung from the fixed ladder — sell-all, trim, hold, add, \
-     add-aggressively — the rung only, no share counts, dollar amounts, or portfolio \
-     weights; and a rationale of exactly ONE sentence, never empty, giving the single \
-     investment reason for the rung. Keep the action firm run to run — it moves only \
-     when the verdict's evidence has materially moved.\n\
-     \n\
-     SHARED DECISION CONTRACT (the holding's applicable evidence and decision basis are below):\n\
-     - The investor profile breaks ties: an aggressive risk tolerance admits the \
-     aggressive rung where the evidence supports it, and it never changes the \
-     verdict's facts.\n\
-     {}",
+        "You are an equity analyst deciding the portfolio action for one holding in a \
+         portfolio review. Part 1 of the message gives the inputs. Part 2 states what to \
+         determine from them and the shape to return. {}",
         crate::portfolio::action_response_contract()
     )
 }
 
-/// Prior evidence and validated current changes, with no inferred equivalence
-/// between unavailable attribution and unchanged evidence.
-fn action_continuity_section(
-    d: &HoldingDossier,
-    summary: &str,
-    changes: Option<&crate::portfolio::WhatChangedAudit>,
-) -> String {
-    let mut out = String::from("\nACTION CONTINUITY EVIDENCE:\n");
-    match d.prior_verdict.as_ref().map(|v| &v.disposition) {
-        Some(VerdictDisposition::Priced(prior)) => {
-            // Prior target price levels may be on another share basis. The
-            // validated delta carries comparable target changes when available.
-            out.push_str(&format!(
-                "Prior engine grade {}; model letter {}; conviction {:?}; outlook short {:?} / mid {:?} / long {:?}.\nPrior financial summary: {}\n",
-                prior.grade.as_str(), prior.model_view.letter.as_str(), prior.conviction,
-                prior.horizon_outlook.short, prior.horizon_outlook.mid, prior.horizon_outlook.long,
-                prior.financial_summary));
-        }
-        Some(VerdictDisposition::RoleRiskOnly(prior)) => {
-            out.push_str(&format!("Prior class: {}; role read: {}\n", prior.class_label, prior.role_summary));
-        }
-        _ => out.push_str("No comparable prior priced or role/risk read.\n"),
-    }
-    out.push_str(&format!("Current interpretation's continuity summary: {summary}\n"));
-    if let Some(changes) = changes {
-        for entry in &changes.entries {
-            out.push_str(&format!("- {:?} {}: {} -> {}; attribution {:?}; evidence {}\n",
-                entry.kind, entry.detail, entry.old, entry.new, entry.attribution, entry.evidence));
-        }
-        out.push_str(&input_delta_prompt_evidence(&changes.input_delta));
-        if changes.entries.is_empty() {
-            out.push_str("No validated attribution rows; this alone does not establish that the evidence is unchanged.\n");
-        }
-    } else {
-        out.push_str("Validated change attribution is unavailable.\n");
-    }
-    out
+/// The one sentence Part 1 opens with on both branches: what the two labels
+/// mean, once (ruled 2026-09-17: "computed" and "analyst"; the packet does not
+/// say the analyst's read came from the same model).
+const TWO_READS: &str = "Two reads of this holding appear below: a computed read, derived from \
+its financial data by fixed formulas, and an analyst's read of the same data and research.\n";
+
+/// The gloss beside a computed grade resting on an imputed sub-score — one
+/// string for the interpretation and action packets.
+const LOW_CONFIDENCE_GLOSS: &str = " (low-confidence: one score is imputed)";
+
+/// The three outlook words a packet prints, short / mid / long.
+fn horizon_words(o: &HorizonOutlook) -> [&'static str; 3] {
+    [o.short.as_str(), o.mid.as_str(), o.long.as_str()]
 }
 
-fn input_delta_prompt_evidence(entries: &[crate::portfolio::DeltaEntry]) -> String {
-    entries.iter().map(|entry| format!("[{}] {}\n", entry.id, entry.label)).collect()
-}
-
-/// The finished verdict, prior evidence, engine action set
-/// (its choice withheld), and investor profile — the production `List` form.
+/// The action message (`portfolio-v41`): Part 1 the inputs, each section
+/// explained once and then its values with no instruction in it; Part 2 the
+/// task in output order and the placeholder-only shape. No arm, baseline,
+/// stage, seam, validator behaviour, stamp or product name — the rulings and
+/// the rendered draft are `docs/verification/2026-09-17-action-prompt-rewrite.md`.
+/// Tunnel vision is enforced by input isolation: no whole-book field exists
+/// here (`docs/portfolio-analysis.md` §Portfolio action).
 pub fn action_user_prompt(input: &ActionInput) -> String {
-    action_user_prompt_with_form(input, EngineSetForm::List)
-}
-
-/// [`action_user_prompt`] under a chosen engine-set rendering (fix list 3.9):
-/// the packet is identical outside the one line the form selects.
-pub fn action_user_prompt_with_form(input: &ActionInput, form: EngineSetForm) -> String {
     let d = input.dossier;
-    let mut p = String::new();
+    let mut p = String::from("======== PART 1: INPUTS ========\n");
     p.push_str(&holding_header(d));
-    if let Some(prior) = d.prior_verdict.as_ref() {
-        if let Some(action) = crate::portfolio::carried_action(prior) {
-            match prior.action_source {
-                ActionSource::ModelChosen => p.push_str(&format!(
-                    "Prior model-chosen action for this holding: {} (continuity baseline — \
-                     move only on materially moved evidence).\n",
-                    action.as_kebab()
-                )),
-                ActionSource::RuleDemoted => p.push_str(&format!(
-                    "Prior persisted action for this holding: {} (rule-demoted by the \
-                     over-age carry rule, not chosen by a model; provenance context only, \
-                     not a continuity anchor).\n",
-                    action.as_kebab()
-                )),
-            }
-        }
-    }
-
+    p.push_str(&format!("\n{TWO_READS}"));
     match &input.subject {
-        ActionSubject::Priced {
-            graded,
-            engine,
-            pre_profit,
-        } => {
-            p.push_str(
-                "\nACTION BASIS: The grade and both arms' implied target moves are the primary basis; \
-                 risk tier and horizon outlook refine the read. The engine's moves \
-                 carry stated provenance; the model's bands are its own forward call. \
-                 The grade is the backward composite of the quality, valuation and risk \
-                 sub-scores, and the targets are the forward scenario read; each is its own \
-                 read.\n",
-            );
+        ActionSubject::Priced { graded, engine, pre_profit, ledger } => {
+            p.push_str(&scores_section(graded));
+            p.push_str(&price_targets_section(d, graded, engine));
             p.push_str(&format!(
-                "\nTHE VERDICT (already authored — the evidence you act on):\n\
-                 ENGINE ARM: grade {}{}; sub-scores quality {:.0} / valuation {:.0} / \
-                 momentum {:.0} / risk/resilience {:.0} {SCORE_POLARITY}; momentum rides \
-                 outside the letter; risk tier {}.\n",
-                graded.grade.as_str(),
-                if graded.low_confidence_grade {
-                    " (a low-confidence letter: one sub-score is imputed — a property of the grade, not the conviction)"
-                } else {
-                    ""
-                },
-                graded.sub_scores.quality,
-                graded.sub_scores.valuation,
-                graded.sub_scores.momentum,
-                graded.sub_scores.risk,
-                graded.risk_tier.as_str(),
+                "\nTARGET RATIONALE (analyst)\n{}\n",
+                graded.model_target_rationale
             ));
-            {
-                let mv = &graded.model_view;
-                p.push_str(&format!(
-                    "MODEL ARM: letter {}; sub-scores quality {:.0} / valuation {:.0} / \
-                     momentum {:.0} / risk/resilience {:.0} {SCORE_POLARITY}.\n",
-                    mv.letter.as_str(),
-                    mv.sub_scores.quality,
-                    mv.sub_scores.valuation,
-                    mv.sub_scores.momentum,
-                    mv.sub_scores.risk,
-                ));
-            }
+            p.push_str(&capital_efficiency_section(&engine.hurdle));
+            let [short, mid, long] = horizon_words(&graded.horizon_outlook);
             p.push_str(&format!(
-                "CONVICTION (the verdict's own confidence): {:?}. HORIZON OUTLOOK: short {:?} / mid {:?} / long {:?}.\n",
-                graded.conviction,
-                graded.horizon_outlook.short,
-                graded.horizon_outlook.mid,
-                graded.horizon_outlook.long,
+                "\nCONVICTION AND OUTLOOK (analyst)\nConviction {}: the analyst's confidence in \
+                 the read as a whole. Outlook: short (about 1 month) {short}, mid (about 1 year) \
+                 {mid}, long (3–5 years) {long}.\n",
+                graded.conviction.as_str(),
             ));
-            // Fix list 3.10 (ruled 2026-09-17 off the v38 read and the Codex churn
-            // analysis, S1): each line opens by naming its owner, horizon and
-            // rate — the engine's twelve-month total-return test against the
-            // tier-scaled hurdle — after the action calls guessed the assessed
-            // horizon and read `indeterminate` as a reason to hold.
-            p.push_str(&match engine.hurdle.hurdle_rate {
-                Some(h) => format!(
-                    "CAPITAL EFFICIENCY (the engine's twelve-month total-return test against a {:.1}% hurdle): ",
-                    h * 100.0
-                ),
-                None => "CAPITAL EFFICIENCY (the engine's twelve-month total-return test; no hurdle rate this run): ".to_string(),
-            });
-            p.push_str(match engine.hurdle.state {
-                // Fix list 2.5 (ruled 2026-09-16, wording ratified 2026-09-16 F5):
-                // "an exit input when forward prospects are independently poor" read
-                // as a mandate to sell everything (86 of 126 capital-efficiency
-                // markers on the two failing holdings); the line states the fact,
-                // the sunk-cost lean it feeds, and its reach, like the other three
-                // states (`docs/portfolio-analysis.md` §Portfolio action).
-                crate::portfolio::HurdleState::Fails =>
-                    "fails — even the bull case misses it, so the position is dead money. This is a weighed exit input beside the forward read, not a rung: it leans toward realizing some or all of the position where the forward prospects are independently poor, and it neither requires nor forbids any rung.\n",
-                // Fix list 2.4 (ruled 2026-09-16): "carries no exit signal" read as a
-                // directive not to sell; the line states the hurdle fact and its reach.
-                crate::portfolio::HurdleState::Clears =>
-                    "clears — even the bear case clears it. This line states the hurdle test only; it neither requires nor forbids any rung.\n",
-                crate::portfolio::HurdleState::Indeterminate =>
-                    "indeterminate — the bear case misses it and the bull case clears it, so the read proves nothing either way. This line neither requires nor forbids any rung.\n",
-                crate::portfolio::HurdleState::Unscorable =>
-                    "unscorable — no hurdle assessment is available. This line neither requires nor forbids any rung.\n",
-            });
-            if d.prior_verdict.is_some() {
-                p.push_str(&action_continuity_section(d, &graded.what_changed, input.changes));
-            }
-            // Both arms' implied moves, both horizons (the 2026-08-24 review's
-            // Codex I5, ruled 2026-08-28): the action call acts on the model's
-            // choices by design (`ModelView`), so its own authored forecast
-            // reaches the rung it decides, not only the letter derived from it.
-            // No usable spot → no implied line for either arm; the quote floor
-            // makes that unreachable on a priced holding, the guard stays
-            // defensive.
-            if let Some(spot) = d
-                .financials
-                .current_price
-                .filter(|s| s.is_finite() && *s > 0.0)
-            {
-                p.push_str(&implied_moves_section(spot, graded));
-            }
-            let t = &engine.target_meta;
             p.push_str(&format!(
-                "TARGET PROVENANCE (engine targets): {} — the model's bands carry no \
-                 provenance to discount.\n",
-                if t.rate_anchored {
-                    "rate-anchored (real forward signal)"
-                } else if t.current_multiple_carry {
-                    "current-multiple carry (targets hug the current price — low signal)"
-                } else {
-                    "raw-percentile fallback (thin issuer history)"
-                }
+                "\nFINANCIAL SUMMARY (analyst)\n{}\n",
+                graded.financial_summary
             ));
-            p.push_str(&format!("FINANCIAL SUMMARY (model-authored at interpretation): {}\n", graded.financial_summary));
+            p.push_str(&ledger_prose_sections(ledger));
+            p.push_str(&action_continuity_sections(d, &graded.what_changed, input.changes));
             if let Some(overlay) = pre_profit {
                 p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Action));
             }
         }
-        ActionSubject::RoleRisk { verdict } => {
-            p.push_str(
-                "\nACTION BASIS: The vehicle's role, expense drag, observable risk, structural \
-                 flags and evidence gaps support the decision. An add-side rung needs support \
-                 from those attributes in the rationale. This branch has no price forecast \
-                 or capital-efficiency hurdle assessment.\n",
-            );
-            p.push_str(&format!(
-                "\nTHE VERDICT (already authored — a role/risk-only vehicle; no grade, \
-                 targets, or conviction exist for this class):\nCLASS: {}\nROLE: {}\n",
-                verdict.class_label, verdict.role_summary
-            ));
+        ActionSubject::RoleRisk { verdict, ledger } => {
+            p.push_str(&format!("\nCLASS (computed)\n{}\n", verdict.class_label));
+            p.push_str(&format!("\nROLE (analyst)\n{}\n", verdict.role_summary));
             if !verdict.exposure_tilt.is_empty() {
                 let tilt: Vec<String> = verdict
                     .exposure_tilt
@@ -5474,12 +5216,12 @@ pub fn action_user_prompt_with_form(input: &ActionInput, form: EngineSetForm) ->
                     .take(5)
                     .map(|w| format!("{} {:.0}%", w.label, w.weight * 100.0))
                     .collect();
-                p.push_str(&format!("EXPOSURE TILT: {}\n", tilt.join(", ")));
+                p.push_str(&format!("\nEXPOSURE TILT (computed)\n{}\n", tilt.join(", ")));
             }
             p.push_str(&format!(
-                "EXPENSE DRAG (decimal fraction of assets per year): {}. OBSERVABLE \
-                 RISK (annualized realized volatility): {}. STRUCTURAL FLAG \
-                 (leveraged/inverse or option-overlay path dependency): {}.\n",
+                "\nRISK PROFILE (computed)\nExpense drag: {} of assets per year. \
+                 Observable risk: {} (annualized realized volatility). Structural flag \
+                 (leveraged / inverse or option-overlay path dependency): {}.\n",
                 fmt_expense_ratio(verdict.expense_drag),
                 opt(verdict.observable_risk),
                 if verdict.structural_flag { "yes" } else { "no" },
@@ -5488,58 +5230,347 @@ pub fn action_user_prompt_with_form(input: &ActionInput, form: EngineSetForm) ->
             // the evidence-gap list below, never a fabricated number.
             if verdict.is_cef {
                 if let Some(prem) = verdict.nav_premium {
+                    p.push('\n');
                     p.push_str(&nav_premium_line(prem));
                 }
             }
             if !verdict.evidence_gaps.is_empty() {
                 p.push_str(&format!(
-                    "EVIDENCE GAPS: {}\n",
+                    "\nEVIDENCE GAPS (computed)\n{}\n",
                     verdict.evidence_gaps.join("; ")
                 ));
             }
-            if d.prior_verdict.is_some() {
-                p.push_str(&action_continuity_section(d, &verdict.what_changed, input.changes));
-            }
+            p.push_str(&ledger_prose_sections(ledger));
+            p.push_str(&action_continuity_sections(d, &verdict.what_changed, input.changes));
         }
     }
-
-    p.push_str(&forensic_prompt_section(input.dossier));
-    p.push_str(&commodity_prompt_section(input.dossier));
-    p.push_str(&option_overlay_prompt_section(input.dossier));
-
-    // The engine's per-holding set, stated once as evidence (ruled 2026-09-16
-    // off attempt-6 Finding 3: the departure mechanics are app behavior —
-    // `outside_set_annotation` — and stay out of the decision prompt).
-    match form {
-        EngineSetForm::List => {
-            let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
-            p.push_str(&format!(
-                "\nENGINE SET (engine evidence): the engine arm's rules admit [{}]; its own pick \
-                 is undisclosed. The full ladder is yours; this set is one input.\n",
-                set.join(", ")
-            ));
-        }
-        EngineSetForm::Facts => p.push_str(&engine_admission_facts_line(&input.subject)),
-    }
-
-    p.push_str("\nINVESTOR PROFILE (frames the decision; the verdict's facts are fixed):\n");
-    let profile = input.profile.display();
+    p.push_str(&forensic_prompt_section(d, PromptStage::Action));
+    p.push_str(&commodity_prompt_section(d));
+    p.push_str(&option_overlay_prompt_section(d));
+    // The computed per-holding set as one data line (fix list 3.9, ruled
+    // 2026-09-17: no permission sentence — the return shape's enum shows the
+    // ladder). An outside-the-set rung persists as authored with the departure
+    // on the audit (`outside_set_annotation`), never a bar.
+    let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
+    p.push_str(&format!(
+        "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: {}.\n",
+        set.join(", ")
+    ));
     // The cash row is deliberately not rendered: available capital is
     // whole-book context — the planner's domain — kept out of this
     // tunnel-vision call by input isolation (Codex 2026-08-14, finding 3). The
     // tax row is not rendered either: the tax posture is read by the app after
     // the rung is fixed (`with_tax_caveat`), never by the decision.
+    let profile = input.profile.display();
     p.push_str(&format!(
-        "- objective: {}\n- risk tolerance: {}\n- horizon: {}\n",
+        "\nINVESTOR PROFILE\n- objective: {}\n- risk tolerance: {}\n- horizon: {}\n",
         profile.objective, profile.risk_tolerance, profile.horizon,
     ));
-
+    p.push_str(&action_task_section(input));
     p
 }
 
-/// Which prompt the pre-profit overlay section is rendered into. The deterministic
-/// facts block is the same on both; the consequence lines state the engine rule and
-/// the model arm's freedom where the current response carries that field.
+/// SCORES: the polarity gloss once, the grade's derivation once (fix list 2.3
+/// and 3.11 folded into one data gloss), then the computed and analyst rows.
+fn scores_section(graded: &GradedVerdict) -> String {
+    let e = &graded.sub_scores;
+    let m = &graded.model_view.sub_scores;
+    format!(
+        "\nSCORES\nFour scores from 0 to 100, higher is better on every axis: quality; \
+         valuation, where higher means more attractive; momentum; risk, where higher means \
+         more resilient. The grade is a letter derived from the quality, valuation and risk \
+         scores.\n\
+         - computed: quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}{}. \
+         Risk tier: {}.\n\
+         - analyst: quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}.\n",
+        e.quality,
+        e.valuation,
+        e.momentum,
+        e.risk,
+        graded.grade.as_str(),
+        if graded.low_confidence_grade { LOW_CONFIDENCE_GLOSS } else { "" },
+        graded.risk_tier.as_str(),
+        m.quality,
+        m.valuation,
+        m.momentum,
+        m.risk,
+        graded.model_view.letter.as_str(),
+    )
+}
+
+/// PRICE TARGETS: both reads' bands as prices with the move each implies from
+/// the current price, the computed bands with the method clauses the
+/// interpretation packet renders (ruled 2026-09-17, in place of the provenance
+/// label). A computed band the scenario function could not derive prints
+/// "(gap)"; an analyst leg outside its domain, or whose move overflows the
+/// percentage arithmetic, prints as authored with "(off-scale as authored)";
+/// a band authored bear above bull carries "(band inverted as authored)" —
+/// annotate, never reorder, never drop (Codex I5, ruled 2026-08-28). With no
+/// usable current price the prices render without moves (unreachable on a
+/// priced holding — the quote floor — so the guard stays defensive).
+fn price_targets_section(
+    d: &HoldingDossier,
+    graded: &GradedVerdict,
+    engine: &EngineOutput,
+) -> String {
+    let spot = d.financials.current_price.filter(|s| s.is_finite() && *s > 0.0);
+    let mv = |v: f64| spot.map(|s| (v / s - 1.0) * 100.0);
+    let leg = |v: f64| match mv(v) {
+        Some(m) => format!("{v:.2} ({m:+.1}%)"),
+        None => format!("{v:.2}"),
+    };
+    let analyst_leg = |v: f64| {
+        if v.is_finite() && v > 0.0 && mv(v).is_none_or(f64::is_finite) {
+            leg(v)
+        } else {
+            format!("{v} (off-scale as authored)")
+        }
+    };
+    let mut p = String::from(
+        "\nPRICE TARGETS (USD, with the move each implies from the current price)\n",
+    );
+    match &graded.price_targets.twelve_month {
+        Some(t) => p.push_str(&format!(
+            "- computed twelve-month: bear {} / base {} / bull {}. Method: {}.{}\n",
+            leg(t.bear),
+            leg(t.base),
+            leg(t.bull),
+            twelve_month_method(&engine.target_meta),
+            target_notes_line(&engine.target_meta)
+                .map(|n| format!(" Notes: {n}"))
+                .unwrap_or_default(),
+        )),
+        None => p.push_str("- computed twelve-month: (gap)\n"),
+    }
+    match &graded.price_targets.one_month {
+        Some(t) => p.push_str(&format!(
+            "- computed one-month: bear {} / base {} / bull {}. Method: {}.\n",
+            leg(t.bear),
+            leg(t.base),
+            leg(t.bull),
+            one_month_method(t),
+        )),
+        None => p.push_str("- computed one-month: (gap)\n"),
+    }
+    let m = &graded.model_view.price_targets;
+    for (label, t) in [("twelve-month", &m.twelve_month), ("one-month", &m.one_month)] {
+        p.push_str(&format!(
+            "- analyst {label}: bear {} / base {} / bull {}{}.\n",
+            analyst_leg(t.bear),
+            analyst_leg(t.base),
+            analyst_leg(t.bull),
+            if t.bear > t.bull { " (band inverted as authored)" } else { "" },
+        ));
+    }
+    p
+}
+
+/// CAPITAL EFFICIENCY as numbers (ruled 2026-09-17 off the v39 read's L19): the
+/// three tested twelve-month total returns and the hurdle rate with one gloss —
+/// no state word, no reach sentence. The sunk-cost rule is one clause of the
+/// task. An unscorable read, or one missing a figure, says no assessment exists.
+fn capital_efficiency_section(h: &engine::HurdleRead) -> String {
+    let scorable = h.state != crate::portfolio::HurdleState::Unscorable;
+    match (scorable, h.hurdle_rate, h.tr_bear, h.tr_base, h.tr_bull) {
+        (true, Some(rate), Some(bear), Some(base), Some(bull)) => format!(
+            "\nCAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario (the \
+             move from the current price to the scenario price, plus forward income per share, \
+             as a fraction of the current price) and the hurdle rate it is measured against.\n\
+             bear {:+.1}% / base {:+.1}% / bull {:+.1}%; hurdle {:.1}%.\n",
+            bear * 100.0,
+            base * 100.0,
+            bull * 100.0,
+            rate * 100.0,
+        ),
+        _ => "\nCAPITAL EFFICIENCY\nNo assessment this run.\n".to_string(),
+    }
+}
+
+/// THESIS and SCENARIOS from the holding's ledger as validated this run (ruled
+/// 2026-09-17): the standing thesis, then each case's conditions with the
+/// analyst's probability for it. The must-improve / must-not-break lines stay
+/// out (ruled the same day).
+fn ledger_prose_sections(ledger: &ThesisLedger) -> String {
+    let mut p = format!("\nTHESIS (analyst)\n{}\n", ledger.current_thesis);
+    p.push_str(
+        "\nSCENARIOS (analyst)\nThe conditions that define each case, with the analyst's \
+         probability for it.\n",
+    );
+    for s in &ledger.monitor {
+        p.push_str(&format!(
+            "- {} ({:.0}%): {}\n",
+            s.scenario.as_str(),
+            s.probability_pct,
+            s.conditions
+        ));
+    }
+    p
+}
+
+/// The continuity sections, rendered only with a prior verdict: PRIOR ACTION
+/// (the rung, glossed as chosen in the prior analysis or set by rule after it —
+/// ruled 2026-09-17, F4), PRIOR ANALYSIS (the prior read's values) and CHANGES
+/// SINCE THE PRIOR ANALYSIS (the analyst's summary, the validated rows in
+/// words, the input-delta rows they cite). Absent attribution says so and is
+/// never read as unchanged evidence.
+fn action_continuity_sections(
+    d: &HoldingDossier,
+    summary: &str,
+    changes: Option<&crate::portfolio::WhatChangedAudit>,
+) -> String {
+    let Some(prior) = d.prior_verdict.as_ref() else {
+        return String::new();
+    };
+    let mut p = String::new();
+    if let Some(action) = crate::portfolio::carried_action(prior) {
+        p.push_str(&format!(
+            "\nPRIOR ACTION\n{}, {}.\n",
+            action.as_kebab(),
+            match prior.action_source {
+                ActionSource::ModelChosen => "chosen in the prior analysis",
+                ActionSource::RuleDemoted => {
+                    "set by rule after the prior analysis, not chosen in it"
+                }
+            }
+        ));
+    }
+    p.push_str("\nPRIOR ANALYSIS\n");
+    match &prior.disposition {
+        VerdictDisposition::Priced(g) => {
+            let [short, mid, long] = horizon_words(&g.horizon_outlook);
+            p.push_str(&format!(
+                "computed grade {}; analyst grade {}; conviction {}; outlook short {short}, \
+                 mid {mid}, long {long}.\nFinancial summary: {}\n",
+                g.grade.as_str(),
+                g.model_view.letter.as_str(),
+                g.conviction.as_str(),
+                g.financial_summary
+            ))
+        }
+        VerdictDisposition::RoleRiskOnly(r) => {
+            p.push_str(&format!("class {}; role: {}\n", r.class_label, r.role_summary))
+        }
+        _ => p.push_str("No comparable prior read.\n"),
+    }
+    p.push_str(&format!(
+        "\nCHANGES SINCE THE PRIOR ANALYSIS\nSummary (analyst): {summary}\n"
+    ));
+    match changes {
+        Some(c) => {
+            for e in &c.entries {
+                let attribution = e.attribution.as_words();
+                let evidence = if e.evidence.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("; evidence {}", e.evidence)
+                };
+                p.push_str(&format!(
+                    "- {}: {} -> {} ({attribution}{evidence})\n",
+                    e.detail, e.old, e.new
+                ));
+            }
+            for e in &c.input_delta {
+                p.push_str(&format!("[{}] {}\n", e.id, e.label));
+            }
+            if c.entries.is_empty() {
+                p.push_str("No attributed changes are recorded.\n");
+            }
+        }
+        None => p.push_str("No change attribution is available.\n"),
+    }
+    p
+}
+
+/// Part 2 of the action message: the two items in output order, each naming
+/// the Part 1 sections it draws on — the weighing order (the former ACTION
+/// BASIS hierarchy as a task clause), the profile tie-break, on a priced
+/// holding the sunk-cost rule as one clause on every packet
+/// (`docs/portfolio-analysis.md` §Portfolio action; ruled 2026-09-17), with a
+/// chosen prior the firmness clause — and the placeholder-only shape.
+fn action_task_section(input: &ActionInput) -> String {
+    let prior = input.dossier.prior_verdict.as_ref();
+    let prior_chosen = prior.is_some_and(|v| {
+        v.action_source == ActionSource::ModelChosen
+            && crate::portfolio::carried_action(v).is_some()
+    });
+    let mut p = String::from(
+        "\n======== PART 2: TASK ========\n\nDetermine the following from the inputs and return \
+         them as one JSON object in the shape at the end, with no code fence and no \
+         surrounding text.\n\
+         \n1. action — one rung for this holding, from these inputs alone: \"sell-all\", \
+         \"trim\", \"hold\", \"add\" or \"add-aggressively\". The rung alone: no share count, \
+         dollar amount or portfolio weight. ",
+    );
+    let (first, mut refining): (Vec<&str>, Vec<&str>) = match &input.subject {
+        ActionSubject::Priced { .. } => (
+            vec!["SCORES", "PRICE TARGETS"],
+            vec!["CAPITAL EFFICIENCY", "CONVICTION AND OUTLOOK", "THESIS", "SCENARIOS"],
+        ),
+        ActionSubject::RoleRisk { verdict, .. } => {
+            let mut first = vec!["CLASS", "ROLE"];
+            if !verdict.exposure_tilt.is_empty() {
+                first.push("EXPOSURE TILT");
+            }
+            first.push("RISK PROFILE");
+            if verdict.is_cef && verdict.nav_premium.is_some() {
+                first.push("PRICE VS NAV");
+            }
+            let mut refining = Vec::new();
+            if !verdict.evidence_gaps.is_empty() {
+                refining.push("EVIDENCE GAPS");
+            }
+            refining.extend(["THESIS", "SCENARIOS"]);
+            (first, refining)
+        }
+    };
+    if prior.is_some() {
+        refining.extend(["PRIOR ANALYSIS", "CHANGES SINCE THE PRIOR ANALYSIS"]);
+    }
+    refining.extend(["SUPPORTED ACTIONS", "INVESTOR PROFILE"]);
+    let list = |names: Vec<&str>| -> String {
+        match names.split_last() {
+            Some((last, [])) => last.to_string(),
+            Some((last, head)) => format!("{} and {last}", head.join(", ")),
+            None => String::new(),
+        }
+    };
+    p.push_str(&format!(
+        "Decide it from {} first, refined by {}. An aggressive risk tolerance admits \
+         add-aggressively where the other inputs support it.",
+        list(first),
+        list(refining),
+    ));
+    match &input.subject {
+        ActionSubject::Priced { .. } => p.push_str(
+            " Where even the bull case in CAPITAL EFFICIENCY misses the hurdle and the forward \
+             read is poor, lean toward realizing some or all of the position.",
+        ),
+        ActionSubject::RoleRisk { .. } => p.push_str(
+            " An add-side rung needs support from the vehicle's own attributes, stated in the \
+             rationale.",
+        ),
+    }
+    if prior_chosen {
+        p.push_str(
+            " Move from PRIOR ACTION only where the inputs have materially changed since the \
+             prior analysis.",
+        );
+    }
+    p.push_str(
+        "\n\n2. rationale — one sentence giving the single investment reason for the rung.\n",
+    );
+    p.push_str(&format!(
+        "\nRETURN SHAPE (every value is a placeholder)\n{}\n",
+        crate::portfolio::action_return_shape()
+    ));
+    p
+}
+
+/// Which packet a shared section is rendered into. The facts are the same on
+/// both; the consequence lines (the overlay's and the forensic sweep's) render
+/// on the interpretation packet only — the action packet's SUPPORTED ACTIONS
+/// line already carries the narrowed set, and its conviction is the analyst's
+/// read (ruled 2026-09-17, F1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptStage {
     /// The intrinsic interpretation prompt (Step 6f): authors conviction, no action.
@@ -5550,11 +5581,8 @@ enum PromptStage {
 
 /// Render the finalized pre-profit execution / financing overlay for an eligible
 /// stock's interpretation prompt and its per-holding action prompt
-/// (`docs/portfolio-workflow.md` §Step 6f): the engine's states and matched rules,
-/// framed as the ENGINE arm's own bindings — evidence the unrestricted model arm
-/// weighs, with departures recorded as annotations, never prompt-level clamps (the
-/// v7 two-arm contract). `stage` picks which consequence line carries the model
-/// arm's guidance (see [`PromptStage`]).
+/// (`docs/portfolio-workflow.md` §Step 6f): the computed states as data on both,
+/// the consequence lines on the interpretation packet only (see [`PromptStage`]).
 fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String {
     use crate::portfolio::pre_profit::{ConvictionCeiling, FinancingState};
     let i = &o.statement_inputs;
@@ -5615,19 +5643,21 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
         "- severe deterioration (conjunctive): {}\n",
         if o.severe_deterioration { "YES" } else { "no" }
     ));
-    // The consequence lines render the deterministic engine rule and, where the
-    // current response has the corresponding model field, its two-arm freedom.
+    // The consequence lines state the computed rule's effect; the action packet
+    // carries the narrowed set on its own line, so they render on the
+    // interpretation packet only (ruled 2026-09-17, F1).
+    if stage == PromptStage::Action {
+        return p;
+    }
     if let Some(ceiling) = o.consequences.conviction_ceiling {
         let ceiling = match ceiling {
             ConvictionCeiling::Medium => "medium",
             ConvictionCeiling::Low => "low",
         };
         let rules = o.consequences.matched_rules.join("; ");
-        match stage {
-            PromptStage::Interpretation | PromptStage::Action => p.push_str(&format!(
-                "- computed conviction capped at {ceiling} by rule: {rules}.\n",
-            )),
-        }
+        p.push_str(&format!(
+            "- computed conviction capped at {ceiling} by rule: {rules}.\n",
+        ));
     }
     if o.consequences.exit_family_only {
         p.push_str(
@@ -6871,12 +6901,12 @@ fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest
 /// the **shared** interpret context size — the one-`num_ctx`-per-model rule (an
 /// Ollama `num_ctx` change reloads the resident runner,
 /// `docs/local-model-operations.md §The num_ctx trap`).
-fn action_request(reasoner_model: &str, input: &ActionInput, form: EngineSetForm) -> ChatRequest {
+fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatRequest {
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
             ChatMessage::system(action_system_prompt()),
-            ChatMessage::user(action_user_prompt_with_form(input, form)),
+            ChatMessage::user(action_user_prompt(input)),
         ],
     );
     req.format_schema = Some(crate::portfolio::action_decision_schema());
@@ -6884,48 +6914,6 @@ fn action_request(reasoner_model: &str, input: &ActionInput, form: EngineSetForm
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
-}
-
-impl LocalAnalyst {
-    /// The action call's one issue path, under the engine-set rendering the
-    /// caller chose (fix list 3.9): the pipeline decides under
-    /// [`EngineSetForm::List`] through [`HoldingAnalyst::decide_action`]; the
-    /// fixed-evidence harness, which holds a concrete `LocalAnalyst`, calls this
-    /// directly for the `Facts` arm, so the production trait stays as it was.
-    /// The `Facts` form labels its stage so the thought-log fence and the usage
-    /// row tell the A/B's arms apart.
-    pub(crate) fn decide_action_under(
-        &self,
-        input: &ActionInput,
-        form: EngineSetForm,
-    ) -> Result<crate::portfolio::ActionDecision> {
-        let mut req = action_request(&self.reasoner_model, input, form);
-        // Stream step-scoped like interpretation: the decision's reasoning lands
-        // on this holding's own "Analyze {SYM}" step.
-        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
-        let stage = match form {
-            EngineSetForm::List => format!("action {}", input.dossier.position.symbol),
-            EngineSetForm::Facts => format!("action {} (engine-set facts)", input.dossier.position.symbol),
-        };
-        req.stage = Some(stage.clone());
-        self.retry.run(self.client.progress(), &stage, || {
-            self.record_model_call(&req);
-            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
-            self.record_usage(stage.clone(), &req, &resp);
-            ensure_not_output_limited(&stage, &req, &resp)?;
-            ensure_nonempty_completion(&stage, &resp)?;
-            serde_json::from_str(&resp.content)
-                .map_err(|e| {
-                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
-                })
-                .with_context(|| {
-                    format!(
-                        "parsing action-decision JSON: {}",
-                        body_snippet(&resp.content)
-                    )
-                })
-        })
-    }
 }
 
 impl HoldingAnalyst for LocalAnalyst {
@@ -7143,7 +7131,29 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
-        self.decide_action_under(input, EngineSetForm::List)
+        let mut req = action_request(&self.reasoner_model, input);
+        // Stream step-scoped like interpretation: the decision's reasoning lands
+        // on this holding's own "Analyze {SYM}" step.
+        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
+        let stage = format!("action {}", input.dossier.position.symbol);
+        req.stage = Some(stage.clone());
+        self.retry.run(self.client.progress(), &stage, || {
+            self.record_model_call(&req);
+            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
+            self.record_usage(stage.clone(), &req, &resp);
+            ensure_not_output_limited(&stage, &req, &resp)?;
+            ensure_nonempty_completion(&stage, &resp)?;
+            serde_json::from_str(&resp.content)
+                .map_err(|e| {
+                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
+                })
+                .with_context(|| {
+                    format!(
+                        "parsing action-decision JSON: {}",
+                        body_snippet(&resp.content)
+                    )
+                })
+        })
     }
 
     fn fast_id(&self) -> String {
@@ -7639,6 +7649,29 @@ pub(crate) mod tests {
             }),
             ttm_dividends_per_share: Some(1.0),
             ..CompanyFinancials::default()
+        }
+    }
+
+    /// A minimal ledger for the action packet's THESIS and SCENARIOS sections.
+    pub(crate) fn test_ledger() -> ThesisLedger {
+        ThesisLedger {
+            branch: LedgerBranch::Priced,
+            original_thesis: "A standing thesis.".into(),
+            current_thesis: "A standing thesis.".into(),
+            key_drivers: vec![],
+            monitor: [(ScenarioKind::Bear, 25.0), (ScenarioKind::Base, 50.0), (ScenarioKind::Bull, 25.0)]
+                .into_iter()
+                .map(|(scenario, probability_pct)| MonitorScenario {
+                    scenario,
+                    conditions: format!("{} case conditions.", scenario.as_str()),
+                    probability_pct,
+                    engine_target: None,
+                })
+                .collect(),
+            what_must_improve: String::new(),
+            what_must_not_break: String::new(),
+            conditions: vec![],
+            authored_band_relation: None,
         }
     }
 
@@ -9660,13 +9693,21 @@ pub(crate) mod tests {
                 graded,
                 engine: &engine_output,
                 pre_profit: None,
+                ledger: v.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
             changes: None,
             profile: &d.profile,
         });
         assert!(action.contains("\nFORENSIC FILINGS (8-K sweep)\nEvents found:\n"), "{action}");
-        assert!(action.contains(RULE), "{action}");
+        // The action packet carries the narrowed set on its own line, so the
+        // sweep's rule sentence renders on the interpretation packet only
+        // (ruled 2026-09-17, F1).
+        assert!(!action.contains("By rule:"), "{action}");
+        assert!(
+            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: sell-all, trim, hold.\n"),
+            "{action}"
+        );
         assert!(!action.contains("HARD TRIGGER TRIPPED"), "{action}");
 
         // An `Unknown` sweep renders as unknown and never trips the rule.
@@ -9706,117 +9747,149 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn action_prompt_carries_the_profile_the_engine_set_and_the_verdict_digest() {
+    fn action_prompt_is_two_parts_with_both_reads_the_supported_set_and_the_profile() {
         // The action call is the profile's ONE entry point (tunnel vision): the
-        // prompt renders the finished verdict digest, the engine's per-holding
-        // set (its own pick withheld — the ruled 6f precedent), and the profile.
+        // message renders the two reads, the computed per-holding set as one
+        // data line, and the profile — and names no app concept
+        // (`portfolio-v41`; `docs/verification/2026-09-17-action-prompt-rewrite.md`).
         let d = dossier(AssetClass::Stock, strong_financials());
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
         };
+        let ledger = v.thesis_ledger.as_ref().unwrap();
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
         let engine_set =
             engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
-        let input = ActionInput {
+        let user = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::Priced {
-                graded,
-                engine: &engine_output,
-                pre_profit: None,
-            },
+            subject: ActionSubject::Priced { graded, engine: &engine_output, pre_profit: None, ledger },
             engine_set: &engine_set,
             changes: None,
             profile: &d.profile,
-        };
-        let user = action_user_prompt(&input);
-        assert!(user.contains("INVESTOR PROFILE"), "{user}");
-        assert!(user.contains("ENGINE SET"), "{user}");
-        assert!(user.contains("its own pick is undisclosed"), "{user}");
-        assert_eq!(user.matches("ENGINE SET").count(), 1, "stated once: {user}");
-        assert!(!user.contains("scoreboard"), "{user}");
-        assert!(user.contains("THE VERDICT"), "{user}");
-        assert!(!user.contains("Unrealized"), "no account economics: {user}");
-        assert!(!user.contains("Cost basis"), "{user}");
-        // Since portfolio-v39: the grade defined beside the forward read (3.11),
-        // conviction named as the verdict's own confidence (3.11), and the
-        // financial summary labelled model-authored (3.12).
-        assert!(user.contains("The grade is the backward composite of the quality, valuation and risk sub-scores, and the targets are the forward scenario read"), "{user}");
-        assert!(user.contains("CONVICTION (the verdict's own confidence): "), "{user}");
-        assert!(user.contains("FINANCIAL SUMMARY (model-authored at interpretation): "), "{user}");
-        // Both arms' targets reach the rung, both horizons (Codex I5): the
-        // engine's lines under their provenance, the model's own band beside
-        // them — the stub authors its twelve-month base at 1.05× the engine's,
-        // so the two base moves must differ on the page.
+        });
+        let system = action_system_prompt();
+        assert_eq!(
+            system,
+            "You are an equity analyst deciding the portfolio action for one holding in a \
+             portfolio review. Part 1 of the message gives the inputs. Part 2 states what to \
+             determine from them and the shape to return. You will return action and \
+             rationale, as one JSON object."
+        );
+        let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").unwrap();
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
+        for section in [
+            "SCORES\n",
+            "PRICE TARGETS (USD, with the move each implies from the current price)\n",
+            "TARGET RATIONALE (analyst)\n",
+            "CAPITAL EFFICIENCY\n",
+            "CONVICTION AND OUTLOOK (analyst)\n",
+            "FINANCIAL SUMMARY (analyst)\n",
+            "THESIS (analyst)\n",
+            "SCENARIOS (analyst)\n",
+            "SUPPORTED ACTIONS (computed)\n",
+            "INVESTOR PROFILE\n",
+        ] {
+            assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "{section}: {part1}");
+        }
+        // Part 1 instructs nothing; Part 2 carries the two items and the shape.
+        assert!(!part1.contains("Return "), "{part1}");
+        assert!(
+            part2.contains(
+                "\n1. action — one rung for this holding, from these inputs alone: \"sell-all\", \
+                 \"trim\", \"hold\", \"add\" or \"add-aggressively\". The rung alone: no share count, \
+                 dollar amount or portfolio weight. Decide it from SCORES and PRICE TARGETS first, \
+                 refined by CAPITAL EFFICIENCY, CONVICTION AND OUTLOOK, THESIS, SCENARIOS, \
+                 SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits \
+                 add-aggressively where the other inputs support it. Where even the bull case in \
+                 CAPITAL EFFICIENCY misses the hurdle and the forward read is poor, lean toward \
+                 realizing some or all of the position.\n"
+            ),
+            "{part2}"
+        );
+        assert!(
+            part2.contains("\n2. rationale — one sentence giving the single investment reason for the rung.\n"),
+            "{part2}"
+        );
+        assert!(
+            part2.ends_with(&format!(
+                "\nRETURN SHAPE (every value is a placeholder)\n{}\n",
+                crate::portfolio::action_return_shape()
+            )),
+            "{part2}"
+        );
+        assert_eq!(
+            crate::portfolio::action_return_shape(),
+            "{\"action\":\"<sell-all|trim|hold|add|add-aggressively>\",\"rationale\":\"\"}"
+        );
+        // Both reads' bands reach the rung with the move each implies, both
+        // horizons (Codex I5): the stub authors its twelve-month base at 1.05×
+        // the computed base, so the two base moves differ on the page.
         let spot = d.financials.current_price.unwrap();
-        let pct = |v: f64| format!("{:+.1}%", (v / spot - 1.0) * 100.0);
+        let leg = |v: f64| format!("{v:.2} ({:+.1}%)", (v / spot - 1.0) * 100.0);
         let engine_12 = graded.price_targets.twelve_month.as_ref().unwrap();
         let model_12 = &graded.model_view.price_targets.twelve_month;
         assert!(
             user.contains(&format!(
-                "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (engine targets): bear {} / base {} \
-                 / bull {}.",
-                pct(engine_12.bear),
-                pct(engine_12.base),
-                pct(engine_12.bull)
+                "- computed twelve-month: bear {} / base {} / bull {}. Method: ",
+                leg(engine_12.bear), leg(engine_12.base), leg(engine_12.bull)
             )),
             "{user}"
         );
         assert!(
             user.contains(&format!(
-                "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (model targets — your own band \
-                 authored at interpretation on its declared domain, never validated against \
-                 the engine, no provenance to discount): bear {} / base {} / bull {}.",
-                pct(model_12.bear),
-                pct(model_12.base),
-                pct(model_12.bull)
+                "- analyst twelve-month: bear {} / base {} / bull {}.\n",
+                leg(model_12.bear), leg(model_12.base), leg(model_12.bull)
             )),
             "{user}"
         );
-        assert_ne!(pct(engine_12.base), pct(model_12.base));
-        assert_eq!(user.matches("IMPLIED 1-MONTH MOVES vs spot").count(), 2, "{user}");
-        assert_eq!(user.matches("IMPLIED 12-MONTH MOVES vs spot").count(), 2, "{user}");
-        assert!(user.contains("TARGET PROVENANCE (engine targets):"), "{user}");
-        assert!(user.contains("the model's bands carry no provenance to discount"), "{user}");
-        assert!(!user.contains("off-scale as authored"), "{user}");
-        assert!(!user.contains("band inverted as authored"), "{user}");
-        let system = action_system_prompt();
-        assert!(user.contains("both arms' implied target moves"), "{user}");
-        assert!(system.contains("the investor profile alone"), "{system}");
-        assert!(system.contains("exactly ONE rung"), "{system}");
-        assert!(!system.contains("not a bound on you"), "{system}");
-        assert!(!system.contains("ENGINE SET"), "the set is stated once, in the packet: {system}");
-        assert!(system.contains("exactly ONE sentence"), "{system}");
-        // Finding-3 (user follow-up): the prompt scopes the task in a clause and does
-        // not narrate the app's whole-book architecture to the model — no tunnel-vision
-        // label, no planning-stage or portfolio-context exposition the model can
-        // neither see nor use. Input isolation (the user prompt omits every whole-book
-        // field, asserted below) is the enforcement, not prompt prose.
-        assert!(!system.contains("TUNNEL VISION"), "{system}");
-        assert!(!system.contains("planning stage"), "{system}");
-        assert!(!system.contains("concentration"), "{system}");
-        // The output contract stays shared. Holding-specific hurdle facts now
-        // live only in the branch packet, tested across every state below.
-        // The departure mechanics are app behavior and left the decision prompt
-        // with the 2026-09-16 slice; the profile tie-break stays.
-        assert!(!system.contains("the app stamps the departure"), "{system}");
-        assert!(system.contains("The investor profile breaks ties"), "{system}");
-        assert!(!system.contains("Capital efficiency"), "{system}");
-        assert_eq!(user.matches("CAPITAL EFFICIENCY (the engine's twelve-month total-return test").count(), 1, "{user}");
-        assert!(!user.contains("capital-efficiency read"), "{user}");
-        assert!(!user.contains("fixed action mapping"), "{user}");
-        assert!(!user.contains("never an exit input"), "{user}");
-        assert!(!user.contains("never a departure note"), "{user}");
-        // No whole-book vocabulary leaks into the user prompt — the cash row
-        // included: the system prompt promises no book-level capital input is
-        // given, so the profile renders without it (Codex 2026-08-14, finding 3).
-        assert!(!user.contains("concentration"), "{user}");
-        assert!(!user.contains("OVERLAP"), "{user}");
-        assert!(!user.contains("- cash:"), "{user}");
-        assert!(!user.contains("unconstrained"), "{user}");
+        assert_ne!(leg(engine_12.base), leg(model_12.base));
+        assert_eq!(user.matches("- computed one-month: ").count(), 1, "{user}");
+        assert_eq!(user.matches("- analyst one-month: ").count(), 1, "{user}");
+        // The polarity gloss once and the grade's derivation once (2.3 and 3.11
+        // as one data gloss); the set once as data with no permission sentence
+        // (3.9, ruled 2026-09-17).
+        assert_eq!(user.matches("higher is better on every axis").count(), 1, "{user}");
+        assert!(
+            user.contains(
+                "The grade is a letter derived from the quality, valuation and risk scores.\n\
+                 - computed: quality "
+            ),
+            "{user}"
+        );
+        let set: Vec<&str> = engine_set.iter().map(Action::as_kebab).collect();
+        assert!(
+            user.contains(&format!(
+                "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its \
+                 own: {}.\n",
+                set.join(", ")
+            )),
+            "{user}"
+        );
+        // The ledger's thesis and scenarios, as validated this run.
+        assert!(user.contains(&format!("\nTHESIS (analyst)\n{}\n", ledger.current_thesis)), "{user}");
+        for s in &ledger.monitor {
+            assert!(
+                user.contains(&format!("- {} ({:.0}%): {}\n", s.scenario.as_str(), s.probability_pct, s.conditions)),
+                "{user}"
+            );
+        }
+        // No app concept, no whole-book vocabulary, no account economics, and
+        // — on a debut — no continuity section or firmness clause.
+        for absent in [
+            "ENGINE SET", "ENGINE ARM", "MODEL ARM", "THE VERDICT", "ACTION BASIS", "IMPLIED ",
+            "TARGET PROVENANCE", "engine arm", "model arm", "engine targets",
+            "model targets", "its own pick", "full ladder", "neither requires nor forbids",
+            "indeterminate", "dead money", "scoreboard", "concentration", "OVERLAP", "- cash:",
+            "unconstrained", "Unrealized", "Cost basis", "PRIOR ACTION", "PRIOR ANALYSIS",
+            "CHANGES SINCE", "Move from PRIOR ACTION", "exactly ONE", "Keep the action firm",
+        ] {
+            assert!(!user.contains(absent), "`{absent}` in the message: {user}");
+            assert!(!system.contains(absent), "`{absent}` in the system prompt: {system}");
+        }
     }
 
     #[test]
@@ -9841,6 +9914,7 @@ pub(crate) mod tests {
         };
         let engine_set =
             engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
+        let ledger = v.thesis_ledger.as_ref().unwrap();
         let render = |d: &HoldingDossier| {
             action_user_prompt(&ActionInput {
                 dossier: d,
@@ -9848,6 +9922,7 @@ pub(crate) mod tests {
                     graded,
                     engine: &engine_output,
                     pre_profit: None,
+                    ledger,
                 },
                 engine_set: &engine_set,
                 changes: None,
@@ -9856,15 +9931,15 @@ pub(crate) mod tests {
         };
 
         let exempt = render(&d);
+        // A rule-demoted prior renders as data with its gloss (ruled 2026-09-17,
+        // F4) and anchors no firmness clause.
         assert!(
-            exempt.contains(
-                "Prior persisted action for this holding: hold (rule-demoted by the over-age \
-                 carry rule, not chosen by a model; provenance context only, not a continuity \
-                 anchor)."
-            ),
+            exempt.contains("\nPRIOR ACTION\nhold, set by rule after the prior analysis, not chosen in it.\n"),
             "{exempt}"
         );
-        assert!(!exempt.contains("Prior model-chosen action"), "{exempt}");
+        assert!(!exempt.contains("chosen in the prior analysis."), "{exempt}");
+        assert!(!exempt.contains("Move from PRIOR ACTION"), "{exempt}");
+        assert!(!exempt.contains("rule-demoted"), "{exempt}");
         // The investment-only packet (2.1, ruled 2026-09-16): no tax row, no
         // P/L, no cost basis under either profile — and the two renders are
         // byte-identical, so the tax posture cannot reach the rung by any route.
@@ -9880,10 +9955,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn action_facts_resolve_each_hurdle_and_include_validated_continuity() {
+    fn action_packet_renders_the_hurdle_as_numbers_and_the_continuity_sections() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let VerdictDisposition::Priced(graded) = &prior.disposition else { panic!("priced"); };
+        let ledger = prior.thesis_ledger.as_ref().unwrap();
         let mut engine = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(engine) => engine,
             _ => panic!("priced"),
@@ -9903,48 +9979,81 @@ pub(crate) mod tests {
             let mut low = graded.clone();
             low.low_confidence_grade = true;
             let prompt = action_user_prompt(&ActionInput {
-                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &engine, pre_profit: None },
+                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &engine, pre_profit: None, ledger },
                 engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
             });
-            // The `fails` line since portfolio-v38 (fix list 2.5): the fact, the
-            // sunk-cost lean, and the same closing reach as the other three states.
-            let fails = state == crate::portfolio::HurdleState::Fails;
-            assert_eq!(prompt.contains("so the position is dead money"), fails);
-            assert_eq!(prompt.contains("a weighed exit input beside the forward read, not a rung"), fails);
-            assert_eq!(prompt.contains("realizing some or all of the position where the forward prospects are independently poor"), fails);
-            assert!(!prompt.contains("an exit input when forward prospects"), "{prompt}");
-            // Since portfolio-v39 (fix list 3.10) the line opens with its owner,
-            // horizon and rate, and the ratified remainder follows it.
-            assert_eq!(prompt.matches("CAPITAL EFFICIENCY (the engine's twelve-month total-return test against a ").count(), 1, "{prompt}");
-            assert!(prompt.contains("% hurdle): "), "{prompt}");
-            assert!(!prompt.contains("over the assessed horizon"), "{prompt}");
-            assert!(!prompt.contains("CAPITAL EFFICIENCY:"), "{prompt}");
-            assert_eq!(prompt.contains("fails — even the bull case misses it, so the position is dead money"), fails);
-            // The low-confidence letter reads as a property of the grade, apart
-            // from the conviction line (fix list 3.11).
-            assert!(prompt.contains("a low-confidence letter: one sub-score is imputed — a property of the grade, not the conviction"), "{prompt}");
-            assert!(!prompt.contains("low-confidence — an imputed sub-score underlies it"), "{prompt}");
-            assert!(!prompt.contains("capital-efficiency read"));
-            assert!(!prompt.contains("fixed action mapping"));
-            assert!(!prompt.contains("carries no exit signal"));
-            assert!(!prompt.contains("could not be evaluated"));
-            assert_eq!(prompt.contains("even the bear case clears"), state == crate::portfolio::HurdleState::Clears);
-            assert_eq!(prompt.contains("proves nothing either way"), state == crate::portfolio::HurdleState::Indeterminate);
-            // Every state closes with the same reach clause.
-            assert_eq!(prompt.matches("neither requires nor forbids any rung").count(), 1, "{prompt}");
-            // With no hurdle rate the prefix says so rather than printing a gap.
+            // CAPITAL EFFICIENCY as numbers (ruled 2026-09-17 off L19): the three
+            // tested returns and the hurdle, no state word, no reach sentence; an
+            // unscorable read says no assessment exists.
+            let h = &engine.hurdle;
+            if state == crate::portfolio::HurdleState::Unscorable {
+                assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment this run.\n"), "{prompt}");
+            } else {
+                assert!(
+                    prompt.contains(&format!(
+                        "\nCAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario \
+                         (the move from the current price to the scenario price, plus forward income \
+                         per share, as a fraction of the current price) and the hurdle rate it is \
+                         measured against.\nbear {:+.1}% / base {:+.1}% / bull {:+.1}%; hurdle {:.1}%.\n",
+                        h.tr_bear.unwrap() * 100.0, h.tr_base.unwrap() * 100.0,
+                        h.tr_bull.unwrap() * 100.0, h.hurdle_rate.unwrap() * 100.0
+                    )),
+                    "{prompt}"
+                );
+            }
+            for absent in [
+                "indeterminate", "dead money", "neither requires nor forbids", "fails —", "clears —",
+                "twelve-month total-return test", "carries no exit signal",
+                "a property of the grade, not the conviction",
+            ] {
+                assert!(!prompt.contains(absent), "`{absent}`: {prompt}");
+            }
+            // The sunk-cost rule is one task clause on every priced packet.
+            assert_eq!(prompt.matches("Where even the bull case in CAPITAL EFFICIENCY misses the hurdle").count(), 1, "{prompt}");
+            // The low-confidence letter is a gloss on the computed grade line.
+            assert!(prompt.contains(&format!("Grade {}{LOW_CONFIDENCE_GLOSS}. Risk tier: ", low.grade.as_str())), "{prompt}");
+            // The continuity sections: the prior action as chosen, the prior read,
+            // the validated rows in words with their evidence ids, and the
+            // firmness clause in the task.
+            assert!(prompt.contains(&format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", graded.action.as_kebab())), "{prompt}");
+            assert!(
+                prompt.contains(&format!(
+                    "\nPRIOR ANALYSIS\ncomputed grade {}; analyst grade {}; conviction {}; outlook short {}, mid {}, long {}.\nFinancial summary: {}\n",
+                    graded.grade.as_str(), graded.model_view.letter.as_str(), graded.conviction.as_str(),
+                    graded.horizon_outlook.short.as_str(), graded.horizon_outlook.mid.as_str(),
+                    graded.horizon_outlook.long.as_str(), graded.financial_summary
+                )),
+                "{prompt}"
+            );
+            assert!(
+                prompt.contains(&format!(
+                    "\nCHANGES SINCE THE PRIOR ANALYSIS\nSummary (analyst): {}\n- twelve-month base: 100 -> 110 (company information; evidence D1)\n[D1] forward earnings changed\n",
+                    low.what_changed
+                )),
+                "{prompt}"
+            );
+            assert!(prompt.contains("SCENARIOS, PRIOR ANALYSIS, CHANGES SINCE THE PRIOR ANALYSIS, SUPPORTED ACTIONS and INVESTOR PROFILE."), "{prompt}");
+            assert!(prompt.contains(" Move from PRIOR ACTION only where the inputs have materially changed since the prior analysis.\n"), "{prompt}");
+            for absent in ["Prior engine grade", "continuity baseline", "Validated change attribution is unavailable", "CompanyInformation"] {
+                assert!(!prompt.contains(absent), "`{absent}`: {prompt}");
+            }
+            // With no hurdle rate there is no assessment to render.
             let mut no_rate = engine.clone();
             no_rate.hurdle.hurdle_rate = None;
             let prompt = action_user_prompt(&ActionInput {
-                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &no_rate, pre_profit: None },
+                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &no_rate, pre_profit: None, ledger },
                 engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
             });
-            assert_eq!(prompt.matches("CAPITAL EFFICIENCY (the engine's twelve-month total-return test; no hurdle rate this run): ").count(), 1, "{prompt}");
-            assert!(!prompt.contains("% hurdle): "), "{prompt}");
-            assert!(prompt.contains("Prior engine grade"));
-            assert!(prompt.contains("twelve-month base: 100 -> 110"));
-            assert!(prompt.contains("[D1] forward earnings changed"));
+            assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment this run.\n"), "{prompt}");
+            assert!(!prompt.contains("; hurdle "), "{prompt}");
         }
+        // Absent attribution says so and is never read as unchanged evidence.
+        let prompt = action_user_prompt(&ActionInput {
+            dossier: &d, subject: ActionSubject::Priced { graded, engine: &engine, pre_profit: None, ledger },
+            engine_set: &[Action::Hold], profile: &d.profile, changes: None,
+        });
+        assert!(prompt.contains("\nCHANGES SINCE THE PRIOR ANALYSIS\nSummary (analyst): "), "{prompt}");
+        assert!(prompt.contains("\nNo change attribution is available.\n"), "{prompt}");
     }
 
     #[test]
@@ -10064,6 +10173,7 @@ pub(crate) mod tests {
                 graded,
                 engine: &engine_output,
                 pre_profit: None,
+                ledger: v.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
             changes: None,
@@ -10074,18 +10184,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn action_prompt_tags_off_domain_model_legs_and_gaps_engine_legs_as_authored() {
+    fn action_prompt_tags_off_domain_analyst_legs_and_gaps_computed_legs_as_authored() {
         // The render annotates, never reorders or drops (Codex I5, ruled
-        // 2026-08-28): an engine leg the scenario function could not derive
-        // prints `(gap)`; a model leg outside the declared domain prints as
-        // authored with its tag in place of a percentage; a band authored bear
-        // above bull carries the inverted tag — the frontend's posture. I6 owns
-        // the upstream domain validation; this is the render's fail-closed read.
+        // 2026-08-28): a computed band the scenario function could not derive
+        // prints `(gap)`; an analyst leg outside the declared domain prints as
+        // authored with its tag in place of a price and move; a band authored
+        // bear above bull carries the inverted tag. I6 owns the upstream domain
+        // validation; this is the render's fail-closed read.
         let d = dossier(AssetClass::Stock, strong_financials());
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
         };
+        let ledger = v.thesis_ledger.as_ref().unwrap();
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -10094,62 +10205,37 @@ pub(crate) mod tests {
             engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
         let mut g = graded.clone();
         g.price_targets.one_month = None;
-        g.model_view.price_targets.one_month = ModelPriceTarget {
-            base: 100.0,
-            bear: 120.0,
-            bull: 90.0,
-        };
-        g.model_view.price_targets.twelve_month = ModelPriceTarget {
-            base: f64::NAN,
-            bear: -5.0,
-            bull: 0.0,
-        };
-        let render = |d: &HoldingDossier| {
+        g.model_view.price_targets.one_month = ModelPriceTarget { base: 100.0, bear: 120.0, bull: 90.0 };
+        g.model_view.price_targets.twelve_month = ModelPriceTarget { base: f64::NAN, bear: -5.0, bull: 0.0 };
+        let render = |d: &HoldingDossier, g: &GradedVerdict| {
             action_user_prompt(&ActionInput {
                 dossier: d,
-                subject: ActionSubject::Priced {
-                    graded: &g,
-                    engine: &engine_output,
-                    pre_profit: None,
-                },
+                subject: ActionSubject::Priced { graded: g, engine: &engine_output, pre_profit: None, ledger },
                 engine_set: &engine_set,
                 changes: None,
                 profile: &d.profile,
             })
         };
-        let user = render(&d);
+        let user = render(&d, &g);
         let spot = d.financials.current_price.unwrap();
-        let pct = |v: f64| format!("{:+.1}%", (v / spot - 1.0) * 100.0);
-        assert!(
-            user.contains(&format!(
-                "IMPLIED 1-MONTH MOVES vs spot {spot:.2} (engine targets): (gap)."
-            )),
-            "{user}"
-        );
-        // The engine's twelve-month leg is untouched and still renders as moves.
+        let leg = |v: f64| format!("{v:.2} ({:+.1}%)", (v / spot - 1.0) * 100.0);
+        assert!(user.contains("- computed one-month: (gap)\n"), "{user}");
+        // The computed twelve-month band is untouched and still renders with moves.
         let engine_12 = g.price_targets.twelve_month.as_ref().unwrap();
-        assert!(
-            user.contains(&format!(
-                "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (engine targets): bear {}",
-                pct(engine_12.bear)
-            )),
-            "{user}"
-        );
+        assert!(user.contains(&format!("- computed twelve-month: bear {}", leg(engine_12.bear))), "{user}");
         // Inverted: authored numbers, authored order, the tag beside them.
         assert!(
             user.contains(&format!(
-                "bear {} / base {} / bull {} (band inverted as authored).",
-                pct(120.0),
-                pct(100.0),
-                pct(90.0)
+                "- analyst one-month: bear {} / base {} / bull {} (band inverted as authored).\n",
+                leg(120.0), leg(100.0), leg(90.0)
             )),
             "{user}"
         );
-        // Off-scale: the raw authored value with its tag, no percentage.
+        // Off-scale: the raw authored value with its tag, no price or move.
         assert!(
             user.contains(
-                "bear -5 (off-scale as authored) / base NaN (off-scale as authored) / bull 0 \
-                 (off-scale as authored)."
+                "- analyst twelve-month: bear -5 (off-scale as authored) / base NaN (off-scale as \
+                 authored) / bull 0 (off-scale as authored).\n"
             ),
             "{user}"
         );
@@ -10160,81 +10246,56 @@ pub(crate) mod tests {
         // bull is never tagged inverted; an in-domain bear above an off-scale
         // bull carries both tags — annotate, never drop.
         let mut both = g.clone();
-        both.model_view.price_targets.one_month = ModelPriceTarget {
-            base: 100.0,
-            bear: f64::NAN,
-            bull: 90.0,
-        };
-        both.model_view.price_targets.twelve_month = ModelPriceTarget {
-            base: 100.0,
-            bear: 120.0,
-            bull: -5.0,
-        };
-        let user3 = action_user_prompt(&ActionInput {
-            dossier: &d,
-            subject: ActionSubject::Priced {
-                graded: &both,
-                engine: &engine_output,
-                pre_profit: None,
-            },
-            engine_set: &engine_set,
-            changes: None,
-            profile: &d.profile,
-        });
+        both.model_view.price_targets.one_month = ModelPriceTarget { base: 100.0, bear: f64::NAN, bull: 90.0 };
+        both.model_view.price_targets.twelve_month = ModelPriceTarget { base: 100.0, bear: 120.0, bull: -5.0 };
+        let user3 = render(&d, &both);
         assert!(
             user3.contains(&format!(
-                "bear NaN (off-scale as authored) / base {} / bull {}.",
-                pct(100.0),
-                pct(90.0)
+                "- analyst one-month: bear NaN (off-scale as authored) / base {} / bull {}.\n",
+                leg(100.0), leg(90.0)
             )),
             "{user3}"
         );
         assert!(
             user3.contains(&format!(
-                "bear {} / base {} / bull -5 (off-scale as authored) (band inverted as authored).",
-                pct(120.0),
-                pct(100.0)
+                "- analyst twelve-month: bear {} / base {} / bull -5 (off-scale as authored) (band inverted as authored).\n",
+                leg(120.0), leg(100.0)
             )),
             "{user3}"
         );
         assert_eq!(user3.matches("band inverted as authored").count(), 1, "{user3}");
         // A finite, positive leg whose move from spot overflows the percentage
         // arithmetic is off-scale too — the guard reads the derived move, so the
-        // prompt never carries `inf%` (Codex round 1).
+        // message never carries `inf%` (Codex round 1).
         let mut penny = strong_financials();
         penny.current_price = Some(1.0);
         let d4 = dossier(AssetClass::Stock, penny);
         let mut huge = g.clone();
-        huge.model_view.price_targets.twelve_month = ModelPriceTarget {
-            base: 1e308,
-            bear: 0.5,
-            bull: 2.0,
-        };
-        let user4 = action_user_prompt(&ActionInput {
-            dossier: &d4,
-            subject: ActionSubject::Priced {
-                graded: &huge,
-                engine: &engine_output,
-                pre_profit: None,
-            },
-            engine_set: &engine_set,
-            changes: None,
-            profile: &d4.profile,
-        });
+        huge.model_view.price_targets.twelve_month = ModelPriceTarget { base: 1e308, bear: 0.5, bull: 2.0 };
+        let user4 = render(&d4, &huge);
         assert!(!user4.contains("inf"), "{user4}");
         assert!(
-            user4.contains("bear -50.0% / base 1")
-                && user4.contains("0 (off-scale as authored) / bull +100.0%."),
+            user4.contains("- analyst twelve-month: bear 0.50 (-50.0%) / base 1")
+                && user4.contains("0 (off-scale as authored) / bull 2.00 (+100.0%).\n"),
             "{user4}"
         );
-        // No usable spot → no implied line for either arm; the provenance line
-        // still renders, since it describes the targets rather than the moves.
+        // No usable current price → prices without moves on both reads; the
+        // method clauses still render, since they describe the bands.
         let mut unpriced = strong_financials();
         unpriced.current_price = None;
         let d2 = dossier(AssetClass::Stock, unpriced);
-        let user2 = render(&d2);
-        assert!(!user2.contains("IMPLIED "), "{user2}");
-        assert!(user2.contains("TARGET PROVENANCE (engine targets):"), "{user2}");
+        let user2 = render(&d2, &g);
+        assert!(
+            user2.contains(&format!(
+                "- computed twelve-month: bear {:.2} / base {:.2} / bull {:.2}. Method: ",
+                engine_12.bear, engine_12.base, engine_12.bull
+            )),
+            "{user2}"
+        );
+        assert!(
+            user2.contains("- analyst one-month: bear 120.00 / base 100.00 / bull 90.00 (band inverted as authored).\n"),
+            "{user2}"
+        );
     }
 
     #[test]
@@ -10290,7 +10351,7 @@ pub(crate) mod tests {
         // rewrite — one message in two parts, no app narration, the caps unshown
         // — changes the interpretation prompts and their contract, so it moves
         // to v40. The checkpoint trail is unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v40");
+        assert_eq!(PROMPT_VERSION, "portfolio-v41");
         assert_eq!(crate::portfolio::store::CHECKPOINT_FORMAT_VERSION, "checkpoint-v10");
     }
 
@@ -10432,13 +10493,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn action_prompt_labels_the_prior_action_as_a_continuity_baseline() {
-        // The prior action anchors the fresh call as a plain continuity baseline.
-        // The retired whole-book-era history label was removed with the pre-v9
-        // legacy (fresh-start ruling 2026-08-17).
+    fn action_prompt_names_a_chosen_prior_action_and_the_firmness_clause() {
+        // A model-chosen prior renders as PRIOR ACTION and the task's firmness
+        // clause refers to it (ruled 2026-09-17, F4). The retired whole-book-era
+        // history label went with the pre-v9 legacy (fresh-start ruling
+        // 2026-08-17).
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        let prior_action = crate::portfolio::carried_action(&prior).unwrap();
         d.prior_verdict = Some(prior);
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
@@ -10450,20 +10513,29 @@ pub(crate) mod tests {
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
         };
-        let graded = graded.clone();
         let user = action_user_prompt(&ActionInput {
             dossier: &d,
             subject: ActionSubject::Priced {
-                graded: &graded,
+                graded,
                 engine: &engine_output,
                 pre_profit: None,
+                ledger: v.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
             changes: None,
             profile: &d.profile,
         });
-        assert!(user.contains("continuity baseline"), "{user}");
-        assert!(!user.contains("RETIRED whole-book contract"), "{user}");
+        assert!(
+            user.contains(&format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", prior_action.as_kebab())),
+            "{user}"
+        );
+        assert!(
+            user.contains(" Move from PRIOR ACTION only where the inputs have materially changed since the prior analysis.\n"),
+            "{user}"
+        );
+        for absent in ["continuity baseline", "RETIRED whole-book contract", "Keep the action firm", "Prior model-chosen action"] {
+            assert!(!user.contains(absent), "`{absent}`: {user}");
+        }
     }
 
     #[test]
@@ -11494,36 +11566,45 @@ pub(crate) mod tests {
             action_rationale: String::new(),
             what_changed: "new holding".into(),
         };
+        let ledger = test_ledger();
         let action = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::RoleRisk { verdict: &rr },
+            subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
             changes: None,
             profile: &d.profile,
         });
-        assert!(action.contains("PRICE VS NAV: -7.2% (discount)"), "{action}");
-        assert!(action.contains("This branch has no price forecast or capital-efficiency hurdle assessment"));
-        assert!(!action.contains("both arms' implied target moves"));
-        assert!(!action.contains("even the bull case"));
-        // The harness's Facts form on this branch states the one fact its set
-        // rests on (fix list 3.9): no return evidence, so no engine support for
-        // the add family.
-        let facts = action_user_prompt_with_form(
-            &ActionInput {
-                dossier: &d,
-                subject: ActionSubject::RoleRisk { verdict: &rr },
-                engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
-                changes: None,
-                profile: &d.profile,
-            },
-            EngineSetForm::Facts,
+        assert!(action.contains("\nPRICE VS NAV: -7.2% (discount)"), "{action}");
+        // The role/risk message on the same two-part frame (`portfolio-v41`):
+        // its own sections, the reduced set as one data line, no capital
+        // efficiency or targets, and its own weighing clause.
+        assert!(action.contains("\nCLASS (computed)\nclosed-end fund\n"), "{action}");
+        assert!(action.contains("\nROLE (analyst)\nincome sleeve\n"), "{action}");
+        assert!(action.contains("\nTHESIS (analyst)\nA standing thesis.\n"), "{action}");
+        assert!(action.contains("- base (50%): base case conditions.\n"), "{action}");
+        assert!(
+            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: sell-all, trim, hold.\n"),
+            "{action}"
         );
-        assert!(!facts.contains("ENGINE SET"), "{facts}");
-        assert!(facts.contains("ENGINE ADMISSION FACTS (engine evidence; the full ladder is yours): this branch carries no return evidence, so the add family has no engine support here."), "{facts}");
+        assert!(
+            action.contains(
+                "Decide it from CLASS, ROLE, RISK PROFILE and PRICE VS NAV first, refined by THESIS, SCENARIOS, \
+                 SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits \
+                 add-aggressively where the other inputs support it. An add-side rung needs support \
+                 from the vehicle's own attributes, stated in the rationale.\n"
+            ),
+            "{action}"
+        );
+        for absent in [
+            "CAPITAL EFFICIENCY", "PRICE TARGETS", "even the bull case", "This branch has no price forecast",
+            "ENGINE SET", "ENGINE ADMISSION FACTS", "EXPOSURE TILT", "EVIDENCE GAPS", "both arms",
+        ] {
+            assert!(!action.contains(absent), "`{absent}`: {action}");
+        }
         rr.nav_premium = None;
         let action_gap = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::RoleRisk { verdict: &rr },
+            subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
             changes: None,
             profile: &d.profile,
@@ -12073,17 +12154,18 @@ pub(crate) mod tests {
             action_rationale: String::new(),
             what_changed: "new holding".into(),
         };
+        let ledger = test_ledger();
         let action = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::RoleRisk { verdict: &rr },
+            subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
             changes: None,
             profile: &d.profile,
         });
         assert!(
             action.contains(
-                "EXPENSE DRAG (decimal fraction of assets per year): 0.0003 (0.03%/yr). \
-                 OBSERVABLE"
+                "\nRISK PROFILE (computed)\nExpense drag: 0.0003 (0.03%/yr) of assets per year. \
+                 Observable risk:"
             ),
             "{action}"
         );
@@ -14129,9 +14211,10 @@ pub(crate) mod tests {
             keys: Vec<&'static str>,
             contract: String,
             prompt: String,
-            /// The priced branch's placeholder-only return shape
-            /// (`portfolio-v40`), rendered at the end of its user message; the
-            /// other prompts declare the key list inline in the contract.
+            /// The placeholder-only return shape (`portfolio-v40` on the priced
+            /// branch, `portfolio-v41` on the action call), rendered at the end
+            /// of the user message; the role/risk prompt declares the key list
+            /// inline in the contract.
             return_shape: Option<String>,
         }
         // Every per-call shape since portfolio-v38 (fix list 3.3): stock and
@@ -14142,7 +14225,7 @@ pub(crate) mod tests {
             keys: pf::ACTION_KEYS.to_vec(),
             contract: pf::action_response_contract(),
             prompt: action_system_prompt(),
-            return_shape: None,
+            return_shape: Some(pf::action_return_shape()),
         }];
         for (is_fund, debut) in [(false, false), (false, true), (true, false), (true, true)] {
             cases.push(ContractCase {
@@ -14664,18 +14747,20 @@ pub(crate) mod tests {
 
         let interp = pre_profit_prompt_section(&overlay, PromptStage::Interpretation);
         let action = pre_profit_prompt_section(&overlay, PromptStage::Action);
+        assert!(
+            interp.contains("- the computed action set excludes adding, on the financing rule.\n"),
+            "{interp}"
+        );
         for prompt in [&interp, &action] {
-            assert!(
-                prompt.contains("- the computed action set excludes adding, on the financing rule.\n"),
-                "{prompt}"
-            );
             for narration in ["stage that follows", "This stage authors", "UNRESTRICTED", "engine"] {
                 assert!(!prompt.contains(narration), "`{narration}` leaked: {prompt}");
             }
         }
-        // The two stages render one identical section: the consequence lines
-        // carry no stage-specific guidance (`portfolio-v40`).
-        assert_eq!(interp, action);
+        // The action packet renders the facts alone — its SUPPORTED ACTIONS
+        // line carries the narrowed set (ruled 2026-09-17, F1) — and the facts
+        // block is shared byte for byte.
+        assert!(!action.contains("computed action set"), "{action}");
+        assert!(interp.starts_with(action.as_str()), "{interp}\n{action}");
     }
 
     #[test]
@@ -14782,17 +14867,21 @@ pub(crate) mod tests {
                 graded: &g,
                 engine: &engine_output,
                 pre_profit: Some(&overlay),
+                ledger: verdict.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
             changes: None,
             profile: &d.profile,
         });
         assert!(!action.contains("UNRESTRICTED"), "{action}");
-        assert!(action.contains("- computed conviction capped at low by rule: "), "{action}");
+        // The overlay's facts render on the action packet; its consequence
+        // lines do not — SUPPORTED ACTIONS carries the narrowed set (ruled
+        // 2026-09-17, F1).
+        assert!(action.contains("- severe deterioration (conjunctive): YES\n"), "{action}");
+        assert!(!action.contains("conviction capped"), "{action}");
+        assert!(!action.contains("computed action set"), "{action}");
         assert!(
-            action.contains(
-                "- severe deterioration: the computed action set narrows to trim and sell-all.\n"
-            ),
+            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: sell-all, trim.\n"),
             "{action}"
         );
         assert!(!action.contains("CONVICTION CEILING"), "{action}");
@@ -15301,43 +15390,24 @@ pub(crate) mod tests {
             engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
         let user = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::Priced { graded, engine: &engine_output, pre_profit: None },
+            subject: ActionSubject::Priced {
+                graded,
+                engine: &engine_output,
+                pre_profit: None,
+                ledger: v.thesis_ledger.as_ref().unwrap(),
+            },
             engine_set: &engine_set,
             changes: None,
             profile: &d.profile,
         });
-        // Polarity on both arms (2.3); the set stated once, as evidence (2.2).
-        assert_eq!(user.matches(SCORE_POLARITY).count(), 2, "{user}");
-        assert_eq!(user.matches("ENGINE SET").count(), 1, "{user}");
-        assert!(user.contains("The full ladder is yours; this set is one input."), "{user}");
-        // The harness's A/B form (fix list 3.9, portfolio-v39): `List` is the
-        // production prompt byte for byte; `Facts` renders the admission facts
-        // in the set's place and nothing else moves.
-        let input = ActionInput {
-            dossier: &d,
-            subject: ActionSubject::Priced { graded, engine: &engine_output, pre_profit: None },
-            engine_set: &engine_set,
-            changes: None,
-            profile: &d.profile,
-        };
-        assert_eq!(action_user_prompt_with_form(&input, EngineSetForm::List), user);
-        let facts = action_user_prompt_with_form(&input, EngineSetForm::Facts);
-        assert!(!facts.contains("ENGINE SET"), "{facts}");
-        assert_eq!(facts.matches("ENGINE ADMISSION FACTS (engine evidence; the full ladder is yours): new-money admission ").count(), 1, "{facts}");
-        assert!(
-            facts.contains(if engine_output.hurdle.admits_new_money {
-                "passes — the base-case total return clears the hurdle as a point test"
-            } else {
-                "fails — the base-case total return misses the hurdle as a point test"
-            }),
-            "{facts}"
-        );
-        assert!(facts.contains("in the engine's own rule."), "{facts}");
-        let (u_head, u_rest) = user.split_once("\nENGINE SET (").unwrap();
-        let (f_head, f_rest) = facts.split_once("\nENGINE ADMISSION FACTS (").unwrap();
-        assert_eq!(u_head, f_head);
-        assert_eq!(&u_rest[u_rest.find('\n').unwrap()..], &f_rest[f_rest.find('\n').unwrap()..]);
-        for absent in ["restriction", "not a bound", "departure", "Its selected action"] {
+        // Polarity once, on the shared gloss (2.3); the set once, as one data
+        // line with no permission sentence (2.2; 3.9 ruled 2026-09-17).
+        assert_eq!(user.matches("higher is better on every axis").count(), 1, "{user}");
+        assert_eq!(user.matches("\nSUPPORTED ACTIONS (computed)\n").count(), 1, "{user}");
+        for absent in [
+            "The full ladder is yours", "its own pick", "ENGINE SET", "ENGINE ADMISSION FACTS",
+            "restriction", "not a bound", "departure", "Its selected action",
+        ] {
             assert!(!user.contains(absent), "{absent}: {user}");
         }
         // No account economics on any route (2.1, F5, C1): the header carries
@@ -15346,7 +15416,7 @@ pub(crate) mod tests {
             assert!(!user.contains(absent), "{absent}: {user}");
         }
         assert!(
-            user.starts_with("HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\n"),
+            user.starts_with("======== PART 1: INPUTS ========\nHOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\n"),
             "{user}"
         );
         assert!(user.contains("covering 100% of the held shares; net delta -70% of the held shares"), "{user}");

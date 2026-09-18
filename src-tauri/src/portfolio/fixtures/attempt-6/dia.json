@@ -67,6 +67,28 @@
    "expect": "qualitative"
   }
  ],
+ "ledger_prose": {
+  "current_thesis": "DIA serves as defensive blue-chip core exposure with structural limitations (price-weighting bias, 30-stock concentration). Near-term multiple compression expected per Market Signal bearish pivot; position benefits from credit cushion delaying funding event but underperforms capex/growth leaders. Long-duration equity beta faces repricing pressure until Fed guidance clarity and energy shock resolution.",
+  "monitor": [
+   {
+    "scenario": "bear",
+    "conditions": "2Y closes above 4.80% and/or WTI sustained >$105 with breakevens past 2.50%, HY OAS widens through 3.00%, VXN breaks above 30—converts valuation compression to funding event",
+    "probability_pct": 25.0
+   },
+   {
+    "scenario": "base",
+    "conditions": "Fed delivers one-and-done guidance with credit conditions holding (HY OAS <3.0%), oil shock resolves within months, equity multiples compress but no funding event materializes",
+    "probability_pct": 55.0
+   },
+   {
+    "scenario": "bull",
+    "conditions": "Fed signals pause with 2Y rolling below 4.45%, WTI slips <$90 on pipeline restart, breakevens retreat below 2.35%, real-money net-short squeeze resolves into VIX <17",
+    "probability_pct": 20.0
+   }
+  ],
+  "what_must_improve": "Fed guidance clarity toward pause rather than continued hikes into inflation; oil supply shock resolution via pipeline restart or demand destruction bringing WTI <$90; broader market cap-weighted leadership rotation from overbought tech/growth back to value/defensives that Dow overweight favors.",
+  "what_must_not_break": "Credit conditions (HY OAS <3.0%); 10Y yield stability below 5.2%; no escalation in geopolitical supply disruption beyond Hormuz premium; Fed avoids hawkish dot plot surprise signaling multiple rate increases."
+ },
  "disposition": {
   "status": "priced",
   "grade": "C",
