@@ -1,5 +1,8 @@
 # Local model calls — fix list from big-run attempt 6 (2026-09-15)
 
+Superseded 2026-09-17: the open entries, the verification owed and the watches moved to `2026-09-17-open-findings.md`, the work list from that date.
+This file is history and is not consulted for what is open.
+
 The single-homed work list distilled from the attempt-6 findings record
 (`2026-09-15-big-run-attempt-6-findings.md`: the Claude read in its Findings 1–9 and
 the Codex analysis in its §1–§10).

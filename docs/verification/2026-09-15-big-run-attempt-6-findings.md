@@ -1,5 +1,8 @@
 # Big confirmation run — findings (2026-09-15, attempt 6, ended at 6 of 47)
 
+Superseded 2026-09-17: what still needs a fix from this record lives in `2026-09-17-open-findings.md`, the work list from that date.
+This file is history and is not consulted for what is open.
+
 Findings from the fourth launch of the single big confirmation run — the
 `portfolio-v35` debut, from a store wiped to a clean debut on 2026-09-14, across
 the same 47-position book.

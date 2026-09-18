@@ -17,8 +17,8 @@ Naming is not specifying — a row may call a concept what the corpus calls it,
 identifier and all, but never uses that identifier to state a rule.
 And a row's subject is a concept, never a slice, PR or review round: dates,
 commit hashes and branch names live in git, build status in `BUILD.md`.
-§Verification records is the one place a date appears, because there it is part
-of the path being cited.*
+Verification records are not indexed: they are temporary, and `CURRENT.md` names
+the ones a session still needs.*
 
 ## Product & platform
 - Product positioning — overview.md; README.md
@@ -210,7 +210,7 @@ build status lives in `BUILD.md`.*
 - What-changed audit — portfolio-analysis.md §What changed; portfolio-workflow.md §Step 6g; storage.md §Local Analysis Suite Storage
 - Step-6a semantic continuity retrieval + per-holding summary embeddings — portfolio-workflow.md §Step 6a, §Step 7; storage.md §Local Vector Memory
 - Run audit record provenance (source labels, model ids) — storage.md §Local Analysis Suite Storage; portfolio-workflow.md §Step 7
-- Degraded-run persistence + constructed marker (removed by the fresh-start slice) — verification/2026-08-17-fresh-start-legacy-removal.md; BUILD.md §Runtime, observability & failure posture
+- Degraded-run persistence + constructed marker (removed by the fresh-start slice) — BUILD.md §Runtime, observability & failure posture
 - Holdings normalization / book-level netting — schwab-integration.md §What is pulled, §Manual import (supplement); portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
 - Holdings change tracking — portfolio-analysis.md §Holdings change tracking
 - Net-short equity handling — portfolio-analysis.md §Asset eligibility, §Triggering, §Holdings change tracking, §Outcome learning
@@ -317,41 +317,3 @@ build status lives in `BUILD.md`.*
 - Local analysis suite storage + per-feature retention — storage.md §Local Analysis Suite Storage
 - Local suite pages — interface.md §Main Layout
 - Suite sorting & views — interface.md §Main Layout, §Persistent Warning Area; portfolio-analysis.md §Storage and display; portfolio-workflow.md §Step 8; trade-opportunities.md §Storage and display; trade-opportunities-workflow.md §Step 10; market-signal-design-system (SKILL.md, README.md §Analytical-register controls, colors_and_type.css, ui_kits Analytical.jsx, preview/analytical-controls.html)
-
-## Verification records
-
-*Evidence files under `docs/verification/`, named for what each covers.
-Most are dated, point-in-time records; the contracts they tested live in the
-docs cited beside them.
-The watch set is the exception — it is written before the run it checks, and
-the run's own dated record follows it.*
-
-- Local-model serving pre-flight — verification/2026-07-28-m5-preflight.md; local-model-operations.md §M5 pre-flight checklist
-- First live Portfolio run — verification/2026-07-31-first-live-portfolio-run.md
-- FMP light-EOD adjustment-basis probe — verification/2026-08-02-fmp-light-eod-adjustment-basis.md; data-sources.md §Financial Modeling Prep
-- Grade-band calibration — verification/2026-08-03-grade-band-shadow-tune.md; portfolio-analysis.md §Starting parameters
-- Portfolio code-vs-docs conformance — verification/2026-08-04-piece2-conformance-walk.md; verification/2026-08-05-piece2-conformance-rerun.md
-- Deterministic value-chain correctness — verification/2026-08-05-piece3-value-chain-walk.md
-- Residual conformance + off-spine doc coverage — verification/2026-08-07-scoped-conformance-check.md
-- Big confirmation run — watch set (forward-looking; the run's dated record follows) — verification/big-run-watch-set.md; BUILD.md §What remains
-- Big confirmation run — attempt 1 — verification/2026-08-10-big-run-attempt-1.md; portfolio-analysis.md §Failure posture
-- Big confirmation run — attempt 2 (analysis, rulings, and the fix slices) — verification/2026-08-13-big-run-attempt-2.md; portfolio-analysis.md §Portfolio roll-up, §Starting parameters
-- Stooq removal — decision, evidence, and removal-slice inventory — verification/2026-08-12-stooq-removal-decision.md; BUILD.md §What remains (Built)
-- Tunnel-vision slice — ruling, build inventory, and per-finding dispositions — verification/2026-08-14-tunnel-vision-slice.md; portfolio-analysis.md §Portfolio action, §Portfolio roll-up
-- Tunnel-vision doc↔code conformance walk — findings, rulings, and applied corrections — verification/2026-08-15-tunnel-vision-conformance-walk.md
-- Selective-run safety additions → card badges — ruling, build inventory, and held-name-lane / pre-v9-gate retirement — verification/2026-08-16-selective-badges-ruling.md; portfolio-analysis.md §Triggering
-- Fresh-start legacy removal — the ruling, the full pre-`v9` removal inventory, and the kept-vs-removed boundary — verification/2026-08-17-fresh-start-legacy-removal.md; BUILD.md §Runtime, observability & failure posture
-- Portfolio Analysis doc/code audit — the 21 findings, their re-verification and dispositions, four rulings, and two Codex rounds — verification/2026-08-18-portfolio-analysis-doc-code-audit.md; BUILD.md §What remains (Built)
-- Trade Opportunities documentation audit — the 28 findings, their verification verdicts, seven rulings, dispositions, and two review rounds — verification/2026-08-19-trade-opportunities-documentation-audit.md; BUILD.md §What remains
-- Fund depth — the four rulings, the CEF probe findings, the built leg, and six review rounds — verification/2026-08-21-fund-depth-rulings.md; BUILD.md §What remains (Built)
-- Research-loop slice — the eight review rounds, the fix inventory, and the three 2026-08-24 channel rulings — verification/2026-08-24-research-loop-rulings.md; BUILD.md §What remains (Built)
-- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I20 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains
-- Fresh-start 2 — the no-data-compat ruling, the writer test, the removal inventory, and the review rounds — verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md; BUILD.md §Standing constraints, §What remains (Built)
-- Portfolio Analysis review 2 — the blind sweep after the 2026-08-24 fixes, the five non-minor and thirty-four minor findings, the open questions, and the cross-check against the 2026-08-24 record — verification/2026-08-30-portfolio-analysis-review-2.md; BUILD.md §What remains
-- Portfolio Analysis review 3 — the third blind sweep after the Review 2 remediation, financial correctness / run-killing bugs / doc-code alignment all clean (no findings, so the Phase 2 cross-check did not apply) — verification/2026-08-30-portfolio-analysis-review-3.md; BUILD.md §What remains
-- Big confirmation run — findings — the attempt-3 debut record (cancelled early at 2/47 on `google cse` rate-limit → Tavily spillover): SearXNG engine blocking + apply-later mitigations, ledger `quant` under-population, action-call prompt friction, the bounded-retry rate, throughput (~25 min/holding → ~20 h full run), extraction telemetry for the deferred render tier, and the thinking-is-a-side-channel note — verification/2026-08-30-big-run-findings.md; big-run-watch-set.md; BUILD.md §What remains
-- Portfolio per-holding failure isolation — the ruling and user decisions (run-level `failed_holdings` list not a disposition variant, all-attempted-failed → Failed with no snapshot, concise stage+root cause, carried-prior not emptied), the shared carry helper, the accessible failed card, the design-package failed-tag (fifth accent relaxation), and the cancellation-based resume-test conversion — verification/2026-08-31-portfolio-failure-isolation.md; portfolio-analysis.md §Failure posture; BUILD.md §What remains (Built)
-- Big confirmation run — attempt 4 findings — the second-launch debut record (`portfolio-v32`, cancelled at 7 of 47 once the findings were in): the Serper-floor search backend serving in-run (Finding 1's re-attempt gate met, attempt 3's Tavily spillover closed by construction), the ledger `quant` under-population not reproducing on the equity path (Finding 2), the action-call prompt-friction root cause diagnosed to the overloaded/unordered prompt with the capital-efficiency and tax rules duplicated across the system and user prompts (Finding 3), and the 6d research-findings terminal-turn empty-body fragility with the first hard holding failure isolated live plus the attempt-3 correction (a findings double-failure errors, not degrades) (Finding 4) — verification/2026-08-31-big-run-attempt-4-findings.md; big-run-watch-set.md; BUILD.md §What remains
-- Big confirmation run — attempt 5 findings — the third-launch debut record (`portfolio-v34`, user-ended at 4 of 47 for a trip): fix B's empty-body rate not reproducing on the sample with both bounded retries recovering (Finding 4), the research findings-synthesis prompt showing the model no schema shape so a format-confused topic dropped whole at reconciliation while the citation set hid the loss (Finding 5, fix landed under `portfolio-v35`), and the fund path's first clean priced and role/risk reads (Finding 6) — verification/2026-09-01-big-run-attempt-5-findings.md; big-run-watch-set.md; BUILD.md §What remains
-- Portfolio prompt clarity — the combined trace-review and static-review implementation (pass-local source-id citations, the dedicated synthesis orientation, schema-derived shape templates, resolved per-holding action facts, action continuity evidence, bounded distillation source text), the tax ruling, and the review follow-up — verification/2026-09-14-portfolio-prompt-clarity.md; web-research.md §The research loop and context management; portfolio-workflow.md §Step 6d, §Step 6f; portfolio-analysis.md §Portfolio action; BUILD.md §What remains
-- Portfolio financial correctness — four financial fixes, the Claude-review cleanup, pre-release contract enforcement, and full verification — verification/2026-09-15-portfolio-financial-correctness.md; portfolio-analysis.md §Asset eligibility, §The position thesis ledger, §Outcome learning; big-run-watch-set.md; BUILD.md §What remains

@@ -786,84 +786,15 @@ every stacked runtime confirmation at once.
 ### Remaining, in order
 
 1. **The single big confirmation run** — the queue's next item now the
-   Portfolio Analysis job is built in full (the pre-run bar is met). By the
-   2026-08-27 ruling the run waits until **every finding** in the 2026-08-24
-   large-scale review
-   (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
-   §Disposition owns the list) is handled: the pre-run majors (C1, F3
-   (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture), the Priority-1/-2/-3 minors and the §A4 seed edge are
-   resolved, and Codex's I1–I20 with them (I1–I5 and I14 2026-08-28, the
-   rest 2026-08-29 — the five groups cut on one code locus and one stamp
-   axis, the fresh-start-2 compat cut ahead of them, and I20 last as its
-   own slice, the record's §Disposition owning the grouping), so nothing
-   sits ahead of the run; the run starts from a wiped store, so every
-   holding is a debut and every read against a prior is a run-2 watch, a
-   second run following only on the user's decision after run 1's result;
-   and the user names the launch session at its start. Its checklist is
-   `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
-   now the FMP quota-consumption and 429-ladder watches), **revised to the v9
-   shape 2026-08-18** (construction / lean / sizing watches removed, the
-   prompt-fit watch re-homed to the per-holding prompts), revised again
-   2026-08-24 with the research-loop, ruling, pre-profit-activation, and
-   Schwab-CEF-typing watches folded in, and 2026-08-27 with the fired-retry
-   watch; read `data-health` early, since several items resolve off that
-   surface alone. Attempts 1 and 2 failed in the
-   since-removed construction stage (their dated records live under
-   `docs/verification/`); attempt 3, the first v9-shape full run, launched
-   from a wiped store on 2026-08-30 and was user-cancelled at 2 of 47
-   holdings when the keyless `google cse` engine rate-limited under the
-   research loop's volume and drove SearXNG-to-Tavily spillover. Its
-   six-finding record is `docs/verification/2026-08-30-big-run-findings.md`.
-   Finding 1's mitigations have since landed — search pacing, a run-scoped
-   query-dedup cache, the `settings.yml` engine re-tune, and the local suite
-   made **SearXNG-only** (the Tavily-fallback machinery removed whole), so the
-   Tavily spillover that stopped attempt 3 can no longer occur.
-   Attempt 4 launched from a wiped store on 2026-08-31 with the Serper.dev paid
-   SERP added as the reliable search floor, and was user-cancelled at 7 of 47
-   once the round's findings were in
-   (`docs/verification/2026-08-31-big-run-attempt-4-findings.md`).
-   The search backend served cleanly (Finding 1's gate met) and the ledger
-   `quant` under-population did not reproduce (Finding 2), but the 6d
-   research-findings terminal turn returned empty or fenced bodies at ~70% and
-   failed a holding (Finding 4), while the action call's prompt friction was
-   diagnosed to an overloaded, unordered prompt (Finding 3).
-   Finding 4's fix landed as **fix B** — the Step-6c research turn split so a
-   tools-only gathering loop and a separate grammar-only synthesis call never
-   share a request (`portfolio::PROMPT_VERSION` bumped to bar a pre-fix resume).
-   Finding 3's fix then restructured the action-call prompt to data-plus-ordered
-   gates and swept the full Portfolio prompt surface to the prompt-posture bar
-   (no stamp moved — `portfolio-v34`).
-   Attempt 5 launched from a wiped store on 2026-09-01 (`portfolio-v34` debut)
-   and was user-ended at 4 of 47 for a trip
-   (`docs/verification/2026-09-01-big-run-attempt-5-findings.md`): fix B's
-   empty-body rate did not reproduce and both bounded retries recovered
-   (Finding 4), the fund path's two branches read clean (Finding 6), and the
-   research findings-synthesis prompt (fix B's grammar-only call) showed the
-   model no schema shape — the grammar is a decoding mask it never sees — so
-   a format-confused topic dropped whole at reconciliation (Finding 5).
-   Finding 5's fix landed as `portfolio-v35`: the synthesis prompt shows the
-   object's keys, types, required members and a placeholder example, pinned
-   to the grammar by test; attempt 6 is again the user's call, from a wiped
-   store.
-   The attempt-5 telemetry gaps then landed 2026-09-14 with no stamp moved
-   — the per-domain source state counts failed and denied live fetches
-   beside the full/thin pair (archive format v6, the pre-release v2–v5
-   shapes refused) and research-loop retry events name their topic and leg
-   — so the wipe before attempt 6 also drops `web_source_state`.
-   The prompt-clarity bundle then merged 2026-09-14 (PR #72, no stamp moved)
-   off a per-call segmentation of the attempt-3–5 thought-logs that put ~85%
-   of attempt 5's re-thinking in the research synthesis call, not the action
-   call — pass-local source-id citations resolved app-side, a dedicated
-   synthesis orientation, schema-derived shape templates on every
-   schema-constrained call, per-holding resolved capital-efficiency facts,
-   validated continuity evidence in the action packet, and bounded original
-   source text for distillation's typed extraction — with tax ruled an
-   optional rationale caveat that never moves the rung, so attempt 6 reads
-   the whole bundle rather than the Finding-5 shape example alone
-   (`docs/verification/2026-09-14-portfolio-prompt-clarity.md`).
-   What stays open behind the run is owned by the attempt records'
-   §Disposition, not this brief.
+   Portfolio Analysis job is built in full (the pre-run bar is met). The run
+   starts from a wiped store, so every holding is a debut and every read
+   against a prior is a run-2 watch, a second run following only on the
+   user's decision after run 1's result; and the user names the launch
+   session at its start. Every attempt to date was user-ended early on
+   findings that became fix slices; those findings, the fixes, the pre-run
+   checklist and whatever stays open behind the run are tracked in
+   `CURRENT.md`, the job docs and the verification records — never in this
+   brief, which records features and load-bearing decisions only.
 2. **Trade Opportunities** — designed, not built, waiting behind the entire
    Portfolio job and its confirmation run. The design is settled against
    live-verified paid FMP shapes and grounded end-to-end by the 2026-08-19
