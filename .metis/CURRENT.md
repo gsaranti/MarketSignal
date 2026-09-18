@@ -2,20 +2,21 @@
 
 ## What happened
 
-**Rulings only, no code change (2026-09-17 late through 2026-09-18).**
-The open local-model-call findings were consolidated into one work list, `docs/verification/2026-09-17-open-findings.md` — eleven flat-numbered entries (1–2 validator bugs, 3 the claim-date persisted shape, 4–6 the fetch layer, 7–8 telemetry, 9 the sampling A/B, 10 the non-thinking experiments, 11 success measures), the checks attempt 7 reads for every rewritten prompt (`portfolio-v40` through `v44`), the watches and the not-adopted list.
-The 2026-09-15 fix list and attempt-6 record are superseded history; a new finding appends to the work list as entry 12 on, never elsewhere.
-The fixed-evidence harness is deprecated: the v40 / v41 / v42 live read is cancelled, the next test after the remaining fixes is attempt 7 itself, the harness is rebuilt after it only if the run shows a need, and its code stays in the tree whole (its thirteen offline tests are the validator slice's offline check).
-BUILD never tracks fixes or adjustments and INDEX never indexes verification records (temporary, referenced from this file only); BUILD was restructured to that rule — compressed spine, suite decisions with §Seams and §Standing constraints whole, §Built one paragraph, no changelog, zero verification pointers — and that is its shape going forward.
-The remaining flags were ruled 2026-09-18 and are on the work list: the 6g checker's existing short-circuit order names a downgrade's reason (a wrong direction outranks a duration; a rolling-window phrase is never a duration); entry 4's failed-URL record is run-scoped memory with no stamp; entry 3's shape half moves `checkpoint` and its freshness-basis half moves `evidence-floor`.
+**The rendered-ledger slice landed (2026-09-18, `82f3dd7`, pushed).**
+The validator slice for work-list entries 1 and 2 (the "over" reader) went four Codex rounds without converging; the user asked why the prose parser exists at all and ruled the structural fix instead.
+A quantitative ledger condition is now authored as its core plus a short name (the `statement` schema key on a quantitative condition), the app renders the persisted statement from the core (`QuantCore::render`), the model's name persists as `LedgerCondition.label`, and the prose-versus-core parser with its ten classes is deleted.
+The replacement guard is `holds-at-authoring`: a new or superseding core that already holds on the value the prompt showed is refused; a carried-verbatim core is exempt, and an off-scale value skips the check through the evaluator's shared `LedgerSeries::admissible`.
+The continuity prompt shows a kept core raw beside its name and a refused row with one data phrase per class; the split re-basis and the quick check's transient re-basis re-render the sentence; import refuses format v7; the attempt-6 fixture outcomes were re-derived (PGNY's 300% growth floor now refuses).
+Task review was a narrow reject (two stale doc sentences), then clean; three Codex rounds followed, every finding and nit taken.
+The abandoned parser diff was dropped from the stash on the user's word.
 
 ## Current state
 
-Committed and pushed on `main`, tree clean; Ollama was found up at session start and left as found.
-Debut stamps unchanged: `portfolio-v44` / `checkpoint-v11` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 7.
+Committed and pushed on `main` (`82f3dd7`), tree clean, stash empty; Ollama was up at session start and left as found.
+Debut stamps: `portfolio-v45` / `checkpoint-v12` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 8; any further prompt or schema change lands as `portfolio-v46`.
 The dev store still holds attempt 6; attempt 7 re-wipes first (drop `web_source_state`, clear `portfolio_runs` and the `portfolio` namespace of `vector_memory`).
-Queue, from the work list: before attempt 7 — entries 1 and 2 as one validator slice, then 8, then 4 through 7 each its own plan, entry 11's measures set before launch; entry 3 is re-scoped on attempt 7's evidence; entries 9 and 10 follow attempt 7 on a rebuilt harness if needed.
-Every entry rules through the selector before implementation; plan flags are ruled with the code in view.
+Work list: entry 12 holds the slice with its rulings; entries 1 and 2 are superseded; the queue before attempt 7 is entry 8 (effective sampling parameters logged at model load), then entries 4 through 7 each its own plan, then entry 11's measures; entry 3 re-scopes on attempt 7's evidence; 9 and 10 follow attempt 7.
+A conditions display slice (label, rendered statement and refusal reason under each holding's thesis) is named as separate work, unscheduled; the frontend still types `conditions` as `unknown[]`.
 
 ## Open questions
 
@@ -23,6 +24,6 @@ Every entry rules through the selector before implementation; plan flags are rul
 
 ## Where to start
 
-Read `docs/verification/2026-09-17-open-findings.md`; it is the only work list.
-On the user's word, `/metis-plan-task` the validator slice (entries 1 and 2), every flag and assumption through the selector before implementing.
+Read `docs/verification/2026-09-17-open-findings.md`; entry 12 is landed, entry 8 is next.
+On the user's word, `/metis-plan-task` entry 8 (log the effective sampling parameters, inherited defaults included, at model load), every flag and assumption through the selector before implementing.
 No harness run and no live read: attempt 7 is the next test, launched only when the user names the session and only after the pre-run entries land — do not propose it.
