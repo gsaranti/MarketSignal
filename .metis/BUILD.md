@@ -350,6 +350,10 @@ rather than re-deriving:
 - `store::load_episodes` / `prune_matured_episodes` — episode identity and
   lifecycle; the episode store and the `HoldingAudit.hurdle` snapshot are what
   the calibration-proposal slice will consume.
+- `QuantCore::render` / `LedgerCondition::rerender_statement` — the one
+  renderer for a quantitative ledger condition's sentence; every site that
+  moves a core (the split re-basis at ingestion, the sweep's transient
+  re-basis) re-renders through it and never rewrites prose.
 - The selective machinery's triggering surface: validated ledger conditions
   with eval state and cadence tags, app-stamped monitor bands, the
   acknowledgment transition, per-holding vintages (`effective_vintage`), the
@@ -527,6 +531,21 @@ Each is easy to break by accident, so a plan should say how it honors them:
   loud-skip stay (ruled 2026-08-29, superseding the 2026-08-17 kept class;
   this brief states the rule, and the refused pre-release archive rungs it
   implies are at `docs/data-portability.md`).
+- **A quantitative ledger condition's statement is the app's render of its
+  core, never model prose.** The model authors the core — series, comparator,
+  threshold, margin — plus a short name; the app renders the sentence the user
+  reads, so what the engine runs is what the sentence says by construction,
+  and nothing reads prose back against a core. The prose-versus-core parser
+  was deleted after four review rounds on one preposition showed that
+  reverse-parsing free English to reconcile two representations of one fact
+  has no closed form (ruled 2026-09-18). What remains is structural and
+  deterministic: the series, comparator and threshold must parse, the margin
+  sits inside its bounds, and a new or superseding core that already holds on
+  the value the prompt showed is refused as `holds-at-authoring` — a carried
+  core exempt, an off-scale value skipped on the evaluator's own admissibility
+  — so a reversed direction or a unit slip cannot become an executed rule. A
+  field the model must convey goes in the schema, never in the sentence.
+  Canonical at `docs/portfolio-analysis.md §The position thesis ledger`.
 
 ## What remains
 

@@ -9,10 +9,11 @@ The replacement guard is `holds-at-authoring`: a new or superseding core that al
 The continuity prompt shows a kept core raw beside its name and a refused row with one data phrase per class; the split re-basis and the quick check's transient re-basis re-render the sentence; import refuses format v7; the attempt-6 fixture outcomes were re-derived (PGNY's 300% growth floor now refuses).
 Task review was a narrow reject (two stale doc sentences), then clean; three Codex rounds followed, every finding and nit taken.
 The abandoned parser diff was dropped from the stash on the user's word.
+BUILD now carries the decision as a standing constraint — a quantitative condition's statement is the app's render of its core, never model prose — and names the renderer among the seams.
 
 ## Current state
 
-Committed and pushed on `main` (`82f3dd7`), tree clean, stash empty; Ollama was up at session start and left as found.
+Committed and pushed on `main` (the slice is `82f3dd7`, BUILD and this handoff follow it), tree clean, stash empty; Ollama was up at session start and left as found.
 Debut stamps: `portfolio-v45` / `checkpoint-v12` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 8; any further prompt or schema change lands as `portfolio-v46`.
 The dev store still holds attempt 6; attempt 7 re-wipes first (drop `web_source_state`, clear `portfolio_runs` and the `portfolio` namespace of `vector_memory`).
 Work list: entry 12 holds the slice with its rulings; entries 1 and 2 are superseded; the queue before attempt 7 is entry 8 (effective sampling parameters logged at model load), then entries 4 through 7 each its own plan, then entry 11's measures; entry 3 re-scopes on attempt 7's evidence; 9 and 10 follow attempt 7.
