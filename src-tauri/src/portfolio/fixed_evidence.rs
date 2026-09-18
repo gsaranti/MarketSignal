@@ -211,6 +211,8 @@ fn dossier_of(f: &Fixture, tax_sensitive: bool) -> super::dossier::HoldingDossie
     d.position.current_price = Some(f.spot);
     d.profile.tax_sensitive = tax_sensitive;
     d.house_view = serde_json::from_str::<HouseView>(HOUSE_VIEW).expect("house view");
+    // The attempt-6 run date, the fixtures' provenance (`portfolio-v43`).
+    d.analysis_date = "2026-09-16".into();
     d
 }
 
@@ -316,6 +318,7 @@ fn synthetic_role_risk_fixture() -> SyntheticRoleRisk {
         iv_skew: None,
     };
     d.house_view = serde_json::from_str::<HouseView>(HOUSE_VIEW).expect("house view");
+    d.analysis_date = "2026-09-16".into();
     d.put_call_backdrop = Some(crate::cboe::PutCallBackdrop {
         as_of: "2026-09-16".into(),
         total: Some(0.95),
@@ -1621,10 +1624,130 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
     assert_eq!(keys, declared);
 }
 
+/// The research messages the harness renders (`portfolio-v43`): the gathering
+/// and synthesis passes on TSLA's first stock topic and the synthetic fund's
+/// exposure-profile topic, over hand-written leads, claims, conditions and
+/// pages (`research::samples`) — the prompts' shape, never a run's research.
+fn research_samples() -> Vec<super::research::samples::Sample> {
+    let f = fixtures().into_iter().find(|f| f.symbol == "TSLA").expect("TSLA");
+    let d = dossier_of(&f, true);
+    let brief = pipeline::holding_header(&d);
+    let agenda = super::research::build_agenda(&d, &super::research::AgendaTriggers::default());
+    let fx = synthetic_role_risk_fixture();
+    let fund_agenda =
+        super::research::build_agenda(&fx.dossier, &super::research::AgendaTriggers::default());
+    let exposure = fund_agenda
+        .iter()
+        .find(|t| t.key == "fund-exposure-profile")
+        .expect("the retitled fund exposure topic (fix list 4.4)");
+    let mut samples = super::research::samples::gathering_messages(
+        &brief,
+        &agenda[0],
+        &super::research::samples::stock_leads(),
+    );
+    samples.extend(super::research::samples::synthesis_messages(&brief, &agenda[0]));
+    let fund_brief = pipeline::holding_header(&fx.dossier);
+    samples.extend(
+        super::research::samples::gathering_messages(
+            &fund_brief,
+            exposure,
+            &super::research::samples::fund_leads(),
+        )
+            .into_iter()
+            .take(1)
+            .map(|mut s| {
+                s.label = format!("{} (SYNTHETIC fund, exposure profile)", s.label);
+                s
+            }),
+    );
+    samples
+}
+
+/// Every research message on the sample passes is two marked parts in order
+/// with no app concept (`portfolio-v43`): Part 1 the input sections with the
+/// dated holding header, the tier scale stated and no instruction; Part 2 the
+/// task — on a gathering pass the per-reply bound and the stopping rule, on a
+/// synthesis pass the numbered items and a shape whose keys carry the
+/// follow-up on a topic pass and not on the disconfirming pass — and neither
+/// part, nor the system prompt, carries a banned word or a routing word.
+#[test]
+fn research_messages_are_two_parts_with_no_app_concept() {
+    let samples = research_samples();
+    assert_eq!(samples.len(), 8, "four gathering, three synthesis, one fund gathering");
+    for s in &samples {
+        let (part1, part2) = s
+            .user
+            .split_once("======== PART 2: TASK ========")
+            .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{}", s.label, s.user));
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{}: {part1}", s.label);
+        assert!(part1.contains("\nDate: 2026-09-16.\n"), "{}: no date line\n{part1}", s.label);
+        assert!(part1.contains("\nTOPIC\n"), "{}: no TOPIC\n{part1}", s.label);
+        assert!(part1.contains("0 is a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
+        assert!(!part1.contains("recency"), "{}: recency rendered\n{part1}", s.label);
+        assert!(
+            !part1.contains("Return ") && !part1.to_lowercase().contains("your "),
+            "{}: Part 1 instructs\n{part1}",
+            s.label
+        );
+        for (label, text) in [("system", s.system.as_str()), ("user", s.user.as_str())] {
+            let hits = banned_hits(text);
+            assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", s.label);
+            assert_no_routing_words(&format!("{} {label}", s.label), text);
+        }
+        for word in [
+            "orchestrator", "cached", "citable", "GATHER", "seeded_by", "S-id", "structured feeds",
+            "input budget", "fetch cap", "turn cap", "treat coverage", "DISPROVE", "emerging thesis",
+            "topic_answered", "material_forward_fact", "[seed-",
+        ] {
+            assert!(
+                !s.user.contains(word) && !s.system.contains(word),
+                "{}: {word} leaked\n{}",
+                s.label,
+                s.user
+            );
+        }
+        if s.label.starts_with("gathering") {
+            assert!(part2.contains("2. At most 8 tool calls in one reply."), "{}: {part2}", s.label);
+            assert!(part2.contains("3. Stop when the questions are answered"), "{}: {part2}", s.label);
+            assert!(part2.contains("a weak source lowers confidence"), "{}: {part2}", s.label);
+        } else {
+            let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
+            let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
+            let keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
+            let disconfirming = s.label.contains("disconfirming");
+            assert_eq!(keys.contains(&"followup_question"), !disconfirming, "{}", s.label);
+            assert_eq!(part2.contains("3. followup_question"), !disconfirming, "{}", s.label);
+            assert!(part2.contains("1. findings") && part2.contains("2. claims"), "{}: {part2}", s.label);
+            assert!(part1.contains("\nEVIDENCE\n") && part1.contains("=== S1: "), "{}: {part1}", s.label);
+            assert_eq!(s.system.contains("follow-up proposal"), !disconfirming, "{}", s.label);
+        }
+        if s.label.contains("continuity") {
+            assert!(part1.contains("\nSTANDING CONDITIONS\n") && part1.contains("\nPRIOR FINDINGS\n"), "{}", s.label);
+            assert!(part2.contains("still holds and for what is newer"), "{}", s.label);
+        }
+        if s.label.contains("disconfirming") {
+            assert!(part1.contains("\nCLAIMS SO FAR\n"), "{}", s.label);
+        }
+        if s.label.contains("incomplete") {
+            assert!(part1.contains("\nSEARCHING\nSearching for this topic was incomplete: "), "{}", s.label);
+            assert!(part2.contains(", SEARCHING included"), "{}", s.label);
+        }
+    }
+    // The tool results carry no instruction either.
+    for (label, text) in super::research::samples::tool_results() {
+        assert!(
+            !text.contains("Work with what you have") && !text.contains("contributes no evidence"),
+            "{label}: {text}"
+        );
+        assert!(banned_hits(&text).is_empty(), "{label}: {text}");
+    }
+}
+
 /// Every rendered fixed-set prompt to one Markdown file for a human read
 /// (`MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP=<file>`): the system prompts once,
 /// then per holding the interpretation message, the action message, and the
-/// lines the tax and cost variants change, then the synthetic role/risk case.
+/// lines the tax and cost variants change, then the synthetic role/risk case,
+/// then the research messages (`portfolio-v43`).
 #[test]
 #[ignore = "writes the rendered fixed-set prompts to MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP"]
 fn fixed_evidence_prompt_dump() {
@@ -1711,6 +1834,28 @@ fn fixed_evidence_prompt_dump() {
     out.push_str(&fence(&cont));
     out.push_str(&format!("### {n}e. Action message on the stub's verdict ({} chars)\n\n", action.len()));
     out.push_str(&fence(&action));
+    // The research messages (`portfolio-v43`): the gathering and synthesis
+    // passes rendered on TSLA's first stock topic and the synthetic fund's
+    // exposure-profile topic over hand-written leads, claims, conditions and
+    // pages, then what a gathering turn gets back.
+    let n = n + 1;
+    out.push_str(&format!(
+        "## {n}. Research messages (TSLA's competitive-position topic and the SYNTHETIC fund's exposure-profile topic; hand-written leads, claims, conditions and pages)\n\n"
+    ));
+    let mut letter = b'a';
+    for s in research_samples() {
+        out.push_str(&format!("### {n}{}. {} — system prompt\n\n", letter as char, s.label));
+        out.push_str(&fence(&s.system));
+        letter += 1;
+        out.push_str(&format!("### {n}{}. {} — message ({} chars)\n\n", letter as char, s.label, s.user.len()));
+        out.push_str(&fence(&s.user));
+        letter += 1;
+    }
+    for (label, text) in super::research::samples::tool_results() {
+        out.push_str(&format!("### {n}{}. Tool result — {label}\n\n", letter as char));
+        out.push_str(&fence(&text));
+        letter += 1;
+    }
     std::fs::write(&path, out).expect("write prompt dump");
     println!("wrote {path}");
 }

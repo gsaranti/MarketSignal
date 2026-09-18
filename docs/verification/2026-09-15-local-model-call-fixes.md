@@ -428,36 +428,67 @@ Docs that change: `web-research.md §The research loop and context management`,
   guided a gathering history it never saw.
   When the pass has no seeds, show an explicit empty allowed set and require `[]`.
   Check: zero `unknown seeded_by reference(s) dropped` gaps on the fixed evidence set.
-  Ruling: open.
+  Ruled 2026-09-17: the model-attributed leg is dropped for Portfolio — nothing read it, and
+  a fresh synthesis conversation cannot see which seeds guided a gathering it never saw;
+  the deterministic `surfaced_by` stays.
+  Landed 2026-09-17 as `portfolio-v43` (`2026-09-17-research-prompt-rewrite.md`).
 - 4.2 `topic_answered`: define the coverage it asserts (evidence obtained versus every
   question answered); consider a compact per-question coverage state if one boolean
   stays ambiguous.
   Check: the definition appears in the prompt and the persisted value matches it on
   the six holdings' passes.
-  Ruling: open.
+  Ruled 2026-09-17: superseded — the field is dropped, since nothing read it; the findings
+  prose states which questions the evidence leaves unanswered.
+  Landed 2026-09-17 as `portfolio-v43`.
 - 4.3 Zero-page passes: the app assembles the no-evidence findings object itself,
   preserving gaps and orientation, instead of asking the model to write it up.
   This is a contract change to the always-synthesize path.
   Check: TSLA's forward-thematic pass costs no model call.
-  Ruling: open.
+  Ruled 2026-09-17: adopt — a pass that retrieved no page with body text is recorded by the
+  app with a fixed sentence plus the searching note, no claims and no follow-up.
+  Landed 2026-09-17 as `portfolio-v43`.
 - 4.4 Fund exposure fit: research gathers exposure facts only; the fit judgment moves
   whole to interpretation, which already sees the house view; retitle the topic.
   Check: no synthesis trace reasons about an unseen house view.
   Ruled 2026-09-15: adopt — research gathers exposure facts only, interpretation owns
   the fit judgment, the topic is retitled; rendering the house view into research is
   not adopted.
+  Landed 2026-09-17 as `portfolio-v43`: the topic is `fund-exposure-profile`, "Exposure
+  profile", asking what exposure the fund actually supplies and what direct or lower-cost
+  vehicles supply the same.
 - 4.5 Untrusted text is data, not instruction, and also fallible evidence: an
   internally impossible number may be excluded or reported as a source defect.
   Check: PSX's impossible insider-sale amount is excluded or persisted as a source
   defect, not as a claim.
-  Ruling: open.
+  Ruled 2026-09-17: adopt — "a figure that cannot be right is a defect of the source" on
+  each call's evidence gloss and the page frame.
+  Landed 2026-09-17 as `portfolio-v43`; the check reads on the next attempt.
 - 4.6 `material_forward_fact`: supply a compact list of the fields the structured feeds
   cover, or change the model's task to naming a sourced forward fact and let the app
   decide whether the feeds lack it; the prompt currently asks the model to infer feed
   absence without showing the feeds (Codex §3).
   Check: no persisted forward fact duplicates a feed-covered field; the CapEx guidance
   case on TSLA resolves by the app's rule, not the model's guess.
-  Ruling: open — Claude recommends the second form (app decides).
+  Ruled 2026-09-17: superseded — the field is dropped, since nothing read it; Step 6e's
+  forward facts are the distillation's page-grounded extraction.
+  Landed 2026-09-17 as `portfolio-v43`.
+- 4.7 The research prompts name no app concept, on the 3.17 principle: one message in two
+  parts on both calls — the gathering message with the holding header and its date, the
+  topic, the follow-up, the claims so far, the standing conditions and prior findings, the
+  news leads and the tool-results gloss, then the task with the source-weighing clause, the
+  per-reply tool-call bound and the stopping rule; the synthesis message with the same
+  header and topic, the searching note in plain words, the evidence with its fields glossed
+  once (the tier scale stated, the published date shown, recency unshown), then the task and
+  a placeholder-only shape of findings, claims and the follow-up (findings and claims on the
+  disconfirming pass); the tool results as data; the no-page pass app-assembled.
+  Check: on the next attempt's first holdings, no gathering or synthesis trace reasons about
+  a seed's attribution, the topic-answered boolean or a house-view fit; no trace calls a
+  2026 source future-dated; the synthesis markers per pass are counted beside the attempt-6
+  table; no rationale carries a banned word.
+  Raised by the audit of the rendered research prompts against the v40 frame (2026-09-17).
+  Ruled 2026-09-17: adopt; the sixteen prompt rulings and the ten plan rulings are recorded
+  in `2026-09-17-research-prompt-rewrite.md` §Rulings.
+  Landed 2026-09-17 as `portfolio-v43` (`2026-09-17-research-prompt-rewrite.md`).
 
 ## 5. Dates — an authoritative anchor on every stage
 
@@ -469,7 +500,9 @@ Docs that change: `web-research.md §The research loop and context management`,
   synthesis, distillation, interpretation and action prompt, with the newest filed
   quarter in the packet.
   Check: no trace calls a 2026 source "future-dated" or "simulated".
-  Ruling: open.
+  Ruled 2026-09-17: adopt for the shared holding header — "Date: <run date>." on every
+  packet, the research messages included; the newest filed quarter is not shown.
+  Landed 2026-09-17 as `portfolio-v43`; the check reads on the next attempt.
 - 5.2 Carry publication date, fact period and retrieval time as distinct fields through
   claims and distillation; reconciliation orders on fact period and publication, not
   retrieval time, and the rule must say what wins when two sources cover the same
@@ -482,7 +515,7 @@ Docs that change: `web-research.md §The research loop and context management`,
 - 5.3 Search date anchoring: queries for prior-year material are intentional and
   labelled, never the default.
   Check: no query asks for "2024/2025" as the latest period on a 2026 run.
-  Ruling: open.
+  Ruled 2026-09-17: covered by 5.1's date line; its check reads on the next attempt.
 
 ## 6. Gathering — failure memory and a visible stopping contract
 

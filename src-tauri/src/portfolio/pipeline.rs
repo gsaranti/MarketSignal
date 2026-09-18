@@ -354,12 +354,12 @@ fn run_research_and_distill(
             .research_priors
             .iter()
             .find(|p| p.topic_key == topic.key);
-        if let Some(text) = research::assemble_topic_seed(prior, prior_ledger, now) {
+        if let Some(seed) = research::assemble_topic_seed(prior, prior_ledger, now) {
             let vintage = prior
                 .filter(|p| research::topic_object_fresh(p, now))
                 .map(|p| p.vintage.clone())
                 .unwrap_or_default();
-            topic_seeds.insert(topic.key.clone(), (text, vintage));
+            topic_seeds.insert(topic.key.clone(), (seed, vintage));
         }
     }
     let plan = ResearchPlan {
@@ -3834,13 +3834,17 @@ pub(crate) fn prompt_renders_house_view(d: &HoldingDossier) -> bool {
 /// issuer's condition, and the intrinsic read is of no investor
 /// (`docs/portfolio-analysis.md` §Intrinsic verdict). The action call's
 /// header had held that form since `portfolio-v36`; the one function now
-/// serves every packet.
-fn holding_header(d: &HoldingDossier) -> String {
+/// serves every packet. Since `portfolio-v43` it closes with the analysis
+/// date (the run's session date), so every packet anchors its period labels
+/// to the date of the analysis rather than the model's training horizon
+/// (attempt-6 Finding 7; fix list 5.1, ruled 2026-09-17 for the header).
+pub(crate) fn holding_header(d: &HoldingDossier) -> String {
     format!(
-        "HOLDING\n{} ({}).\nPrice: {}\n",
+        "HOLDING\n{} ({}).\nPrice: {}\nDate: {}.\n",
         d.position.symbol,
         holding_display_name(d),
         spot_line(d),
+        d.analysis_date,
     )
 }
 
@@ -7763,6 +7767,7 @@ pub(crate) mod tests {
             semantic_recall: Default::default(),
             news_seeds: Vec::new(),
             research_priors: Vec::new(),
+            analysis_date: "2026-07-28".into(),
             company_name: None,
             position: position(asset_class),
             position_delta: PositionDelta::new_position(),
@@ -7860,7 +7865,7 @@ pub(crate) mod tests {
         let backfill = topic
             .questions
             .iter()
-            .find(|q| q.starts_with("Backfill obligation:"))
+            .find(|q| q.starts_with("Also find the issuer's latest four reported periods"))
             .expect("the binding obligation reaches the agenda");
         assert!(backfill.contains("exact reporting span"), "{backfill}");
         assert!(backfill.contains("never substitute quarterly"), "{backfill}");
@@ -10458,7 +10463,7 @@ pub(crate) mod tests {
         // — changes the interpretation prompts and their contract, so it moves
         // to v40. The checkpoint trail is unchanged. The action rewrite moved it
         // to v41 and the role/risk rewrite to v42, the trail still unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v42");
+        assert_eq!(PROMPT_VERSION, "portfolio-v43");
         assert_eq!(crate::portfolio::store::CHECKPOINT_FORMAT_VERSION, "checkpoint-v10");
     }
 
@@ -12772,9 +12777,6 @@ pub(crate) mod tests {
                     findings: "x".repeat(over),
                     claims: Vec::new(),
                     followup: None,
-                    material_forward_fact: false,
-                    seeded_by: Vec::new(),
-                    topic_answered: true,
                 }],
                 skipped: None,
             }],
@@ -14225,6 +14227,8 @@ pub(crate) mod tests {
         let h = holding_header(&d);
         assert!(h.starts_with("HOLDING\nAAPL (Phillips 66).\n"), "{h}");
         assert!(h.contains("Price: $195.00 per share.\n"), "{h}");
+        // The analysis date closes the header on every packet (`portfolio-v43`).
+        assert!(h.ends_with("Date: 2026-07-28.\n"), "{h}");
         assert!(!h.contains("Current price"), "{h}");
         for absent in ["Quantity", "Cost basis", "Market value", " total"] {
             assert!(!h.contains(absent), "{absent} leaked: {h}");

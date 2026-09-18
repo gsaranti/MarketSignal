@@ -1996,9 +1996,6 @@ mod tests {
             findings: findings.to_string(),
             claims,
             followup: None,
-            material_forward_fact: false,
-            seeded_by: vec![],
-            topic_answered: true,
         }
     }
 

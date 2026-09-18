@@ -460,6 +460,11 @@ pub struct HoldingDossier {
     /// (`docs/portfolio-analysis.md` §Starting parameters). Empty on a debut
     /// or while no layer exists; expiry is filtered at consumption.
     pub research_priors: Vec<crate::portfolio::research::TopicDistillate>,
+    /// The run's session date (`YYYY-MM-DD`) — the "Date:" line of the shared
+    /// holding header, so every model-facing packet anchors its period labels
+    /// to the analysis date rather than the model's training horizon
+    /// (attempt-6 Finding 7; fix list 5.1, ruled 2026-09-17 for the header).
+    pub analysis_date: String,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
 }
@@ -803,6 +808,7 @@ pub fn assemble(
     semantic_recall: SemanticRecall,
     news_seeds: Vec<crate::portfolio::research::ResearchSeed>,
     research_priors: Vec<crate::portfolio::research::TopicDistillate>,
+    analysis_date: String,
 ) -> HoldingDossier {
     let (
         prior_verdict,
@@ -1024,6 +1030,7 @@ pub fn assemble(
         semantic_recall,
         news_seeds,
         research_priors,
+        analysis_date,
         sources,
     }
 }
@@ -1891,6 +1898,7 @@ Sources and footnotes.
             SemanticRecall::default(),
             Vec::new(),
             Vec::new(),
+            "2026-07-28".to_string(),
         );
         assert!(dossier.sources.iter().any(|s| s.contains("FMP")));
         assert!(dossier.sources.iter().any(|s| s.contains("SEC")));
@@ -1975,6 +1983,7 @@ Sources and footnotes.
             SemanticRecall::default(),
             Vec::new(),
             Vec::new(),
+            "2026-07-28".to_string(),
         )
         .sources;
         assert_eq!(
@@ -2030,6 +2039,7 @@ Sources and footnotes.
                 SemanticRecall::default(),
                 Vec::new(),
                 Vec::new(),
+                "2026-07-28".to_string(),
             )
             .sources
         };
@@ -2100,6 +2110,7 @@ Sources and footnotes.
             SemanticRecall::default(),
             Vec::new(),
             Vec::new(),
+            "2026-07-28".to_string(),
         )
         .sources
     }

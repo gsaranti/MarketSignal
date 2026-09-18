@@ -2231,7 +2231,26 @@ pub struct HoldingAudit {
 /// reworded as data on every surface that renders them. No persisted shape
 /// changes: the checkpoint stamp stays `checkpoint-v10`. A v41 trail cannot
 /// resume into v42 on the prompt axis.
-pub const PROMPT_VERSION: &str = "portfolio-v42";
+/// `portfolio-v43` is the research gathering and synthesis prompt rewrite on
+/// the same principle (ruled 2026-09-17;
+/// `docs/verification/2026-09-17-research-prompt-rewrite.md`): both calls one
+/// message in two parts with the role-line system prompt; the shared holding
+/// header closes with the analysis date on every packet; the gathering
+/// message with the topic, the follow-up, the claims so far, the standing
+/// conditions and prior findings, the news leads and the tool-results gloss,
+/// then the task with the source-weighing clause, the per-reply tool-call
+/// bound and the stopping rule; the synthesis message with the searching note
+/// in plain words and the evidence glossed once (the tier scale stated, the
+/// published date shown, recency unshown), then the task and a
+/// placeholder-only shape of findings, claims and the follow-up (findings and
+/// claims on the disconfirming pass, whose grammar carries no follow-up); the
+/// topic-answered, material-forward-fact and model-attributed seed fields
+/// gone from the grammar, the wire and the pass record; the no-page pass
+/// app-assembled; the fund exposure topic `fund-exposure-profile` (fix list
+/// 4.4). The pass record's shape changes in the audit JSON only: the
+/// checkpoint stamp stays `checkpoint-v10` and portability format 7 stands. A
+/// v42 trail cannot resume into v43 on the prompt axis.
+pub const PROMPT_VERSION: &str = "portfolio-v43";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

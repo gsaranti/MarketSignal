@@ -2023,6 +2023,7 @@ fn run_analysis(
             semantic_recall,
             news_seeds,
             research_priors,
+            run_session_date.clone(),
         );
 
         // Cancellation checkpoint between the (now-complete) data gather and the model
