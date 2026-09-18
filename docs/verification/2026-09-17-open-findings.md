@@ -22,7 +22,8 @@ A finding from attempt 7 is appended here as the next number, never in another f
   The next test after the remaining fixes is attempt 7, a book-scale run from a re-wiped store; every landed prompt and every fix that lands before it is admitted or faulted on attempt 7's evidence, its first holdings read early.
   The v40 / v41 / v42 fixed-set live read is not run; its checks read on attempt 7 instead (§Verification on attempt 7).
   The harness is rebuilt after attempt 7 if the run shows a need; an entry that needs repeats on byte-identical packets waits on that rebuild.
-  This ruling removes no harness code; whether the offline replay, the fixtures and the ignored live test stay in the tree is a separate decision.
+  Ruled 2026-09-18: the harness code stays in the tree whole.
+  The thirteen offline tests run in `cargo test` — the attempt-6 6g outcome regression is the validator slice's offline check, and the two-part / no-app-concept pins hold every prompt surface — and the two ignored tests cost nothing in the gate and seed the rebuild.
 - Attempt 7 follows the remaining fixes, and the user names the launch session.
   It re-wipes the dev store first, dropping `web_source_state` and clearing `portfolio_runs` and the `portfolio` namespace of `vector_memory`.
 
@@ -49,7 +50,8 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
   "over", "across" and "through" N units read as durations.
 - Rests on: the v39 read (PSX).
 - Check, offline: the PSX sentence downgrades as `qualifier`; "across two quarters" and "through two quarters" likewise.
-  Which reason wins when one sentence trips both entries is a plan flag.
+  Ruled 2026-09-18: the checker's existing short-circuit order stands (series, malformed, unit, comparator, metric, basis, level, no-level, margin, qualifier) and the first failing check names the reason, so a wrong direction outranks a duration.
+  "over a rolling N-month window" describes the series and is never read as a duration.
 - Stamp: as entry 1.
 - Ruled 2026-09-17: the same validator slice as entry 1.
 
@@ -63,7 +65,8 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
   What remains is the persisted half: `DistilledClaim` carries a single `vintage` field, so the three dates are not distinguishable in the persisted record and no app-side ordering can prefer publication over retrieval.
 - Rests on: attempt 6 — ARKF's "announced September 16, 2026, trading March 31, 2025" contradiction and TSLA's "July CY25", both dated by retrieval.
 - Check: neither can persist; a claim's persisted record names its publication date and its fact period apart from when it was retrieved.
-- Stamp: the persisted claim shape changes; which stamp it moves (evidence-floor, checkpoint or both) is open.
+- Stamp, ruled 2026-09-18: the shape half (new fields on the persisted claim) moves `checkpoint`, plus portability's format if the archive carries the topic layer, which the plan confirms; the basis half (the freshness window reading publication instead of retrieval) moves `evidence-floor`.
+  The entry as scoped does both.
 - Ruling: open.
   Re-scoped on attempt 7's dating checks (§Verification on attempt 7) before planning: if no distilled finding dates a fact by retrieval, the entry narrows to the persisted shape alone.
 
@@ -73,8 +76,8 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
   An exact-URL repeat returns the earlier failure without spending an attempt; a host that denies (401 / 403) gets a short-lived backoff; a transient failure never becomes a permanent ban.
 - Rests on: attempt 6's fetch economics — nhtsa.gov 3 attempts on 1 URL, wsj 4 on 2, reuters 6 on 4; phillips66 11 attempts on 9 distinct URLs and progyny 15 on 13, where URL reuse alone barely helps.
 - Check, as three separate expectations on the attempt-6 log offline and on attempt 7's rows live: exact-URL reuse removes the repeats; host backoff bounds a denying host to a set number of live attempts per window; a transient failure is retried once and never banned.
-- Stamp: none unless the record persists.
-  Whether the record is run-scoped memory or rides the per-domain `web_source_state` counts is a plan flag.
+- Stamp: none.
+- Ruled 2026-09-18: run-scoped memory keyed by URL and by host, spanning every holding of one run and dropped at run end; `web_source_state` keeps its telemetry role untouched.
 - Ruling: open.
 
 ### 5. Evidence reuse across a holding's topics and a visible remaining budget
