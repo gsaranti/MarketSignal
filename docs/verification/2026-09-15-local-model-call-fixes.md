@@ -118,11 +118,27 @@ Docs that change: `portfolio-analysis.md §The position thesis ledger`,
   Ruled 2026-09-16: adopt; lands with the §3 slice, not its own.
   Landed 2026-09-16 as `portfolio-v38`: the contract's sentence names the unit per series kind (`2026-09-16-interpretation-slice.md`).
   Live 2026-09-16: no levelless core authored on eighteen calls (the v37 re-read caught six); PSX and PGNY each recovered from one core to two, not four — the remaining conditions spend themselves on durations and, on PGNY, on over-wide margins (§Live admission read in `2026-09-16-interpretation-slice.md`).
+  Live 2026-09-17: PSX recovered to six cores over three calls (v38 two) and PGNY to three (v38 two), with three `no-level` downgrades returning on PSX and PGNY (v38 none).
 - 1.8 A relative margin cap per series kind on top of the magnitude bound.
   Check: DIA's margin of 489.5 on a $490 level downgrades; a $15 margin on $485 keeps.
   Raised by the live read (L5).
   Ruled 2026-09-16: adopt, the fraction per series kind drafted at plan time (25% on the price and ratios, 50% on fractions); landed as `portfolio-v37`.
 
+- 1.10 A window preposition masks a statement's direction: "over" in "over a rolling
+  6-month window" or "over two quarters" counts as an above-word, the direction reads as
+  mixed, and the comparator check is skipped.
+  Check: SPMO's "Trailing price return inflects below -10% over rolling 6-month window"
+  on a core of `above -0.1` downgrades as `comparator-mismatch` instead of keeping — the
+  one wrong core admitted on the v39 read, the first since the v37 re-read.
+  Raised by the v39 read (§Live read in `2026-09-17-residue-slice.md`).
+  Ruled 2026-09-17: a separate small validator slice, not the prompt rewrite.
+- 1.11 "over N units" is not read as a duration: the parser accepts "for N units" and "N
+  consecutive units" only, so "Net margin sustains below 4% over two quarters" keeps a
+  core that confirms on the first breaching print.
+  Check: the PSX sentence downgrades as `qualifier`; "across two quarters" and "through
+  two quarters" likewise.
+  Raised by the v39 read.
+  Ruled 2026-09-17: the same validator slice as 1.10.
 ## 2. Action call — an investment-only packet
 
 Rests on: record Finding 3; Codex §4.
@@ -229,18 +245,22 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Raised by the v38 read (L10).
   Ruled 2026-09-16: adopt; lands in the residue slice (`portfolio-v39`).
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: no weekly-close core kept on eighteen v39 calls (§Live read in `2026-09-17-residue-slice.md`).
 - 3.6 The interpretation prompt's sub-score line glosses every axis, as the action
   packet's polarity clause does (valuation = more attractive, risk = more resilient).
   Check: the interpretation re-think's polarity re-checks fall on the fixed set.
   Raised by the v38 read (L11).
   Ruled 2026-09-16: adopt; residue slice.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: polarity re-checks did not fall (v38 eleven markers, v39 eight on eighteen calls) and interpretation churn rose on every holding, 7.1 to 10.2 markers per call.
+  Superseded by the `portfolio-v40` rewrite (§Live read in `2026-09-17-residue-slice.md`).
 - 3.7 The shape contract's closing sentence states "with no code fence or surrounding
   prose".
   Check: fence deliberation in the interpretation thinking falls toward zero on the fixed set.
   Raised by the v38 read (L12).
   Ruled 2026-09-16: adopt; residue slice.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: interpretation fence markers fell from twelve to three; the sentence rides into `portfolio-v40`.
 - 3.8 The ledger prompt states that a key driver with no series in this holding's list
   carries null.
   Check: the driver-mapping deliberation falls on the fixed set; the persisted driver
@@ -250,6 +270,8 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Amended 2026-09-17: the prompt states the rule alone; the expectation clause ("most
   drivers will") is dropped, since it invites skipping a mapping that plainly exists.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: driver-null markers four on eighteen calls (v38 two); no change read.
+  The rule rides into `portfolio-v40` as an output requirement, without the "which most drivers will be" clause the aligned draft had carried (ruled 2026-09-17 at task review: the amendment above stands).
 - 3.9 The ENGINE SET line, at thirty percent of the action call's re-think since 2.2:
   an A/B on the fixed set — the live harness gains a variant that renders the set's
   underlying facts (the new-money admission result, the hurdle state, the grade bar)
@@ -261,6 +283,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-17: the A/B's read also scans every action call under both forms for invented permission claims, prose-ownership errors and rationale correctness.
   The marker share and the rung table alone do not decide the form (Codex churn analysis S3; DIA call 44 concluded three times that the set excludes add while quoting "the full ladder is yours").
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17 (fifteen Facts calls against thirty-two List): the Facts form steers harder on both admission outcomes — PSX's passing admission read as a buy signal (List trim ×3, Facts add, add, hold; engine-set markers 1.0 to 7.7 per call) and DIA's failing admission as a prohibition ("explicitly prohibits increasing exposure"; the permission scan hit "prohibit"); the Facts form is not adopted, the List form stays production, and the entry's ruling on the line itself is open (§Live read in `2026-09-17-residue-slice.md`).
 - 3.10 The action packet's capital-efficiency line names its owner, horizon and rate: the
   engine's twelve-month total-return test against the stated hurdle rate, each of the four
   states saying what it establishes and no more.
@@ -271,6 +294,8 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Ruled 2026-09-17: adopt the wording; lands in the residue slice (`portfolio-v39`).
   The numbers themselves are 3.15.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: the prefix's rate and test gave the model a computation to run itself — on TSLA (indeterminate) one rationale asserts the position "fails capital efficiency tests" from a self-run point test; the failing holdings' rationales quote the rate correctly.
+  Read as a regression on the indeterminate holdings (§Live read in `2026-09-17-residue-slice.md`).
 - 3.11 The action packet distinguishes the grade's low-confidence marker (an imputed
   sub-score) from conviction (the degradation count), and states what the grade is: the
   backward composite of the quality, valuation and risk sub-scores, distinct from the
@@ -283,6 +308,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   reads as a meaning, never a permission, and answers the imported grade-to-action
   convention directly (PGNY calls 51 and 53).
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: no rationale called a low-confidence grade "low conviction"; four rationales across TSLA and DIA cite "indeterminate capital efficiency" as their reason, so the entry's second check is not met (§Live read in `2026-09-17-residue-slice.md`).
 - 3.12 The action packet labels the financial summary as model-authored, so its provenance
   reads beside the engine's.
   Check: no action thinking attributes the financial summary to the engine.
@@ -297,6 +323,7 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Raised by the Codex churn analysis (S5).
   Ruled 2026-09-17: adopt; residue slice.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: action fence markers forty-two on forty-seven calls (v38 seventeen on thirty-six); not met; rides into `portfolio-v40` unchanged pending the action-prompt rewrite.
 - 3.14 The ledger prompt states what the margin is for — the noise band that keeps a print
   inside the series' ordinary variation from confirming a breach — and then the relative
   and magnitude caps the 6g seam applies (the ruled 1.8 rule), where the margin is authored,
@@ -309,6 +336,8 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   Amended 2026-09-17: the purpose precedes the cap and the check watches for anchoring, so a
   model that learns the ceiling as the norm shows in the read.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: not met — `margin-implausible` five on eighteen calls (v38 five), eight `price-level-mismatch` against one (the statement and the core one margin apart, "$40 ($38 + margin buffer)"), and the thinking sized to the cap ("~23%, acceptable per text 'at most 25%'"); non-price kept margins drifted up (max 29% to 40%).
+  Superseded: `portfolio-v40` shows no caps and sizes by example (§Live read in `2026-09-17-residue-slice.md`).
 - 3.15 The action packet carries the hurdle read's numbers — the hurdle rate and the bear /
   base / bull twelve-month total returns it tested — beside the state.
   This adds to the decision's evidence set under `portfolio-analysis.md §Portfolio action`
@@ -326,6 +355,18 @@ Ruled 2026-09-16: the slice's twelve plan flags and Codex-review points are reco
   words on it).
   Raised by the Codex churn analysis (S4, the forwarding half).
   Ruled 2026-09-17: follow-on after the 3.9 A/B; not in the residue slice.
+- 3.17 The interpretation prompt names no app concept: one message in two parts — inputs,
+  each section explained once and then its values; then the task in output order — with no
+  arm, baseline, stage, seam, validator behaviour, stamp or product name, the caps unshown
+  and the margin sized by example, and a placeholder-only return shape.
+  Check: on the fixed set, interpretation markers per call and the level-class downgrades
+  fall below the v39 read's, the kept cores match their sentences, and no rationale
+  computes with a sentence the packet no longer carries.
+  Raised by the user's reading of the rendered v39 prompts and the v39 read's finding that
+  every explanatory clause became an input (2026-09-17).
+  Ruled 2026-09-17: adopt; the action, role/risk and distillation prompts follow the same
+  principle in their own slices.
+  Landed 2026-09-17 as `portfolio-v40` (`2026-09-17-interpretation-prompt-rewrite.md`).
 - Not adopted (L14, ruled 2026-09-16): rendering "keep the action firm run to run" on
   continuity calls only — the debut check is accepted cost.
 
@@ -503,6 +544,7 @@ Rests on: Codex §9; user priority stated 2026-09-15 (local model calls first).
   residue slice; the plan verifies the live dossier cannot produce the split before treating
   it as harness-only.
   Landed 2026-09-17 as `portfolio-v39` (`2026-09-17-residue-slice.md`).
+  Live 2026-09-17: PGNY's prompt carried the balance-sheet basis with its computed debt / equity; no template-error reading in its thinking.
 - 8.6 A sampling-profile comparison on the action call, on the fixed set: the current
   "Thinking — general" row against the vendor "Thinking — precise" row
   (`local-model-operations.md §Sampling settings`), the packet byte-identical, thinking on,

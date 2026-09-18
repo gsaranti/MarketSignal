@@ -186,14 +186,19 @@ fn reconstructed_interpretation_uses_the_persisted_options_evidence() {
             narrative: None,
         });
         let options = &graded.options_signal;
+        // The OPTIONS ACTIVITY section (`portfolio-v40`): the persisted values
+        // with their unit and polarity, no grade-input disclaimer.
         let activity = format!(
-            "put/call vol {:.3}, put/call OI {:.3}, IV {:.3}, IV skew 0.000",
+            "\nOPTIONS ACTIVITY\nput/call volume {:.3}, put/call open interest {:.3}, implied \
+             volatility {:.3}, IV skew 0.000 (mean put IV minus mean call IV, in IV's decimal \
+             unit; positive means puts are richer).\n",
             options.put_call_volume.expect("persisted volume"),
             options.put_call_open_interest.expect("persisted OI"),
             options.implied_volatility.expect("persisted IV"),
         );
         assert_eq!(options.iv_skew, Some(0.0), "{}: fixture skew", f.symbol);
         assert!(prompt.contains(&activity), "{}: {activity}", f.symbol);
+        assert!(!prompt.contains("NOT a grade input"), "{}: {prompt}", f.symbol);
     }
 }
 
@@ -385,14 +390,32 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
         for phrase in ACCOUNT_ECONOMICS_PHRASES {
             assert!(!lower.contains(phrase), "{}: {phrase} leaked: {taxable}", f.symbol);
         }
-        assert!(taxable.starts_with(&format!("HOLDING: {} (", f.symbol)), "{taxable}");
-        assert!(taxable.contains("Position change since last run: NEW (no prior verdict"), "{taxable}");
+        assert!(
+            taxable.starts_with(&format!("======== PART 1: INPUTS ========\nHOLDING\n{} (", f.symbol)),
+            "{taxable}"
+        );
+        assert!(taxable.contains("This is the first analysis of this holding.\n"), "{taxable}");
         // Fix list 8.5 (portfolio-v39): a fixture carrying a computed debt / equity
         // stamps the equity source its live dossier would have, so the packet's
         // balance-sheet line never contradicts its own computed metrics.
         match (f.engine_output.metrics.debt_to_equity, f.equity_source) {
-            (Some(_), Some(src)) => assert!(taxable.contains(&format!("supplied this run by {}.", src.label())), "{}: {taxable}", f.symbol),
-            (None, None) => assert!(taxable.contains("no equity line reached the engine"), "{}: {taxable}", f.symbol),
+            // A fund has no statement series: its line names the market
+            // metrics' cadence and the expense ratio's source instead.
+            _ if f.is_fund => assert!(
+                taxable.contains("\nFINANCIAL METRICS\nThe market metrics are daily; the expense ratio is the fund's published figure.\n"),
+                "{}: {taxable}",
+                f.symbol
+            ),
+            (Some(_), Some(src)) => assert!(
+                taxable.contains(&format!("Balance-sheet metrics (debt / equity, P/B) are from {}.", src.label())),
+                "{}: {taxable}",
+                f.symbol
+            ),
+            (None, None) => assert!(
+                taxable.contains("Balance-sheet metrics (debt / equity, P/B) have no balance sheet this run"),
+                "{}: {taxable}",
+                f.symbol
+            ),
             (de, src) => panic!("{}: debt/equity {de:?} beside equity source {src:?}", f.symbol),
         }
     }
@@ -870,4 +893,159 @@ fn fixed_evidence_live() {
         }
         ctx.step_finished(step_key, "ok", None);
     }
+}
+
+// ---- The `portfolio-v40` structural pins: the two-part frame and the banned lexicon ----
+
+/// The words the interpretation message must not contain (`portfolio-v40`,
+/// ruled 2026-09-17): each is an app concept the model would reason about
+/// instead of using. Matched as whole words, case-insensitive, over the
+/// message's own sentences on the fixed set (the research and market text
+/// are fixture-controlled here, so a hit is the app's).
+pub(crate) const BANNED_LEXICON: [&str; 19] = [
+    "arm", "arms", "engine", "seam", "the app", "deterministic", "this stage",
+    "validator", "rejected", "downgrade", "downgraded", "baseline",
+    "v1 mechanics", "clamp", "clamped", "degenerate", "inverse map", "trough", "targets-v",
+];
+
+pub(crate) fn banned_hits(text: &str) -> Vec<String> {
+    let lower = text.to_lowercase();
+    BANNED_LEXICON
+        .iter()
+        .filter(|w| {
+            let w = **w;
+            lower.match_indices(w).any(|(i, _)| {
+                let before = lower[..i].chars().next_back();
+                let after = lower[i + w.len()..].chars().next();
+                let boundary = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '-'));
+                boundary(before) && boundary(after)
+            })
+        })
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// Every priced interpretation message on the fixed set is two marked parts in
+/// order, Part 1 carrying the input sections and no instruction, Part 2 the
+/// numbered task and the return shape — and neither part, nor the system
+/// prompt, carries a banned word.
+#[test]
+fn attempt_6_interpretation_messages_are_two_parts_with_no_app_concept() {
+    for f in fixtures() {
+        let d = dossier_of(&f, true);
+        let input = InterpretationInput {
+            input_delta: &[], dossier: &d, prior_ledger: None, engine: &f.engine_output,
+            distilled: &f.research_combined, ledger_eval: None, pre_profit: None,
+            tech_pre_flag: None, narrative: None,
+        };
+        let user = interpretation_user_prompt(&input);
+        let system = pipeline::interpretation_system_prompt(f.is_fund, true);
+        let (part1, part2) = user
+            .split_once("======== PART 2: TASK ========")
+            .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{user}", f.symbol));
+        assert!(part1.starts_with("======== PART 1: INPUTS ========"), "{}: {part1}", f.symbol);
+        for section in ["HOLDING\n", "FINANCIAL METRICS\n", "COMPUTED SCORES\n", "COMPUTED PRICE TARGETS (USD)\n", "OPTIONS ACTIVITY\n", "RESEARCH SUMMARY\n", "MARKET ANALYSIS\n", "PRIOR THESIS LEDGER\n"] {
+            assert!(part1.contains(&format!("\n{section}")), "{}: Part 1 lacks {section}\n{part1}", f.symbol);
+        }
+        // The fund section renders where the fixture carries fund context; a
+        // stock never has one.
+        assert!(f.is_fund || !part1.contains("\nFUND\n"), "{}", f.symbol);
+        // Part 1 instructs nothing: no "Return", no "you", no numbered task item.
+        assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
+        assert!(!part1.to_lowercase().contains("your "), "{}: Part 1 addresses the model\n{part1}", f.symbol);
+        for item in ["1. financial_summary", "2. model_sub_scores", "3. model_price_targets", "4. horizon_outlook", "5. ledger", "6. conviction", "7. self_assessment", "RETURN SHAPE"] {
+            assert!(part2.contains(item), "{}: Part 2 lacks {item}\n{part2}", f.symbol);
+        }
+        assert!(part2.contains("2 on a price of 100"), "{}", f.symbol);
+        assert!(!user.contains("CAPITAL-EFFICIENCY") && !user.contains("hurdle"), "{}: the hurdle read leaked into the interpretation call\n{user}", f.symbol);
+        assert!(!user.contains("at most 25%") && !user.contains("at most 50%"), "{}: the margin caps are shown\n{user}", f.symbol);
+        assert!(!user.contains("Field alternatives") && !user.contains("Field notes"), "{}", f.symbol);
+        for token in ["P75", "DGS10", "[targets-", "√t", "PR_base"] {
+            assert!(!user.contains(token), "{}: internal target token {token}\n{user}", f.symbol);
+        }
+        for (label, text) in [("system", system.as_str()), ("user", user.as_str())] {
+            let hits = banned_hits(text);
+            assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", f.symbol);
+        }
+        // The shape is JSON with exactly the declared keys.
+        let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
+        let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
+        let mut keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut declared = crate::portfolio::interpretation_keys(true);
+        declared.sort_unstable();
+        assert_eq!(keys, declared, "{}", f.symbol);
+        // The system prompt names every declared key.
+        for k in &declared {
+            assert!(system.contains(k), "{}: system prompt does not name {k}\n{system}", f.symbol);
+        }
+    }
+}
+
+/// Every rendered fixed-set prompt to one Markdown file for a human read
+/// (`MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP=<file>`): the system prompts once,
+/// then per holding the interpretation message, the List-form action prompt,
+/// and the lines the Facts form and the tax and cost variants change.
+#[test]
+#[ignore = "writes the rendered fixed-set prompts to MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP"]
+fn fixed_evidence_prompt_dump() {
+    let Ok(path) = std::env::var("MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP") else { return };
+    let fence = |s: &str| format!("~~~~text\n{}\n~~~~\n\n", s.trim_end());
+    let diff_lines = |base: &str, variant: &str| -> String {
+        let b: Vec<&str> = base.lines().collect();
+        let v: Vec<&str> = variant.lines().collect();
+        let mut out = String::new();
+        for l in &b { if !v.contains(l) { out.push_str(&format!("- {l}\n")); } }
+        for l in &v { if !b.contains(l) { out.push_str(&format!("+ {l}\n")); } }
+        if out.is_empty() { "(no line differs)\n".into() } else { out }
+    };
+    let mut out = String::new();
+    out.push_str(&format!("# Fixed-set prompts as rendered — `{}`\n\n", super::PROMPT_VERSION));
+    out.push_str("## 1. System prompts\n\n### 1a. Interpretation — stock, first analysis\n\n");
+    out.push_str(&fence(&pipeline::interpretation_system_prompt(false, true)));
+    out.push_str("### 1b. Interpretation — fund, first analysis\n\n");
+    out.push_str(&fence(&pipeline::interpretation_system_prompt(true, true)));
+    out.push_str("### 1c. Action\n\n");
+    out.push_str(&fence(&pipeline::action_system_prompt()));
+    let mut n = 2;
+    for f in fixtures() {
+        let VerdictDisposition::Priced(graded) = &f.disposition else { continue };
+        let d = dossier_of(&f, true);
+        let input = InterpretationInput {
+            input_delta: &[], dossier: &d, prior_ledger: None, engine: &f.engine_output,
+            distilled: &f.research_combined, ledger_eval: None, pre_profit: None,
+            tech_pre_flag: None, narrative: None,
+        };
+        let interp = interpretation_user_prompt(&input);
+        let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
+        macro_rules! action_input { ($dd:expr) => { ActionInput {
+            dossier: $dd,
+            subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
+            engine_set: &engine_set, changes: None, profile: &$dd.profile,
+        } } }
+        let list = action_user_prompt_with_form(&action_input!(&d), EngineSetForm::List);
+        let facts = action_user_prompt_with_form(&action_input!(&d), EngineSetForm::Facts);
+        let dt = dossier_of(&f, false);
+        let tax = action_user_prompt_with_form(&action_input!(&dt), EngineSetForm::List);
+        let mut costly = dossier_of(&f, true);
+        costly.position.cost_basis *= 3.0;
+        let cost = action_user_prompt_with_form(&action_input!(&costly), EngineSetForm::List);
+        out.push_str(&format!("## {n}. {} ({}; engine set [{}]; hurdle {:?})\n\n", f.symbol,
+            if f.is_fund { "fund" } else { "stock" },
+            engine_set.iter().map(Action::as_kebab).collect::<Vec<_>>().join(", "),
+            f.engine_output.hurdle.state));
+        out.push_str(&format!("### {n}a. Interpretation message ({} chars)\n\n", interp.len()));
+        out.push_str(&fence(&interp));
+        out.push_str(&format!("### {n}b. Action user prompt — List form, production ({} chars)\n\n", list.len()));
+        out.push_str(&fence(&list));
+        out.push_str(&format!("### {n}c. Action user prompt — Facts form: lines that differ from the List form\n\n"));
+        out.push_str(&fence(&diff_lines(&list, &facts)));
+        out.push_str(&format!("### {n}d. Tax-exempt variant: lines that differ from the List form\n\n"));
+        out.push_str(&fence(&diff_lines(&list, &tax)));
+        out.push_str(&format!("### {n}e. Cost-basis ×3 variant: lines that differ from the List form\n\n"));
+        out.push_str(&fence(&diff_lines(&list, &cost)));
+        n += 1;
+    }
+    std::fs::write(&path, out).expect("write prompt dump");
+    println!("wrote {path}");
 }

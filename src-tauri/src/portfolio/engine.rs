@@ -1146,14 +1146,20 @@ impl LedgerSeries {
     /// the confirmation count to the app (durations belong to no quantitative
     /// condition).
     pub fn confirmation_note(&self) -> String {
+        let count_word = |n: u32| match n {
+            1 => "one".to_string(),
+            2 => "two".to_string(),
+            3 => "three".to_string(),
+            n => n.to_string(),
+        };
         match self.cadence() {
-            crate::portfolio::ConditionCadence::Filing => format!(
-                "confirms on the first breaching filing print (count {})",
-                LEDGER_CONSECUTIVE_FILING
-            ),
+            crate::portfolio::ConditionCadence::Filing => match LEDGER_CONSECUTIVE_FILING {
+                1 => "confirmed by one filing".to_string(),
+                n => format!("confirmed by {} consecutive filings", count_word(n)),
+            },
             crate::portfolio::ConditionCadence::MarketData => format!(
-                "confirms on {} consecutive distinct breaching daily closes",
-                LEDGER_CONSECUTIVE_MARKET_DATA
+                "confirmed by {} consecutive daily closes",
+                count_word(LEDGER_CONSECUTIVE_MARKET_DATA)
             ),
         }
     }
@@ -1241,6 +1247,25 @@ impl LedgerSeries {
     /// parameters), so the prompt states it once beside this list rather than a
     /// label asserting a TTM the engine may have fallen back from (large-scale
     /// review 2026-08-24, Priority-1 minor).
+    /// The series' computed value on this run's metrics surface — the number
+    /// the interpretation message prints on the metric line. The price is not a
+    /// computed metric and reads from the financials instead.
+    pub fn metric_value(&self, m: &ComputedMetrics) -> Option<f64> {
+        match self {
+            LedgerSeries::NetMargin => m.net_margin,
+            LedgerSeries::GrossMargin => m.gross_margin,
+            LedgerSeries::RevenueGrowth => m.revenue_growth,
+            LedgerSeries::DebtToEquity => m.debt_to_equity,
+            LedgerSeries::ReturnVolatility => m.return_volatility,
+            LedgerSeries::TrailingReturn => m.trailing_return,
+            LedgerSeries::PeRatio => m.pe_ratio,
+            LedgerSeries::PsRatio => m.ps_ratio,
+            LedgerSeries::PbRatio => m.pb_ratio,
+            LedgerSeries::ExpenseRatio => m.expense_ratio,
+            LedgerSeries::Price => None,
+        }
+    }
+
     pub fn describe(&self) -> &'static str {
         match self {
             LedgerSeries::NetMargin => "net margin",

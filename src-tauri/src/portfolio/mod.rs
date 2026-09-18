@@ -2162,7 +2162,17 @@ pub struct HoldingAudit {
 /// from conviction, and the financial summary is labelled model-authored. No
 /// persisted shape changes: the checkpoint stamp stays `checkpoint-v10`. A v38
 /// trail cannot resume into v39 on the prompt axis.
-pub const PROMPT_VERSION: &str = "portfolio-v39";
+/// `portfolio-v40` is the interpretation-prompt rewrite (ruled 2026-09-17 off
+/// the v39 read and the user's reading of the rendered prompts): one message
+/// in two parts — inputs, each section explained once and then its values,
+/// then the task in output order — with no app concept in it (no arms,
+/// baselines, stages, seams, validator behaviour or stamps), the margin caps
+/// unshown and sized by example, the capital-efficiency read left to the action
+/// call, and a placeholder-only return shape; the optional input sections lose
+/// their narration on every packet they render into. No persisted shape
+/// changes: the checkpoint stamp stays `checkpoint-v10`. A v39 trail cannot
+/// resume into v40 on the prompt axis.
+pub const PROMPT_VERSION: &str = "portfolio-v40";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2664,30 +2674,64 @@ pub(crate) fn complete_debut_response(body: &mut Value) {
     }
 }
 
-/// The priced branch's response-contract sentence, generated from
-/// [`interpretation_keys`]. The nested shapes are stated after the key list
-/// because they are structure the model benefits from, not part of the top-level
-/// set. On a continuity call the two what-changed fields' relation is stated
-/// once — the prose line summarizes the typed rows — since attempt 6's traces
-/// re-derived whether one superseded the other (Finding 8).
-pub fn interpretation_response_contract(is_fund: bool, debut: bool) -> String {
-    let continuity = if debut {
-        String::new()
-    } else {
-        "; what_changed is the one-line summary of what_changed_entries, the typed \
-         rows (kind, detail, old, new, attribution, evidence) — one per moved value — \
-         and both are required"
-            .to_string()
-    };
-    format!(
-        "Respond with a single JSON object carrying exactly these keys: {}. \
-         Within them: horizon_outlook is short / mid / long; model_sub_scores is \
-         quality / valuation / momentum / risk; model_price_targets is one_month and \
-         twelve_month, each base / bear / bull{continuity}.",
-        interpretation_keys(debut).join(", ")
-    )
-    + " model_target_rationale explains your own model_price_targets: the assumptions behind your base case and where and why it departs from the engine's twelve-month base target, whose methodology is given above. "
-    + &response_shape_contract(&interpretation_schema(is_fund, debut))
+/// The priced branch's response-contract line, generated from
+/// [`interpretation_keys`]: the output names the system prompt states once, so
+/// the model knows what it is reading Part 1 for (`portfolio-v40`, ruled
+/// 2026-09-17). Field meanings live in the message's Part 2, each in the item
+/// that produces it, and the shape is [`interpretation_return_shape`]; the
+/// schema's `required` set and this line are built from the same list, so the
+/// enforced grammar and the stated contract cannot diverge.
+pub fn interpretation_response_contract(debut: bool) -> String {
+    let keys = interpretation_keys(debut);
+    let (last, head) = keys.split_last().expect("the key list is never empty");
+    format!("You will return {} and {last}, as one JSON object.", head.join(", "))
+}
+
+/// The placeholder-only return shape the interpretation message closes with
+/// (`portfolio-v40`): the schema's nesting with every value blank — a string is
+/// "", a number 0, a boolean false, an enum its alternatives as "<a|b|c>", a
+/// nullable enum null, an array one item — and no field notes, since every field
+/// is defined in the Part 2 item that produces it. Interpretation-only; the
+/// distillation and role/risk prompts keep [`response_shape_contract`].
+pub fn interpretation_return_shape(is_fund: bool, debut: bool) -> String {
+    fn visit(schema: &Value) -> Value {
+        if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+            if values.iter().any(Value::is_null) {
+                return Value::Null;
+            }
+            let names: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
+            return json!(format!("<{}>", names.join("|")));
+        }
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            return Value::Object(properties.iter().map(|(k, v)| (k.clone(), visit(v))).collect());
+        }
+        if let Some(items) = schema.get("items") {
+            return json!([visit(items)]);
+        }
+        let kind = schema["type"].as_str().or_else(|| {
+            schema["type"].as_array()?.iter().filter_map(Value::as_str).find(|t| *t != "null")
+        });
+        match kind {
+            Some("number" | "integer") => json!(0),
+            Some("boolean") => json!(false),
+            Some("string") => json!(""),
+            _ => Value::Null,
+        }
+    }
+    let shape = visit(&interpretation_schema(is_fund, debut));
+    // Top-level keys in the output order the task states them — the map type
+    // sorts alphabetically, so the object is written key by key.
+    let fields: Vec<String> = interpretation_keys(debut)
+        .iter()
+        .map(|k| {
+            format!(
+                "{}:{}",
+                serde_json::to_string(k).expect("a key serializes"),
+                serde_json::to_string(&shape[k]).expect("a JSON value serializes")
+            )
+        })
+        .collect();
+    format!("{{{}}}", fields.join(","))
 }
 
 /// The `role_risk_only` branch's contract, generated from [`role_risk_keys`].
@@ -3097,40 +3141,92 @@ mod tests {
         assert_eq!(twice["what_changed"], DEBUT_WHAT_CHANGED);
         assert_eq!(twice["what_changed_entries"], serde_json::json!([]));
 
-        let contract = interpretation_response_contract(false, false);
-        let template: Value = serde_json::from_str(contract.lines().find(|line| line.starts_with('{')).unwrap()).unwrap();
-        assert_eq!(template["conviction"], "<conviction>");
-        for horizon in ["short", "mid", "long"] {
-            assert_eq!(template["horizon_outlook"][horizon], "neutral");
+        // The priced branch's contract is the output-name sentence, and its
+        // shape is the placeholder-only return shape (`portfolio-v40`): exactly
+        // the declared keys, every enum its alternatives as "<a|b|c>", a
+        // nullable enum null, and no field notes or template narration.
+        fn placeholders_only(v: &Value, path: &str) {
+            match v {
+                Value::String(s) => assert!(
+                    s.is_empty() || (s.starts_with('<') && s.ends_with('>') && s.contains('|')),
+                    "{path}: {s}"
+                ),
+                Value::Number(n) => assert_eq!(n.as_f64(), Some(0.0), "{path}"),
+                Value::Bool(b) => assert!(!b, "{path}"),
+                Value::Array(items) => {
+                    assert_eq!(items.len(), 1, "{path}");
+                    placeholders_only(&items[0], &format!("{path}[]"));
+                }
+                Value::Object(m) => {
+                    for (k, child) in m {
+                        placeholders_only(child, &format!("{path}.{k}"));
+                    }
+                }
+                Value::Null => {}
+            }
         }
-        assert_eq!(template["ledger"]["triggers"][0]["family"], "<ledger.triggers[].family>");
-        assert_eq!(template["what_changed_entries"][0]["attribution"], "<what_changed_entries[].attribution>");
-        assert!(contract.contains("never the literal placeholder"));
-        assert!(contract.contains("horizon_outlook.short: [\"bullish\",\"neutral\",\"bearish\"]"));
-        assert!(contract.contains("ledger.falsifiers[].quant: may also be null"));
-        // The two what-changed fields' relation, stated once on a continuity call
-        // and absent on a debut (Finding 8).
-        assert!(contract.contains("what_changed is the one-line summary of what_changed_entries"));
-        assert!(contract.contains("both are required"));
-        let debut_contract = interpretation_response_contract(false, true);
-        assert!(!debut_contract.contains("what_changed"), "{debut_contract}");
-        assert!(debut_contract.contains(&interpretation_keys(true).join(", ")));
-        // The ledger's numeric notes (F4) on every interpretation contract, and
-        // the series enum scoped to the vehicle (3.3a).
-        for c in [&contract, &debut_contract, &interpretation_response_contract(true, false), &role_risk_response_contract(false)] {
+        for (is_fund, debut) in [(false, false), (false, true), (true, false), (true, true)] {
+            let contract = interpretation_response_contract(debut);
+            assert!(
+                contract.starts_with("You will return ") && contract.ends_with(", as one JSON object."),
+                "{contract}"
+            );
+            for k in interpretation_keys(debut) {
+                assert!(contract.contains(k), "{contract}: {k}");
+            }
+            assert_eq!(contract.contains("what_changed"), !debut, "{contract}");
+            let shape_text = interpretation_return_shape(is_fund, debut);
+            assert!(!shape_text.contains('\n'), "{shape_text}");
+            let shape: Value = serde_json::from_str(&shape_text).unwrap();
+            let mut top: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
+            top.sort_unstable();
+            let mut declared = interpretation_keys(debut);
+            declared.sort_unstable();
+            assert_eq!(top, declared, "fund {is_fund} debut {debut}");
+            assert_eq!(shape["conviction"], "<high|medium|low>");
+            for horizon in ["short", "mid", "long"] {
+                assert_eq!(shape["horizon_outlook"][horizon], "<bullish|neutral|bearish>");
+            }
+            assert_eq!(shape["ledger"]["triggers"][0]["family"], "<add|trim|sell>");
+            assert_eq!(shape["ledger"]["triggers"][0]["quant"]["comparator"], "<below|above>");
+            assert_eq!(shape["ledger"]["key_drivers"][0]["series"], Value::Null, "a nullable enum is null");
+            assert_eq!(shape["ledger"]["base"]["probability_pct"], 0);
+            // The series enum scoped to the vehicle (3.3a).
+            let series = shape["ledger"]["falsifiers"][0]["quant"]["series"].as_str().unwrap().to_string();
+            assert!(series.starts_with('<') && series.ends_with('>') && series.contains('|'), "{series}");
+            assert_eq!(series.contains("pe-ratio"), !is_fund, "{series}");
+            assert_eq!(series.contains("expense-ratio"), is_fund, "{series}");
+            if debut {
+                assert!(shape.get("what_changed").is_none() && shape.get("what_changed_entries").is_none());
+            } else {
+                let attribution = shape["what_changed_entries"][0]["attribution"].as_str().unwrap();
+                assert!(attribution.starts_with('<') && attribution.contains("self-correction"), "{attribution}");
+                assert_eq!(shape["what_changed"], "");
+            }
+            placeholders_only(&shape, "");
+            for narration in [
+                "Field notes",
+                "Field alternatives",
+                "never the literal placeholder",
+                "code fence",
+                "<conviction>",
+                "neutral\"",
+            ] {
+                assert!(!contract.contains(narration) && !shape_text.contains(narration), "`{narration}`: {contract} {shape_text}");
+            }
+        }
+        // The role/risk contract keeps the template form: the ledger's numeric
+        // notes (F4), and the closing sentence naming the surface the grammar
+        // never shows the model (fix list 3.7, portfolio-v39).
+        for c in [role_risk_response_contract(false), role_risk_response_contract(true)] {
             assert!(c.contains("Field notes (the ledger's numeric fields"), "{c}");
             assert!(c.contains("three sibling scenario objects"), "{c}");
             assert!(c.contains("exactly the level the statement names"), "{c}");
             assert!(c.contains("a fraction of a nonzero level (a zero level has no cap), never folded into the threshold"), "{c}");
-            // The closing sentence names the surface the grammar never shows the
-            // model (fix list 3.7, portfolio-v39).
             assert!(c.contains("beginning with {, with no code fence or surrounding prose."), "{c}");
         }
         // The action contract carries the same sentence (fix list 3.13).
         assert!(action_response_contract().contains(", with no code fence or surrounding prose."), "{}", action_response_contract());
-        assert!(contract.contains("\"pe-ratio\"") && !contract.contains("\"expense-ratio\""), "stock enum: {contract}");
-        let fund_contract = interpretation_response_contract(true, false);
-        assert!(fund_contract.contains("\"expense-ratio\"") && !fund_contract.contains("\"pe-ratio\""), "fund enum: {fund_contract}");
         let role_contract = role_risk_response_contract(false);
         assert!(role_contract.contains("\"expense-ratio\"") && !role_contract.contains("\"net-margin\""), "{role_contract}");
         assert!(role_contract.contains("both are required"));
