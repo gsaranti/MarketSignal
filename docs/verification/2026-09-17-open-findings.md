@@ -76,13 +76,27 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 
 ### 4. Failed-URL memory with failure classes and host backoff
 
-- Decision: a per-holding record of failed URLs with failure classes, consulted by the fetch tool.
+- Decision: a run-scoped record of failed URLs with failure classes, consulted by the fetch tool.
   An exact-URL repeat returns the earlier failure without spending an attempt; a host that denies (401 / 403) gets a short-lived backoff; a transient failure never becomes a permanent ban.
 - Rests on: attempt 6's fetch economics — nhtsa.gov 3 attempts on 1 URL, wsj 4 on 2, reuters 6 on 4; phillips66 11 attempts on 9 distinct URLs and progyny 15 on 13, where URL reuse alone barely helps.
 - Check, as three separate expectations on the attempt-6 log offline and on attempt 7's rows live: exact-URL reuse removes the repeats; host backoff bounds a denying host to a set number of live attempts per window; a transient failure is retried once and never banned.
 - Stamp: none.
 - Ruled 2026-09-18: run-scoped memory keyed by URL and by host, spanning every holding of one run and dropped at run end; `web_source_state` keeps its telemetry role untouched.
-- Ruling: open.
+- Ruled through the selector 2026-09-18: the first 401/403 starts a five-minute cooldown for the denying host and URL; skips never extend it, and expiry admits a probe.
+  Exhausted transient failures and unclassified failures have a 30-second URL cooldown; only positively classified transient failures retry, once after one second, with `Retry-After` a minimum and budget/cancellation checked before issue.
+  Retryable HTTP statuses are 408/429/500/502/503/504; typed timeouts, connection resets, connection aborts and broken pipes qualify, while opaque DNS/TLS errors do not.
+  Exact parsed URL keys drop fragments but preserve paths, trailing slashes and queries; exact lowercase host keys keep `www` and subdomains separate.
+  Each invocation, including resume, starts empty; redirect denial cools the denying host without changing requested-host telemetry.
+- Offline acceptance uses archived attempt-6 URL/status fixtures plus synthetic time: nhtsa's repeated URL, phillips66's distinct denied URLs and progyny's unknown-cause failures remain separate cases.
+  The archived progress rows have no per-request timestamps and some omit causes, so historical cooldown savings and transient classifications are not inferred from them.
+  Fake-clock and mock-HTTP tests cover expiry, retry recovery/exhaustion, cancellation, budget limits, `Retry-After`, redirect guards, telemetry and invocation reset.
+- Implementation: entry 4's code and contract are implemented and review is complete; attempt-7 live-effectiveness acceptance remains pending.
+  The canonical policy is `docs/web-research.md` §Failed fetch memory and bounded retry.
+  No prompt, persisted-shape or version-stamp change.
+- Review follow-up (2026-09-18): a newly discovered redirect alias now remembers a suppressed destination's failure with its original expiry.
+  The adapter/runner regression failed before the fix and passes after it: repeating the alias, including in another holding, adds no request, attempt charge or telemetry sample, and the alias becomes eligible at the original host expiry.
+- Verification (2026-09-18, after the review follow-up): `cargo test` passed (1,505 library tests and 32 integration tests; 33 ignored), including fourteen entry-4 regressions; `cargo clippy --all-targets --all-features` passed without warnings, `npm run build` passed, and `git diff --check` passed.
+  Mock-HTTP tests required execution outside the sandbox to bind local ports; no live-source or model run was performed.
 
 ### 5. Evidence reuse across a holding's topics and a visible remaining budget
 

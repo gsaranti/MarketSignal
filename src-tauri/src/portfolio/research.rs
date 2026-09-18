@@ -864,14 +864,164 @@ pub trait ResearchModel {
     }
 }
 
-/// The web seam: search (SearXNG, dedup-cached) and fetch (document-cache
-/// first, then the live SSRF-guarded fetch, telemetry recorded). `fetch`
-/// reports whether the document was served from cache — a cache hit spends no
-/// budget.
+/// One application-managed fetch operation. Disposition and attempt accounting
+/// are independent: a redirect can contact one host before a later hop is skipped.
+#[derive(Debug)]
+pub struct FetchAttempt {
+    result: Result<FetchedPage>,
+    disposition: FetchDisposition,
+    attempted: bool,
+    retry_delay: Option<Duration>,
+}
+
+#[cfg(test)]
+impl FetchAttempt {
+    fn scripted(result: Result<(FetchedPage, bool)>) -> Self {
+        match result {
+            Ok((page, cached)) => Self {
+                result: Ok(page),
+                attempted: !cached,
+                disposition: if cached {
+                    FetchDisposition::DocumentCache
+                } else {
+                    FetchDisposition::Live
+                },
+                retry_delay: None,
+            },
+            Err(err) => Self {
+                result: Err(err),
+                attempted: true,
+                disposition: FetchDisposition::Live,
+                retry_delay: None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FetchDisposition {
+    Live,
+    DocumentCache,
+    Remembered,
+    HostCooldown,
+    Policy,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureClass {
+    Policy,
+    Denied,
+    Deterministic,
+    Transient,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+struct RememberedFailure {
+    message: String,
+    class: FailureClass,
+    until: Option<Duration>,
+    retry_at: Duration,
+}
+
+impl RememberedFailure {
+    fn reply(&self, disposition: FetchDisposition, attempted: bool, now: Duration) -> FetchAttempt {
+        FetchAttempt {
+            result: Err(anyhow::anyhow!(self.message.clone())),
+            disposition,
+            attempted,
+            retry_delay: (disposition == FetchDisposition::Live
+                && self.class == FailureClass::Transient)
+                .then(|| self.retry_at.saturating_sub(now)),
+        }
+    }
+
+    fn active(&self, now: Duration) -> bool {
+        self.until.is_none_or(|until| now < until)
+    }
+}
+
+#[derive(Default)]
+struct FetchMemory {
+    urls: std::collections::HashMap<String, RememberedFailure>,
+    hosts: std::collections::HashMap<String, RememberedFailure>,
+}
+
+/// Exact document identity for failure memory; intentionally not the older
+/// successful-document cache normalization (which merges trailing slashes).
+fn failed_url_key(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut parsed) => {
+            parsed.set_fragment(None);
+            parsed.to_string()
+        }
+        Err(_) => url.to_string(),
+    }
+}
+
+fn failed_host_key(url: &reqwest::Url) -> String {
+    url.host_str().unwrap_or_default().to_ascii_lowercase()
+}
+
+trait FetchRuntime: Send + Sync {
+    fn elapsed(&self) -> Duration;
+    fn sleep(&self, duration: Duration);
+}
+
+struct RealFetchRuntime(std::time::Instant);
+
+impl FetchRuntime for RealFetchRuntime {
+    fn elapsed(&self) -> Duration {
+        self.0.elapsed()
+    }
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+fn wait_for_fetch_retry(
+    runtime: &dyn FetchRuntime,
+    delay: Duration,
+    permitted: &dyn Fn() -> bool,
+) -> bool {
+    let start = runtime.elapsed();
+    loop {
+        if !permitted() {
+            return false;
+        }
+        let remaining = delay.saturating_sub(runtime.elapsed().saturating_sub(start));
+        if remaining.is_zero() {
+            return true;
+        }
+        runtime.sleep(remaining.min(Duration::from_millis(50)));
+    }
+}
+
+/// Search plus one fetch attempt. Retry ownership stays in ResearchRunner,
+/// where every new attempt can consult the holding's budget and cancellation.
 pub trait ResearchWeb {
     fn search(&self, query: &str) -> Result<Vec<SearchHit>>;
-    fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)>;
+    fn fetch(&self, url: &str, retry: bool) -> FetchAttempt;
+    fn wait_for_retry(&self, delay: Duration, permitted: &dyn Fn() -> bool) -> bool {
+        wait_for_fetch_retry(
+            &RealFetchRuntime(std::time::Instant::now()),
+            delay,
+            permitted,
+        )
+    }
 }
+
+// A redirect-hop suppression carries its original failure and never becomes
+// a fresh failed-source telemetry sample or refreshes a cooldown.
+#[derive(Debug)]
+struct SuppressedHost(RememberedFailure);
+impl std::fmt::Display for SuppressedHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.message)
+    }
+}
+impl std::error::Error for SuppressedHost {}
 
 /// The live web seam (`docs/web-research.md`): SearXNG-only search (Tavily is
 /// reserved for the report job), the SSRF-guarded fetch behind the shared
@@ -880,8 +1030,10 @@ pub trait ResearchWeb {
 /// store writes are tiny and the per-holding loop is sequential).
 pub struct LiveResearchWeb {
     search: crate::web_research::search::SearchTool,
-    fetcher: crate::web_research::fetch::HttpPageFetcher,
-    conn: std::sync::Mutex<rusqlite::Connection>
+    fetcher: Box<dyn crate::web_research::fetch::PageFetcher>,
+    memory: std::sync::Mutex<FetchMemory>,
+    runtime: Box<dyn FetchRuntime>,
+    conn: std::sync::Mutex<rusqlite::Connection>,
 }
 
 impl LiveResearchWeb {
@@ -898,9 +1050,71 @@ impl LiveResearchWeb {
         crate::storage::init_schema(&conn)?;
         Ok(Self {
             search: crate::web_research::search::SearchTool::new(searxng),
-            fetcher: crate::web_research::fetch::HttpPageFetcher::new(),
-            conn: std::sync::Mutex::new(conn)
+            fetcher: Box::new(crate::web_research::fetch::HttpPageFetcher::new()),
+            memory: std::sync::Mutex::new(FetchMemory::default()),
+            runtime: Box::new(RealFetchRuntime(std::time::Instant::now())),
+            conn: std::sync::Mutex::new(conn),
         })
+    }
+}
+
+impl LiveResearchWeb {
+    fn remember_failure(
+        &self,
+        url: &str,
+        err: anyhow::Error,
+        attempted: bool,
+        now: Duration,
+    ) -> FetchAttempt {
+        use crate::web_research::fetch::{
+            failure_of, location_of, transient_failure, FetchFailure,
+        };
+        let class = match failure_of(&err) {
+            Some(FetchFailure::Policy) => FailureClass::Policy,
+            Some(FetchFailure::Http(401 | 403)) => FailureClass::Denied,
+            _ if transient_failure(&err) => FailureClass::Transient,
+            Some(FetchFailure::Http(_) | FetchFailure::Deterministic) => {
+                FailureClass::Deterministic
+            }
+            _ => FailureClass::Unknown,
+        };
+        let location = location_of(&err);
+        let retry_after = location.and_then(|v| v.retry_after).unwrap_or_default();
+        let duration = match class {
+            FailureClass::Denied => Some(Duration::from_secs(300)),
+            FailureClass::Transient | FailureClass::Unknown => Some(Duration::from_secs(30)),
+            FailureClass::Policy | FailureClass::Deterministic => None,
+        };
+        let failure = RememberedFailure {
+            message: location
+                .map(|v| v.detail.clone())
+                .unwrap_or_else(|| format!("{err:#}")),
+            class,
+            until: duration.map(|duration| now.saturating_add(duration.max(retry_after))),
+            retry_at: now.saturating_add(Duration::from_secs(1).max(retry_after)),
+        };
+        let mut memory = self.memory.lock().unwrap();
+        memory.urls.insert(failed_url_key(url), failure.clone());
+        if class == FailureClass::Denied {
+            let failed_url = location.map(|v| v.url.as_str()).unwrap_or(url);
+            memory
+                .urls
+                .insert(failed_url_key(failed_url), failure.clone());
+            if let Ok(parsed) = reqwest::Url::parse(failed_url) {
+                memory
+                    .hosts
+                    .insert(failed_host_key(&parsed), failure.clone());
+            }
+        }
+        failure.reply(
+            if attempted {
+                FetchDisposition::Live
+            } else {
+                FetchDisposition::Policy
+            },
+            attempted,
+            now,
+        )
     }
 }
 
@@ -909,42 +1123,93 @@ impl ResearchWeb for LiveResearchWeb {
         self.search.search(query)
     }
 
-    fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
+    fn fetch(&self, url: &str, retry: bool) -> FetchAttempt {
+        use crate::web_research::fetch::{check_url_policy, location_of};
         let now = chrono::Utc::now();
-        // The URL policy binds BEFORE the cache is consulted: an imported or
-        // legacy cache row must not serve content the current rules (scheme,
-        // deny list, literal-address classes) would block
-        // (`docs/web-research.md §Safety and provenance`).
-        crate::web_research::fetch::check_url_policy(url)?;
-        // The document cache serves repeat fetches inside the shared freshness
-        // window — a cache hit spends no budget (`docs/storage.md §Local
-        // Analysis Suite Storage`).
+        // Current policy always wins, including over cached content and memory.
+        if let Err(err) = check_url_policy(url) {
+            return FetchAttempt {
+                result: Err(err),
+                disposition: FetchDisposition::Policy,
+                attempted: false,
+                retry_delay: None,
+            };
+        }
         {
             let conn = self.conn.lock().unwrap();
-            if let Ok(Some(page)) =
-                crate::web_research::store::get_fresh_document(&conn, url, now)
+            if let Ok(Some(page)) = crate::web_research::store::get_fresh_document(&conn, url, now)
             {
-                // The key can be a redirecting requested URL. Re-check the
-                // stored destination under the current policy too, matching
-                // the live fetcher's every-hop validation instead of letting
-                // an imported/legacy cache alias bypass a newer deny rule.
-                crate::web_research::fetch::check_url_policy(&page.final_url)
-                    .context("cached redirect destination failed the current URL policy")?;
-                return Ok((page, true));
+                if let Err(err) = check_url_policy(&page.final_url)
+                    .context("cached redirect destination failed the current URL policy")
+                {
+                    return FetchAttempt {
+                        result: Err(err),
+                        disposition: FetchDisposition::Policy,
+                        attempted: false,
+                        retry_delay: None,
+                    };
+                }
+                return FetchAttempt {
+                    result: Ok(page),
+                    disposition: FetchDisposition::DocumentCache,
+                    attempted: false,
+                    retry_delay: None,
+                };
             }
         }
-        let page = match crate::web_research::fetch::PageFetcher::fetch(&self.fetcher, url) {
+        let elapsed = self.runtime.elapsed();
+        let key = failed_url_key(url);
+        {
+            let mut memory = self.memory.lock().unwrap();
+            memory.urls.retain(|_, failure| failure.active(elapsed));
+            memory.hosts.retain(|_, failure| failure.active(elapsed));
+            if let Some(failure) = memory.urls.get(&key) {
+                // Only the runner's one admitted transient retry bypasses URL memory.
+                if !(retry
+                    && failure.class == FailureClass::Transient
+                    && elapsed >= failure.retry_at)
+                {
+                    return failure.reply(FetchDisposition::Remembered, false, elapsed);
+                }
+            }
+        }
+        let guard = |target: &reqwest::Url| {
+            let memory = self.memory.lock().unwrap();
+            if let Some(failure) = memory
+                .hosts
+                .get(&failed_host_key(target))
+                .filter(|failure| failure.active(self.runtime.elapsed()))
+            {
+                return Err(anyhow::Error::new(SuppressedHost(failure.clone())));
+            }
+            Ok(())
+        };
+        let page = match self.fetcher.fetch_guarded(url, &guard) {
             Ok(page) => page,
             Err(err) => {
-                // A failed live attempt is the source's record too (attempt-5
-                // Finding 1: the blocked fetches counted nowhere per domain).
-                let conn = self.conn.lock().unwrap();
-                record_failed_fetch(&conn, url, &err, now);
-                return Err(err);
+                let elapsed = self.runtime.elapsed();
+                let attempted = location_of(&err).map(|v| v.attempted).unwrap_or_else(|| {
+                    crate::web_research::fetch::failure_of(&err)
+                        != Some(crate::web_research::fetch::FetchFailure::Policy)
+                });
+                if let Some(skip) = err.chain().find_map(|e| e.downcast_ref::<SuppressedHost>()) {
+                    // Remember a newly discovered redirect alias too. Copy the
+                    // original expiry: this skip must not restart the host's
+                    // window or charge source telemetry for a suppressed hop.
+                    self.memory.lock().unwrap().urls.insert(key, skip.0.clone());
+                    return skip.0.reply(
+                        FetchDisposition::HostCooldown,
+                        location_of(&err).is_some_and(|v| v.attempted),
+                        elapsed,
+                    );
+                }
+                if attempted {
+                    record_failed_fetch(&self.conn.lock().unwrap(), url, &err, now);
+                }
+                return self.remember_failure(url, err, attempted, elapsed);
             }
         };
-        // Cache + telemetry are best-effort: losing a write costs a repeat
-        // fetch or a telemetry sample, never the research.
+        self.memory.lock().unwrap().urls.remove(&key);
         {
             let conn = self.conn.lock().unwrap();
             if let Err(e) = crate::web_research::store::put_document(&conn, url, &page) {
@@ -955,16 +1220,22 @@ impl ResearchWeb for LiveResearchWeb {
             } else {
                 crate::web_research::store::FetchOutcome::Full
             };
-            if let Err(e) = crate::web_research::store::record_fetch_outcome(
-                &conn,
-                &page.host,
-                outcome,
-                now,
-            ) {
+            if let Err(e) =
+                crate::web_research::store::record_fetch_outcome(&conn, &page.host, outcome, now)
+            {
                 eprintln!("web source-state write failed for {}: {e}", page.host);
             }
         }
-        Ok((page, false))
+        FetchAttempt {
+            result: Ok(page),
+            disposition: FetchDisposition::Live,
+            attempted: true,
+            retry_delay: None,
+        }
+    }
+
+    fn wait_for_retry(&self, delay: Duration, permitted: &dyn Fn() -> bool) -> bool {
+        wait_for_fetch_retry(self.runtime.as_ref(), delay, permitted)
     }
 }
 
@@ -972,8 +1243,9 @@ impl ResearchWeb for LiveResearchWeb {
 /// §Extraction telemetry`): an HTTP 401/403 answer counts as denied, any other
 /// failure past the app's own guard as failed, and a policy refusal — which
 /// never reached the source — is not the source's record. Keyed by the
-/// requested host, the one a failed attempt can name. Best-effort like the
-/// served-page write: a lost sample never costs the research.
+/// requested host, preserving the persisted attribution independently of
+/// redirect-host backoff. Best-effort like the served-page write: a lost
+/// sample never costs the research.
 fn record_failed_fetch(
     conn: &rusqlite::Connection,
     url: &str,
@@ -1846,6 +2118,87 @@ impl ResearchRunner<'_> {
         }
     }
 
+    /// At most two application-managed attempts. Memory and redirect hops never
+    /// hide retry work below this budget/cancellation boundary.
+    fn fetch_with_retry(&self, url: &str, ctx: &PassContext<'_>, spent: &mut u32) -> FetchAttempt {
+        let mut retry = false;
+        loop {
+            if self.progress.is_cancelled() || self.budget.exhausted(*spent) {
+                return FetchAttempt {
+                    result: Err(anyhow::anyhow!(
+                        "fetch stopped by cancellation or holding budget"
+                    )),
+                    disposition: FetchDisposition::Stopped,
+                    attempted: false,
+                    retry_delay: None,
+                };
+            }
+            let series = if retry {
+                format!("fetch retry: {url}")
+            } else {
+                format!("fetch: {url}")
+            };
+            let target = || RequestTarget {
+                kind: "fetch".into(),
+                text: url.to_string(),
+            };
+            self.progress.request_started_with_target(
+                "web",
+                "research",
+                &series,
+                &ctx.topic.key,
+                target(),
+            );
+            let attempt = self.web.fetch(url, retry);
+            *spent += u32::from(attempt.attempted);
+            let detail = match (&attempt.result, attempt.disposition) {
+                (Ok(_), FetchDisposition::DocumentCache) => {
+                    "served from document cache; 0 live attempts".into()
+                }
+                (Ok(page), _) => format!("{} chars extracted", page.text.chars().count()),
+                (Err(err), disposition) => format!(
+                    "{}; {} live attempt(s): {err}",
+                    match disposition {
+                        FetchDisposition::Remembered => "remembered URL failure",
+                        FetchDisposition::HostCooldown => "host cooldown",
+                        FetchDisposition::Policy => "policy refusal",
+                        _ if retry => "retry failed",
+                        _ => "fetch failed",
+                    },
+                    u32::from(attempt.attempted)
+                ),
+            };
+            self.progress.request_finished_with_target(
+                "web",
+                "research",
+                &series,
+                &ctx.topic.key,
+                if attempt.result.is_ok() {
+                    "ok"
+                } else {
+                    "failed"
+                },
+                Some(detail),
+                target(),
+            );
+            if retry || attempt.result.is_ok() {
+                return attempt;
+            }
+            let Some(delay) = attempt.retry_delay else {
+                return attempt;
+            };
+            let permitted = || !self.progress.is_cancelled() && !self.budget.exhausted(*spent);
+            let remaining = self
+                .budget
+                .max_wall
+                .saturating_sub(self.budget.clock.elapsed());
+            if !permitted() || delay >= remaining || !self.web.wait_for_retry(delay, &permitted) {
+                return attempt;
+            }
+            retry = true;
+        }
+    }
+
     /// Execute one fetch call, with its tracker row, cache accounting, and the
     /// quoted-evidence framing.
     #[allow(clippy::too_many_arguments)] // each is one distinct per-pass accumulator or per-holding store, documented at the call site
@@ -1861,18 +2214,9 @@ impl ResearchRunner<'_> {
         published_by_url: &std::collections::HashMap<String, String>,
         degradation: &mut PassDegradation,
     ) -> String {
-        let series = format!("fetch: {url}");
-        let target = || RequestTarget {
-            kind: "fetch".into(),
-            text: url.to_string()
-        };
-        self.progress
-            .request_started_with_target("web", "research", &series, &ctx.topic.key, target());
-        match self.web.fetch(url) {
-            Ok((page, from_cache)) => {
-                if !from_cache {
-                    *fetches_spent += 1;
-                }
+        let attempt = self.fetch_with_retry(url, ctx, fetches_spent);
+        match attempt.result {
+            Ok(page) => {
                 let age_days = chrono::DateTime::parse_from_rfc3339(&page.retrieved_at)
                     .ok()
                     .map(|t| {
@@ -1914,36 +2258,10 @@ impl ResearchRunner<'_> {
                     PageMeta { title: page.title.clone(), published: published.clone() },
                 );
                 fetched.push((normalized, page.retrieved_at.clone(), annotation.clone()));
-                self.progress.request_finished_with_target(
-                    "web",
-                    "research",
-                    &series,
-                    &ctx.topic.key,
-                    "ok",
-                    Some(if from_cache {
-                        "served from document cache".to_string()
-                    } else {
-                        format!("{page_text_chars} chars extracted")
-                    }),
-                    target(),
-                );
                 render_page(&page, annotation.as_ref(), published.as_deref())
             }
             Err(e) => {
-                // A failed live attempt spends budget like a served one — the
-                // 40-attempt ceiling bounds *work*, so a storm of failing
-                // fetches can't ride for free under the wall clock alone.
-                *fetches_spent += 1;
                 degradation.fetches_failed += 1;
-                self.progress.request_finished_with_target(
-                    "web",
-                    "research",
-                    &series,
-                    &ctx.topic.key,
-                    "failed",
-                    Some(e.to_string()),
-                    target(),
-                );
                 format!("FETCH FAILED: {e:#}. No text was retrieved.")
             }
         }
@@ -2916,6 +3234,727 @@ mod tests {
             .with_timezone(&chrono::Utc)
     }
 
+    // Entry 4: use the production web adapter, failure memory and runner with
+    // scripted transport and a monotonic clock; no live service or model call.
+    #[derive(Default)]
+    struct FetchTestTime {
+        millis: std::sync::atomic::AtomicU64,
+        cancel_on_sleep: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    }
+
+    impl FetchTestTime {
+        fn advance(&self, millis: u64) {
+            self.millis
+                .fetch_add(millis, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl Clock for FetchTestTime {
+        fn elapsed(&self) -> Duration {
+            Duration::from_millis(self.millis.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+    impl FetchRuntime for std::sync::Arc<FetchTestTime> {
+        fn elapsed(&self) -> Duration {
+            Clock::elapsed(self.as_ref())
+        }
+        fn sleep(&self, duration: Duration) {
+            self.advance(duration.as_millis() as u64);
+            if let Some(cancel) = self.cancel_on_sleep.lock().unwrap().as_ref() {
+                cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
+    struct FetchScript {
+        replies: Mutex<std::collections::VecDeque<Result<FetchedPage>>>,
+        calls: std::sync::Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::web_research::fetch::PageFetcher for FetchScript {
+        fn fetch(&self, url: &str) -> Result<FetchedPage> {
+            self.calls.lock().unwrap().push(url.to_string());
+            self.replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected live attempt")
+        }
+    }
+
+    fn fetch_web(
+        replies: Vec<Result<FetchedPage>>,
+        time: &std::sync::Arc<FetchTestTime>,
+    ) -> (LiveResearchWeb, std::sync::Arc<Mutex<Vec<String>>>) {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::storage::init_schema(&conn).unwrap();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        (
+            LiveResearchWeb {
+                search: crate::web_research::search::SearchTool::new(None),
+                fetcher: Box::new(FetchScript {
+                    replies: Mutex::new(replies.into()),
+                    calls: calls.clone(),
+                }),
+                memory: Mutex::new(FetchMemory::default()),
+                runtime: Box::new(time.clone()),
+                conn: Mutex::new(conn),
+            },
+            calls,
+        )
+    }
+
+    fn failed_status(status: u16) -> Result<FetchedPage> {
+        Err(anyhow::Error::new(
+            crate::web_research::fetch::FetchFailure::Http(status),
+        ))
+    }
+    fn delayed_failure(url: &str, status: u16, delay: Duration) -> Result<FetchedPage> {
+        Err(
+            anyhow::Error::new(crate::web_research::fetch::FetchFailure::Http(status)).context(
+                crate::web_research::fetch::FetchLocation {
+                    url: url.into(),
+                    retry_after: Some(delay),
+                    attempted: true,
+                    message: format!("HTTP {status}"),
+                    detail: format!("HTTP {status}"),
+                },
+            ),
+        )
+    }
+    fn served_page(url: &str) -> Result<FetchedPage> {
+        Ok(FetchedPage {
+            final_url: url.into(),
+            host: "reuters.com".into(),
+            title: "Article".into(),
+            text: "A source-backed article.".into(),
+            extraction_quality: 0.8,
+            thin_stub: false,
+            retrieved_at: chrono::Utc::now().to_rfc3339(),
+        })
+    }
+    fn fetch_cycle(
+        web: &LiveResearchWeb,
+        time: &FetchTestTime,
+        progress: &RunContext,
+        max_fetches: u32,
+        max_wall: Duration,
+        spent: &mut u32,
+        url: &str,
+    ) -> FetchAttempt {
+        let model = ScriptModel::new(vec![]);
+        let agenda = one_topic_agenda();
+        let runner = ResearchRunner {
+            model: &model,
+            web,
+            budget: ResearchBudget {
+                max_fetches,
+                max_wall,
+                clock: time,
+            },
+            progress,
+            step_label: "research TEST".into(),
+        };
+        let context = PassContext {
+            holding_brief: "WID",
+            topic: &agenda[0],
+            seed: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        runner.fetch_with_retry(url, &context, spent)
+    }
+
+    #[test]
+    fn entry4_attempt6_url_status_fixture_reuses_denials_across_holdings() {
+        // Three identical 403 rows in attempt-6 tauri-dev.log (TSLA). Timing
+        // here is synthetic: the archived progress rows have no timestamps.
+        let url =
+            "https://www.nhtsa.gov/press-releases/investigation-tesla-cybercab-self-certification";
+        let time = std::sync::Arc::new(FetchTestTime::default());
+        let (web, calls) = fetch_web(vec![failed_status(403), failed_status(403)], &time);
+        let progress = RunContext::noop();
+        for holding in 0..3 {
+            let mut spent = 0;
+            let outcome = fetch_cycle(
+                &web,
+                &time,
+                &progress,
+                40,
+                Duration::from_secs(3600),
+                &mut spent,
+                url,
+            );
+            assert!(outcome.result.is_err());
+            assert_eq!(spent, u32::from(holding == 0));
+        }
+        time.advance(299_999);
+        assert!(!web.fetch(url, false).attempted);
+        assert_eq!(
+            web.fetch("https://www.nhtsa.gov/another-page", false)
+                .disposition,
+            FetchDisposition::HostCooldown
+        );
+        time.advance(1);
+        assert!(
+            web.fetch(url, false).attempted,
+            "skips did not extend the five-minute window"
+        );
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        let state =
+            crate::web_research::store::source_state(&web.conn.lock().unwrap(), "nhtsa.gov")
+                .unwrap()
+                .unwrap();
+        assert_eq!((state.failed_count, state.denied_count), (2, 2));
+        let (fresh_invocation, _) = fetch_web(vec![failed_status(403)], &time);
+        assert!(
+            fresh_invocation.fetch(url, false).attempted,
+            "fresh/resume invocation has no inherited ban"
+        );
+    }
+
+    #[test]
+    fn entry4_suppressed_fetches_still_cross_the_persisted_gap_boundary() {
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use std::sync::{atomic::AtomicBool, Arc};
+        let url = "https://www.reuters.com/article";
+        let time = Arc::new(FetchTestTime::default());
+        let (web, calls) = fetch_web(vec![failed_status(401)], &time);
+        let reporter = Arc::new(RecordingReporter::default());
+        let progress =
+            RunContext::new("entry4", reporter.clone(), Arc::new(AtomicBool::new(false)));
+        for (index, holding) in ["HOLDING: ONE", "HOLDING: TWO"].iter().enumerate() {
+            let model = ScriptModel::new(vec![
+                turn_with_tools(json!([
+                    {"function": {"name": "web_fetch", "arguments": {"url": url}}},
+                    {"function": {"name": "web_fetch", "arguments": {"url": url}}},
+                    {"function": {"name": "web_fetch", "arguments": {"url": "https://www.reuters.com/another"}}}
+                ])),
+                gather_done(),
+                gather_done(),
+            ]);
+            let runner = ResearchRunner {
+                model: &model,
+                web: &web,
+                budget: ResearchBudget {
+                    max_fetches: 40,
+                    max_wall: Duration::from_secs(3600),
+                    clock: time.as_ref(),
+                },
+                progress: &progress,
+                step_label: (*holding).into(),
+            };
+            let out = runner
+                .run_holding(holding, &one_topic_agenda(), &[], &|_| None)
+                .unwrap();
+            assert_eq!(out.fetches_spent, u32::from(index == 0));
+            assert!(out.topics[0].passes[0].claims.is_empty());
+            assert!(out.page_texts.is_empty());
+            // These are the gap strings the pipeline copies to HoldingAudit.
+            let persisted = serde_json::to_value(&out).unwrap();
+            assert!(persisted["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap.as_str().unwrap().contains("3 fetch(es) failed")));
+        }
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let state =
+            crate::web_research::store::source_state(&web.conn.lock().unwrap(), "reuters.com")
+                .unwrap()
+                .unwrap();
+        assert_eq!((state.failed_count, state.denied_count), (1, 1));
+        let details: Vec<_> = reporter
+            .messages()
+            .into_iter()
+            .filter_map(|message| match message.event {
+                ProgressEvent::RequestFinished { detail, .. } => detail,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(details.len(), 6);
+        assert!(details[1].contains("remembered URL failure; 0 live attempt(s)"));
+        assert!(details[2].contains("host cooldown; 0 live attempt(s)"));
+    }
+
+    #[test]
+    fn entry4_attempt6_distinct_phillips_urls_share_one_host_cooldown() {
+        // Different 403 URLs from attempt-6 PSX rows; URL dedup alone cannot
+        // remove either distinct request. Synthetic time pins the host bound.
+        let urls = [
+            "https://investor.phillips66.com/financial-information/news-releases/news-release-details/2025/Phillips-66-Provides-Statement-of-Critical-Facts/default.aspx",
+            "https://investor.phillips66.com/financial-information/news-releases/news-release-details/2024/Phillips-66-provides-notice-of-its-plan-to-cease-operations-at-Los-Angeles-area-refinery/default.aspx",
+            "https://investor.phillips66.com/financial-information/news-releases/news-release-details/2026/Phillips-66-Delivers-Strong-Second-Quarter-Results-and-Operating-Performance/default.aspx",
+        ];
+        let time = std::sync::Arc::new(FetchTestTime::default());
+        let (web, calls) = fetch_web(vec![failed_status(403), served_page(urls[1])], &time);
+        assert!(web.fetch(urls[0], false).attempted);
+        for url in &urls[1..] {
+            assert_eq!(
+                web.fetch(url, false).disposition,
+                FetchDisposition::HostCooldown
+            );
+        }
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        time.advance(300_000);
+        assert!(web.fetch(urls[1], false).result.is_ok());
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn entry4_exact_keys_do_not_merge_documents_or_sibling_hosts() {
+        assert_eq!(
+            failed_url_key("https://EXAMPLE.com/a#x"),
+            failed_url_key("https://example.com/a#y")
+        );
+        for other in [
+            "https://example.com/a/",
+            "https://example.com/a?q=1",
+            "https://example.com/A",
+        ] {
+            assert_ne!(
+                failed_url_key("https://example.com/a"),
+                failed_url_key(other)
+            );
+        }
+        let time = std::sync::Arc::new(FetchTestTime::default());
+        let (web, calls) = fetch_web((0..4).map(|_| failed_status(403)).collect(), &time);
+        for url in [
+            "https://www.reuters.com/a",
+            "https://reuters.com/a",
+            "https://news.reuters.com/a",
+        ] {
+            assert!(web.fetch(url, false).attempted);
+        }
+        assert!(
+            !web.fetch("https://WWW.REUTERS.COM/a#fragment", false)
+                .attempted
+        );
+        assert_eq!(calls.lock().unwrap().len(), 3);
+        // A deterministic document failure does not suppress a different path/query.
+        let (web, calls) = fetch_web((0..4).map(|_| failed_status(404)).collect(), &time);
+        for url in [
+            "https://reuters.com/a",
+            "https://reuters.com/a/",
+            "https://reuters.com/a?q=1",
+        ] {
+            assert!(web.fetch(url, false).attempted);
+        }
+        time.advance(1_000_000);
+        assert!(!web.fetch("https://reuters.com/a", false).attempted);
+        assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn entry4_transient_retry_recovery_and_exhaustion_account_per_attempt() {
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use std::sync::{atomic::AtomicBool, Arc};
+        let url = "https://reuters.com/a";
+        let time = Arc::new(FetchTestTime::default());
+        let (web, calls) = fetch_web(
+            vec![
+                failed_status(503),
+                failed_status(503),
+                failed_status(503),
+                served_page(url),
+            ],
+            &time,
+        );
+        let reporter = Arc::new(RecordingReporter::default());
+        let progress =
+            RunContext::new("entry4", reporter.clone(), Arc::new(AtomicBool::new(false)));
+        let mut spent = 0;
+        assert!(fetch_cycle(
+            &web,
+            &time,
+            &progress,
+            40,
+            Duration::from_secs(3600),
+            &mut spent,
+            url
+        )
+        .result
+        .is_err());
+        assert_eq!(spent, 2);
+        assert_eq!(Clock::elapsed(time.as_ref()), Duration::from_secs(1));
+        assert!(!web.fetch(url, false).attempted);
+        time.advance(29_999);
+        assert!(!web.fetch(url, false).attempted);
+        time.advance(1);
+        assert!(fetch_cycle(
+            &web,
+            &time,
+            &progress,
+            40,
+            Duration::from_secs(3600),
+            &mut spent,
+            url
+        )
+        .result
+        .is_ok());
+        assert_eq!(spent, 4);
+        assert_eq!(calls.lock().unwrap().len(), 4);
+        assert_eq!(
+            web.fetch(url, false).disposition,
+            FetchDisposition::DocumentCache
+        );
+        let conn = web.conn.lock().unwrap();
+        let state = crate::web_research::store::source_state(&conn, "reuters.com")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (state.failed_count, state.denied_count, state.full_count),
+            (3, 0, 1)
+        );
+        let finishes: Vec<_> = reporter
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                ProgressEvent::RequestFinished {
+                    series_id, status, ..
+                } => Some((series_id, status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finishes.len(), 4);
+        assert_eq!(
+            finishes[1],
+            (format!("fetch retry: {url}"), "failed".into())
+        );
+        assert_eq!(finishes[3], (format!("fetch retry: {url}"), "ok".into()));
+    }
+
+    #[test]
+    fn entry4_retry_budget_cancel_and_retry_after_boundaries() {
+        use std::sync::{atomic::AtomicBool, Arc};
+        let url = "https://reuters.com/a";
+        // Final remaining attempt: no retry, even with ample wall time.
+        let time = Arc::new(FetchTestTime::default());
+        let (web, calls) = fetch_web(vec![failed_status(503)], &time);
+        let mut spent = 0;
+        fetch_cycle(
+            &web,
+            &time,
+            &RunContext::noop(),
+            1,
+            Duration::from_secs(3600),
+            &mut spent,
+            url,
+        );
+        assert_eq!(spent, 1);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        // Retry-After beyond the holding window is not truncated to an early retry.
+        let (web, calls) = fetch_web(
+            vec![
+                delayed_failure(url, 429, Duration::from_secs(120)),
+                failed_status(404),
+            ],
+            &time,
+        );
+        let mut spent = 0;
+        fetch_cycle(
+            &web,
+            &time,
+            &RunContext::noop(),
+            40,
+            Duration::from_secs(60),
+            &mut spent,
+            url,
+        );
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        time.advance(119_999);
+        assert!(!web.fetch(url, false).attempted);
+        time.advance(1);
+        assert!(web.fetch(url, false).attempted);
+        // A permitted delay is honored; cancellation during the wait stops it.
+        let time = Arc::new(FetchTestTime::default());
+        let (web, calls) = fetch_web(
+            vec![
+                delayed_failure(url, 503, Duration::from_secs(2)),
+                served_page(url),
+            ],
+            &time,
+        );
+        let mut spent = 0;
+        assert!(fetch_cycle(
+            &web,
+            &time,
+            &RunContext::noop(),
+            40,
+            Duration::from_secs(60),
+            &mut spent,
+            url
+        )
+        .result
+        .is_ok());
+        assert_eq!(Clock::elapsed(time.as_ref()), Duration::from_secs(2));
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let time = Arc::new(FetchTestTime::default());
+        *time.cancel_on_sleep.lock().unwrap() = Some(cancel.clone());
+        let progress = RunContext::new(
+            "entry4",
+            Arc::new(crate::progress::RecordingReporter::default()),
+            cancel,
+        );
+        let (web, calls) = fetch_web(vec![failed_status(503)], &time);
+        fetch_cycle(
+            &web,
+            &time,
+            &progress,
+            40,
+            Duration::from_secs(60),
+            &mut 0,
+            url,
+        );
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert!(progress.is_cancelled());
+        assert_eq!(Clock::elapsed(time.as_ref()), Duration::from_millis(50));
+    }
+
+    #[test]
+    fn entry4_wait_stops_at_wall_budget_and_no_request_starts_after_exhaustion() {
+        let time = std::sync::Arc::new(FetchTestTime::default());
+        assert!(!wait_for_fetch_retry(
+            &time,
+            Duration::from_secs(1),
+            &|| Clock::elapsed(time.as_ref()) < Duration::from_millis(100)
+        ));
+        assert_eq!(Clock::elapsed(time.as_ref()), Duration::from_millis(100));
+        let (web, calls) = fetch_web(vec![], &time);
+        let attempt = fetch_cycle(
+            &web,
+            &time,
+            &RunContext::noop(),
+            40,
+            Duration::from_millis(100),
+            &mut 0,
+            "https://reuters.com/a",
+        );
+        assert_eq!(attempt.disposition, FetchDisposition::Stopped);
+        assert!(!attempt.attempted);
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn entry4_unknowns_expire_without_retry_and_retry_denials_change_class() {
+        let url = "https://investors.progyny.com/news-releases/news-release-details/progyny-inc-announces-fourth-quarter-2025-results";
+        let time = std::sync::Arc::new(FetchTestTime::default());
+        // Archived Progyny rows name only "fetching <url>"; no transient cause
+        // is inferred from that text. A typed timeout is a separate synthetic case.
+        let (web, calls) = fetch_web(
+            vec![
+                Err(anyhow::anyhow!("fetching {url}")),
+                Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into()),
+                failed_status(403),
+            ],
+            &time,
+        );
+        let mut spent = 0;
+        fetch_cycle(
+            &web,
+            &time,
+            &RunContext::noop(),
+            40,
+            Duration::from_secs(3600),
+            &mut spent,
+            url,
+        );
+        assert_eq!(spent, 1);
+        assert!(!web.fetch(url, false).attempted);
+        time.advance(30_000);
+        fetch_cycle(
+            &web,
+            &time,
+            &RunContext::noop(),
+            40,
+            Duration::from_secs(3600),
+            &mut spent,
+            url,
+        );
+        assert_eq!(spent, 3);
+        time.advance(30_000);
+        assert!(
+            !web.fetch(url, false).attempted,
+            "retry's denial now has a five-minute window"
+        );
+        assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn entry4_redirect_alias_reuses_suppression_until_the_original_host_expiry() {
+        use crate::web_research::fetch::{FetchLocation, PageFetcher};
+        use std::sync::Arc;
+        const DESTINATION: &str = "https://www.wsj.com/article";
+        const ALIAS: &str = "https://reuters.com/redirect-to-wsj";
+
+        // Simulate wire requests and redirect hops, but run the production host
+        // guard, LiveResearchWeb memory, telemetry and runner budget accounting.
+        struct RedirectScript(Arc<Mutex<Vec<String>>>);
+        impl PageFetcher for RedirectScript {
+            fn fetch(&self, url: &str) -> Result<FetchedPage> {
+                assert_eq!(url, DESTINATION);
+                self.0.lock().unwrap().push(url.into());
+                failed_status(403)
+            }
+            fn fetch_guarded(
+                &self,
+                url: &str,
+                guard: &dyn Fn(&reqwest::Url) -> Result<()>,
+            ) -> Result<FetchedPage> {
+                guard(&reqwest::Url::parse(url)?)?;
+                if url == DESTINATION {
+                    return self.fetch(url);
+                }
+                assert_eq!(url, ALIAS);
+                self.0.lock().unwrap().push(url.into());
+                guard(&reqwest::Url::parse(DESTINATION)?).map_err(|err| {
+                    let provenance = FetchLocation {
+                        url: DESTINATION.into(),
+                        retry_after: None,
+                        attempted: true,
+                        message: err.to_string(),
+                        detail: format!("{err:#}"),
+                    };
+                    err.context(provenance)
+                })?;
+                self.0.lock().unwrap().push(DESTINATION.into());
+                let mut page = served_page(DESTINATION)?;
+                page.host = "wsj.com".into();
+                Ok(page)
+            }
+        }
+
+        let time = Arc::new(FetchTestTime::default());
+        let (mut web, requests) = fetch_web(vec![], &time);
+        web.fetcher = Box::new(RedirectScript(requests.clone()));
+        let progress = RunContext::noop();
+        let mut spent = 0;
+        let wall_limit = Duration::from_secs(3600);
+        assert!(fetch_cycle(
+            &web,
+            &time,
+            &progress,
+            40,
+            wall_limit,
+            &mut spent,
+            DESTINATION
+        )
+        .result
+        .is_err());
+        assert_eq!(spent, 1);
+
+        // Discover A -> B well into B's existing window, not at its start.
+        time.advance(100_000);
+        let first = fetch_cycle(&web, &time, &progress, 40, wall_limit, &mut spent, ALIAS);
+        assert_eq!(first.disposition, FetchDisposition::HostCooldown);
+        assert!(first.attempted);
+        assert_eq!(spent, 2);
+        assert_eq!(requests.lock().unwrap().as_slice(), [DESTINATION, ALIAS]);
+
+        // Both this holding and a later holding reuse the known alias for free.
+        time.advance(50_000);
+        let repeat = fetch_cycle(&web, &time, &progress, 40, wall_limit, &mut spent, ALIAS);
+        assert_eq!(repeat.disposition, FetchDisposition::Remembered);
+        assert!(!repeat.attempted);
+        assert_eq!(spent, 2);
+        let mut next_holding_spent = 0;
+        time.advance(149_999);
+        assert!(
+            !fetch_cycle(
+                &web,
+                &time,
+                &progress,
+                40,
+                wall_limit,
+                &mut next_holding_spent,
+                ALIAS
+            )
+            .attempted
+        );
+        assert_eq!(next_holding_spent, 0);
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        {
+            let conn = web.conn.lock().unwrap();
+            let denied = crate::web_research::store::source_state(&conn, "wsj.com")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (denied.failed_count, denied.denied_count, denied.full_count),
+                (1, 1, 0)
+            );
+            assert!(
+                crate::web_research::store::source_state(&conn, "reuters.com")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        // Original expiry t=300s, not discovery+300s or the latest skip+300s.
+        time.advance(1);
+        assert!(fetch_cycle(
+            &web,
+            &time,
+            &progress,
+            40,
+            wall_limit,
+            &mut next_holding_spent,
+            ALIAS
+        )
+        .result
+        .is_ok());
+        assert_eq!(next_holding_spent, 1);
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [DESTINATION, ALIAS, ALIAS, DESTINATION]
+        );
+        let state = crate::web_research::store::source_state(&web.conn.lock().unwrap(), "wsj.com")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (state.failed_count, state.denied_count, state.full_count),
+            (1, 1, 1)
+        );
+    }
+
+    #[test]
+    fn entry4_redirect_denial_cools_destination_but_keeps_requested_host_telemetry() {
+        let time = std::sync::Arc::new(FetchTestTime::default());
+        let origin = "https://reuters.com/redirect";
+        let destination = "https://www.wsj.com/article";
+        let (web, calls) = fetch_web(
+            vec![
+                delayed_failure(destination, 401, Duration::ZERO),
+                failed_status(404),
+            ],
+            &time,
+        );
+        assert!(web.fetch(origin, false).attempted);
+        assert_eq!(
+            web.fetch("https://www.wsj.com/another", false).disposition,
+            FetchDisposition::HostCooldown
+        );
+        assert!(web.fetch("https://reuters.com/unrelated", false).attempted);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        let conn = web.conn.lock().unwrap();
+        let state = crate::web_research::store::source_state(&conn, "reuters.com")
+            .unwrap()
+            .unwrap();
+        assert_eq!((state.failed_count, state.denied_count), (2, 1));
+        assert!(crate::web_research::store::source_state(&conn, "wsj.com")
+            .unwrap()
+            .is_none());
+        // Existing usable cached evidence can serve despite the host's cooldown.
+        let page = served_page(destination).unwrap();
+        crate::web_research::store::put_document(&conn, destination, &page).unwrap();
+        drop(conn);
+        assert_eq!(
+            web.fetch(destination, false).disposition,
+            FetchDisposition::DocumentCache
+        );
+        assert!(!web.fetch("http://127.0.0.1/private", false).attempted);
+    }
+
     #[test]
     fn a_failed_live_fetch_counts_against_its_requested_host() {
         // Attempt-5 Finding 1: 17 of PSX's 25 fetch attempts failed, almost all
@@ -2970,7 +4009,7 @@ mod tests {
             let conn = web.conn.lock().unwrap();
             crate::web_research::store::put_document(&conn, requested, &page).unwrap();
         }
-        let err = web.fetch(requested).unwrap_err();
+        let err = web.fetch(requested, false).result.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("cached redirect destination"), "{msg}");
         assert!(msg.contains("loopback"), "{msg}");
@@ -2983,8 +4022,9 @@ mod tests {
             let conn = web.conn.lock().unwrap();
             crate::web_research::store::put_document(&conn, requested, &page).unwrap();
         }
-        let (served, cached) = web.fetch(requested).unwrap();
-        assert!(cached);
+        let attempt = web.fetch(requested, false);
+        assert_eq!(attempt.disposition, FetchDisposition::DocumentCache);
+        let served = attempt.result.unwrap();
         assert_eq!(served.final_url, page.final_url);
     }
 
@@ -3257,10 +4297,10 @@ mod tests {
                 tier: 2
             }])
         }
-        fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
+        fn fetch(&self, url: &str, _retry: bool) -> FetchAttempt {
             let guard = self.fetches.lock().unwrap();
             *guard.borrow_mut() += 1;
-            Ok((
+            FetchAttempt::scripted(Ok((
                 FetchedPage {
                     final_url: url.to_string(),
                     host: "reuters.com".into(),
@@ -3268,10 +4308,10 @@ mod tests {
                     text: "Widget Co reported revenue of $1.2 billion.".into(),
                     extraction_quality: 0.9,
                     thin_stub: false,
-                    retrieved_at: "2026-08-22T10:00:00+00:00".into()
+                    retrieved_at: "2026-08-22T10:00:00+00:00".into(),
                 },
                 false,
-            ))
+            )))
         }
     }
 
@@ -3719,8 +4759,8 @@ mod tests {
             fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
                 Ok(Vec::new())
             }
-            fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
-                bail!("fetch of {url} returned HTTP 404")
+            fn fetch(&self, url: &str, _retry: bool) -> FetchAttempt {
+                FetchAttempt::scripted(Err(anyhow::anyhow!("fetch of {url} returned HTTP 404")))
             }
         }
         let model = ScriptModel::new(vec![
@@ -3925,9 +4965,9 @@ mod tests {
             fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
                 Ok(Vec::new())
             }
-            fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
+            fn fetch(&self, url: &str, _retry: bool) -> FetchAttempt {
                 *self.fetches.lock().unwrap().borrow_mut() += 1;
-                Ok((
+                FetchAttempt::scripted(Ok((
                     FetchedPage {
                         final_url: url.to_string(),
                         host: "reuters.com".into(),
@@ -3935,10 +4975,10 @@ mod tests {
                         text: "e".repeat(PAGE_TEXT_CAP_CHARS),
                         extraction_quality: 0.9,
                         thin_stub: false,
-                        retrieved_at: "2026-08-22T10:00:00+00:00".into()
+                        retrieved_at: "2026-08-22T10:00:00+00:00".into(),
                     },
                     true,
-                ))
+                )))
             }
         }
         struct PacketRecordingModel {
@@ -4580,8 +5620,8 @@ mod tests {
             fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
                 Ok(Vec::new())
             }
-            fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
-                Ok((
+            fn fetch(&self, url: &str, _retry: bool) -> FetchAttempt {
+                FetchAttempt::scripted(Ok((
                     FetchedPage {
                         final_url: url.to_string(),
                         host: "reuters.com".into(),
@@ -4589,10 +5629,10 @@ mod tests {
                         text: "e".repeat(self.body_chars),
                         extraction_quality: 0.9,
                         thin_stub: false,
-                        retrieved_at: "2026-08-22T10:00:00+00:00".into()
+                        retrieved_at: "2026-08-22T10:00:00+00:00".into(),
                     },
                     false,
-                ))
+                )))
             }
         }
 
@@ -4779,8 +5819,8 @@ mod tests {
             fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
                 bail!("searxng unreachable")
             }
-            fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
-                bail!("fetch of {url} returned HTTP 404")
+            fn fetch(&self, url: &str, _retry: bool) -> FetchAttempt {
+                FetchAttempt::scripted(Err(anyhow::anyhow!("fetch of {url} returned HTTP 404")))
             }
         }
         let empty_findings = || {
@@ -5260,8 +6300,8 @@ mod tests {
         fn search(&self, _q: &str) -> Result<Vec<SearchHit>> {
             Ok(vec![])
         }
-        fn fetch(&self, _url: &str) -> Result<(FetchedPage, bool)> {
-            Ok((
+        fn fetch(&self, _url: &str, _retry: bool) -> FetchAttempt {
+            FetchAttempt::scripted(Ok((
                 FetchedPage {
                     final_url: "https://www.reuters.com/widget-final".into(),
                     host: "reuters.com".into(),
@@ -5269,10 +6309,10 @@ mod tests {
                     text: "body".into(),
                     extraction_quality: 0.9,
                     thin_stub: false,
-                    retrieved_at: "2026-08-22T10:00:00+00:00".into()
+                    retrieved_at: "2026-08-22T10:00:00+00:00".into(),
                 },
                 false,
-            ))
+            )))
         }
     }
 
@@ -5535,8 +6575,8 @@ mod tests {
             fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
                 Ok(vec![])
             }
-            fn fetch(&self, url: &str) -> Result<(FetchedPage, bool)> {
-                bail!("fetch of {url} returned HTTP 403")
+            fn fetch(&self, url: &str, _retry: bool) -> FetchAttempt {
+                FetchAttempt::scripted(Err(anyhow::anyhow!("fetch of {url} returned HTTP 403")))
             }
         }
         let model = ScriptModel::new(vec![

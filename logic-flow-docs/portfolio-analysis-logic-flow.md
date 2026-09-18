@@ -1021,6 +1021,8 @@ The orchestrator works the agenda **one topic at a time**. Each topic is worked 
 - **What is retrieved during a pass (the data)**
   - Live web-page text — the pages the model deep-reads, fetched and readability-extracted from the open web. This is what "current web sources" means.
   - Cached pages — previously-fetched pages under about four weeks old come from the document cache (Layer 1) instead of the network, carrying their original retrieval timestamp; new URLs are fetched live.
+  - Failed URLs and denying hosts share invocation-scoped memory across holdings; remembered failures cost no live attempt, and each admitted retry costs one under the holding's existing budget.
+    The failure classes, cooldowns, redirect-host boundary and retry rules are canonical at `docs/web-research.md` §Failed fetch memory and bounded retry; resume starts with empty failure memory.
   - Search backend, not a separate data source: the orchestrator runs search on SearXNG only (the local suite wires no Tavily fallback).
 
 - **Who owns the context, and what persists**

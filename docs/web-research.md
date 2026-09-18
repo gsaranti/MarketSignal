@@ -47,7 +47,7 @@ A follow-up is the model's *proposal*, carried as a structured field the orchest
 **Terminology:** a topic is worked in **isolation** from other topics — its own pass loop over a clean context, plus that pass's separate synthesis call; where a workflow doc says *one call per topic*, it means this per-topic isolation — within which each **turn** is one model request and the orchestrator owns every tool execution — never a single-request contract.
 
 The orchestrator — not the model — owns every request, so the loop is bounded the way the report's research executor is.
-Several ceilings work together: the per-pass turn, per-turn tool-call, and aggregate-history bounds above; the per-topic depth cap (a quality guard against rabbit-holing one topic); and a **per-item budget that binds first** — a cap on **web-fetch attempts and wall-clock per item** (a failed live attempt spends like a served one, so failing URLs can't ride for free; a document-cache hit spends nothing), spent across all topics in priority order and polled at each request boundary (see [report-workflow.md](report-workflow.md)).
+Several ceilings work together: the per-pass turn, per-turn tool-call, and aggregate-history bounds above; the per-topic depth cap (a quality guard against rabbit-holing one topic); and a **per-item budget that binds first** — a cap on **web-fetch attempts and wall-clock per item** (a failed live attempt spends like a served one, so failing URLs can't ride for free; a document-cache hit or remembered failure spends nothing; a retry spends another attempt), spent across all topics in priority order and polled at each request boundary (see [report-workflow.md](report-workflow.md)).
 That boundary poll is a *between-requests gate*, never a mid-request kill — a model call or fetch already in flight always runs to completion.
 A spent budget then stops further fetches, any follow-up pass, and the move to the next topic, but does not suppress the current pass's findings synthesis.
 That synthesis is the separate model call over the gathered evidence, not a tool turn — the rule the per-job logic flows already state, *once the topic is answered or the budget is spent, the pass's findings are authored* — so a budget-interrupted pass still yields findings, not nothing.
@@ -133,6 +133,36 @@ Pages that are paywalled or render their content with client-side JavaScript ret
 **That thin-text case is the trigger for an optional *rendered-retrieval* tier — a selective escalation, not a new default.**
 The plain GET stays the default for the bulk of fetches; only pages the extraction telemetry flags as thin escalate to a **render fetch** that executes the page's JavaScript before extraction, recovering a body a non-browser GET can't. The render reuses the **browser engine the app already embeds** (the Tauri webview) rather than bundling a second browser (Playwright / Selenium) or a Python scraper sidecar (Crawl4AI) — keeping the binary footprint and the macOS signing surface flat; an external headless browser stays a **spike-gated fallback** for a publisher the embedded webview can't drive.
 A render fetch holds the same safety posture as the plain GET ([§Safety and provenance](#safety-and-provenance)) and feeds the same `extractionQuality` telemetry, so escalation stays **measured, never blanket** — browser-rendering every fetch would be slow and heavy, so it fires only on the flagged subset.
+
+### Failed fetch memory and bounded retry
+
+Failed-fetch memory is in-process and shared across every holding and topic of one Portfolio invocation, including the disconfirming passes.
+A fresh invocation, including resume, starts empty; none of this memory is stored in `web_source_state`, checkpoints or portability archives.
+A URL key is its parsed URL with the fragment removed, preserving path case, trailing slashes and query strings; a host key is the exact lowercase host, keeping `www` and other subdomains separate.
+Current URL policy is checked first, and usable cached documents can serve before failure memory or host cooldown is consulted; cached redirect destinations still re-pass policy.
+
+An HTTP 401 or 403 records the requested and denying URLs and puts the **denying host** into a five-minute cooldown, checked before contacting any redirect destination as well as on direct requests.
+During the window, repeated URLs return the recorded failure and other URLs on that host are skipped; neither refreshes the expiry nor spends a live attempt.
+Expiry permits a new probe; another denial starts a new five-minute window.
+A redirect chain that already contacted an earlier host still spends its one admitted attempt when a later hop is suppressed.
+The requested alias then remembers that failure until the denying host's original expiry, so repeating the alias makes no request and spends no further attempt.
+The denial's host identity is deliberately separate from persisted failure telemetry, which retains requested-host attribution.
+Other deterministic HTTP/document failures are remembered for the invocation; policy refusals are rechecked without contacting the source.
+
+Only HTTP **408, 429, 500, 502, 503 and 504**, typed timeouts, and positively identified connection resets, connection aborts or broken pipes qualify for **one application-managed retry after one second**.
+An opaque DNS, TLS or other connection error is unclassified, not guessed transient from its message; an unclassified failure gets no automatic retry and its URL becomes eligible again after 30 seconds.
+After a transient failure exhausts its retry, its URL likewise has a 30-second cooldown, after which a new attempt plus one retry is eligible.
+A retry that instead returns a denial or deterministic failure adopts that failure's policy.
+The retry checks cancellation, remaining fetch attempts and the holding's elapsed-time budget before issuance, and its wait is cancellation-aware.
+A valid `Retry-After` (seconds or HTTP date) is a minimum wait: a longer delay is honored only if the holding budget allows it, otherwise the retry is omitted and URL suppression retains the server's minimum; an overflowing seconds value never becomes an immediate retry.
+Missing or malformed headers use the default delay; the cooldown is at least its class's normal duration.
+Reqwest's configurable internal retry policy is disabled for this fetcher so the app owns the retry count.
+An attempt means an application-managed page fetch, including its existing bounded redirect chain, not a count of TCP connections.
+
+Progress details distinguish document-cache service, remembered URL failures, host cooldowns and live failures; an automatic retry has its own request row.
+Only actual admitted attempts contribute source telemetry, each once; a memory hit or suppressed destination adds no failed/denied sample, and a recovered retry adds the successful extraction sample beside the original failure.
+An unavailable page still contributes the existing research-degradation gap and cannot become citation evidence.
+Exhaustion still ends further tool execution, even when a later request might otherwise have been served without spending an attempt.
 
 ## Tavily fallback
 

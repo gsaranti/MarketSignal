@@ -33,13 +33,14 @@ use super::registry::{self, SourcePolicy};
 /// telemetry`). `Policy` is the app's own guard — scheme, deny list, a
 /// non-public address — which never reaches the network and is never the
 /// source's record; `Http` is the source's own answer (401/403 read as
-/// denied). Anything unmarked — a transport error, an unresolvable host, the
-/// content-type or redirect-cap bound — is a plain failed attempt. Attached at
-/// the root of the error chain; read back through [`failure_of`].
+/// denied). Content and redirect bounds are deterministic failures; unmarked
+/// transport errors retain their original typed source for retry classification.
+/// Read back through [`failure_of`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchFailure {
     Policy,
     Http(u16),
+    Deterministic,
 }
 
 impl std::fmt::Display for FetchFailure {
@@ -47,6 +48,7 @@ impl std::fmt::Display for FetchFailure {
         match self {
             Self::Policy => f.write_str("blocked by the fetch policy"),
             Self::Http(status) => write!(f, "HTTP {status}"),
+            Self::Deterministic => f.write_str("unusable document or redirect"),
         }
     }
 }
@@ -55,17 +57,105 @@ impl std::error::Error for FetchFailure {}
 
 /// The typed failure at the root of a fetch error's chain, if any.
 pub fn failure_of(err: &anyhow::Error) -> Option<FetchFailure> {
-    err.chain()
-        .find_map(|cause| cause.downcast_ref::<FetchFailure>().copied())
+    err.downcast_ref::<FetchFailure>().copied().or_else(|| {
+        err.chain()
+            .find_map(|cause| cause.downcast_ref::<FetchFailure>().copied())
+    })
+}
+
+/// Ephemeral failure provenance, separate from requested-host telemetry.
+#[derive(Debug)]
+pub struct FetchLocation {
+    pub url: String,
+    pub retry_after: Option<Duration>,
+    pub attempted: bool,
+    pub(crate) message: String,
+    pub(crate) detail: String,
+}
+
+impl std::fmt::Display for FetchLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for FetchLocation {}
+
+pub fn location_of(err: &anyhow::Error) -> Option<&FetchLocation> {
+    err.downcast_ref::<FetchLocation>()
+}
+
+/// Positive typed evidence only: an opaque connect/DNS/TLS failure is unknown.
+pub fn transient_failure(err: &anyhow::Error) -> bool {
+    if let Some(class) = failure_of(err) {
+        return matches!(class, FetchFailure::Http(408 | 429 | 500 | 502 | 503 | 504));
+    }
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|e| e.is_timeout())
+            || cause.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                )
+            })
+    })
+}
+
+/// HTTP-date or decimal seconds. Overflow must never become an immediate retry.
+fn retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    use chrono::Datelike;
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit()) {
+        return Some(Duration::from_secs(
+            value.parse::<u64>().unwrap_or(u64::MAX),
+        ));
+    }
+    let date = chrono::DateTime::parse_from_rfc2822(value)
+        .ok()
+        .map(|v| v.with_timezone(&chrono::Utc))
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(
+                value.split_once(", ")?.1,
+                "%d-%b-%y %H:%M:%S GMT",
+            )
+            .ok()
+            .and_then(|date| {
+                // RFC 850's two-digit year uses the most recent matching year
+                // no more than fifty years in the future, not chrono's pivot.
+                let mut year = now.year().div_euclid(100) * 100 + date.year().rem_euclid(100);
+                if year < now.year() - 49 {
+                    year += 100;
+                }
+                if year > now.year() + 50 {
+                    year -= 100;
+                }
+                date.with_year(year).map(|v| v.and_utc())
+            })
+        })
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y")
+                .ok()
+                .map(|v| v.and_utc())
+        });
+    date.map(|date| {
+        date.signed_duration_since(now)
+            .to_std()
+            .unwrap_or(Duration::ZERO)
+    })
 }
 
 fn policy_err(message: String) -> anyhow::Error {
     anyhow::Error::new(FetchFailure::Policy).context(message)
 }
 
-/// The normalized host a fetch was requested against — the telemetry key for
-/// a failed attempt, which has no served page (and so no post-redirect host)
-/// to name one. `None` for an unparseable or host-less URL.
+/// The normalized requested host remains the failed-attempt telemetry key.
+/// Redirect-destination provenance governs ephemeral backoff separately;
+/// it does not change this persisted attribution. `None` for an invalid URL.
 pub fn requested_host(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
     let host = parsed.host_str()?;
@@ -122,6 +212,12 @@ pub struct FetchedPage {
 /// supply their own. The live implementation is [`HttpPageFetcher`].
 pub trait PageFetcher: Send + Sync {
     fn fetch(&self, url: &str) -> Result<FetchedPage>;
+
+    /// The run's host cooldown binds on redirect destinations too.
+    fn fetch_guarded(&self, url: &str, guard: &dyn Fn(&Url) -> Result<()>) -> Result<FetchedPage> {
+        guard(&Url::parse(url)?)?;
+        self.fetch(url)
+    }
 }
 
 /// Why an address is rejected — used in errors so a blocked fetch is legible
@@ -264,7 +360,11 @@ pub fn check_url_policy(url_str: &str) -> Result<()> {
     let url = Url::parse(url_str).with_context(|| format!("unparseable URL {url_str:?}"))?;
     match url.scheme() {
         "http" | "https" => {}
-        other => return Err(policy_err(format!("blocked: scheme {other:?} is not allowed"))),
+        other => {
+            return Err(policy_err(format!(
+                "blocked: scheme {other:?} is not allowed"
+            )))
+        }
     }
     let host = url.host_str().context("URL carries no host")?;
     if let SourcePolicy::Deny(reason) = registry::assess(host) {
@@ -336,78 +436,117 @@ impl HttpPageFetcher {
 
     /// One validated GET, redirects handled manually so every hop re-passes
     /// the SSRF rules. Returns the final URL and the (bounded) body text.
-    fn get_bounded(&self, start: &Url) -> Result<(Url, String)> {
+    fn get_bounded(
+        &self,
+        start: &Url,
+        guard: &dyn Fn(&Url) -> Result<()>,
+    ) -> Result<(Url, String)> {
         let mut url = start.clone();
-        for _hop in 0..=REDIRECT_CAP {
-            // The fetch-gate deny check (`docs/data-sources.md §Source
-            // registry and evidence tiers`): a denied host is dropped even if
-            // a redirect landed on it.
-            let host = url.host_str().unwrap_or_default();
-            if let SourcePolicy::Deny(reason) = registry::assess(host) {
-                return Err(policy_err(format!(
-                    "fetch blocked: {host} is on the deny list ({reason})"
-                )));
-            }
-            let addrs = validate_url(&url, self.allow_loopback)?;
-            let client = reqwest::blocking::Client::builder()
-                .timeout(FETCH_TIMEOUT)
-                .redirect(reqwest::redirect::Policy::none())
-                .resolve_to_addrs(host, &addrs)
-                .user_agent(USER_AGENT)
-                .build()
-                .context("building the fetch client")?;
-            let resp = client
-                .get(url.clone())
-                .header("Accept", ACCEPT)
-                .header("Accept-Language", ACCEPT_LANGUAGE)
-                .header("Sec-Fetch-Dest", "document")
-                .header("Sec-Fetch-Mode", "navigate")
-                .header("Sec-Fetch-Site", "none")
-                .send()
-                .with_context(|| format!("fetching {url}"))?;
-
-            let status = resp.status();
-            if status.is_redirection() {
-                let location = resp
+        let mut attempted = false;
+        for hop in 0..=REDIRECT_CAP {
+            let mut retry_delay = None;
+            // Keep provenance at the failing hop without replacing the source chain.
+            let result: Result<Option<String>> = (|| {
+                let host = url.host_str().unwrap_or_default();
+                if let SourcePolicy::Deny(reason) = registry::assess(host) {
+                    return Err(policy_err(format!(
+                        "fetch blocked: {host} is on the deny list ({reason})"
+                    )));
+                }
+                guard(&url)?;
+                let addrs = validate_url(&url, self.allow_loopback).inspect_err(|err| {
+                    // DNS failure is an admitted attempt; an app policy refusal is not.
+                    attempted |= failure_of(err) != Some(FetchFailure::Policy);
+                })?;
+                let client = reqwest::blocking::Client::builder()
+                    .timeout(FETCH_TIMEOUT)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .retry(reqwest::retry::never())
+                    .resolve_to_addrs(host, &addrs)
+                    .user_agent(USER_AGENT)
+                    .build()
+                    .context("building the fetch client")?;
+                attempted = true;
+                let resp = client
+                    .get(url.clone())
+                    .header("Accept", ACCEPT)
+                    .header("Accept-Language", ACCEPT_LANGUAGE)
+                    .header("Sec-Fetch-Dest", "document")
+                    .header("Sec-Fetch-Mode", "navigate")
+                    .header("Sec-Fetch-Site", "none")
+                    .send()
+                    .with_context(|| format!("fetching {url}"))?;
+                let status = resp.status();
+                retry_delay = resp
                     .headers()
-                    .get(reqwest::header::LOCATION)
+                    .get(reqwest::header::RETRY_AFTER)
                     .and_then(|v| v.to_str().ok())
-                    .context("redirect carried no Location header")?;
-                url = url
-                    .join(location)
-                    .with_context(|| format!("joining redirect target {location:?}"))?;
-                continue;
+                    .and_then(|v| retry_after(v, chrono::Utc::now()));
+                if status.is_redirection() {
+                    if hop == REDIRECT_CAP {
+                        return Err(anyhow::Error::new(FetchFailure::Deterministic).context(
+                            format!("fetch of {start} exceeded the {REDIRECT_CAP}-redirect cap"),
+                        ));
+                    }
+                    let location = resp
+                        .headers()
+                        .get(reqwest::header::LOCATION)
+                        .and_then(|v| v.to_str().ok())
+                        .ok_or_else(|| {
+                            anyhow::Error::new(FetchFailure::Deterministic)
+                                .context("redirect carried no Location header")
+                        })?;
+                    url = url.join(location).map_err(|err| {
+                        anyhow::Error::new(err)
+                            .context(FetchFailure::Deterministic)
+                            .context(format!("joining redirect target {location:?}"))
+                    })?;
+                    return Ok(None);
+                }
+                if !status.is_success() {
+                    return Err(anyhow::Error::new(FetchFailure::Http(status.as_u16()))
+                        .context(format!("fetch of {url} returned HTTP {}", status.as_u16())));
+                }
+                let content_type = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let allowed = content_type.is_empty()
+                    || content_type.starts_with("text/")
+                    || content_type.starts_with("application/xhtml+xml")
+                    || content_type.starts_with("application/xml");
+                if !allowed {
+                    return Err(
+                        anyhow::Error::new(FetchFailure::Deterministic).context(format!(
+                            "fetch of {url} returned unsupported content type {content_type:?}"
+                        )),
+                    );
+                }
+                use std::io::Read;
+                let mut body = Vec::new();
+                resp.take(MAX_FETCH_BYTES)
+                    .read_to_end(&mut body)
+                    .with_context(|| format!("reading the body of {url}"))?;
+                Ok(Some(String::from_utf8_lossy(&body).into_owned()))
+            })();
+            match result {
+                Ok(Some(body)) => return Ok((url, body)),
+                Ok(None) => continue,
+                Err(err) => {
+                    let location = FetchLocation {
+                        url: url.to_string(),
+                        retry_after: retry_delay,
+                        attempted,
+                        message: err.to_string(),
+                        detail: format!("{err:#}"),
+                    };
+                    return Err(err.context(location));
+                }
             }
-            if !status.is_success() {
-                return Err(anyhow::Error::new(FetchFailure::Http(status.as_u16()))
-                    .context(format!("fetch of {url} returned HTTP {}", status.as_u16())));
-            }
-            // Content-type bound: HTML/text only — a research fetch reads
-            // documents, never binaries.
-            let content_type = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let allowed = content_type.is_empty()
-                || content_type.starts_with("text/")
-                || content_type.starts_with("application/xhtml+xml")
-                || content_type.starts_with("application/xml");
-            if !allowed {
-                bail!("fetch of {url} returned unsupported content type {content_type:?}");
-            }
-            // Size bound: read at most MAX_FETCH_BYTES whatever the declared
-            // Content-Length says.
-            use std::io::Read;
-            let mut body = Vec::new();
-            resp.take(MAX_FETCH_BYTES)
-                .read_to_end(&mut body)
-                .with_context(|| format!("reading the body of {url}"))?;
-            let text = String::from_utf8_lossy(&body).into_owned();
-            return Ok((url, text));
         }
-        bail!("fetch of {start} exceeded the {REDIRECT_CAP}-redirect cap")
+        unreachable!("last redirect returns the cap failure")
     }
 }
 
@@ -419,8 +558,12 @@ impl Default for HttpPageFetcher {
 
 impl PageFetcher for HttpPageFetcher {
     fn fetch(&self, url: &str) -> Result<FetchedPage> {
+        self.fetch_guarded(url, &|_| Ok(()))
+    }
+
+    fn fetch_guarded(&self, url: &str, guard: &dyn Fn(&Url) -> Result<()>) -> Result<FetchedPage> {
         let parsed = Url::parse(url).with_context(|| format!("parsing fetch URL {url:?}"))?;
-        let (final_url, html) = self.get_bounded(&parsed)?;
+        let (final_url, html) = self.get_bounded(&parsed, guard)?;
         let (title, text, probably_readable) = extract_article(&html, final_url.as_str());
         let (extraction_quality, thin_stub) = quality_of(text.chars().count(), probably_readable);
         Ok(FetchedPage {
@@ -464,7 +607,10 @@ mod tests {
             (IpAddr::V4(Ipv4Addr::new(0, 1, 2, 3)), "non-routable"),
             // The special-use ranges the first cut missed (Codex round 1):
             // protocol assignments, benchmarking, TEST-NET, reserved space.
-            (IpAddr::V4(Ipv4Addr::new(192, 0, 0, 170)), "protocol-assignment"),
+            (
+                IpAddr::V4(Ipv4Addr::new(192, 0, 0, 170)),
+                "protocol-assignment",
+            ),
             (IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1)), "benchmarking"),
             (IpAddr::V4(Ipv4Addr::new(198, 19, 255, 1)), "benchmarking"),
             (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), "documentation"),
@@ -484,7 +630,10 @@ mod tests {
         assert!(non_public_reason("::192.168.1.1".parse().unwrap()).is_some());
         // Public addresses pass.
         assert_eq!(non_public_reason("93.184.216.34".parse().unwrap()), None);
-        assert_eq!(non_public_reason("2606:2800:220:1::1".parse().unwrap()), None);
+        assert_eq!(
+            non_public_reason("2606:2800:220:1::1".parse().unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -493,13 +642,21 @@ mod tests {
         // list, literal-address classes — so an imported or legacy cache row
         // can't serve under a policy the current rules would block.
         assert!(check_url_policy("https://reuters.com/a").is_ok());
-        let err = check_url_policy("ftp://reuters.com/a").unwrap_err().to_string();
+        let err = check_url_policy("ftp://reuters.com/a")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("scheme"), "{err}");
-        let err = check_url_policy("https://stockinvest.us/x").unwrap_err().to_string();
+        let err = check_url_policy("https://stockinvest.us/x")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("deny list"), "{err}");
-        let err = check_url_policy("http://192.168.1.10/admin").unwrap_err().to_string();
+        let err = check_url_policy("http://192.168.1.10/admin")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("private"), "{err}");
-        let err = check_url_policy("http://[fec0::1]/x").unwrap_err().to_string();
+        let err = check_url_policy("http://[fec0::1]/x")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("site-local"), "{err}");
     }
 
@@ -671,6 +828,142 @@ mod tests {
             Some("reuters.com")
         );
         assert_eq!(requested_host("not a url"), None);
+    }
+
+    #[test]
+    fn entry4_retry_classifier_uses_status_and_typed_transport_evidence() {
+        for status in [408, 429, 500, 502, 503, 504] {
+            assert!(transient_failure(&anyhow::Error::new(FetchFailure::Http(
+                status
+            ))));
+        }
+        for status in [400, 401, 403, 404, 410, 501, 505] {
+            assert!(!transient_failure(&anyhow::Error::new(FetchFailure::Http(
+                status
+            ))));
+        }
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::BrokenPipe,
+        ] {
+            assert!(transient_failure(
+                &anyhow::Error::new(std::io::Error::from(kind)).context("fetching")
+            ));
+        }
+        for kind in [
+            std::io::ErrorKind::InvalidData,
+            std::io::ErrorKind::ConnectionRefused,
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            assert!(!transient_failure(&anyhow::Error::new(
+                std::io::Error::from(kind)
+            )));
+        }
+        assert!(!transient_failure(&anyhow::anyhow!(
+            "TLS timeout, DNS connection reset"
+        )));
+        let policy = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::TimedOut))
+            .context(FetchFailure::Policy);
+        assert!(
+            !transient_failure(&policy),
+            "policy refusal overrides a transport cause"
+        );
+    }
+
+    #[test]
+    fn entry4_retry_after_dates_seconds_and_invalid_values() {
+        let now = chrono::DateTime::parse_from_rfc3339("1994-11-06T08:49:30Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        for value in [
+            "7",
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+        ] {
+            assert_eq!(
+                retry_after(value, now),
+                Some(Duration::from_secs(7)),
+                "{value}"
+            );
+        }
+        assert_eq!(retry_after("0", now), Some(Duration::ZERO));
+        assert_eq!(
+            retry_after("Sun, 06 Nov 1994 08:49:20 GMT", now),
+            Some(Duration::ZERO)
+        );
+        for value in ["-1", "no date", "1.5", ""] {
+            assert_eq!(retry_after(value, now), None);
+        }
+        assert_eq!(
+            retry_after("999999999999999999999999999999999999", now),
+            Some(Duration::from_secs(u64::MAX))
+        );
+    }
+
+    #[test]
+    fn entry4_wire_failure_keeps_status_retry_after_and_failing_redirect_url() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 302,
+                headers: vec![("Location", "/destination")],
+                body: "",
+            },
+            Canned::Reply {
+                status: 503,
+                headers: vec![("Retry-After", "7")],
+                body: "unavailable",
+            },
+        ]);
+        let err = HttpPageFetcher::allowing_loopback()
+            .fetch(&format!("{}start", server.base_url))
+            .unwrap_err();
+        assert_eq!(
+            server.attempts(),
+            2,
+            "redirect hops, no hidden application retry"
+        );
+        assert_eq!(failure_of(&err), Some(FetchFailure::Http(503)));
+        let location = location_of(&err).unwrap();
+        assert!(location.url.ends_with("/destination"));
+        assert_eq!(location.retry_after, Some(Duration::from_secs(7)));
+        assert!(location.attempted);
+    }
+
+    #[test]
+    fn entry4_redirect_guard_runs_before_contacting_destination() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 302,
+            headers: vec![("Location", "https://denied.example/article")],
+            body: "",
+        }]);
+        let guard = |url: &Url| {
+            if url.host_str() == Some("denied.example") {
+                bail!("host cooling down");
+            }
+            Ok(())
+        };
+        let fetcher = HttpPageFetcher::allowing_loopback();
+        let err = fetcher.fetch_guarded(&server.base_url, &guard).unwrap_err();
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(
+            location_of(&err).unwrap().url,
+            "https://denied.example/article"
+        );
+        assert!(
+            location_of(&err).unwrap().attempted,
+            "earlier redirect work still spent one attempt"
+        );
+        let err = fetcher
+            .fetch_guarded("https://denied.example/article", &guard)
+            .unwrap_err();
+        assert!(
+            !location_of(&err).unwrap().attempted,
+            "a direct skip spent nothing"
+        );
     }
 
     #[test]
