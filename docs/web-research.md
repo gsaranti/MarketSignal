@@ -139,6 +139,9 @@ Adding a *keyed engine inside* SearXNG — as Serper now is for Google — is th
 
 Search returns links; the tool then **fetches the top results and extracts readable text**.
 The fetch is a plain HTTP GET carrying a **realistic, browser-like header set** (a current User-Agent plus the coherent `Accept` / `Accept-Language` / `Sec-Fetch-*` headers a real browser sends) and a timeout — header hygiene is **cheap prevention on the default path**, so the common fetch isn't needlessly flagged as a bot before the render tier is ever reached (it won't fool fingerprint-based detectors, where a non-browser TLS handshake still gives it away — that's the render escalation's job, not the GET's); extraction strips navigation, ads, and boilerplate down to the article body so the model reasons over content, not page chrome.
+For `sec.gov` and its subdomains, the User-Agent is instead the declared app identity shared with the SEC EDGAR adapter, including its contact information.
+The fetcher selects that identity from each redirect hop's parsed destination host, treating a terminal DNS root dot equivalently; other destinations retain the browser User-Agent.
+This header does not imply successful access: an HTTP 401 or 403 still follows the denial policy below.
 Readability extraction is done in Rust (a `readability.js`-style article extractor).
 Pages that are paywalled or render their content with client-side JavaScript return thin text to a non-browser fetch — a fetch-layer limit, not an extractor failure — and such results simply contribute less evidence rather than breaking the loop.
 **That thin-text case is the trigger for an optional *rendered-retrieval* tier — a selective escalation, not a new default.**
@@ -171,6 +174,8 @@ Reqwest's configurable internal retry policy is disabled for this fetcher so the
 An attempt means an application-managed page fetch, including its existing bounded redirect chain, not a count of TCP connections.
 
 Progress details distinguish document-cache service, remembered URL failures, host cooldowns and live failures; an automatic retry has its own request row.
+Failure details include the context and underlying error source chain, retained when a remembered URL failure or host cooldown is reported, so a transport failure names the available cause rather than only the outer fetching context.
+Cause text is diagnostic; classification and retry eligibility still use typed evidence, never guesses from that text.
 Only actual admitted attempts contribute source telemetry, each once; a memory hit or suppressed destination adds no failed/denied sample, and a recovered retry adds the successful extraction sample beside the original failure.
 An unavailable page still contributes the existing research-degradation gap and cannot become citation evidence.
 Exhaustion still ends further tool execution, even when a later request might otherwise have been served without spending an attempt.

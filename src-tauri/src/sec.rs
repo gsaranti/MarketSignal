@@ -25,7 +25,7 @@ const SEC_DATA_BASE: &str = "https://data.sec.gov";
 
 /// SEC asks automated clients to identify themselves with a descriptive User-Agent
 /// (a generic browser UA gets throttled). Static, since this is an app-level client.
-const SEC_USER_AGENT: &str = "MarketSignal local-analysis (support@market-signal.app)";
+pub(crate) const SEC_USER_AGENT: &str = "MarketSignal local-analysis (support@market-signal.app)";
 
 /// The company-facts endpoint path; `{cik}` is the 10-digit zero-padded CIK.
 fn company_facts_path(cik10: &str) -> String {

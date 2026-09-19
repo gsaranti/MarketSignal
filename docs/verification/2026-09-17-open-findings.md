@@ -123,7 +123,17 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 - Rests on: attempt 6 — sec.gov pages denied through the web tool, and progyny-class failures with no cause in the tracker row.
 - Check: the web fetcher's request to sec.gov carries the declared User-Agent and a 403 still classifies as denied (live availability is not the test); a progyny-class failure names its cause in the tracker row.
 - Stamp: none.
-- Ruling: open.
+- Ruling: approved 2026-09-18 — reuse the existing SEC identity for `sec.gov` and its subdomains, selected again on each redirect hop; other hosts retain the browser identity.
+  Preserve entry 4's existing source-chain propagation and add regression coverage rather than rewriting it.
+  Include the narrow tracker-documentation correction for separate web-fetch retry rows.
+- Implementation: complete 2026-09-18; Metis review approved after independently rerunning all verification gates.
+  Claude's separate review agreed and reported matching green gates; its stale review-status nit is corrected here.
+  Six offline regressions cover SEC host boundaries, outgoing headers through redirects into and out of SEC, denied classification and telemetry, cooldown and remembered-failure accounting, and nested causes reaching progress details from synthetic errors and malformed HTTP responses/bodies.
+  The malformed-response tests exercise the production fetcher, failure memory and research runner; the historical Progyny cause remains unknown.
+  Verification passed: 1,516 library tests and 32 integration tests (33 ignored), warning-free `cargo clippy --all-targets --all-features`, `npm run build`, `npm test` (46 pure-module and 266 component tests), and `git diff --check`.
+  The HTTP fixtures required local-port access outside the sandbox after its initial `Operation not permitted` failure.
+  No prompt, schema or persisted shape changed; no version stamp moved.
+  Live effectiveness remains deferred to attempt 7; no live source/model probe, harness run, daemon restart or dev-store wipe was performed.
 
 ### 7. Per-call telemetry with explicit semantics
 

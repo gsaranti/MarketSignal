@@ -10,7 +10,8 @@
 //! addresses are pinned into the client so the connection goes to the
 //! addresses that were validated, not a second DNS answer.
 //!
-//! The plain GET carries a realistic, browser-like header set — cheap
+//! SEC hosts use the declared identity shared with the EDGAR adapter; other
+//! hosts use a realistic, browser-like header set — cheap
 //! prevention so the common fetch isn't needlessly flagged as a bot; it won't
 //! fool TLS-fingerprint detectors, which is the deferred render tier's job,
 //! not the GET's. Extraction strips navigation, ads, and boilerplate down to
@@ -188,6 +189,17 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
                           AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
 const ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 const ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
+
+/// Select from the current hop's parsed host, never a substring of the URL.
+/// A terminal DNS root dot does not change the destination's identity.
+fn user_agent_for(url: &Url) -> &'static str {
+    let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+    if host == "sec.gov" || host.ends_with(".sec.gov") {
+        crate::sec::SEC_USER_AGENT
+    } else {
+        USER_AGENT
+    }
+}
 
 /// One fetched, extracted page — the shape the research loop's evidence
 /// ledger and the document cache consume. `retrieved_at` is the original
@@ -416,12 +428,16 @@ pub struct HttpPageFetcher {
     /// driven against a localhost mock. Compiled to `false` in production —
     /// the field is set only by the `cfg(test)` constructor below.
     allow_loopback: bool,
+    #[cfg(test)]
+    test_address: Option<SocketAddr>,
 }
 
 impl HttpPageFetcher {
     pub fn new() -> Self {
         Self {
             allow_loopback: false,
+            #[cfg(test)]
+            test_address: None,
         }
     }
 
@@ -431,7 +447,29 @@ impl HttpPageFetcher {
     pub fn allowing_loopback() -> Self {
         Self {
             allow_loopback: true,
+            test_address: None,
         }
+    }
+
+    /// Keep the URL's host on the wire while using a local mock, without DNS.
+    #[cfg(test)]
+    pub(crate) fn with_test_address(address: SocketAddr) -> Self {
+        assert!(address.ip().is_loopback());
+        Self {
+            allow_loopback: true,
+            test_address: Some(address),
+        }
+    }
+
+    fn resolve_url(&self, url: &Url) -> Result<Vec<SocketAddr>> {
+        #[cfg(test)]
+        if let Some(address) = self.test_address {
+            // Only DNS/address validation is replaced. Keep URL policy and the
+            // caller's per-hop guard active even on this test transport.
+            check_url_policy(url.as_str())?;
+            return Ok(vec![address]);
+        }
+        validate_url(url, self.allow_loopback)
     }
 
     /// One validated GET, redirects handled manually so every hop re-passes
@@ -454,7 +492,7 @@ impl HttpPageFetcher {
                     )));
                 }
                 guard(&url)?;
-                let addrs = validate_url(&url, self.allow_loopback).inspect_err(|err| {
+                let addrs = self.resolve_url(&url).inspect_err(|err| {
                     // DNS failure is an admitted attempt; an app policy refusal is not.
                     attempted |= failure_of(err) != Some(FetchFailure::Policy);
                 })?;
@@ -463,7 +501,16 @@ impl HttpPageFetcher {
                     .redirect(reqwest::redirect::Policy::none())
                     .retry(reqwest::retry::never())
                     .resolve_to_addrs(host, &addrs)
-                    .user_agent(USER_AGENT)
+                    .user_agent(user_agent_for(&url));
+                // A test override must not route an SEC-named URL through an
+                // ambient proxy. Production retains its existing proxy behavior.
+                #[cfg(test)]
+                let client = if self.test_address.is_some() {
+                    client.no_proxy()
+                } else {
+                    client
+                };
+                let client = client
                     .build()
                     .context("building the fetch client")?;
                 attempted = true;
@@ -578,10 +625,156 @@ impl PageFetcher for HttpPageFetcher {
     }
 }
 
+/// Local wire fixtures shared with the production research-runner tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    pub(crate) struct WireServer {
+        pub address: SocketAddr,
+        requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl WireServer {
+        pub fn serve(responses: impl FnOnce(u16) -> Vec<String>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind local wire fixture");
+            let address = listener.local_addr().unwrap();
+            let responses = responses(address.port());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let recorded = requests.clone();
+            std::thread::spawn(move || {
+                for response in responses {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut head = Vec::new();
+                    let mut byte = [0];
+                    while head.len() < 65_536 && !head.ends_with(b"\r\n\r\n") {
+                        if stream.read(&mut byte).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        head.push(byte[0]);
+                    }
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8(head).unwrap());
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            });
+            Self { address, requests }
+        }
+
+        pub fn url(&self, host: &str, path: &str) -> String {
+            format!("http://{host}:{}{path}", self.address.port())
+        }
+
+        pub fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    pub(crate) fn response(status: u16, headers: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",
+            body.len()
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_http::{Canned, MockHttp};
+
+    #[test]
+    fn entry6_sec_identity_matches_only_sec_hosts() {
+        for host in [
+            "sec.gov",
+            "www.sec.gov",
+            "data.sec.gov",
+            "WWW.SEC.GOV",
+            "sec.gov.",
+            "DATA.SEC.GOV.",
+        ] {
+            let url = Url::parse(&format!("https://{host}/Archives/example")).unwrap();
+            assert_eq!(user_agent_for(&url), crate::sec::SEC_USER_AGENT, "{host}");
+        }
+        for url in [
+            "https://notsec.gov/",
+            "https://sec.gov.example/",
+            "https://example.com/sec.gov",
+            "https://sec.gov@example.com/",
+            "https://example.com/?host=sec.gov",
+            "http://8.8.8.8/",
+        ] {
+            assert_eq!(
+                user_agent_for(&Url::parse(url).unwrap()),
+                USER_AGENT,
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn entry6_wire_identity_follows_each_redirect_destination() {
+        use test_support::{response, WireServer};
+        let server = WireServer::serve(|port| {
+            vec![
+                response(
+                    302,
+                    &format!("Location: http://www.sec.gov:{port}/filing\r\n"),
+                    "",
+                ),
+                response(
+                    302,
+                    &format!("Location: http://publisher.example:{port}/article\r\n"),
+                    "",
+                ),
+                response(200, "Content-Type: text/plain\r\n", "Published text"),
+            ]
+        });
+        let page = HttpPageFetcher::with_test_address(server.address)
+            .fetch(&server.url("publisher.example", "/start"))
+            .unwrap();
+        assert_eq!(page.final_url, server.url("publisher.example", "/article"));
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        for (request, expected) in
+            requests
+                .iter()
+                .zip([USER_AGENT, crate::sec::SEC_USER_AGENT, USER_AGENT])
+        {
+            let ua = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("user-agent")
+                    .then(|| value.trim())
+            });
+            assert_eq!(ua, Some(expected));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("accept-language: en-us,en;q=0.9"));
+        }
+        assert!(requests[1].contains(&format!("host: www.sec.gov:{}", server.address.port())));
+    }
+
+    #[test]
+    fn entry6_declared_identity_does_not_reclassify_a_wire_denial() {
+        use test_support::{response, WireServer};
+        let server = WireServer::serve(|_| vec![response(403, "", "Denied")]);
+        let err = HttpPageFetcher::with_test_address(server.address)
+            .fetch(&server.url("sec.gov", "/filing"))
+            .unwrap_err();
+        assert_eq!(failure_of(&err), Some(FetchFailure::Http(403)));
+        assert!(!transient_failure(&err));
+        assert!(location_of(&err).unwrap().detail.contains("HTTP 403"));
+        assert!(server.requests()[0].contains(crate::sec::SEC_USER_AGENT));
+        assert_eq!(server.requests().len(), 1);
+    }
 
     #[test]
     fn schemes_other_than_http_are_blocked() {

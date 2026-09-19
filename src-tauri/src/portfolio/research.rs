@@ -3558,6 +3558,149 @@ mod tests {
         runner.fetch_with_retry(url, &context, spent)
     }
 
+    fn entry6_details(reporter: &crate::progress::RecordingReporter) -> Vec<String> {
+        reporter
+            .messages()
+            .into_iter()
+            .filter_map(|message| match message.event {
+                crate::progress::ProgressEvent::RequestFinished { status, detail, .. } => {
+                    assert_eq!(status, "failed");
+                    detail
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn entry6_nested_causes_survive_live_and_remembered_progress_details() {
+        use crate::progress::{RecordingReporter, RunContext};
+        use std::sync::{atomic::AtomicBool, Arc};
+        let url = "https://investors.progyny.com/synthetic-fixture";
+        // Synthetic evidence only: the archived failure did not name its cause.
+        let error = anyhow::Error::new(std::io::Error::other("synthetic TLS handshake failure"))
+            .context("connecting to source")
+            .context(format!("fetching {url}"));
+        let time = Arc::new(FetchTestTime::default());
+        let (web, calls) = fetch_web(vec![Err(error)], &time);
+        let reporter = Arc::new(RecordingReporter::default());
+        let progress =
+            RunContext::new("entry6", reporter.clone(), Arc::new(AtomicBool::new(false)));
+        let mut spent = 0;
+        for _ in 0..2 {
+            fetch_cycle(
+                &web,
+                &time,
+                &progress,
+                40,
+                Duration::from_secs(3600),
+                &mut spent,
+                url,
+            );
+        }
+        assert_eq!(
+            spent, 1,
+            "an opaque failure does not acquire an automatic retry"
+        );
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let details = entry6_details(&reporter);
+        assert_eq!(details.len(), 2);
+        for detail in &details {
+            assert!(
+                detail.contains(&format!(
+                    "fetching {url}: connecting to source: synthetic TLS handshake failure"
+                )),
+                "{detail}"
+            );
+        }
+        assert!(details[0].starts_with("fetch failed; 1 live attempt(s)"));
+        assert!(details[1].starts_with("remembered URL failure; 0 live attempt(s)"));
+    }
+
+    #[test]
+    fn entry6_wire_transport_and_body_errors_reach_progress_with_nested_causes() {
+        use crate::progress::{RecordingReporter, RunContext};
+        use crate::web_research::fetch::{test_support::WireServer, HttpPageFetcher};
+        use std::sync::{atomic::AtomicBool, Arc};
+        for (reply, context, cause) in [
+            ("not-http\r\n\r\n", "fetching", "invalid http version"),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\ninvalid-chunk-size\r\n",
+                "reading the body of",
+                "chunk",
+            ),
+        ] {
+            let server = WireServer::serve(|_| vec![reply.into()]);
+            let time = Arc::new(FetchTestTime::default());
+            let (mut web, _) = fetch_web(vec![], &time);
+            web.fetcher = Box::new(HttpPageFetcher::with_test_address(server.address));
+            let reporter = Arc::new(RecordingReporter::default());
+            let progress = RunContext::new("entry6", reporter.clone(), Arc::new(AtomicBool::new(false)));
+            let url = server.url("publisher.example", "/broken-response");
+            let mut spent = 0;
+            for _ in 0..2 {
+                fetch_cycle(&web, &time, &progress, 40, Duration::from_secs(3600), &mut spent, &url);
+            }
+            assert_eq!(spent, 1);
+            assert_eq!(server.requests().len(), 1);
+            let details = entry6_details(&reporter);
+            assert_eq!(details.len(), 2);
+            for detail in &details {
+                assert!(detail.contains(&format!("{context} {url}:")), "{detail}");
+                assert!(detail.to_ascii_lowercase().contains(cause), "underlying cause absent: {detail}");
+            }
+            assert!(details[1].starts_with("remembered URL failure; 0 live attempt(s)"));
+        }
+    }
+
+    #[test]
+    fn entry6_wire_sec_denial_keeps_telemetry_cooldown_and_progress_causes() {
+        use crate::progress::{RecordingReporter, RunContext};
+        use crate::web_research::fetch::{
+            test_support::{response, WireServer},
+            HttpPageFetcher,
+        };
+        use std::sync::{atomic::AtomicBool, Arc};
+        let server = WireServer::serve(|_| vec![response(403, "", "Denied")]);
+        let time = Arc::new(FetchTestTime::default());
+        let (mut web, _) = fetch_web(vec![], &time);
+        web.fetcher = Box::new(HttpPageFetcher::with_test_address(server.address));
+        let reporter = Arc::new(RecordingReporter::default());
+        let progress =
+            RunContext::new("entry6", reporter.clone(), Arc::new(AtomicBool::new(false)));
+        let url = server.url("www.sec.gov", "/filing");
+        let mut spent = 0;
+        for target in [&url, &url, &server.url("www.sec.gov", "/another-filing")] {
+            fetch_cycle(
+                &web,
+                &time,
+                &progress,
+                40,
+                Duration::from_secs(3600),
+                &mut spent,
+                target,
+            );
+        }
+        assert_eq!(
+            spent, 1,
+            "denial is not retried; memory and cooldown spend nothing"
+        );
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains(crate::sec::SEC_USER_AGENT));
+        let state = crate::web_research::store::source_state(&web.conn.lock().unwrap(), "sec.gov")
+            .unwrap()
+            .unwrap();
+        assert_eq!((state.failed_count, state.denied_count), (1, 1));
+        let details = entry6_details(&reporter);
+        assert_eq!(details.len(), 3);
+        for detail in &details {
+            assert!(detail.contains("HTTP 403"), "{detail}");
+        }
+        assert!(details[1].starts_with("remembered URL failure; 0 live attempt(s)"));
+        assert!(details[2].starts_with("host cooldown; 0 live attempt(s)"));
+    }
+
     #[test]
     fn entry4_attempt6_url_status_fixture_reuses_denials_across_holdings() {
         // Three identical 403 rows in attempt-6 tauri-dev.log (TSLA). Timing
