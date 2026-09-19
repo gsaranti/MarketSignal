@@ -6,43 +6,28 @@ The single big confirmation run
 
 ## What happened
 
-**Entry 3 completed and review-approved (2026-09-19), pulled forward before attempt 7.**
-Claims now carry separate retrieval time, reported publication metadata, and source-stated fact period through research, consolidation, reuse, and persistence.
-The user retained the four-week retrieval-age limit and assigned semantic conflict resolution to the model; the app validates provenance and date structure.
-Independent review caught contradictory newer-wins instructions and ambiguous publication parsing; both were corrected with rendered-prompt and date-ordering regressions, then approved on re-review.
-Claude's separate review agreed; both stale review-pending lines in the findings document were corrected.
-Final implementation and independent review gates passed 1,533 library and 32 integration tests (33 ignored), warning-free clippy, frontend build, 46 pure and 266 component tests, and diff check.
-Rust mock-server tests required localhost-port access.
-The reviewed entry-3 changes and this handoff accompany the user-requested commit and push on `main`.
+All pre-attempt-7 findings are landed and committed — entries 4–8 and 11, and entry 3 pulled forward last (`d7fa5dd`): claims now carry separate retrieval time, reported publication metadata, and source-stated fact period through research, consolidation, reuse, and persistence (`portfolio-v47` / `checkpoint-v14` / portability format 10).
+Each Codex-built slice was independently reviewed against the code with its full gate re-run green, and no pre-release backward-compat was introduced (serde defaults confined to provider/model wire JSON; retired checkpoint/archive shapes refused, not migrated).
+This session then, at the user's request, **re-wiped the dev store to a clean debut ahead of attempt 7** — so the store no longer holds attempt 6 and needs no further wipe at bring-up.
 
 ## Current state
 
-Entries 3–8 and 11 are complete prerequisites; entry 3's scope report is empty.
-The confirmation-run BUILD item remains incomplete, with live acceptance pending the user-named launch session; no implementation task is in flight.
-BUILD stays unchanged because these prerequisites are not separate BUILD items.
-The date contract is canonical in `docs/portfolio-analysis.md` under research reuse: different periods remain distinct observations; an explicit same-period revision supersedes its predecessor; later publication alone does not resolve a conflict; unknown or incomparable periods retain uncertainty.
-Publication remains reported search/seed metadata, not independently verified authorship; retrieval age governs reuse at seed and merge, never the factual winner.
-Occurrence references preserve date provenance across reduction routes, including same-URL claims and snapshots.
-Populated seed, run-audit, checkpoint, and archive tests cover round-trip and legacy rejection; reconstructed ARKF/TSLA fixtures prove offline transport, not live semantic reasoning.
+No implementation task is in flight; the confirmation-run BUILD item stays incomplete, its live acceptance pending the user-named launch session.
+BUILD is unchanged — these prerequisites are not separate BUILD items.
 Debut stamps: `portfolio-v47` / `checkpoint-v14` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 10; the next prompt/output-schema change is `portfolio-v48`.
-Entry 11 in `docs/verification/2026-09-17-open-findings.md` owns the acceptance/readout protocol; `docs/local-models.md` owns measurement semantics.
-Acceptance requires correctness and whole-book completion with no failed holding, with justified not-rated/insufficient-evidence outcomes separate, unsupported checks unverified, and no elapsed-time limit.
-Claim support requires the source text the run saw; persisted retries omit failed holdings, grouped source-drop causes stay grouped, and phase-limited counters cannot establish whole-call generation or truncation.
-Entry 7 retains physical-attempt observations and resume ownership; entry 6 supplies SEC-only redirect-hop identity and source-chain errors; entry 4 supplies invocation-scoped failure memory, with `web_source_state` still telemetry.
-Entry 5 keeps page reuse holding-scoped and out of the contrary pass; its comparison retains attempt 6's matched topic-pass population (24/33 cap hits), denominators, and coverage, separately from whole-book results and without isolated attribution among stacked fixes.
-Entry 8 requires fresh complete sampler blocks for both profiles, inherited defaults included.
-Entry 12 supersedes entries 1 and 2 with app-rendered quantitative statements and holds-at-authoring admission.
-No live probe, harness run, daemon restart, or dev-store wipe occurred.
-Attempt 6 remains in the dev store; attempt 7 re-wipes first (drop `web_source_state`, clear `portfolio_runs` and the `portfolio` namespace of `vector_memory`).
-Entries 9 and 10 follow attempt 7; the conditions-display slice remains separate and unscheduled (`conditions` is still `unknown[]`).
+The attempt-7 acceptance/readout protocol is entry 11 of `docs/verification/2026-09-17-open-findings.md`, whose §Verification-on-attempt-7 carries every landed entry's checks (measurement semantics single-homed in `docs/local-models.md`; the claim-date contract in `docs/portfolio-analysis.md` under research reuse — different periods stay distinct observations, an explicit same-period revision supersedes, later publication alone never resolves a conflict, unknown/incomparable periods retain uncertainty).
+Acceptance = every applicable correctness check passes + whole-book completion with no failed holding; justified not-rated/insufficient-evidence outcomes are reported separately, unexercised checks stay unverified, and elapsed time has no pass/fail limit.
+The dev store is now a clean debut (re-wiped this session): `portfolio_runs` / `portfolio_checkpoints` / `portfolio_checkpoint_holdings` / `portfolio_research_seeds` / `portfolio_outcome_episodes` / `portfolio_quick_checks` / `holdings_pulls` / `price_bars` / `web_documents` cleared, `web_source_state` **dropped** (recreated by `init_schema` on next dev-app start), the `portfolio` vector-memory namespace cleared.
+Continuity kept — 30 reports / 14 baselines / 69 report vectors / `job_runs` max id 6 (attempt 7 → id 7) / 16 `app_settings`; the prod store is untouched and `PRAGMA integrity_check` is `ok`; attempt-6 residue is archived at `~/Downloads/market-signal-attempt-6-logs/`.
+Entries 9 and 10 (sampling-profile comparison; non-thinking experiments) follow attempt 7 and need a rebuilt harness; the conditions-display slice remains separate and unscheduled (`conditions` still typed `unknown[]`).
 Known stale SYNTHESIS scheduling, pipeline-length, and LanceDB claims remain unreconciled.
 
 ## Open questions
 
-None pending from entry 3; the retrieval-age and model-reconciliation rulings are captured in code and canonical docs.
+None — the retrieval-age and model-reconciliation rulings (entry 3) and the acceptance protocol (entry 11) are captured in code and canonical docs.
 
 ## Where to start
 
-When the user names the launch session, read the findings document's entry-11 protocol and attempt-7 verification/watches, including entry 3's live factual-dating and conflict checks.
-The prerequisite fixes and success measures are complete; elapsed time has no limit.
+When the user names the launch session, the dev store is already a clean debut, so bring-up goes straight to the store pre-check (expect the clean-debut counts with `web_source_state` absent until the fresh dev app recreates it), then Ollama / OrbStack / SearXNG+Serper per the usual bring-up.
+Read entry 11's protocol and the findings doc's §Verification-on-attempt-7, including entry 3's live factual-dating and conflict checks.
 This handoff authorizes no live read or harness run: attempt 7 launches only when the user names the session — do not propose it.
