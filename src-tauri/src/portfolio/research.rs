@@ -324,7 +324,135 @@ pub const RESEARCH_FRESHNESS_DAYS: i64 = crate::web_research::store::RESEARCH_FR
 // Durable shapes shared with distillation (Step 6d) and the seed layer
 // ---------------------------------------------------------------------------
 
-/// One distilled claim in the persisted per-topic layer. `vintage` is the
+/// Search/seed-reported publication metadata, never inferred from retrieval.
+/// `reported` preserves the source's precision; `day` exists only for an
+/// unambiguous canonical calendar day. An empty report means unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PublicationDate {
+    pub reported: String,
+    pub day: Option<String>,
+}
+
+impl PublicationDate {
+    pub fn from_reported(raw: Option<&str>) -> Self {
+        let raw = raw.unwrap_or("").trim();
+        let reported: String = raw.chars().take(160).collect();
+        let day = if raw.chars().count() <= 160 {
+            raw.get(..10)
+                .filter(|prefix| {
+                    canonical_day(prefix)
+                        // Validate the entire report before assigning a sortable day.
+                        // Search/seed providers emit dates, RFC3339 timestamps, or
+                        // local timestamps with a space/T separator. Preserve the
+                        // source's calendar day without inventing a timezone.
+                        && (raw.len() == 10
+                            || chrono::DateTime::parse_from_rfc3339(raw).is_ok()
+                            || ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"]
+                                .iter()
+                                .any(|fmt| chrono::NaiveDateTime::parse_from_str(raw, fmt).is_ok()))
+                })
+                .map(str::to_string)
+        } else {
+            None
+        };
+        Self { reported, day }
+    }
+}
+
+fn canonical_day(s: &str) -> bool {
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .is_ok_and(|d| d.format("%Y-%m-%d").to_string() == s)
+}
+
+/// A claim's source-stated period, preserving fiscal/partial precision.
+/// Calendar boundaries are never guessed from a fiscal label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PeriodPrecision {
+    Day,
+    Month,
+    Year,
+    Range,
+    Fiscal,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FactPeriod {
+    pub kind: PeriodPrecision,
+    pub value: String,
+    pub end: Option<String>,
+}
+
+impl FactPeriod {
+    pub fn valid(&self) -> bool {
+        if self.value.chars().count() > 120 {
+            return false;
+        }
+        if self.kind != PeriodPrecision::Range && self.end.is_some() {
+            return false;
+        }
+        match self.kind {
+            PeriodPrecision::Day => canonical_day(&self.value),
+            PeriodPrecision::Month => {
+                self.value.len() == 7 && canonical_day(&format!("{}-01", self.value))
+            }
+            PeriodPrecision::Year => {
+                self.value.len() == 4
+                    && self.value.bytes().all(|b| b.is_ascii_digit())
+                    && canonical_day(&format!("{}-01-01", self.value))
+            }
+            PeriodPrecision::Range => {
+                canonical_day(&self.value)
+                    && self
+                        .end
+                        .as_deref()
+                        .is_some_and(|end| canonical_day(end) && end >= self.value.as_str())
+            }
+            PeriodPrecision::Fiscal => {
+                !self.value.trim().is_empty()
+                    && self.value.trim() == self.value
+                    && !self.value.chars().any(char::is_control)
+            }
+            PeriodPrecision::Unknown => self.value.is_empty(),
+        }
+    }
+
+    pub fn render(&self) -> String {
+        match self.kind {
+            PeriodPrecision::Unknown => "unknown".into(),
+            PeriodPrecision::Range => format!(
+                "{} through {}",
+                self.value,
+                self.end.as_deref().unwrap_or("unknown")
+            ),
+            PeriodPrecision::Fiscal => format!("source label: {}", self.value),
+            _ => self.value.clone(),
+        }
+    }
+}
+
+fn fact_period_schema() -> Value {
+    json!({"type":"object", "properties": {
+        "kind": {"type":"string", "enum":["day","month","year","range","fiscal","unknown"]},
+        "value": {"type":"string"}, "end": {"type":["string","null"]}
+    }, "required":["kind","value","end"]})
+}
+
+pub fn claim_date_label(publication: &PublicationDate, period: &FactPeriod) -> String {
+    format!(
+        "publication (search/seed report): {}; fact period: {}",
+        if publication.reported.is_empty() {
+            "unknown"
+        } else {
+            &publication.reported
+        },
+        period.render()
+    )
+}
+
+/// One distilled claim in the persisted per-topic layer. `retrieved_at` is the
 /// claim's own retrieval date (RFC 3339) — expiry is by claim vintage, never
 /// the object's; `cached` marks a claim carried from a prior run's layer
 /// rather than freshly confirmed.
@@ -332,12 +460,51 @@ pub const RESEARCH_FRESHNESS_DAYS: i64 = crate::web_research::store::RESEARCH_FR
 pub struct DistilledClaim {
     pub claim: String,
     pub source_url: String,
-    pub vintage: String,
+    pub retrieved_at: String,
+    pub publication: PublicationDate,
+    pub fact_period: FactPeriod,
     pub cached: bool,
     /// The ledger condition this claim bears on, where the distillation named
     /// one (validated against known condition ids) — the seed assembly's
     /// "claims tied to an open condition" priority key.
     pub related_condition_id: Option<String>
+}
+
+#[cfg(test)]
+pub(crate) fn entry3_fixture_layer() -> TopicDistillate {
+    TopicDistillate {
+        topic_key: "exposure-profile".into(),
+        vintage: "2026-09-19T00:00:00Z".into(),
+        summary: "Reconstructed dating fixture, not archived historical source text.".into(),
+        claims: vec![
+            DistilledClaim {
+                claim: "ARKF trading venue change takes effect March 31, 2025".into(),
+                source_url: "https://example.com/reconstructed-arkf".into(),
+                retrieved_at: "2026-09-16T12:00:00Z".into(),
+                publication: PublicationDate::from_reported(Some("2025-03-27")),
+                fact_period: FactPeriod {
+                    kind: PeriodPrecision::Day,
+                    value: "2025-03-31".into(),
+                    end: None,
+                },
+                cached: false,
+                related_condition_id: None,
+            },
+            DistilledClaim {
+                claim: "TSLA measure applies to July CY25".into(),
+                source_url: "https://example.com/reconstructed-tsla".into(),
+                retrieved_at: "2026-09-16T12:00:00Z".into(),
+                publication: PublicationDate::from_reported(Some("2025-08-15")),
+                fact_period: FactPeriod {
+                    kind: PeriodPrecision::Month,
+                    value: "2025-07".into(),
+                    end: None,
+                },
+                cached: false,
+                related_condition_id: None,
+            },
+        ],
+    }
 }
 
 /// One topic's persisted distilled object — the per-topic seed layer's unit
@@ -583,7 +750,7 @@ pub struct TopicSeed {
     /// "Falsifier: …" / "Trigger: …" lines, in the ledger's stored order.
     pub conditions: Vec<String>,
     /// "<YYYY-MM-DD>: <claim> [<url>]" lines — tied to an open condition
-    /// first, then newest vintage, then stored order.
+    /// first, then newest known publication date, then stored order.
     pub findings: Vec<String>
 }
 
@@ -598,7 +765,7 @@ impl TopicSeed {
 /// reuse). Non-expired claims only (each by its OWN vintage against `now`),
 /// under the hard per-topic character budget with the fixed priority order:
 /// the topic's ledger conditions first (stored order), then prior claims tied
-/// to an open condition, then newest vintage, then stored order. Returns
+/// to an open condition, then newest known publication date, then stored order. Returns
 /// `None` when the topic has no seedable content (cold).
 pub fn assemble_topic_seed(
     prior: Option<&TopicDistillate>,
@@ -625,14 +792,14 @@ pub fn assemble_topic_seed(
         .unwrap_or_default();
 
     // Priority tiers 2–4 over the prior claims: tied-to-an-open-condition
-    // first, then newest vintage, then stored order — a stable sort keyed
-    // (tied, vintage desc, stored index).
+    // first, then newest known publication date, then stored order — a stable sort keyed
+    // (tied, publication desc with unknown last, stored index).
     if let Some(prior) = prior {
         let mut claims: Vec<(usize, &DistilledClaim)> = prior
             .claims
             .iter()
             .enumerate()
-            .filter(|(_, c)| within_window(&c.vintage, now))
+            .filter(|(_, c)| within_window(&c.retrieved_at, now))
             .collect();
         claims.sort_by(|(ia, a), (ib, b)| {
             let tied_a = a
@@ -645,13 +812,13 @@ pub fn assemble_topic_seed(
                 .is_some_and(|id| open_condition_ids.contains(id));
             tied_b
                 .cmp(&tied_a)
-                .then(b.vintage.cmp(&a.vintage))
+                .then(b.publication.day.cmp(&a.publication.day))
                 .then(ia.cmp(ib))
         });
         for (_, c) in claims {
             findings.push(format!(
                 "{}: {} [{}]",
-                &c.vintage[..c.vintage.len().min(10)],
+                claim_date_label(&c.publication, &c.fact_period),
                 c.claim,
                 c.source_url
             ));
@@ -714,6 +881,8 @@ pub struct EvidenceClaim {
     pub claim: String,
     pub source_url: String,
     pub retrieved_at: String,
+    pub publication: PublicationDate,
+    pub fact_period: FactPeriod,
     /// Deterministic seed lineage: the seed whose URL this claim's source
     /// resolves to, where one does (`surfaced_by` — stamped free, no model
     /// attribution involved).
@@ -1331,9 +1500,10 @@ fn findings_schema(disconfirming: bool) -> Value {
                 "type": "object",
                 "properties": {
                     "claim": { "type": "string" },
-                    "source_id": { "type": "string" }
+                    "source_id": { "type": "string" },
+                    "fact_period": fact_period_schema()
                 },
-                "required": ["claim", "source_id"]
+                "required": ["claim", "source_id", "fact_period"]
             }
         }
     });
@@ -1377,7 +1547,9 @@ struct ClaimWire {
     // A pass-local source id on the wire; resolved to the existing URL contract
     // immediately after parsing, before citation validation and persistence.
     #[serde(rename = "source_id")]
-    source_url: String
+    source_url: String,
+    #[serde(default)]
+    fact_period: FactPeriod
 }
 
 /// The placeholder-only return shape that closes Part 2 of the synthesis
@@ -1396,7 +1568,7 @@ fn findings_return_shape(disconfirming: bool, ids: &[String]) -> String {
     } else {
         format!("<{}>", ids.join("|"))
     };
-    let mut shape = format!(r#"{{"findings":"","claims":[{{"claim":"","source_id":"{source_id}"}}]"#);
+    let mut shape = format!(r#"{{"findings":"","claims":[{{"claim":"","source_id":"{source_id}","fact_period":{{"kind":"<day|month|year|range|fiscal|unknown>","value":"","end":null}}}}]"#);
     if !disconfirming {
         shape.push_str(
             r#","followup_question":null,"followup_rationale":null,"followup_technology_event":false"#,
@@ -2117,7 +2289,7 @@ impl ResearchRunner<'_> {
             .filter(|(url, _, _)| shown.contains_key(url))
             .cloned()
             .collect();
-        Ok(self.validate_findings(wire, ctx, &shown_fetched, &url_aliases, gaps))
+        Ok(self.validate_findings(wire, ctx, &shown_fetched, &url_aliases, page_meta, gaps))
     }
 
     /// Write up one pass's findings from a fresh conversation — the gathered
@@ -2460,6 +2632,7 @@ impl ResearchRunner<'_> {
         ctx: &PassContext<'_>,
         fetched: &[(String, String, Option<SourceAnnotation>)],
         url_aliases: &std::collections::HashMap<String, String>,
+        page_meta: &std::collections::HashMap<String, PageMeta>,
         gaps: &mut Vec<String>,
     ) -> PassFindings {
         let seed_by_url: std::collections::HashMap<String, &ResearchSeed> = ctx
@@ -2471,7 +2644,11 @@ impl ResearchRunner<'_> {
 
         let mut claims = Vec::new();
         let mut dropped = 0usize;
-        for c in wire.claims {
+        for mut c in wire.claims {
+            if !c.fact_period.valid() {
+                gaps.push(format!("topic {}: invalid fact period retained as unknown", ctx.topic.key));
+                c.fact_period = FactPeriod::default();
+            }
             if claims.len() >= MAX_CLAIMS_PER_PASS {
                 dropped += 1;
                 continue;
@@ -2482,6 +2659,8 @@ impl ResearchRunner<'_> {
                     claim: c.claim,
                     source_url: url.clone(),
                     retrieved_at: retrieved_at.clone(),
+                    publication: PublicationDate::from_reported(page_meta.get(url).and_then(|m| m.published.as_deref())),
+                    fact_period: c.fact_period,
                     // The final URL, or its requested-URL alias, keys the
                     // deterministic seed lineage — a redirecting seed URL
                     // keeps its surfaced_by.
@@ -2676,7 +2855,11 @@ in what it says, it does not exclude it.",
     out.push_str(
         "\n\n2. claims — each specific statement the findings rest on, one per item, with \
 source_id the id of the page in EVIDENCE that states it. A statement no page in EVIDENCE states \
-is not a claim.\n\n",
+is not a claim. fact_period names when the fact applies, never when it was retrieved or \
+when this analysis runs: kind day (YYYY-MM-DD), month (YYYY-MM), year (YYYY), range \
+(value and end both YYYY-MM-DD), fiscal (the source's exact fiscal-period label), or unknown \
+(empty value). end is null except for a range. Preserve separate announcement and effective \
+dates as separate claims. Do not infer a calendar period from a fiscal label.\n\n",
     );
     if !ctx.disconfirming {
         out.push_str(
@@ -3123,8 +3306,9 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
         }
         for claim in ctx.prior_claims.iter().take(40) {
             out.push_str(&format!(
-                "- {}\n",
-                crate::data_sources::cap_chars(&claim.claim, PRIOR_CLAIM_CAP_CHARS).0
+                "- {}\n  {}\n",
+                crate::data_sources::cap_chars(&claim.claim, PRIOR_CLAIM_CAP_CHARS).0,
+                claim_date_label(&claim.publication, &claim.fact_period)
             ));
         }
     }
@@ -3177,7 +3361,7 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, remaining: u32) -> 
         let mut shown = 0usize;
         for c in ctx.prior_claims.iter().take(40) {
             let (claim, cut) = crate::data_sources::cap_chars(&c.claim, PRIOR_CLAIM_CAP_CHARS);
-            let line = format!("- {}{} [{}]\n", claim, if cut { "…" } else { "" }, c.source_url);
+            let line = format!("- {}{} [{}]\n  {}\n", claim, if cut { "…" } else { "" }, c.source_url, claim_date_label(&c.publication, &c.fact_period));
             if shown > 0 && block + line.chars().count() > PRIOR_CLAIMS_BLOCK_CHARS {
                 break;
             }
@@ -4368,9 +4552,11 @@ mod tests {
 
     fn claim(text: &str, vintage: &str, related: Option<&str>) -> DistilledClaim {
         DistilledClaim {
+            publication: crate::portfolio::research::PublicationDate::default(),
+            fact_period: crate::portfolio::research::FactPeriod::default(),
             claim: text.to_string(),
             source_url: format!("https://x.example/{}", text.len()),
-            vintage: vintage.to_string(),
+            retrieved_at: vintage.to_string(),
             cached: true,
             related_condition_id: related.map(str::to_string)
         }
@@ -4433,9 +4619,192 @@ mod tests {
     }
 
     #[test]
+    fn entry3_date_precision_unknowns_and_retrieval_expiry_are_independent() {
+        for (kind, value, end, valid) in [
+            (PeriodPrecision::Day, "2024-02-29", None, true),
+            (PeriodPrecision::Day, "2025-02-29", None, false),
+            (PeriodPrecision::Day, "2026-9-01", None, false),
+            (PeriodPrecision::Month, "2025-07", None, true),
+            (PeriodPrecision::Month, "2025-13", None, false),
+            (PeriodPrecision::Year, "2025", None, true),
+            (PeriodPrecision::Fiscal, "FY25 Q3", None, true),
+            (
+                PeriodPrecision::Range,
+                "2025-01-01",
+                Some("2025-03-31"),
+                true,
+            ),
+            (
+                PeriodPrecision::Range,
+                "2025-03-31",
+                Some("2025-01-01"),
+                false,
+            ),
+            (PeriodPrecision::Unknown, "", None, true),
+            (PeriodPrecision::Unknown, "2026-09-19", None, false),
+        ] {
+            let period = FactPeriod {
+                kind,
+                value: value.into(),
+                end: end.map(str::to_string),
+            };
+            assert_eq!(period.valid(), valid, "{period:?}");
+        }
+        for raw in [
+            None,
+            Some("unknown"),
+            Some("2026-9-1"),
+            Some("2025-02-29"),
+            Some("July CY25"),
+        ] {
+            assert_eq!(PublicationDate::from_reported(raw).day, None);
+        }
+        assert_eq!(
+            PublicationDate::from_reported(Some("2026-09-01T08:00:00Z"))
+                .day
+                .as_deref(),
+            Some("2026-09-01")
+        );
+        let mut layer = entry3_fixture_layer();
+        let seed = assemble_topic_seed(Some(&layer), None, utc("2026-09-19T00:00:00Z")).unwrap();
+        assert!(seed.findings.iter().any(|f| f.contains("2025-07")));
+        assert!(
+            seed.findings.iter().all(|f| !f.contains("2026-09-16")),
+            "retrieval is not a factual date"
+        );
+        layer.vintage = "2026-10-14T00:00:00Z".into();
+        assert!(assemble_topic_seed(Some(&layer), None, utc("2026-10-14T11:59:59Z")).is_some());
+        assert!(
+            assemble_topic_seed(Some(&layer), None, utc("2026-10-14T12:00:00Z")).is_none(),
+            "rewriting the object cannot renew a claim"
+        );
+    }
+
+    #[test]
+    fn entry3_publication_requires_a_complete_date_or_timestamp() {
+        for (raw, expected) in [
+            ("2026-09-01", "2026-09-01"),
+            (" 2026-09-01 ", "2026-09-01"),
+            ("2024-02-29", "2024-02-29"),
+            ("2026-09-01T08:00:00Z", "2026-09-01"),
+            ("2026-09-01T08:00:00.123Z", "2026-09-01"),
+            ("2026-09-01T23:30:00-07:00", "2026-09-01"),
+            ("2026-09-01T00:30:00+14:00", "2026-09-01"),
+            ("2026-09-01 08:00:00", "2026-09-01"),
+            ("2026-09-01 08:00:00.123456", "2026-09-01"),
+            ("2026-09-01T08:00:00", "2026-09-01"),
+        ] {
+            let publication = PublicationDate::from_reported(Some(raw));
+            assert_eq!(publication.day.as_deref(), Some(expected), "{raw}");
+            assert_eq!(publication.reported, raw.trim());
+        }
+        let ambiguous = [
+            "2026-09-01 or 2026-09-02",
+            "2026-09-01 to 2026-09-30",
+            "2026-09-01Tgarbage",
+            "2026-09-01T",
+            "2026-09-01T25:00:00Z",
+            "2026-09-01T08:00:00Z extra",
+            "2026-09-01 08:00:00 or 09:00:00",
+            "2026-09-01 08:00:00 unknown timezone",
+            "2026-09-01T08:00:00+99:00",
+            "2025-02-29T08:00:00Z",
+        ];
+        let mut layer = entry3_fixture_layer();
+        let template = layer.claims[0].clone();
+        layer.claims = ambiguous.iter().enumerate().map(|(i, raw)| {
+            let publication = PublicationDate::from_reported(Some(raw));
+            assert_eq!(publication.day, None, "{raw}");
+            assert_eq!(publication.reported, *raw);
+            DistilledClaim {
+                claim: format!("ambiguous report {i}"),
+                publication,
+                ..template.clone()
+            }
+        }).collect();
+        layer.claims.push(DistilledClaim {
+            claim: "known older publication".into(),
+            publication: PublicationDate::from_reported(Some("2025-03-27")),
+            ..template
+        });
+        let seed = assemble_topic_seed(Some(&layer), None, utc("2026-09-19T00:00:00Z"))
+            .unwrap();
+        assert_eq!(seed.findings.len(), ambiguous.len() + 1);
+        assert!(seed.findings[0].contains("known older publication"));
+        for (i, finding) in seed.findings[1..].iter().enumerate() {
+            assert!(finding.contains(&format!("ambiguous report {i}")), "{finding}");
+        }
+    }
+
+    #[test]
+    fn entry3_source_evidence_synthesis_preserves_periods_and_publication() {
+        // Reconstructed ARKF/TSLA source cases; the model is scripted, so this
+        // verifies the production evidence/validation path, not live reasoning.
+        let fixture = entry3_fixture_layer();
+        for expected in fixture.claims {
+            let agenda = one_topic_agenda();
+            let ctx = PassContext {
+                holding_brief: "HOLDING: dating fixture",
+                topic: &agenda[0],
+                seed: None,
+                seeds: &[],
+                followup: None,
+                prior_claims: &[],
+                disconfirming: false,
+            };
+            let model = ScriptModel::new(vec![findings_turn(json!({
+                "findings": expected.claim, "claims": [{"claim": expected.claim,
+                    "source_id":"S1", "fact_period": expected.fact_period}]
+            }))]);
+            let web = ScriptWeb::new();
+            let clock = FrozenClock(Duration::from_secs(10));
+            let progress = RunContext::noop();
+            let runner = runner(&model, &web, &clock, &progress, 10);
+            let fetched = vec![(
+                expected.source_url.clone(),
+                expected.retrieved_at.clone(),
+                None,
+            )];
+            let pages = [(
+                expected.source_url.clone(),
+                format!(
+                    "Published {}. {}.",
+                    expected.publication.reported, expected.claim
+                ),
+            )]
+            .into_iter()
+            .collect();
+            let meta = [(
+                expected.source_url.clone(),
+                PageMeta {
+                    title: "Reconstructed evidence".into(),
+                    published: Some(expected.publication.reported.clone()),
+                },
+            )]
+            .into_iter()
+            .collect();
+            let mut gaps = vec![];
+            let (wire, _) = runner
+                .synthesize_findings(&ctx, &fetched, &pages, &meta, None, &mut gaps)
+                .unwrap();
+            let found = runner.validate_findings(
+                wire,
+                &ctx,
+                &fetched,
+                &Default::default(),
+                &meta,
+                &mut gaps,
+            );
+            assert_eq!(found.claims[0].publication, expected.publication);
+            assert_eq!(found.claims[0].fact_period, expected.fact_period);
+            assert_eq!(found.claims[0].retrieved_at, expected.retrieved_at);
+        }
+    }
+
+    #[test]
     fn seed_priority_is_ledger_then_tied_then_newest_then_stored_order() {
         let now = utc("2026-08-23T00:00:00+00:00");
-        let prior = TopicDistillate {
+        let mut prior = TopicDistillate {
             topic_key: "t".into(),
             vintage: "2026-08-20T00:00:00+00:00".into(),
             summary: String::new(),
@@ -4445,11 +4814,15 @@ mod tests {
                 claim("tied to condition", "2026-08-05T00:00:00+00:00", Some("c1")),
             ]
         };
+        // Deliberately oppose retrieval order: publication, not retrieval, ranks.
+        prior.claims[0].publication = PublicationDate::from_reported(Some("2026-08-01"));
+        prior.claims[1].publication = PublicationDate::from_reported(Some("2026-08-03"));
+        prior.claims[0].retrieved_at = "2026-08-22T00:00:00Z".into();
         let ledger = ledger_with(&[("c1", "Gross margin holds above 30%")]);
         let seed = seed_text(&assemble_topic_seed(Some(&prior), Some(&ledger), now).unwrap());
         let pos = |needle: &str| seed.find(needle).unwrap_or_else(|| panic!("{needle} in {seed}"));
         // Ledger first, then the tied claim (despite being oldest), then
-        // newest-vintage ordering among the untied.
+        // publication ordering among the untied.
         assert!(pos("Gross margin") < pos("tied to condition"));
         assert!(pos("tied to condition") < pos("newest untied"));
         assert!(pos("newest untied") < pos("older untied"));
@@ -5249,6 +5622,8 @@ mod tests {
         let agenda = one_topic_agenda();
         let seeds = seeds();
         let claims = vec![EvidenceClaim {
+            publication: crate::portfolio::research::PublicationDate::default(),
+            fact_period: crate::portfolio::research::FactPeriod::default(),
             claim: "Prior proposition to test".into(), source_url: "https://prior.example/claim".into(),
             retrieved_at: String::new(), surfaced_by: None, annotation: None
         }];
@@ -5362,7 +5737,7 @@ mod tests {
         ).unwrap();
         assert_eq!(resolved, shown);
         let allowed: Vec<_> = fetched.into_iter().filter(|(url, _, _)| resolved.contains_key(url)).collect();
-        let findings = runner.validate_findings(wire, &ctx, &allowed, &Default::default(), &mut gaps);
+        let findings = runner.validate_findings(wire, &ctx, &allowed, &Default::default(), &Default::default(), &mut gaps);
         let urls: Vec<_> = findings.claims.iter().map(|claim| claim.source_url.as_str()).collect();
         assert_eq!(urls, ["https://example.com/a", "https://example.com/b1", "https://example.com/b10"]);
         assert!(gaps.iter().any(|gap| gap.contains("unresolved source ID")));
@@ -6440,6 +6815,8 @@ mod tests {
         );
         let claims: Vec<EvidenceClaim> = (0..40)
             .map(|i| EvidenceClaim {
+            publication: crate::portfolio::research::PublicationDate::default(),
+            fact_period: crate::portfolio::research::FactPeriod::default(),
                 claim: "x".repeat(20_000),
                 source_url: format!("https://example.com/{i}"),
                 retrieved_at: "2026-08-22T10:00:00+00:00".to_string(),
@@ -7226,6 +7603,8 @@ mod tests {
         }
         // The pass kinds change the opening and the sections, never the frame.
         let claims = vec![EvidenceClaim {
+            publication: crate::portfolio::research::PublicationDate::default(),
+            fact_period: crate::portfolio::research::FactPeriod::default(),
             claim: "Widget Co held 40% share.".into(),
             source_url: "https://example.com/share".into(),
             retrieved_at: String::new(),
@@ -7398,7 +7777,7 @@ mod tests {
             "{condition}"
         );
         assert_eq!(seed.findings.len(), 1);
-        assert!(seed.findings[0].starts_with("2026-08-21: Widget held share ["), "{}", seed.findings[0]);
+        assert!(seed.findings[0].starts_with("publication (search/seed report): unknown; fact period: unknown: Widget held share ["), "{}", seed.findings[0]);
         assert!(!seed.findings[0].contains("PRIOR FINDING"));
         // The budget holds a huge finding out while the condition stays.
         let big = TopicDistillate {
@@ -7453,6 +7832,8 @@ pub(crate) mod samples {
     pub(crate) fn claims() -> Vec<EvidenceClaim> {
         vec![
             EvidenceClaim {
+            publication: crate::portfolio::research::PublicationDate::default(),
+            fact_period: crate::portfolio::research::FactPeriod::default(),
                 claim: "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix.".into(),
                 source_url: "https://ir.tesla.com/press-release/tesla-second-quarter-2026-results".into(),
                 retrieved_at: "2026-09-16T02:11:40Z".into(),
@@ -7460,6 +7841,8 @@ pub(crate) mod samples {
                 annotation: None
             },
             EvidenceClaim {
+            publication: crate::portfolio::research::PublicationDate::default(),
+            fact_period: crate::portfolio::research::FactPeriod::default(),
                 claim: "BYD outsold Tesla in Europe for the fourth consecutive month in August 2026 (ACEA registrations).".into(),
                 source_url: "https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/".into(),
                 retrieved_at: "2026-09-16T02:14:05Z".into(),

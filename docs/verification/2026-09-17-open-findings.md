@@ -11,8 +11,8 @@ A finding from attempt 7 is appended here as the next number, never in another f
 ## Standing rules
 
 - Pre-release, no data compatibility work: a persisted-shape change moves its stamp and the next attempt re-wipes.
-- The debut stamps are `portfolio-v46` / `checkpoint-v13` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability format 9.
-  Any further prompt or schema change lands as `portfolio-v47`; the checkpoint and evidence-floor stamps move only where an entry says its persisted shape changes, confirmed at plan time.
+- The debut stamps are `portfolio-v47` / `checkpoint-v14` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability format 10.
+  Any further prompt or schema change lands as `portfolio-v48`; the checkpoint and evidence-floor stamps move only where an entry says its persisted shape changes, confirmed at plan time.
 - Nothing is adopted on one holding's impression; each entry names the check that admits it.
 - Checks are behavioral where the finding was: a source-evidence input and an expected persisted outcome.
   Re-think marker counts stay a diagnostic, never the gate.
@@ -32,7 +32,7 @@ A finding from attempt 7 is appended here as the next number, never in another f
 
 Before attempt 7, in this order unless ruled otherwise: entry 8; then entries 4 through 7, each its own plan; entry 11's measures set before the launch.
 Entries 1, 2 and 12 are closed (12 landed 2026-09-18, superseding 1 and 2).
-Entry 3 is re-scoped on attempt 7's evidence and planned after it.
+Entry 3 is implemented before attempt 7 under the 2026-09-19 retrieval-age and model-reconciliation rulings; independent review is approved, and live dating acceptance remains pending.
 Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows the need.
 
 ## Entries
@@ -61,18 +61,19 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 
 ### 3. Claim dating — the persisted shape and the reconciliation rule
 
-- Decision: carry publication date, fact period and retrieval time as distinct fields through claims and distillation.
-  Reconciliation orders on fact period and publication, never retrieval time, and the rule says what wins when two sources cover the same period, when a revision supersedes, and when a period or date is unknown or incomparable.
-  The rule itself is the plan's to write.
-- Narrowed 2026-09-17: the model-facing half is done.
-  Since `portfolio-v43` and `portfolio-v44` the research and distillation messages show each page's publication date and no retrieval timestamp, and the shared holding header carries the run date.
-  What remains is the persisted half: `DistilledClaim` carries a single `vintage` field, so the three dates are not distinguishable in the persisted record and no app-side ordering can prefer publication over retrieval.
+- Decision: carry publication metadata, fact period, and retrieval time as distinct fields through research, every distillation hop, and persisted claims.
+  The contract is canonical at [portfolio-analysis.md §Starting parameters](../portfolio-analysis.md#starting-parameters-calibratable).
+- Ruled 2026-09-19: implement before attempt 7; the four-week reuse limit measures retrieval age, while publication and fact period govern factual recency.
+  Keep the model responsible for semantic reconciliation; the app validates date structure and source-occurrence references, not semantic cross-topic identities.
+  An explicit same-period correction or revision supersedes its predecessor, but later publication alone does not prove a revision; unknown or incomparable dates and unresolved conflicts stay explicit.
 - Rests on: attempt 6 — ARKF's "announced September 16, 2026, trading March 31, 2025" contradiction and TSLA's "July CY25", both dated by retrieval.
-- Check: neither can persist; a claim's persisted record names its publication date and its fact period apart from when it was retrieved.
-- Stamp, ruled 2026-09-18: the shape half (new fields on the persisted claim) moves `checkpoint` (to v13, past the landed v12), plus portability's format if the archive carries the topic layer, which the plan confirms; the basis half (the freshness window reading publication instead of retrieval) moves `evidence-floor`.
-  The entry as scoped does both.
-- Ruling: open.
-  Re-scoped on attempt 7's dating checks (§Verification on attempt 7) before planning: if no distilled finding dates a fact by retrieval, the entry narrows to the persisted shape alone.
+- Check, offline: reconstructed source-evidence fixtures retain publication, applicable period, and retrieval separately through synthesis, all consolidation routes, persistence, and next-run seed assembly.
+  Same-URL claims and snapshots cannot borrow dates, and re-distillation never refreshes retrieval age.
+  Offline fixtures verify transport and validation; attempt 7 still verifies the model's factual dating and reconciliation in actual source text.
+- Stamp: `portfolio-v47`, `checkpoint-v14`, portability format 10 (both archived run audits and the research-seed table carry claims).
+  `evidence-floor-v5` stays: the selected retrieval-age rule does not change the financial evidence floor.
+  These replace the earlier proposed checkpoint-v13 and publication-based expiry ruling.
+- Status: implementation complete and independent review approved; live acceptance pending.
 
 ### 4. Failed-URL memory with failure classes and host backoff
 
@@ -338,6 +339,8 @@ Research (`portfolio-v43`):
 Distillation (`portfolio-v44`):
 
 - no distilled finding or topic summary dates a fact by its retrieval, and no persisted `as_of` is the run date;
+- entry 3: publication metadata and fact period match the evidence actually shown, remain distinct from retrieval time, and preserve unknown or incomparable dates without fabricated precision;
+- entry 3: same-period revisions and unresolved source conflicts follow the canonical reconciliation rule consistently in combined findings and per-topic claims; cross-run expiry and reuse remain offline checks on this debut run;
 - every typed field returned cites a page under the message's SOURCE TEXT, and none is returned on a fund;
 - no leading indicator names a driver id outside the rendered list, and none is returned on a first analysis;
 - the forward assumption, where returned, is an EPS or revenue figure from guidance, a contract or a filing;

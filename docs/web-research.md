@@ -24,7 +24,9 @@ The synthesis message closes with the findings object's shape, every value a pla
 The object is the findings, the claims and, on a topic pass, the follow-up proposal; the disconfirming pass returns findings and claims only, and no field the app does not read is asked for (the topic-answered, material-forward-fact and model-attributed seed fields were retired 2026-09-17).
 For Portfolio, each rendered source has a contiguous pass-local `S1`, `S2`, … identifier assigned after evidence admission, and the synthesis wire cites `source_id` instead of copying a URL.
 The same rendered-source mapping supplies the prompt identifiers and their resolution; empty, duplicate and budget-omitted pages introduce no numbering gaps.
-The app resolves only identifiers for evidence actually shown in that call, then preserves the existing claim + final source URL + retrieval timestamp contract, including redirected seed lineage.
+The app resolves only identifiers for evidence actually shown in that call, then preserves the claim, final source URL, app-stamped retrieval time, search/seed-reported publication metadata, and source-stated fact period, including redirected seed lineage.
+A fact period preserves calendar precision or an unmapped fiscal label; missing dates remain unknown and never inherit retrieval or analysis time.
+The app validates period structure; semantic dating remains the model's responsibility.
 Unknown identifiers, URL strings supplied as identifiers, and identifiers for budget-omitted sources cannot become citations.
 Portfolio's synthesis message is one message in two parts on the frame every Portfolio prompt shares (`portfolio-v43`, ruled 2026-09-17).
 Part 1 carries the holding header with the analysis date, the topic's questions, on a follow-up pass the question it pursues, on the disconfirming pass the claims it tests, the searching note where gathering lost something, and the evidence.

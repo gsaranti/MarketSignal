@@ -6729,9 +6729,11 @@ pub(crate) mod tests {
     fn research_delta_entries_carry_the_ledger_tie_by_statement_for_fresh_claims() {
         use crate::portfolio::research::{DistilledClaim, TopicDistillate};
         let claim = |text: &str, cached: bool, tie: Option<&str>| DistilledClaim {
+            publication: crate::portfolio::research::PublicationDate::default(),
+            fact_period: crate::portfolio::research::FactPeriod::default(),
             claim: text.into(),
             source_url: format!("https://x.example/{}", text.len()),
-            vintage: "2026-08-26T00:00:00+00:00".into(),
+            retrieved_at: "2026-08-26T00:00:00+00:00".into(),
             cached,
             related_condition_id: tie.map(str::to_string),
         };
@@ -9853,10 +9855,10 @@ pub(crate) mod tests {
         // as fields plus a name and renders its statement from the core, refusing
         // a core that already holds at authoring: the prompt, the persisted
         // condition (`label`) and the trail move to v45 / v12.
-        assert_eq!(PROMPT_VERSION, "portfolio-v46");
+        assert_eq!(PROMPT_VERSION, "portfolio-v47");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v13"
+            "checkpoint-v14"
         );
     }
 

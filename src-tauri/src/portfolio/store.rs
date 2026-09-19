@@ -234,7 +234,8 @@ pub struct CheckpointHeader {
 /// so a v11 trail's conditions cannot resume under the new shape.
 /// `checkpoint-v13`: complete physical-attempt observations with explicit
 /// app measurements and raw API counters; no v12 row can resume this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v13";
+/// `checkpoint-v14`: claim retrieval, publication, and fact-period fields.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v14";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1029,6 +1030,32 @@ pub fn record_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
 }
 
 #[cfg(test)]
+pub(crate) fn entry3_test_run() -> PortfolioRun {
+    use crate::portfolio::{
+        distill::{DistillShape, ResearchAuditRecord},
+        research,
+    };
+    let layer = research::entry3_fixture_layer();
+    let mut run = tests::sample_run("entry3", "2026-09-19T00:00:00Z");
+    run.audit[0].research = Some(ResearchAuditRecord {
+        combined: "Reconstructed dating evidence".into(),
+        seed_layer: vec![layer.clone()],
+        shape: DistillShape::SinglePass,
+        fetches_spent: 2,
+        elapsed_secs: 0,
+        seed_decisions: vec![],
+        sources: vec![],
+        gaps: vec![],
+        unreconciled_topics: vec![],
+        forward_assumption: None,
+        leading_indicator: None,
+        forensic_event: None,
+        forward_assumption_resolution: None,
+    });
+    run
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::portfolio::{
@@ -1283,7 +1310,7 @@ mod tests {
         assert_eq!(load_topic_distillates(&conn, "MSFT").unwrap().len(), 1);
     }
 
-    fn sample_run(run_id: &str, created_at: &str) -> PortfolioRun {
+    pub(super) fn sample_run(run_id: &str, created_at: &str) -> PortfolioRun {
         let position = Position {
             symbol: "AAPL".into(),
             description: "Apple".into(),
@@ -1356,6 +1383,71 @@ mod tests {
             outcome: Default::default(),
             failed_holdings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn entry3_populated_claims_round_trip_and_legacy_shapes_are_loud_skips() {
+        use crate::portfolio::research;
+        let conn = mem();
+        let run = entry3_test_run();
+        let layer = research::entry3_fixture_layer();
+        insert_run(&conn, &run).unwrap();
+        assert_eq!(latest_run(&conn).unwrap().unwrap(), run);
+        save_topic_distillates(&conn, "AAPL", std::slice::from_ref(&layer)).unwrap();
+        assert_eq!(
+            load_topic_distillates(&conn, "AAPL").unwrap(),
+            vec![layer.clone()]
+        );
+        let mut header = checkpoint_header(&run);
+        save_checkpoint_header(&conn, &header).unwrap();
+        let row = CheckpointHolding {
+            verdict: run.verdicts[0].clone(),
+            audit: run.audit[0].clone(),
+            prompt_usage: vec![],
+            model_retries: vec![],
+            health: HoldingHealth::default(),
+        };
+        save_checkpoint_progress(
+            &conn,
+            &run.run_id,
+            "AAPL",
+            &row,
+            &CheckpointAccumulators::default(),
+        )
+        .unwrap();
+        assert_eq!(load_checkpoint(&conn).unwrap().unwrap().holdings, vec![row]);
+
+        let mut legacy = serde_json::to_value(&layer).unwrap();
+        for claim in legacy["claims"].as_array_mut().unwrap() {
+            let claim = claim.as_object_mut().unwrap();
+            let retrieved = claim.remove("retrieved_at").unwrap();
+            claim.insert("vintage".into(), retrieved);
+            claim.remove("publication");
+            claim.remove("fact_period");
+        }
+        conn.execute(
+            "UPDATE portfolio_research_seeds SET seed_json=?1",
+            [legacy.to_string()],
+        )
+        .unwrap();
+        assert!(load_topic_distillates(&conn, "AAPL").unwrap().is_empty());
+        let mut legacy_run = serde_json::to_value(&run).unwrap();
+        legacy_run["audit"][0]["research"]["seed_layer"][0] = legacy;
+        conn.execute(
+            "UPDATE portfolio_runs SET run_json=?1",
+            [legacy_run.to_string()],
+        )
+        .unwrap();
+        assert!(latest_run(&conn).unwrap().is_none());
+        // A v13 header is refused before trying to decode deliberately corrupt rows.
+        header.checkpoint_format_version = "checkpoint-v13".into();
+        save_checkpoint_header(&conn, &header).unwrap();
+        conn.execute(
+            "UPDATE portfolio_checkpoint_holdings SET row_json='invalid'",
+            [],
+        )
+        .unwrap();
+        assert!(load_checkpoint(&conn).unwrap().unwrap().holdings.is_empty());
     }
 
     #[test]

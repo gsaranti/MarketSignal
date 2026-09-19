@@ -2357,7 +2357,8 @@ pub struct HoldingAudit {
 /// Source snapshots remain transient; that slice kept checkpoint-v12 and portability 8.
 /// Entry 7 later moves telemetry alone to checkpoint-v13 and portability 9.
 /// A v45 trail cannot resume into v46 on the prompt axis.
-pub const PROMPT_VERSION: &str = "portfolio-v46";
+/// `portfolio-v47`: distinct claim dates and evidence-reference reconciliation.
+pub const PROMPT_VERSION: &str = "portfolio-v47";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

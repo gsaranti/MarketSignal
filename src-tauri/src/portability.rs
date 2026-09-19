@@ -70,10 +70,11 @@ use crate::storage;
 /// statement (`checkpoint-v12`), so a v7 archive's runs would not decode under
 /// the current condition shape.
 /// v9: complete physical-attempt telemetry in run data health (checkpoint-v13).
-/// Every pre-release shape below the current one — v2 through v8, none of which
+/// Every pre-release shape below the current one — v2 through v9, none of which
 /// a shipped build wrote — is refused outright (`check_format_version`, the
 /// 2026-08-29 no-compat ruling).
-pub const FORMAT_VERSION: u32 = 9;
+/// v10: explicit dates in persisted research claims, including topic seeds.
+pub const FORMAT_VERSION: u32 = 10;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -1211,7 +1212,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 2..=8) {
+    if matches!(manifest.format_version, 2..=9) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -1641,6 +1642,39 @@ mod tests {
             params![old_md.to_string_lossy()],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn entry3_archive_round_trip_preserves_dates_in_seeds_and_run_audits() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let conn = storage::open(&source.db_path).unwrap();
+        let layer = crate::portfolio::research::entry3_fixture_layer();
+        crate::portfolio::store::save_topic_distillates(
+            &conn,
+            "ARKF",
+            std::slice::from_ref(&layer),
+        )
+        .unwrap();
+        let run = crate::portfolio::store::entry3_test_run();
+        crate::portfolio::store::insert_run(&conn, &run).unwrap();
+        let dest = source.db_path.parent().unwrap().join("dates.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+        let (_b, target) = temp_store();
+        import_archive(&target, &dest, None, false).unwrap();
+        let conn = storage::open(&target.db_path).unwrap();
+        assert_eq!(
+            crate::portfolio::store::load_topic_distillates(&conn, "ARKF").unwrap(),
+            vec![layer.clone()]
+        );
+        let restored = crate::portfolio::store::run_by_id(&conn, &run.run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored, run);
+        assert_eq!(
+            restored.audit[0].research.as_ref().unwrap().seed_layer,
+            vec![layer]
+        );
     }
 
     #[test]
@@ -2334,7 +2368,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_through_v8_stamps_are_refused_as_pre_release_formats() {
+    fn v2_through_v9_stamps_are_refused_as_pre_release_formats() {
         // The single-URL (v4), pre-counter (v5), pre-rename (v6, the priced
         // verdict's `price_target_rationale`) and pre-label (v7, the ledger
         // condition's `label` and app-rendered statement) shapes were
@@ -2347,7 +2381,7 @@ mod tests {
         export_archive(&source, &dest, None, None).unwrap();
         let mut entries = read_archive_entries(&dest);
         let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        for version in 2..=8 {
+        for version in 2..=9 {
             manifest.format_version = version;
             entries.insert(
                 "manifest.json".to_string(),
