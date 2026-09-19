@@ -192,9 +192,94 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 
 ### 11. Success measures
 
-- Decision: end-to-end acceptance and useful evidence retained per unit of elapsed time, per-stage median and worst-case latency, retries, source drops and thought length; re-think marker counts stay a diagnostic, never the gate; the user's time budget is set explicitly.
-- Needs entry 7 so the measures are honest.
-- Ruling: open; the measures are set before attempt 7 launches so the run is judged by them.
+- Decision: end-to-end acceptance and useful evidence retained per unit of elapsed time, per-stage median and observed worst-case latency, retries, source drops and thought length; re-think marker counts stay a diagnostic, never the gate.
+- Ruled through all five selectors 2026-09-19: written protocol using existing records; reviewed retained claims plus topic coverage; correctness and whole-book completion required; **no elapsed-time limit and no time-based stop**; an action outside the engine set is reviewed and annotated, never failed solely for that departure.
+  No offline measurement tool, new instrumentation, prompt, schema, persisted shape or version stamp is introduced.
+  Entry 7 supplies the physical-attempt observations; their meanings remain canonical in [the local-model adapter seam](../local-models.md#the-local-model-adapter-seam).
+- Acceptance: every applicable attempt-7 correctness check for the landed entries and in §Verification on attempt 7 must pass, the whole book must finish, and any failed holding prevents an overall pass even if the app's run state is successful.
+  Reconcile the normalized book roster against its final outcomes; justified not-rated and insufficient-evidence outcomes are reported separately and are not automatically failures.
+  A cancelled or interrupted partial run cannot pass whole-book completion.
+  Record each correctness check as passed, failed, unverified, or not applicable, with its holding/pass/call and evidence location; an applicable check with missing evidence remains unverified and prevents a confirmed overall pass.
+  An unexercised branch stays unverified, with the absent population named, rather than receiving an inferred pass.
+  Historical marker counts and repeat sets are comparison references, not additional correctness thresholds.
+  Evidence yield, latency, retry frequency, source drops and thinking length are reported measures with no newly imposed numerical pass/fail thresholds.
+  Existing behavioral checks, including entry 5's cap-hit comparison with coverage, remain in force.
+
+#### Useful evidence and coverage
+
+Review the final holding distillate's `combined` text and `seed_layer` claims and summaries, enumerating distinct factual claims and deduplicating equivalent facts within the holding, including repetitions across topics and citations.
+The same fact used by different holdings counts once in each holding; the full-book numerator is the sum of those per-holding counts, not a unique-document count.
+A useful claim must be relevant to that holding's research, supported by source text available to the run, and correctly dated or explicitly undated where the evidence supplies no date.
+Link each reviewed claim to its final audit location and the supporting passage in the captured source material or issued packet, with log locations where needed.
+A resolved citation URL alone does not establish support, and a later changed web page cannot silently substitute for the text the run saw.
+Classify claims as verified useful, rejected with reason, or unverified; report the total retained, reviewed and unreviewed counts and the duplicate count alongside the verified numerator.
+Absent source text leaves support unverified, never assumed; unsupported or uncheckable claims do not enter the verified numerator.
+These review labels measure evidence yield; any associated violation of an applicable correctness check is also recorded against that check.
+
+For each holding with a final research audit, report verified useful claims divided by `ResearchAuditRecord.elapsed_secs / 60`, the existing research-loop time including gathering and synthesis but excluding subsequent distillation.
+For an aggregate research-minute rate, sum the verified claims and research seconds over the same holdings, name that population, and report exclusions separately; do not average the per-holding rates.
+For the whole-run rate, divide the final verified-claim total by the run's elapsed minutes, including time spent on holdings that produced no retained evidence.
+Use `job_runs.started_at` and `finished_at` as the whole-run boundaries and cite the row and matching lifecycle records; these are wall-clock timestamps, not the adapter's monotonic attempt clock.
+Zero, missing or demonstrably unreliable elapsed time yields an unavailable rate, with the reason recorded, rather than a zero or estimated denominator.
+An incomplete review produces an explicitly partial verified yield, not a complete usefulness assessment.
+
+Report planned eligible topics, attempted topics, topics with retained verified evidence, and skipped, failed, empty or unverified outcomes using the agenda/issued packets, research gaps, tracker/log trail and final distillates.
+Topic coverage is topics with at least one verified retained claim divided by planned eligible topics; name the denominator and distinguish topics that ran but lost all useful evidence during consolidation.
+Give follow-up passes and the separate disconfirming pass their own counts and outcomes rather than inflating the topic denominator.
+When one verified claim serves multiple topics, cite the supported topic associations explicitly; it still counts only once in the holding's claim numerator.
+If the available records cannot reconstruct a population, mark that coverage unavailable rather than using only surviving distillate topics as the denominator.
+For entry 5, retain the same completed-holdings topic-pass population used by attempt 6's recorded 24/33 baseline, list the matched holdings/passes and any missing comparisons, and report skipped or failed passes and coverage alongside cap hits.
+Report the full-book cap-hit rate separately, keep the cap unchanged, and do not credit empty passes or earlier bounds as improvement or attribute the comparison solely to evidence reuse among the stacked fixes.
+
+#### Timing and diagnostic readout
+
+Group `data_health.prompt_usage` physical attempts by stage family, separating gathering, synthesis, distillation, interpretation and action, and retain exact stage labels for drill-down by holding, topic, leg, turn and expanded attempt.
+Keep model, thinking mode, streaming, tools/format flags and reservations with each group; do not pool unlike modes without also showing the separate groups.
+For each group report the resolved-attempt count, adapter outcome counts, sum, median and observed maximum of `elapsed_ms`, with references to the slowest calls.
+For an even count the median is the mean of the two middle sorted durations; an empty group has no median or maximum.
+Include failed attempts and retries; the maximum is the worst observed attempt, not an estimate of an unseen tail.
+An adapter response is not semantic acceptance: downstream validation and the final holding outcome supply that evidence.
+Attempt timings exclude retry waits and downstream validation, so their sum never substitutes for whole-run elapsed time or a complete stage's wall time.
+For incomplete runs, use resolved call-fence observations where available and identify their coverage; a header without a terminal observation is unresolved and contributes no invented duration.
+If the run is resumed, retain the canonical holding-row ownership for the final-record view and report invocation timing and superseded/unresolved calls separately; never pair a resumed invocation's time with the whole retained numerator as if it were a fresh full-run rate.
+
+Count fired model retries from the tracker/log trail by stage and failure class, reconciling them with `model_retries` without double-counting the same event across surfaces.
+The persisted recovered-retry list omits all retry events from failed holdings, including earlier recoveries in those holdings, so it cannot establish the run's total retry count by itself.
+Report raw counts and, where the trail is complete, retry events per 100 resolved physical attempts with both numerator and denominator; identify this as event frequency, not a probability that a logical call fails.
+Keep web-fetch retries and remembered-failure skips separate from model retries, using their request rows and gaps to read entries 4 and 6.
+Missing log coverage makes a total unknown, not zero.
+
+Report source failures/skips, source-body omissions, source-body truncations and rejected claims separately, with the original reason groups and units preserved from research gaps and request rows.
+For example, a gap combining unresolved source IDs, sources not shown and the per-pass claim cap remains one grouped claim-drop count; do not allocate its count among causes the record does not distinguish.
+Likewise retain grouped reused-page omissions, and distinguish repeated page exposures across topics from unique source URLs rather than summing them as distinct lost sources.
+Name denominators for any drop share; when the pre-drop population is unavailable, give counts and coverage limits only.
+
+For each stage/mode report complete, partial and unavailable thinking-observation counts, with median and maximum decoded character lengths separately for complete and partial observations.
+Partial counts are lower bounds; unavailable is not zero, and complete zero-thinking replies remain zero.
+Keep the six raw API counters in their original units with missing fields absent; phase-limited counters cannot establish whole-call generation, original-packet truncation or a length-stop cause.
+Report re-think markers alongside the relevant traces and populations as diagnostics only, never as an acceptance gate or a proxy for useful evidence.
+
+#### Results table specification
+
+Each results row carries a run/holding/pass/call identifier as applicable, its evidence file or record location, its population and missing coverage, and its check status where it represents an acceptance check.
+Use the following compact tables in the attempt-7 readout; no new result file is created by this definition task.
+
+| Table | Required result columns | Existing evidence and limits |
+| --- | --- | --- |
+| Acceptance | Check, applicability, status, expected and observed outcome; book roster and outcome counts | Final verdicts/audits, failed holdings, job history, tracker and thought logs; unexercised or unsupported checks stay unverified |
+| Evidence yield | Holding, distinct retained/reviewed/verified/rejected/unverified claims, duplicates, research seconds, claims/research minute; whole-run total and claims/run minute | Research audit `combined`, `seed_layer`, `elapsed_secs`, captured source text/packets and job-history boundaries; cite each verified claim and flag partial review |
+| Coverage | Planned/attempted/verified-covered topics; skipped/failed/empty/unverified outcomes; follow-up and disconfirming outcomes; cap hits/passes for matched and full-book populations | Agenda/packets, gaps, logs and final distillates; absent population evidence prevents a reconstructed rate |
+| Latency | Stage/mode, resolved-attempt and outcome counts, sum/median/maximum milliseconds, slowest-call references | `prompt_usage` and resolved fences; waits, validation and unresolved calls are outside the attempt durations |
+| Retries and drops | Retry counts/class/stage and event-frequency numerator/denominator; separate web retries/skips; drop/truncation counts, units and recorded reason groups | Tracker/log trail, `model_retries`, research gaps and request rows; failed-holding retry omissions and grouped causes remain explicit |
+| Thinking and API diagnostics | Complete/partial/unavailable counts, separate character medians/maxima, raw API counters/units, marker counts and trace references | Attempt observations and thought logs; partial thinking is a lower bound and phase-limited API counters are not whole-call totals |
+
+- Definition status: complete; independent Metis review approved 2026-09-19 after the planned verification gates were rerun successfully.
+  Claude's separate static review agreed; its stale review-status nit is corrected here.
+  Attempt-7 live acceptance and the parent confirmation-run item remain pending.
+  This protocol does not authorize a launch, a harness run, a live probe or a store wipe; the standing user-named launch-session rule still applies.
+- Implementation verification (2026-09-19): the protocol was traced against the existing research audit, physical-attempt observations, failed-holding retry handling, job-history timing and canonical action contract.
+  `cargo test` passed (1,523 library and 32 integration tests; 33 ignored), `cargo clippy --all-targets --all-features` passed without warnings, `npm run build` passed, and `git diff --check` passed.
+  The full Rust suite required localhost-port access after the sandbox blocked mock-HTTP fixtures; no live-source or model probe was performed.
 
 ### 12. The ledger statement is rendered from the core
 
@@ -227,7 +312,8 @@ Action (`portfolio-v41`):
 
 - no rationale cites a hurdle state word or computes the hurdle test from a prefix; the rationales that name the hurdle quote the tested returns;
 - no rationale argues from what the computed read permits (the permission scan);
-- each attempt-6 holding's rung is read beside attempt 6's rung and the fixed-set repeat set (TSLA trim / sell-all, PSX trim, SPMO sell-all, ARKF trim / sell-all, DIA hold, PGNY hold), and a rung outside its engine set is a failure;
+- each attempt-6 holding's rung is read beside attempt 6's rung and the fixed-set repeat set (TSLA trim / sell-all, PSX trim, SPMO sell-all, ARKF trim / sell-all, DIA hold, PGNY hold);
+  a rung outside its engine set is reviewed against the holding's evidence and rationale, with its persisted `action_annotations` departure checked under [the canonical Portfolio action contract](../portfolio-analysis.md#portfolio-action); departure alone is not a failure;
 - action fence markers are counted beside the v39 rate (forty-two on forty-seven calls), and the ENGINE SET and capital-efficiency shares of the re-think are read;
 - the rationales are consistent with the thesis and scenarios now in the packet, and none computes with a sentence the packet no longer carries.
 

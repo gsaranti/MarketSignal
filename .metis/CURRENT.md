@@ -6,43 +6,43 @@ The single big confirmation run
 
 ## What happened
 
-**Entry 7 completed and review-approved (2026-09-19).**
-Every resolved physical chat attempt now records the original serialized messages-plus-tools size, app elapsed time, decoded thinking characters with complete/partial/unavailable state, six raw API counters, and precise request metadata.
-The full list survives final persistence; retries and failures are captured at the shared adapter boundary, while resume retains existing holding-row ownership and excludes superseded calls.
-Fences name raw API counters; phase-limited counters no longer imply total generation, original-packet truncation, or a length-stop cause.
-All four scope selectors were approved; failure behavior, retry policy, limits, prompts and financial stamps stayed unchanged.
-The persisted shape moved to `checkpoint-v13` and portability format 9; pre-release archive formats 2–8 are refused.
-Implementation and independent Metis review passed 1,523 library and 32 integration tests (33 ignored), warning-free clippy, frontend build, 46 pure-module and 266 component tests, and diff check.
-Claude's separate review agreed and reported matching gates; the stale review-status line was corrected.
-The implementation and this handoff accompany the user-requested commit and push on `main`.
+**Entry 11 completed and review-approved (2026-09-19).**
+All five selectors were ruled: a written protocol using existing records, reviewed retained claims plus topic coverage, correctness and whole-book completion, **no elapsed-time limit or time-based stop**, and action departures reviewed and annotated rather than failed solely for leaving the engine set.
+The protocol defines evidence yield, coverage, physical-attempt latency, retries, source drops and thinking diagnostics with explicit populations and missing-evidence limits.
+The conflicting action-checklist clause was corrected to the canonical two-arm contract.
+Implementation and review-time verification passed 1,523 library and 32 integration tests (33 ignored), warning-free clippy, frontend build and diff check; mock HTTP fixtures required localhost-port access.
+Independent Metis review approved; Claude's separate static review agreed, and its stale review-status nit was corrected.
+Only the findings document and this handoff accompany the user-requested commit and push on `main`.
 
 ## Current state
 
-Entry 7 is complete; scope report empty (no skipped, deferred, stubbed or differently handled implementation criteria).
-Entry 11 is next, not yet planned: establish success measures and the user's explicit time budget before attempt 7.
-Measurement definitions are canonical in `docs/local-models.md` §The local-model adapter seam; rulings and verification live in `docs/verification/2026-09-17-open-findings.md` entry 7.
-Missing optional API counters stay unknown; retired persisted shapes are rejected through required observation fields and version guards, not through `Option` fields alone.
-Entry 6 remains landed (`e931b21`): SEC-only declared identity selected per redirect hop, preserved source-chain errors, and corrected retry-row docs.
-Entry 5 remains landed (`e00751e`): previously fetched pages feed ordinary topics and follow-ups with provenance; the contrary-search pass stays separate; remaining replies include the current reply and match on retries.
-Its live comparison uses attempt 6's same completed-holdings topic-pass population (24/33 cap-hit baseline), explicit denominators and coverage, a separate full-book rate, and no isolated attribution with other pre-run fixes present.
-Entry 4 remains landed (`d55f91d`): fresh invocation-scoped failure memory, including resume; `web_source_state` remains telemetry.
-Archived attempt-6 rows establish URL/status evidence only, not historical transport causes or retry timing; offline tests establish policy and attempt 7 establishes effectiveness.
-Entry 8 remains landed (`b4b4e5f`): attempt 7 must quote fresh complete sampler blocks for both profiles, inherited defaults included; missing evidence stays unverified.
-Entry 12 remains landed (`82f3dd7`): quantitative statements render from cores, labels persist separately, and new/superseding cores face `holds-at-authoring`; entries 1 and 2 are superseded.
+Entries 4–8 and 11 are complete prerequisites; entry 11's scope report is empty.
+The confirmation-run item remains incomplete, with live acceptance pending the user-named launch session; no implementation task is in flight.
+Entry 11 in `docs/verification/2026-09-17-open-findings.md` owns the acceptance/readout protocol; `docs/local-models.md` §The local-model adapter seam owns measurement semantics.
+Acceptance requires all applicable correctness checks and whole-book completion with no failed holding; justified not-rated/insufficient-evidence outcomes are separate, and unexercised or unsupported checks stay unverified.
+Time is measured without a pass/fail budget; claim support requires the source text the run saw, not merely a resolved URL.
+Persisted retries omit failed holdings, grouped source-drop causes stay grouped, and phase-limited API counters cannot establish whole-call generation or truncation.
+Entry 7 retains physical-attempt observations with complete/partial/unavailable thinking; resume preserves holding-row ownership and omits superseded calls, while missing counters stay unknown.
+Entry 6 (`e931b21`) supplies SEC-only redirect-hop identity and source-chain errors; entry 4 (`d55f91d`) supplies fresh invocation-scoped failure memory, with `web_source_state` still telemetry.
+Archived attempt-6 URL/status rows do not establish historical transport causes or cooldown savings.
+Entry 5 (`e00751e`) reuses holding-scoped pages on ordinary topics/follow-ups, keeps the contrary-search pass separate, and shows replies left including the current reply.
+Its comparison retains attempt 6's matched completed-holdings topic-pass population (24/33 cap hits), denominators and coverage, with full-book results separate and no isolated attribution among stacked fixes.
+Entry 8 (`b4b4e5f`) requires fresh complete sampler blocks for both profiles, inherited defaults included; missing evidence remains unverified.
+Entry 12 (`82f3dd7`) renders quantitative statements from cores and enforces `holds-at-authoring` on new/superseding cores; entries 1 and 2 are superseded.
 Debut stamps: `portfolio-v46` / `checkpoint-v13` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 9; a further prompt or output-schema change lands as `portfolio-v47`.
 No harness, live model/source probe, daemon restart or dev-store wipe occurred.
 Attempt 6 remains in the dev store as previously recorded; attempt 7 re-wipes first (drop `web_source_state`, clear `portfolio_runs` and the `portfolio` namespace of `vector_memory`).
 Entry 3 re-scopes on attempt 7's evidence; entries 9 and 10 follow attempt 7.
 The conditions display slice remains separate and unscheduled; the frontend still types `conditions` as `unknown[]`.
-BUILD stays unchanged: the confirmation-run item is incomplete; entries 4–8 are completed prerequisites, not separate BUILD items.
+BUILD stays unchanged: the completed prerequisites are not separate BUILD items.
 The known stale SYNTHESIS scheduling, pipeline-length and LanceDB claims remain unreconciled.
 
 ## Open questions
 
-- Entry 11 must set the success measures and the user's time budget; its selectors are not yet drafted.
+None pending from entry 11; all five rulings are recorded in the findings document.
 
 ## Where to start
 
-Read `docs/verification/2026-09-17-open-findings.md`; entry 11 is next, with entries 4–8 complete.
-On the user's word, `/metis-plan-task` entry 11, ruling every flag and assumption through the selector.
-No harness run and no live read: attempt 7 launches only when the user names the session and after its measures are set — do not propose it.
+Read `docs/verification/2026-09-17-open-findings.md` entry 11 and its attempt-7 verification/watches when the user names the launch session.
+The prerequisite fixes and success measures are complete; elapsed time has no limit.
+No harness run and no live read are authorized by this handoff: attempt 7 launches only when the user names the session — do not propose it.
