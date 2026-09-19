@@ -2,32 +2,30 @@
 
 ## Active task
 
-The single big confirmation run
+The single big confirmation run — attempt 7 ran and was user-ended; a fix slice precedes attempt 8
 
 ## What happened
 
-All pre-attempt-7 findings are landed and committed — entries 4–8 and 11, and entry 3 pulled forward last (`d7fa5dd`): claims now carry separate retrieval time, reported publication metadata, and source-stated fact period through research, consolidation, reuse, and persistence (`portfolio-v47` / `checkpoint-v14` / portability format 10).
-Each Codex-built slice was independently reviewed against the code with its full gate re-run green, and no pre-release backward-compat was introduced (serde defaults confined to provider/model wire JSON; retired checkpoint/archive shapes refused, not migrated).
-This session then, at the user's request, **re-wiped the dev store to a clean debut ahead of attempt 7** — so the store no longer holds attempt 6 and needs no further wipe at bring-up.
+Attempt 7 launched 2026-09-19 14:46 PDT from the clean-debut store on the 47-position book, debut stamps confirmed (`portfolio-v47` / `checkpoint-v14`, `prior_run_id` null), and was user-ended by a cooperative tracker cancel at 16:05 after TSLA and PSX completed (`job_runs` id 7 cancelled, 78 minutes).
+Neither ruled stop rule fired; the run was ended because both stocks researched only two of seven topics before the 30-minute per-holding wall.
+The findings are written to `docs/verification/2026-09-19-attempt-7-findings.md` under a new ruling: each attempt gets its own dated record holding only issues and required changes, with the cause established; the 2026-09-17 list takes no new entries and points there.
+The dominant cause of the slowdown is confirmed in the serve log and the code: entry 5's per-turn rewrite of the first gathering message (the reply countdown) defeats the runtime's context cache on Qwen3.5, so every gathering turn re-prefills the whole conversation (turn-2+ median 2–5 s in attempt 6 → 26–31 s; 90 of 98 requests full re-evaluation).
+Run archive: `~/Downloads/market-signal-attempt-7-logs/` (logs, thought logs, store extracts, `notes.md`).
 
 ## Current state
 
-No implementation task is in flight; the confirmation-run BUILD item stays incomplete, its live acceptance pending the user-named launch session.
-BUILD is unchanged — these prerequisites are not separate BUILD items.
-Debut stamps: `portfolio-v47` / `checkpoint-v14` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`; portability format 10; the next prompt/output-schema change is `portfolio-v48`.
-The attempt-7 acceptance/readout protocol is entry 11 of `docs/verification/2026-09-17-open-findings.md`, whose §Verification-on-attempt-7 carries every landed entry's checks (measurement semantics single-homed in `docs/local-models.md`; the claim-date contract in `docs/portfolio-analysis.md` under research reuse — different periods stay distinct observations, an explicit same-period revision supersedes, later publication alone never resolves a conflict, unknown/incomparable periods retain uncertainty).
-Acceptance = every applicable correctness check passes + whole-book completion with no failed holding; justified not-rated/insufficient-evidence outcomes are reported separately, unexercised checks stay unverified, and elapsed time has no pass/fail limit.
-The dev store is now a clean debut (re-wiped this session): `portfolio_runs` / `portfolio_checkpoints` / `portfolio_checkpoint_holdings` / `portfolio_research_seeds` / `portfolio_outcome_episodes` / `portfolio_quick_checks` / `holdings_pulls` / `price_bars` / `web_documents` cleared, `web_source_state` **dropped** (recreated by `init_schema` on next dev-app start), the `portfolio` vector-memory namespace cleared.
-Continuity kept — 30 reports / 14 baselines / 69 report vectors / `job_runs` max id 6 (attempt 7 → id 7) / 16 `app_settings`; the prod store is untouched and `PRAGMA integrity_check` is `ok`; attempt-6 residue is archived at `~/Downloads/market-signal-attempt-6-logs/`.
-Entries 9 and 10 (sampling-profile comparison; non-thinking experiments) follow attempt 7 and need a rebuilt harness; the conditions-display slice remains separate and unscheduled (`conditions` still typed `unknown[]`).
-Known stale SYNTHESIS scheduling, pipeline-length, and LanceDB claims remain unreconciled.
+No implementation is in flight; the confirmation-run BUILD item stays incomplete.
+Six findings await the user's selector rulings before any plan: (1) append-only gathering conversation, countdown out of Part 1; (2) every topic's root pass before any follow-up spends budget; (3) second-guessing closers — a `quarter` fact-period kind, drop `followup_technology_event`, trim the interpretation packet's derived grade and proration sentence; (4) rationale figures by value (PSX named the hurdle without its returns, a v41 check fail); (5) issuer IR hosts return 403 on every attempt — EDGAR 8-K exhibit fallback recommended; (6) distillation output doubled per topic, model-emitted date fields the candidate.
+Findings 1 and 2 are what make attempt 8 a whole-book run; the prompt-text findings move the stamp to `portfolio-v48`.
+The dev store is NOT clean: TSLA and PSX checkpoint rows, `job_runs` max id 7 (attempt 8 → id 8), `web_source_state` 27 rows, `web_documents` 21, `portfolio_research_seeds` 4; prod untouched.
+Entries 9 and 10 of the 2026-09-17 list still follow a completed run; the conditions-display slice remains separate.
 
 ## Open questions
 
-None — the retrieval-age and model-reconciliation rulings (entry 3) and the acceptance protocol (entry 11) are captured in code and canonical docs.
+- Finding 5's route: render-first webview on the first IR 403, or the deterministic EDGAR 8-K exhibit 99.1 fallback (recommended) — the user rules.
+- Finding 6: which per-claim date fields the distillation model actually emits is read at plan time before the change is fixed.
 
 ## Where to start
 
-When the user names the launch session, the dev store is already a clean debut, so bring-up goes straight to the store pre-check (expect the clean-debut counts with `web_source_state` absent until the fresh dev app recreates it), then Ollama / OrbStack / SearXNG+Serper per the usual bring-up.
-Read entry 11's protocol and the findings doc's §Verification-on-attempt-7, including entry 3's live factual-dating and conflict checks.
-This handoff authorizes no live read or harness run: attempt 7 launches only when the user names the session — do not propose it.
+Read `docs/verification/2026-09-19-attempt-7-findings.md`, then take the six findings through the selector (four per call, recommended first) and plan the slice — Findings 1 and 2 first, the `portfolio-v48` prompt findings together.
+Do not propose attempt 8; when the user names it, re-wipe the dev store first (the store holds attempt 7), then the usual bring-up.

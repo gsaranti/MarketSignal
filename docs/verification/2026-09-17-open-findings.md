@@ -6,7 +6,7 @@ Every entry the prompt-rewrite series closed (`portfolio-v40` through `portfolio
 Entry 12, the rendered ledger (`portfolio-v45`), is landed and kept for its rulings and the checks attempt 7 reads; entries 1 and 2 stay as the history it superseded.
 What remains is app-side work the prompts never touched, the checks attempt 7 reads for the landed prompts, and the watches for that attempt.
 Each entry is a decision, the evidence it rests on, the acceptance check and the stamp it moves; its ruling status is on the entry.
-A finding from attempt 7 is appended here as the next number, never in another file.
+Ruled 2026-09-19: findings from attempt 7 onward live in dated attempt records (`2026-09-19-attempt-7-findings.md` first), focused on issues and required changes; this list takes no new entries.
 
 ## Standing rules
 
@@ -299,7 +299,7 @@ Use the following compact tables in the attempt-7 readout; no new result file is
 
 Every check below reads on attempt 7, its first holdings read early, from the persisted rows, the tracker and the thought logs.
 The attempt-6 holdings in book order (TSLA, PSX, SPMO, ARKF, DIA, PGNY) are the comparison set; where a check names a fixed-set count, that count is the reference for the same holding, not a bar.
-A check that fails becomes an entry here, numbered on from 13.
+A check that fails is recorded as a finding in the attempt's own record (`2026-09-19-attempt-7-findings.md` for attempt 7), not as an entry here (ruled 2026-09-19).
 
 Interpretation (`portfolio-v40`):
 
