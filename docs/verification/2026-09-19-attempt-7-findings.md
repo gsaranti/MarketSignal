@@ -4,7 +4,9 @@ This record holds only what attempt 7 showed needs to change.
 Every finding names the defect, the evidence, the cause as far as it is established, the change proposed, the check that admits it and the stamp it moves.
 What read clean is not repeated here; the per-holding reads, the stop-rule counts and the run timeline are in the archive's `notes.md`.
 Ruled 2026-09-19: attempt findings live in a dated record like this one, focused on issues and required changes; the 2026-09-17 work list stays the record of the fixes that preceded this attempt and no longer takes new entries.
-Each finding below is proposed and unruled; the user rules each through the selector before a plan starts, as the standing rule requires.
+Each finding below is proposed and unruled, grouped into the three slices of §Slices below.
+Ruled 2026-09-19: the findings are ruled per slice during that slice's plan, not through a pre-plan selector sweep.
+Several decisions need the plan's code context — Finding 6's emitted date fields and Finding 5's fetch route — and the standing selector rule governs a plan's own flags before implement, not this pre-plan grouping stage.
 
 Run identity: progress id `1e35a182-4943-46e8-aceb-7f9e5355465f`, portfolio run `136d171e-edf4-4ef9-85c6-974f4f58999c`, `job_runs` id 7.
 Launched 2026-09-19 14:46 PDT (21:46:41Z) from the store re-wiped to a clean debut that morning, on the 47-position book (33 stocks, 14 funds).
@@ -140,6 +142,24 @@ What remains is concentrated on four prompt questions, each with a concrete chan
 - Check, on attempt 8.
   Distillation `eval_count` per topic returns toward the attempt-6 band with the entry-3 fields still fully populated on the persisted claims.
 - Stamp: `portfolio-v48`; `checkpoint-v15` only if the persisted claim shape changes.
+
+## Slices
+
+The six findings land as three slices, ordered so the run-blocking fixes go first and the fetch route rules on its own.
+Findings 1, 3, 4 and 6 each move `portfolio::PROMPT_VERSION`, so the concrete stamp a finding takes depends on its slice's land order; the per-finding `Stamp:` lines above name each finding's move from the `portfolio-v47` debut, and the numbers below assume the order given here.
+
+- Slice 1 — the gathering loop (Findings 1, 2).
+  The gathering conversation becomes append-only with the reply countdown out of Part 1 (Finding 1), and every eligible topic's root pass runs before any follow-up (Finding 2).
+  These two ended attempt 7 at two of seven topics, so they gate whether attempt 8 completes the book and land first.
+  Stamp: `portfolio-v48` — Finding 1 moves the gathering message text; Finding 2 is orchestration order and moves no stamp.
+- Slice 2 — the second-guessing prompt changes (Findings 3, 4, 6).
+  The `quarter` fact-period kind, the dropped `followup_technology_event` and the interpretation-packet trims (Finding 3); the by-value rationale clause (Finding 4); and the app-carried claim dates with the trimmed distillation output (Finding 6).
+  These are prompt-text and output-shape changes with no ordering dependency on Slice 1, grouped so they share one review and one stamp move.
+  Stamp: `portfolio-v49` landing after Slice 1, plus `checkpoint-v15` only if Finding 6 changes the persisted claim shape.
+- Slice 3 — the issuer-IR fetch route (Finding 5).
+  The 403 route is ruled between render-first webview and the EDGAR 8-K exhibit 99.1 fallback at plan time, since both are read against the fetcher code before the plan settles.
+  It touches neither the prompt set nor the persisted shapes, so it stays its own slice.
+  Stamp: none for the route; the next `portfolio-v` only if the tool-result text changes.
 
 ## Observed, no change proposed
 

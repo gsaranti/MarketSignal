@@ -2,30 +2,36 @@
 
 ## Active task
 
-The single big confirmation run — attempt 7 ran and was user-ended; a fix slice precedes attempt 8
+The single big confirmation run — attempt 7 ran and was user-ended; its six findings are now grouped into three fix slices that precede attempt 8
 
 ## What happened
 
-Attempt 7 launched 2026-09-19 14:46 PDT from the clean-debut store on the 47-position book, debut stamps confirmed (`portfolio-v47` / `checkpoint-v14`, `prior_run_id` null), and was user-ended by a cooperative tracker cancel at 16:05 after TSLA and PSX completed (`job_runs` id 7 cancelled, 78 minutes).
-Neither ruled stop rule fired; the run was ended because both stocks researched only two of seven topics before the 30-minute per-holding wall.
-The findings are written to `docs/verification/2026-09-19-attempt-7-findings.md` under a new ruling: each attempt gets its own dated record holding only issues and required changes, with the cause established; the 2026-09-17 list takes no new entries and points there.
-The dominant cause of the slowdown is confirmed in the serve log and the code: entry 5's per-turn rewrite of the first gathering message (the reply countdown) defeats the runtime's context cache on Qwen3.5, so every gathering turn re-prefills the whole conversation (turn-2+ median 2–5 s in attempt 6 → 26–31 s; 90 of 98 requests full re-evaluation).
-Run archive: `~/Downloads/market-signal-attempt-7-logs/` (logs, thought logs, store extracts, `notes.md`).
+Attempt 7's six findings (canonical in `docs/verification/2026-09-19-attempt-7-findings.md`) were grouped into three delivery slices, recorded in a new §Slices section of that doc.
+A process ruling was taken (2026-09-19): the findings are ruled per slice during that slice's plan, not through a pre-plan selector sweep — several decisions need the plan's code context (Finding 6's emitted date fields, Finding 5's fetch route), and the standing selector rule governs a plan's own flags before implement, not this pre-plan stage; the doc's opening line was updated to record it.
+Surfaced a stamp coupling: Findings 1, 3, 4 and 6 all move `portfolio::PROMPT_VERSION`, so splitting them across Slices 1 and 2 means `portfolio-v48` then `portfolio-v49`, not a shared v48.
+The findings-doc edits and this handoff were committed and pushed.
 
 ## Current state
 
 No implementation is in flight; the confirmation-run BUILD item stays incomplete.
-Six findings await the user's selector rulings before any plan: (1) append-only gathering conversation, countdown out of Part 1; (2) every topic's root pass before any follow-up spends budget; (3) second-guessing closers — a `quarter` fact-period kind, drop `followup_technology_event`, trim the interpretation packet's derived grade and proration sentence; (4) rationale figures by value (PSX named the hurdle without its returns, a v41 check fail); (5) issuer IR hosts return 403 on every attempt — EDGAR 8-K exhibit fallback recommended; (6) distillation output doubled per topic, model-emitted date fields the candidate.
-Findings 1 and 2 are what make attempt 8 a whole-book run; the prompt-text findings move the stamp to `portfolio-v48`.
-The dev store is NOT clean: TSLA and PSX checkpoint rows, `job_runs` max id 7 (attempt 8 → id 8), `web_source_state` 27 rows, `web_documents` 21, `portfolio_research_seeds` 4; prod untouched.
+The three slices, in land order:
+
+- Slice 1 — the gathering loop (Findings 1, 2): the gathering conversation becomes append-only with the reply countdown out of Part 1, and every eligible topic's root pass runs before any follow-up. These ended attempt 7 at two of seven topics, so they gate whether attempt 8 completes the book and land first. Stamp `portfolio-v48`.
+- Slice 2 — the second-guessing prompt changes (Findings 3, 4, 6): the `quarter` fact-period kind, dropped `followup_technology_event`, interpretation-packet trims, the by-value rationale clause, and app-carried claim dates. Stamp `portfolio-v49` landing after Slice 1, plus `checkpoint-v15` only if Finding 6 changes the persisted claim shape.
+- Slice 3 — the issuer-IR fetch route (Finding 5): render-first webview vs the EDGAR 8-K exhibit 99.1 fallback (recommended), ruled at plan time. No route stamp.
+
+The dev store is NOT clean (attempt-7 residue: TSLA and PSX checkpoint rows, `job_runs` max id 7, `web_source_state` 27, `web_documents` 21, `portfolio_research_seeds` 4); prod untouched. Attempt 8 re-wipes first.
 Entries 9 and 10 of the 2026-09-17 list still follow a completed run; the conditions-display slice remains separate.
 
 ## Open questions
 
-- Finding 5's route: render-first webview on the first IR 403, or the deterministic EDGAR 8-K exhibit 99.1 fallback (recommended) — the user rules.
-- Finding 6: which per-claim date fields the distillation model actually emits is read at plan time before the change is fixed.
+- Merge or split the prompt stamp: land Slices 1 and 2 separately (`portfolio-v48` then `-v49`) or together as one `portfolio-v48`? — offered to the user, unruled.
+- Whether the §Slices grouping belongs in the findings doc or in `CURRENT.md` (it stretches the one-attempt issues-only ruling) — offered, unruled.
+- Finding 5's route: render-first webview or the EDGAR 8-K exhibit fallback (recommended) — ruled at Slice 3's plan.
+- Finding 6: which per-claim date fields the distillation model actually emits — read at Slice 2's plan.
 
 ## Where to start
 
-Read `docs/verification/2026-09-19-attempt-7-findings.md`, then take the six findings through the selector (four per call, recommended first) and plan the slice — Findings 1 and 2 first, the `portfolio-v48` prompt findings together.
+`/metis-plan-task` Slice 1 (Findings 1, 2) — the run-blocking gathering-loop fixes.
+Rule its flags during the plan (post-plan, pre-implement) per the standing rule.
 Do not propose attempt 8; when the user names it, re-wipe the dev store first (the store holds attempt 7), then the usual bring-up.
