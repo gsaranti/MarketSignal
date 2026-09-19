@@ -139,20 +139,14 @@ pub enum ProgressEvent {
     /// `detail` is a failed call's capped top-level message. The counts are
     /// Ollama's reported `prompt_eval_count` / `eval_count` and its
     /// `done_reason`, absent when the daemon omitted them or the call failed
-    /// before a reply landed.
+    /// before a reply landed; `usage` carries app measurements and raw counters.
     ModelCallFinished {
         call: u64,
         stage: String,
         status: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
-        elapsed_ms: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        prompt_tokens: Option<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        generated_tokens: Option<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        done_reason: Option<String>,
+        usage: crate::local_model::PromptUsage,
         #[serde(skip_serializing_if = "Option::is_none")]
         step: Option<String>,
     },
@@ -213,10 +207,7 @@ pub struct ModelCallInfo {
 pub struct ModelCallOutcome {
     pub ok: bool,
     pub detail: Option<String>,
-    pub elapsed_ms: u64,
-    pub prompt_tokens: Option<u64>,
-    pub generated_tokens: Option<u64>,
-    pub done_reason: Option<String>,
+    pub usage: crate::local_model::PromptUsage,
 }
 
 /// Sink for [`ProgressMessage`]s. Implemented by the Tauri layer (an `emit`-backed
@@ -268,9 +259,17 @@ fn tee_to_stderr(run_id: &str, event: &ProgressEvent) {
             let transport = if *streamed { "streamed" } else { "non-streaming" };
             eprintln!("[run {run_id}] [{step}] model call {call}: {stage} → {model} ({think}, {transport})");
         }
-        ProgressEvent::ModelCallFinished { call, stage, status, detail, elapsed_ms, step, .. } => {
+        ProgressEvent::ModelCallFinished {
+            call,
+            stage,
+            status,
+            detail,
+            usage,
+            step,
+            ..
+        } => {
             let step = step.as_deref().unwrap_or("unattributed");
-            let elapsed = elapsed_label(*elapsed_ms);
+            let elapsed = elapsed_label(usage.elapsed_ms);
             match detail {
                 Some(d) => eprintln!("[run {run_id}] [{step}] model call {call}: {stage} {status} after {elapsed} — {d}"),
                 None => eprintln!("[run {run_id}] [{step}] model call {call}: {stage} {status} after {elapsed}"),
@@ -592,10 +591,7 @@ impl RunContext {
             stage: stage.into(),
             status: if outcome.ok { "ok" } else { "failed" }.to_string(),
             detail: outcome.detail,
-            elapsed_ms: outcome.elapsed_ms,
-            prompt_tokens: outcome.prompt_tokens,
-            generated_tokens: outcome.generated_tokens,
-            done_reason: outcome.done_reason,
+            usage: outcome.usage,
             // Placeholder — `emit` overwrites it with the run's active step.
             step: None,
         });
@@ -910,10 +906,16 @@ mod tests {
             ModelCallOutcome {
                 ok: true,
                 detail: None,
-                elapsed_ms: 461_000,
-                prompt_tokens: Some(41_203),
-                generated_tokens: Some(8_921),
-                done_reason: Some("stop".into()),
+                usage: crate::local_model::PromptUsage {
+                    elapsed_ms: 461_000,
+                    api: crate::local_model::ApiCounters {
+                        prompt_eval_count: Some(41_203),
+                        eval_count: Some(8_921),
+                        ..Default::default()
+                    },
+                    done_reason: Some("stop".into()),
+                    ..Default::default()
+                },
             },
         );
         ctx.step_finished("holding-AAPL", "ok", None);
@@ -923,10 +925,16 @@ mod tests {
             ModelCallOutcome {
                 ok: false,
                 detail: Some("local model returned 500".into()),
-                elapsed_ms: 12,
-                prompt_tokens: None,
-                generated_tokens: None,
-                done_reason: None,
+                usage: crate::local_model::PromptUsage {
+                    elapsed_ms: 12,
+                    api: crate::local_model::ApiCounters {
+                        prompt_eval_count: None,
+                        eval_count: None,
+                        ..Default::default()
+                    },
+                    done_reason: None,
+                    ..Default::default()
+                },
             },
         );
 
@@ -955,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn model_call_events_serialize_flat_with_kebab_kinds_and_no_null_fields() {
+    fn model_call_events_serialize_with_named_usage_and_optional_controls() {
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-9", rec.clone(), Arc::new(AtomicBool::new(false)));
         let mut info = call_info("distill AAPL");
@@ -967,10 +975,16 @@ mod tests {
             ModelCallOutcome {
                 ok: false,
                 detail: Some("boom".into()),
-                elapsed_ms: 1_500,
-                prompt_tokens: None,
-                generated_tokens: None,
-                done_reason: None,
+                usage: crate::local_model::PromptUsage {
+                    elapsed_ms: 1_500,
+                    api: crate::local_model::ApiCounters {
+                        prompt_eval_count: None,
+                        eval_count: None,
+                        ..Default::default()
+                    },
+                    done_reason: None,
+                    ..Default::default()
+                },
             },
         );
 
@@ -994,10 +1008,10 @@ mod tests {
         assert_eq!(finished["call"], 1);
         assert_eq!(finished["status"], "failed");
         assert_eq!(finished["detail"], "boom");
-        assert_eq!(finished["elapsed_ms"], 1_500);
-        assert!(finished.get("prompt_tokens").is_none());
-        assert!(finished.get("generated_tokens").is_none());
-        assert!(finished.get("done_reason").is_none());
+        assert_eq!(finished["usage"]["elapsed_ms"], 1_500);
+        assert!(finished["usage"]["api"]["prompt_eval_count"].is_null());
+        assert!(finished["usage"]["api"]["eval_count"].is_null());
+        assert!(finished["usage"]["done_reason"].is_null());
     }
 
     #[test]

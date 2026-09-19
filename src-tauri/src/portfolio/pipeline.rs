@@ -6003,11 +6003,6 @@ pub struct LocalAnalyst {
     /// order. This is separate from prompt usage because provenance must also
     /// survive a transport failure before the daemon returns counters.
     model_calls: std::sync::Mutex<Vec<String>>,
-    /// Prompt-size observations accumulated since the job's last drain
-    /// ([`HoldingAnalyst::take_prompt_usage`] — once per holding checkpoint).
-    /// A `Mutex` only for the `&self` receivers — the per-holding loop is
-    /// sequential, so it is never contended.
-    prompt_usage: std::sync::Mutex<Vec<crate::local_model::PromptUsage>>,
     /// The bounded retry-once gate shared by every model-call site this run
     /// (`docs/local-models.md §The local-model adapter seam`); its fired
     /// events drain through [`HoldingAnalyst::take_retry_events`].
@@ -6047,11 +6042,10 @@ impl LocalAnalyst {
     pub fn new(client: LocalModelClient, reasoner_model: String, fast_model: String) -> Self {
         let fast_model = effective_fast_model(&reasoner_model, &fast_model);
         Self {
-            client,
+            client: client.with_usage_capture(),
             reasoner_model,
             fast_model,
             model_calls: std::sync::Mutex::new(Vec::new()),
-            prompt_usage: std::sync::Mutex::new(Vec::new()),
             retry: crate::local_model::RetryOnce::new(),
             research_ctx: None,
         }
@@ -6073,42 +6067,6 @@ impl LocalAnalyst {
             .lock()
             .expect("model-call lock is never poisoned")
             .push(req.model_id.clone());
-    }
-
-    /// Record one call's usage observation. Recorded unconditionally: the
-    /// context-fit pair (`prompt_eval_count` × `num_ctx`) may be daemon-omitted,
-    /// but the output-side observation (`eval_count`, `done_reason`) must survive
-    /// regardless — a length stop whose row was dropped for a missing prompt
-    /// count would vanish from the run's data-health read. Context-fit consumers
-    /// gate on the fields being present (`build_data_health`).
-    fn record_usage(
-        &self,
-        stage: String,
-        req: &ChatRequest,
-        resp: &crate::local_model::ChatResponse,
-    ) {
-        // The variable prompt material in chars — serialized messages (roles,
-        // content, and assistant tool calls) plus the tool schema. This is the
-        // same projection the gathering input guard sizes and the ground truth
-        // a post-truncation `prompt_eval_count` is checked against
-        // (`build_data_health`).
-        let prompt_chars = u64::try_from(crate::local_model::prompt_material_chars(
-            &req.messages,
-            req.tools.as_ref(),
-        ))
-        .unwrap_or(u64::MAX);
-        self.prompt_usage
-            .lock()
-            .expect("prompt-usage lock is never poisoned")
-            .push(crate::local_model::PromptUsage {
-                stage,
-                prompt_tokens: resp.prompt_eval_count,
-                num_ctx: crate::local_model::request_num_ctx(req).unwrap_or(0),
-                prompt_chars,
-                completion_tokens: resp.eval_count,
-                num_predict: crate::local_model::request_num_predict(req),
-                output_limited: resp.done_reason.as_deref() == Some("length"),
-            });
     }
 }
 
@@ -6134,7 +6092,7 @@ fn body_snippet(content: &str) -> String {
 /// still returns `Ok` with a partial body and HTTP 200, so without this check
 /// the truncation surfaces only as an opaque downstream parse failure
 /// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Fix candidates 4).
-/// Called after `record_usage`, so the observation survives on the run's
+/// Called after adapter telemetry capture, so the observation survives on the run's
 /// data-health read even though the call fails.
 fn ensure_not_output_limited(
     stage: &str,
@@ -6152,24 +6110,24 @@ fn ensure_not_output_limited(
         // the shared context filling first (generated well under it). The
         // classification is single-homed in `length_stop_reading` — the
         // data-health line reads the same stop through the same predicate —
-        // and a stop with incomplete counts names no lever at all.
-        match crate::local_model::length_stop_reading(generated, reservation) {
+        // and incomplete or phase-limited counts name no lever at all.
+        match crate::local_model::observed_length_stop_reading(generated, reservation, crate::local_model::phase_limited(req.think, req.format_schema.is_some())) {
             crate::local_model::LengthStopReading::AtReservation => anyhow::bail!(
                 "{stage}: response truncated at the output reservation (num_predict {}, \
-                 generated {} tokens) — a runaway chain or a genuinely undersized \
+                 API eval_count {} tokens) — a runaway chain or a genuinely undersized \
                  reservation; raise it only on evidence",
                 show_res(reservation),
                 show(generated),
             ),
             crate::local_model::LengthStopReading::UnderReservation => anyhow::bail!(
-                "{stage}: generation length-stopped under the output reservation (generated {} \
+                "{stage}: generation length-stopped under the output reservation (API eval_count {} \
                  of {} reserved) — context exhaustion suspected; the sanctioned lever is \
                  compressing the digest, never raising num_ctx",
                 show(generated),
                 show_res(reservation),
             ),
             crate::local_model::LengthStopReading::Unattributed => anyhow::bail!(
-                "{stage}: generation length-stopped with incomplete counts (generated {}, \
+                "{stage}: generation length-stopped with incomplete or phase-limited counts (API eval_count {}, \
                  num_predict {}) — reservation-hit vs context exhaustion cannot be told \
                  apart; read the Ollama server log before reaching for either lever",
                 show(generated),
@@ -6499,7 +6457,7 @@ impl HoldingAnalyst for LocalAnalyst {
                     .analyst
                     .client
                     .chat_with_role(&req, StreamRole::Step(self.stage))?;
-                self.analyst.record_usage(self.stage.to_string(), &req, &resp);
+
                 ensure_not_output_limited(self.stage, &req, &resp)?;
                 ensure_nonempty_completion(self.stage, &resp)?;
                 Ok(resp)
@@ -6567,7 +6525,7 @@ impl HoldingAnalyst for LocalAnalyst {
                 req.stage = Some(stage.to_string());
                 self.analyst.record_model_call(&req);
                 let resp = self.analyst.client.chat(&req)?;
-                self.analyst.record_usage(stage.to_string(), &req, &resp);
+
                 if hit_normal_distill_reservation(&req, &resp) {
                     // The rendered prompt already passed the reasoner's 60%
                     // input guard, leaving more than the 32 K expanded ceiling
@@ -6587,7 +6545,7 @@ impl HoldingAnalyst for LocalAnalyst {
                     expanded_req.stage = Some(format!("{stage} (expanded)"));
                     self.analyst.record_model_call(&expanded_req);
                     let expanded_resp = self.analyst.client.chat(&expanded_req)?;
-                    self.analyst.record_usage(stage.to_string(), &expanded_req, &expanded_resp);
+
                     ensure_not_output_limited(stage, &expanded_req, &expanded_resp).with_context(
                         || {
                             format!(
@@ -6649,8 +6607,10 @@ impl HoldingAnalyst for LocalAnalyst {
         req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
-            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
-            self.record_usage(stage.clone(), &req, &resp);
+            let resp = self
+                .client
+                .chat_streaming(&req, StreamRole::Step(&step_key))?;
+
             ensure_not_output_limited(&stage, &req, &resp)?;
             ensure_nonempty_completion(&stage, &resp)?;
             decode_interpretation(&stage, &resp.content, debut)
@@ -6665,8 +6625,10 @@ impl HoldingAnalyst for LocalAnalyst {
         req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
-            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
-            self.record_usage(stage.clone(), &req, &resp);
+            let resp = self
+                .client
+                .chat_streaming(&req, StreamRole::Step(&step_key))?;
+
             ensure_not_output_limited(&stage, &req, &resp)?;
             ensure_nonempty_completion(&stage, &resp)?;
             decode_response_body("role/risk interpretation", &resp.content, debut)
@@ -6682,8 +6644,10 @@ impl HoldingAnalyst for LocalAnalyst {
         req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
-            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
-            self.record_usage(stage.clone(), &req, &resp);
+            let resp = self
+                .client
+                .chat_streaming(&req, StreamRole::Step(&step_key))?;
+
             ensure_not_output_limited(&stage, &req, &resp)?;
             ensure_nonempty_completion(&stage, &resp)?;
             serde_json::from_str(&resp.content)
@@ -6719,12 +6683,7 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
-        std::mem::take(
-            &mut *self
-                .prompt_usage
-                .lock()
-                .expect("prompt-usage lock is never poisoned"),
-        )
+        self.client.take_prompt_usage()
     }
 
     fn take_retry_events(&self) -> Vec<crate::local_model::RetryEvent> {
@@ -6974,83 +6933,36 @@ pub(crate) mod tests {
         assert!(audit.thesis_changed, "the surviving self-correction still counts");
     }
 
-    /// The prompt-usage collector: a counted response records against the request's
-    /// `num_ctx`; a count-less one (an older daemon) still records — with a `None`
-    /// prompt count, so its output-side observation (a length stop above all)
-    /// survives to the data-health read; and draining empties the buffer.
     #[test]
-    fn local_analyst_records_and_drains_prompt_usage() {
+    fn local_analyst_records_and_drains_failed_physical_attempts() {
         let analyst = LocalAnalyst::new(
             LocalModelClient::new("http://127.0.0.1:1").unwrap(),
             "reasoner".into(),
             String::new(),
         );
-        let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
-        req.messages.push(ChatMessage::assistant_with_tool_calls(
-            "",
-            serde_json::json!([{
-                "function": {"name": "web_search", "arguments": {"query": "widget"}}
-            }]),
-        ));
-        req.tools = Some(serde_json::json!([{
-            "type": "function",
-            "function": {"name": "web_search", "parameters": {"type": "object"}}
-        }]));
-        req.options = Some(options::thinking_general(131_072, NUM_PREDICT_THINKING));
-        let counted = crate::local_model::ChatResponse {
-            content: String::new(),
-            thinking: None,
-            prompt_eval_count: Some(120_000),
-            eval_count: Some(NUM_PREDICT_THINKING as u64),
-            done_reason: Some("length".into()),
-            tool_calls: None,
-        };
-        analyst.record_usage("construction".to_string(), &req, &counted);
-        let uncounted = crate::local_model::ChatResponse {
-            content: String::new(),
-            thinking: None,
-            prompt_eval_count: None,
-            eval_count: None,
-            done_reason: Some("length".into()),
-            tool_calls: None,
-        };
-        analyst.record_usage("interpret AAPL".to_string(), &req, &uncounted);
-        let drained = analyst.take_prompt_usage();
-        assert_eq!(drained.len(), 2);
-        assert_eq!(drained[0].stage, "construction");
-        assert_eq!(drained[0].prompt_tokens, Some(120_000));
-        assert_eq!(drained[0].num_ctx, 131_072);
+        let mut req = ChatRequest::new("reasoner", vec![ChatMessage::user("café 世界")]);
+        req.stage = Some("holding-AAPL research earnings gathering turn 2".into());
+        assert!(analyst.client.chat(&req).is_err());
+        req.stage = Some("distill AAPL (expanded)".into());
+        assert!(analyst
+            .client
+            .chat_streaming(&req, StreamRole::Silent)
+            .is_err());
+        let rows = analyst.take_prompt_usage();
+        assert_eq!(rows.len(), 2);
         assert_eq!(
-            drained[0].prompt_chars,
-            u64::try_from(crate::local_model::prompt_material_chars(
-                &req.messages,
-                req.tools.as_ref()
-            ))
-            .unwrap(),
-            "usage records the shared serialized prompt-material projection"
+            rows[0].stage,
+            "holding-AAPL research earnings gathering turn 2"
         );
-        let visible_content: u64 = req
-            .messages
+        assert_eq!(rows[1].stage, "distill AAPL (expanded)");
+        assert!(rows
             .iter()
-            .map(|m| m.content.chars().count() as u64)
-            .sum();
-        assert!(
-            drained[0].prompt_chars > visible_content,
-            "assistant tool calls and the tool schema cannot disappear from telemetry"
+            .all(|u| !u.adapter_ok && u.api.eval_count.is_none()));
+        assert_eq!(
+            rows[0].prompt_chars,
+            crate::local_model::prompt_material_chars(&req.messages, None) as u64
         );
-        // The output-side half rides the same observation.
-        assert_eq!(drained[0].completion_tokens, Some(NUM_PREDICT_THINKING as u64));
-        assert_eq!(drained[0].num_predict, Some(NUM_PREDICT_THINKING));
-        assert!(drained[0].output_limited, "a length stop is recorded");
-        // The count-less row keeps its length-stop observation instead of
-        // being dropped with it (attempt-1 review sweep).
-        assert_eq!(drained[1].stage, "interpret AAPL");
-        assert_eq!(drained[1].prompt_tokens, None);
-        assert!(drained[1].output_limited, "the observation survives a missing count");
-        assert!(
-            analyst.take_prompt_usage().is_empty(),
-            "drain empties the buffer"
-        );
+        assert!(analyst.take_prompt_usage().is_empty());
     }
 
     #[test]
@@ -9942,7 +9854,10 @@ pub(crate) mod tests {
         // a core that already holds at authoring: the prompt, the persisted
         // condition (`label`) and the trail move to v45 / v12.
         assert_eq!(PROMPT_VERSION, "portfolio-v46");
-        assert_eq!(crate::portfolio::store::CHECKPOINT_FORMAT_VERSION, "checkpoint-v12");
+        assert_eq!(
+            crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
+            "checkpoint-v13"
+        );
     }
 
     #[test]
@@ -12103,7 +12018,21 @@ pub(crate) mod tests {
         let msg = err.to_string();
         assert!(msg.contains("cannot be told apart"), "{msg}");
         assert!(!msg.contains("context exhaustion suspected"), "{msg}");
-        assert!(!msg.contains("truncated at the output reservation"), "{msg}");
+        assert!(
+            !msg.contains("truncated at the output reservation"),
+            "{msg}"
+        );
+
+        req.think = Some(true);
+        req.format_schema = Some(serde_json::json!({"type":"object"}));
+        let error =
+            ensure_not_output_limited("interpret AAPL", &req, &context_stopped).unwrap_err();
+        assert!(error.to_string().contains("phase-limited"));
+        assert!(!error.to_string().contains("context exhaustion suspected"));
+        assert!(
+            crate::local_model::retry_class(&error).is_none(),
+            "length stop is not retryable"
+        );
 
         let complete = crate::local_model::ChatResponse {
             content: "{}".into(),

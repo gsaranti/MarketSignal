@@ -572,16 +572,12 @@ pub mod options {
 pub struct ChatResponse {
     pub content: String,
     pub thinking: Option<String>,
-    /// Ollama's reported prompt token count (`prompt_eval_count` — on the
-    /// non-streaming reply body, or the stream's `done` chunk). The context-fit
-    /// instrumentation: `num_ctx` overflow **silently front-truncates** the prompt
-    /// (`docs/local-model-operations.md §The num_ctx trap`), and this count against
-    /// the request's `num_ctx` is the only in-app way to see it. `None` when the
-    /// daemon omits the field.
+    /// Raw terminal API prompt count, absent if omitted. It describes the
+    /// runtime's evaluated prompt, which on the two-task path is not necessarily
+    /// the original app packet. Its fill is a phase observation, not proof of fit.
     pub prompt_eval_count: Option<u64>,
-    /// Ollama's generated-token count (`eval_count`, same sources) — thinking and
-    /// content together. Against the request's `num_predict` it is the
-    /// output-budget read. `None` when the daemon omits the field.
+    /// Raw API `eval_count`. On the pinned thinking-plus-format runtime this
+    /// is the second task's count, not thinking plus content. `None` if omitted.
     pub eval_count: Option<u64>,
     /// Why generation stopped (`done_reason`, same sources) — `"stop"` for a
     /// natural end, `"length"` for a `num_predict`/context stop. A length stop
@@ -597,43 +593,73 @@ pub struct ChatResponse {
     pub tool_calls: Option<Value>,
 }
 
-/// One chat call's prompt-size observation — the stage label, Ollama's reported
-/// prompt token count, and the `num_ctx` the request declared. Collected per run
-/// and folded into the run's data-health read (`docs/portfolio-analysis.md`
-/// §Portfolio roll-up: the digest-compression covenant's detection leg).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Raw terminal API counters, without conversion or phase aggregation. Durations
+/// are nanoseconds. Provider omission is unknown, never zero. On the pinned
+/// thinking-plus-format path eval_count/eval_duration describe the second task;
+/// total_duration can include both phases and is still not the app elapsed time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiCounters {
+    pub prompt_eval_count: Option<u64>,
+    pub eval_count: Option<u64>,
+    pub total_duration: Option<u64>,
+    pub load_duration: Option<u64>,
+    pub prompt_eval_duration: Option<u64>,
+    pub eval_duration: Option<u64>,
+}
+
+/// Decoded Unicode scalar values received in the thinking channel. Partial
+/// includes zero when a stream was opened but ended before any thinking arrived.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ThinkingObservation {
+    #[default]
+    Unavailable,
+    Complete {
+        chars: u64,
+    },
+    Partial {
+        chars: u64,
+    },
+}
+
+/// One resolved physical attempt, captured before downstream validation. The
+/// collector is independent of the diagnostic log and drained by holding. The
+/// required app fields deliberately reject retired pre-release persisted shapes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PromptUsage {
-    /// Which call this measures (e.g. `interpret AAPL`, `construction`).
     pub stage: String,
-    /// Ollama's `prompt_eval_count` for the call — **post-truncation**: on
-    /// `num_ctx` overflow the daemon front-truncates and reports only the kept
-    /// tokens (live-verified far *below* `num_ctx`, not near it —
-    /// `docs/verification/2026-07-28-m5-preflight.md` §Truncation behavior), so
-    /// this count alone cannot witness a truncation. `None` when the daemon
-    /// omits the count — the row still records the output-side observation.
-    #[serde(default)]
-    pub prompt_tokens: Option<u64>,
-    /// The `num_ctx` the request was sent with; `0` when the request declared
-    /// none. Every context-fit consumer gates on `num_ctx > 0`, so a
-    /// count-less row can never fake a fill or truncation read.
+    pub model: String,
+    pub think: Option<bool>,
+    pub streamed: bool,
+    pub tools: bool,
+    pub format: bool,
     pub num_ctx: u32,
-    /// The serialized prompt material the app presented — message roles/content,
-    /// assistant tool calls, and the tool schema — the app-side ground truth a
-    /// post-truncation `prompt_tokens` is checked against.
-    #[serde(default)]
-    pub prompt_chars: u64,
-    /// Ollama's generated-token count for the call (`eval_count` — thinking and
-    /// content together), when reported. The output-side half of the read.
-    #[serde(default)]
-    pub completion_tokens: Option<u64>,
-    /// The `num_predict` the request declared, when set.
-    #[serde(default)]
     pub num_predict: Option<u32>,
-    /// The call stopped at a length limit (`done_reason: "length"`) — its own
-    /// output reservation, or the shared context filling first. The consumers
-    /// disambiguate through [`length_stop_reading`].
-    #[serde(default)]
+    /// Serialized messages and tools before daemon processing; excludes request
+    /// controls and the output grammar. Uses the gathering guard's projection.
+    pub prompt_chars: u64,
+    /// Monotonic app wall time of this attempt, excluding retry waits and
+    /// downstream validation. Never reconstructed from API duration fields.
+    pub elapsed_ms: u64,
+    pub thinking: ThinkingObservation,
+    pub api: ApiCounters,
+    /// Adapter result only; a received response may fail semantic validation.
+    pub adapter_ok: bool,
+    pub done_reason: Option<String>,
     pub output_limited: bool,
+}
+
+impl PromptUsage {
+    /// A format request with thinking on or runtime-default thinking may use
+    /// two tasks. Do not infer original packet fit or whole-generation usage.
+    pub fn phase_limited(&self) -> bool {
+        phase_limited(self.think, self.format)
+    }
+}
+
+/// Conservative request-side classification shared by capture and diagnostics.
+pub fn phase_limited(think: Option<bool>, format: bool) -> bool {
+    format && think != Some(false)
 }
 
 /// How a `done_reason: "length"` stop reads against its counts. The one
@@ -659,6 +685,19 @@ pub fn length_stop_reading(generated: Option<u64>, reservation: Option<u32>) -> 
         (Some(g), Some(r)) if g >= u64::from(r) => LengthStopReading::AtReservation,
         (Some(_), Some(_)) => LengthStopReading::UnderReservation,
         _ => LengthStopReading::Unattributed,
+    }
+}
+
+/// Phase-limited counters cannot attribute a whole-call length stop.
+pub fn observed_length_stop_reading(
+    generated: Option<u64>,
+    reservation: Option<u32>,
+    phase_limited: bool,
+) -> LengthStopReading {
+    if phase_limited {
+        LengthStopReading::Unattributed
+    } else {
+        length_stop_reading(generated, reservation)
     }
 }
 
@@ -724,10 +763,16 @@ fn build_chat_body(req: &ChatRequest, stream: bool) -> Value {
 #[derive(Debug, Deserialize)]
 struct ChatReplyWire {
     message: ChatReplyMessage,
-    #[serde(default)]
     prompt_eval_count: Option<u64>,
-    #[serde(default)]
     eval_count: Option<u64>,
+    #[serde(default)]
+    total_duration: Value,
+    #[serde(default)]
+    load_duration: Value,
+    #[serde(default)]
+    prompt_eval_duration: Value,
+    #[serde(default)]
+    eval_duration: Value,
     #[serde(default)]
     done_reason: Option<String>,
 }
@@ -745,10 +790,30 @@ struct ChatReplyMessage {
 /// Shape a non-streaming `/api/chat` response body into a [`ChatResponse`]. Pure, so
 /// the envelope contract is testable without a live call. An empty `thinking` string
 /// collapses to `None` so callers don't distinguish "" from absent.
+#[cfg(test)]
 fn parse_chat_reply(body: &str) -> Result<ChatResponse> {
+    parse_chat_reply_observed(body, &mut PromptUsage::default())
+}
+
+fn parse_chat_reply_observed(body: &str, usage: &mut PromptUsage) -> Result<ChatResponse> {
     let wire: ChatReplyWire = serde_json::from_str(body)
         .map_err(|e| anyhow::Error::new(e).context(RetryClass::SchemaParse))
         .context("parsing local chat response JSON")?;
+    usage.api = ApiCounters {
+        prompt_eval_count: wire.prompt_eval_count,
+        eval_count: wire.eval_count,
+        total_duration: wire.total_duration.as_u64(),
+        load_duration: wire.load_duration.as_u64(),
+        prompt_eval_duration: wire.prompt_eval_duration.as_u64(),
+        eval_duration: wire.eval_duration.as_u64(),
+    };
+    usage.thinking = ThinkingObservation::Complete {
+        chars: wire
+            .message
+            .thinking
+            .as_deref()
+            .map_or(0, |t| t.chars().count() as u64),
+    };
     Ok(ChatResponse {
         content: wire.message.content,
         thinking: wire.message.thinking.filter(|t| !t.is_empty()),
@@ -864,6 +929,7 @@ pub struct LocalModelClient {
     base_url: String,
     progress: Arc<RunContext>,
     deadline: DeadlinePolicy,
+    usage: Option<std::sync::Mutex<Vec<PromptUsage>>>,
 }
 
 impl LocalModelClient {
@@ -883,6 +949,19 @@ impl LocalModelClient {
             base_url: normalize_endpoint(&endpoint.into()),
             progress: RunContext::noop(),
             deadline: DeadlinePolicy::DEFAULT,
+            usage: None,
+        })
+    }
+
+    /// Enable bounded-by-job, per-holding collection only for the owning analyst.
+    pub(crate) fn with_usage_capture(mut self) -> Self {
+        self.usage = Some(std::sync::Mutex::new(Vec::new()));
+        self
+    }
+
+    pub(crate) fn take_prompt_usage(&self) -> Vec<PromptUsage> {
+        self.usage.as_ref().map_or_else(Vec::new, |rows| {
+            std::mem::take(&mut *rows.lock().expect("usage lock is never poisoned"))
         })
     }
 
@@ -943,24 +1022,37 @@ impl LocalModelClient {
     /// always between the call's two boundary events. `Silent` forwards
     /// nothing.
     pub fn chat_with_role(&self, req: &ChatRequest, role: StreamRole<'_>) -> Result<ChatResponse> {
-        let (call, started) = self.call_started(req, false);
+        let (call, started, mut usage) = self.call_started(req, false);
         self.progress
             .request_started("Local", "local", req.model_id.as_str(), "Local model");
-        let result = self.chat_inner(req);
+        let result = self.chat_inner(req, &mut usage);
+        usage.elapsed_ms = elapsed_millis(started);
         self.finish_row(&req.model_id, &result);
         if let Ok(resp) = &result {
             if let Some(thinking) = &resp.thinking {
                 emit_thinking(&self.progress, role, thinking.clone());
             }
         }
-        self.call_finished(call, req, started, &result);
+        self.call_finished(call, usage, &result);
         result
     }
 
     /// Open a call's boundary: the `model-call-started` event with the
     /// request's controls (never its prompt text), returning the call number
     /// and the clock the matching close reads.
-    fn call_started(&self, req: &ChatRequest, streamed: bool) -> (u64, Instant) {
+    fn call_started(&self, req: &ChatRequest, streamed: bool) -> (u64, Instant, PromptUsage) {
+        let usage = PromptUsage {
+            stage: call_stage(req),
+            model: req.model_id.clone(),
+            think: req.think,
+            streamed,
+            tools: req.tools.is_some(),
+            format: req.format_schema.is_some(),
+            num_ctx: request_num_ctx(req).unwrap_or(0),
+            num_predict: request_num_predict(req),
+            prompt_chars: prompt_material_chars(&req.messages, req.tools.as_ref()) as u64,
+            ..PromptUsage::default()
+        };
         let call = self.progress.model_call_started(ModelCallInfo {
             stage: call_stage(req),
             model: req.model_id.clone(),
@@ -970,44 +1062,39 @@ impl LocalModelClient {
             format: req.format_schema.is_some(),
             num_ctx: request_num_ctx(req),
             num_predict: request_num_predict(req),
-            prompt_chars: u64::try_from(prompt_material_chars(&req.messages, req.tools.as_ref()))
-                .unwrap_or(u64::MAX),
+            prompt_chars: usage.prompt_chars,
         });
-        (call, Instant::now())
+        (call, Instant::now(), usage)
     }
 
     /// Close a call's boundary with how it resolved: the daemon's counts on
     /// success, the capped top-level message on failure.
-    fn call_finished(
-        &self,
-        call: u64,
-        req: &ChatRequest,
-        started: Instant,
-        result: &Result<ChatResponse>,
-    ) {
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let outcome = match result {
-            Ok(resp) => ModelCallOutcome {
-                ok: true,
-                detail: None,
-                elapsed_ms,
-                prompt_tokens: resp.prompt_eval_count,
-                generated_tokens: resp.eval_count,
-                done_reason: resp.done_reason.clone(),
+    fn call_finished(&self, call: u64, mut usage: PromptUsage, result: &Result<ChatResponse>) {
+        usage.adapter_ok = result.is_ok();
+        if let Ok(resp) = result {
+            usage.done_reason = resp.done_reason.clone();
+            usage.output_limited = resp.done_reason.as_deref() == Some("length");
+        }
+        if let Some(rows) = &self.usage {
+            rows.lock()
+                .expect("usage lock is never poisoned")
+                .push(usage.clone());
+        }
+        self.progress.model_call_finished(
+            call,
+            usage.stage.clone(),
+            ModelCallOutcome {
+                ok: result.is_ok(),
+                detail: result
+                    .as_ref()
+                    .err()
+                    .map(|e| cap_call_detail(&e.to_string())),
+                usage,
             },
-            Err(e) => ModelCallOutcome {
-                ok: false,
-                detail: Some(cap_call_detail(&e.to_string())),
-                elapsed_ms,
-                prompt_tokens: None,
-                generated_tokens: None,
-                done_reason: None,
-            },
-        };
-        self.progress.model_call_finished(call, call_stage(req), outcome);
+        );
     }
 
-    fn chat_inner(&self, req: &ChatRequest) -> Result<ChatResponse> {
+    fn chat_inner(&self, req: &ChatRequest, usage: &mut PromptUsage) -> Result<ChatResponse> {
         let deadline = self.deadline.request_deadline(req, false);
         let body = build_chat_body(req, false);
         let resp = self
@@ -1029,7 +1116,7 @@ impl LocalModelClient {
             return Err(anyhow::Error::new(RetryClass::DaemonStatus)
                 .context(format!("local model returned {status}: {text}")));
         }
-        parse_chat_reply(&text)
+        parse_chat_reply_observed(&text, usage)
     }
 
     /// A streaming chat call: emits tokens / reasoning through the run context as the
@@ -1044,13 +1131,19 @@ impl LocalModelClient {
     /// so a prose stage can't mistake a cut-off stream for a complete answer and
     /// `run_job` classifies a cancelled run off the shared flag (`jobs.rs`).
     pub fn chat_streaming(&self, req: &ChatRequest, role: StreamRole<'_>) -> Result<ChatResponse> {
-        let (call, started) = self.call_started(req, true);
-        let result = self.chat_streaming_inner(req, role);
-        self.call_finished(call, req, started, &result);
+        let (call, started, mut usage) = self.call_started(req, true);
+        let result = self.chat_streaming_inner(req, role, &mut usage);
+        usage.elapsed_ms = elapsed_millis(started);
+        self.call_finished(call, usage, &result);
         result
     }
 
-    fn chat_streaming_inner(&self, req: &ChatRequest, role: StreamRole<'_>) -> Result<ChatResponse> {
+    fn chat_streaming_inner(
+        &self,
+        req: &ChatRequest,
+        role: StreamRole<'_>,
+        usage: &mut PromptUsage,
+    ) -> Result<ChatResponse> {
         let deadline = self.deadline.request_deadline(req, true);
         let body = build_chat_body(req, true);
         let http = Self::streaming_http(deadline)?;
@@ -1084,7 +1177,7 @@ impl LocalModelClient {
             return Err(anyhow::Error::new(RetryClass::DaemonStatus)
                 .context(format!("local model returned {status}: {text}")));
         }
-        stream_chat_response(std::io::BufReader::new(resp), &self.progress, role)
+        stream_chat_response_observed(std::io::BufReader::new(resp), &self.progress, role, usage)
             .map_err(|e| name_deadline_trip(e, deadline))
     }
 
@@ -1206,11 +1299,22 @@ fn emit_thinking(progress: &RunContext, role: StreamRole<'_>, delta: String) {
 /// stops reading promptly; a stream that ends without a `done` chunk and was not
 /// cancelled is a truncation and fails the call (rather than returning a silently
 /// short envelope that would surface only as an opaque downstream parse error).
+#[cfg(test)]
 fn stream_chat_response(
     reader: impl BufRead,
     progress: &RunContext,
     role: StreamRole<'_>,
 ) -> Result<ChatResponse> {
+    stream_chat_response_observed(reader, progress, role, &mut PromptUsage::default())
+}
+
+fn stream_chat_response_observed(
+    reader: impl BufRead,
+    progress: &RunContext,
+    role: StreamRole<'_>,
+    usage: &mut PromptUsage,
+) -> Result<ChatResponse> {
+    usage.thinking = ThinkingObservation::Partial { chars: 0 };
     let mut content = String::new();
     let mut thinking = String::new();
     let mut token_pending = String::new();
@@ -1252,6 +1356,9 @@ fn stream_chat_response(
         if let Some(t) = event.pointer("/message/thinking").and_then(Value::as_str) {
             if !t.is_empty() {
                 thinking.push_str(t);
+                if let ThinkingObservation::Partial { chars } = &mut usage.thinking {
+                    *chars = chars.saturating_add(t.chars().count() as u64);
+                }
                 thinking_pending.push_str(t);
                 if thinking_pending.chars().count() >= TOKEN_FLUSH_CHARS {
                     emit_thinking(progress, role, std::mem::take(&mut thinking_pending));
@@ -1260,6 +1367,14 @@ fn stream_chat_response(
         }
         if event.get("done").and_then(Value::as_bool) == Some(true) {
             saw_done = true;
+            usage.api = ApiCounters {
+                prompt_eval_count: event.get("prompt_eval_count").and_then(Value::as_u64),
+                eval_count: event.get("eval_count").and_then(Value::as_u64),
+                total_duration: event.get("total_duration").and_then(Value::as_u64),
+                load_duration: event.get("load_duration").and_then(Value::as_u64),
+                prompt_eval_duration: event.get("prompt_eval_duration").and_then(Value::as_u64),
+                eval_duration: event.get("eval_duration").and_then(Value::as_u64),
+            };
             // The terminal chunk carries the run counters (`prompt_eval_count` …)
             // and the stop reason — a `num_predict`/length stop still ends with
             // `done: true`, so this is where a truncation becomes visible.
@@ -1293,6 +1408,9 @@ fn stream_chat_response(
         return Err(anyhow::Error::new(RetryClass::Stream)
             .context("local model stream ended before completion"));
     }
+    usage.thinking = ThinkingObservation::Complete {
+        chars: thinking.chars().count() as u64,
+    };
     Ok(ChatResponse {
         content,
         thinking: (!thinking.is_empty()).then_some(thinking),
@@ -1303,6 +1421,10 @@ fn stream_chat_response(
         // tools; the research loop's tool turns ride the non-streaming call.
         tool_calls: None,
     })
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The local daemon endpoint from validated configuration: the set, non-blank value
@@ -1582,6 +1704,189 @@ mod tests {
         for profile in [&think, &fast] {
             assert_ne!(profile["temperature"], 0.0, "greedy decoding is forbidden");
         }
+    }
+
+    #[test]
+    fn entry7_raw_counters_and_unicode_thinking_match_both_transports() {
+        let counters = r#""prompt_eval_count":17,"eval_count":3,"total_duration":9000000000,"load_duration":101,"prompt_eval_duration":202,"eval_duration":303"#;
+        let reply = format!(
+            r#"{{"message":{{"content":"{{}}","thinking":"é🦀界"}},"done_reason":"stop",{counters}}}"#
+        );
+        let mut plain = PromptUsage::default();
+        parse_chat_reply_observed(&reply, &mut plain).unwrap();
+        let stream = format!("{{\"message\":{{\"thinking\":\"é🦀\"}}}}\n{{\"message\":{{\"thinking\":\"界\"}}}}\n{{\"done\":true,{counters}}}\n");
+        let mut streamed = PromptUsage::default();
+        stream_chat_response_observed(
+            stream.as_bytes(),
+            &RunContext::noop(),
+            StreamRole::Silent,
+            &mut streamed,
+        )
+        .unwrap();
+        assert_eq!(plain.api, streamed.api);
+        assert_eq!(
+            plain.api,
+            ApiCounters {
+                prompt_eval_count: Some(17),
+                eval_count: Some(3),
+                total_duration: Some(9_000_000_000),
+                load_duration: Some(101),
+                prompt_eval_duration: Some(202),
+                eval_duration: Some(303),
+            }
+        );
+        assert_eq!(plain.thinking, ThinkingObservation::Complete { chars: 3 });
+        assert_eq!(plain.thinking, streamed.thinking);
+        let mut empty = PromptUsage::default();
+        parse_chat_reply_observed(r#"{"message":{"content":"{}"}}"#, &mut empty).unwrap();
+        assert_eq!(empty.thinking, ThinkingObservation::Complete { chars: 0 });
+        assert_eq!(empty.api, ApiCounters::default());
+        // New diagnostic metadata must not turn an otherwise valid response
+        // into a model failure when a daemon returns an invalid duration.
+        parse_chat_reply_observed(
+            r#"{"message":{"content":"{}"},"total_duration":"unknown","eval_duration":-1}"#,
+            &mut empty,
+        )
+        .unwrap();
+        assert_eq!(empty.api.total_duration, None);
+        assert_eq!(empty.api.eval_duration, None);
+    }
+
+    #[test]
+    fn entry7_partial_thinking_survives_stream_error_eof_and_cancel() {
+        for trailer in ["", "{\"error\":\"runner stopped\"}\n"] {
+            let stream = format!("{{\"message\":{{\"thinking\":\"é🦀\"}}}}\n{trailer}");
+            let mut usage = PromptUsage::default();
+            assert!(stream_chat_response_observed(
+                stream.as_bytes(),
+                &RunContext::noop(),
+                StreamRole::Silent,
+                &mut usage
+            )
+            .is_err());
+            assert_eq!(usage.thinking, ThinkingObservation::Partial { chars: 2 });
+            assert_eq!(usage.api, ApiCounters::default());
+        }
+        // Cancel only after the first line was delivered, so the already received
+        // thinking is retained even though the next read observes cancellation.
+        struct CancelAfterLine<'a> {
+            bytes: std::io::Cursor<&'a [u8]>,
+            flag: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl std::io::Read for CancelAfterLine<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                std::io::Read::read(&mut self.bytes, buf)
+            }
+        }
+        impl std::io::BufRead for CancelAfterLine<'_> {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                self.bytes.fill_buf()
+            }
+            fn consume(&mut self, n: usize) {
+                self.bytes.consume(n);
+            }
+            fn read_line(&mut self, line: &mut String) -> std::io::Result<usize> {
+                let n = self.bytes.read_line(line)?;
+                if self.bytes.position() > 0 && line.contains("done") {
+                    self.flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(n)
+            }
+        }
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ctx = RunContext::new(
+            "cancel",
+            Arc::new(RecordingReporter::default()),
+            flag.clone(),
+        );
+        let mut usage = PromptUsage::default();
+        let input = "{\"message\":{\"thinking\":\"é🦀\"}}\n{\"done\":true}\n";
+        let reader = CancelAfterLine {
+            bytes: std::io::Cursor::new(input.as_bytes()),
+            flag,
+        };
+        assert!(
+            stream_chat_response_observed(reader, &ctx, StreamRole::Silent, &mut usage).is_err()
+        );
+        assert_eq!(usage.thinking, ThinkingObservation::Partial { chars: 2 });
+    }
+
+    #[test]
+    fn entry7_retry_records_each_attempt_once_and_fences_share_measurements() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 500,
+                headers: vec![],
+                body: "runner failed",
+            },
+            Canned::Delay {
+                for_ms: 40,
+                then: Box::new(Canned::Reply {
+                    status: 200,
+                    headers: vec![],
+                    body: r#"{"message":{"content":"{}","thinking":"é🦀界"},"eval_count":1,"total_duration":9,"done_reason":"stop"}"#,
+                }),
+            },
+        ]);
+        let (rec, ctx) = recording_ctx();
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_context(ctx)
+            .with_usage_capture();
+        let mut req = ChatRequest::new("model", vec![ChatMessage::user("évidence")]);
+        req.stage = Some("holding-AAPL research t1 synthesis".into());
+        req.think = Some(true);
+        req.format_schema = Some(serde_json::json!({"type":"object"}));
+        let retry = RetryOnce::new();
+        retry
+            .run(client.progress(), req.stage.as_ref().unwrap(), || {
+                client.chat(&req)
+            })
+            .unwrap();
+        let rows = client.take_prompt_usage();
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[0].adapter_ok);
+        assert_eq!(rows[0].thinking, ThinkingObservation::Unavailable);
+        assert!(rows[1].adapter_ok && rows[1].phase_limited());
+        assert_eq!(rows[1].thinking, ThinkingObservation::Complete { chars: 3 });
+        assert_eq!(rows[1].api.total_duration, Some(9));
+        assert!(
+            rows[1].elapsed_ms >= 30,
+            "whole app attempt includes the delayed reply"
+        );
+        assert_eq!(rows[0].prompt_chars, rows[1].prompt_chars);
+        assert_eq!(rows[1].stage, req.stage.unwrap());
+        let fenced: Vec<_> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                ProgressEvent::ModelCallFinished { usage, .. } => Some(usage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows, fenced);
+        assert!(client.take_prompt_usage().is_empty());
+    }
+
+    #[test]
+    fn entry7_stream_failure_and_length_stop_are_captured_before_validation() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: "{\"message\":{\"thinking\":\"é🦀\"}}\n" },
+            Canned::Reply { status: 200, headers: vec![], body: "{\"message\":{\"thinking\":\"界\"}}\n{\"done\":true,\"eval_count\":3,\"done_reason\":\"length\"}\n" },
+        ]);
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_usage_capture();
+        let req = thinking_request();
+        assert!(client.chat_streaming(&req, StreamRole::Silent).is_err());
+        assert!(client.chat_streaming(&req, StreamRole::Silent).is_ok());
+        let rows = client.take_prompt_usage();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].thinking, ThinkingObservation::Partial { chars: 2 });
+        assert!(!rows[0].adapter_ok);
+        assert_eq!(rows[1].thinking, ThinkingObservation::Complete { chars: 1 });
+        assert!(rows[1].adapter_ok && rows[1].output_limited);
+        assert_eq!(rows[1].api.eval_count, Some(3));
     }
 
     #[test]
@@ -2373,10 +2678,19 @@ mod tests {
                         step.as_deref().unwrap_or("-")
                     )
                 }
-                ProgressEvent::ModelCallFinished { call, status, prompt_tokens, generated_tokens, done_reason, detail, .. } => {
+                ProgressEvent::ModelCallFinished {
+                    call,
+                    status,
+                    usage,
+                    detail,
+                    ..
+                } => {
                     format!(
                         "finished {call} {status} {:?} {:?} {:?} {:?}",
-                        prompt_tokens, generated_tokens, done_reason, detail
+                        usage.api.prompt_eval_count,
+                        usage.api.eval_count,
+                        usage.done_reason,
+                        detail
                     )
                 }
                 ProgressEvent::RequestStarted { .. } => "row sent".into(),

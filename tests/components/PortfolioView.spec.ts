@@ -205,7 +205,7 @@ const run: PortfolioRun = {
       benchmark_gaps: 0,
       research_degraded_holdings: 0,
       research_gap_count: 0,
-      context_pressure: [],
+      prompt_usage: [], context_pressure: [],
       peak_prompt: null,
       model_retries: [],
       attention: false,

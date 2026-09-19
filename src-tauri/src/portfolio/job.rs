@@ -2852,16 +2852,17 @@ fn build_data_health(
     // for its output-side observation): fill reads 0 and truncation reads
     // false, so a count-less row can never enter a context-fit line.
     let fill = |u: &crate::local_model::PromptUsage| {
-        u.prompt_tokens.unwrap_or(0) as f64 / u.num_ctx as f64
+        u.api.prompt_eval_count.unwrap_or(0) as f64 / u.num_ctx as f64
     };
     let truncated = |u: &crate::local_model::PromptUsage| {
-        u.prompt_tokens.is_some_and(|t| {
-            t.saturating_mul(crate::portfolio::TRUNCATION_CHARS_PER_TOKEN) < u.prompt_chars
-        })
+        !u.phase_limited()
+            && u.api.prompt_eval_count.is_some_and(|t| {
+                t.saturating_mul(crate::portfolio::TRUNCATION_CHARS_PER_TOKEN) < u.prompt_chars
+            })
     };
     let peak_prompt = prompt_usage
         .iter()
-        .filter(|u| u.num_ctx > 0 && u.prompt_tokens.is_some())
+        .filter(|u| u.num_ctx > 0 && u.api.prompt_eval_count.is_some())
         .max_by(|a, b| fill(a).total_cmp(&fill(b)))
         .cloned();
     // The output-budget read (`num_predict` — `docs/verification/
@@ -2874,15 +2875,16 @@ fn build_data_health(
         .cloned()
         .collect();
     let context_pressure: Vec<crate::local_model::PromptUsage> = prompt_usage
-        .into_iter()
+        .iter()
         .filter(|u| {
             u.num_ctx > 0
                 && (fill(u) >= crate::portfolio::CONTEXT_PRESSURE_FRACTION || truncated(u))
         })
+        .cloned()
         .collect();
     if let Some(worst) = output_limited
         .iter()
-        .max_by_key(|u| u.completion_tokens.unwrap_or(0))
+        .max_by_key(|u| u.api.eval_count.unwrap_or(0))
     {
         // `done_reason: "length"` covers two stops with different levers — the
         // call's own output reservation, or the shared context filling first —
@@ -2890,18 +2892,20 @@ fn build_data_health(
         // same single-homed predicate the per-call typed failure used
         // (`local_model::length_stop_reading`), and claims nothing when the
         // counts are incomplete.
-        let reading = crate::local_model::length_stop_reading(
-            worst.completion_tokens,
+        let reading = crate::local_model::observed_length_stop_reading(
+            worst.api.eval_count,
             worst.num_predict,
+            worst.phase_limited(),
         );
         parts.push(format!(
-            "generation length-stopped on {} local call{} (worst: {} generated {} of {} \
+            "generation length-stopped on {} local call{} (largest returned eval_count: {} API eval_count {} of {} \
              reserved — {})",
             output_limited.len(),
             if output_limited.len() == 1 { "" } else { "s" },
             worst.stage,
             worst
-                .completion_tokens
+                .api
+                .eval_count
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "unreported".into()),
             worst
@@ -2916,7 +2920,7 @@ fn build_data_health(
                     "under it; context exhaustion suspected"
                 }
                 crate::local_model::LengthStopReading::Unattributed => {
-                    "counts incomplete; stop unattributed"
+                    "counts incomplete or phase-limited; stop unattributed"
                 }
             },
         ));
@@ -2928,13 +2932,13 @@ fn build_data_health(
         .max_by(|a, b| a.prompt_chars.cmp(&b.prompt_chars))
     {
         parts.push(format!(
-            "likely front-truncation on {} local call{} (worst: {} reported {} tokens for a \
+            "likely front-truncation on {} local call{} (worst: {} API prompt_eval_count {} tokens for a \
              {}-char prompt, num_ctx {})",
             truncation_suspects.len(),
             if truncation_suspects.len() == 1 { "" } else { "s" },
             worst.stage,
             // `truncated` requires a reported count, so this is always Some.
-            worst.prompt_tokens.unwrap_or(0),
+            worst.api.prompt_eval_count.unwrap_or(0),
             worst.prompt_chars,
             worst.num_ctx
         ));
@@ -2961,11 +2965,11 @@ fn build_data_health(
             .max_by(|a, b| fill(a).total_cmp(&fill(b)))
             .expect("near_full > 0 implies a non-truncated pressured row");
         parts.push(format!(
-            "context pressure on {near_full} local call{} (worst: {} at {} of {} tokens)",
+            "context pressure on {near_full} local call{} (worst: {} API prompt_eval_count {} of {} tokens; measured runtime phase)",
             if near_full == 1 { "" } else { "s" },
             worst.stage,
             // A near-full fill requires a reported count, so this is always Some.
-            worst.prompt_tokens.unwrap_or(0),
+            worst.api.prompt_eval_count.unwrap_or(0),
             worst.num_ctx
         ));
     }
@@ -3001,6 +3005,7 @@ fn build_data_health(
         benchmark_gaps: feed_gaps.benchmark,
         research_degraded_holdings,
         research_gap_count,
+        prompt_usage,
         context_pressure,
         peak_prompt,
         model_retries,
@@ -3344,25 +3349,105 @@ mod tests {
     /// `num_ctx` is named in the summary and trips attention; the peak fill is
     /// recorded either way — the big-run prompt-fit watch's measurement.
     #[test]
+    fn entry7_all_attempts_survive_summary_and_phase_limited_counts_stay_unattributed() {
+        use crate::local_model::{ApiCounters, PromptUsage, ThinkingObservation};
+        let ordinary = PromptUsage {
+            stage: "holding-AAPL research t1 gathering turn 1".into(),
+            model: "qwen".into(),
+            num_ctx: 131_072,
+            prompt_chars: 400,
+            elapsed_ms: 500,
+            adapter_ok: true,
+            thinking: ThinkingObservation::Complete { chars: 20 },
+            api: ApiCounters {
+                prompt_eval_count: Some(100),
+                eval_count: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let phase_limited = PromptUsage {
+            stage: "interpret AAPL".into(),
+            think: Some(true),
+            format: true,
+            prompt_chars: 80_000,
+            num_predict: Some(65_536),
+            output_limited: true,
+            done_reason: Some("length".into()),
+            ..ordinary.clone()
+        };
+        let failed = PromptUsage {
+            stage: "action AAPL".into(),
+            num_ctx: 131_072,
+            prompt_chars: 300,
+            elapsed_ms: 99,
+            thinking: ThinkingObservation::Partial { chars: 7 },
+            ..Default::default()
+        };
+        let rows = vec![ordinary, phase_limited.clone(), failed];
+        let dh = build_data_health(
+            &[],
+            0,
+            false,
+            false,
+            FeedGaps::default(),
+            rows.clone(),
+            vec![],
+        );
+        assert_eq!(dh.prompt_usage, rows);
+        assert!(dh.context_pressure.is_empty());
+        assert!(
+            dh.summary.contains("phase-limited; stop unattributed"),
+            "{}",
+            dh.summary
+        );
+        assert!(!dh.summary.contains("context exhaustion suspected"));
+        assert!(dh.attention, "length stops still demand attention");
+        let single_phase = PromptUsage {
+            think: Some(false),
+            ..phase_limited
+        };
+        let dh = build_data_health(
+            &[],
+            0,
+            false,
+            false,
+            FeedGaps::default(),
+            vec![single_phase],
+            vec![],
+        );
+        assert!(dh.summary.contains("context exhaustion suspected"));
+        assert!(dh.summary.contains("likely front-truncation"));
+    }
+
+    #[test]
     fn data_health_flags_context_pressure_and_records_the_peak() {
         let usage = vec![
             crate::local_model::PromptUsage {
                 stage: "interpret AAPL".into(),
-                prompt_tokens: Some(50_000),
                 num_ctx: 131_072,
                 prompt_chars: 200_000,
-                completion_tokens: None,
                 num_predict: None,
                 output_limited: false,
+                api: crate::local_model::ApiCounters {
+                    prompt_eval_count: Some(50_000),
+                    eval_count: None,
+                    ..Default::default()
+                },
+                ..Default::default()
             },
             crate::local_model::PromptUsage {
                 stage: "construction".into(),
-                prompt_tokens: Some(125_000),
                 num_ctx: 131_072,
                 prompt_chars: 500_000,
-                completion_tokens: None,
                 num_predict: None,
                 output_limited: false,
+                api: crate::local_model::ApiCounters {
+                    prompt_eval_count: Some(125_000),
+                    eval_count: None,
+                    ..Default::default()
+                },
+                ..Default::default()
             },
         ];
         let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
@@ -3370,8 +3455,8 @@ mod tests {
         assert_eq!(dh.context_pressure[0].stage, "construction");
         assert_eq!(dh.peak_prompt.as_ref().unwrap().stage, "construction");
         assert!(dh.attention, "{}", dh.summary);
-        let expected = "context pressure on 1 local call (worst: construction at 125000 of \
-                        131072 tokens)";
+        let expected = "context pressure on 1 local call (worst: construction API prompt_eval_count 125000 of \
+                        131072 tokens; measured runtime phase)";
         assert!(dh.summary.contains(expected), "{}", dh.summary);
     }
 
@@ -3379,17 +3464,23 @@ mod tests {
     fn data_health_records_the_peak_without_pressure() {
         let usage = vec![crate::local_model::PromptUsage {
             stage: "interpret MSFT".into(),
-            prompt_tokens: Some(90_000),
             num_ctx: 131_072,
             prompt_chars: 360_000,
-            completion_tokens: None,
             num_predict: None,
             output_limited: false,
+            api: crate::local_model::ApiCounters {
+                prompt_eval_count: Some(90_000),
+                eval_count: None,
+                ..Default::default()
+            },
+            ..Default::default()
         }];
         let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.context_pressure.is_empty());
-        let peak = dh.peak_prompt.expect("peak recorded regardless of pressure");
-        assert_eq!(peak.prompt_tokens, Some(90_000));
+        let peak = dh
+            .peak_prompt
+            .expect("peak recorded regardless of pressure");
+        assert_eq!(peak.api.prompt_eval_count, Some(90_000));
         assert!(!dh.attention, "{}", dh.summary);
         assert!(!dh.summary.contains("context pressure"), "{}", dh.summary);
     }
@@ -3401,17 +3492,21 @@ mod tests {
     fn data_health_names_an_output_limited_call() {
         let usage = vec![crate::local_model::PromptUsage {
             stage: "construction".into(),
-            prompt_tokens: Some(60_000),
             num_ctx: 131_072,
             prompt_chars: 240_000,
-            completion_tokens: Some(65_536),
             num_predict: Some(65_536),
             output_limited: true,
+            api: crate::local_model::ApiCounters {
+                prompt_eval_count: Some(60_000),
+                eval_count: Some(65_536),
+                ..Default::default()
+            },
+            ..Default::default()
         }];
         let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.attention, "{}", dh.summary);
         let expected =
-            "generation length-stopped on 1 local call (worst: construction generated 65536 of \
+            "generation length-stopped on 1 local call (largest returned eval_count: construction API eval_count 65536 of \
              65536 reserved — at the output reservation)";
         assert!(dh.summary.contains(expected), "{}", dh.summary);
     }
@@ -3424,17 +3519,21 @@ mod tests {
     fn data_health_keeps_a_length_stop_with_no_prompt_count() {
         let usage = vec![crate::local_model::PromptUsage {
             stage: "construction".into(),
-            prompt_tokens: None,
             num_ctx: 131_072,
             prompt_chars: 240_000,
-            completion_tokens: None,
             num_predict: Some(65_536),
             output_limited: true,
+            api: crate::local_model::ApiCounters {
+                prompt_eval_count: None,
+                eval_count: None,
+                ..Default::default()
+            },
+            ..Default::default()
         }];
         let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.attention, "{}", dh.summary);
-        let expected = "generation length-stopped on 1 local call (worst: construction \
-                        generated unreported of 65536 reserved — counts incomplete; stop \
+        let expected = "generation length-stopped on 1 local call (largest returned eval_count: construction \
+                        API eval_count unreported of 65536 reserved — counts incomplete or phase-limited; stop \
                         unattributed)";
         assert!(dh.summary.contains(expected), "{}", dh.summary);
         // The count-less row must not fake a context-fit read.
@@ -3452,17 +3551,22 @@ mod tests {
     fn data_health_flags_likely_truncation_despite_comfortable_fill() {
         let usage = vec![crate::local_model::PromptUsage {
             stage: "interpret NVDA".into(),
-            prompt_tokens: Some(1_026),
             num_ctx: 2_048,
             prompt_chars: 18_400,
-            completion_tokens: None,
             num_predict: None,
             output_limited: false,
+            api: crate::local_model::ApiCounters {
+                prompt_eval_count: Some(1_026),
+                eval_count: None,
+                ..Default::default()
+            },
+            ..Default::default()
         }];
         let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert_eq!(dh.context_pressure.len(), 1);
         assert!(dh.attention, "{}", dh.summary);
-        let expected = "likely front-truncation on 1 local call (worst: interpret NVDA reported \
+        let expected =
+            "likely front-truncation on 1 local call (worst: interpret NVDA API prompt_eval_count \
                         1026 tokens for a 18400-char prompt, num_ctx 2048)";
         assert!(dh.summary.contains(expected), "{}", dh.summary);
         assert!(!dh.summary.contains("context pressure on"), "{}", dh.summary);
@@ -5407,12 +5511,16 @@ mod tests {
                 .unwrap()
                 .push(crate::local_model::PromptUsage {
                     stage,
-                    prompt_tokens: Some(prompt_tokens),
                     num_ctx: 131_072,
                     prompt_chars: prompt_tokens * 4,
-                    completion_tokens: Some(1_000),
                     num_predict: None,
                     output_limited: false,
+                    api: crate::local_model::ApiCounters {
+                        prompt_eval_count: Some(prompt_tokens),
+                        eval_count: Some(1_000),
+                        ..Default::default()
+                    },
+                    ..Default::default()
                 });
         }
     }
@@ -5699,11 +5807,36 @@ mod tests {
         // retries list pre-crash AAPL then post-resume MSFT, the peak is AAPL's
         // pre-crash 120 k fill over MSFT's 60 k, and AAPL's pressure row survives.
         let dh = &run.roll_up.data_health;
+        assert_eq!(
+            dh.prompt_usage
+                .iter()
+                .map(|u| u.stage.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "distill AAPL",
+                "interpret AAPL",
+                "distill MSFT",
+                "interpret MSFT"
+            ]
+        );
+        let loaded = store::latest_run(&conn).unwrap().unwrap();
+        assert_eq!(loaded.roll_up.data_health.prompt_usage, dh.prompt_usage);
         let retry_stages: Vec<&str> = dh.model_retries.iter().map(|r| r.stage.as_str()).collect();
-        assert_eq!(retry_stages, ["interpret AAPL", "interpret MSFT"], "{retry_stages:?}");
+        assert_eq!(
+            retry_stages,
+            ["interpret AAPL", "interpret MSFT"],
+            "{retry_stages:?}"
+        );
         let peak = dh.peak_prompt.as_ref().expect("a peak is recorded");
-        assert_eq!((peak.stage.as_str(), peak.prompt_tokens), ("interpret AAPL", Some(120_000)));
-        let pressure: Vec<&str> = dh.context_pressure.iter().map(|u| u.stage.as_str()).collect();
+        assert_eq!(
+            (peak.stage.as_str(), peak.api.prompt_eval_count),
+            ("interpret AAPL", Some(120_000))
+        );
+        let pressure: Vec<&str> = dh
+            .context_pressure
+            .iter()
+            .map(|u| u.stage.as_str())
+            .collect();
         assert_eq!(pressure, ["interpret AAPL"], "{pressure:?}");
         assert!(dh.attention, "pressure and a fired retry are attention triggers: {}", dh.summary);
         // The trail cleared with the successful persist.
@@ -5919,8 +6052,36 @@ mod tests {
             PortfolioJobOutcome::Successful(run) => *run,
             other => panic!("expected a successful resume, got {other:?}"),
         };
-        assert_eq!(run.verdicts.len(), 3, "restored GOOG + re-analyzed AAPL and MSFT");
+        assert_eq!(
+            run.verdicts.len(),
+            3,
+            "restored GOOG + re-analyzed AAPL and MSFT"
+        );
         let dh = &run.roll_up.data_health;
+        assert_eq!(
+            dh.prompt_usage
+                .iter()
+                .map(|u| u.stage.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "distill GOOG",
+                "interpret GOOG",
+                "distill AAPL",
+                "interpret AAPL",
+                "distill MSFT",
+                "interpret MSFT"
+            ]
+        );
+        let aapl = dh
+            .prompt_usage
+            .iter()
+            .find(|u| u.stage == "interpret AAPL")
+            .unwrap();
+        assert_eq!(
+            aapl.api.prompt_eval_count,
+            Some(60_000),
+            "superseded pre-crash AAPL calls are absent"
+        );
         assert_eq!(
             dh.deep_history_failures, 3,
             "three holdings, each degraded once — never AAPL twice: {}",
@@ -6150,6 +6311,25 @@ mod tests {
         assert_eq!(run.failed_holdings.len(), 1);
         assert_eq!(run.failed_holdings[0].symbol, "MSFT");
         assert!(!run.failed_holdings[0].carried_prior, "no prior to carry");
+        let observations = &run.roll_up.data_health.prompt_usage;
+        assert_eq!(
+            observations
+                .iter()
+                .map(|u| u.stage.as_str())
+                .collect::<Vec<_>>(),
+            ["distill AAPL", "interpret AAPL", "distill MSFT"]
+        );
+        let conn = storage::open(&paths.db_path).unwrap();
+        assert!(store::load_checkpoint(&conn).unwrap().is_none());
+        assert_eq!(
+            &store::latest_run(&conn)
+                .unwrap()
+                .unwrap()
+                .roll_up
+                .data_health
+                .prompt_usage,
+            observations
+        );
         assert_eq!(run.roll_up.failed_count, 1);
         assert!(run.verdicts.iter().any(|v| v.symbol == "AAPL"), "AAPL analyzed");
         assert!(

@@ -1385,6 +1385,9 @@ pub fn effective_vintage<'a>(verdict: &'a HoldingVerdict, run_created_at: &'a st
 /// line on the Portfolio page's roll-up card.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DataHealth {
+    /// Every resolved physical attempt retained by this run's checkpoint ownership,
+    /// including adapter failures. Summary selections never discard these rows.
+    pub prompt_usage: Vec<crate::local_model::PromptUsage>,
     /// Priced holdings carrying a `target_meta` (the denominator).
     pub targets_total: usize,
     /// Targets whose multiples were rate-anchored on the DGS10 spread history.
@@ -2351,7 +2354,8 @@ pub struct HoldingAudit {
 /// `portfolio-v46` (2026-09-18): gathering sees bounded raw pages already
 /// retrieved for the holding and a remaining-reply count refreshed per turn.
 /// The model judges unanswered questions; no question-status wire is added.
-/// Source snapshots remain transient; checkpoint-v12 and portability 8 stand.
+/// Source snapshots remain transient; that slice kept checkpoint-v12 and portability 8.
+/// Entry 7 later moves telemetry alone to checkpoint-v13 and portability 9.
 /// A v45 trail cannot resume into v46 on the prompt axis.
 pub const PROMPT_VERSION: &str = "portfolio-v46";
 

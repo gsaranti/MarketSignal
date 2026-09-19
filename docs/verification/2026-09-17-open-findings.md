@@ -11,7 +11,7 @@ A finding from attempt 7 is appended here as the next number, never in another f
 ## Standing rules
 
 - Pre-release, no data compatibility work: a persisted-shape change moves its stamp and the next attempt re-wipes.
-- The debut stamps are `portfolio-v46` / `checkpoint-v12` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability format 8.
+- The debut stamps are `portfolio-v46` / `checkpoint-v13` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability format 9.
   Any further prompt or schema change lands as `portfolio-v47`; the checkpoint and evidence-floor stamps move only where an entry says its persisted shape changes, confirmed at plan time.
 - Nothing is adopted on one holding's impression; each entry names the check that admits it.
 - Checks are behavioral where the finding was: a source-evidence input and an expected persisted outcome.
@@ -137,12 +137,27 @@ Entries 9 and 10 follow attempt 7 and need a harness, rebuilt if the run shows t
 
 ### 7. Per-call telemetry with explicit semantics
 
-- Decision: record per call, with explicit semantics, the original packet size, the whole-call elapsed, the thinking characters and the returned API counters.
-  Stop describing the fence's `generated` count as thinking-plus-content; on this runtime's two-phase path it is the second task's count.
+- Decision: retain one observation per resolved physical chat attempt, including failures and retries, in the finished run's data-health record.
+  Ordinary observations are retained as well as the peak and pressured calls.
 - Rests on: attempt 6's token telemetry, where the fence counts undercount because the runtime runs thinking and content as two tasks.
-- Check: a persisted prompt-usage row carries the four measures with their names, and the fence trailer's count is labelled as the runtime returns it.
-- Stamp: the prompt-usage row is persisted; the plan confirms whether the checkpoint stamp moves.
-- Ruling: open.
+- Ruling: approved 2026-09-19 through all four selectors with the code in view.
+  Original size means the existing serialized messages-plus-tools character count before daemon processing, not evidence before app compression.
+  Elapsed is app wall time for the physical attempt, excluding retry waits and downstream validation.
+  Thinking counts decoded Unicode characters and explicitly distinguishes complete, partial, and unavailable observations.
+  The six API fields retain their names and raw values: `prompt_eval_count`, `eval_count`, `total_duration`, `load_duration`, `prompt_eval_duration`, and `eval_duration`, the durations in nanoseconds and omitted fields absent.
+  Precise request stage labels and model/mode metadata persist, without a new UI.
+  Checkpoint/resume keeps holding-row ownership: restored completed rows retain their calls; superseded calls from re-analyzed holdings are omitted.
+  A process killed mid-call can still leave only a fence header.
+- Diagnostics: fence counts use raw API names; thinking-plus-format counters do not establish whole-call generation, original-packet truncation, or the cause of a length stop.
+  Length stops still fail, and retry eligibility, reservations, and limits are unchanged.
+  The measurement contract is canonical in `docs/local-models.md` §The local-model adapter seam.
+- Check, offline: reply and stream counter parity, Unicode thinking counts, partial/error/cancel paths, one observation per retry attempt matching its fence, ordinary and count-less rows surviving final persistence, checkpoint/resume ownership, and current archive round-trip with retired-format refusals.
+- Stamp: `checkpoint-v13` and portability format 9 for the persisted shape; `portfolio-v46` and all financial stamps stay unchanged because no model prompt or output schema changes.
+- Implementation verification (2026-09-19): `cargo test` passed (1,523 library and 32 integration tests; 33 ignored), including seven new entry-7 regressions and the extended checkpoint/resume, failed-holding, fence, and diagnostic checks.
+  `cargo clippy --all-targets --all-features` passed without warnings; `npm run build`, `npm test` (46 pure-module and 266 component tests), and `git diff --check` passed.
+  Offline HTTP fixtures required localhost-port access outside the sandbox; no live source/model probe, harness run, daemon restart, or dev-store wipe occurred.
+  Independent review is complete: Metis approved after independently rerunning all gates, and Claude's separate review agreed and reported matching green gates.
+  Attempt-7 live evidence remains pending until the user-authorized run.
 
 ### 8. Effective sampling parameters captured from the serve log
 

@@ -53,7 +53,9 @@ The capture is thoughts-only by construction: the main agent's report body persi
 A local-model call additionally writes a **call fence** around its thinking.
 Every local chat call emits a `model-call-started` and a `model-call-finished` event on the progress seam, and the sink renders them as a header and a trailer line in the owning step's file (`run.txt` when the call fired with no step open), so a holding's file reads as a call timeline rather than every call's reasoning run together.
 The header carries the run's call number, the caller's stage label (the interpretation, role-risk or action stage, a distillation stage, or a research topic's gathering turn or synthesis leg), the model, the `think` flag, whether the call streamed, whether tools or a format grammar rode the request, `num_ctx`, `num_predict`, the prompt's size in characters, and the UTC start time.
-The trailer carries the outcome, the elapsed time, and the daemon's prompt and generated token counts and stop reason when reported, or a failed call's top-level message capped to about 200 characters.
+The trailer carries the adapter outcome, app elapsed time, thinking character count with its completeness state, the raw API counter names and units, and the stop reason when reported, or a failed call's top-level message capped to about 200 characters.
+Its `eval_count` is exactly the runtime-returned count, not a thinking-plus-content total; on the pinned thinking-plus-format path it belongs to the second task.
+The trailer and persisted observation share one measurement; the field definitions are canonical in [local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam).
 Fences carry labels and counts only, never prompt or body text.
 Every local call is fenced.
 A non-thinking distillation call therefore leaves adjacent fences with nothing between.

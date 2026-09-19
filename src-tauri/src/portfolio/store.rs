@@ -232,7 +232,9 @@ pub struct CheckpointHeader {
 /// `checkpoint-v12` (`portfolio-v45`): every ledger condition gains `label`
 /// and a quantitative condition's `statement` is app-rendered from its core,
 /// so a v11 trail's conditions cannot resume under the new shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v12";
+/// `checkpoint-v13`: complete physical-attempt observations with explicit
+/// app measurements and raw API counters; no v12 row can resume this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v13";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1074,6 +1076,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn entry7_finished_run_preserves_all_observations_and_rejects_missing_list() {
+        use crate::local_model::{ApiCounters, PromptUsage, ThinkingObservation};
+        let conn = mem();
+        let mut run = sample_run("telemetry", "2026-09-19T12:00:00Z");
+        run.roll_up.data_health.prompt_usage = vec![
+            PromptUsage {
+                stage: "ordinary".into(),
+                model: "qwen".into(),
+                adapter_ok: true,
+                prompt_chars: 123,
+                elapsed_ms: 456,
+                thinking: ThinkingObservation::Complete { chars: 789 },
+                api: ApiCounters {
+                    eval_count: Some(2),
+                    total_duration: Some(1000),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            PromptUsage {
+                stage: "failed".into(),
+                elapsed_ms: 99,
+                thinking: ThinkingObservation::Partial { chars: 3 },
+                ..Default::default()
+            },
+            PromptUsage {
+                stage: "length without counters".into(),
+                output_limited: true,
+                done_reason: Some("length".into()),
+                ..Default::default()
+            },
+        ];
+        insert_run(&conn, &run).unwrap();
+        clear_checkpoints(&conn).unwrap();
+        assert_eq!(
+            latest_run(&conn)
+                .unwrap()
+                .unwrap()
+                .roll_up
+                .data_health
+                .prompt_usage,
+            run.roll_up.data_health.prompt_usage
+        );
+        let mut retired = serde_json::to_value(&run).unwrap();
+        retired["roll_up"]["data_health"]
+            .as_object_mut()
+            .unwrap()
+            .remove("prompt_usage");
+        assert!(serde_json::from_value::<PortfolioRun>(retired).is_err());
+        let mut retired_row =
+            serde_json::to_value(&run.roll_up.data_health.prompt_usage[0]).unwrap();
+        retired_row.as_object_mut().unwrap().remove("thinking");
+        assert!(serde_json::from_value::<PromptUsage>(retired_row).is_err());
+    }
+
     /// A holding's checkpoint row round-trips its context-fit and fired-retry
     /// rows and its data-health contribution exactly — what a resumed run's
     /// data-health read rebuilds from — and the header its format stamp
@@ -1098,12 +1156,23 @@ mod tests {
             audit: run.audit[0].clone(),
             prompt_usage: vec![crate::local_model::PromptUsage {
                 stage: "interpret AAPL".into(),
-                prompt_tokens: Some(120_000),
+                model: "qwen".into(),
+                think: Some(true),
+                format: true,
+                streamed: true,
+                adapter_ok: true,
+                elapsed_ms: 321,
+                thinking: crate::local_model::ThinkingObservation::Complete { chars: 456 },
                 num_ctx: 131_072,
                 prompt_chars: 480_000,
-                completion_tokens: Some(2_000),
                 num_predict: Some(8_192),
                 output_limited: false,
+                api: crate::local_model::ApiCounters {
+                    prompt_eval_count: Some(120_000),
+                    eval_count: Some(2_000),
+                    ..Default::default()
+                },
+                ..Default::default()
             }],
             model_retries: vec![crate::local_model::RetryEvent {
                 stage: "interpret AAPL".into(),
@@ -1130,7 +1199,7 @@ mod tests {
         let conn = mem();
         let run = sample_run("run-1", "2026-08-28T12:00:00+00:00");
         let mut header = checkpoint_header(&run);
-        header.checkpoint_format_version = "checkpoint-v3".into();
+        header.checkpoint_format_version = "checkpoint-v12".into();
         save_checkpoint_header(&conn, &header).unwrap();
         let acc = CheckpointAccumulators {
             sector_by_symbol: [(
@@ -1150,8 +1219,11 @@ mod tests {
         };
         save_checkpoint_progress(&conn, &run.run_id, "AAPL", &row, &acc).unwrap();
         let cp = load_checkpoint(&conn).unwrap().expect("the header loads");
-        assert_eq!(cp.header.checkpoint_format_version, "checkpoint-v3");
-        assert!(cp.holdings.is_empty(), "rows under another format are not read");
+        assert_eq!(cp.header.checkpoint_format_version, "checkpoint-v12");
+        assert!(
+            cp.holdings.is_empty(),
+            "rows under another format are not read"
+        );
         assert_eq!(cp.accumulators, CheckpointAccumulators::default());
     }
 

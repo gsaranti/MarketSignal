@@ -639,6 +639,7 @@ export interface ExitedPosition {
 // infrastructure degradation (any deep-history failure, any current-multiple
 // carry, a run-wide DGS10 history gap).
 export interface DataHealth {
+  prompt_usage: PromptUsage[];
   targets_total: number;
   rate_anchored_count: number;
   raw_percentile_count: number;
@@ -688,19 +689,31 @@ export interface RetryEvent {
   cause: string;
 }
 
-// One local chat call's prompt-size observation: Ollama's reported prompt token
-// count (post-truncation) against the num_ctx the request declared and the
-// serialized prompt material the app actually presented (message roles/content,
-// assistant tool calls, and the tool schema).
+// One resolved physical chat attempt. API counters are raw, phase-dependent;
+// durations are nanoseconds. elapsed_ms is independently measured app wall time.
 export interface PromptUsage {
   stage: string;
-  // Ollama's reported prompt count; null when the daemon omitted it (the row
-  // then carries only the output-side observation and enters no context-fit
-  // read, so rows shipped inside context_pressure/peak_prompt are counted in
-  // practice).
-  prompt_tokens: number | null;
+  model: string;
+  think: boolean | null;
+  streamed: boolean;
+  tools: boolean;
+  format: boolean;
   num_ctx: number;
+  num_predict: number | null;
   prompt_chars: number;
+  elapsed_ms: number;
+  thinking: { state: "unavailable" } | { state: "complete" | "partial"; chars: number };
+  api: {
+    prompt_eval_count: number | null;
+    eval_count: number | null;
+    total_duration: number | null;
+    load_duration: number | null;
+    prompt_eval_duration: number | null;
+    eval_duration: number | null;
+  };
+  adapter_ok: boolean;
+  done_reason: string | null;
+  output_limited: boolean;
 }
 
 export interface PortfolioRollUp {

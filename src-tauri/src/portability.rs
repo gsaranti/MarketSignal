@@ -69,10 +69,11 @@ use crate::storage;
 /// `portfolio_runs.run_json` gained the model's `label` beside an app-rendered
 /// statement (`checkpoint-v12`), so a v7 archive's runs would not decode under
 /// the current condition shape.
-/// Every pre-release shape below the current one — v2 through v7, none of which
+/// v9: complete physical-attempt telemetry in run data health (checkpoint-v13).
+/// Every pre-release shape below the current one — v2 through v8, none of which
 /// a shipped build wrote — is refused outright (`check_format_version`, the
 /// 2026-08-29 no-compat ruling).
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -1210,7 +1211,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 2..=7) {
+    if matches!(manifest.format_version, 2..=8) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -1640,6 +1641,65 @@ mod tests {
             params![old_md.to_string_lossy()],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn entry7_archive_round_trip_preserves_named_attempt_measurements() {
+        use crate::local_model::{ApiCounters, PromptUsage, ThinkingObservation};
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let conn = storage::open(&source.db_path).unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT run_json FROM portfolio_runs WHERE run_id = 'run-two'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut run: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let health = crate::portfolio::DataHealth {
+            prompt_usage: vec![PromptUsage {
+                stage: "holding-AAPL research t1 synthesis".into(),
+                model: "qwen".into(),
+                think: Some(true),
+                format: true,
+                prompt_chars: 1234,
+                elapsed_ms: 5678,
+                thinking: ThinkingObservation::Partial { chars: 9012 },
+                api: ApiCounters {
+                    eval_count: Some(3),
+                    total_duration: Some(4),
+                    load_duration: Some(5),
+                    prompt_eval_count: Some(6),
+                    prompt_eval_duration: Some(7),
+                    eval_duration: Some(8),
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        run["roll_up"]["data_health"] = serde_json::to_value(&health).unwrap();
+        conn.execute(
+            "UPDATE portfolio_runs SET run_json = ?1 WHERE run_id = 'run-two'",
+            [run.to_string()],
+        )
+        .unwrap();
+        let dest = source.db_path.parent().unwrap().join("telemetry.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+        let (_b, target) = temp_store();
+        import_archive(&target, &dest, None, false).unwrap();
+        let conn = storage::open(&target.db_path).unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT run_json FROM portfolio_runs WHERE run_id = 'run-two'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let restored: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let restored: crate::portfolio::DataHealth =
+            serde_json::from_value(restored["roll_up"]["data_health"].clone()).unwrap();
+        assert_eq!(restored.prompt_usage, health.prompt_usage);
     }
 
     #[test]
@@ -2274,7 +2334,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_through_v7_stamps_are_refused_as_pre_release_formats() {
+    fn v2_through_v8_stamps_are_refused_as_pre_release_formats() {
         // The single-URL (v4), pre-counter (v5), pre-rename (v6, the priced
         // verdict's `price_target_rationale`) and pre-label (v7, the ledger
         // condition's `label` and app-rendered statement) shapes were
@@ -2287,7 +2347,7 @@ mod tests {
         export_archive(&source, &dest, None, None).unwrap();
         let mut entries = read_archive_entries(&dest);
         let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        for version in [4, 5, 6, 7] {
+        for version in 2..=8 {
             manifest.format_version = version;
             entries.insert(
                 "manifest.json".to_string(),

@@ -256,24 +256,37 @@ fn render_fence(event: &ProgressEvent) -> String {
             call,
             status,
             detail,
-            elapsed_ms,
-            prompt_tokens,
-            generated_tokens,
-            done_reason,
+            usage,
             ..
         } => {
             let mut parts = vec![
                 format!("==== end {call}"),
                 status.clone(),
-                elapsed_label(*elapsed_ms),
+                elapsed_label(usage.elapsed_ms),
             ];
-            if let Some(n) = prompt_tokens {
-                parts.push(format!("prompt {n} tok"));
+            for (name, value, unit) in [
+                ("prompt_eval_count", usage.api.prompt_eval_count, "tok"),
+                ("eval_count", usage.api.eval_count, "tok"),
+                ("total_duration", usage.api.total_duration, "ns"),
+                ("load_duration", usage.api.load_duration, "ns"),
+                ("prompt_eval_duration", usage.api.prompt_eval_duration, "ns"),
+                ("eval_duration", usage.api.eval_duration, "ns"),
+            ] {
+                if let Some(n) = value {
+                    parts.push(format!("{name} {n} {unit}"));
+                }
             }
-            if let Some(n) = generated_tokens {
-                parts.push(format!("generated {n} tok"));
+            use crate::local_model::ThinkingObservation;
+            match usage.thinking {
+                ThinkingObservation::Complete { chars } => {
+                    parts.push(format!("thinking {chars} chars complete"))
+                }
+                ThinkingObservation::Partial { chars } => {
+                    parts.push(format!("thinking {chars} chars partial"))
+                }
+                ThinkingObservation::Unavailable => parts.push("thinking unavailable".into()),
             }
-            if let Some(reason) = done_reason {
+            if let Some(reason) = &usage.done_reason {
                 parts.push(reason.clone());
             }
             if let Some(detail) = detail {
@@ -427,10 +440,16 @@ mod tests {
             stage: "interpret AAPL".into(),
             status: "ok".into(),
             detail: None,
-            elapsed_ms: 461_000,
-            prompt_tokens: Some(41_203),
-            generated_tokens: Some(8_921),
-            done_reason: Some("stop".into()),
+            usage: crate::local_model::PromptUsage {
+                elapsed_ms: 461_000,
+                api: crate::local_model::ApiCounters {
+                    prompt_eval_count: Some(41_203),
+                    eval_count: Some(8_921),
+                    ..Default::default()
+                },
+                done_reason: Some("stop".into()),
+                ..Default::default()
+            },
             step: step.map(str::to_string),
         }
     }
@@ -464,7 +483,7 @@ mod tests {
         assert_eq!(lines[1], "weighing the trim");
         assert_eq!(
             lines[2],
-            "==== end 1 | ok | 7m41s | prompt 41203 tok | generated 8921 tok | stop"
+            "==== end 1 | ok | 7m41s | prompt_eval_count 41203 tok | eval_count 8921 tok | thinking unavailable | stop"
         );
         assert_eq!(lines[3], "", "a blank line separates calls");
         assert!(text.ends_with("\n\n"));
@@ -488,10 +507,16 @@ mod tests {
             stage: "distill AAPL".into(),
             status: "ok".into(),
             detail: None,
-            elapsed_ms: 12_000,
-            prompt_tokens: None,
-            generated_tokens: None,
-            done_reason: None,
+            usage: crate::local_model::PromptUsage {
+                elapsed_ms: 12_000,
+                api: crate::local_model::ApiCounters {
+                    prompt_eval_count: None,
+                    eval_count: None,
+                    ..Default::default()
+                },
+                done_reason: None,
+                ..Default::default()
+            },
             step: step.map(str::to_string),
         }));
         let text = fs::read_to_string(sink.dir.join("holding-AAPL.txt")).unwrap();
@@ -501,7 +526,10 @@ mod tests {
             "{}",
             lines[0]
         );
-        assert_eq!(lines[1], "==== end 2 | ok | 12s", "absent counts are omitted, not printed");
+        assert_eq!(
+            lines[1], "==== end 2 | ok | 12s | thinking unavailable",
+            "absent counts are omitted, not printed"
+        );
         assert_eq!(lines.len(), 3);
     }
 
@@ -514,16 +542,22 @@ mod tests {
             stage: "action AAPL".into(),
             status: "failed".into(),
             detail: Some("local model returned 500:\nrunner crashed".into()),
-            elapsed_ms: 900,
-            prompt_tokens: None,
-            generated_tokens: None,
-            done_reason: None,
+            usage: crate::local_model::PromptUsage {
+                elapsed_ms: 900,
+                api: crate::local_model::ApiCounters {
+                    prompt_eval_count: None,
+                    eval_count: None,
+                    ..Default::default()
+                },
+                done_reason: None,
+                ..Default::default()
+            },
             step: Some("holding-AAPL".into()),
         }));
         let text = fs::read_to_string(sink.dir.join("holding-AAPL.txt")).unwrap();
         assert_eq!(
             text,
-            "==== end 3 | failed | 900ms | local model returned 500: runner crashed\n\n"
+            "==== end 3 | failed | 900ms | thinking unavailable | local model returned 500: runner crashed\n\n"
         );
     }
 
