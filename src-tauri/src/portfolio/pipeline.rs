@@ -9855,7 +9855,7 @@ pub(crate) mod tests {
         // as fields plus a name and renders its statement from the core, refusing
         // a core that already holds at authoring: the prompt, the persisted
         // condition (`label`) and the trail move to v45 / v12.
-        assert_eq!(PROMPT_VERSION, "portfolio-v47");
+        assert_eq!(PROMPT_VERSION, "portfolio-v48");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v14"

@@ -2358,7 +2358,9 @@ pub struct HoldingAudit {
 /// Entry 7 later moves telemetry alone to checkpoint-v13 and portability 9.
 /// A v45 trail cannot resume into v46 on the prompt axis.
 /// `portfolio-v47`: distinct claim dates and evidence-reference reconciliation.
-pub const PROMPT_VERSION: &str = "portfolio-v47";
+/// `portfolio-v48`: append-only gathering countdown and roots-first research.
+/// Shared delivery stamp with the separately implemented attempt-7 prompt slice.
+pub const PROMPT_VERSION: &str = "portfolio-v48";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

@@ -2,36 +2,47 @@
 
 ## Active task
 
-The single big confirmation run — attempt 7 ran and was user-ended; its six findings are now grouped into three fix slices that precede attempt 8
+The single big confirmation run — attempt 7 was user-ended; Slice 1 is complete, with Slices 2 and 3 still preceding attempt 8.
 
 ## What happened
 
-Attempt 7's six findings (canonical in `docs/verification/2026-09-19-attempt-7-findings.md`) were grouped into three delivery slices, recorded in a new §Slices section of that doc.
-A process ruling was taken (2026-09-19): the findings are ruled per slice during that slice's plan, not through a pre-plan selector sweep — several decisions need the plan's code context (Finding 6's emitted date fields, Finding 5's fetch route), and the standing selector rule governs a plan's own flags before implement, not this pre-plan stage; the doc's opening line was updated to record it.
-Surfaced a stamp coupling: Findings 1, 3, 4 and 6 all move `portfolio::PROMPT_VERSION`, so splitting them across Slices 1 and 2 means `portfolio-v48` then `portfolio-v49`, not a shared v48.
-The findings-doc edits and this handoff were committed and pushed.
+Implemented and review-approved attempt-7 Findings 1 and 2 only (canonical findings: `docs/verification/2026-09-19-attempt-7-findings.md`).
+Gathering now appends a separate user countdown before each request, keeps previously issued messages unchanged, and retries the identical packet/count.
+A stable `(is_followup, topic_order, depth)` queue runs eligible roots before follow-ups, including technology roots activated during a follow-up; follow-ups retain topic priority through the existing depth cap, with disconfirmation last.
+The user ruled that Slices 1 and 2 share the combined delivery stamp `portfolio-v48` while remaining separately planned, implemented and reviewed tasks; this did not expand Slice 1 to Findings 3, 4 or 6.
+Metis's independent reviewer approved with no nits, and Claude separately approved.
+Full Rust tests (1,536 library and 32 integration passes, 33 ignored), warning-free all-target/all-feature clippy, frontend build, frontend tests (46 pure-module and 266 component passes), and diff-check passed; the Metis reviewer independently reran all gates.
 
 ## Current state
 
-No implementation is in flight; the confirmation-run BUILD item stays incomplete.
-The three slices, in land order:
+No implementation is in flight; the confirmation-run BUILD item remains incomplete.
 
-- Slice 1 — the gathering loop (Findings 1, 2): the gathering conversation becomes append-only with the reply countdown out of Part 1, and every eligible topic's root pass runs before any follow-up. These ended attempt 7 at two of seven topics, so they gate whether attempt 8 completes the book and land first. Stamp `portfolio-v48`.
-- Slice 2 — the second-guessing prompt changes (Findings 3, 4, 6): the `quarter` fact-period kind, dropped `followup_technology_event`, interpretation-packet trims, the by-value rationale clause, and app-carried claim dates. Stamp `portfolio-v49` landing after Slice 1, plus `checkpoint-v15` only if Finding 6 changes the persisted claim shape.
-- Slice 3 — the issuer-IR fetch route (Finding 5): render-first webview vs the EDGAR 8-K exhibit 99.1 fallback (recommended), ruled at plan time. No route stamp.
+- Slice 1 — Findings 1, 2: implemented and reviewed under `portfolio-v48`, with no checkpoint or portability shape change.
+  Regression coverage includes immutable message prefixes, countdown/reset/retry identity, input bounds, roots-first order, late technology activation, budget exhaustion, cancellation, topic isolation, provenance and final disconfirmation.
+- Slice 2 — Findings 3, 4, 6: next to plan; `quarter` fact-period kind, dropped `followup_technology_event`, interpretation-packet trims, by-value rationale clause and app-carried claim dates.
+  Keep the shared `portfolio-v48`; `checkpoint-v15` only if Finding 6 changes the persisted claim shape.
+- Slice 3 — Finding 5: issuer-IR fetch route, ruled during its plan between render-first webview and the recommended EDGAR 8-K exhibit 99.1 fallback.
+  No route stamp unless model-facing text changes.
 
-The dev store is NOT clean (attempt-7 residue: TSLA and PSX checkpoint rows, `job_runs` max id 7, `web_source_state` 27, `web_documents` 21, `portfolio_research_seeds` 4); prod untouched. Attempt 8 re-wipes first.
+The docs and findings record carry the append-only and scheduling contracts and the shared-stamp ruling.
+No code criteria were skipped or stubbed; the contemplated BUILD gathering-constraint prose update remains unmade because implementation forbids `.metis` edits and session-end only permits moving fully completed BUILD items.
+Restored cache reuse, gathering latency and complete-book coverage remain runtime-unverified.
+Source inspection of the pinned Ollama v0.32.5 `qwen3.5` renderer (also selected by the installed model) found no alternating-role restriction: consecutive user messages render separately.
+The countdown becomes the latest user query and affects historical thinking rendering; the app already omits the separate thinking field when replaying tool calls.
+A rendered-template prefix comparison would be an additional offline check, not a completed test or a launch prerequisite; no model run was started.
+
+The dev store still holds attempt-7 residue per the prior handoff (TSLA and PSX checkpoint rows, `job_runs` max id 7, `web_source_state` 27, `web_documents` 21, `portfolio_research_seeds` 4); it was not re-inspected or wiped this session, and prod was untouched.
+Attempt 8 re-wipes first.
 Entries 9 and 10 of the 2026-09-17 list still follow a completed run; the conditions-display slice remains separate.
 
 ## Open questions
 
-- Merge or split the prompt stamp: land Slices 1 and 2 separately (`portfolio-v48` then `-v49`) or together as one `portfolio-v48`? — offered to the user, unruled.
-- Whether the §Slices grouping belongs in the findings doc or in `CURRENT.md` (it stretches the one-attempt issues-only ruling) — offered, unruled.
-- Finding 5's route: render-first webview or the EDGAR 8-K exhibit fallback (recommended) — ruled at Slice 3's plan.
-- Finding 6: which per-claim date fields the distillation model actually emits — read at Slice 2's plan.
+- Whether the §Slices grouping belongs in the findings doc or only in `CURRENT.md` — previously offered, still unruled.
+- Finding 5's route: render-first webview or the EDGAR 8-K exhibit fallback — rule at Slice 3's plan.
+- Finding 6: which per-claim date fields distillation actually emits and whether the persisted shape must change — inspect at Slice 2's plan.
 
 ## Where to start
 
-`/metis-plan-task` Slice 1 (Findings 1, 2) — the run-blocking gathering-loop fixes.
-Rule its flags during the plan (post-plan, pre-implement) per the standing rule.
-Do not propose attempt 8; when the user names it, re-wipe the dev store first (the store holds attempt 7), then the usual bring-up.
+`/metis-plan-task` Slice 2 (Findings 3, 4, 6), preserving the shared `portfolio-v48` ruling and the separate task boundary.
+Rule that plan's flags post-plan, pre-implement; attempt findings are ruled per slice, not through a pre-plan selector sweep.
+Do not propose attempt 8; when the user names it, re-wipe the dev store first, then follow the usual bring-up.

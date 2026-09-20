@@ -34,18 +34,21 @@ Each page's header states the tier (0 a primary source, 5 sentiment only), the p
 Part 2 is the task in output order and the shape.
 It carries no prior findings, standing conditions, news leads or URL roster beyond the evidence, and no gathering-stage instruction: the write-up is of this pass's pages, and the distillation merges passes and priors.
 The distillation messages are the same frame (`portfolio-v44`, ruled 2026-09-17); their contract is canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation).
-Portfolio's gathering message is the same frame.
+Portfolio's initial gathering message is the same frame and renders once per pass, including its selected reuse block.
 Its Part 1 carries the holding header, the topic, on a follow-up pass the question it pursues and the claims so far, on the disconfirming pass the run's claims so far, on a continuity run the standing conditions and the prior findings, the news leads, and the tool results' fields glossed once.
 Its Part 2 states what to find, how to weigh a source (a lower tier number and a higher extraction quality preferred; a weak source lowers confidence, it does not exclude), the per-reply tool-call bound, and when to stop — a reply with no tool call.
 Since `portfolio-v46`, ordinary topic and follow-up gathering begins with a bounded selection of raw pages already retrieved while researching this holding, before another search is requested.
 The transient holding-scoped inventory retains capped page text together with the title, publication date, original retrieval timestamp, source annotation, requested/final URL lineage and truncation status; a successful document-cache read can populate it, but failed reads and empty bodies cannot supply reused evidence.
-Selection follows first-retrieval order, rechecks current URL policy on the requested and final addresses, and fits complete page framing plus usable body text into the existing initial-message allowance after reserving the questions, task and remaining-reply line.
+Selection follows first-retrieval order, rechecks current URL policy on the requested and final addresses, and fits complete page framing plus usable body text into the existing initial-message allowance after reserving the questions, task and first appended remaining-reply message.
 Unselected pages are counted in a plain omission note and persisted gap; shortened bodies carry the continuation marker and a gap, and the complete serialized gathering packet still passes the existing input guard before issue.
 No network attempt or extraction-telemetry sample is charged for this in-memory reuse.
 The inventory is discarded between holdings and is never persisted; an explicit successful re-fetch replaces a source's content and provenance together while preserving its requested aliases and first-retrieval position.
 Selected reused pages join the current pass's synthesis roster after explicitly requested pages, deduplicated by final URL, and pass through the same body admission, contiguous source-ID assignment and shown-source citation checks; original retrieval dates and seed lineage survive reuse.
 Other topics' findings and transcripts are never supplied, and the disconfirming pass retains its dedicated contrary-search behavior without automatic page injection.
-Before each gathering request, Part 1 states the replies remaining in this pass, including the current reply (8 down to 1); a bounded transport retry repeats the identical packet and count, and a new pass starts at 8.
+Since `portfolio-v48`, before each gathering request the app appends a short user message stating the replies remaining in this pass, including the current reply (8 down to 1).
+The initial brief, selected reuse block and every previously issued message stay unchanged; each new countdown follows the initial brief or the completed tool-result batch.
+The initial allowance reserves the first countdown once, and the full serialized input guard counts every accumulated countdown alongside the other messages.
+A bounded transport retry repeats the identical packet and count without appending again, and a new pass starts at 8.
 The topic's questions remain visible and the model judges what the shown pages leave unanswered; Part 2 asks it to read those pages before searching for the remaining answers, with no question-status tool or app-assigned answered list.
 All turn, tool-call, fetch, elapsed-time and context limits remain unchanged.
 The tool results are data in the same register: a search result's fields, a page's address, title, dates and annotation fields and its text framed as quoted material, and a failed search or fetch stated as such, with no instruction in any of them.
@@ -57,6 +60,11 @@ Those persisted per-holding research gaps are counted without matching their pro
 When a pass surfaces a sub-thread worth pursuing, it may spawn an **app-governed follow-up pass**, bounded to **depth ≤2** — a topic's root pass plus at most two follow-ups, so **≤3 passes per topic**.
 That cap counts passes (branches), *not* raw LLM turns: the turns and fetches inside each pass are governed by the per-item budget below, not the depth cap.
 A follow-up is the model's *proposal*, carried as a structured field the orchestrator reads and decides whether to spend; the model never recurses on its own.
+Portfolio schedules passes by root-before-follow-up priority, then agenda order, then depth: every eligible root precedes pending follow-ups, and each topic's follow-ups retain its priority through the depth cap.
+A technology topic activated by a proposal joins the root queue once, including when discovered during a follow-up; its root precedes the next pending follow-up.
+Each pass still begins a clean conversation with only its own topic's prior claims and seed, plus the bounded holding-scoped raw-page reuse.
+Budget exhaustion records skipped roots separately from unspent follow-ups; roots themselves may exhaust the budget, so the ordering does not guarantee complete coverage.
+The disconfirming pass retains its final placement after the topic work, under the same budget ([portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research)).
 **Terminology:** a topic is worked in **isolation** from other topics — its own pass loop over a clean conversation, with Portfolio's bounded raw-source reuse but no other topic's findings or transcript, plus that pass's separate synthesis call; where a workflow doc says *one call per topic*, it means this per-topic isolation — within which each **turn** is one model request and the orchestrator owns every tool execution — never a single-request contract.
 
 The orchestrator — not the model — owns every request, so the loop is bounded the way the report's research executor is.

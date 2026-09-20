@@ -1740,8 +1740,12 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             );
         }
         if s.label.starts_with("gathering") {
-            let remaining = if s.label.contains("three replies left") { 3 } else { 8 };
-            assert!(part1.contains(&format!("Replies remaining, including this one: {remaining}.")), "{}: {part1}", s.label);
+            assert!(!s.user.contains("Replies remaining"), "{}: {}", s.label, s.user);
+            assert_eq!(s.appended.len(), 1);
+            assert_eq!(s.appended[0].role, "user");
+            assert_eq!(s.appended[0].content, "SEARCHING\nReplies remaining, including this one: 8.\n");
+            assert!(banned_hits(&s.appended[0].content).is_empty());
+            assert_no_routing_words(&s.label, &s.appended[0].content);
             if s.label.contains("previously retrieved pages") {
                 assert!(part1.contains("PAGES ALREADY RETRIEVED") && part1.contains("BEGIN PAGE TEXT"));
             }
@@ -1995,6 +1999,10 @@ fn fixed_evidence_prompt_dump() {
         letter += 1;
         out.push_str(&format!("### {n}{}. {} — message ({} chars)\n\n", letter as char, s.label, s.user.len()));
         out.push_str(&fence(&s.user));
+        for message in &s.appended {
+            out.push_str(&format!("\nAppended {} message:\n\n", message.role));
+            out.push_str(&fence(&message.content));
+        }
         letter += 1;
     }
     for (label, text) in super::research::samples::tool_results() {

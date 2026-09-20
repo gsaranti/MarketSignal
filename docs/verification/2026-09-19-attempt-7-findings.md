@@ -4,7 +4,7 @@ This record holds only what attempt 7 showed needs to change.
 Every finding names the defect, the evidence, the cause as far as it is established, the change proposed, the check that admits it and the stamp it moves.
 What read clean is not repeated here; the per-holding reads, the stop-rule counts and the run timeline are in the archive's `notes.md`.
 Ruled 2026-09-19: attempt findings live in a dated record like this one, focused on issues and required changes; the 2026-09-17 work list stays the record of the fixes that preceded this attempt and no longer takes new entries.
-Each finding below is proposed and unruled, grouped into the three slices of §Slices below.
+Findings 1 and 2 are ruled and implemented for offline review; Findings 3–6 remain proposed, grouped into the tasks of §Slices below.
 Ruled 2026-09-19: the findings are ruled per slice during that slice's plan, not through a pre-plan selector sweep.
 Several decisions need the plan's code context — Finding 6's emitted date fields and Finding 5's fetch route — and the standing selector rule governs a plan's own flags before implement, not this pre-plan grouping stage.
 
@@ -50,9 +50,15 @@ Durations are the dev log's `ok after` figures per call; attempt 7 spent its mod
 - Cost.
   About 700–800 s per holding on gathering alone at two topics; at seven topics it would have been roughly 2,500 s per holding, or about 33 hours over the book before any other stage.
 - Change proposed.
-  The gathering conversation becomes append-only: the countdown moves out of Part 1 and rides the newest tool-result (or user) message each turn, or is dropped in favour of the existing eight-turn statement in the task.
+  Ruled: keep the countdown in a newly appended user message before each gathering request, outside the immutable initial two-part brief.
+  A bounded retry repeats the identical packet and count.
+  The task's existing eight-tool-call statement is a per-reply tool limit, not an eight-reply statement.
   The reuse block and Part 1 render once per pass and are never rewritten.
-  A regression test asserts that the messages from turn 1 are byte-identical prefixes of every later turn's messages.
+  A regression test asserts that every previously issued message remains a byte-identical prefix of the next request, including old countdowns and tool results.
+- Offline verification.
+  The recording-model regression passes for the complete 8-to-1 countdown, two tool results per turn, identical retry packets and a fresh pass's reset to 8.
+  The bounded-reuse and aggregate-history tests pass with the appended messages; the prompt fixtures and dump show the countdown separately from the initial brief.
+  Runtime cache restoration and latency remain unverified.
 - Check, on attempt 8.
   `prompt_eval_count` on gathering turns 2+ is bounded by the new tool result, not the conversation; the serve log restores a checkpoint on nearly every request at a distinct position; gathering turn-2+ median returns to the attempt-6 band (2–5 s).
 - Stamp: `portfolio-v48` (the gathering message text moves a line).
@@ -67,8 +73,15 @@ Durations are the dev log's `ok after` figures per call; attempt 7 spent its mod
 - Cause.
   The orchestrator honours each follow-up proposal in topic order as it arrives, so a topic's follow-ups run before the next topic's root pass; `docs/web-research.md` caps depth per topic (≤3 passes) but nothing orders root passes ahead of follow-ups across topics.
 - Change proposed.
-  Every eligible topic's root pass runs first, in priority order; follow-up proposals are queued and spent from the remaining budget afterwards, topic order preserved, the disconfirming pass keeping its place.
+  Ruled: schedule passes by `(is_followup, topic_order, depth)`, so every eligible root precedes pending follow-ups and topic priority is preserved within follow-ups.
+  A technology root activated during a follow-up joins the same queue and precedes the next follow-up; activation remains available until Finding 3b's separate task.
+  The disconfirming pass keeps its final placement and shared budget.
+  Roots can still exhaust the budget; the guarantee is that follow-ups cannot consume it ahead of eligible roots.
   Finding 1's fix may make three passes per topic fit the wall, but ordering is the guarantee, so both land.
+- Offline verification.
+  Scripted production-loop tests pass for three roots that all propose follow-ups, root-time and follow-up-time technology activation, topic-local claims and seed reuse, depth limits, wall exhaustion after roots, fetch exhaustion during a root, absent proposals, cancellation between phases and final disconfirmation.
+  The full Rust gate passed (1,536 library tests, 32 integration tests, 33 ignored live/manual tests); all-target/all-feature clippy was warning-free, the frontend build passed, and frontend tests passed (46 pure-module tests, 266 component tests).
+  These gates establish request structure and scheduling order; complete-book coverage remains a runtime check.
 - Check, on attempt 8.
   Seven topics synthesized on every stock that keeps its wall budget; the skip gaps, when they appear, name follow-ups before they name root passes.
 - Stamp: none (orchestration order; no prompt or persisted shape changes).
@@ -145,8 +158,10 @@ What remains is concentrated on four prompt questions, each with a concrete chan
 
 ## Slices
 
-The six findings land as three slices, ordered so the run-blocking fixes go first and the fetch route rules on its own.
-Findings 1, 3, 4 and 6 each move `portfolio::PROMPT_VERSION`, so the concrete stamp a finding takes depends on its slice's land order; the per-finding `Stamp:` lines above name each finding's move from the `portfolio-v47` debut, and the numbers below assume the order given here.
+The six findings are handled as three tasks, with the run-blocking fixes first and the fetch route ruled on its own.
+Ruled: Slices 1 and 2 share one combined delivery stamp, `portfolio-v48`, while remaining separately planned and implemented tasks.
+The current task covers Findings 1 and 2 only; Findings 3, 4 and 6 stay in Slice 2.
+The shared stamp does not establish that Slice 2 is implemented.
 
 - Slice 1 — the gathering loop (Findings 1, 2).
   The gathering conversation becomes append-only with the reply countdown out of Part 1 (Finding 1), and every eligible topic's root pass runs before any follow-up (Finding 2).
@@ -154,8 +169,8 @@ Findings 1, 3, 4 and 6 each move `portfolio::PROMPT_VERSION`, so the concrete st
   Stamp: `portfolio-v48` — Finding 1 moves the gathering message text; Finding 2 is orchestration order and moves no stamp.
 - Slice 2 — the second-guessing prompt changes (Findings 3, 4, 6).
   The `quarter` fact-period kind, the dropped `followup_technology_event` and the interpretation-packet trims (Finding 3); the by-value rationale clause (Finding 4); and the app-carried claim dates with the trimmed distillation output (Finding 6).
-  These are prompt-text and output-shape changes with no ordering dependency on Slice 1, grouped so they share one review and one stamp move.
-  Stamp: `portfolio-v49` landing after Slice 1, plus `checkpoint-v15` only if Finding 6 changes the persisted claim shape.
+  These prompt-text and output-shape changes remain a separate implementation and review task, sharing the combined delivery stamp with Slice 1.
+  Stamp: the shared `portfolio-v48`, plus `checkpoint-v15` only if Finding 6 changes the persisted claim shape.
 - Slice 3 — the issuer-IR fetch route (Finding 5).
   The 403 route is ruled between render-first webview and the EDGAR 8-K exhibit 99.1 fallback at plan time, since both are read against the fetcher code before the plan settles.
   It touches neither the prompt set nor the persisted shapes, so it stays its own slice.

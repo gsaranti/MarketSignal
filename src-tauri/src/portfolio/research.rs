@@ -1762,7 +1762,8 @@ fn reuse_pages(
     ) / 3;
     let heading = "\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding.\n";
     // Reserve the omission line even when no omission is ultimately needed.
-    let mut room = prefix_cap.saturating_sub(pass_brief(ctx).chars().count() + heading.len() + 200);
+    let mut room = prefix_cap.saturating_sub(pass_brief(ctx).chars().count()
+        + gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count() + heading.len() + 200);
     let mut block = String::from(heading);
     let mut selected = Vec::new();
     let mut omitted = 0;
@@ -1868,100 +1869,92 @@ impl ResearchRunner<'_> {
             })
             .collect();
         let mut fetches_spent = 0u32;
-        let mut pending: Vec<AgendaTopic> = agenda.to_vec();
-        let mut worked: Vec<TopicResearch> = Vec::new();
+        // Stable priority: every eligible root precedes every follow-up, then
+        // agenda order wins over depth. A late technology root uses this same
+        // queue, including when it is discovered by a follow-up.
+        struct TopicWork {
+            topic: AgendaTopic,
+            seed: Option<TopicSeed>,
+            research: TopicResearch,
+        }
+        let new_topic = |topic: AgendaTopic| TopicWork {
+            research: TopicResearch {
+                topic_key: topic.key.clone(),
+                title: topic.title.clone(),
+                seeded_vintage: None,
+                passes: Vec::new(),
+                skipped: None,
+            },
+            topic,
+            seed: None,
+        };
+        let mut topics: Vec<TopicWork> = agenda.iter().cloned().map(new_topic).collect();
+        let mut pending: std::collections::BTreeSet<(bool, usize, usize)> =
+            (0..topics.len()).map(|i| (false, i, 0)).collect();
         let mut tech_escalated = agenda.iter().any(|t| t.key == "technology-event");
 
-        let mut i = 0;
-        while i < pending.len() {
-            let topic = pending[i].clone();
-            i += 1;
+        while let Some((is_followup, index, depth)) = pending.pop_first() {
             if self.progress.is_cancelled() {
                 bail!("research cancelled");
             }
+            let work = &mut topics[index];
             if self.budget.exhausted(fetches_spent) {
-                out.gaps
-                    .push(format!("topic {} skipped: budget exhausted", topic.key));
-                worked.push(TopicResearch {
-                    topic_key: topic.key.clone(),
-                    title: topic.title.clone(),
-                    seeded_vintage: None,
-                    passes: Vec::new(),
-                    skipped: Some("budget-exhausted".to_string())
-                });
+                if is_followup {
+                    out.gaps.push(format!(
+                        "topic {} follow-up not spent: budget exhausted", work.topic.key
+                    ));
+                } else {
+                    out.gaps.push(format!(
+                        "topic {} skipped: budget exhausted", work.topic.key
+                    ));
+                    work.research.skipped = Some("budget-exhausted".into());
+                }
                 continue;
             }
-
-            let seed = seed_for_topic(&topic.key);
-            // A seed may carry ledger conditions with no fresh topic object —
-            // an orientation, but the reuse decision reads cold (the empty
-            // vintage marks it).
-            let (seed, seeded_vintage) = match &seed {
-                Some((seed, vintage)) => (
-                    Some(seed),
-                    Some(vintage.clone()).filter(|v| !v.is_empty()),
-                ),
-                None => (None, None)
-            };
-            out.seed_decisions.push(match &seeded_vintage {
-                Some(v) => format!("{}: seeded (vintage {v})", topic.key),
-                None => format!("{}: cold", topic.key)
-            });
-
-            let mut passes: Vec<PassFindings> = Vec::new();
-            let mut topic_claims: Vec<EvidenceClaim> = Vec::new();
-            let mut followup: Option<FollowupProposal> = None;
-            while passes.len() < MAX_PASSES_PER_TOPIC {
-                if !passes.is_empty() && followup.is_none() {
-                    break; // No proposal to spend.
+            if !is_followup {
+                // Resolve each topic's seed once, when its root actually runs.
+                if let Some((seed, vintage)) = seed_for_topic(&work.topic.key) {
+                    work.seed = Some(seed);
+                    work.research.seeded_vintage = Some(vintage).filter(|v| !v.is_empty());
                 }
-                if !passes.is_empty() && self.budget.exhausted(fetches_spent) {
-                    out.gaps.push(format!(
-                        "topic {} follow-up not spent: budget exhausted",
-                        topic.key
-                    ));
-                    break;
-                }
-                let ctx = PassContext {
-                    holding_brief,
-                    topic: &topic,
-                    seed,
-                    seeds,
-                    followup: followup.as_ref(),
-                    prior_claims: &topic_claims,
-                    disconfirming: false
-                };
-                let pass = self.run_pass(
-                    &ctx,
-                    &mut fetches_spent,
-                    &mut out.gaps,
-                    &mut page_texts,
-                    &mut page_meta,
-                    &mut published_by_url,
-                    &mut inventory,
-                )?;
-                topic_claims.extend(pass.claims.iter().cloned());
-                // The follow-up is the model's proposal; the orchestrator
-                // decides whether to spend it (here: whenever budget remains).
-                followup = pass.followup.clone();
-                // Mid-loop technology escalation: an approved proposal flagged
-                // technology_event activates the conditional topic once.
-                if let Some(f) = &followup {
-                    if f.technology_event && !tech_escalated {
-                        tech_escalated = true;
-                        pending.push(technology_topic());
-                    }
-                }
-                passes.push(pass);
+                out.seed_decisions.push(match &work.research.seeded_vintage {
+                    Some(v) => format!("{}: seeded (vintage {v})", work.topic.key),
+                    None => format!("{}: cold", work.topic.key),
+                });
             }
-            worked.push(TopicResearch {
-                topic_key: topic.key.clone(),
-                title: topic.title.clone(),
-                seeded_vintage,
-                passes,
-                skipped: None
-            });
+            let topic_claims: Vec<EvidenceClaim> = work.research.passes.iter()
+                .flat_map(|pass| pass.claims.iter().cloned()).collect();
+            let ctx = PassContext {
+                holding_brief,
+                topic: &work.topic,
+                seed: work.seed.as_ref(),
+                seeds,
+                followup: work.research.passes.last().and_then(|p| p.followup.as_ref()),
+                prior_claims: &topic_claims,
+                disconfirming: false,
+            };
+            let pass = self.run_pass(
+                &ctx,
+                &mut fetches_spent,
+                &mut out.gaps,
+                &mut page_texts,
+                &mut page_meta,
+                &mut published_by_url,
+                &mut inventory,
+            )?;
+            let activate_tech = pass.followup.as_ref()
+                .is_some_and(|f| f.technology_event) && !tech_escalated;
+            if pass.followup.is_some() && depth + 1 < MAX_PASSES_PER_TOPIC {
+                pending.insert((true, index, depth + 1));
+            }
+            work.research.passes.push(pass);
+            if activate_tech {
+                tech_escalated = true;
+                pending.insert((false, topics.len(), 0));
+                topics.push(new_topic(technology_topic()));
+            }
         }
+        let worked: Vec<TopicResearch> = topics.into_iter().map(|t| t.research).collect();
 
         // The disconfirming-fetch pass: once per holding, after its topics,
         // spent from the same budget, outside any topic's depth cap
@@ -2041,7 +2034,7 @@ impl ResearchRunner<'_> {
         let (reuse_block, reused) = reuse_pages(ctx, inventory, gaps);
         let mut messages = vec![
             ChatMessage::system(research_system_prompt()),
-            ChatMessage::user(pass_brief_with_reuse(ctx, &reuse_block, MAX_TURNS_PER_PASS)),
+            ChatMessage::user(pass_brief_with_reuse(ctx, &reuse_block)),
         ];
         // Explicitly fetched URLs (reused sources join after gathering) —
         // plus a final→requested alias so a redirecting seed URL keeps its
@@ -2100,13 +2093,15 @@ impl ResearchRunner<'_> {
             // call. Unlike the fresh synthesis request, this conversation grows
             // across turns; no cache-hit or search-result path may let it cross
             // the shared portfolio input ceiling.
-            messages[1] = ChatMessage::user(pass_brief_with_reuse(
-                ctx, &reuse_block, MAX_TURNS_PER_PASS - turns,
-            ));
-            if !gathering_packet_fits(&messages, &tools) {
+            // Append current control data only; never rewrite a prefix already
+            // issued to the model. A retry below reuses this exact packet.
+            let mut candidate = messages.clone();
+            candidate.push(gathering_countdown(MAX_TURNS_PER_PASS - turns));
+            if !gathering_packet_fits(&candidate, &tools) {
                 degradation.history_budget_exhausted = true;
                 break;
             }
+            messages = candidate;
             turns += 1;
             // One bounded re-attempt on a transient turn failure — the messages
             // are unchanged, so the re-issued request is the same turn
@@ -3333,10 +3328,14 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
 /// Part 1 is capped so the task always renders whole under the input guard
 /// (Finding 1).
 fn pass_brief(ctx: &PassContext<'_>) -> String {
-    pass_brief_with_reuse(ctx, "", MAX_TURNS_PER_PASS)
+    pass_brief_with_reuse(ctx, "")
 }
 
-fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, remaining: u32) -> String {
+fn gathering_countdown(remaining: u32) -> ChatMessage {
+    ChatMessage::user(format!("SEARCHING\nReplies remaining, including this one: {remaining}.\n"))
+}
+
+fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str) -> String {
     let mut inputs = String::from("======== PART 1: INPUTS ========\n");
     inputs.push_str(ctx.holding_brief);
     inputs.push_str(&topic_section(ctx.topic));
@@ -3426,14 +3425,15 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, remaining: u32) -> 
     let prefix_cap = crate::portfolio::distill::input_budget_chars(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
     ) / 3;
-    let countdown = format!("\nSEARCHING\nReplies remaining, including this one: {remaining}.\n");
-    let inputs_cap = prefix_cap.saturating_sub(task.chars().count() + countdown.chars().count()
+    // Reserve the first appended countdown inside the initial allowance.
+    // Later countdowns, like every other message, count in the full wire guard.
+    let countdown_chars = gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count();
+    let inputs_cap = prefix_cap.saturating_sub(task.chars().count() + countdown_chars
         + reuse.chars().count());
     let (mut out, cut) = crate::data_sources::cap_chars(&inputs, inputs_cap);
     if cut {
         out.push_str("\n[the inputs continue beyond what is shown]\n");
     }
-    out.push_str(&countdown);
     out.push_str(reuse);
     out.push_str(&task);
     out
@@ -5138,9 +5138,9 @@ mod tests {
                 gather_done(),
                 findings_turn(root.clone()),
                 gather_done(),
-                findings_turn(simple_findings()), // follow-up, reuse only
+                findings_turn(simple_findings()), // second topic root, reuse only
                 gather_done(),
-                findings_turn(simple_findings()), // second topic, reuse only
+                findings_turn(simple_findings()), // first topic follow-up, reuse only
                 gather_done(), // contrary search gets no automatic evidence or synthesis
             ]
         };
@@ -5190,12 +5190,11 @@ mod tests {
             assert!(out.disconfirming.as_ref().unwrap().claims.is_empty());
             let calls = model.calls.lock().unwrap();
             assert!(!calls[0].1[1].content.contains("PAGES ALREADY RETRIEVED"));
-            let followup = &calls[3].1[1].content;
-            assert!(
-                followup.contains("PAGES ALREADY RETRIEVED")
-                    && followup.contains("including this one: 8.")
-            );
-            let topic_b = &calls[5].1[1].content;
+            let followup = &calls[5].1[1].content;
+            assert!(followup.contains("PAGES ALREADY RETRIEVED"));
+            assert!(followup.contains("FOLLOW-UP") && followup.contains("CLAIMS SO FAR"));
+            assert!(calls[5].1.last().unwrap().content.contains("including this one: 8."));
+            let topic_b = &calls[3].1[1].content;
             for value in [
                 "Did costs decline?",
                 "Revenue was $1.2 billion",
@@ -5206,7 +5205,7 @@ mod tests {
                 assert!(topic_b.contains(value), "missing {value}: {topic_b}");
             }
             assert!(!topic_b.contains("ROOT FINDINGS MUST NOT SEED"));
-            assert_eq!(calls[5].1.len(), 2, "new topic has a clean conversation");
+            assert_eq!(calls[3].1.len(), 3, "new topic has a brief and appended countdown");
             assert!(!calls[7].1[1].content.contains("PAGES ALREADY RETRIEVED"));
             assert!(calls[7].1[1]
                 .content
@@ -5387,7 +5386,10 @@ mod tests {
                     return Ok(gather_done());
                 }
                 Ok(turn_with_tools(
-                    json!([{"function": {"name": "web_search", "arguments": {"query": "q"}}}]),
+                    json!([
+                        {"function": {"name": "web_search", "arguments": {"query": "q"}}},
+                        {"function": {"name": "web_search", "arguments": {"query": "q2"}}},
+                    ]),
                 ))
             }
             fn retry_permitted(&self, _: &str, _: &anyhow::Error) -> bool {
@@ -5419,8 +5421,19 @@ mod tests {
         assert_eq!(calls.len(), 10);
         assert_eq!(calls[1], calls[2], "a retry is the identical turn");
         for (packet, remaining) in calls.iter().zip([8, 7, 7, 6, 5, 4, 3, 2, 1, 8]) {
-            assert_eq!(packet.matches("Replies remaining").count(), 1);
-            assert!(packet.contains(&format!("including this one: {remaining}.")));
+            let messages: Vec<Value> = serde_json::from_str(packet).unwrap();
+            assert_eq!(packet.matches("Replies remaining").count(), (9 - remaining) as usize);
+            assert!(!messages[1]["content"].as_str().unwrap().contains("Replies remaining"));
+            assert_eq!(messages.last().unwrap()["role"], "user");
+            assert_eq!(messages.last().unwrap()["content"], gathering_countdown(remaining).content);
+        }
+        // Every previously issued message remains byte-identical, including
+        // tool calls/results and old countdowns. The final call is a new pass.
+        for pair in calls[..9].windows(2) {
+            let before: Vec<Value> = serde_json::from_str(&pair[0]).unwrap();
+            let after: Vec<Value> = serde_json::from_str(&pair[1]).unwrap();
+            assert_eq!(serde_json::to_string(&before).unwrap(),
+                serde_json::to_string(&after[..before.len()]).unwrap());
         }
     }
 
@@ -5472,19 +5485,20 @@ mod tests {
         assert!(!block.contains("127.0.0.1") && !block.contains("file:///"));
         assert!(block.contains(PAGE_CONTINUES_MARKER));
         assert!(gaps.iter().any(|g| g.contains("omitted from gathering")));
-        let brief = pass_brief_with_reuse(&ctx, &block, 8);
+        let brief = pass_brief_with_reuse(&ctx, &block);
         let cap = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         ) / 3;
         assert!(
-            brief.chars().count() <= cap,
+            brief.chars().count() + gathering_countdown(8).content.chars().count() <= cap,
             "{} > {cap}",
             brief.chars().count()
         );
         assert!(gathering_packet_fits(
             &[
                 ChatMessage::system(research_system_prompt()),
-                ChatMessage::user(brief)
+                ChatMessage::user(brief),
+                gathering_countdown(8),
             ],
             &research_tools()
         ));
@@ -7383,18 +7397,17 @@ mod tests {
         };
         let model = ScriptModel::new(vec![
             // Each pass gathers a page, ends (gather_done), then synthesizes
-            // (fix B). Topic 1: root pass proposes a tech follow-up; follow-up
-            // 1 proposes again (non-tech); follow-up 2 (depth cap: last).
+            // (fix B). The root proposes technology; its newly eligible root
+            // precedes either follow-up of topic 1.
             fetch(),
             gather_done(),
             findings_with_followup(true),
             fetch(),
             gather_done(),
-            findings_with_followup(false),
+            done(), // technology root
             fetch(),
             gather_done(),
-            done(),
-            // The escalated technology topic then runs one pass.
+            findings_with_followup(false),
             fetch(),
             gather_done(),
             done(),
@@ -7417,6 +7430,180 @@ mod tests {
             "root + two follow-ups"
         );
         assert_eq!(out.topics[1].topic_key, "technology-event");
+    }
+
+    #[derive(Default)]
+    struct SchedulingClock(std::sync::atomic::AtomicU64);
+
+    impl Clock for SchedulingClock {
+        fn elapsed(&self) -> Duration {
+            Duration::from_secs(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+
+    /// Exercises the real pass loop, including fetched evidence and synthesis.
+    /// Each synthesis consumes one second on the injected clock; no wall sleeps.
+    struct SchedulingModel<'a> {
+        clock: &'a SchedulingClock,
+        calls: Mutex<Vec<(String, usize, Vec<ChatMessage>)>>,
+        activate_at: Option<usize>,
+        propose: bool,
+        cancel_after: Option<(usize, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    }
+
+    impl ResearchModel for SchedulingModel<'_> {
+        fn research_turn(
+            &self,
+            stage: &str,
+            messages: &[ChatMessage],
+            tools: Option<&Value>,
+            format: Option<&Value>,
+        ) -> Result<ChatResponse> {
+            assert_ne!(tools.is_some(), format.is_some());
+            let key = stage.split(" research ").nth(1).unwrap()
+                .split_whitespace().next().unwrap();
+            if tools.is_some() {
+                if stage.ends_with("turn 1") {
+                    let mut calls = self.calls.lock().unwrap();
+                    let depth = calls.iter().filter(|(k, _, _)| k == key).count();
+                    calls.push((key.into(), depth, messages.to_vec()));
+                    return Ok(turn_with_tools(json!([
+                        {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
+                    ])));
+                }
+                return Ok(gather_done());
+            }
+            let calls = self.calls.lock().unwrap();
+            let depth = calls.last().unwrap().1;
+            self.clock.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some((after, cancel)) = &self.cancel_after {
+                if calls.len() == *after {
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let mut findings = json!({
+                "findings": format!("findings-{key}-{depth}"),
+                "claims": [{"claim": format!("claim-{key}-{depth}"), "source_id": "S1"}],
+            });
+            if self.propose && key != "disconfirming" {
+                findings["followup_question"] = json!(format!("follow-{key}-{depth}"));
+                findings["followup_rationale"] = json!("Check the remaining evidence");
+                findings["followup_technology_event"] = json!(key == "a" && self.activate_at == Some(depth));
+            }
+            Ok(findings_turn(findings))
+        }
+    }
+
+    #[test]
+    fn roots_precede_followups_even_when_technology_activates_late() {
+        for activate_at in [None, Some(0), Some(1)] {
+            let clock = SchedulingClock::default();
+            let model = SchedulingModel {
+                clock: &clock, calls: Mutex::new(Vec::new()), activate_at,
+                propose: true, cancel_after: None,
+            };
+            let web = ScriptWeb::new();
+            let progress = RunContext::noop();
+            let runner = ResearchRunner {
+                model: &model, web: &web,
+                budget: ResearchBudget { max_fetches: 40, max_wall: Duration::from_secs(100), clock: &clock },
+                progress: &progress, step_label: "TEST".into(),
+            };
+            let agenda: Vec<_> = ["a", "b", "c"].iter().map(|key| topic(key, key, &["q"])).collect();
+            let seed_reads = std::cell::RefCell::new(Vec::new());
+            let out = runner.run_holding("HOLDING: WID", &agenda, &[], &|key| {
+                seed_reads.borrow_mut().push(key.to_owned());
+                Some((TopicSeed { conditions: vec![format!("condition-{key}")], findings: vec![] }, "vintage".into()))
+            }).unwrap();
+            let calls = model.calls.lock().unwrap();
+            let mut expected = vec![("a", 0), ("b", 0), ("c", 0)];
+            if activate_at == Some(0) { expected.push(("technology-event", 0)); }
+            expected.push(("a", 1));
+            if activate_at == Some(1) { expected.push(("technology-event", 0)); }
+            expected.extend([("a", 2), ("b", 1), ("b", 2), ("c", 1), ("c", 2)]);
+            if activate_at.is_some() { expected.extend([("technology-event", 1), ("technology-event", 2)]); }
+            expected.push(("disconfirming", 0));
+            let actual: Vec<_> = calls.iter().map(|(k, d, _)| (k.as_str(), *d)).collect();
+            assert_eq!(actual, expected);
+            let keys: Vec<_> = out.topics.iter().map(|t| t.topic_key.clone()).collect();
+            assert_eq!(*seed_reads.borrow(), keys);
+            assert_eq!(out.seed_decisions.len(), keys.len());
+            assert!(out.topics.iter().all(|t| t.passes.len() == 3 && t.seeded_vintage.as_deref() == Some("vintage")));
+            for (key, depth, messages) in calls.iter().filter(|(k, _, _)| k != "disconfirming") {
+                let brief = &messages[1].content;
+                assert!(brief.contains(&format!("condition-{key}")));
+                assert_eq!(brief.contains("\nFOLLOW-UP\n"), *depth > 0);
+                for other in &keys {
+                    if other != key {
+                        assert!(!brief.contains(&format!("claim-{other}-")));
+                        assert!(!brief.contains(&format!("condition-{other}")));
+                    }
+                }
+                for previous in 0..*depth {
+                    assert!(brief.contains(&format!("claim-{key}-{previous}")));
+                }
+            }
+            let disconfirm = &calls.last().unwrap().2[1].content;
+            assert!(!disconfirm.contains("PAGES ALREADY RETRIEVED"));
+            for key in keys {
+                for depth in 0..3 { assert!(disconfirm.contains(&format!("claim-{key}-{depth}"))); }
+            }
+            assert!(out.disconfirming.is_some());
+        }
+    }
+
+    #[test]
+    fn wall_budget_after_roots_leaves_followup_gaps_without_skipping_roots() {
+        let clock = SchedulingClock::default();
+        let model = SchedulingModel {
+            clock: &clock, calls: Mutex::new(Vec::new()), activate_at: None,
+            propose: true, cancel_after: None,
+        };
+        let web = ScriptWeb::new();
+        let progress = RunContext::noop();
+        let runner = ResearchRunner {
+            model: &model, web: &web,
+            budget: ResearchBudget { max_fetches: 40, max_wall: Duration::from_secs(3), clock: &clock },
+            progress: &progress, step_label: "TEST".into(),
+        };
+        let agenda: Vec<_> = ["a", "b", "c"].iter().map(|key| topic(key, key, &["q"])).collect();
+        let out = runner.run_holding("HOLDING: WID", &agenda, &[], &|_| None).unwrap();
+        assert_eq!(model.calls.lock().unwrap().len(), 3);
+        assert!(out.topics.iter().all(|t| t.skipped.is_none() && t.passes.len() == 1));
+        assert_eq!(out.gaps.iter().filter(|g| g.contains("follow-up not spent")).count(), 3);
+        assert!(out.gaps.iter().any(|g| g.contains("disconfirming-fetch pass not spent")));
+        assert!(out.disconfirming.is_none());
+    }
+
+    #[test]
+    fn scheduler_honors_absent_proposals_and_cancellation_between_phases() {
+        use std::sync::{atomic::AtomicBool, Arc};
+        for cancel_after in [None, Some(2)] {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let clock = SchedulingClock::default();
+            let model = SchedulingModel {
+                clock: &clock, calls: Mutex::new(Vec::new()), activate_at: None,
+                propose: cancel_after.is_some(), cancel_after: cancel_after.map(|n| (n, cancel.clone())),
+            };
+            let web = ScriptWeb::new();
+            let progress = RunContext::new("TEST", Arc::new(crate::progress::NoopReporter), cancel);
+            let runner = ResearchRunner {
+                model: &model, web: &web,
+                budget: ResearchBudget { max_fetches: 40, max_wall: Duration::from_secs(100), clock: &clock },
+                progress: &progress, step_label: "TEST".into(),
+            };
+            let agenda = vec![topic("a", "A", &["q"]), topic("b", "B", &["q"])];
+            let result = runner.run_holding("HOLDING: WID", &agenda, &[], &|_| None);
+            if cancel_after.is_some() {
+                assert!(result.unwrap_err().to_string().contains("cancelled"));
+                assert_eq!(model.calls.lock().unwrap().len(), 2);
+            } else {
+                let out = result.unwrap();
+                assert!(out.topics.iter().all(|t| t.passes.len() == 1));
+                assert!(out.disconfirming.is_some());
+                assert_eq!(model.calls.lock().unwrap().len(), 3);
+            }
+        }
     }
 
     /// A web stub whose fetch lands on a redirected final URL.
@@ -7806,7 +7993,8 @@ pub(crate) mod samples {
     pub(crate) struct Sample {
         pub label: String,
         pub system: String,
-        pub user: String
+        pub user: String,
+        pub appended: Vec<ChatMessage>,
     }
 
     /// Two hand-written headlines for the stock sample.
@@ -7949,7 +8137,8 @@ pub(crate) mod samples {
         let sample = |label: &str, user: String| Sample {
             label: format!("gathering — {label}"),
             system: system.clone(),
-            user
+            user,
+            appended: vec![gathering_countdown(MAX_TURNS_PER_PASS)],
         };
         let reuse_ctx = ctx(holding_brief, topic, None, &leads, None, &[], false);
         let source = ReusablePage {
@@ -7964,7 +8153,7 @@ pub(crate) mod samples {
             sample("follow-up pass, the approved question and the topic's claims so far", pass_brief(&ctx(holding_brief, topic, None, &leads, Some(&fu), &claims, false))),
             sample("root pass on a continuity run, the standing conditions and prior findings", pass_brief(&ctx(holding_brief, topic, Some(&seed), &leads, None, &[], false))),
             sample("the disconfirming pass, the run's claims so far", pass_brief(&ctx(holding_brief, &disc, None, &leads, None, &claims, true))),
-            sample("later topic, previously retrieved pages and three replies left", pass_brief_with_reuse(&reuse_ctx, &reuse, 3)),
+            sample("later topic, previously retrieved pages", pass_brief_with_reuse(&reuse_ctx, &reuse)),
         ]
     }
 
@@ -7999,7 +8188,8 @@ pub(crate) mod samples {
             Sample {
                 label: format!("synthesis — {label}"),
                 system: synthesis_system_prompt(c.disconfirming),
-                user: synthesis_brief(c, &fetched, &texts, &meta, note.as_deref(), &mut gaps, &mut shown)
+                user: synthesis_brief(c, &fetched, &texts, &meta, note.as_deref(), &mut gaps, &mut shown),
+                appended: Vec::new(),
             }
         };
         vec![
