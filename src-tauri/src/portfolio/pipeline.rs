@@ -4085,14 +4085,13 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     p.push_str(&format!(
         "\nCOMPUTED SCORES\nFour scores from 0 to 100, higher is better on every axis: quality; \
          valuation, where higher means more attractive; momentum; risk, where higher means \
-         more resilient. The grade is a letter derived from the scores.\n\
-         quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}{}. Risk tier: {}.\n",
+         more resilient.\n\
+         quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}.{} Risk tier: {}.\n",
         e.sub_scores.quality,
         e.sub_scores.valuation,
         e.sub_scores.momentum,
         e.sub_scores.risk,
-        e.grade.as_str(),
-        if e.low_confidence_grade { LOW_CONFIDENCE_GLOSS } else { "" },
+        if e.low_confidence_grade { " One score is imputed." } else { "" },
         e.risk_tier.as_str(),
     ));
 
@@ -4109,11 +4108,10 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     }
     if let Some(om) = &e.price_targets.one_month {
         p.push_str(&format!(
-            "- one-month: bear {:.2} / base {:.2} / bull {:.2}. Method: {}\n",
+            "- one-month: bear {:.2} / base {:.2} / bull {:.2}.\n",
             om.bear,
             om.base,
             om.bull,
-            one_month_method(om)
         ));
     }
     if let Some(notes) = target_notes_line(&e.target_meta) {
@@ -4359,9 +4357,10 @@ fn interpretation_task_section(
     );
     p.push_str(
         "\n3. model_price_targets — your own one_month and twelve_month bands, each with base, \
-         bear and bull as positive prices in USD, bear ≤ base ≤ bull.\n   \
-         model_target_rationale — the assumptions behind your base case, and where and why \
-         your twelve-month base differs from the computed twelve-month base.\n",
+         bear and bull as positive prices in USD, bear ≤ base ≤ bull. The computed bands are \
+         inputs; your bands may agree with them or differ.\n   \
+         model_target_rationale — the assumptions behind your base case; where your \
+         twelve-month base differs, name your figure and the computed figure and explain why.\n",
     );
     // The shared horizon definitions less their "<name> term" prefix, so the
     // item reads "short (~1 month)" rather than "short (short term (~1 month))".
@@ -5145,8 +5144,12 @@ fn action_task_section(input: &ActionInput) -> String {
         );
     }
     p.push_str(
-        "\n\n2. rationale — one sentence giving the single investment reason for the rung.\n",
+        "\n\n2. rationale — one sentence giving the single investment reason for the rung.",
     );
+    if matches!(&input.subject, ActionSubject::Priced { .. }) {
+        p.push_str(" Name the returns you weighed by their values; do not describe them by their relation to another figure.");
+    }
+    p.push('\n');
     p.push_str(&format!(
         "\nRETURN SHAPE (every value is a placeholder)\n{}\n",
         crate::portfolio::action_return_shape()
@@ -7221,6 +7224,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn slice2_fund_agenda_excludes_technology_even_with_both_triggers() {
+        let d = fund_dossier(us_equity_fund());
+        let agenda = research::build_agenda(&d, &research::AgendaTriggers {
+            tech_pre_flag_fired: true,
+            tech_ledger_falsifier: true,
+            ..Default::default()
+        });
+        assert!(!agenda.iter().any(|t| t.key == "technology-event"));
+    }
+
+    #[test]
     fn the_pre_profit_backfill_agenda_keeps_reporting_spans_separate() {
         let d = dossier(AssetClass::Stock, strong_financials());
         let agenda = research::build_agenda(
@@ -8681,18 +8695,20 @@ pub(crate) mod tests {
         );
         assert!(
             user.contains(&format!(
-                "quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}. Risk tier: {}.",
+                "quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Risk tier: {}.",
                 engine_output.sub_scores.quality,
                 engine_output.sub_scores.valuation,
                 engine_output.sub_scores.momentum,
                 engine_output.sub_scores.risk,
-                engine_output.grade.as_str(),
                 engine_output.risk_tier.as_str(),
             )),
             "{user}"
         );
         assert!(user.contains("\nCOMPUTED PRICE TARGETS (USD)\n- twelve-month: bear "), "{user}");
-        assert!(user.contains(". Method: ") && user.contains("capped at 15%"), "{user}");
+        assert!(user.contains(". Method: "), "{user}");
+        assert!(!user.contains("prorated to one month") && !user.contains("capped at 15%"), "{user}");
+        let scores = user.split("COMPUTED SCORES\n").nth(1).unwrap().split("COMPUTED PRICE TARGETS").next().unwrap();
+        assert!(!scores.contains("Grade") && !scores.contains("grade"), "{scores}");
         assert!(user.contains("\nOPTIONS ACTIVITY\nput/call volume "), "{user}");
         assert!(user.contains("\nRESEARCH SUMMARY\ndistilled findings\n"), "{user}");
         // The task states the scale and the domain as requirements on the output.
@@ -9291,7 +9307,7 @@ pub(crate) mod tests {
             "{part2}"
         );
         assert!(
-            part2.contains("\n2. rationale — one sentence giving the single investment reason for the rung.\n"),
+            part2.contains("\n2. rationale — one sentence giving the single investment reason for the rung. Name the returns you weighed by their values; do not describe them by their relation to another figure.\n"),
             "{part2}"
         );
         assert!(
@@ -9465,6 +9481,7 @@ pub(crate) mod tests {
             // CAPITAL EFFICIENCY as numbers (ruled 2026-09-17 off L19): the three
             // tested returns and the hurdle, no state word, no reach sentence; an
             // unscorable read says no assessment exists.
+            assert_eq!(prompt.matches("Name the returns you weighed by their values").count(), 1);
             let h = &engine.hurdle;
             if state == crate::portfolio::HurdleState::Unscorable {
                 assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment this run.\n"), "{prompt}");
@@ -9858,7 +9875,7 @@ pub(crate) mod tests {
         assert_eq!(PROMPT_VERSION, "portfolio-v48");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v14"
+            "checkpoint-v15"
         );
     }
 
@@ -11557,7 +11574,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_priced_fund_prompt_renders_the_guards_us_share_and_both_horizons_methodology() {
+    fn the_priced_fund_prompt_renders_guards_us_share_and_twelve_month_methodology() {
         // Codex I8: the FUND CONTEXT line reads `fund::us_share` — every US
         // alias summed and capped, the ≥ 70% guard's own read — where it had
         // taken the first label containing "united states", so a `US` row
@@ -11598,8 +11615,8 @@ pub(crate) mod tests {
         assert!(capped.contains("US share of holdings: 100%."), "{capped}");
         let gap = prompt_for(vec![]);
         assert!(gap.contains("US share of holdings: (gap)."), "{gap}");
-        // Both horizons' computed targets carry their method on the same line
-        // (Codex I10): the one-month line names its basis like the twelve-month one.
+        // Slice 2 keeps the twelve-month method; the one-month computed band
+        // supplies its prices without the proration method.
         assert!(us.contains("\nCOMPUTED PRICE TARGETS (USD)\n- twelve-month: bear "), "{us}");
         let twelve = us.find("- twelve-month: bear ").unwrap_or_else(|| panic!("{us}"));
         let line = us[twelve..].lines().next().unwrap();
@@ -11608,11 +11625,8 @@ pub(crate) mod tests {
         assert!(line.contains(". Method: ") && line.contains(" × ") && line.contains("percentile"), "{line}");
         let one_month = us.find("- one-month: bear ").unwrap_or_else(|| panic!("{us}"));
         let line = us[one_month..].lines().next().unwrap();
-        assert!(
-            line.contains(". Method: base = the twelve-month base price return prorated to one month; bear and bull = ±"),
-            "{line}"
-        );
-        assert!(line.contains("capped at 15%"), "{line}");
+        assert!(line.contains(" / base ") && line.contains(" / bull "), "{line}");
+        assert!(!line.contains("Method:") && !line.contains("prorated"), "{line}");
         assert!(!us.contains(engine::SCENARIO_TARGET_PARAMETER_VERSION), "{us}");
         for narration in ["ENGINE SCENARIO TARGETS", "baseline arm", "ENGINE ONE-MONTH TARGETS", "methodology:", "v1 mechanics", "degenerate", "clamp", "inverse map", "P75", "DGS10", "PR_base"] {
             assert!(!us.contains(narration), "`{narration}` leaked: {us}");

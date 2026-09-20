@@ -235,7 +235,8 @@ pub struct CheckpointHeader {
 /// `checkpoint-v13`: complete physical-attempt observations with explicit
 /// app measurements and raw API counters; no v12 row can resume this shape.
 /// `checkpoint-v14`: claim retrieval, publication, and fact-period fields.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v14";
+/// `checkpoint-v15`: calendar-quarter values in persisted claim fact periods.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v15";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1439,15 +1440,19 @@ mod tests {
         )
         .unwrap();
         assert!(latest_run(&conn).unwrap().is_none());
-        // A v13 header is refused before trying to decode deliberately corrupt rows.
-        header.checkpoint_format_version = "checkpoint-v13".into();
-        save_checkpoint_header(&conn, &header).unwrap();
+        // Every retired header is refused before decoding deliberately corrupt rows.
         conn.execute(
             "UPDATE portfolio_checkpoint_holdings SET row_json='invalid'",
             [],
         )
         .unwrap();
-        assert!(load_checkpoint(&conn).unwrap().unwrap().holdings.is_empty());
+        for version in 1..=14 {
+            header.checkpoint_format_version = format!("checkpoint-v{version}");
+            save_checkpoint_header(&conn, &header).unwrap();
+            let checkpoint = load_checkpoint(&conn).unwrap().unwrap();
+            assert_eq!(checkpoint.header.checkpoint_format_version, header.checkpoint_format_version);
+            assert!(checkpoint.holdings.is_empty(), "v{version}");
+        }
     }
 
     #[test]

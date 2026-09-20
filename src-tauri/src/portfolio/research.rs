@@ -371,6 +371,7 @@ fn canonical_day(s: &str) -> bool {
 pub enum PeriodPrecision {
     Day,
     Month,
+    Quarter,
     Year,
     Range,
     Fiscal,
@@ -397,6 +398,14 @@ impl FactPeriod {
             PeriodPrecision::Day => canonical_day(&self.value),
             PeriodPrecision::Month => {
                 self.value.len() == 7 && canonical_day(&format!("{}-01", self.value))
+            }
+            PeriodPrecision::Quarter => {
+                let bytes = self.value.as_bytes();
+                bytes.len() == 7
+                    && bytes[..4].iter().all(u8::is_ascii_digit)
+                    && &bytes[4..6] == b"-Q"
+                    && (b'1'..=b'4').contains(&bytes[6])
+                    && canonical_day(&format!("{}-01-01", &self.value[..4]))
             }
             PeriodPrecision::Year => {
                 self.value.len() == 4
@@ -435,7 +444,7 @@ impl FactPeriod {
 
 fn fact_period_schema() -> Value {
     json!({"type":"object", "properties": {
-        "kind": {"type":"string", "enum":["day","month","year","range","fiscal","unknown"]},
+        "kind": {"type":"string", "enum":["day","month","quarter","year","range","fiscal","unknown"]},
         "value": {"type":"string"}, "end": {"type":["string","null"]}
     }, "required":["kind","value","end"]})
 }
@@ -498,6 +507,32 @@ pub(crate) fn entry3_fixture_layer() -> TopicDistillate {
                 fact_period: FactPeriod {
                     kind: PeriodPrecision::Month,
                     value: "2025-07".into(),
+                    end: None,
+                },
+                cached: false,
+                related_condition_id: None,
+            },
+            DistilledClaim {
+                claim: "TSLA deliveries cover the three months April through June 2026".into(),
+                source_url: "https://example.com/reconstructed-tsla".into(),
+                retrieved_at: "2026-09-16T12:00:00Z".into(),
+                publication: PublicationDate::default(),
+                fact_period: FactPeriod {
+                    kind: PeriodPrecision::Quarter,
+                    value: "2026-Q2".into(),
+                    end: None,
+                },
+                cached: false,
+                related_condition_id: None,
+            },
+            DistilledClaim {
+                claim: "Issuer reports Q4 FY2025 revenue".into(),
+                source_url: "https://example.com/reconstructed-fiscal".into(),
+                retrieved_at: "2026-09-16T12:00:00Z".into(),
+                publication: PublicationDate::from_reported(Some("2026-02-01")),
+                fact_period: FactPeriod {
+                    kind: PeriodPrecision::Fiscal,
+                    value: "Q4 FY2025".into(),
                     end: None,
                 },
                 cached: false,
@@ -689,19 +724,16 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
         agenda.push(t);
     }
 
-    // Why the topic activated is not carried: the pre-flag persists on the
-    // audit, the standing falsifier in the ledger, and a mid-loop escalation
-    // is the topic present with neither, so the audit reconstructs every
-    // reason from what it already stores.
+    // The two activation sources already persist: the pre-flag on the audit
+    // and the standing technology-class falsifier in the ledger.
     if triggers.tech_pre_flag_fired || triggers.tech_ledger_falsifier {
         agenda.push(technology_topic());
     }
     agenda
 }
 
-/// The conditional technology-event topic — also appended mid-loop when an
-/// approved follow-up proposal escalates it (`docs/portfolio-workflow.md`
-/// §Step 6c, the third trigger).
+/// The conditional technology-event topic, selected when assembling the agenda
+/// from the event pre-flag or a standing technology-class falsifier.
 pub fn technology_topic() -> AgendaTopic {
     topic(
         "technology-event",
@@ -897,9 +929,6 @@ pub struct EvidenceClaim {
 pub struct FollowupProposal {
     pub question: String,
     pub rationale: String,
-    /// The mid-loop technology-event escalation flag: the orchestrator
-    /// approves it like any follow-up, then activates the conditional topic.
-    pub technology_event: bool
 }
 
 /// One pass's outcome: the full findings response preserved whole, its
@@ -1510,8 +1539,7 @@ fn findings_schema(disconfirming: bool) -> Value {
     if !disconfirming {
         let followup = json!({
             "followup_question": { "type": ["string", "null"] },
-            "followup_rationale": { "type": ["string", "null"] },
-            "followup_technology_event": { "type": "boolean" }
+            "followup_rationale": { "type": ["string", "null"] }
         });
         properties
             .as_object_mut()
@@ -1537,8 +1565,6 @@ struct FindingsWire {
     followup_question: Option<String>,
     #[serde(default)]
     followup_rationale: Option<String>,
-    #[serde(default)]
-    followup_technology_event: bool
 }
 
 #[derive(Debug, Deserialize)]
@@ -1568,10 +1594,10 @@ fn findings_return_shape(disconfirming: bool, ids: &[String]) -> String {
     } else {
         format!("<{}>", ids.join("|"))
     };
-    let mut shape = format!(r#"{{"findings":"","claims":[{{"claim":"","source_id":"{source_id}","fact_period":{{"kind":"<day|month|year|range|fiscal|unknown>","value":"","end":null}}}}]"#);
+    let mut shape = format!(r#"{{"findings":"","claims":[{{"claim":"","source_id":"{source_id}","fact_period":{{"kind":"<day|month|quarter|year|range|fiscal|unknown>","value":"","end":null}}}}]"#);
     if !disconfirming {
         shape.push_str(
-            r#","followup_question":null,"followup_rationale":null,"followup_technology_event":false"#,
+            r#","followup_question":null,"followup_rationale":null"#,
         );
     }
     shape.push('}');
@@ -1870,8 +1896,8 @@ impl ResearchRunner<'_> {
             .collect();
         let mut fetches_spent = 0u32;
         // Stable priority: every eligible root precedes every follow-up, then
-        // agenda order wins over depth. A late technology root uses this same
-        // queue, including when it is discovered by a follow-up.
+        // agenda order wins over depth. Technology eligibility is settled at
+        // agenda assembly, before any pass runs.
         struct TopicWork {
             topic: AgendaTopic,
             seed: Option<TopicSeed>,
@@ -1891,7 +1917,6 @@ impl ResearchRunner<'_> {
         let mut topics: Vec<TopicWork> = agenda.iter().cloned().map(new_topic).collect();
         let mut pending: std::collections::BTreeSet<(bool, usize, usize)> =
             (0..topics.len()).map(|i| (false, i, 0)).collect();
-        let mut tech_escalated = agenda.iter().any(|t| t.key == "technology-event");
 
         while let Some((is_followup, index, depth)) = pending.pop_first() {
             if self.progress.is_cancelled() {
@@ -1942,17 +1967,10 @@ impl ResearchRunner<'_> {
                 &mut published_by_url,
                 &mut inventory,
             )?;
-            let activate_tech = pass.followup.as_ref()
-                .is_some_and(|f| f.technology_event) && !tech_escalated;
             if pass.followup.is_some() && depth + 1 < MAX_PASSES_PER_TOPIC {
                 pending.insert((true, index, depth + 1));
             }
             work.research.passes.push(pass);
-            if activate_tech {
-                tech_escalated = true;
-                pending.insert((false, topics.len(), 0));
-                topics.push(new_topic(technology_topic()));
-            }
         }
         let worked: Vec<TopicResearch> = topics.into_iter().map(|t| t.research).collect();
 
@@ -2680,7 +2698,6 @@ impl ResearchRunner<'_> {
             FollowupProposal {
                 question,
                 rationale: wire.followup_rationale.unwrap_or_default(),
-                technology_event: wire.followup_technology_event
             }
         });
         PassFindings {
@@ -2851,17 +2868,18 @@ in what it says, it does not exclude it.",
         "\n\n2. claims — each specific statement the findings rest on, one per item, with \
 source_id the id of the page in EVIDENCE that states it. A statement no page in EVIDENCE states \
 is not a claim. fact_period names when the fact applies, never when it was retrieved or \
-when this analysis runs: kind day (YYYY-MM-DD), month (YYYY-MM), year (YYYY), range \
-(value and end both YYYY-MM-DD), fiscal (the source's exact fiscal-period label), or unknown \
-(empty value). end is null except for a range. Preserve separate announcement and effective \
+when this analysis runs: kind day (YYYY-MM-DD, e.g. 2026-06-30), month (YYYY-MM, e.g. 2026-06), \
+quarter (calendar YYYY-Qn, e.g. 2026-Q2), year (YYYY, e.g. 2026), range \
+(value and end both YYYY-MM-DD, e.g. 2026-04-01 through 2026-06-30), fiscal \
+(the source's exact fiscal-period label, e.g. Q4 FY2025), or unknown (empty value). \
+Use quarter only for a stated calendar quarter or a source-stated period that unambiguously \
+covers that calendar quarter. end is null except for a range. Preserve separate announcement and effective \
 dates as separate claims. Do not infer a calendar period from a fiscal label.\n\n",
     );
     if !ctx.disconfirming {
         out.push_str(
             "3. followup_question — one further question worth a search of its own, or null; \
-followup_rationale — why, or null. followup_technology_event is true only when the follow-up \
-concerns a competitor's or supplier's product or standard announcement that could impair the \
-holding's economics.\n\n",
+followup_rationale — why, or null.\n\n",
         );
     }
     out.push_str(
@@ -4619,6 +4637,26 @@ mod tests {
     }
 
     #[test]
+    fn slice2_quarters_validate_render_and_round_trip_without_fiscal_conversion() {
+        for value in ["2026-Q1", "2026-Q2", "2026-Q3", "2026-Q4"] {
+            let quarter = FactPeriod { kind: PeriodPrecision::Quarter, value: value.into(), end: None };
+            assert!(quarter.valid());
+            assert_eq!(quarter.render(), value);
+            let encoded = serde_json::to_value(&quarter).unwrap();
+            assert_eq!(encoded, json!({"kind":"quarter", "value":value, "end":null}));
+            assert_eq!(serde_json::from_value::<FactPeriod>(encoded).unwrap(), quarter);
+        }
+        for value in ["2026-Q0", "2026-Q5", "26-Q2", "2026-q2", "2026-Q02", "2026-Q2 ",
+            " 2026-Q2", "２０２６-Q2", "202éQ2", "Q4 FY2025", "2026-06-30", ""] {
+            assert!(!FactPeriod { kind: PeriodPrecision::Quarter, value: value.into(), end: None }.valid(), "{value}");
+        }
+        assert!(!FactPeriod { kind: PeriodPrecision::Quarter, value: "2026-Q2".into(), end: Some("2026-06-30".into()) }.valid());
+        let fiscal = FactPeriod { kind: PeriodPrecision::Fiscal, value: "Q4 FY2025".into(), end: None };
+        assert!(fiscal.valid());
+        assert_eq!(fiscal.render(), "source label: Q4 FY2025");
+    }
+
+    #[test]
     fn entry3_date_precision_unknowns_and_retrieval_expiry_are_independent() {
         for (kind, value, end, valid) in [
             (PeriodPrecision::Day, "2024-02-29", None, true),
@@ -5060,7 +5098,6 @@ mod tests {
             ],
             "followup_question": null,
             "followup_rationale": null,
-            "followup_technology_event": false
         })
     }
 
@@ -5540,6 +5577,11 @@ mod tests {
                     .collect::<BTreeSet<_>>()
             );
             assert_eq!(!disconfirming, properties.contains_key("followup_question"));
+            assert!(!properties.contains_key("followup_technology_event"));
+            let periods = &schema["properties"]["claims"]["items"]["properties"]["fact_period"]["properties"]["kind"]["enum"];
+            let kinds: Vec<_> = periods.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            assert_eq!(shape["claims"][0]["fact_period"]["kind"], format!("<{}>", kinds.join("|")));
+            assert!(kinds.contains(&"quarter"));
             // The system prompt names the outputs and never the grammar.
             let system = synthesis_system_prompt(disconfirming);
             assert!(!system.to_lowercase().contains("grammar"), "{system}");
@@ -5670,7 +5712,6 @@ mod tests {
         let followup = FollowupProposal {
             question: "é".repeat(FOLLOWUP_CAP_CHARS + 1),
             rationale: " ".into(),
-            technology_event: false
         };
         let render = |followup| synthesis_orientation(&PassContext {
             holding_brief: "HOLDING: WID", topic: &agenda[0], seed: None,
@@ -5686,7 +5727,6 @@ mod tests {
         let followup = FollowupProposal {
             question: "q".repeat(FOLLOWUP_CAP_CHARS),
             rationale: "r".repeat(FOLLOWUP_CAP_CHARS + 1),
-            technology_event: false
         };
         let orientation = render(&followup);
         assert!(orientation.contains(&format!("\n{}\n", followup.question)));
@@ -7374,14 +7414,14 @@ mod tests {
     }
 
     #[test]
-    fn followups_are_approved_to_depth_and_tech_escalation_activates_the_topic_once() {
-        let findings_with_followup = |tech: bool| {
+    fn followups_stop_at_depth_and_cannot_activate_technology() {
+        let findings_with_followup = || {
             findings_turn(json!({
                 "findings": "partial",
                 "claims": [],
                 "followup_question": "dig into the supplier note",
                 "followup_rationale": "a thread worth one more pass",
-                "followup_technology_event": tech
+                "followup_technology_event": true
             }))
         };
         let done = || {
@@ -7397,17 +7437,14 @@ mod tests {
         };
         let model = ScriptModel::new(vec![
             // Each pass gathers a page, ends (gather_done), then synthesizes
-            // (fix B). The root proposes technology; its newly eligible root
-            // precedes either follow-up of topic 1.
+            // (fix B). Even an obsolete flag returned by the model cannot
+            // activate technology. Ordinary follow-ups retain their depth cap.
             fetch(),
             gather_done(),
-            findings_with_followup(true),
+            findings_with_followup(),
             fetch(),
             gather_done(),
-            done(), // technology root
-            fetch(),
-            gather_done(),
-            findings_with_followup(false),
+            findings_with_followup(),
             fetch(),
             gather_done(),
             done(),
@@ -7423,13 +7460,13 @@ mod tests {
         let out = r
             .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
             .unwrap();
-        assert_eq!(out.topics.len(), 2, "{:?}", out.topics);
+        assert_eq!(out.topics.len(), 1, "{:?}", out.topics);
         assert_eq!(
             out.topics[0].passes.len(),
             MAX_PASSES_PER_TOPIC,
             "root + two follow-ups"
         );
-        assert_eq!(out.topics[1].topic_key, "technology-event");
+        assert!(out.disconfirming.is_some());
     }
 
     #[derive(Default)]
@@ -7446,7 +7483,6 @@ mod tests {
     struct SchedulingModel<'a> {
         clock: &'a SchedulingClock,
         calls: Mutex<Vec<(String, usize, Vec<ChatMessage>)>>,
-        activate_at: Option<usize>,
         propose: bool,
         cancel_after: Option<(usize, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     }
@@ -7488,18 +7524,17 @@ mod tests {
             if self.propose && key != "disconfirming" {
                 findings["followup_question"] = json!(format!("follow-{key}-{depth}"));
                 findings["followup_rationale"] = json!("Check the remaining evidence");
-                findings["followup_technology_event"] = json!(key == "a" && self.activate_at == Some(depth));
             }
             Ok(findings_turn(findings))
         }
     }
 
     #[test]
-    fn roots_precede_followups_even_when_technology_activates_late() {
-        for activate_at in [None, Some(0), Some(1)] {
+    fn roots_precede_followups_including_initial_technology_topic() {
+        for with_technology in [false, true] {
             let clock = SchedulingClock::default();
             let model = SchedulingModel {
-                clock: &clock, calls: Mutex::new(Vec::new()), activate_at,
+                clock: &clock, calls: Mutex::new(Vec::new()),
                 propose: true, cancel_after: None,
             };
             let web = ScriptWeb::new();
@@ -7509,7 +7544,8 @@ mod tests {
                 budget: ResearchBudget { max_fetches: 40, max_wall: Duration::from_secs(100), clock: &clock },
                 progress: &progress, step_label: "TEST".into(),
             };
-            let agenda: Vec<_> = ["a", "b", "c"].iter().map(|key| topic(key, key, &["q"])).collect();
+            let mut agenda: Vec<_> = ["a", "b", "c"].iter().map(|key| topic(key, key, &["q"])).collect();
+            if with_technology { agenda.push(technology_topic()); }
             let seed_reads = std::cell::RefCell::new(Vec::new());
             let out = runner.run_holding("HOLDING: WID", &agenda, &[], &|key| {
                 seed_reads.borrow_mut().push(key.to_owned());
@@ -7517,11 +7553,10 @@ mod tests {
             }).unwrap();
             let calls = model.calls.lock().unwrap();
             let mut expected = vec![("a", 0), ("b", 0), ("c", 0)];
-            if activate_at == Some(0) { expected.push(("technology-event", 0)); }
+            if with_technology { expected.push(("technology-event", 0)); }
             expected.push(("a", 1));
-            if activate_at == Some(1) { expected.push(("technology-event", 0)); }
             expected.extend([("a", 2), ("b", 1), ("b", 2), ("c", 1), ("c", 2)]);
-            if activate_at.is_some() { expected.extend([("technology-event", 1), ("technology-event", 2)]); }
+            if with_technology { expected.extend([("technology-event", 1), ("technology-event", 2)]); }
             expected.push(("disconfirming", 0));
             let actual: Vec<_> = calls.iter().map(|(k, d, _)| (k.as_str(), *d)).collect();
             assert_eq!(actual, expected);
@@ -7556,7 +7591,7 @@ mod tests {
     fn wall_budget_after_roots_leaves_followup_gaps_without_skipping_roots() {
         let clock = SchedulingClock::default();
         let model = SchedulingModel {
-            clock: &clock, calls: Mutex::new(Vec::new()), activate_at: None,
+            clock: &clock, calls: Mutex::new(Vec::new()),
             propose: true, cancel_after: None,
         };
         let web = ScriptWeb::new();
@@ -7582,7 +7617,7 @@ mod tests {
             let cancel = Arc::new(AtomicBool::new(false));
             let clock = SchedulingClock::default();
             let model = SchedulingModel {
-                clock: &clock, calls: Mutex::new(Vec::new()), activate_at: None,
+                clock: &clock, calls: Mutex::new(Vec::new()),
                 propose: cancel_after.is_some(), cancel_after: cancel_after.map(|n| (n, cancel.clone())),
             };
             let web = ScriptWeb::new();
@@ -7801,7 +7836,6 @@ mod tests {
         let followup = FollowupProposal {
             question: "Did share hold in Q3?".into(),
             rationale: "Q2 was the peak.".into(),
-            technology_event: false
         };
         let fu = pass_brief(&PassContext {
             holding_brief: "HOLDING\nWID.\n",
@@ -8057,7 +8091,6 @@ pub(crate) mod samples {
         FollowupProposal {
             question: "Has BYD's European share gain continued into September, and is Tesla's Model Y refresh pricing responding?".into(),
             rationale: "The ACEA August print showed the fourth consecutive month of BYD outselling Tesla; the September run-rate decides whether the share loss is structural.".into(),
-            technology_event: false
         }
     }
 

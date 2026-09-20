@@ -2973,6 +2973,7 @@ mod tests {
         bodies: Mutex<RefCell<Vec<String>>>,
         stages: Mutex<RefCell<Vec<String>>>,
         prompts: Mutex<RefCell<Vec<String>>>,
+        schemas: Mutex<Vec<Value>>,
     }
 
     impl ScriptDistill {
@@ -2983,6 +2984,7 @@ mod tests {
                 )),
                 stages: Mutex::new(RefCell::new(Vec::new())),
                 prompts: Mutex::new(RefCell::new(Vec::new())),
+                schemas: Mutex::new(Vec::new()),
             }
         }
         fn stages(&self) -> Vec<String> {
@@ -3044,7 +3046,8 @@ mod tests {
     }
 
     impl DistillModel for ScriptDistill {
-        fn distill_call(&self, stage: &str, prompt: &DistillPrompt, _schema: &Value) -> Result<String> {
+        fn distill_call(&self, stage: &str, prompt: &DistillPrompt, schema: &Value) -> Result<String> {
+            self.schemas.lock().unwrap().push(schema.clone());
             self.stages
                 .lock()
                 .unwrap()
@@ -3307,7 +3310,21 @@ mod tests {
             let model = ScriptDistill::new(bodies);
             let out = distill(&model, &ins).unwrap();
             assert_eq!(out.topic_layer[0].claims, layer.claims, "route {route}");
+            assert_eq!(model.stages().len(), route + 1, "all reduction hops exercised");
+            for schema in model.schemas.lock().unwrap().iter() {
+                let properties = &schema["properties"];
+                let claim = if properties.get("topics").is_some() {
+                    &properties["topics"]["items"]["properties"]["claims"]["items"]["properties"]
+                } else {
+                    &properties["claims"]["items"]["properties"]
+                };
+                let keys: Vec<_> = claim.as_object().unwrap().keys().map(String::as_str).collect();
+                assert_eq!(keys, ["claim", "evidence_ref", "source_url"], "route {route}");
+            }
             for prompt in model.prompts() {
+                assert!(prompt.contains("fact period: 2026-Q2"));
+                assert!(prompt.contains("source label: Q4 FY2025"));
+                assert!(prompt.contains("publication (search/seed report): unknown; fact period: 2026-Q2"));
                 assert!(prompt.contains("fact period: 2025-07"));
                 assert!(prompt.contains("2025-03-27"));
                 assert!(!prompt.contains("2026-09-16T12:00:00Z"));
@@ -3323,6 +3340,8 @@ mod tests {
                 .findings
                 .iter()
                 .any(|s| s.contains("fact period: 2025-07")));
+            assert!(seed.findings.iter().any(|s| s.contains("fact period: 2026-Q2")));
+            assert!(seed.findings.iter().any(|s| s.contains("source label: Q4 FY2025")));
         }
     }
 

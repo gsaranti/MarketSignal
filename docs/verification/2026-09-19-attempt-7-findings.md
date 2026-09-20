@@ -4,7 +4,8 @@ This record holds only what attempt 7 showed needs to change.
 Every finding names the defect, the evidence, the cause as far as it is established, the change proposed, the check that admits it and the stamp it moves.
 What read clean is not repeated here; the per-holding reads, the stop-rule counts and the run timeline are in the archive's `notes.md`.
 Ruled 2026-09-19: attempt findings live in a dated record like this one, focused on issues and required changes; the 2026-09-17 work list stays the record of the fixes that preceded this attempt and no longer takes new entries.
-Findings 1 and 2 are ruled and implemented for offline review; Findings 3–6 remain proposed, grouped into the tasks of §Slices below.
+Findings 1 and 2 are ruled and implemented; Slice 2 implements Findings 3 and 4 and verifies the existing date transfer in Finding 6, with independent review pending.
+Finding 5 remains proposed for Slice 3.
 Ruled 2026-09-19: the findings are ruled per slice during that slice's plan, not through a pre-plan selector sweep.
 Several decisions need the plan's code context — Finding 6's emitted date fields and Finding 5's fetch route — and the standing selector rule governs a plan's own flags before implement, not this pre-plan grouping stage.
 
@@ -74,7 +75,8 @@ Durations are the dev log's `ok after` figures per call; attempt 7 spent its mod
   The orchestrator honours each follow-up proposal in topic order as it arrives, so a topic's follow-ups run before the next topic's root pass; `docs/web-research.md` caps depth per topic (≤3 passes) but nothing orders root passes ahead of follow-ups across topics.
 - Change proposed.
   Ruled: schedule passes by `(is_followup, topic_order, depth)`, so every eligible root precedes pending follow-ups and topic priority is preserved within follow-ups.
-  A technology root activated during a follow-up joins the same queue and precedes the next follow-up; activation remains available until Finding 3b's separate task.
+  Slice 1 preserved a technology root activated during a follow-up in the same queue, ahead of the next follow-up.
+  Slice 2 retires that mid-loop activation under Finding 3b; initially eligible technology roots retain the roots-first ordering.
   The disconfirming pass keeps its final placement and shared budget.
   Roots can still exhaust the budget; the guarantee is that follow-ups cannot consume it ahead of eligible roots.
   Finding 1's fix may make three passes per topic fit the wall, but ordering is the guarantee, so both land.
@@ -101,18 +103,29 @@ What remains is concentrated on four prompt questions, each with a concrete chan
 
 - 3a. `fact_period` has no way to say "a quarter" (synthesis; ≥13 of the 35 markers; six persisted gaps).
   The synthesis shape offers kind `day`, `month`, `year`, `range` (both ends as YYYY-MM-DD), `fiscal` (the source's exact label) or `unknown`, and tells the model not to infer a calendar period from a fiscal label.
-  A fact stated as "three months ending June 2026" or "Q4 FY2025" fits none: the model cycles year → fiscal → range → unknown (TSLA call 5 spent eight markers on one delivery figure; PSX call 64 four) and six model periods were rejected by the parser and persisted as `invalid fact period retained as unknown` (two TSLA, four PSX).
-  Change: add kind `quarter` with value `YYYY-Qn` (or widen `fiscal` to name quarter labels explicitly) and gloss each kind with one example; the reconciliation rule in `docs/portfolio-analysis.md` gains the quarter as a comparable period.
-  Check: zero `invalid fact period` gaps on attempt 8's first stocks and the quarter figures persist as quarters.
+  The prompt did not make the representation clear for "three months ending June 2026" or "Q4 FY2025": the model cycles year → fiscal → range → unknown (TSLA call 5 spent eight markers on one delivery figure; PSX call 64 four) and six model periods were rejected by the parser and persisted as `invalid fact period retained as unknown` (two TSLA, four PSX).
+  Ruled and implemented in Slice 2: add calendar kind `quarter` with value `YYYY-Q1` through `YYYY-Q4` and null `end`, and gloss each kind with one example.
+  `Q4 FY2025` already passes the existing fiscal validator and is now an explicit prompt example; it retains its exact label without a guessed calendar mapping.
+  A calendar quarter requires the source to state it or an unambiguous corresponding period.
+  The reconciliation rule in `docs/portfolio-analysis.md` admits calendar quarters for the same measure and basis.
+  This persisted enum extension, rather than Finding 6, moves `checkpoint-v15` and portability format `11`.
+  Check: zero `invalid fact period` gaps on attempt 8's first stocks and calendar-quarter figures persist as quarters while fiscal labels remain fiscal.
 - 3b. `followup_technology_event` asks for a judgement the shape cannot define (synthesis; ≥6 markers on TSLA alone).
   The boolean is defined in the task as "true only when the follow-up concerns a competitor or supplier product or standard announcement"; the model re-argues the NHTSA rule proposal against that sentence on both TSLA competitive-position syntheses.
-  Its only reader arms the conditional technology topic once per holding (`research.rs` `technology_event`), a trigger the engine's deterministic event pre-flag also serves.
-  Change: drop the field from the synthesis shape and let the conditional topic arm from the pre-flag and the other defined triggers (`docs/portfolio-analysis.md` §Research agenda); if a model-side trigger is still wanted, it becomes a closed enum of the announcement kinds rather than a definition sentence.
+  Its only reader arms the conditional technology topic once per holding (`research.rs` `technology_event`).
+  The engine pre-flag and standing technology-class falsifier are separate triggers and do not guarantee detection of every event first discovered mid-loop.
+  Ruled and implemented in Slice 2: remove the field from the synthesis grammar, wire, return shape and task and remove mid-loop activation.
+  The conditional topic arms only from the engine pre-flag or standing technology-class falsifier at agenda assembly.
+  Ordinary follow-up proposals remain topic-local and retain their depth cap; no replacement announcement enum is introduced.
   Check: the field is absent from the grammar and the wire; the conditional-topic arming tests pass on the remaining triggers.
 - 3c. Interpretation re-litigates its relationship to the computed figures (PSX 21 markers, ten of them on price levels).
   The PSX trace debates whether "your own" targets should anchor on or diverge from the computed bands, re-derives the one-month proration from the twelve-month base, tries to reconcile "Grade D" with a valuation score of 96, and re-checks the "level the metric has not already crossed" rule against the spot.
   Attempt 6's PSX carried 20 markers on the same call, TSLA 0 both times, so this is a holding-shape effect the v40 rewrite did not reach.
-  Change: remove the derived letter grade from COMPUTED SCORES (the model returns its own letter and the grade is app-computed downstream); state once that the computed bands are inputs and the rationale names the figure that differs; render the one-month computed band without its proration method sentence.
+  Ruled and implemented in Slice 2: remove the derived letter grade and its derivation gloss from COMPUTED SCORES while retaining the four scores, polarity, risk tier and imputed-score disclosure.
+  The model returns its own sub-scores, and its letter is derived app-side.
+  State once that computed bands are inputs and agreement is allowed; where the twelve-month base differs, the rationale names both figures and explains why.
+  Render the one-month computed band without its method sentence, preserving the twelve-month method and target-quality notes.
+  The action packet retains both grades and both target-method clauses.
   Check: PSX-class interpretation markers read again beside 20/21 on attempt 8.
 - 3d. Not proposed for change: the action call's trim-versus-sell-all weighing on TSLA (bull-case optionality against a negative base), the evidence cross-checks in gathering (which source states the delivery figure, whether a snippet's period label is FY2025 or Q4 2024) and the one closing check of "one JSON object, no code fence" are the model doing the task.
 
@@ -125,9 +138,10 @@ What remains is concentrated on four prompt questions, each with a concrete chan
 - Cause.
   CAPITAL EFFICIENCY renders "the computed twelve-month total return in each scenario … and the hurdle rate it is measured against", so the hurdle is a named quantity in the packet and the model summarises the comparison by name.
 - Change proposed.
-  The rationale task clause asks for the figures by value: "name the returns you weighed by their values; do not describe them by their relation to another figure".
+  Ruled and implemented in Slice 2: the priced rationale task clause asks for the figures by value: "name the returns you weighed by their values; do not describe them by their relation to another figure".
 - Check, on attempt 8.
   Every rationale that mentions the hurdle carries the return figures it tested.
+  Role/risk packets have no return-value clause; compliance is a runtime check, not a semantic output validator.
 - Stamp: `portfolio-v48`.
 
 ### Finding 5 — Investor-relations hosts refuse the fetcher: the primary earnings sources never enter the packet
@@ -148,29 +162,44 @@ What remains is concentrated on four prompt questions, each with a concrete chan
 - Evidence.
   Distillation completion tokens: attempt 6 TSLA 2,961 and PSX 2,521 over six and seven topics; attempt 7 TSLA 5,445 and PSX 4,547 over two topics — roughly 500 tokens per topic then, 2,500 now — at 34 tokens per second of decode, so 197 s and 168 s against 106 s and 96 s.
   Prompt sizes are comparable (62,778 and 65,162 characters against 54,299 and 68,619).
-- Cause, candidate.
-  Entry 3 (`d7fa5dd`) gave every persisted claim `retrieved_at`, a `publication` object and a `fact_period` object; `retrieved_at` is app-supplied from the evidence ledger, and the plan slice reads whether the model now emits the other two per claim, and whether the claim count per topic also rose under the three-pass structure of Finding 2.
-- Change proposed.
-  Any date the app already holds for a cited page (retrieval time, reported publication) is carried by the app through `evidence_ref` and removed from the model's output shape; the model emits only what the source text states (the fact period, and a publication date only where the app has none).
-- Check, on attempt 8.
-  Distillation `eval_count` per topic returns toward the attempt-6 band with the entry-3 fields still fully populated on the persisted claims.
-- Stamp: `portfolio-v48`; `checkpoint-v15` only if the persisted claim shape changes.
+- Candidate cause corrected by Slice 2's code inspection.
+  Entry 3 (`d7fa5dd`) gave persisted claims `retrieved_at`, `publication` and `fact_period`, but ordinary distillation claim outputs already contain only `claim`, `source_url` and `evidence_ref` (plus a condition tie when applicable).
+  The app resolves the cited occurrence and restores all three date fields; synthesis alone authors an ordinary claim's fact period.
+  Thus these date objects are not repeated in the distillation completion and the proposed transfer is already implemented.
+  Typed extraction still legitimately emits its own source-stated dates, including forensic event dates and pre-profit publication dates and periods.
+- Archived claim-volume evidence.
+  The persisted seed layers contain 20 TSLA claims across six topic rows and 17 PSX claims across six topic rows (five nonempty) in attempt 6, versus 26 and 21 respectively across two topic rows each in attempt 7.
+  These are retained claims, not raw completion-token accounting.
+  The denser per-topic output and differing pass counts support further investigation but do not establish the cause of token growth.
+- Ruled Slice 2 scope.
+  Verify the existing app-carried date contract across single-pass, pass-level, tier-1 and reduce calls and through persistence, including the new calendar-quarter kind.
+  Unknown publication remains unknown; no model-authored publication fallback or claim cap is introduced.
+- Revised check, when a later run supplies evidence.
+  Read distillation tokens and latency alongside researched topic count, completed passes, retained claims, reduction shape and evidence completeness.
+  Returning to attempt-6 tokens per topic is not an acceptance gate across different research workloads.
+  Every retained claim must still carry its cited occurrence's retrieval, publication and fact-period provenance; improved latency remains runtime-unverified.
+- Stamp: none for the already-implemented date transfer.
+  Slice 2 shares `portfolio-v48`; Finding 3a's persisted calendar-quarter kind moves `checkpoint-v15` and portability format `11`.
 
 ## Slices
 
 The six findings are handled as three tasks, with the run-blocking fixes first and the fetch route ruled on its own.
 Ruled: Slices 1 and 2 share one combined delivery stamp, `portfolio-v48`, while remaining separately planned and implemented tasks.
-The current task covers Findings 1 and 2 only; Findings 3, 4 and 6 stay in Slice 2.
-The shared stamp does not establish that Slice 2 is implemented.
+Slice 1 is complete; Slice 2 is implemented for independent review.
+The shared stamp identifies the combined delivery rather than either task's review status.
 
 - Slice 1 — the gathering loop (Findings 1, 2).
   The gathering conversation becomes append-only with the reply countdown out of Part 1 (Finding 1), and every eligible topic's root pass runs before any follow-up (Finding 2).
   These two ended attempt 7 at two of seven topics, so they gate whether attempt 8 completes the book and land first.
   Stamp: `portfolio-v48` — Finding 1 moves the gathering message text; Finding 2 is orchestration order and moves no stamp.
 - Slice 2 — the second-guessing prompt changes (Findings 3, 4, 6).
-  The `quarter` fact-period kind, the dropped `followup_technology_event` and the interpretation-packet trims (Finding 3); the by-value rationale clause (Finding 4); and the app-carried claim dates with the trimmed distillation output (Finding 6).
+  The `quarter` fact-period kind, the dropped `followup_technology_event` and the interpretation-packet trims (Finding 3); the by-value rationale clause (Finding 4); and verification of the already-implemented app-carried claim dates with a corrected performance check (Finding 6).
   These prompt-text and output-shape changes remain a separate implementation and review task, sharing the combined delivery stamp with Slice 1.
-  Stamp: the shared `portfolio-v48`, plus `checkpoint-v15` only if Finding 6 changes the persisted claim shape.
+  Stamp: the shared `portfolio-v48`, plus `checkpoint-v15` and portability format `11` for Finding 3a's calendar-quarter value domain.
+  Offline implementation verification: 1,538 Rust library tests and 32 integration tests passed, with 33 live/manual tests ignored; all-target/all-feature clippy finished without warnings, the frontend build passed, and frontend tests passed (46 pure-module and 266 component tests).
+  The offline prompt dump was rendered and inspected; quarter/fiscal dating, all reduction paths, persisted seeds/checkpoints/archives, retired-format rejection, remaining technology triggers, roots-first scheduling and the priced-versus-role/risk prompt boundaries are covered.
+  Initial sandboxed checks could not bind localhost fixtures; the full Rust gate passed with local-port access after updating the checkpoint-version assertion.
+  These are implementer-run offline gates; independent review and live model compliance, coverage and latency remain outstanding.
 - Slice 3 — the issuer-IR fetch route (Finding 5).
   The 403 route is ruled between render-first webview and the EDGAR 8-K exhibit 99.1 fallback at plan time, since both are read against the fetcher code before the plan settles.
   It touches neither the prompt set nor the persisted shapes, so it stays its own slice.

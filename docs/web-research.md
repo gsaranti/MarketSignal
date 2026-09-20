@@ -25,7 +25,9 @@ The object is the findings, the claims and, on a topic pass, the follow-up propo
 For Portfolio, each rendered source has a contiguous pass-local `S1`, `S2`, … identifier assigned after evidence admission, and the synthesis wire cites `source_id` instead of copying a URL.
 The same rendered-source mapping supplies the prompt identifiers and their resolution; empty, duplicate and budget-omitted pages introduce no numbering gaps.
 The app resolves only identifiers for evidence actually shown in that call, then preserves the claim, final source URL, app-stamped retrieval time, search/seed-reported publication metadata, and source-stated fact period, including redirected seed lineage.
-A fact period preserves calendar precision or an unmapped fiscal label; missing dates remain unknown and never inherit retrieval or analysis time.
+A fact period preserves calendar precision, including a calendar quarter as `YYYY-Q1` through `YYYY-Q4`, or an unmapped fiscal label; missing dates remain unknown and never inherit retrieval or analysis time.
+A quarter requires source-stated calendar correspondence and a null `end`; fiscal quarter labels remain exact source labels with no guessed calendar mapping.
+The synthesis task illustrates every period kind, including `Q4 FY2025` as fiscal.
 The app validates period structure; semantic dating remains the model's responsibility.
 Unknown identifiers, URL strings supplied as identifiers, and identifiers for budget-omitted sources cannot become citations.
 Portfolio's synthesis message is one message in two parts on the frame every Portfolio prompt shares (`portfolio-v43`, ruled 2026-09-17).
@@ -61,7 +63,9 @@ When a pass surfaces a sub-thread worth pursuing, it may spawn an **app-governed
 That cap counts passes (branches), *not* raw LLM turns: the turns and fetches inside each pass are governed by the per-item budget below, not the depth cap.
 A follow-up is the model's *proposal*, carried as a structured field the orchestrator reads and decides whether to spend; the model never recurses on its own.
 Portfolio schedules passes by root-before-follow-up priority, then agenda order, then depth: every eligible root precedes pending follow-ups, and each topic's follow-ups retain its priority through the depth cap.
-A technology topic activated by a proposal joins the root queue once, including when discovered during a follow-up; its root precedes the next pending follow-up.
+Since `portfolio-v48`, Portfolio determines technology-topic eligibility when assembling the agenda, from the engine event pre-flag or a standing technology-class falsifier.
+Synthesis requests no `followup_technology_event` field, and a follow-up proposal cannot add a technology topic mid-loop.
+An initially eligible technology root shares the roots-first queue; ordinary follow-ups retain their existing depth limit.
 Each pass still begins a clean conversation with only its own topic's prior claims and seed, plus the bounded holding-scoped raw-page reuse.
 Budget exhaustion records skipped roots separately from unspent follow-ups; roots themselves may exhaust the budget, so the ordering does not guarantee complete coverage.
 The disconfirming pass retains its final placement after the topic work, under the same budget ([portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research)).

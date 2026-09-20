@@ -1340,6 +1340,16 @@ fn attempt_6_interpretation_messages_are_two_parts_with_no_app_concept() {
         for section in ["HOLDING\n", "FINANCIAL METRICS\n", "COMPUTED SCORES\n", "COMPUTED PRICE TARGETS (USD)\n", "OPTIONS ACTIVITY\n", "RESEARCH SUMMARY\n", "MARKET ANALYSIS\n", "PRIOR THESIS LEDGER\n"] {
             assert!(part1.contains(&format!("\n{section}")), "{}: Part 1 lacks {section}\n{part1}", f.symbol);
         }
+        // Slice 2 removes only the current computed letter and one-month
+        // derivation, preserving all numerical inputs and score uncertainty.
+        let scores = part1.split("\nCOMPUTED SCORES\n").nth(1).unwrap()
+            .split("\nCOMPUTED PRICE TARGETS").next().unwrap();
+        assert!(!scores.to_lowercase().contains("grade"), "{}: {scores}", f.symbol);
+        assert_eq!(scores.contains("One score is imputed."), f.engine_output.low_confidence_grade);
+        assert!(!part1.contains("prorated to one month"), "{}", f.symbol);
+        assert_eq!(part2.matches("The computed bands are inputs").count(), 1);
+        assert!(part2.contains("your bands may agree with them or differ"));
+        assert!(part2.contains("name your figure and the computed figure and explain why"));
         // The fund section renders where the fixture carries fund context; a
         // stock never has one.
         assert!(f.is_fund || !part1.contains("\nFUND\n"), "{}", f.symbol);
@@ -1425,6 +1435,9 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
         ] {
             assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "{}: Part 1 lacks {section}\n{part1}", f.symbol);
         }
+        assert!(part1.contains(&format!("Grade {}", graded.grade.as_str())));
+        assert!(part1.contains("prorated to one month"));
+        assert!(part2.contains("Name the returns you weighed by their values; do not describe them by their relation to another figure."));
         // The thesis and the three scenario rows, as persisted.
         assert!(part1.contains(&format!("\nTHESIS (analyst)\n{}\n", f.ledger_prose.current_thesis)), "{}", f.symbol);
         assert_eq!(f.ledger_prose.monitor.len(), 3, "{}", f.symbol);
@@ -1631,6 +1644,7 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
     assert!(part1.contains("\nEVIDENCE GAPS (computed)\nno duration, credit or yield-curve data for this fund\n"), "{part1}");
     assert!(part1.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: sell-all, trim, hold.\n"), "{part1}");
     assert!(!part1.contains("Return "), "Part 1 instructs\n{part1}");
+    assert!(!part2.contains("Name the returns you weighed"));
     for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "RETURN SHAPE (every value is a placeholder)"] {
         assert!(part2.contains(item), "Part 2 lacks {item}\n{part2}");
     }
