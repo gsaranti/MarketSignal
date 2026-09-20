@@ -162,6 +162,48 @@ Pages that are paywalled or render their content with client-side JavaScript ret
 The plain GET stays the default for the bulk of fetches; only pages the extraction telemetry flags as thin escalate to a **render fetch** that executes the page's JavaScript before extraction, recovering a body a non-browser GET can't. The render reuses the **browser engine the app already embeds** (the Tauri webview) rather than bundling a second browser (Playwright / Selenium) or a Python scraper sidecar (Crawl4AI) — keeping the binary footprint and the macOS signing surface flat; an external headless browser stays a **spike-gated fallback** for a publisher the embedded webview can't drive.
 A render fetch holds the same safety posture as the plain GET ([§Safety and provenance](#safety-and-provenance)) and feeds the same `extractionQuality` telemetry, so escalation stays **measured, never blanket** — browser-rendering every fetch would be slow and heavy, so it fires only on the flagged subset.
 
+### Portfolio earnings-release recovery
+
+Portfolio can recover an identifiable current-holding earnings-results release from SEC EDGAR after an issuer-host HTTP 403, including a remembered denial or another URL suppressed by that denial's host cooldown.
+This is partial recovery: it does not implement rendered retrieval, recover peer issuers or paywalled commentary, interpret production/consensus pages, or extract figures that exist only in images.
+The same existing FMP profile read supplies the corporate website; the exact corporate host, its `www` host and its `ir`, `investor` or `investors` subdomains are eligible, with both the requested and denying destinations required to belong to that set.
+The website is an eligibility hint, not proof that two documents are equivalent.
+The existing ticker-to-CIK resolver supplies the issuer identity, and the submissions response must independently agree on CIK and ticker.
+All identity and discovery state is transient and stays out of prompts, checkpoints and portability archives.
+
+The requested URL path or a bounded search/seed title must explicitly identify earnings results and one quarter/year; conflicting periods, opaque requests without an identifying title, announcement notices, preliminary/corrected results and unsupported intent remain unavailable.
+Conflicts within either lead, including partial quarter/year information, cannot be overridden by the other lead; titles or paths naming an announcement date remain ineligible.
+“Year-to-date” within quarterly results is eligible period wording, including in an “announces results” title; a separate announcement/release-date notice remains ineligible even when it also contains that wording.
+A year printed in a URL is read literally, never shifted to the previous year to manufacture a fourth-quarter match.
+An available search/seed publication date bounds candidate discovery to seven days on either side; that date is a lead, never publication evidence for the recovered release.
+Without a dated lead, only an issuer whose submissions metadata explicitly declares a December 31 fiscal year end can use the requested calendar quarter end through the following 100 days as its discovery window.
+An explicit fiscal label requires a dated lead and matches literal source wording without calendar conversion.
+Fiscal matching requires a compact fiscal quarter/year label directly associated with results, with no competing fiscal period or quarter; a section containing guidance, outlook, forecasts or projected/expected results remains unresolved even if it also mentions actual results.
+The current submissions response is the history boundary; additional historical files are not traversed.
+
+The resolver considers Item 2.02 8-K filings in that window and later 8-K/A amendments, which remain plausible beyond the ordinary window.
+More than four plausible filings leaves the match unresolved before document retrieval.
+The filing's typed document table must identify one Exhibit 99.1 within the same issuer/accession, and the primary 8-K's Item 2.02 must link that exhibit as the first exhibit associated with a press/earnings release and identify the requested reporting period.
+The parser unwraps only the SEC's exact inline-XBRL `ix?doc=` link form; it does not render that viewer.
+Filing dates and event/report dates never substitute for the reporting period.
+Multiple matching filings, a matching amendment/correction, malformed or unavailable discovery documents, or a request limit reached before every plausible candidate is checked leave the match unresolved.
+Correction and preliminary-result checks cover the full Item 2.02 section, including wording after the exhibit reference; only recognized Securities Act/Exchange Act “as amended” boilerplate is exempt.
+The selected exhibit must yield identifiable issuer/quarter financial text through the existing extractor; an index, cover page or image-only body cannot count as recovered earnings evidence.
+
+Each resolution permits at most ten additional live attempts, including retries, inside the existing 40-fetch and elapsed-time holding limits.
+The runner checks cancellation and both budgets before each discovery or exhibit request and applies the existing single transient retry policy.
+SEC GETs are paced, including redirect hops, and retain the shared declared identity, URL policy, address pinning and response bounds.
+Discovery accepts bounded SEC JSON/HTML separately from extracted pages; discovery metadata never enters the evidence roster or the successful-page extraction profile.
+Failed live discovery attempts retain normal source-failure telemetry.
+Submissions metadata and completed resolution outcomes are reused only within the holding, and issuer/release deduplication prevents repeated denied URLs from launching the same resolution again.
+The original IR denial and its cooldown are retained; recovery diagnostics distinguish that failed address from the actual SEC source.
+
+A recovered exhibit passes through ordinary quoted-page rendering, page/body limits, holding-scoped reuse and shown-source citation admission in the same pass.
+Its document cache key and citation are the SEC address, never the denied IR URL or a fabricated redirect alias.
+Publication provenance comes only from a recognizable dateline in the release's own text and otherwise remains unknown; filing/event dates and the failed URL's search metadata are not copied into that field.
+The retrieval timestamp is the exhibit's original retrieval time, including document-cache service.
+The renderer's wording and persisted shapes are unchanged by this route.
+
 ### Failed fetch memory and bounded retry
 
 Failed-fetch memory is in-process and shared across every holding and topic of one Portfolio invocation, including the disconfirming passes.

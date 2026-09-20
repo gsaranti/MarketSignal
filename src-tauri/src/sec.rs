@@ -38,6 +38,1156 @@ fn submissions_path(cik10: &str) -> String {
     format!("/submissions/CIK{cik10}.json")
 }
 
+/// Conservative, transient earnings-release recovery. These are discovery
+/// parsers, not the forensic filing classifier or a new financial-data feed.
+pub(crate) mod earnings {
+    use anyhow::{bail, Context, Result};
+    use chrono::NaiveDate;
+    use reqwest::Url;
+    use serde_json::Value;
+
+    pub const MAX_CANDIDATES: usize = 4;
+    pub const MAX_ATTEMPTS: u32 = 10;
+
+    #[derive(Debug, Clone)]
+    pub struct Issuer {
+        pub symbol: String,
+        pub cik: String,
+        corporate_host: String,
+    }
+
+    impl Issuer {
+        pub fn new(symbol: &str, cik: &str, website: &str) -> Option<Self> {
+            if cik.len() != 10
+                || !cik.bytes().all(|b| b.is_ascii_digit())
+                || cik.parse::<u64>().ok()? == 0
+            {
+                return None;
+            }
+            let url = Url::parse(website).ok()?;
+            crate::web_research::fetch::check_url_policy(website).ok()?;
+            if !url.username().is_empty() || url.password().is_some() || url.port().is_some() {
+                return None;
+            }
+            let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+            let corporate_host = host.strip_prefix("www.").unwrap_or(&host).to_string();
+            if corporate_host.parse::<std::net::IpAddr>().is_ok() || !corporate_host.contains('.') {
+                return None;
+            }
+            Some(Self {
+                symbol: symbol.to_ascii_uppercase(),
+                cik: cik.to_string(),
+                corporate_host,
+            })
+        }
+
+        pub fn allows(&self, address: &str) -> bool {
+            let Ok(url) = Url::parse(address) else {
+                return false;
+            };
+            if !matches!(url.scheme(), "http" | "https")
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.port().is_some()
+            {
+                return false;
+            }
+            let host = url
+                .host_str()
+                .unwrap_or_default()
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            host == self.corporate_host
+                || ["www", "ir", "investor", "investors"]
+                    .iter()
+                    .any(|label| host == format!("{label}.{}", self.corporate_host))
+        }
+
+        pub fn submissions_url(&self) -> String {
+            format!("https://data.sec.gov{}", super::submissions_path(&self.cik))
+        }
+
+        fn archive_root(&self) -> String {
+            format!(
+                "https://www.sec.gov/Archives/edgar/data/{}/",
+                self.cik.trim_start_matches('0')
+            )
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub struct ReleaseTarget {
+        pub year: i32,
+        pub quarter: u32,
+        pub fiscal: bool,
+    }
+
+    fn words(text: &str) -> Vec<String> {
+        text.split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect()
+    }
+
+    fn quarters(tokens: &[String]) -> std::collections::BTreeSet<u32> {
+        let mut out = std::collections::BTreeSet::new();
+        for (i, token) in tokens.iter().enumerate() {
+            let q = match token.as_str() {
+                "q1" | "1q" => Some(1),
+                "q2" | "2q" => Some(2),
+                "q3" | "3q" => Some(3),
+                "q4" | "4q" => Some(4),
+                "first" | "1st" | "1" if tokens.get(i + 1).is_some_and(|v| v == "quarter") => {
+                    Some(1)
+                }
+                "second" | "2nd" | "2" if tokens.get(i + 1).is_some_and(|v| v == "quarter") => {
+                    Some(2)
+                }
+                "third" | "3rd" | "3" if tokens.get(i + 1).is_some_and(|v| v == "quarter") => {
+                    Some(3)
+                }
+                "fourth" | "4th" | "4" if tokens.get(i + 1).is_some_and(|v| v == "quarter") => {
+                    Some(4)
+                }
+                _ => None,
+            };
+            if let Some(q) = q {
+                out.insert(q);
+            }
+        }
+        out
+    }
+
+    fn years(tokens: &[String]) -> std::collections::BTreeSet<i32> {
+        tokens
+            .iter()
+            .filter_map(|w| {
+                let w = w.strip_prefix("fy").unwrap_or(w);
+                (w.len() == 4)
+                    .then(|| w.parse::<i32>().ok())
+                    .flatten()
+                    .filter(|y| (1900..=2100).contains(y))
+            })
+            .collect()
+    }
+
+    fn requested_period(text: &str) -> Option<ReleaseTarget> {
+        let tokens = words(text);
+        let quarters = quarters(&tokens);
+        let years = years(&tokens);
+        if quarters.len() != 1 || years.len() != 1 {
+            return None;
+        }
+        Some(ReleaseTarget {
+            year: *years.first()?,
+            quarter: *quarters.first()?,
+            fiscal: tokens
+                .iter()
+                .any(|w| w == "fiscal" || w == "fy" || w.starts_with("fy20")),
+        })
+    }
+
+    // Match compact, literal fiscal labels rather than assembling a period
+    // from arbitrary nearby words (for example results plus next-year guidance).
+    fn fiscal_period(tokens: &[String], start: usize) -> Option<(usize, i32, u32)> {
+        fn quarter(tokens: &[String], start: usize) -> Option<(usize, u32)> {
+            for len in [1, 2] {
+                let slice = tokens.get(start..start + len)?;
+                if let Some(q) = quarters(slice).first() {
+                    return Some((start + len, *q));
+                }
+            }
+            None
+        }
+        fn year(tokens: &[String], start: usize) -> Option<(usize, i32)> {
+            let token = tokens.get(start)?;
+            let (end, value) = if matches!(token.as_str(), "fiscal" | "fy") {
+                let next =
+                    start + 1 + usize::from(tokens.get(start + 1).is_some_and(|w| w == "year"));
+                (next + 1, tokens.get(next)?.as_str())
+            } else {
+                (start + 1, token.strip_prefix("fy")?)
+            };
+            let year = value.parse::<i32>().ok()?;
+            (value.len() == 4 && (1900..=2100).contains(&year)).then_some((end, year))
+        }
+        if let Some((mut next, q)) = quarter(tokens, start) {
+            if tokens.get(next).is_some_and(|w| w == "of") {
+                next += 1;
+            }
+            if tokens.get(next).is_some_and(|w| w == "the") {
+                next += 1;
+            }
+            let (end, y) = year(tokens, next)?;
+            Some((end, y, q))
+        } else {
+            let (mut next, y) = year(tokens, start)?;
+            if tokens.get(next).is_some_and(|w| w == "the") {
+                next += 1;
+            }
+            let (end, q) = quarter(tokens, next)?;
+            Some((end, y, q))
+        }
+    }
+
+    fn announcement_date(text: &str) -> bool {
+        let tokens = words(text);
+        let date = tokens.iter().enumerate().any(|(i, word)| {
+            matches!(word.as_str(), "date" | "dates")
+                && !(word == "date" && i >= 2 && tokens[i - 2..i] == ["year", "to"])
+        });
+        date && tokens.iter().any(|word| {
+            matches!(
+                word.as_str(),
+                "announce"
+                    | "announces"
+                    | "announced"
+                    | "announcement"
+                    | "set"
+                    | "sets"
+                    | "schedule"
+                    | "schedules"
+                    | "scheduled"
+                    | "scheduling"
+                    | "release"
+                    | "publication"
+                    | "reporting"
+            )
+        })
+    }
+
+    impl ReleaseTarget {
+        pub fn from_request(url: &str, title: Option<&str>) -> Option<Self> {
+            let parsed = Url::parse(url).ok()?;
+            let path = parsed.path();
+            let title = title.unwrap_or_default();
+            if path.len() > 2048 || title.len() > 1024 {
+                return None;
+            }
+            let words = words(&format!("{path} {title}"));
+            if !words.iter().any(|w| w == "results")
+                || words.iter().any(|w| {
+                    matches!(
+                        w.as_str(),
+                        "consensus"
+                            | "production"
+                            | "deliveries"
+                            | "webcast"
+                            | "preliminary"
+                            | "restated"
+                            | "revised"
+                            | "corrected"
+                            | "correction"
+                            | "amended"
+                    )
+                })
+                || announcement_date(path)
+                || announcement_date(title)
+                || words
+                    .windows(2)
+                    .any(|p| matches!(p[0].as_str(), "to" | "will") && p[1] == "announce")
+            {
+                return None;
+            }
+            // Missing information may come from the other lead; conflicting
+            // information may not. Check partial and internally ambiguous leads
+            // together before the Option-based complete-period fallback.
+            if quarters(&words).len() > 1 || years(&words).len() > 1 {
+                return None;
+            }
+            // Title and URL are leads, not evidence. Conflicting explicit
+            // periods are unresolved; a year in a URL is never shifted to Q4
+            // of the prior year to make a candidate fit.
+            match (requested_period(path), requested_period(title)) {
+                (Some(a), Some(b)) if a != b => None,
+                (Some(a), _) | (_, Some(a)) => Some(a),
+                _ => None,
+            }
+        }
+
+        pub fn label(&self) -> String {
+            format!(
+                "{}Q{} {}",
+                if self.fiscal { "fiscal " } else { "" },
+                self.quarter,
+                self.year
+            )
+        }
+
+        fn calendar_end(&self) -> NaiveDate {
+            let (month, day) = match self.quarter {
+                1 => (3, 31),
+                2 => (6, 30),
+                3 => (9, 30),
+                _ => (12, 31),
+            };
+            NaiveDate::from_ymd_opt(self.year, month, day).unwrap()
+        }
+
+        pub fn matches_filing(&self, text: &str, calendar_issuer: bool) -> bool {
+            let tokens = words(text);
+            // An explicit source fiscal label is matched literally, never
+            // converted into a calendar quarter from a filing/event date.
+            if self.fiscal {
+                // This bounded parser does not resolve actual-versus-projected
+                // fiscal results within a mixed guidance section.
+                if tokens.iter().any(|w| {
+                    matches!(
+                        w.as_str(),
+                        "guidance"
+                            | "outlook"
+                            | "forecast"
+                            | "forecasts"
+                            | "expected"
+                            | "projected"
+                            | "projection"
+                            | "projections"
+                    )
+                }) {
+                    return false;
+                }
+                let mut periods = std::collections::BTreeSet::new();
+                let mut results_match = false;
+                for start in 0..tokens.len() {
+                    if let Some((end, year, quarter)) = fiscal_period(&tokens, start) {
+                        periods.insert((year, quarter));
+                        let before = &tokens[..start];
+                        let after = &tokens[end..];
+                        let preceding_results = before
+                            .iter()
+                            .rposition(|w| w == "results")
+                            .is_some_and(|i| {
+                                before[i + 1..]
+                                    .iter()
+                                    .all(|w| matches!(w.as_str(), "for" | "of" | "the" | "our"))
+                            });
+                        let following_results = after.first().is_some_and(|w| w == "results")
+                            || (after
+                                .first()
+                                .is_some_and(|w| matches!(w.as_str(), "financial" | "operating"))
+                                && after.get(1).is_some_and(|w| w == "results"));
+                        results_match |= (preceding_results || following_results)
+                            && year == self.year
+                            && quarter == self.quarter;
+                    }
+                }
+                return results_match
+                    && periods.len() == 1
+                    && quarters(&tokens) == std::collections::BTreeSet::from([self.quarter]);
+            }
+            if !calendar_issuer {
+                return false;
+            }
+            let end = self.calendar_end();
+            let periods: std::collections::BTreeSet<_> = tokens
+                .windows(5)
+                .filter_map(|w| {
+                    (w[0] == "quarter" && w[1] == "ended")
+                        .then(|| date_from_words(&w[2..5]))
+                        .flatten()
+                })
+                .collect();
+            periods.len() == 1 && periods.contains(&end)
+        }
+    }
+
+    fn date_from_words(w: &[String]) -> Option<NaiveDate> {
+        let month = [
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        ]
+        .iter()
+        .position(|m| w.first().is_some_and(|v| v == m))? as u32
+            + 1;
+        NaiveDate::from_ymd_opt(w.get(2)?.parse().ok()?, month, w.get(1)?.parse().ok()?)
+    }
+
+    pub fn publication_date(text: &str) -> Option<String> {
+        // Only the release's own opening dateline. Filing/report dates and
+        // search-result dates are never relabeled as publication provenance.
+        let opening = text.chars().take(1800).collect::<String>();
+        // Require an actual dateline: CITY, Month D, YYYY followed by a dash.
+        // A quarter-end date printed earlier in the release is not publication.
+        for before_dash in opening.split(['–', '—']) {
+            let parts: Vec<_> = before_dash.rsplitn(3, ',').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let year = parts[0].trim();
+            if year.len() != 4 || !year.bytes().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            let city = parts[2].split_whitespace().last().unwrap_or_default();
+            if city.is_empty() || !city.chars().all(|c| c.is_ascii_uppercase()) {
+                continue;
+            }
+            let date = format!("{} {year}", parts[1].trim());
+            if let Some(date) = date_from_words(&words(&date)) {
+                return Some(date.to_string());
+            }
+        }
+        None
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Candidate {
+        pub index_url: String,
+        pub primary_url: String,
+        pub amended: bool,
+    }
+
+    #[derive(Debug)]
+    pub struct Candidates {
+        pub rows: Vec<Candidate>,
+        pub calendar_issuer: bool,
+        pub name: String,
+    }
+
+    /// Validate the requested issuer against the response itself. Candidate
+    /// dates bound discovery only; actual period matching uses filing text.
+    pub fn candidates(
+        body: &str,
+        issuer: &Issuer,
+        target: &ReleaseTarget,
+        reported_publication: Option<&str>,
+    ) -> Result<Candidates> {
+        let value: Value = serde_json::from_str(body).context("SEC submissions JSON")?;
+        let cik = value["cik"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| value["cik"].as_u64().map(|n| n.to_string()));
+        if cik.as_deref().and_then(|s| s.parse::<u64>().ok()) != issuer.cik.parse::<u64>().ok()
+            || !value["tickers"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|t| t.as_str() == Some(&issuer.symbol)))
+        {
+            bail!("SEC submissions issuer identity mismatch");
+        }
+        let name = value["name"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .context("SEC issuer name absent")?
+            .to_string();
+        let calendar_issuer = value["fiscalYearEnd"].as_str() == Some("1231");
+        let reported = reported_publication
+            .and_then(|s| s.get(..10))
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+        // The explicit dated lead is a search constraint, never publication
+        // evidence. Without it, only a verified calendar-year issuer can use
+        // the quarter-end through following-quarter reporting window.
+        let (from, through) = if let Some(date) = reported {
+            (
+                date - chrono::Duration::days(7),
+                date + chrono::Duration::days(7),
+            )
+        } else if calendar_issuer && !target.fiscal {
+            let end = target.calendar_end();
+            (end, end + chrono::Duration::days(100))
+        } else {
+            bail!("release date required for non-calendar or fiscal-label recovery");
+        };
+        let recent = &value["filings"]["recent"];
+        let forms = recent["form"].as_array().context("SEC forms absent")?;
+        for key in [
+            "accessionNumber",
+            "filingDate",
+            "reportDate",
+            "items",
+            "primaryDocument",
+        ] {
+            if recent[key]
+                .as_array()
+                .is_none_or(|a| a.len() != forms.len())
+            {
+                bail!("SEC unpaired {key} column");
+            }
+        }
+        let mut rows = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (i, form) in forms.iter().enumerate() {
+            let form = form.as_str().context("SEC unreadable form")?;
+            if !matches!(form, "8-K" | "8-K/A") {
+                continue;
+            }
+            let date = |key: &str| -> Result<NaiveDate> {
+                Ok(NaiveDate::parse_from_str(
+                    recent[key][i].as_str().context("SEC missing filing date")?,
+                    "%Y-%m-%d",
+                )?)
+            };
+            let filed = date("filingDate")?;
+            let report = date("reportDate")?;
+            // Later amendments remain plausible even outside the reporting
+            // window; they must be inspected or make the bounded read unresolved.
+            if form == "8-K/A" {
+                if filed < from {
+                    continue;
+                }
+            } else if !((from..=through).contains(&filed) || (from..=through).contains(&report)) {
+                continue;
+            }
+            let items = recent["items"][i]
+                .as_str()
+                .context("SEC unreadable items")?;
+            if form != "8-K/A" && !items.split(',').any(|s| s.trim() == "2.02") {
+                continue;
+            }
+            let accession = recent["accessionNumber"][i]
+                .as_str()
+                .context("SEC accession absent")?;
+            if accession.len() != 20
+                || accession.as_bytes()[10] != b'-'
+                || accession.as_bytes()[13] != b'-'
+                || !accession
+                    .replace('-', "")
+                    .bytes()
+                    .all(|c| c.is_ascii_digit())
+            {
+                bail!("SEC malformed accession");
+            }
+            let primary = recent["primaryDocument"][i]
+                .as_str()
+                .context("SEC primary document absent")?;
+            if primary.is_empty()
+                || !primary
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
+                || primary.contains("..")
+            {
+                bail!("SEC unsafe primary document");
+            }
+            if !seen.insert(accession.to_string()) {
+                continue;
+            }
+            let root = format!("{}{}/", issuer.archive_root(), accession.replace('-', ""));
+            rows.push(Candidate {
+                index_url: format!("{root}{accession}-index.htm"),
+                primary_url: format!("{root}{primary}"),
+                amended: form == "8-K/A",
+            });
+        }
+        if rows.len() > MAX_CANDIDATES {
+            bail!("more than {MAX_CANDIDATES} plausible SEC filings; match unresolved");
+        }
+        Ok(Candidates {
+            rows,
+            calendar_issuer,
+            name,
+        })
+    }
+
+    pub fn document_url_allowed(url: &Url) -> bool {
+        url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && match url.host_str() {
+                Some("data.sec.gov") => {
+                    url.path().starts_with("/submissions/CIK") && url.path().ends_with(".json")
+                }
+                Some("www.sec.gov") => url.path().starts_with("/Archives/edgar/data/"),
+                _ => false,
+            }
+    }
+
+    pub fn document_text(html: &str, url: &str) -> Result<String> {
+        let parsed = dom_smoothie::Readability::new(html, Some(url), None)?;
+        Ok(parsed.doc.text().to_string())
+    }
+
+    /// Read the filing-detail document table, never guess an exhibit filename
+    /// or take the first directory entry named 99.1.
+    pub fn exhibit_url(html: &str, candidate: &Candidate) -> Result<String> {
+        let parsed = dom_smoothie::Readability::new(html, Some(&candidate.index_url), None)?;
+        let base = Url::parse(&candidate.index_url)?;
+        let root = base.join(".")?;
+        let mut primary_seen = false;
+        let mut exhibits = std::collections::BTreeSet::new();
+        for row in parsed.doc.select("table.tableFile tr").iter() {
+            let cells = row.select("td");
+            let cells: Vec<_> = cells.iter().collect();
+            if cells.len() < 4 {
+                continue;
+            }
+            let kind = cells[3].text().trim().to_ascii_uppercase();
+            if !matches!(kind.as_str(), "8-K" | "8-K/A" | "EX-99.1") {
+                continue;
+            }
+            let href = cells[2]
+                .select("a")
+                .attr("href")
+                .context("SEC document link absent")?;
+            let mut link = base.join(&href)?;
+            // SEC's filing index may point the primary inline-XBRL document
+            // through its viewer. Unwrap only that exact official doc parameter.
+            if link.host_str() == Some("www.sec.gov") && link.path() == "/ix" {
+                let query: Vec<_> = link.query_pairs().collect();
+                if query.len() != 1 || query[0].0 != "doc" {
+                    bail!("unrecognized SEC viewer link");
+                }
+                link = base.join(&query[0].1)?;
+            }
+            if !document_url_allowed(&link) || !link.as_str().starts_with(root.as_str()) {
+                bail!("SEC exhibit link leaves the selected issuer/accession");
+            }
+            if kind == "EX-99.1" {
+                exhibits.insert(link.to_string());
+            } else if link.as_str() == candidate.primary_url {
+                primary_seen = true;
+            }
+        }
+        if !primary_seen || exhibits.len() != 1 {
+            bail!("SEC filing document table has no unique EX-99.1 relationship");
+        }
+        Ok(exhibits.into_iter().next().unwrap())
+    }
+
+    pub fn confirms_relationship(
+        html: &str,
+        candidate: &Candidate,
+        exhibit: &str,
+        target: &ReleaseTarget,
+        calendar: bool,
+    ) -> Result<bool> {
+        let text = document_text(html, &candidate.primary_url)?;
+        let tokens = words(&text);
+        let Some(start) = tokens.windows(3).position(|w| w == ["item", "2", "02"]) else {
+            return Ok(false);
+        };
+        let tail = &tokens[start + 3..];
+        let end = tail.iter().position(|w| w == "item").unwrap_or(tail.len());
+        let section = &tail[..end];
+        let Some(first_exhibit) = section.iter().position(|w| w == "exhibit") else {
+            return Ok(false);
+        };
+        let release = section
+            .windows(2)
+            .any(|w| w == ["press", "release"] || w == ["earnings", "release"]);
+        let exhibit_991 = section.get(first_exhibit + 1).is_some_and(|w| w == "99")
+            && section.get(first_exhibit + 2).is_some_and(|w| w == "1");
+        let parsed = dom_smoothie::Readability::new(html, Some(&candidate.primary_url), None)?;
+        let base = Url::parse(&candidate.primary_url)?;
+        let linked = parsed.doc.select("a[href]").iter().any(|a| {
+            a.attr("href")
+                .and_then(|href| base.join(&href).ok())
+                .is_some_and(|u| u.as_str() == exhibit)
+        });
+        let period_matches = target.matches_filing(&section.join(" "), calendar);
+        if period_matches && has_release_revision(section) {
+            bail!("preliminary or corrected earnings relationship unresolved");
+        }
+        Ok(release && exhibit_991 && linked && period_matches)
+    }
+
+    fn has_release_revision(tokens: &[String]) -> bool {
+        tokens.iter().enumerate().any(|(i, word)| {
+            if word == "amended" {
+                // Exempt only named securities-law boilerplate, not arbitrary
+                // 'as amended' text that could describe the release itself.
+                let before = &tokens[..i];
+                let legal = [
+                    "securities act as",
+                    "securities exchange act as",
+                    "securities act of 1933 as",
+                    "securities exchange act of 1934 as",
+                    "securities act 1933 as",
+                    "securities exchange act 1934 as",
+                ]
+                .iter()
+                .any(|phrase| before.ends_with(&words(phrase)));
+                !legal
+            } else {
+                matches!(
+                    word.as_str(),
+                    "preliminary" | "restated" | "revised" | "corrected" | "correction"
+                )
+            }
+        })
+    }
+
+    pub fn usable_release(text: &str, name: &str, target: &ReleaseTarget) -> bool {
+        let opening = words(&text.chars().take(1800).collect::<String>()).join(" ");
+        let name = words(name)
+            .into_iter()
+            .filter(|w| {
+                !matches!(
+                    w.as_str(),
+                    "inc" | "incorporated" | "corp" | "corporation" | "company" | "co" | "ltd"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let quarter = quarters(&words(&opening));
+        !text.trim().is_empty()
+            && !name.is_empty()
+            && opening.contains(&name)
+            && quarter.contains(&target.quarter)
+            && text.chars().any(|c| c == '$' || c == '%')
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        const SUBMISSIONS: &str =
+            include_str!("portfolio/fixtures/edgar-recovery/psx-submissions.json");
+        const INDEX: &str = include_str!("portfolio/fixtures/edgar-recovery/psx-index.htm");
+        const FILING: &str = include_str!("portfolio/fixtures/edgar-recovery/psx-8k.htm");
+
+        fn issuer() -> Issuer {
+            Issuer::new("PSX", "0001534701", "https://www.phillips66.com").unwrap()
+        }
+        fn target() -> ReleaseTarget {
+            ReleaseTarget {
+                year: 2026,
+                quarter: 2,
+                fiscal: false,
+            }
+        }
+
+        #[test]
+        fn slice3_real_psx_filing_links_the_earnings_period_not_the_report_date() {
+            let selected = candidates(SUBMISSIONS, &issuer(), &target(), None).unwrap();
+            assert_eq!(selected.rows.len(), 1);
+            let candidate = &selected.rows[0];
+            let exhibit = exhibit_url(INDEX, candidate).unwrap();
+            assert!(exhibit.ends_with("psx-2026630_ex991.htm"));
+            assert!(confirms_relationship(
+                FILING,
+                candidate,
+                &exhibit,
+                &target(),
+                selected.calendar_issuer
+            )
+            .unwrap());
+            assert!(!confirms_relationship(
+                FILING,
+                candidate,
+                &exhibit,
+                &ReleaseTarget {
+                    quarter: 3,
+                    ..target()
+                },
+                true
+            )
+            .unwrap());
+            assert!(!confirms_relationship(
+                FILING,
+                candidate,
+                &exhibit,
+                &ReleaseTarget {
+                    year: 2025,
+                    ..target()
+                },
+                true
+            )
+            .unwrap());
+            // Source markup can split the phrase; the pure period matcher pins
+            // the semantic boundary separately from this real DOM fixture.
+            assert!(!target().matches_filing(
+                "Report date August 5, 2026. Quarter ended June 30, 2025.",
+                true
+            ));
+        }
+
+        #[test]
+        fn slice3_issuer_hosts_and_request_intent_fail_closed() {
+            let issuer = issuer();
+            for host in [
+                "phillips66.com",
+                "www.phillips66.com",
+                "investor.phillips66.com",
+                "IR.PHILLIPS66.COM.",
+            ] {
+                assert!(issuer.allows(&format!("https://{host}/news")));
+            }
+            for url in [
+                "https://phillips66.com.evil.org/news",
+                "https://evilphillips66.com/news",
+                "https://ir.marathonpetroleum.com/news",
+                "https://user@investor.phillips66.com/news",
+                "https://investor.phillips66.com:444/news",
+            ] {
+                assert!(!issuer.allows(url), "{url}");
+            }
+            let url = "https://investor.phillips66.com/2026/second-quarter-results";
+            assert_eq!(ReleaseTarget::from_request(url, None), Some(target()));
+            assert!(ReleaseTarget::from_request(url, Some("First quarter 2026 results")).is_none());
+            for path in [
+                "2026/to-announce-second-quarter-results",
+                "2026/second-quarter-delivery-consensus",
+                "static-files/abcd",
+                "2026/quarterly-results",
+                "2026/full-year-results",
+            ] {
+                assert!(
+                    ReleaseTarget::from_request(
+                        &format!("https://investor.phillips66.com/{path}"),
+                        None
+                    )
+                    .is_none(),
+                    "{path}"
+                );
+            }
+            let fiscal = ReleaseTarget::from_request(
+                "https://example.com/results",
+                Some("First quarter fiscal 2026 results"),
+            )
+            .unwrap();
+            assert!(fiscal.fiscal);
+            assert!(!fiscal.matches_filing(
+                "First quarter 2026 results. Quarter ended March 31, 2026.",
+                true
+            ));
+            assert!(fiscal.matches_filing(
+                "We announced first quarter fiscal 2026 results on this date.",
+                false
+            ));
+        }
+
+        #[test]
+        fn slice3_discovery_refuses_identity_drift_bad_links_and_uninspected_candidates() {
+            let mut v: Value = serde_json::from_str(SUBMISSIONS).unwrap();
+            v["tickers"] = serde_json::json!(["MPC"]);
+            assert!(candidates(&v.to_string(), &issuer(), &target(), None).is_err());
+            let mut v: Value = serde_json::from_str(SUBMISSIONS).unwrap();
+            let recent = v["filings"]["recent"].as_object_mut().unwrap();
+            for value in recent.values_mut() {
+                let first = value[0].clone();
+                *value = Value::Array(vec![first; 5]);
+            }
+            for i in 0..5 {
+                recent.get_mut("accessionNumber").unwrap()[i] =
+                    Value::String(format!("0001534701-26-{:06}", i + 30));
+            }
+            assert!(candidates(&v.to_string(), &issuer(), &target(), None)
+                .unwrap_err()
+                .to_string()
+                .contains("plausible"));
+            let candidate = candidates(SUBMISSIONS, &issuer(), &target(), None)
+                .unwrap()
+                .rows
+                .remove(0);
+            let bad = INDEX.replace(
+                "/Archives/edgar/data/1534701/000153470126000030/psx-2026630_ex991.htm",
+                "https://evil.example/exhibit.htm",
+            );
+            assert_ne!(bad, INDEX);
+            assert!(exhibit_url(&bad, &candidate).is_err());
+            assert!(exhibit_url(&INDEX.replace("EX-99.1", "EX-99.2"), &candidate).is_err());
+            assert!(!document_url_allowed(
+                &Url::parse("https://www.sec.gov.evil.org/Archives/edgar/data/1/a.htm").unwrap()
+            ));
+        }
+
+        #[test]
+        fn slice3_late_amendments_remain_plausible_and_fiscal_dates_are_not_inferred() {
+            let mut v: Value = serde_json::from_str(SUBMISSIONS).unwrap();
+            v["filings"]["recent"]["form"][0] = Value::String("8-K/A".into());
+            v["filings"]["recent"]["filingDate"][0] = Value::String("2027-02-01".into());
+            assert!(
+                candidates(&v.to_string(), &issuer(), &target(), None)
+                    .unwrap()
+                    .rows[0]
+                    .amended
+            );
+            v["fiscalYearEnd"] = Value::String("0630".into());
+            assert!(candidates(&v.to_string(), &issuer(), &target(), None).is_err());
+            assert!(candidates(&v.to_string(), &issuer(), &target(), Some("2026-08-05")).is_ok());
+            assert_eq!(
+                publication_date(
+                    "Quarter ended June 30, 2026. HOUSTON, August 5, 2026 – Phillips 66 results"
+                ),
+                Some("2026-08-05".into())
+            );
+            assert_eq!(publication_date("Quarter ended June 30, 2026"), None);
+        }
+
+        #[test]
+        fn slice3_period_and_exhibit_relationship_cannot_be_borrowed_from_another_item() {
+            let candidate = candidates(SUBMISSIONS, &issuer(), &target(), None)
+                .unwrap()
+                .rows
+                .remove(0);
+            let exhibit = exhibit_url(INDEX, &candidate).unwrap();
+            let html = |statement: &str| {
+                format!(
+                "<html><body><p>Item 2.02 Results of Operations and Financial Condition. {statement}</p><p>A copy of the press release is furnished as <a href='{exhibit}'>Exhibit 99.1</a>.</p><p>The Securities Exchange Act, as amended.</p><p>Item 9.01 Exhibits. Quarter ended June 30, 2026.</p></body></html>")
+            };
+            assert!(confirms_relationship(
+                &html("We issued a press release for the quarter ended June 30, 2026."),
+                &candidate,
+                &exhibit,
+                &target(),
+                true
+            )
+            .unwrap());
+            assert!(!confirms_relationship(
+                &html("We issued a press release for the quarter ended March 31, 2026."),
+                &candidate,
+                &exhibit,
+                &target(),
+                true
+            )
+            .unwrap());
+            assert!(!confirms_relationship(&html("We issued a press release for the quarter ended June 30, 2026 and the quarter ended March 31, 2026."), &candidate, &exhibit, &target(), true).unwrap());
+            assert!(!confirms_relationship(&html("We issued a press release for the quarter ended June 30, 2026 in Exhibit 99.2."), &candidate, &exhibit, &target(), true).unwrap());
+            assert!(confirms_relationship(
+                &html("We issued a corrected press release for the quarter ended June 30, 2026."),
+                &candidate,
+                &exhibit,
+                &target(),
+                true
+            )
+            .is_err());
+            let unrelated = format!("<html><body><p>Item 2.02 Dividends were announced.</p><p>Item 8.01 We issued a press release for the quarter ended June 30, 2026, attached as <a href='{exhibit}'>Exhibit 99.1</a>.</p></body></html>");
+            assert!(
+                !confirms_relationship(&unrelated, &candidate, &exhibit, &target(), true).unwrap()
+            );
+        }
+
+        #[test]
+        fn slice3_review_conflicting_request_leads_cannot_be_overridden() {
+            for (path, title) in [
+                (
+                    "2026/first-quarter-and-second-quarter-results",
+                    "Second quarter 2026 results",
+                ),
+                (
+                    "2025/second-quarter-results-2026",
+                    "Second quarter 2026 results",
+                ),
+                (
+                    "2026/second-quarter-results",
+                    "First quarter and second quarter 2026 results",
+                ),
+                (
+                    "2026/second-quarter-results",
+                    "Second quarter 2025 and 2026 results",
+                ),
+                ("2025/results", "Second quarter 2026 results"),
+                ("first-quarter/results", "Second quarter 2026 results"),
+            ] {
+                assert!(
+                    ReleaseTarget::from_request(
+                        &format!("https://investor.phillips66.com/{path}"),
+                        Some(title)
+                    )
+                    .is_none(),
+                    "{path}: {title}"
+                );
+            }
+            assert_eq!(
+                ReleaseTarget::from_request(
+                    "https://investor.phillips66.com/static-files/abcd",
+                    Some("Second quarter 2026 results")
+                ),
+                Some(target())
+            );
+            assert_eq!(
+                ReleaseTarget::from_request(
+                    "https://investor.phillips66.com/2026/second-quarter-results",
+                    None
+                ),
+                Some(target())
+            );
+        }
+
+        #[test]
+        fn slice3_review_announcement_dates_are_not_results_releases() {
+            for notice in [
+                "announces date for second quarter 2026 results",
+                "sets date for second quarter 2026 results",
+                "announced dates for second quarter 2026 results",
+                "second quarter 2026 results announcement date",
+                "will announce second quarter 2026 results",
+                "to announce second quarter 2026 results",
+            ] {
+                assert!(
+                    ReleaseTarget::from_request(
+                        &format!(
+                            "https://investor.phillips66.com/{}",
+                            notice.replace(' ', "-")
+                        ),
+                        None
+                    )
+                    .is_none(),
+                    "{notice}"
+                );
+                assert!(
+                    ReleaseTarget::from_request(
+                        "https://investor.phillips66.com/static-files/abcd",
+                        Some(notice)
+                    )
+                    .is_none(),
+                    "{notice}"
+                );
+            }
+            for release in [
+                "announces second quarter 2026 results",
+                "reports second quarter 2026 results",
+            ] {
+                assert_eq!(
+                    ReleaseTarget::from_request(
+                        "https://investor.phillips66.com/news",
+                        Some(release)
+                    ),
+                    Some(target())
+                );
+            }
+        }
+
+        #[test]
+        fn slice3_review_year_to_date_results_remain_eligible_but_not_their_notices() {
+            for release in [
+                "second quarter and year-to-date 2026 results",
+                "announces second quarter and year to date 2026 results",
+                "reports second quarter 2026 and year-to-date results",
+            ] {
+                assert_eq!(
+                    ReleaseTarget::from_request(
+                        &format!(
+                            "https://investor.phillips66.com/{}",
+                            release.replace(' ', "-")
+                        ),
+                        None
+                    ),
+                    Some(target()),
+                    "{release}"
+                );
+                assert_eq!(
+                    ReleaseTarget::from_request(
+                        "https://investor.phillips66.com/static-files/abcd",
+                        Some(release)
+                    ),
+                    Some(target()),
+                    "{release}"
+                );
+            }
+            for notice in [
+                "announces date for second quarter and year-to-date 2026 results",
+                "sets date for second quarter and year-to-date 2026 results",
+                "second quarter and year-to-date 2026 results announcement date",
+                "scheduled release date for second quarter and year-to-date 2026 results",
+            ] {
+                assert!(
+                    ReleaseTarget::from_request(
+                        &format!(
+                            "https://investor.phillips66.com/{}",
+                            notice.replace(' ', "-")
+                        ),
+                        None
+                    )
+                    .is_none(),
+                    "{notice}"
+                );
+                assert!(ReleaseTarget::from_request(
+                    "https://investor.phillips66.com/2026/second-quarter-and-year-to-date-results", Some(notice)
+                ).is_none(), "{notice}");
+            }
+        }
+
+        #[test]
+        fn slice3_review_corrections_after_exhibit_fail_closed_but_law_does_not() {
+            let candidate = candidates(SUBMISSIONS, &issuer(), &target(), None)
+                .unwrap()
+                .rows
+                .remove(0);
+            let exhibit = exhibit_url(INDEX, &candidate).unwrap();
+            for qualifier in ["corrected", "preliminary", "restated", "revised", "amended"] {
+                let html = format!("<html><body><p>Item 2.02 We issued a press release, furnished as <a href='{exhibit}'>Exhibit 99.1</a>, containing {qualifier} results for the quarter ended June 30, 2026.</p><p>Item 9.01 Exhibits.</p></body></html>");
+                assert!(
+                    confirms_relationship(&html, &candidate, &exhibit, &target(), true).is_err(),
+                    "{qualifier}"
+                );
+            }
+            let html = format!("<html><body><p>Item 2.02 We issued a press release furnished as <a href='{exhibit}'>Exhibit 99.1</a> for the quarter ended June 30, 2026.</p><p>The release corrects earlier information: corrected financial results are attached.</p><p>Item 9.01 Exhibits.</p></body></html>");
+            assert!(confirms_relationship(&html, &candidate, &exhibit, &target(), true).is_err());
+            for law in [
+                "Securities Act",
+                "Securities Act of 1933",
+                "Securities Exchange Act",
+                "Securities Exchange Act of 1934",
+            ] {
+                let html = format!("<html><body><p>Item 2.02 Under the {law}, as amended, we issued a press release for the quarter ended June 30, 2026, furnished as <a href='{exhibit}'>Exhibit 99.1</a>.</p><p>The {law}, as amended.</p><p>Item 9.01 A corrected unrelated exhibit.</p></body></html>");
+                assert!(
+                    confirms_relationship(&html, &candidate, &exhibit, &target(), true).unwrap(),
+                    "{law}"
+                );
+            }
+        }
+
+        #[test]
+        fn slice3_review_fiscal_results_cannot_borrow_guidance_or_competing_periods() {
+            let candidate = candidates(SUBMISSIONS, &issuer(), &target(), None)
+                .unwrap()
+                .rows
+                .remove(0);
+            let exhibit = exhibit_url(INDEX, &candidate).unwrap();
+            let fiscal = ReleaseTarget {
+                year: 2027,
+                quarter: 1,
+                fiscal: true,
+            };
+            let html = |statement: &str| {
+                format!("<html><body><p>Item 2.02 Results of Operations and Financial Condition. We issued a press release with {statement}, furnished as <a href='{exhibit}'>Exhibit 99.1</a>.</p><p>Item 9.01 Exhibits.</p></body></html>")
+            };
+            for statement in [
+                "fourth quarter fiscal 2026 results and first quarter fiscal 2027 guidance",
+                "first quarter fiscal 2027 guidance and fourth quarter fiscal 2026 results",
+                "first quarter fiscal 2026 results and first quarter fiscal 2027 guidance",
+                "first quarter fiscal 2027 guidance",
+                "guidance for first quarter fiscal 2027 results",
+                "expected results for first quarter fiscal 2027",
+                "first quarter fiscal 2027 results outlook",
+                "guidance regarding financial and operating results for the first quarter fiscal 2027",
+                "projected financial and operating results for the first quarter fiscal 2027",
+                "first quarter fiscal 2027 results and second quarter fiscal 2027 results",
+            ] {
+                assert!(
+                    !confirms_relationship(&html(statement), &candidate, &exhibit, &fiscal, false)
+                        .unwrap(),
+                    "{statement}"
+                );
+            }
+            for statement in [
+                "first quarter fiscal 2027 results",
+                "results for the first quarter of fiscal year 2027",
+                "fiscal 2027 first quarter results",
+                "results for Q1 FY2027",
+            ] {
+                assert!(
+                    confirms_relationship(&html(statement), &candidate, &exhibit, &fiscal, false)
+                        .unwrap(),
+                    "{statement}"
+                );
+                assert!(!confirms_relationship(
+                    &html(statement),
+                    &candidate,
+                    &exhibit,
+                    &ReleaseTarget {
+                        year: 2026,
+                        ..fiscal.clone()
+                    },
+                    false
+                )
+                .unwrap());
+            }
+        }
+    }
+}
+
 /// The latest annual values pulled from a company's XBRL facts — each `None` when the
 /// concept was not reported (or could not be resolved). Deliberately a small set: the
 /// lines the engine cross-checks against FMP.

@@ -6530,6 +6530,7 @@ fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::Prof
         currency: field("currency"),
         is_adr: obj.get("isAdr").and_then(Value::as_bool),
         company_name: field("companyName"),
+        website: field("website"),
         exchange: field("exchange"),
         sector: field("sector"),
         industry: field("industry"),
@@ -7406,13 +7407,14 @@ mod suite_tests {
     fn profile_identity_reads_array_of_one_or_bare_object() {
         use crate::portfolio::listing::ProfileLookup;
         let v: Value = serde_json::from_str(
-            r#"[{"symbol":"AAPL","isAdr": true, "currency": "USD", "companyName":"Apple Inc.","exchange":"NASDAQ","sector":"Technology"}]"#,
+            r#"[{"symbol":"AAPL","isAdr": true, "currency": "USD", "companyName":"Apple Inc.","website":"https://www.apple.com","exchange":"NASDAQ","sector":"Technology"}]"#,
         )
         .unwrap();
         let ProfileLookup::Resolved(identity) = profile_identity_from_value(&v) else {
             panic!("expected resolved");
         };
         assert_eq!(identity.company_name.as_deref(), Some("Apple Inc."));
+        assert_eq!(identity.website.as_deref(), Some("https://www.apple.com"));
         assert_eq!(identity.exchange.as_deref(), Some("NASDAQ"));
         assert_eq!(identity.sector.as_deref(), Some("Technology"));
         assert_eq!(identity.currency.as_deref(), Some("USD"));

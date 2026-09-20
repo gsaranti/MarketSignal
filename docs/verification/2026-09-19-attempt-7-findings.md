@@ -5,7 +5,7 @@ Every finding names the defect, the evidence, the cause as far as it is establis
 What read clean is not repeated here; the per-holding reads, the stop-rule counts and the run timeline are in the archive's `notes.md`.
 Ruled 2026-09-19: attempt findings live in a dated record like this one, focused on issues and required changes; the 2026-09-17 work list stays the record of the fixes that preceded this attempt and no longer takes new entries.
 Findings 1 and 2 are ruled and implemented; Slice 2 implements Findings 3 and 4 and verifies the existing date transfer in Finding 6, with independent review pending.
-Finding 5 remains proposed for Slice 3.
+Finding 5's Slice 3 implementation adopts the recommended EDGAR route and bounded partial coverage; independent review and live acceptance remain outstanding.
 Ruled 2026-09-19: the findings are ruled per slice during that slice's plan, not through a pre-plan selector sweep.
 Several decisions need the plan's code context — Finding 6's emitted date fields and Finding 5's fetch route — and the standing selector rule governs a plan's own flags before implement, not this pre-plan grouping stage.
 
@@ -150,12 +150,23 @@ What remains is concentrated on four prompt questions, each with a concrete chan
   24 of 45 fetch attempts failed across the two stocks; 17 were live failures, 5 host cooldowns and 2 remembered failures (entry 4's memory and entry 6's cause naming both working).
   The failing hosts are the issuers' own: `investor.phillips66.com` (7), `ir.tesla.com` (5), `ir.marathonpetroleum.com` (2), `www.hfsinclair.com` (1) — every one HTTP 403 — plus Reuters 401 and the paywalls (Seeking Alpha, Barron's, Benzinga).
   What succeeded was tier-4 commentary (Motley Fool, Zacks, GuruFocus, Yahoo) and one `sec.gov` page, so TSLA's Q2 figures were persisted from CNBC and Fool rather than the release, and PSX's utilization from a stub 10-K extraction.
-- Change proposed, to be ruled between two routes.
-  Either the render-first (embedded webview) profile is tried on the first 403 from an issuer IR host before the host enters cooldown, or the app falls back deterministically to EDGAR: an issuer press release that fails resolves to the matching 8-K exhibit 99.1 on `sec.gov`, which the fetcher reaches.
-  The EDGAR route is the primary source and needs no browser, so it is the recommendation.
+- Ruled route and implemented scope.
+  The implementation invocation adopts the recommended EDGAR fallback, partial current-issuer earnings-results coverage, four plausible candidate filings and ten additional attempts per resolution, including retries.
+  The route retains the failed IR host's cooldown and resolves an eligible release to a uniquely matched 8-K Exhibit 99.1 under the holding's existing budget.
+  Requested and denying hosts must match the current issuer's profile website or defined IR subdomains; the submissions response must agree with the resolved CIK and ticker.
+  Reporting-period matching comes from Item 2.02 and the linked release relationship, never the filing/event date or the latest filing alone.
+  Every plausible candidate must be checked before a match is accepted; ambiguity, amendments/corrections, unavailable documents and exhausted limits remain unresolved.
+  Full eligibility, discovery-window and provenance details are single-homed at [web-research.md §Portfolio earnings-release recovery](../web-research.md#portfolio-earnings-release-recovery).
+  Peer issuers, production/consensus pages, unsupported or unidentified releases, paywalls, historical-file traversal and image-only figures remain outside this slice.
+  The seven PSX failures include distinct quarters and an announcement notice; deduplication does not turn all seven into one recovery.
+  Browser-style headers already existed before this slice; rendered retrieval remains unimplemented.
 - Check, on attempt 8.
-  On a stock whose IR fetch fails, a `sec.gov` release body appears in the same pass's evidence and the claim cites it.
-- Stamp: none for the fetch route; `portfolio-v48` only if the tool-result text changes.
+  On an eligible earnings-results request whose IR fetch fails, a matched `sec.gov` release body appears in the same pass's evidence and the claim cites that SEC source.
+  Unmatched and unsupported requests remain explicit gaps; an exhibit URL without usable extracted financial text does not satisfy the check.
+  Offline fixtures use the actual PSX submissions row, filing index, 8-K and Exhibit 99.1, and the actual Tesla shareholder-update exhibit.
+  The extractor recovered PSX's 96% refining utilization and earnings text, and Tesla operating/net-income text, without OCR; this does not establish recovery of every figure or eligibility of the opaque and non-earnings TSLA requests from attempt 7.
+  Live recovery coverage, access reliability and model citation behavior remain unverified.
+- Stamp: no new prompt or persisted-shape stamp; the existing page-result wording is reused.
 
 ### Finding 6 — Distillation output nearly doubled on a third of the topics
 
@@ -201,9 +212,22 @@ The shared stamp identifies the combined delivery rather than either task's revi
   Initial sandboxed checks could not bind localhost fixtures; the full Rust gate passed with local-port access after updating the checkpoint-version assertion.
   These are implementer-run offline gates; independent review and live model compliance, coverage and latency remain outstanding.
 - Slice 3 — the issuer-IR fetch route (Finding 5).
-  The 403 route is ruled between render-first webview and the EDGAR 8-K exhibit 99.1 fallback at plan time, since both are read against the fetcher code before the plan settles.
+  The implemented route is bounded SEC 8-K Exhibit 99.1 recovery for identifiable current-issuer earnings results after a typed 403 or suppression originating from that denial.
+  The coverage is partial, as recorded in Finding 5; independent review and live acceptance remain outstanding.
   It touches neither the prompt set nor the persisted shapes, so it stays its own slice.
-  Stamp: none for the route; the next `portfolio-v` only if the tool-result text changes.
+  Stamp: none for the route; existing tool-result wording is unchanged.
+  Post-review implementation verification: all 1,554 Rust library tests and 32 integration tests passed, with 33 live/manual tests ignored; all-target/all-feature clippy finished without warnings; the frontend build passed; 46 pure-module and 266 component tests passed; diff-check was clean.
+  Sixteen Slice 3 regressions cover the real-document recovery path, extraction, typed denial memory, candidate/attempt bounds, cancellation, issuer/period refusals, amendments and source relationship checks.
+  The first full Rust run caught the generic legal phrase “as amended” tripping an overbroad correction check; the initial fix confined it to text before the exhibit reference.
+  Independent review rejected that boundary along with fiscal guidance matching, conflicting request leads and announcement-date notices.
+  The review fixes now check correction/preliminary wording throughout Item 2.02 with narrow securities-law boilerplate exceptions, require a unique fiscal results label, reject conflicts within either request lead and exclude announcement-date wording.
+  Four additional regressions exercise those failures and their accepted counterparts, including correction wording after the exhibit, competing fiscal years, guidance before/after the target, partial request conflicts and ordinary “announces results” titles.
+  Re-review found the notice fix also excluded ordinary “year-to-date” quarterly results.
+  The corrected check requires announcement/release-date intent and exempts “year-to-date” period wording; a paired regression accepts those results in URLs and titles while continuing to reject notices that also mention year-to-date results.
+  Fiscal sections mentioning guidance, outlook, forecasts or projected/expected results now remain unresolved even when actual results also appear; this stricter coverage boundary is documented in the canonical recovery section.
+  A dated lead uses a ±7-day candidate window; absent that lead, the implementation requires an explicitly calendar-year issuer and uses quarter end through 100 days later.
+  Literal fiscal-label recovery requires a dated lead; these conservative discovery restrictions refine the plan's broader matching description and remain part of its partial-coverage limit.
+  These are implementer-run offline gates; independent review and the live acceptance check remain outstanding.
 
 ## Observed, no change proposed
 

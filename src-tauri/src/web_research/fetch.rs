@@ -220,6 +220,13 @@ pub struct FetchedPage {
     pub retrieved_at: String,
 }
 
+/// Bounded SEC discovery bytes, kept separate from extracted citation evidence.
+#[derive(Debug, Clone)]
+pub struct SecDocument {
+    pub final_url: String,
+    pub body: String,
+}
+
 /// The injectable fetch seam: the research runner, tests, and demo mode each
 /// supply their own. The live implementation is [`HttpPageFetcher`].
 pub trait PageFetcher: Send + Sync {
@@ -229,6 +236,10 @@ pub trait PageFetcher: Send + Sync {
     fn fetch_guarded(&self, url: &str, guard: &dyn Fn(&Url) -> Result<()>) -> Result<FetchedPage> {
         guard(&Url::parse(url)?)?;
         self.fetch(url)
+    }
+
+    fn sec_document(&self, _url: &str, _guard: &dyn Fn(&Url) -> Result<()>) -> Result<SecDocument> {
+        Err(policy_err("SEC document transport not configured".into()))
     }
 }
 
@@ -422,6 +433,21 @@ fn quality_of(extracted_chars: usize, probably_readable: bool) -> (f64, bool) {
     (quality, thin)
 }
 
+#[test]
+fn slice3_actual_sec_exhibits_extract_financial_text_without_ocr() {
+    for (html, url, figures) in [
+        (include_str!("../portfolio/fixtures/edgar-recovery/psx-ex991.htm"),
+         "https://www.sec.gov/Archives/edgar/data/1534701/000153470126000030/psx-2026630_ex991.htm",
+         vec!["Phillips 66", "96%", "$3.8 billion"]),
+        (include_str!("../portfolio/fixtures/edgar-recovery/tsla-ex991.htm"),
+         "https://www.sec.gov/Archives/edgar/data/1318605/000162828026049213/exhibit991.htm",
+         vec!["Tesla", "$0.4B", "$1.1B"]),
+    ] {
+        let (_, text, _) = extract_article(html, url);
+        for figure in figures { assert!(text.contains(figure), "missing {figure} from {} chars: {}", text.len(), text.chars().take(1800).collect::<String>()); }
+    }
+}
+
 /// The live SSRF-guarded fetcher.
 pub struct HttpPageFetcher {
     /// Test-only escape hatch for the loopback block, so the wire path can be
@@ -478,6 +504,7 @@ impl HttpPageFetcher {
         &self,
         start: &Url,
         guard: &dyn Fn(&Url) -> Result<()>,
+        sec_document: bool,
     ) -> Result<(Url, String)> {
         let mut url = start.clone();
         let mut attempted = false;
@@ -485,6 +512,9 @@ impl HttpPageFetcher {
             let mut retry_delay = None;
             // Keep provenance at the failing hop without replacing the source chain.
             let result: Result<Option<String>> = (|| {
+                if sec_document && !crate::sec::earnings::document_url_allowed(&url) {
+                    return Err(policy_err("SEC discovery destination is outside its allowed paths".into()));
+                }
                 let host = url.host_str().unwrap_or_default();
                 if let SourcePolicy::Deny(reason) = registry::assess(host) {
                     return Err(policy_err(format!(
@@ -514,8 +544,23 @@ impl HttpPageFetcher {
                     .build()
                     .context("building the fetch client")?;
                 attempted = true;
+                // Sequential SEC retrieval stays below fair-access limits,
+                // including redirect hops. This is part of an in-flight GET;
+                // cancellation/budgets are checked before its admission.
+                if user_agent_for(&url) == crate::sec::SEC_USER_AGENT {
+                    std::thread::sleep(Duration::from_millis(110));
+                }
+                #[cfg(test)]
+                let wire_url = if let Some(address) = self.test_address {
+                    let mut local = url.clone();
+                    local.set_scheme("http").unwrap();
+                    local.set_port(Some(address.port())).unwrap();
+                    local
+                } else { url.clone() };
+                #[cfg(not(test))]
+                let wire_url = url.clone();
                 let resp = client
-                    .get(url.clone())
+                    .get(wire_url)
                     .header("Accept", ACCEPT)
                     .header("Accept-Language", ACCEPT_LANGUAGE)
                     .header("Sec-Fetch-Dest", "document")
@@ -564,6 +609,7 @@ impl HttpPageFetcher {
                     || content_type.starts_with("text/")
                     || content_type.starts_with("application/xhtml+xml")
                     || content_type.starts_with("application/xml");
+                let allowed = allowed || (sec_document && content_type.starts_with("application/json"));
                 if !allowed {
                     return Err(
                         anyhow::Error::new(FetchFailure::Deterministic).context(format!(
@@ -573,9 +619,13 @@ impl HttpPageFetcher {
                 }
                 use std::io::Read;
                 let mut body = Vec::new();
-                resp.take(MAX_FETCH_BYTES)
+                resp.take(MAX_FETCH_BYTES + u64::from(sec_document))
                     .read_to_end(&mut body)
                     .with_context(|| format!("reading the body of {url}"))?;
+                if sec_document && body.len() as u64 > MAX_FETCH_BYTES {
+                    return Err(anyhow::Error::new(FetchFailure::Deterministic)
+                        .context("SEC discovery document exceeded the byte bound"));
+                }
                 Ok(Some(String::from_utf8_lossy(&body).into_owned()))
             })();
             match result {
@@ -610,7 +660,7 @@ impl PageFetcher for HttpPageFetcher {
 
     fn fetch_guarded(&self, url: &str, guard: &dyn Fn(&Url) -> Result<()>) -> Result<FetchedPage> {
         let parsed = Url::parse(url).with_context(|| format!("parsing fetch URL {url:?}"))?;
-        let (final_url, html) = self.get_bounded(&parsed, guard)?;
+        let (final_url, html) = self.get_bounded(&parsed, guard, false)?;
         let (title, text, probably_readable) = extract_article(&html, final_url.as_str());
         let (extraction_quality, thin_stub) = quality_of(text.chars().count(), probably_readable);
         Ok(FetchedPage {
@@ -622,6 +672,12 @@ impl PageFetcher for HttpPageFetcher {
             thin_stub,
             retrieved_at: chrono::Utc::now().to_rfc3339(),
         })
+    }
+
+    fn sec_document(&self, url: &str, guard: &dyn Fn(&Url) -> Result<()>) -> Result<SecDocument> {
+        let parsed = Url::parse(url)?;
+        let (final_url, body) = self.get_bounded(&parsed, guard, true)?;
+        Ok(SecDocument { final_url: final_url.to_string(), body })
     }
 }
 

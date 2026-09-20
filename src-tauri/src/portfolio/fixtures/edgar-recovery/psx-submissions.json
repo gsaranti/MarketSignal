@@ -1,0 +1,61 @@
+{
+  "cik": "0001534701",
+  "name": "Phillips 66",
+  "tickers": [
+    "PSX"
+  ],
+  "fiscalYearEnd": "1231",
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001534701-26-000030"
+      ],
+      "filingDate": [
+        "2026-08-05"
+      ],
+      "reportDate": [
+        "2026-08-05"
+      ],
+      "acceptanceDateTime": [
+        "2026-08-05T14:03:40.000Z"
+      ],
+      "act": [
+        "34"
+      ],
+      "form": [
+        "8-K"
+      ],
+      "fileNumber": [
+        "001-35349"
+      ],
+      "filmNumber": [
+        "261241724"
+      ],
+      "items": [
+        "2.02,9.01"
+      ],
+      "core_type": [
+        "XBRL"
+      ],
+      "size": [
+        3367732
+      ],
+      "isXBRL": [
+        1
+      ],
+      "isInlineXBRL": [
+        1
+      ],
+      "isXBRLNumeric": [
+        0
+      ],
+      "primaryDocument": [
+        "psx-20260805.htm"
+      ],
+      "primaryDocDescription": [
+        "8-K"
+      ]
+    },
+    "files": []
+  }
+}

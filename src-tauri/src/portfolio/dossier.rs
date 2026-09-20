@@ -333,6 +333,8 @@ pub struct BenchmarkSeries {
 #[derive(Debug, Clone)]
 pub struct HoldingDossier {
     pub position: Position,
+    /// Transient SEC recovery identity. Never serialized or rendered in prompts.
+    pub earnings_issuer: Option<crate::sec::earnings::Issuer>,
     /// The issuer name off the same one-per-stock FMP `/profile` lookup the listing
     /// guard reads — kept because Schwab's `description` is often blank, which renders
     /// the prompt header as `HOLDING: PSX ()` and leaves the model guessing at the
@@ -1003,6 +1005,7 @@ pub fn assemble(
 
     HoldingDossier {
         position,
+        earnings_issuer: None,
         company_name,
         position_delta,
         financials,

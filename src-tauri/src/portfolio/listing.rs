@@ -18,6 +18,9 @@ pub struct ProfileIdentity {
     pub currency: Option<String>,
     pub is_adr: Option<bool>,
     pub company_name: Option<String>,
+    /// Corporate website from the same profile read; an IR eligibility hint,
+    /// never evidence that two documents are equivalent.
+    pub website: Option<String>,
     pub exchange: Option<String>,
     pub sector: Option<String>,
     /// The FMP industry label — the commodity context's gold-linkage key
@@ -308,6 +311,7 @@ mod tests {
 
     fn profile(name: &str, exchange: &str) -> ProfileLookup {
         ProfileLookup::Resolved(ProfileIdentity {
+            website: None,
             currency: Some("USD".into()),
             is_adr: Some(false),
             company_name: Some(name.to_string()),
@@ -483,6 +487,7 @@ mod tests {
         // A resolved profile missing its exchange or name cannot be verified —
         // and is never routed terminal.
         let no_exchange = ProfileLookup::Resolved(ProfileIdentity {
+            website: None,
             currency: Some("USD".into()),
             is_adr: Some(false),
             company_name: Some("Apple Inc.".to_string()),
@@ -495,6 +500,7 @@ mod tests {
             ListingResolution::Unverified { .. }
         ));
         let no_name = ProfileLookup::Resolved(ProfileIdentity {
+            website: None,
             currency: Some("USD".into()),
             is_adr: Some(false),
             company_name: None,

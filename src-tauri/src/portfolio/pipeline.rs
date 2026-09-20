@@ -6489,9 +6489,13 @@ impl HoldingAnalyst for LocalAnalyst {
             step_label: plan.step_label.clone(),
         };
         let brief = holding_header(dossier);
-        runner.run_holding(&brief, &plan.agenda, &plan.seeds, &|key| {
-            plan.topic_seeds.get(key).cloned()
-        })
+        runner.run_holding_with_issuer(
+            &brief,
+            &plan.agenda,
+            &plan.seeds,
+            dossier.earnings_issuer.as_ref(),
+            &|key| plan.topic_seeds.get(key).cloned(),
+        )
     }
 
     fn distill_research(&self, inputs: &DistillInputs) -> Result<DistilledResearch> {
@@ -7139,6 +7143,7 @@ pub(crate) mod tests {
 
     pub(crate) fn dossier(asset_class: AssetClass, financials: CompanyFinancials) -> HoldingDossier {
         HoldingDossier {
+            earnings_issuer: None,
             prior_metrics: None,
             semantic_recall: Default::default(),
             news_seeds: Vec::new(),

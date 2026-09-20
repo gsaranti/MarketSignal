@@ -74,6 +74,10 @@ pub trait CompanyDataSource {
     }
     /// SEC EDGAR company facts plus any degraded-input notes ([`SecData`]).
     fn facts(&self, symbol: &str) -> SecData;
+    /// Reuse the already-loaded SEC identity map after the normal gather.
+    fn research_cik(&self, _symbol: &str) -> Option<String> {
+        None
+    }
     /// Deep dated daily closes (FMP dated EOD — the v2 anchor join's price side),
     /// plus any gap notes. Fail-soft: an empty history under-populates the anchor
     /// window, which takes its documented fallback.
@@ -571,6 +575,10 @@ impl CompanyDataSource for LiveCompanyData {
 
     fn facts(&self, symbol: &str) -> SecData {
         sec_company_facts(&self.cik, &self.sec, symbol)
+    }
+
+    fn research_cik(&self, symbol: &str) -> Option<String> {
+        self.cik.resolve(&self.sec, symbol).map(str::to_owned)
     }
 
     fn filing_events(
@@ -1557,8 +1565,12 @@ fn run_analysis(
         // listing-resolution guard (`docs/portfolio-analysis.md` §Asset eligibility)
         // and the entry-stamped sector identity; a fund is a multi-sector vehicle by
         // construction, typed `sector-unscorable` without a profile call.
+        let mut research_website = None;
         let listing = if is_stock {
             let lookup = company_data.profile_identity(&position.symbol);
+            if let crate::portfolio::listing::ProfileLookup::Resolved(p) = &lookup {
+                research_website = p.website.clone();
+            }
             let (sector, name, industry) = match &lookup {
                 crate::portfolio::listing::ProfileLookup::Resolved(p) => {
                     (p.sector.clone(), p.company_name.clone(), p.industry.clone())
@@ -1981,7 +1993,7 @@ fn run_analysis(
         } else {
             Vec::new()
         };
-        let dossier: HoldingDossier = dossier::assemble(
+        let mut dossier: HoldingDossier = dossier::assemble(
             position.clone(),
             holdings_diff.delta_for(&position.symbol),
             fmp_financials,
@@ -2025,6 +2037,15 @@ fn run_analysis(
             research_priors,
             run_session_date.clone(),
         );
+        if is_stock && !skip_retrieval {
+            dossier.earnings_issuer = research_website.as_deref().and_then(|website| {
+                crate::sec::earnings::Issuer::new(
+                    &position.symbol,
+                    &company_data.research_cik(&position.symbol)?,
+                    website,
+                )
+            });
+        }
 
         // Cancellation checkpoint between the (now-complete) data gather and the model
         // stages, so a cancel mid-gather is observed before any model call is spent.
@@ -3942,6 +3963,7 @@ mod tests {
             use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
             if symbol == "NTDOF" {
                 ProfileLookup::Resolved(ProfileIdentity {
+                    website: None,
                     currency: Some("USD".into()),
                     is_adr: Some(false),
                     company_name: Some("Nintendo Co., Ltd.".into()),
@@ -4132,6 +4154,7 @@ mod tests {
                 use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
                 if symbol == "MSFT" {
                     ProfileLookup::Resolved(ProfileIdentity {
+                        website: None,
                         currency: Some("USD".into()),
                         is_adr: Some(false),
                         company_name: Some("Zenith Mining Corp".into()),
@@ -6110,6 +6133,7 @@ mod tests {
         fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
             use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
             ProfileLookup::Resolved(ProfileIdentity {
+                website: None,
                 currency: Some("USD".into()),
                 is_adr: Some(false),
                 company_name: Some(format!("{symbol} Inc.")),

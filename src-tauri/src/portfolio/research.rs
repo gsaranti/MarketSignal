@@ -1065,8 +1065,9 @@ pub trait ResearchModel {
 /// One application-managed fetch operation. Disposition and attempt accounting
 /// are independent: a redirect can contact one host before a later hop is skipped.
 #[derive(Debug)]
-pub struct FetchAttempt {
-    result: Result<FetchedPage>,
+pub struct FetchAttempt<T = FetchedPage> {
+    result: Result<T>,
+    denial: Option<(u16, String)>,
     disposition: FetchDisposition,
     attempted: bool,
     retry_delay: Option<Duration>,
@@ -1077,6 +1078,7 @@ impl FetchAttempt {
     fn scripted(result: Result<(FetchedPage, bool)>) -> Self {
         match result {
             Ok((page, cached)) => Self {
+                denial: None,
                 result: Ok(page),
                 attempted: !cached,
                 disposition: if cached {
@@ -1087,6 +1089,11 @@ impl FetchAttempt {
                 retry_delay: None,
             },
             Err(err) => Self {
+                denial: crate::web_research::fetch::failure_of(&err).and_then(|failure| match failure {
+                    crate::web_research::fetch::FetchFailure::Http(status @ (401 | 403)) =>
+                        Some((status, crate::web_research::fetch::location_of(&err).map(|l| l.url.clone()).unwrap_or_default())),
+                    _ => None,
+                }),
                 result: Err(err),
                 attempted: true,
                 disposition: FetchDisposition::Live,
@@ -1118,14 +1125,16 @@ enum FailureClass {
 #[derive(Debug, Clone)]
 struct RememberedFailure {
     message: String,
+    denial: Option<(u16, String)>,
     class: FailureClass,
     until: Option<Duration>,
     retry_at: Duration,
 }
 
 impl RememberedFailure {
-    fn reply(&self, disposition: FetchDisposition, attempted: bool, now: Duration) -> FetchAttempt {
+    fn reply<T>(&self, disposition: FetchDisposition, attempted: bool, now: Duration) -> FetchAttempt<T> {
         FetchAttempt {
+            denial: self.denial.clone(),
             result: Err(anyhow::anyhow!(self.message.clone())),
             disposition,
             attempted,
@@ -1201,6 +1210,10 @@ fn wait_for_fetch_retry(
 pub trait ResearchWeb {
     fn search(&self, query: &str) -> Result<Vec<SearchHit>>;
     fn fetch(&self, url: &str, retry: bool) -> FetchAttempt;
+    fn sec_document(&self, _url: &str, _retry: bool) -> FetchAttempt<crate::web_research::fetch::SecDocument> {
+        FetchAttempt { result: Err(anyhow::anyhow!("SEC discovery unavailable")), denial: None,
+            disposition: FetchDisposition::Policy, attempted: false, retry_delay: None }
+    }
     fn wait_for_retry(&self, delay: Duration, permitted: &dyn Fn() -> bool) -> bool {
         wait_for_fetch_retry(
             &RealFetchRuntime(std::time::Instant::now()),
@@ -1234,6 +1247,8 @@ pub struct LiveResearchWeb {
     conn: std::sync::Mutex<rusqlite::Connection>,
 }
 
+type GuardedFetch<'a, T> = dyn Fn(&dyn Fn(&reqwest::Url) -> Result<()>) -> Result<T> + 'a;
+
 impl LiveResearchWeb {
     /// Build the stack from configuration. A `None` or unreachable SearXNG
     /// endpoint degrades rather than errors — every search then fail-softs
@@ -1257,13 +1272,13 @@ impl LiveResearchWeb {
 }
 
 impl LiveResearchWeb {
-    fn remember_failure(
+    fn remember_failure<T>(
         &self,
         url: &str,
         err: anyhow::Error,
         attempted: bool,
         now: Duration,
-    ) -> FetchAttempt {
+    ) -> FetchAttempt<T> {
         use crate::web_research::fetch::{
             failure_of, location_of, transient_failure, FetchFailure,
         };
@@ -1284,6 +1299,15 @@ impl LiveResearchWeb {
             FailureClass::Policy | FailureClass::Deterministic => None,
         };
         let failure = RememberedFailure {
+            denial: match failure_of(&err) {
+                Some(FetchFailure::Http(status @ (401 | 403))) => Some((
+                    status,
+                    location
+                        .map(|v| v.url.clone())
+                        .unwrap_or_else(|| url.to_string()),
+                )),
+                _ => None,
+            },
             message: location
                 .map(|v| v.detail.clone())
                 .unwrap_or_else(|| format!("{err:#}")),
@@ -1316,45 +1340,24 @@ impl LiveResearchWeb {
     }
 }
 
-impl ResearchWeb for LiveResearchWeb {
-    fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        self.search.search(query)
-    }
-
-    fn fetch(&self, url: &str, retry: bool) -> FetchAttempt {
+impl LiveResearchWeb {
+    fn fetch_live<T>(
+        &self,
+        url: &str,
+        retry: bool,
+        operation: &GuardedFetch<'_, T>,
+    ) -> FetchAttempt<T> {
         use crate::web_research::fetch::{check_url_policy, location_of};
-        let now = chrono::Utc::now();
-        // Current policy always wins, including over cached content and memory.
         if let Err(err) = check_url_policy(url) {
             return FetchAttempt {
                 result: Err(err),
+                denial: None,
                 disposition: FetchDisposition::Policy,
                 attempted: false,
                 retry_delay: None,
             };
         }
-        {
-            let conn = self.conn.lock().unwrap();
-            if let Ok(Some(page)) = crate::web_research::store::get_fresh_document(&conn, url, now)
-            {
-                if let Err(err) = check_url_policy(&page.final_url)
-                    .context("cached redirect destination failed the current URL policy")
-                {
-                    return FetchAttempt {
-                        result: Err(err),
-                        disposition: FetchDisposition::Policy,
-                        attempted: false,
-                        retry_delay: None,
-                    };
-                }
-                return FetchAttempt {
-                    result: Ok(page),
-                    disposition: FetchDisposition::DocumentCache,
-                    attempted: false,
-                    retry_delay: None,
-                };
-            }
-        }
+        let now = chrono::Utc::now();
         let elapsed = self.runtime.elapsed();
         let key = failed_url_key(url);
         {
@@ -1382,7 +1385,7 @@ impl ResearchWeb for LiveResearchWeb {
             }
             Ok(())
         };
-        let page = match self.fetcher.fetch_guarded(url, &guard) {
+        let page = match operation(&guard) {
             Ok(page) => page,
             Err(err) => {
                 let elapsed = self.runtime.elapsed();
@@ -1407,29 +1410,88 @@ impl ResearchWeb for LiveResearchWeb {
                 return self.remember_failure(url, err, attempted, elapsed);
             }
         };
+
         self.memory.lock().unwrap().urls.remove(&key);
-        {
-            let conn = self.conn.lock().unwrap();
-            if let Err(e) = crate::web_research::store::put_document(&conn, url, &page) {
-                eprintln!("web document cache write failed for {url}: {e}");
-            }
-            let outcome = if page.thin_stub {
-                crate::web_research::store::FetchOutcome::Thin
-            } else {
-                crate::web_research::store::FetchOutcome::Full
-            };
-            if let Err(e) =
-                crate::web_research::store::record_fetch_outcome(&conn, &page.host, outcome, now)
-            {
-                eprintln!("web source-state write failed for {}: {e}", page.host);
-            }
-        }
         FetchAttempt {
             result: Ok(page),
+            denial: None,
             disposition: FetchDisposition::Live,
             attempted: true,
             retry_delay: None,
         }
+    }
+}
+
+impl ResearchWeb for LiveResearchWeb {
+    fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
+        self.search.search(query)
+    }
+
+    fn fetch(&self, url: &str, retry: bool) -> FetchAttempt {
+        use crate::web_research::fetch::check_url_policy;
+        let now = chrono::Utc::now();
+        // Current policy always wins, including over cached content and memory.
+        if let Err(err) = check_url_policy(url) {
+            return FetchAttempt {
+                denial: None,
+                result: Err(err),
+                disposition: FetchDisposition::Policy,
+                attempted: false,
+                retry_delay: None,
+            };
+        }
+        {
+            let conn = self.conn.lock().unwrap();
+            if let Ok(Some(page)) = crate::web_research::store::get_fresh_document(&conn, url, now)
+            {
+                if let Err(err) = check_url_policy(&page.final_url)
+                    .context("cached redirect destination failed the current URL policy")
+                {
+                    return FetchAttempt {
+                        denial: None,
+                        result: Err(err),
+                        disposition: FetchDisposition::Policy,
+                        attempted: false,
+                        retry_delay: None,
+                    };
+                }
+                return FetchAttempt {
+                    denial: None,
+                    result: Ok(page),
+                    disposition: FetchDisposition::DocumentCache,
+                    attempted: false,
+                    retry_delay: None,
+                };
+            }
+        }
+        let attempt = self.fetch_live(url, retry, &|guard| self.fetcher.fetch_guarded(url, guard));
+        if let Ok(page) = &attempt.result {
+            {
+                let conn = self.conn.lock().unwrap();
+                if let Err(e) = crate::web_research::store::put_document(&conn, url, page) {
+                    eprintln!("web document cache write failed for {url}: {e}");
+                }
+                let outcome = if page.thin_stub {
+                    crate::web_research::store::FetchOutcome::Thin
+                } else {
+                    crate::web_research::store::FetchOutcome::Full
+                };
+                if let Err(e) = crate::web_research::store::record_fetch_outcome(
+                    &conn, &page.host, outcome, now,
+                ) {
+                    eprintln!("web source-state write failed for {}: {e}", page.host);
+                }
+            }
+        }
+        attempt
+    }
+
+    fn sec_document(
+        &self,
+        url: &str,
+        retry: bool,
+    ) -> FetchAttempt<crate::web_research::fetch::SecDocument> {
+        self.fetch_live(url, retry, &|guard| self.fetcher.sec_document(url, guard))
     }
 
     fn wait_for_retry(&self, delay: Duration, permitted: &dyn Fn() -> bool) -> bool {
@@ -1860,6 +1922,21 @@ struct PassContext<'a> {
     disconfirming: bool
 }
 
+#[derive(Clone)]
+struct RecoveredRelease {
+    page: FetchedPage,
+    published: Option<String>,
+}
+
+#[derive(Default)]
+struct EarningsRecovery {
+    issuer: Option<crate::sec::earnings::Issuer>,
+    titles: std::collections::HashMap<String, String>,
+    submissions: Option<std::result::Result<crate::web_research::fetch::SecDocument, String>>,
+    resolved: std::collections::HashMap<crate::sec::earnings::ReleaseTarget, std::result::Result<RecoveredRelease, String>>,
+    gaps: Vec<String>,
+}
+
 impl ResearchRunner<'_> {
     /// Run the whole holding: the agenda in priority order, then the
     /// disconfirming pass, under the shared budget.
@@ -1870,6 +1947,21 @@ impl ResearchRunner<'_> {
         seeds: &[ResearchSeed],
         seed_for_topic: &dyn Fn(&str) -> Option<(TopicSeed, String)>,
     ) -> Result<HoldingResearch> {
+        self.run_holding_with_issuer(holding_brief, agenda, seeds, None, seed_for_topic)
+    }
+
+    pub fn run_holding_with_issuer(
+        &self,
+        holding_brief: &str,
+        agenda: &[AgendaTopic],
+        seeds: &[ResearchSeed],
+        issuer: Option<&crate::sec::earnings::Issuer>,
+        seed_for_topic: &dyn Fn(&str) -> Option<(TopicSeed, String)>,
+    ) -> Result<HoldingResearch> {
+        let mut recovery = EarningsRecovery { issuer: issuer.cloned(), ..Default::default() };
+        for seed in seeds {
+            recovery.titles.insert(crate::web_research::store::normalize_url(&seed.url), seed.headline.chars().take(TITLE_CAP_CHARS).collect());
+        }
         let mut out = HoldingResearch {
             seeds: seeds.to_vec(),
             ..Default::default()
@@ -1966,6 +2058,7 @@ impl ResearchRunner<'_> {
                 &mut page_meta,
                 &mut published_by_url,
                 &mut inventory,
+                &mut recovery,
             )?;
             if pass.followup.is_some() && depth + 1 < MAX_PASSES_PER_TOPIC {
                 pending.insert((true, index, depth + 1));
@@ -2007,11 +2100,13 @@ impl ResearchRunner<'_> {
                     &mut page_meta,
                     &mut published_by_url,
                     &mut inventory,
+                    &mut recovery,
                 )?;
                 out.disconfirming = Some(pass);
             }
         }
 
+        out.gaps.extend(recovery.gaps);
         out.topics = worked;
         out.page_texts = page_texts;
         out.page_published = page_meta
@@ -2047,6 +2142,7 @@ impl ResearchRunner<'_> {
         page_meta: &mut std::collections::HashMap<String, PageMeta>,
         published_by_url: &mut std::collections::HashMap<String, String>,
         inventory: &mut Vec<ReusablePage>,
+        recovery: &mut EarningsRecovery,
     ) -> Result<PassFindings> {
         let tools = research_tools();
         let (reuse_block, reused) = reuse_pages(ctx, inventory, gaps);
@@ -2186,7 +2282,7 @@ impl ResearchRunner<'_> {
                 }
                 let result = match call {
                     ToolCall::Search { query } => {
-                        self.exec_search(query, ctx, &mut degradation, published_by_url)
+                        self.exec_search(query, ctx, &mut degradation, published_by_url, recovery)
                     }
                     ToolCall::Fetch { url } => self.exec_fetch(
                         url,
@@ -2199,6 +2295,7 @@ impl ResearchRunner<'_> {
                         published_by_url,
                         &mut degradation,
                         inventory,
+                        recovery,
                     ),
                     ToolCall::Unknown { name } => {
                         degradation.malformed_calls += 1;
@@ -2404,6 +2501,7 @@ impl ResearchRunner<'_> {
         ctx: &PassContext<'_>,
         degradation: &mut PassDegradation,
         published_by_url: &mut std::collections::HashMap<String, String>,
+        recovery: &mut EarningsRecovery,
     ) -> String {
         let series = format!("search: {query}");
         let target = || RequestTarget {
@@ -2421,6 +2519,10 @@ impl ResearchRunner<'_> {
                 // page's header (`portfolio-v43`); the first report for a URL
                 // stands.
                 for hit in &hits {
+                    if recovery.titles.len() < 4096 {
+                        recovery.titles.entry(crate::web_research::store::normalize_url(&hit.url))
+                            .or_insert_with(|| hit.title.chars().take(TITLE_CAP_CHARS).collect());
+                    }
                     if let Some(published) = &hit.published {
                         published_by_url
                             .entry(crate::web_research::store::normalize_url(&hit.url))
@@ -2457,10 +2559,20 @@ impl ResearchRunner<'_> {
     /// At most two application-managed attempts. Memory and redirect hops never
     /// hide retry work below this budget/cancellation boundary.
     fn fetch_with_retry(&self, url: &str, ctx: &PassContext<'_>, spent: &mut u32) -> FetchAttempt {
+        self.request_with_retry(url, ctx, spent, u32::MAX, &|retry| self.web.fetch(url, retry),
+            &|page| format!("{} chars extracted", page.text.chars().count()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn request_with_retry<T>(
+        &self, url: &str, ctx: &PassContext<'_>, spent: &mut u32, ceiling: u32,
+        issue: &dyn Fn(bool) -> FetchAttempt<T>, describe: &dyn Fn(&T) -> String,
+    ) -> FetchAttempt<T> {
         let mut retry = false;
         loop {
-            if self.progress.is_cancelled() || self.budget.exhausted(*spent) {
+            if self.progress.is_cancelled() || (self.budget.exhausted(*spent) || *spent >= ceiling) {
                 return FetchAttempt {
+                denial: None,
                     result: Err(anyhow::anyhow!(
                         "fetch stopped by cancellation or holding budget"
                     )),
@@ -2485,13 +2597,13 @@ impl ResearchRunner<'_> {
                 &ctx.topic.key,
                 target(),
             );
-            let attempt = self.web.fetch(url, retry);
+            let attempt = issue(retry);
             *spent += u32::from(attempt.attempted);
             let detail = match (&attempt.result, attempt.disposition) {
                 (Ok(_), FetchDisposition::DocumentCache) => {
                     "served from document cache; 0 live attempts".into()
                 }
-                (Ok(page), _) => format!("{} chars extracted", page.text.chars().count()),
+                (Ok(value), _) => describe(value),
                 (Err(err), disposition) => format!(
                     "{}; {} live attempt(s): {err}",
                     match disposition {
@@ -2523,7 +2635,7 @@ impl ResearchRunner<'_> {
             let Some(delay) = attempt.retry_delay else {
                 return attempt;
             };
-            let permitted = || !self.progress.is_cancelled() && !self.budget.exhausted(*spent);
+            let permitted = || !self.progress.is_cancelled() && !(self.budget.exhausted(*spent) || *spent >= ceiling);
             let remaining = self
                 .budget
                 .max_wall
@@ -2533,6 +2645,161 @@ impl ResearchRunner<'_> {
             }
             retry = true;
         }
+    }
+
+    fn recover_earnings(
+        &self,
+        url: &str,
+        denying_url: &str,
+        ctx: &PassContext<'_>,
+        spent: &mut u32,
+        publications: &std::collections::HashMap<String, String>,
+        state: &mut EarningsRecovery,
+    ) -> Option<RecoveredRelease> {
+        use crate::sec::earnings;
+        let issuer = state.issuer.clone()?;
+        if !issuer.allows(url)
+            || !issuer.allows(denying_url)
+            || crate::web_research::fetch::check_url_policy(url).is_err()
+            || crate::web_research::fetch::check_url_policy(denying_url).is_err()
+            || self.progress.is_cancelled()
+            || self.budget.exhausted(*spent)
+        {
+            return None;
+        }
+        let key = crate::web_research::store::normalize_url(url);
+        let target =
+            earnings::ReleaseTarget::from_request(url, state.titles.get(&key).map(String::as_str))?;
+        if let Some(result) = state.resolved.get(&target) {
+            return result
+                .as_ref()
+                .ok()
+                .filter(|r| crate::web_research::fetch::check_url_policy(&r.page.final_url).is_ok())
+                .cloned();
+        }
+        let ceiling = spent.saturating_add(earnings::MAX_ATTEMPTS);
+        let result = self
+            .resolve_earnings(
+                &issuer,
+                &target,
+                publications.get(&key).map(String::as_str),
+                ctx,
+                spent,
+                ceiling,
+                state,
+            )
+            .map_err(|e| format!("{e:#}"));
+        let detail = match &result {
+            Ok(release) => format!("SEC earnings recovery: {url} -> {}", release.page.final_url),
+            Err(reason) => {
+                let gap = format!("topic {}: SEC earnings recovery for {} {} unresolved: {reason}; original URL {url}", ctx.topic.key, issuer.symbol, target.label());
+                state.gaps.push(gap.clone());
+                gap
+            }
+        };
+        // A route diagnostic is not a second HTTP row or a fabricated redirect.
+        self.progress
+            .request_started("web", "earnings-recovery", url, &ctx.topic.key);
+        self.progress.request_finished(
+            "web",
+            "earnings-recovery",
+            url,
+            &ctx.topic.key,
+            if result.is_ok() { "ok" } else { "failed" },
+            Some(detail),
+        );
+        let recovered = result.as_ref().ok().cloned();
+        state.resolved.insert(target, result);
+        recovered
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_earnings(
+        &self,
+        issuer: &crate::sec::earnings::Issuer,
+        target: &crate::sec::earnings::ReleaseTarget,
+        publication: Option<&str>,
+        ctx: &PassContext<'_>,
+        spent: &mut u32,
+        ceiling: u32,
+        state: &mut EarningsRecovery,
+    ) -> Result<RecoveredRelease> {
+        use crate::sec::earnings;
+        let metadata =
+            |address: &str, spent: &mut u32| -> Result<crate::web_research::fetch::SecDocument> {
+                let result = self
+                    .request_with_retry(
+                        address,
+                        ctx,
+                        spent,
+                        ceiling,
+                        &|retry| self.web.sec_document(address, retry),
+                        &|doc| format!("{} bytes of SEC discovery metadata", doc.body.len()),
+                    )
+                    .result?;
+                // Identity metadata cannot move to another issuer/accession through
+                // an otherwise policy-safe SEC redirect.
+                if result.final_url != address {
+                    bail!("SEC discovery redirected away from the selected document");
+                }
+                Ok(result)
+            };
+        if state.submissions.is_none() {
+            state.submissions =
+                Some(metadata(&issuer.submissions_url(), spent).map_err(|e| format!("{e:#}")));
+        }
+        let submissions = state
+            .submissions
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!(e.clone()))?;
+        let candidates = earnings::candidates(&submissions.body, issuer, target, publication)?;
+        let mut matches = Vec::new();
+        for candidate in &candidates.rows {
+            let index = metadata(&candidate.index_url, spent)?;
+            let exhibit = earnings::exhibit_url(&index.body, candidate)?;
+            let primary = metadata(&candidate.primary_url, spent)?;
+            if earnings::confirms_relationship(
+                &primary.body,
+                candidate,
+                &exhibit,
+                target,
+                candidates.calendar_issuer,
+            )? {
+                // An amendment can change the original release. Until the
+                // correction relationship is modeled, neither version is a
+                // unique match, including a sole amended filing.
+                if candidate.amended {
+                    bail!("matching amended earnings filing; correction relationship unresolved");
+                }
+                matches.push(exhibit);
+            }
+        }
+        if matches.len() != 1 {
+            bail!(
+                "{} matching earnings exhibits; unique match required",
+                matches.len()
+            );
+        }
+        let exhibit = &matches[0];
+        let page = self
+            .request_with_retry(
+                exhibit,
+                ctx,
+                spent,
+                ceiling,
+                &|retry| self.web.fetch(exhibit, retry),
+                &|page| format!("{} chars extracted", page.text.chars().count()),
+            )
+            .result?;
+        if page.final_url != *exhibit
+            || !earnings::usable_release(&page.text, &candidates.name, target)
+        {
+            bail!("matched exhibit did not yield an identifiable earnings-results body");
+        }
+        let published = earnings::publication_date(&page.text);
+        Ok(RecoveredRelease { page, published })
     }
 
     /// Execute one fetch call, with its tracker row, cache accounting, and the
@@ -2550,8 +2817,19 @@ impl ResearchRunner<'_> {
         published_by_url: &std::collections::HashMap<String, String>,
         degradation: &mut PassDegradation,
         inventory: &mut Vec<ReusablePage>,
+        recovery: &mut EarningsRecovery,
     ) -> String {
-        let attempt = self.fetch_with_retry(url, ctx, fetches_spent);
+        let mut attempt = self.fetch_with_retry(url, ctx, fetches_spent);
+        let mut recovered = None;
+        if attempt.result.is_err() {
+            degradation.fetches_failed += 1;
+            if let Some((403, denying_url)) = &attempt.denial {
+                recovered = self.recover_earnings(url, denying_url, ctx, fetches_spent, published_by_url, recovery);
+                if let Some(release) = &recovered { attempt.result = Ok(release.page.clone()); }
+            }
+        }
+        let actual_url = recovered.as_ref().map(|r| r.page.final_url.clone());
+        let url = actual_url.as_deref().unwrap_or(url);
         match attempt.result {
             Ok(page) => {
                 let age_days = chrono::DateTime::parse_from_rfc3339(&page.retrieved_at)
@@ -2586,13 +2864,13 @@ impl ResearchRunner<'_> {
                 // The extracted headline and the reported publication date ride
                 // their own map so the fresh synthesis header can carry them
                 // (Finding 3; `portfolio-v43`).
-                let published = published_by_url
+                let published = if let Some(release) = &recovered { release.published.clone() } else { published_by_url
                     .get(&normalized)
                     .or_else(|| published_by_url.get(&requested))
                     // A later explicit read may use the final URL rather than
                     // the alias whose search/seed supplied the publication date.
                     .or_else(|| page_meta.get(&normalized).and_then(|meta| meta.published.as_ref()))
-                    .cloned();
+                    .cloned() };
                 page_meta.insert(
                     normalized.clone(),
                     PageMeta { title: page.title.clone(), published: published.clone() },
@@ -2629,7 +2907,6 @@ impl ResearchRunner<'_> {
                 render_page(&page, annotation.as_ref(), published.as_deref())
             }
             Err(e) => {
-                degradation.fetches_failed += 1;
                 format!("FETCH FAILED: {e:#}. No text was retrieved.")
             }
         }
@@ -5115,6 +5392,402 @@ mod tests {
         }]
     }
 
+    const SLICE3_IR: &str = "https://investor.phillips66.com/2026/second-quarter-results";
+    const SLICE3_EXHIBIT: &str =
+        "https://www.sec.gov/Archives/edgar/data/1534701/000153470126000030/psx-2026630_ex991.htm";
+
+    fn slice3_wire_web(
+        responses: Vec<String>,
+    ) -> (
+        LiveResearchWeb,
+        crate::web_research::fetch::test_support::WireServer,
+    ) {
+        let server = crate::web_research::fetch::test_support::WireServer::serve(|_| responses);
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::storage::init_schema(&conn).unwrap();
+        (
+            LiveResearchWeb {
+                search: crate::web_research::search::SearchTool::new(None),
+                fetcher: Box::new(
+                    crate::web_research::fetch::HttpPageFetcher::with_test_address(server.address),
+                ),
+                memory: Mutex::new(FetchMemory::default()),
+                runtime: Box::new(RealFetchRuntime(std::time::Instant::now())),
+                conn: Mutex::new(conn),
+            },
+            server,
+        )
+    }
+
+    fn slice3_responses() -> Vec<String> {
+        use crate::web_research::fetch::test_support::response;
+        vec![
+            response(403, "", "Denied"),
+            response(
+                200,
+                "",
+                include_str!("fixtures/edgar-recovery/psx-submissions.json"),
+            ),
+            response(
+                200,
+                "",
+                include_str!("fixtures/edgar-recovery/psx-index.htm"),
+            ),
+            response(200, "", include_str!("fixtures/edgar-recovery/psx-8k.htm")),
+            response(
+                200,
+                "",
+                include_str!("fixtures/edgar-recovery/psx-ex991.htm"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn slice3_denied_ir_recovers_sec_release_in_same_pass_and_deduplicates() {
+        let (web, server) = slice3_wire_web(slice3_responses());
+        let issuer =
+            crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://www.phillips66.com")
+                .unwrap();
+        let mut findings = simple_findings();
+        findings["findings"] =
+            json!("Phillips 66 reported second-quarter earnings and 96% refining utilization.");
+        findings["claims"][0]["claim"] = json!("Phillips 66 reported refining utilization of 96%.");
+        let model = Entry5RecordingModel {
+            inner: ScriptModel::new(vec![
+                turn_with_tools(json!([
+                    {"function": {"name": "web_fetch", "arguments": {"url": SLICE3_IR}}},
+                    {"function": {"name": "web_fetch", "arguments": {"url": SLICE3_IR}}},
+                    {"function": {"name": "web_fetch", "arguments": {"url": "https://investor.phillips66.com/2026/reports-second-quarter-results"}}}
+                ])),
+                gather_done(),
+                findings_turn(findings),
+                gather_done(),
+            ]),
+            calls: Mutex::new(Vec::new()),
+        };
+        let clock = FrozenClock(Duration::ZERO);
+        let progress = RunContext::noop();
+        let runner = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 40,
+                max_wall: Duration::from_secs(1800),
+                clock: &clock,
+            },
+            progress: &progress,
+            step_label: "holding-PSX".into(),
+        };
+        let out = runner
+            .run_holding_with_issuer("PSX", &one_topic_agenda(), &[], Some(&issuer), &|_| None)
+            .unwrap();
+        assert_eq!(out.fetches_spent, 5);
+        assert_eq!(
+            server.requests().len(),
+            5,
+            "neither repeated URL nor a different URL for the same release rediscover it"
+        );
+        let pass = &out.topics[0].passes[0];
+        assert_eq!(pass.claims.len(), 1, "unshown S999 was rejected");
+        assert_eq!(pass.claims[0].source_url, SLICE3_EXHIBIT);
+        assert_eq!(
+            out.page_published.get(SLICE3_EXHIBIT).map(String::as_str),
+            Some("2026-08-05")
+        );
+        assert!(out.page_texts[SLICE3_EXHIBIT].contains("96%"));
+        assert!(!out.page_texts.contains_key(SLICE3_IR));
+        assert!(
+            out.gaps.iter().any(|g| g.contains("gathering degraded")),
+            "original denial remains an operational gap"
+        );
+        let calls = model.calls.lock().unwrap();
+        let synthesis = calls.iter().find(|(_, _, tools)| !tools).unwrap();
+        let rendered = synthesis
+            .1
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains(SLICE3_EXHIBIT) && rendered.contains("96%"));
+        assert!(
+            !rendered.contains(SLICE3_IR),
+            "no fabricated IR redirect/source identity"
+        );
+        assert!(
+            web.fetch(SLICE3_IR, false).denial.is_some(),
+            "recovery does not erase the IR cooldown"
+        );
+        let conn = web.conn.lock().unwrap();
+        assert!(crate::web_research::store::get_fresh_document(
+            &conn,
+            SLICE3_IR,
+            chrono::Utc::now()
+        )
+        .unwrap()
+        .is_none());
+        assert!(crate::web_research::store::get_fresh_document(
+            &conn,
+            SLICE3_EXHIBIT,
+            chrono::Utc::now()
+        )
+        .unwrap()
+        .is_some());
+    }
+
+    #[test]
+    fn slice3_denial_status_survives_live_remembered_and_host_cooldown() {
+        let time = std::sync::Arc::new(FetchTestTime::default());
+        for status in [401, 403] {
+            let (web, calls) = fetch_web(vec![failed_status(status)], &time);
+            for url in [
+                SLICE3_IR,
+                SLICE3_IR,
+                "https://investor.phillips66.com/another",
+            ] {
+                let attempt = web.fetch(url, false);
+                assert_eq!(attempt.denial, Some((status, SLICE3_IR.into())));
+            }
+            assert_eq!(calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn slice3_holding_budget_stops_discovery_without_admitting_index_as_evidence() {
+        let (web, server) = slice3_wire_web(slice3_responses().into_iter().take(2).collect());
+        let issuer =
+            crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://phillips66.com")
+                .unwrap();
+        let model = ScriptModel::new(vec![turn_with_tools(json!([
+            {"function": {"name": "web_fetch", "arguments": {"url": SLICE3_IR}}}
+        ]))]);
+        let clock = FrozenClock(Duration::ZERO);
+        let progress = RunContext::noop();
+        let runner = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 2,
+                max_wall: Duration::from_secs(1800),
+                clock: &clock,
+            },
+            progress: &progress,
+            step_label: "holding-PSX".into(),
+        };
+        let out = runner
+            .run_holding_with_issuer("PSX", &one_topic_agenda(), &[], Some(&issuer), &|_| None)
+            .unwrap();
+        assert_eq!(out.fetches_spent, 2);
+        assert_eq!(server.requests().len(), 2);
+        assert!(out.page_texts.is_empty());
+        assert!(out.topics[0].passes[0].claims.is_empty());
+        assert!(out
+            .gaps
+            .iter()
+            .any(|g| g.contains("SEC earnings recovery") && g.contains("budget")));
+    }
+
+    #[test]
+    fn slice3_ten_attempt_limit_counts_retries_and_never_accepts_a_partially_scanned_match() {
+        struct RetryWeb {
+            calls: Mutex<Vec<String>>,
+            submissions: String,
+        }
+        impl ResearchWeb for RetryWeb {
+            fn search(&self, _: &str) -> Result<Vec<SearchHit>> {
+                unreachable!()
+            }
+            fn fetch(&self, _: &str, _: bool) -> FetchAttempt {
+                panic!("an uninspected candidate prevents exhibit admission")
+            }
+            fn sec_document(
+                &self,
+                url: &str,
+                retry: bool,
+            ) -> FetchAttempt<crate::web_research::fetch::SecDocument> {
+                self.calls.lock().unwrap().push(url.into());
+                if !retry {
+                    return FetchAttempt {
+                        result: Err(anyhow::anyhow!("HTTP 503")),
+                        denial: None,
+                        disposition: FetchDisposition::Live,
+                        attempted: true,
+                        retry_delay: Some(Duration::ZERO),
+                    };
+                }
+                let body = if url.ends_with(".json") {
+                    self.submissions.clone()
+                } else if url.ends_with("-index.htm") {
+                    let accession = url.split('/').nth_back(1).unwrap();
+                    include_str!("fixtures/edgar-recovery/psx-index.htm")
+                        .replace("000153470126000030", accession)
+                } else {
+                    let accession = url.split('/').nth_back(1).unwrap();
+                    let body = include_str!("fixtures/edgar-recovery/psx-8k.htm")
+                        .replace("000153470126000030", accession);
+                    if accession.ends_with("30") {
+                        body
+                    } else {
+                        body.replace("June 30, 2026", "March 31, 2026")
+                    }
+                };
+                FetchAttempt {
+                    result: Ok(crate::web_research::fetch::SecDocument {
+                        final_url: url.into(),
+                        body,
+                    }),
+                    denial: None,
+                    disposition: FetchDisposition::Live,
+                    attempted: true,
+                    retry_delay: None,
+                }
+            }
+        }
+        let mut submissions: Value =
+            serde_json::from_str(include_str!("fixtures/edgar-recovery/psx-submissions.json"))
+                .unwrap();
+        let recent = submissions["filings"]["recent"].as_object_mut().unwrap();
+        for value in recent.values_mut() {
+            *value = Value::Array(vec![value[0].clone(); 4]);
+        }
+        for i in 0..4 {
+            recent.get_mut("accessionNumber").unwrap()[i] =
+                json!(format!("0001534701-26-{:06}", i + 30));
+        }
+        let web = RetryWeb {
+            calls: Mutex::new(Vec::new()),
+            submissions: submissions.to_string(),
+        };
+        let model = ScriptModel::new(vec![]);
+        let clock = FrozenClock(Duration::ZERO);
+        let progress = RunContext::noop();
+        let runner = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 40,
+                max_wall: Duration::from_secs(1800),
+                clock: &clock,
+            },
+            progress: &progress,
+            step_label: "holding-PSX".into(),
+        };
+        let agenda = one_topic_agenda();
+        let ctx = PassContext {
+            holding_brief: "PSX",
+            topic: &agenda[0],
+            seed: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let issuer =
+            crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://phillips66.com")
+                .unwrap();
+        let target = crate::sec::earnings::ReleaseTarget::from_request(SLICE3_IR, None).unwrap();
+        let mut spent = 1; // original IR attempt, outside the ten-additional limit
+        let mut state = EarningsRecovery::default();
+        let result =
+            runner.resolve_earnings(&issuer, &target, None, &ctx, &mut spent, 11, &mut state);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("budget"));
+        assert_eq!(spent, 11);
+        assert_eq!(
+            web.calls.lock().unwrap().len(),
+            10,
+            "five issued discovery operations each retried once"
+        );
+    }
+
+    #[test]
+    fn slice3_cancellation_between_discovery_requests_stops_before_the_index() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        struct CancelWeb {
+            cancel: Arc<AtomicBool>,
+            calls: Mutex<usize>,
+        }
+        impl ResearchWeb for CancelWeb {
+            fn search(&self, _: &str) -> Result<Vec<SearchHit>> {
+                unreachable!()
+            }
+            fn fetch(&self, _: &str, _: bool) -> FetchAttempt {
+                unreachable!()
+            }
+            fn sec_document(
+                &self,
+                url: &str,
+                _: bool,
+            ) -> FetchAttempt<crate::web_research::fetch::SecDocument> {
+                *self.calls.lock().unwrap() += 1;
+                self.cancel.store(true, Ordering::SeqCst);
+                FetchAttempt {
+                    result: Ok(crate::web_research::fetch::SecDocument {
+                        final_url: url.into(),
+                        body: include_str!("fixtures/edgar-recovery/psx-submissions.json").into(),
+                    }),
+                    denial: None,
+                    disposition: FetchDisposition::Live,
+                    attempted: true,
+                    retry_delay: None,
+                }
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let progress = RunContext::new(
+            "slice3-cancel",
+            Arc::new(crate::progress::NoopReporter),
+            cancel.clone(),
+        );
+        let web = CancelWeb {
+            cancel,
+            calls: Mutex::new(0),
+        };
+        let model = ScriptModel::new(vec![]);
+        let clock = FrozenClock(Duration::ZERO);
+        let runner = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 40,
+                max_wall: Duration::from_secs(1800),
+                clock: &clock,
+            },
+            progress: &progress,
+            step_label: "holding-PSX".into(),
+        };
+        let agenda = one_topic_agenda();
+        let ctx = PassContext {
+            holding_brief: "PSX",
+            topic: &agenda[0],
+            seed: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false,
+        };
+        let issuer =
+            crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://phillips66.com")
+                .unwrap();
+        let target = crate::sec::earnings::ReleaseTarget::from_request(SLICE3_IR, None).unwrap();
+        let mut spent = 0;
+        assert!(runner
+            .resolve_earnings(
+                &issuer,
+                &target,
+                None,
+                &ctx,
+                &mut spent,
+                10,
+                &mut EarningsRecovery::default()
+            )
+            .is_err());
+        assert_eq!(spent, 1);
+        assert_eq!(*web.calls.lock().unwrap(), 1);
+    }
+
     struct Entry5RecordingModel {
         inner: ScriptModel,
         calls: Mutex<Vec<(String, Vec<ChatMessage>, bool)>>,
@@ -5385,6 +6058,7 @@ mod tests {
                 &mut metadata,
                 &mut Default::default(),
                 &mut inventory,
+                &mut EarningsRecovery::default(),
             )
             .unwrap();
         assert!(out.claims.is_empty());
@@ -7965,7 +8639,7 @@ mod tests {
         let mut meta = std::collections::HashMap::new();
         let mut published = std::collections::HashMap::new();
         let pass = r
-            .run_pass(&pctx, &mut spent, &mut gaps, &mut texts, &mut meta, &mut published, &mut Vec::new())
+            .run_pass(&pctx, &mut spent, &mut gaps, &mut texts, &mut meta, &mut published, &mut Vec::new(), &mut EarningsRecovery::default())
             .unwrap();
         assert_eq!(
             pass.findings,
