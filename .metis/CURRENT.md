@@ -2,31 +2,35 @@
 
 ## Active task
 
-The single big confirmation run — all three attempt-7 fix slices are now landed and the dev store is re-wiped to a clean debut; attempt 8 is the next item and awaits the user naming the launch session.
+The single big confirmation run — attempt 8 ran and was user-ended at 3 of 47; its findings are recorded as two fix slices, neither planned yet.
 
 ## What happened
 
-Slice 3 (attempt-7 Finding 5) landed: a bounded EDGAR **8-K Exhibit 99.1** fallback fired on a `403` from an eligible issuer IR host, current-issuer earnings-results only, unresolved on any ambiguity, SSRF-guarded to sec.gov, cited under the SEC URL (the IR URL stays a diagnostic, never a redirect alias), no stamp.
-Codex drove the Metis loop and its self-review caught five real matching bugs across two reject rounds (correction wording, fiscal guidance, conflicting periods, announcement notices, year-to-date); all fixed.
-Claude reviewed the diff against the code and independently re-ran the full gate green (1,554 Rust library + 32 integration, clippy warning-free, frontend build, clean diff-check).
-Committed and pushed as `e385fbd`.
-The dev store was re-wiped to a clean debut this session (Claude, on user request) ahead of attempt 8.
-The prod hash change flagged last session was explained: the user ran the Market Signal **report** job on prod (a legitimate prod write), not an errant one.
+Attempt 8 launched 2026-09-19 22:16 PDT on the clean-debut store (`job_runs` id 8) with the expected v48 stamp set, and the user ended it at 07:23Z after TSLA (57 min), PSX (~40) and SPMO (~40) completed — for the hour, not on a finding; neither stop rule fired.
+Attempt 7's Slices 1 and 2 admitted: every stock synthesized all six root topics, the runtime restored a context checkpoint on nearly every request (prompt-eval 6.3 min vs 14.9), the second-guessing that remains is genuine source-conflict and hurdle deliberation, and all three rationales name returns by value.
+Two attempt-7 checks failed and became findings: fact-period values still violate the stated formats (17 claims demoted to unknown), and three of 26 synthesis calls failed their parse on a claims-first body whose cause the log and the retry record drop.
+The findings doc `docs/verification/2026-09-20-attempt-8-findings.md` records five findings and two slices (committed this session).
+Archive at `~/Downloads/market-signal-attempt-8-logs/`.
 
 ## Current state
 
-No implementation in flight; the confirmation-run BUILD item stays incomplete, but every attempt-7 fix is now committed on `main` (Slice 1 `f43ecde`, Slice 2 `ed13e03`, Slice 3 `e385fbd`).
+Nothing in flight; the confirmation-run BUILD item stays incomplete.
 
-- **Debut stamp set for attempt 8:** `portfolio-v48` / `checkpoint-v15` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability `11`. The `checkpoint-v15` + portability `11` bump is Finding 3a's persisted `quarter` enum, not Finding 6.
-- **Dev store is a clean debut.** Local-suite tables cleared (portfolio_runs / checkpoints / checkpoint_holdings / research_seeds / outcome_episodes / quick_checks / holdings_pulls / price_bars / web_documents / web_source_state → 0 rows, table kept not dropped); `vector_memory` untouched (no portfolio vectors existed); continuity kept — 30 reports / 14 baselines / 70 report vectors / `job_runs` max 7 (attempt 8 = id 8) / app_settings 16; VACUUM 9.85→1.85 MB, integrity ok. Full pre-wipe backup: `~/Downloads/market-signal-dev-store-attempt7-preclear-2026-09-20.db` (sha `c9760e4d`). **Attempt 8 needs no further wipe** — the fresh dev app recreates `web_source_state` via init_schema. Prod untouched (sha verified unchanged after the wipe).
-- **Runtime-unverified, for attempt 8:** cache restoration, gathering latency, complete-book coverage, live prompt compliance; Slice 3's live recovery coverage and model citation behavior; distillation latency (attempt-6 tokens-per-topic is no longer an acceptance gate). Slice 3 is deliberately **partial** — peer issuers, production/consensus pages, paywalls and image-only figures stay out — and its SEC recovery spends the holding's 40-fetch budget (bounded +10/resolution, deduped by issuer+release), so watch budget competition on issuers with several failed releases.
-- **BUILD reviewed, no change needed** (user ruling 2026-09-20): the attempt-7 findings/fixes/slices do not belong in BUILD — they are fixes single-homed in the docs, no BUILD statement was made stale by them, and stamps are cited by constant name. The previously-carried "gathering-constraint prose update" is cancelled.
-- Entries 9 and 10 of the 2026-09-17 list still follow a completed run; the conditions-display slice remains separate.
+- **Slice A — synthesis contract and glosses (Findings 1, 2, 5), lands first:** findings-first task sentence, value-format hint in the shape template, softened fiscal gloss, sub-score scale line, supported-actions clause; telemetry — retry line and persisted cause carry the full error chain with a head-and-tail body snippet, the fact-period gap names the rejected kind and value.
+  Findings 1, 2, 5 are proposed and unruled → selector rulings at this slice's plan.
+  Stamp `portfolio-v49`; none for telemetry.
+- **Slice B — latency (Findings 3, 4), ruled, lands second:** raise `NUM_PREDICT_DISTILL` into the 12,288–16,384 band (exact value a plan flag); order each fresh conversation holding-constant text first and give synthesis its pass's evidence order.
+  Other latency levers ruled not-taken.
+  Shared `portfolio-v49`.
+- **Store:** three checkpoint holding rows, `portfolio_runs` 0, `job_runs` max 8; attempt 9 needs a re-wipe to a clean debut (user's call). Prod untouched.
+- **Watches carried (no change):** 40-fetch budget exhausted before follow-ups and the disconfirming pass; distillation claim drops; funds not faster than stocks (SPMO 40 min, interpret 10 markers); quality sub-score ≤10 on both stocks (read across a fuller book before any `grade-v2.3` change); empty issuer descriptions again.
 
 ## Open questions
 
-- Whether the §Slices grouping belongs in the findings doc or only in `CURRENT.md` — carried, now low-stakes (all slices landed; the findings doc records them).
+- Whether the §Slices grouping belongs in the findings doc or only here — carried; attempt 8's doc defines them in-doc, following attempt 7.
 
 ## Where to start
 
-The user has signaled attempt 8 for the next session. On their word — never propose it — bring up per [[local-run-bringup-runbook]] (caffeinate → Ollama v0.32.5 one-slot → OrbStack → render Serper + SearXNG up → per-engine probe → fresh `npm run tauri dev` → user clicks Run → monitor to completion). The dev store is already a clean debut, so **skip the re-wipe**; confirm it at bring-up (`web_source_state` absent until the fresh app recreates it, `portfolio_runs` 0).
+On the user's word, `/metis-plan-task` Slice A from `docs/verification/2026-09-20-attempt-8-findings.md` §Slices; every assumption and Findings 1, 2, 5 go through the selector before implement.
+Slice B follows on Slice A's final prompt text.
+Never propose a run; attempt 9 is the user's call and re-wipes first.
