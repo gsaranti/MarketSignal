@@ -2,50 +2,31 @@
 
 ## Active task
 
-The single big confirmation run — attempt 7 was user-ended; Slices 1 and 2 are complete, with Slice 3 still preceding attempt 8.
+The single big confirmation run — all three attempt-7 fix slices are now landed and the dev store is re-wiped to a clean debut; attempt 8 is the next item and awaits the user naming the launch session.
 
 ## What happened
 
-Implemented and independently review-approved Slice 2 (attempt-7 Findings 3, 4, 6; canonical record: `docs/verification/2026-09-19-attempt-7-findings.md`).
-Synthesis now supports calendar quarters while preserving exact fiscal labels; the model-side technology flag and mid-loop topic activation are removed.
-Priced interpretation omits the current computed letter and one-month method, while action retains both grades and target methods and asks for the returns weighed by value.
-Finding 6's proposed date transfer already existed: ordinary distillation claims cite `evidence_ref`, and the app restores their dates.
-Its performance diagnosis and acceptance check were corrected rather than adding a claim cap or publication fallback.
-The shared `portfolio-v48` remains; the persisted quarter enum, not Finding 6, moves `checkpoint-v15` and portability format `11`.
-Metis's independent reviewer approved with no nits and reran all gates: 1,538 Rust library and 32 integration passes, 33 ignored; warning-free all-target/all-feature clippy; frontend build; 46 pure-module and 266 component passes; clean diff-check.
-The offline prompt dump was rendered and inspected.
+Slice 3 (attempt-7 Finding 5) landed: a bounded EDGAR **8-K Exhibit 99.1** fallback fired on a `403` from an eligible issuer IR host, current-issuer earnings-results only, unresolved on any ambiguity, SSRF-guarded to sec.gov, cited under the SEC URL (the IR URL stays a diagnostic, never a redirect alias), no stamp.
+Codex drove the Metis loop and its self-review caught five real matching bugs across two reject rounds (correction wording, fiscal guidance, conflicting periods, announcement notices, year-to-date); all fixed.
+Claude reviewed the diff against the code and independently re-ran the full gate green (1,554 Rust library + 32 integration, clippy warning-free, frontend build, clean diff-check).
+Committed and pushed as `e385fbd`.
+The dev store was re-wiped to a clean debut this session (Claude, on user request) ahead of attempt 8.
+The prod hash change flagged last session was explained: the user ran the Market Signal **report** job on prod (a legitimate prod write), not an errant one.
 
 ## Current state
 
-No implementation is in flight; the confirmation-run BUILD item remains incomplete.
+No implementation in flight; the confirmation-run BUILD item stays incomplete, but every attempt-7 fix is now committed on `main` (Slice 1 `f43ecde`, Slice 2 `ed13e03`, Slice 3 `e385fbd`).
 
-- Slice 1 — Findings 1, 2: complete under `portfolio-v48`.
-  Gathering is append-only with a separate countdown and identical retry packets; roots precede follow-ups, which retain topic priority and the existing depth cap, with disconfirmation last.
-- Slice 2 — Findings 3, 4, 6: complete and approved under the shared stamp.
-  Technology eligibility is now settled at agenda assembly by the engine pre-flag or standing technology-class falsifier; ordinary follow-ups remain, but cannot activate a technology topic.
-  This is an accepted coverage tradeoff, not equivalent event detection.
-  Quarter/fiscal provenance survives every reduction path and seed/checkpoint/archive round-trips; retired formats are rejected without compatibility shims.
-  No criteria were skipped, deferred or stubbed against the revised plan; Claude reviewed the plan, and Metis independently reviewed the implementation.
-- Slice 3 — Finding 5: next to plan; choose the issuer-IR fetch route between render-first webview and the recommended EDGAR 8-K exhibit 99.1 fallback.
-  No route stamp unless model-facing text changes; then use the next `portfolio-v`.
-
-Cache restoration, gathering latency, complete-book coverage and live prompt compliance remain runtime-unverified.
-Finding 6's retained claim counts grew (TSLA 20→26, PSX 17→21); this is not proof of token causation, and attempt-6 tokens per topic is no longer an acceptance gate across different pass/claim workloads.
-Source inspection from the prior session found no alternating-role restriction in the pinned Ollama v0.32.5 `qwen3.5` renderer.
-The appended countdown affects historical thinking rendering; a rendered-template prefix comparison remains optional offline work, not a launch prerequisite.
-The contemplated BUILD gathering-constraint prose update remains unmade; this item is not fully complete and session-end cannot otherwise edit BUILD.
-
-The dev store still holds attempt-7 residue per the prior handoff (TSLA/PSX checkpoint rows, `job_runs` max id 7, `web_source_state` 27, `web_documents` 21, `portfolio_research_seeds` 4); it was not re-inspected or wiped this session, and prod was untouched.
-Attempt 8 re-wipes first.
-Entries 9 and 10 of the 2026-09-17 list still follow a completed run; the conditions-display slice remains separate.
+- **Debut stamp set for attempt 8:** `portfolio-v48` / `checkpoint-v15` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability `11`. The `checkpoint-v15` + portability `11` bump is Finding 3a's persisted `quarter` enum, not Finding 6.
+- **Dev store is a clean debut.** Local-suite tables cleared (portfolio_runs / checkpoints / checkpoint_holdings / research_seeds / outcome_episodes / quick_checks / holdings_pulls / price_bars / web_documents / web_source_state → 0 rows, table kept not dropped); `vector_memory` untouched (no portfolio vectors existed); continuity kept — 30 reports / 14 baselines / 70 report vectors / `job_runs` max 7 (attempt 8 = id 8) / app_settings 16; VACUUM 9.85→1.85 MB, integrity ok. Full pre-wipe backup: `~/Downloads/market-signal-dev-store-attempt7-preclear-2026-09-20.db` (sha `c9760e4d`). **Attempt 8 needs no further wipe** — the fresh dev app recreates `web_source_state` via init_schema. Prod untouched (sha verified unchanged after the wipe).
+- **Runtime-unverified, for attempt 8:** cache restoration, gathering latency, complete-book coverage, live prompt compliance; Slice 3's live recovery coverage and model citation behavior; distillation latency (attempt-6 tokens-per-topic is no longer an acceptance gate). Slice 3 is deliberately **partial** — peer issuers, production/consensus pages, paywalls and image-only figures stay out — and its SEC recovery spends the holding's 40-fetch budget (bounded +10/resolution, deduped by issuer+release), so watch budget competition on issuers with several failed releases.
+- **Owed (session-end cannot edit BUILD):** the BUILD §Standing-constraints gathering-loop line still needs the Slice 1 append-only invariant added.
+- Entries 9 and 10 of the 2026-09-17 list still follow a completed run; the conditions-display slice remains separate.
 
 ## Open questions
 
-- Whether the §Slices grouping belongs in the findings doc or only in `CURRENT.md` — previously offered, still unruled.
-- Finding 5's route: render-first webview or the EDGAR 8-K exhibit fallback — rule at Slice 3's plan.
+- Whether the §Slices grouping belongs in the findings doc or only in `CURRENT.md` — carried, now low-stakes (all slices landed; the findings doc records them).
 
 ## Where to start
 
-`/metis-plan-task` Slice 3 (Finding 5), inspecting the issuer-IR fetch route before settling render-first versus the EDGAR 8-K exhibit fallback.
-Rule that plan's flags post-plan, pre-implement; preserve the separate task boundary.
-Do not propose attempt 8; when the user names it, re-wipe the dev store first, then follow the usual bring-up.
+The user has signaled attempt 8 for the next session. On their word — never propose it — bring up per [[local-run-bringup-runbook]] (caffeinate → Ollama v0.32.5 one-slot → OrbStack → render Serper + SearXNG up → per-engine probe → fresh `npm run tauri dev` → user clicks Run → monitor to completion). The dev store is already a clean debut, so **skip the re-wipe**; confirm it at bring-up (`web_source_state` absent until the fresh app recreates it, `portfolio_runs` 0). Before or alongside the run, land the owed BUILD gathering-constraint prose update.
