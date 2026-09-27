@@ -11,10 +11,11 @@ Five selector rulings, all on the recommended option: `NUM_PREDICT_DISTILL` 12,2
 The attempt-8 serve log plus a source read settled the runtime mechanics: Ollama 0.32.5 runs llama-server b10091 with one slot and an 8 GiB RAM prompt cache; checkpoints sit 1,024 tokens before a prompt's end; a cached conversation is handed back only when the shared prefix is at least a quarter of its length; tools render before the system text, so gathering and synthesis requests share three tokens.
 The reorder therefore reaches consecutive same-kind conversations only: syntheses from a holding's second topic, roots from about the fourth; follow-up passes, the closing calls and continuity-run roots with large prior findings stay full-prefill.
 Reviews: the Metis reviewer approved with three nits, taken; Codex ran two rounds, four P3 findings taken (both gathering caps reserve their markers and the reuse framing, the docs state the saving as conditional, the debut exemption was narrowed).
+After session-end the runtime cache facts got their durable home as one bullet beside the one-slot note in `docs/local-model-operations.md` (`86f95ae`); the user ruled that neither the cache facts nor the prompt-order principle belongs in BUILD, the first being a serving-path fact and the second a fix canonical in `docs/web-research.md`.
 
 ## Current state
 
-Nothing in flight; the working tree is clean at `304b872`.
+Nothing in flight; the working tree is clean at `86f95ae`.
 
 - **Debut stamp set:** `portfolio-v49` / `checkpoint-v15` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability 11.
 - **Store:** attempt 8's three checkpoint holding rows persist under `portfolio-v48`, `portfolio_runs` 0, `job_runs` max 8; attempt 9 needs a re-wipe to a clean debut (user's call). Prod untouched.
