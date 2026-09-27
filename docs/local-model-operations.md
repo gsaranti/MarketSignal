@@ -155,6 +155,16 @@ Default-on MLX doesn't help a model with no MLX build: our 122B runs on Ollama's
   A 4-slot pick multiplies the KV cache the memory budget above plans at one slot.
   It also round-robins requests across slots, so a call can miss the slot holding the previous prompt's cached prefix — defeating the within-pass research-turn prefix reuse.
   One slot costs no per-call context, since `num_ctx` is per-request either way, and pinning it holds the memory fit steady across an Ollama version bump that would otherwise move the auto-default.
+- **Prompt-cache reuse across fresh conversations** [verified on attempt 8's serve log and llama.cpp's server source, 2026-09-27].
+  Under the pinned v0.32.5 this GGUF is served by llama.cpp's own `llama-server` (build b10091), launched with llama.cpp's defaults: one slot, an 8 GiB RAM prompt cache, context checkpoints enabled.
+  A new prompt restores from a checkpoint only where it extends a cached conversation's token-identical prefix from the first token.
+  `llama-server` saves each prompt's checkpoints 1,024 tokens before its end (its default micro-batch; the app sets no `num_batch`) and 4 tokens before it, and keeps a conversation's first checkpoint as its anchor.
+  The RAM cache hands a conversation back only when the shared prefix is at least a quarter of that conversation's length, so a short shared header alone never earns a restore.
+  Ollama's `qwen3.5` renderer places the tools JSON inside the system turn ahead of the system text, so a tool-carrying request and a tool-free one share three tokens, and cross-conversation reuse exists only between same-kind requests.
+  Two consequences bind prompt edits.
+  The text that varies per conversation follows the shared text and stays under about 1,024 tokens, or the previous conversation's checkpoint falls outside the shared prefix.
+  A serving-path change, an Ollama pin bump or a batch-size flag, re-verifies both numbers.
+  The research prompts' order is canonical at [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management).
 - **Daemon launch** (both flags are daemon-side, set at `serve` start): `OLLAMA_FLASH_ATTENTION=1 OLLAMA_NUM_PARALLEL=1 ~/ollama/v0.32.5/ollama serve`.
   Confirm the effective slot count in the serve log's runner line (`--parallel N`) and the working context via the `CONTEXT` column of `ollama ps`.
 

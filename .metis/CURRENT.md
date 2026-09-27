@@ -25,7 +25,6 @@ Nothing in flight; the working tree is clean at `304b872`.
 ## Open questions
 
 - Whether the §Slices grouping belongs in the findings doc or only here — carried.
-- Whether the runtime cache facts (checkpoint distance, the quarter rule, tools before the system text) need a durable home, likely `docs/local-model-operations.md` beside the one-slot note, or stay in the verification record — unruled.
 
 ## Where to start
 
