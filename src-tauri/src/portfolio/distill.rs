@@ -2628,13 +2628,18 @@ fn reduce_message(
 pub(crate) mod samples {
     use super::*;
     use crate::portfolio::research::samples as research_samples;
+    use crate::portfolio::research::samples::prose;
     use crate::portfolio::research::{EvidenceClaim, PassFindings, TopicResearch};
     use crate::portfolio::{ConditionRole, KeyDriver, LedgerCondition, TriggerFamily};
 
+    /// One rendered distillation call: its two messages, the per-call grammar
+    /// the adapter passes as `format`, and the stage label the run gives it.
     pub(crate) struct Sample {
         pub label: String,
+        pub stage: String,
         pub system: String,
         pub user: String,
+        pub schema: Value,
     }
 
     const ACEA_URL: &str = "https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/";
@@ -2672,8 +2677,8 @@ pub(crate) mod samples {
         }
     }
 
-    fn stock_research() -> HoldingResearch {
-        let mut root = research_samples::claims();
+    fn stock_research(stub: bool) -> HoldingResearch {
+        let mut root = research_samples::claims(stub);
         let acea = root.pop().expect("the ACEA claim");
         let margin = root.pop().expect("the margin claim");
         HoldingResearch {
@@ -2684,14 +2689,14 @@ pub(crate) mod samples {
                     seeded_vintage: Some("2026-09-01T00:00:00+00:00".into()),
                     passes: vec![
                         PassFindings {
-                            findings: "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% in Q2 2025 on lower ASPs and Cybertruck mix; management guides 2026 deliveries roughly flat. In Europe BYD outsold Tesla for a fourth consecutive month in August 2026 (ACEA). Pricing power on the moat question is unanswered: no source states a September price action.".into(),
+                            findings: prose(stub, "the root pass's findings — what the search established, in prose", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% in Q2 2025 on lower ASPs and Cybertruck mix; management guides 2026 deliveries roughly flat. In Europe BYD outsold Tesla for a fourth consecutive month in August 2026 (ACEA). Pricing power on the moat question is unanswered: no source states a September price action."),
                             claims: vec![margin, acea],
                             followup: None,
                         },
                         PassFindings {
-                            findings: "The follow-up on September pricing found no Model Y refresh price action; the ACEA August print stands as the latest share read. NHTSA's PE on FSD v14 is unrelated to share but bears on the moat narrative.".into(),
+                            findings: prose(stub, "the follow-up pass's findings", "The follow-up on September pricing found no Model Y refresh price action; the ACEA August print stands as the latest share read. NHTSA's PE on FSD v14 is unrelated to share but bears on the moat narrative."),
                             claims: vec![claim(
-                                "NHTSA opened Preliminary Evaluation PE26-014 covering about 2.4 million FSD v14 vehicles after 11 intersection-crash reports.",
+                                &prose(stub, "claim 3 — one dated fact from its source", "NHTSA opened Preliminary Evaluation PE26-014 covering about 2.4 million FSD v14 vehicles after 11 intersection-crash reports."),
                                 NHTSA_URL,
                                 "2026-09-16T02:19:52Z",
                             )],
@@ -2705,10 +2710,10 @@ pub(crate) mod samples {
                     title: "Recent results and estimate revisions".into(),
                     seeded_vintage: None,
                     passes: vec![PassFindings {
-                        findings: "Q2 2026 revenue was $25.5B (+3% YoY), energy storage revenue $4.2B (+41%), free cash flow $0.9B; 2026 capex is guided above $12B. Estimate revisions since the print could not be found.".into(),
+                        findings: prose(stub, "the root pass's findings on the second topic", "Q2 2026 revenue was $25.5B (+3% YoY), energy storage revenue $4.2B (+41%), free cash flow $0.9B; 2026 capex is guided above $12B. Estimate revisions since the print could not be found."),
                         claims: vec![
-                            claim("Q2 2026 total revenues were $25.5B, up 3% year over year.", research_samples::IR_URL, "2026-09-16T02:11:40Z"),
-                            claim("Tesla expects 2026 capital expenditures to exceed $12B.", research_samples::IR_URL, "2026-09-16T02:11:40Z"),
+                            claim(&prose(stub, "claim 4 — one dated fact from its source", "Q2 2026 total revenues were $25.5B, up 3% year over year."), research_samples::IR_URL, "2026-09-16T02:11:40Z"),
+                            claim(&prose(stub, "claim 5 — a forward figure from its source", "Tesla expects 2026 capital expenditures to exceed $12B."), research_samples::IR_URL, "2026-09-16T02:11:40Z"),
                         ],
                         followup: None,
                     }],
@@ -2716,9 +2721,9 @@ pub(crate) mod samples {
                 },
             ],
             disconfirming: Some(PassFindings {
-                findings: "Against the margin-pressure picture: energy storage grew 41% with record deployments, and free cash flow stayed positive at $0.9B. Nothing found contradicts the BYD share claim.".into(),
+                findings: prose(stub, "the disconfirming pass's findings — what contradicts the picture so far", "Against the margin-pressure picture: energy storage grew 41% with record deployments, and free cash flow stayed positive at $0.9B. Nothing found contradicts the BYD share claim."),
                 claims: vec![claim(
-                    "Energy generation and storage revenue grew 41% to $4.2B in Q2 2026 with record 12.4 GWh deployed.",
+                    &prose(stub, "claim 6 — a contrary fact from its source", "Energy generation and storage revenue grew 41% to $4.2B in Q2 2026 with record 12.4 GWh deployed."),
                     research_samples::IR_URL,
                     "2026-09-16T02:31:07Z",
                 )],
@@ -2727,9 +2732,9 @@ pub(crate) mod samples {
             fetches_spent: 9,
             elapsed_secs: 1_112,
             page_texts: [
-                (research_samples::IR_URL.to_string(), research_samples::IR_TEXT.to_string()),
-                (ACEA_URL.to_string(), ACEA_TEXT.to_string()),
-                (NHTSA_URL.to_string(), NHTSA_TEXT.to_string()),
+                (research_samples::IR_URL.to_string(), research_samples::ir_text(stub)),
+                (ACEA_URL.to_string(), prose(stub, "the page's extracted article text — a registrations release", ACEA_TEXT)),
+                (NHTSA_URL.to_string(), prose(stub, "the page's extracted article text — a regulator's notice", NHTSA_TEXT)),
             ]
             .into(),
             page_published: [
@@ -2741,7 +2746,7 @@ pub(crate) mod samples {
         }
     }
 
-    fn stock_priors() -> Vec<TopicDistillate> {
+    fn stock_priors(stub: bool) -> Vec<TopicDistillate> {
         let prior = |claim: &str, url: &str, tie: Option<&str>| DistilledClaim {
             publication: crate::portfolio::research::PublicationDate::default(),
             fact_period: crate::portfolio::research::FactPeriod::default(),
@@ -2755,18 +2760,18 @@ pub(crate) mod samples {
             TopicDistillate {
                 topic_key: "competitive-position".into(),
                 vintage: "2026-09-01T00:00:00+00:00".into(),
-                summary: "Tesla's margin ex-credits compressed to 14.6% in Q2 2026; BYD outsold Tesla in Europe in July for a third month.".into(),
+                summary: prose(stub, "the prior run's summary of this topic", "Tesla's margin ex-credits compressed to 14.6% in Q2 2026; BYD outsold Tesla in Europe in July for a third month."),
                 claims: vec![
-                    prior("Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%.", research_samples::IR_URL, Some("c-margin")),
-                    prior("BYD outsold Tesla in Europe in July 2026 for the third consecutive month.", JULY_URL, None),
+                    prior(&prose(stub, "prior claim 1, tied to a standing condition", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%."), research_samples::IR_URL, Some("c-margin")),
+                    prior(&prose(stub, "prior claim 2", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month."), JULY_URL, None),
                 ],
             },
             TopicDistillate {
                 topic_key: "catalysts-risks".into(),
                 vintage: "2026-09-01T00:00:00+00:00".into(),
-                summary: "The Cybercab launch (Q4 2026) and the lower-cost model (H2 2026) are the dated catalysts; the NHTSA FSD evaluation is the named risk.".into(),
+                summary: prose(stub, "the prior run's summary of a topic not searched this time", "The Cybercab launch (Q4 2026) and the lower-cost model (H2 2026) are the dated catalysts; the NHTSA FSD evaluation is the named risk."),
                 claims: vec![prior(
-                    "Cybercab production began at Giga Texas ahead of a Q4 2026 launch.",
+                    &prose(stub, "prior claim 3", "Cybercab production began at Giga Texas ahead of a Q4 2026 launch."),
                     "https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/",
                     None,
                 )],
@@ -2788,16 +2793,16 @@ pub(crate) mod samples {
         ]
     }
 
-    fn fund_research() -> HoldingResearch {
+    fn fund_research(stub: bool) -> HoldingResearch {
         HoldingResearch {
             topics: vec![TopicResearch {
                 topic_key: "fund-exposure-profile".into(),
                 title: "Exposure profile".into(),
                 seeded_vintage: None,
                 passes: vec![PassFindings {
-                    findings: "BND tracks the Bloomberg US Aggregate Float Adjusted index: 68% government/agency, 25% corporate, effective duration 6.0 years; no shift in the quarter. BIV and AGG supply the same exposure at 0.03–0.04%.".into(),
+                    findings: prose(stub, "the root pass's findings on the fund's exposure profile", "BND tracks the Bloomberg US Aggregate Float Adjusted index: 68% government/agency, 25% corporate, effective duration 6.0 years; no shift in the quarter. BIV and AGG supply the same exposure at 0.03–0.04%."),
                     claims: vec![claim(
-                        "BND's effective duration was 6.0 years at 2026-08-31 with 68% in Treasury and agency issues.",
+                        &prose(stub, "claim 1 — one dated fact from its source", "BND's effective duration was 6.0 years at 2026-08-31 with 68% in Treasury and agency issues."),
                         BND_URL,
                         "2026-09-16T04:02:11Z",
                     )],
@@ -2805,7 +2810,7 @@ pub(crate) mod samples {
                 }],
                 skipped: None,
             }],
-            page_texts: [(BND_URL.to_string(), "BND: effective duration 6.0 years as of 08/31/2026; Treasury/agency 68.2%.".to_string())].into(),
+            page_texts: [(BND_URL.to_string(), prose(stub, "the page's extracted text — the fund's profile page", "BND: effective duration 6.0 years as of 08/31/2026; Treasury/agency 68.2%."))].into(),
             ..Default::default()
         }
     }
@@ -2842,7 +2847,7 @@ pub(crate) mod samples {
         }
     }
 
-    fn reduce(ins: &DistillInputs<'_>, tier1: Option<&[(String, Tier1Wire)]>) -> DistillPrompt {
+    fn reduce(ins: &DistillInputs<'_>, tier1: Option<&[(String, Tier1Wire)]>) -> (DistillPrompt, Value) {
         let prior_by_key: HashMap<&str, &TopicDistillate> =
             ins.priors.iter().map(|p| (p.topic_key.as_str(), p)).collect();
         let analyzed: HashSet<&str> = ins
@@ -2853,23 +2858,25 @@ pub(crate) mod samples {
             .map(|t| t.topic_key.as_str())
             .collect();
         let dormant = dormant_priors_of(ins.priors, &analyzed);
-        reduce_message(ins, tier1, &prior_by_key, &dormant, &analyzed, &mut Vec::new()).prompt
+        let m = reduce_message(ins, tier1, &prior_by_key, &dormant, &analyzed, &mut Vec::new());
+        (m.prompt, m.schema)
     }
 
-    fn sample(label: &str, prompt: DistillPrompt) -> Sample {
-        Sample { label: label.into(), system: prompt.system, user: prompt.user }
+    fn sample(label: &str, stage: String, (prompt, schema): (DistillPrompt, Value)) -> Sample {
+        Sample { label: label.into(), stage, system: prompt.system, user: prompt.user, schema }
     }
 
     /// The seven messages: five over the stock research (the continuity reduce
     /// with the overlay and the backfill obligation, the first-analysis
     /// reduce, the tier-1, pass and tree-level calls, the hierarchical reduce)
-    /// and the fund's reduce.
-    pub(crate) fn messages(stock_brief: &str, fund_brief: &str) -> Vec<Sample> {
-        let research = stock_research();
-        let priors = stock_priors();
+    /// and the fund's reduce. `stub` swaps every hand-written research field
+    /// for its bracketed placeholder (the docs examples).
+    pub(crate) fn messages(stock_brief: &str, fund_brief: &str, stub: bool) -> Vec<Sample> {
+        let research = stock_research(stub);
+        let priors = stock_priors(stub);
         let conditions = stock_conditions();
         let drivers = stock_drivers();
-        let fund = fund_research();
+        let fund = fund_research(stub);
         let fund_conditions = vec![condition(
             "c-dur",
             ConditionRole::Trigger,
@@ -2881,18 +2888,20 @@ pub(crate) mod samples {
         let fund_inputs = inputs("BND", "Vanguard Total Bond Market ETF", fund_brief, &fund, &[], &fund_conditions, &[], true, false, false);
         let topic = &research.topics[0];
         let prior = priors.iter().find(|p| p.topic_key == topic.topic_key);
+        let topic_ids = condition_ids(&continuity);
+        let topic_schema = tier1_schema(&topic_ids);
         let pass_bodies = vec![
-            json!({"summary":"Margin ex-credits 14.6% in Q2 2026, down from 17.2%; BYD outsold Tesla in Europe a fourth month in August.","claims":[{"claim":"Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix.","source_url":research_samples::IR_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[0].claims[0]),"related_condition_id":"c-margin"}]}).to_string(),
-            json!({"summary":"No September price action found; NHTSA opened PE26-014 on FSD v14.","claims":[{"claim":"NHTSA opened Preliminary Evaluation PE26-014 covering about 2.4 million FSD v14 vehicles after 11 intersection-crash reports.","source_url":NHTSA_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[1].claims[0]),"related_condition_id":null}]}).to_string(),
+            json!({"summary":prose(stub, "pass 1's summary, as the pass-level call returned it", "Margin ex-credits 14.6% in Q2 2026, down from 17.2%; BYD outsold Tesla in Europe a fourth month in August."),"claims":[{"claim":prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),"source_url":research_samples::IR_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[0].claims[0]),"related_condition_id":"c-margin"}]}).to_string(),
+            json!({"summary":prose(stub, "pass 2's summary, as the pass-level call returned it", "No September price action found; NHTSA opened PE26-014 on FSD v14."),"claims":[{"claim":prose(stub, "claim 3 — one dated fact from its source", "NHTSA opened Preliminary Evaluation PE26-014 covering about 2.4 million FSD v14 vehicles after 11 intersection-crash reports."),"source_url":NHTSA_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[1].claims[0]),"related_condition_id":null}]}).to_string(),
         ];
         let tier1_outputs = vec![
             (
                 "competitive-position".to_string(),
                 Tier1Wire {
-                    summary: "Margin ex-credits 14.6% in Q2 2026; BYD outsold Tesla in Europe a fourth month; NHTSA PE on FSD v14.".into(),
+                    summary: prose(stub, "the tier-1 summary of the first topic", "Margin ex-credits 14.6% in Q2 2026; BYD outsold Tesla in Europe a fourth month; NHTSA PE on FSD v14."),
                     claims: vec![ClaimWire {
                         evidence_ref: fresh_ref(&research.topics[0].passes[0].claims[0]),
-                        claim: "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix.".into(),
+                        claim: prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),
                         source_url: research_samples::IR_URL.into(),
                         related_condition_id: Some("c-margin".into()),
                     }],
@@ -2901,10 +2910,10 @@ pub(crate) mod samples {
             (
                 "results-revisions".to_string(),
                 Tier1Wire {
-                    summary: "Q2 2026 revenue $25.5B (+3%), FCF $0.9B, 2026 capex above $12B.".into(),
+                    summary: prose(stub, "the tier-1 summary of the second topic", "Q2 2026 revenue $25.5B (+3%), FCF $0.9B, 2026 capex above $12B."),
                     claims: vec![ClaimWire {
                         evidence_ref: fresh_ref(&research.topics[1].passes[0].claims[1]),
-                        claim: "Tesla expects 2026 capital expenditures to exceed $12B.".into(),
+                        claim: prose(stub, "claim 5 — a forward figure from its source", "Tesla expects 2026 capital expenditures to exceed $12B."),
                         source_url: research_samples::IR_URL.into(),
                         related_condition_id: None,
                     }],
@@ -2913,13 +2922,13 @@ pub(crate) mod samples {
         ];
         let hierarchical = inputs("TSLA", "Tesla, Inc.", stock_brief, &research, &priors, &conditions, &drivers, false, false, false);
         vec![
-            sample("reduce — stock, continuity run, overlay-eligible with the backfill obligation, single pass", reduce(&continuity, None)),
-            sample("reduce — stock, first analysis, no overlay", reduce(&debut, None)),
-            sample("reduce — fund (SYNTHETIC BND), one topic, one standing condition", reduce(&fund_inputs, None)),
-            sample("tier-1 — one topic-tree with its prior", tier1_message(&continuity, topic, prior)),
-            sample("pass — one search of one topic", pass_message(&continuity, topic, 0, &topic.passes[0])),
-            sample("tree-level reduce — two pass outputs with the prior", tree_reduce_message(&continuity, topic, &pass_bodies, prior)),
-            sample("reduce — stock, hierarchical over the tier-1 outputs, the dormant prior and the contrary-evidence pass", reduce(&hierarchical, Some(&tier1_outputs))),
+            sample("reduce — stock, continuity run, overlay-eligible with the backfill obligation, single pass", "distill TSLA".into(), reduce(&continuity, None)),
+            sample("reduce — stock, first analysis, no overlay", "distill TSLA".into(), reduce(&debut, None)),
+            sample("reduce — fund (SYNTHETIC BND), one topic, one standing condition", "distill BND".into(), reduce(&fund_inputs, None)),
+            sample("tier-1 — one topic-tree with its prior", format!("distill TSLA {}", topic.topic_key), (tier1_message(&continuity, topic, prior), topic_schema.clone())),
+            sample("pass — one search of one topic", format!("distill TSLA {} pass 0", topic.topic_key), (pass_message(&continuity, topic, 0, &topic.passes[0]), topic_schema.clone())),
+            sample("tree-level reduce — two pass outputs with the prior", format!("distill TSLA {} reduce", topic.topic_key), (tree_reduce_message(&continuity, topic, &pass_bodies, prior), topic_schema)),
+            sample("reduce — stock, hierarchical over the tier-1 outputs, the dormant prior and the contrary-evidence pass", "distill TSLA reduce".into(), reduce(&hierarchical, Some(&tier1_outputs))),
         ]
     }
 }

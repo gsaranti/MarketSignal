@@ -9250,26 +9250,63 @@ pub(crate) mod samples {
     use crate::web_research::registry::SourceAnnotation;
     use crate::web_research::search::SearchHit;
 
+    /// One rendered research call: the two messages, what the loop appends
+    /// before issue, and the request's protocol half — the tools on a
+    /// gathering turn, the findings grammar on a synthesis call — under the
+    /// stage label the run gives it.
     pub(crate) struct Sample {
         pub label: String,
+        pub stage: String,
         pub system: String,
         pub user: String,
         pub appended: Vec<ChatMessage>,
+        pub tools: Option<Value>,
+        pub format: Option<Value>,
+    }
+
+    /// A sample field's prose: the hand-written text, or — on the docs
+    /// examples' stub rendering (`docs/prompts/README.md`) — a bracketed label
+    /// that keeps the field's place and names what stood there. Ids, dates,
+    /// URLs, hosts and section headers are never stubbed, so the tiers and the
+    /// glosses that read them render as on a run.
+    pub(crate) fn prose(stub: bool, label: &str, real: &str) -> String {
+        if stub {
+            format!("[stub: {label}]")
+        } else {
+            real.to_string()
+        }
+    }
+
+    /// The loop's per-turn countdown, for the docs examples' tool-turn shape.
+    pub(crate) fn countdown(remaining: u32) -> ChatMessage {
+        gathering_countdown(remaining)
+    }
+
+    /// The assistant turn the loop echoes back before the results — the
+    /// model's accepted tool calls, verbatim — for the docs examples.
+    pub(crate) fn tool_call_turn() -> ChatMessage {
+        ChatMessage::assistant_with_tool_calls(
+            "",
+            json!([
+                {"function": {"name": "web_search", "arguments": {"query": "Tesla Q2 2026 automotive gross margin ex-credits"}}},
+                {"function": {"name": "web_fetch", "arguments": {"url": IR_URL}}}
+            ]),
+        )
     }
 
     /// Two hand-written headlines for the stock sample.
-    pub(crate) fn stock_leads() -> Vec<ResearchSeed> {
+    pub(crate) fn stock_leads(stub: bool) -> Vec<ResearchSeed> {
         vec![
             ResearchSeed {
                 id: "seed-1".into(),
-                headline: "Tesla begins Cybercab production at Giga Texas ahead of Q4 launch".into(),
+                headline: prose(stub, "headline of lead 1", "Tesla begins Cybercab production at Giga Texas ahead of Q4 launch"),
                 url: "https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/".into(),
                 source: "reuters.com".into(),
                 published: Some("2026-09-10 14:02:00".into())
             },
             ResearchSeed {
                 id: "seed-2".into(),
-                headline: "NHTSA opens preliminary evaluation into FSD v14 intersection crashes".into(),
+                headline: prose(stub, "headline of lead 2", "NHTSA opens preliminary evaluation into FSD v14 intersection crashes"),
                 url: "https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14".into(),
                 source: "nhtsa.gov".into(),
                 published: Some("2026-09-12 09:30:00".into())
@@ -9277,12 +9314,12 @@ pub(crate) mod samples {
         ]
     }
 
-    pub(crate) fn claims() -> Vec<EvidenceClaim> {
+    pub(crate) fn claims(stub: bool) -> Vec<EvidenceClaim> {
         vec![
             EvidenceClaim {
             publication: crate::portfolio::research::PublicationDate::default(),
             fact_period: crate::portfolio::research::FactPeriod::default(),
-                claim: "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix.".into(),
+                claim: prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),
                 source_url: "https://ir.tesla.com/press-release/tesla-second-quarter-2026-results".into(),
                 retrieved_at: "2026-09-16T02:11:40Z".into(),
                 surfaced_by: None,
@@ -9291,7 +9328,7 @@ pub(crate) mod samples {
             EvidenceClaim {
             publication: crate::portfolio::research::PublicationDate::default(),
             fact_period: crate::portfolio::research::FactPeriod::default(),
-                claim: "BYD outsold Tesla in Europe for the fourth consecutive month in August 2026 (ACEA registrations).".into(),
+                claim: prose(stub, "claim 2 — one dated fact from its source", "BYD outsold Tesla in Europe for the fourth consecutive month in August 2026 (ACEA registrations)."),
                 source_url: "https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/".into(),
                 retrieved_at: "2026-09-16T02:14:05Z".into(),
                 surfaced_by: None,
@@ -9300,23 +9337,29 @@ pub(crate) mod samples {
         ]
     }
 
-    fn seed() -> TopicSeed {
+    fn seed(stub: bool) -> TopicSeed {
         TopicSeed {
             conditions: vec![
                 "Falsifier: Automotive gross margin ex-credits falls below 14% for two consecutive quarters.".into(),
                 "Trigger: Price closes below $250.".into(),
             ],
             findings: vec![
-                "2026-09-01: Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%. [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results]".into(),
-                "2026-09-01: BYD outsold Tesla in Europe in July 2026 for the third consecutive month. [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/]".into(),
+                format!(
+                    "2026-09-01: {} [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results]",
+                    prose(stub, "prior finding 1 — a claim the prior run kept", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%.")
+                ),
+                format!(
+                    "2026-09-01: {} [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/]",
+                    prose(stub, "prior finding 2 — a claim the prior run kept", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month.")
+                ),
             ]
         }
     }
 
-    fn followup() -> FollowupProposal {
+    fn followup(stub: bool) -> FollowupProposal {
         FollowupProposal {
-            question: "Has BYD's European share gain continued into September, and is Tesla's Model Y refresh pricing responding?".into(),
-            rationale: "The ACEA August print showed the fourth consecutive month of BYD outselling Tesla; the September run-rate decides whether the share loss is structural.".into(),
+            question: prose(stub, "the approved follow-up question from the root pass's synthesis", "Has BYD's European share gain continued into September, and is Tesla's Model Y refresh pricing responding?"),
+            rationale: prose(stub, "why the question matters to the thesis", "The ACEA August print showed the fourth consecutive month of BYD outselling Tesla; the September run-rate decides whether the share loss is structural."),
         }
     }
 
@@ -9324,6 +9367,21 @@ pub(crate) mod samples {
     pub(crate) const IR_TEXT: &str = "Tesla Second Quarter 2026 Update\n\nTotal revenues of $25.5B, up 3% YoY. Automotive gross margin excluding regulatory credits was 14.6% compared with 17.2% in Q2 2025, reflecting lower average selling prices and a higher Cybertruck mix. Energy generation and storage revenue grew 41% to $4.2B with record 12.4 GWh deployed. Free cash flow was $0.9B. We expect vehicle deliveries in 2026 to be roughly flat versus 2025 as we prioritize the Cybercab ramp and the launch of the lower-cost model in the second half. Capital expenditures for 2026 are expected to exceed $12B.";
     pub(crate) const WSJ_URL: &str = "https://www.wsj.com/business/autos/tesla-europe-byd-august-2026";
     pub(crate) const WSJ_TEXT: &str = "Sign in to continue reading. Subscribe for full access to The Wall Street Journal.";
+
+    /// The served page's extracted text, or its stub.
+    pub(crate) fn ir_text(stub: bool) -> String {
+        prose(stub, "the page's extracted article text — a primary-source results release", IR_TEXT)
+    }
+    fn ir_title(stub: bool) -> String {
+        prose(stub, "the page's title", "Tesla Second Quarter 2026 Update")
+    }
+    /// The thin extraction of a paywalled page, or its stub.
+    fn wsj_text(stub: bool) -> String {
+        prose(stub, "the thin extraction of a paywalled page", WSJ_TEXT)
+    }
+    fn wsj_title(stub: bool) -> String {
+        prose(stub, "the page's title", "Tesla Loses Ground in Europe as BYD Surges")
+    }
 
     fn annotation(tier: u8, kinds: &[&str], quality: f64, thin: bool) -> SourceAnnotation {
         SourceAnnotation {
@@ -9362,18 +9420,18 @@ pub(crate) mod samples {
 
     /// Two hand-written headlines for a bond-fund holding, so the fund sample
     /// reads as one.
-    pub(crate) fn fund_leads() -> Vec<ResearchSeed> {
+    pub(crate) fn fund_leads(stub: bool) -> Vec<ResearchSeed> {
         vec![
             ResearchSeed {
                 id: "seed-1".into(),
-                headline: "Vanguard trims expense ratios across its bond index lineup".into(),
+                headline: prose(stub, "headline of lead 1", "Vanguard trims expense ratios across its bond index lineup"),
                 url: "https://www.reuters.com/markets/funds/vanguard-bond-index-fee-cut-2026-09-08/".into(),
                 source: "reuters.com".into(),
                 published: Some("2026-09-08 13:10:00".into())
             },
             ResearchSeed {
                 id: "seed-2".into(),
-                headline: "Treasury curve steepens as the ten-year yield climbs past 4.4%".into(),
+                headline: prose(stub, "headline of lead 2", "Treasury curve steepens as the ten-year yield climbs past 4.4%"),
                 url: "https://www.ft.com/content/treasury-curve-steepens-2026-09-11".into(),
                 source: "ft.com".into(),
                 published: Some("2026-09-11 16:45:00".into())
@@ -9381,57 +9439,71 @@ pub(crate) mod samples {
         ]
     }
 
+    fn stage_of(symbol: &str, topic_key: &str, leg: &str) -> String {
+        research_retry_stage(&crate::portfolio::holding_step_key(symbol), topic_key, leg)
+    }
+
     /// Gathering samples, including a later topic with already retrieved text.
     pub(crate) fn gathering_messages(
+        symbol: &str,
         holding_brief: &str,
         topic: &AgendaTopic,
         leads: &[ResearchSeed],
+        stub: bool,
     ) -> Vec<Sample> {
         let leads = leads.to_vec();
-        let claims = claims();
-        let seed = seed();
-        let fu = followup();
+        let claims = claims(stub);
+        let seed = seed(stub);
+        let fu = followup(stub);
         let disc = disconfirming_topic();
         let system = research_system_prompt();
-        let sample = |label: &str, user: String| Sample {
+        let sample = |label: &str, topic_key: &str, user: String| Sample {
             label: format!("gathering — {label}"),
+            stage: format!("{} turn 1", stage_of(symbol, topic_key, "gathering")),
             system: system.clone(),
             user,
             appended: vec![gathering_countdown(MAX_TURNS_PER_PASS)],
+            tools: Some(research_tools()),
+            format: None,
         };
         let reuse_ctx = ctx(holding_brief, topic, None, &leads, None, &[], false);
         let source = ReusablePage {
-            page: page(IR_URL, "Tesla Second Quarter 2026 Update", IR_TEXT, 0.92, false),
+            page: page(IR_URL, &ir_title(stub), &ir_text(stub), 0.92, false),
             requested_urls: vec![IR_URL.into()], published: Some("2026-07-22".into()),
             annotation: Some(annotation(0, &["filings", "financials"], 0.92, false)),
             truncated: false,
         };
         let (reuse, _) = reuse_pages(&reuse_ctx, &[source], &mut Vec::new());
         vec![
-            sample("root pass, first analysis, two news leads", pass_brief(&ctx(holding_brief, topic, None, &leads, None, &[], false))),
-            sample("follow-up pass, the approved question and the topic's claims so far", pass_brief(&ctx(holding_brief, topic, None, &leads, Some(&fu), &claims, false))),
-            sample("root pass on a continuity run, the standing conditions and prior findings", pass_brief(&ctx(holding_brief, topic, Some(&seed), &leads, None, &[], false))),
-            sample("the disconfirming pass, the run's claims so far", pass_brief(&ctx(holding_brief, &disc, None, &leads, None, &claims, true))),
-            sample("later topic, previously retrieved pages", pass_brief_with_reuse(&reuse_ctx, &reuse)),
+            sample("root pass, first analysis, two news leads", &topic.key, pass_brief(&ctx(holding_brief, topic, None, &leads, None, &[], false))),
+            sample("follow-up pass, the approved question and the topic's claims so far", &topic.key, pass_brief(&ctx(holding_brief, topic, None, &leads, Some(&fu), &claims, false))),
+            sample("root pass on a continuity run, the standing conditions and prior findings", &topic.key, pass_brief(&ctx(holding_brief, topic, Some(&seed), &leads, None, &[], false))),
+            sample("the disconfirming pass, the run's claims so far", &disc.key, pass_brief(&ctx(holding_brief, &disc, None, &leads, None, &claims, true))),
+            sample("later topic, previously retrieved pages", &topic.key, pass_brief_with_reuse(&reuse_ctx, &reuse)),
         ]
     }
 
     /// The three synthesis passes on one topic, over two hand-written pages —
     /// the first reused from an earlier topic, the second fetched by this pass
     /// (`portfolio-v49`: reused pages lead, in first-retrieval order).
-    pub(crate) fn synthesis_messages(holding_brief: &str, topic: &AgendaTopic) -> Vec<Sample> {
-        let claims = claims();
-        let fu = followup();
+    pub(crate) fn synthesis_messages(
+        symbol: &str,
+        holding_brief: &str,
+        topic: &AgendaTopic,
+        stub: bool,
+    ) -> Vec<Sample> {
+        let claims = claims(stub);
+        let fu = followup(stub);
         let disc = disconfirming_topic();
-        let ir = page(IR_URL, "Tesla Second Quarter 2026 Update", IR_TEXT, 0.92, false);
-        let wsj = page(WSJ_URL, "Tesla Loses Ground in Europe as BYD Surges", WSJ_TEXT, 0.04, true);
+        let ir = page(IR_URL, &ir_title(stub), &ir_text(stub), 0.92, false);
+        let wsj = page(WSJ_URL, &wsj_title(stub), &wsj_text(stub), 0.04, true);
         let fetched = vec![
             (IR_URL.to_string(), ir.retrieved_at.clone(), Some(annotation(0, &["filings", "financials"], 0.92, false))),
             (WSJ_URL.to_string(), wsj.retrieved_at.clone(), Some(annotation(1, &["event-verification"], 0.04, true))),
         ];
         let explicit: std::collections::HashSet<String> = [WSJ_URL.to_string()].into();
         let texts: std::collections::HashMap<String, String> =
-            [(IR_URL.to_string(), IR_TEXT.to_string()), (WSJ_URL.to_string(), WSJ_TEXT.to_string())].into();
+            [(IR_URL.to_string(), ir.text.clone()), (WSJ_URL.to_string(), wsj.text.clone())].into();
         let meta: std::collections::HashMap<String, PageMeta> = [
             (IR_URL.to_string(), PageMeta { title: ir.title.clone(), published: Some("2026-07-22".into()) }),
             (WSJ_URL.to_string(), PageMeta { title: wsj.title.clone(), published: Some("2026-09-03".into()) }),
@@ -9449,9 +9521,12 @@ pub(crate) mod samples {
             let mut shown = std::collections::HashMap::new();
             Sample {
                 label: format!("synthesis — {label}"),
+                stage: stage_of(symbol, &c.topic.key, "synthesis"),
                 system: synthesis_system_prompt(c.disconfirming),
                 user: synthesis_brief(c, &fetched, &explicit, &texts, &meta, note.as_deref(), &mut gaps, &mut shown),
                 appended: Vec::new(),
+                tools: None,
+                format: Some(findings_schema(c.disconfirming)),
             }
         };
         vec![
@@ -9463,14 +9538,14 @@ pub(crate) mod samples {
 
     /// What a gathering turn gets back: a search result set, an empty one, a
     /// failed search, a served page, a thin stub and a failed fetch.
-    pub(crate) fn tool_results() -> Vec<(String, String)> {
+    pub(crate) fn tool_results(stub: bool) -> Vec<(String, String)> {
         let hits = vec![
-            SearchHit { title: "Tesla Q2 2026 Update".into(), url: IR_URL.into(), host: "ir.tesla.com".into(), snippet: Some("Total revenues of $25.5B, up 3% YoY. Automotive gross margin excluding regulatory credits was 14.6%...".into()), published: Some("2026-07-22".into()), tier: 0 },
-            SearchHit { title: "Tesla Loses Ground in Europe as BYD Surges".into(), url: WSJ_URL.into(), host: "wsj.com".into(), snippet: Some("BYD outsold Tesla for a fourth straight month...".into()), published: Some("2026-09-03".into()), tier: 1 },
-            SearchHit { title: "Why TSLA is a screaming buy right now".into(), url: "https://seekingalpha.com/article/tsla-screaming-buy".into(), host: "seekingalpha.com".into(), snippet: None, published: None, tier: 4 },
+            SearchHit { title: prose(stub, "result title", "Tesla Q2 2026 Update"), url: IR_URL.into(), host: "ir.tesla.com".into(), snippet: Some(prose(stub, "the result's snippet", "Total revenues of $25.5B, up 3% YoY. Automotive gross margin excluding regulatory credits was 14.6%...")), published: Some("2026-07-22".into()), tier: 0 },
+            SearchHit { title: prose(stub, "result title", "Tesla Loses Ground in Europe as BYD Surges"), url: WSJ_URL.into(), host: "wsj.com".into(), snippet: Some(prose(stub, "the result's snippet", "BYD outsold Tesla for a fourth straight month...")), published: Some("2026-09-03".into()), tier: 1 },
+            SearchHit { title: prose(stub, "result title", "Why TSLA is a screaming buy right now"), url: "https://seekingalpha.com/article/tsla-screaming-buy".into(), host: "seekingalpha.com".into(), snippet: None, published: None, tier: 4 },
         ];
-        let ir = page(IR_URL, "Tesla Second Quarter 2026 Update", IR_TEXT, 0.92, false);
-        let wsj = page(WSJ_URL, "Tesla Loses Ground in Europe as BYD Surges", WSJ_TEXT, 0.04, true);
+        let ir = page(IR_URL, &ir_title(stub), &ir_text(stub), 0.92, false);
+        let wsj = page(WSJ_URL, &wsj_title(stub), &wsj_text(stub), 0.04, true);
         vec![
             ("web_search — results".into(), render_hits(&hits)),
             ("web_search — no results".into(), render_hits(&[])),

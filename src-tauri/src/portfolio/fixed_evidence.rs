@@ -27,6 +27,8 @@ use crate::portfolio::dossier::HouseView;
 use serde::Deserialize;
 use std::collections::HashSet;
 
+mod prompt_examples;
+
 #[derive(Deserialize)]
 struct Fixture {
     symbol: String,
@@ -1688,17 +1690,21 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
         .find(|t| t.key == "fund-exposure-profile")
         .expect("the retitled fund exposure topic (fix list 4.4)");
     let mut samples = super::research::samples::gathering_messages(
+        "TSLA",
         &brief,
         &agenda[0],
-        &super::research::samples::stock_leads(),
+        &super::research::samples::stock_leads(false),
+        false,
     );
-    samples.extend(super::research::samples::synthesis_messages(&brief, &agenda[0]));
+    samples.extend(super::research::samples::synthesis_messages("TSLA", &brief, &agenda[0], false));
     let fund_brief = pipeline::holding_header(&fx.dossier);
     samples.extend(
         super::research::samples::gathering_messages(
+            "BND",
             &fund_brief,
             exposure,
-            &super::research::samples::fund_leads(),
+            &super::research::samples::fund_leads(false),
+            false,
         )
             .into_iter()
             .take(1)
@@ -1793,7 +1799,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         }
     }
     // The tool results carry no instruction either.
-    for (label, text) in super::research::samples::tool_results() {
+    for (label, text) in super::research::samples::tool_results(false) {
         assert!(
             !text.contains("Work with what you have") && !text.contains("contributes no evidence"),
             "{label}: {text}"
@@ -1812,6 +1818,7 @@ fn distillation_samples() -> Vec<super::distill::samples::Sample> {
     super::distill::samples::messages(
         &pipeline::holding_header(&d),
         &pipeline::holding_header(&fx.dossier),
+        false,
     )
 }
 
@@ -2019,7 +2026,7 @@ fn fixed_evidence_prompt_dump() {
         }
         letter += 1;
     }
-    for (label, text) in super::research::samples::tool_results() {
+    for (label, text) in super::research::samples::tool_results(false) {
         out.push_str(&format!("### {n}{}. Tool result — {label}\n\n", letter as char));
         out.push_str(&fence(&text));
         letter += 1;

@@ -2846,7 +2846,7 @@ fn append_shared_delta(
 /// downstream is exact `old ≠ new` (ruled 2026-08-21): stored numerics round-trip
 /// bit-exact, so any difference is a real entry.
 #[allow(clippy::too_many_arguments)]
-fn priced_input_delta(
+pub(super) fn priced_input_delta(
     dossier: &HoldingDossier,
     engine_output: &EngineOutput,
     position_change: PositionChange,
@@ -6216,7 +6216,7 @@ fn decode_interpretation(stage: &str, content: &str, debut: bool) -> Result<Inte
 /// The fast rung of [`distill_route`]'s issue guard: a distillation prompt that
 /// outgrows this context's budget issues on the reasoner at
 /// [`NUM_CTX_INTERPRET`] instead of front-truncating here.
-const NUM_CTX_DISTILL: u32 = 32_768;
+pub(super) const NUM_CTX_DISTILL: u32 = 32_768;
 /// Interpretation: the vendor advises ≥ 128 K context to preserve thinking
 /// capability (chains run tens of thousands of tokens); hybrid attention keeps
 /// the KV cost of this a few GB (`docs/local-model-operations.md §Context window`).
@@ -6238,7 +6238,7 @@ const KEEP_ALIVE_RESIDENT: i64 = -1;
 // `done_reason: "length"` and lands in the same typed guard.
 /// Thinking stages (interpretation, role-risk, construction): chains run tens
 /// of thousands of tokens and count against the same budget as the answer.
-const NUM_PREDICT_THINKING: u32 = 65_536;
+pub(super) const NUM_PREDICT_THINKING: u32 = 65_536;
 /// Normal distillation ceiling. The response is a potentially wide structured
 /// object: combined narrative, per-topic claims and URLs, typed side channels,
 /// and bounded observation excerpts. A reservation-bound stop gets one larger
@@ -6251,11 +6251,11 @@ const NUM_PREDICT_THINKING: u32 = 65_536;
 /// (`distill::input_budget_chars`), so the exact-reservation stop stays the
 /// data-health signal for an oversized distillation rather than a routine
 /// event.
-const NUM_PREDICT_DISTILL: u32 = 12_288;
+pub(super) const NUM_PREDICT_DISTILL: u32 = 12_288;
 /// One evidence-triggered distillation re-attempt after the normal reservation
 /// binds exactly. It issues on the reasoner's 128 K context so the prompt and
 /// this full ceiling fit together under the same 60% input sizing guard.
-const NUM_PREDICT_DISTILL_RETRY: u32 = 32_768;
+pub(super) const NUM_PREDICT_DISTILL_RETRY: u32 = 32_768;
 
 /// The distill stage's context size, resolved per *model*, not per call: Ollama
 /// reloads a resident runner whenever a request's load-time options — `num_ctx`
@@ -6265,7 +6265,7 @@ const NUM_PREDICT_DISTILL_RETRY: u32 = 32_768;
 /// runner between 32 K and 128 K at every stage transition; the smaller distill
 /// context applies only to a genuinely distinct fast model
 /// (`docs/local-model-operations.md §The num_ctx trap`).
-fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
+pub(super) fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
     if fast_model == reasoner_model {
         NUM_CTX_INTERPRET
     } else {
@@ -6314,7 +6314,7 @@ fn distill_route<'a>(
 /// the first live run ~45 minutes, F3), non-thinking sampling, the
 /// grammar-constraining `format` schema, the caller-routed model and context
 /// size ([`distill_route`]). Pure, so the per-stage wiring is asserted offline.
-fn distill_request(
+pub(super) fn distill_request(
     model: &str,
     num_ctx: u32,
     num_predict: u32,
@@ -6354,7 +6354,7 @@ fn hit_normal_distill_reservation(
 /// per phase and never together — the gathering turns carry `tools` with no
 /// `format`, the synthesis call carries `format` with no `tools` (attempt-4
 /// Finding 4, fix B).
-fn research_turn_request(
+pub(super) fn research_turn_request(
     reasoner_model: &str,
     messages: Vec<ChatMessage>,
     tools: Option<&serde_json::Value>,
@@ -6371,7 +6371,7 @@ fn research_turn_request(
 
 /// Build the priced-branch interpretation request: thinking on (composes with the
 /// grammar-constrained `format`), thinking sampling, interpret-sized context.
-fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatRequest {
+pub(super) fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatRequest {
     let is_fund = dossier_is_fund(input.dossier);
     let debut = input.dossier.prior_verdict.is_none();
     let mut req = ChatRequest::new(
@@ -6395,7 +6395,7 @@ fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatR
 
 /// Build the `role_risk_only`-branch interpretation request — same mode wiring as
 /// the priced branch, reduced schema.
-fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest {
+pub(super) fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest {
     let debut = input.dossier.prior_verdict.is_none();
     let mut req = ChatRequest::new(
         reasoner_model,
@@ -6417,7 +6417,7 @@ fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest
 /// the **shared** interpret context size — the one-`num_ctx`-per-model rule (an
 /// Ollama `num_ctx` change reloads the resident runner,
 /// `docs/local-model-operations.md §The num_ctx trap`).
-fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatRequest {
+pub(super) fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatRequest {
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
