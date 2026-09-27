@@ -2970,12 +2970,18 @@ fn build_data_health(
     // failed holding's retry events as it isolates it), so the line measures the
     // absorbed transient rate — the big-run retry watch's read.
     if let Some(first) = model_retries.first() {
+        // The cause carries the full error chain since `portfolio-v49`, body
+        // snippet included, so the summary shows a capped head of it; the
+        // persisted event keeps the whole chain.
+        const SUMMARY_CAUSE_CAP: usize = 200;
+        let (cause, cut) = crate::data_sources::cap_chars(&first.cause, SUMMARY_CAUSE_CAP);
         parts.push(format!(
-            "bounded retry absorbed {} transient model-call failure{} (first: {} — {})",
+            "bounded retry absorbed {} transient model-call failure{} (first: {} — {}{})",
             model_retries.len(),
             if model_retries.len() == 1 { "" } else { "s" },
             first.stage,
-            first.cause
+            cause,
+            if cut { "…" } else { "" },
         ));
     }
     let near_full = context_pressure.len() - truncation_suspects.len();
@@ -3360,6 +3366,22 @@ mod tests {
             "{}",
             dh.summary
         );
+        // A long chain (a parse failure's body snippet) is capped on the
+        // summary line only; the structured event keeps the whole cause.
+        let long_cause = format!("content failed its parse: {}", "x".repeat(1_000));
+        let retries = vec![crate::local_model::RetryEvent {
+            stage: "research WID synthesis".into(),
+            cause: long_cause.clone(),
+        }];
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], retries);
+        let line = dh
+            .summary
+            .split("; ")
+            .find(|part| part.starts_with("bounded retry absorbed"))
+            .expect("the retry line");
+        assert!(line.contains("…)"), "{line}");
+        assert!(line.chars().count() < 300, "{}", line.chars().count());
+        assert_eq!(dh.model_retries[0].cause, long_cause);
         // No fired retries: no line, no attention from this trigger.
         let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], vec![]);
         assert!(!dh.attention);

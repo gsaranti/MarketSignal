@@ -223,8 +223,11 @@ impl std::error::Error for RetryClass {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetryEvent {
     pub stage: String,
-    /// The [`RetryClass`] display form — a string so persisted rows outlive
-    /// enum changes.
+    /// The [`RetryClass`] display form followed by the failed attempt's full
+    /// error chain (`{class}: {err:#}`) — a string so persisted rows outlive
+    /// enum changes, and the whole chain so a parse failure's innermost cause
+    /// and body snippet survive into the data-health read (attempt-8
+    /// Finding 1: the class alone could not say why a synthesis failed).
     pub cause: String,
 }
 
@@ -319,8 +322,10 @@ impl RetryOnce {
         }
         // The retry's own row pair: the streaming stages emit no per-request
         // rows, so this is a fired retry's only tracker surface — status
-        // "failed" (attempt one did fail), the detail naming the class and the
-        // single re-attempt.
+        // "failed" (attempt one did fail), the detail naming the class, the
+        // single re-attempt and the full error chain — `{err:#}`, not `{err}`,
+        // so the innermost message (a serde error, a blank-field guard) and any
+        // body snippet survive alongside the outermost context.
         progress.request_started("Local", "local", stage, "Local model retry");
         progress.request_finished(
             "Local",
@@ -328,14 +333,14 @@ impl RetryOnce {
             stage,
             "Local model retry",
             "failed",
-            Some(format!("{class}; retrying once: {err}")),
+            Some(format!("{class}; retrying once: {err:#}")),
         );
         self.events
             .lock()
             .expect("retry-event lock is never poisoned")
             .push(RetryEvent {
                 stage: stage.to_string(),
-                cause: class.to_string(),
+                cause: format!("{class}: {err:#}"),
             });
         // Abortable pause: poll the cancel flag rather than sleeping blind.
         const POLL: Duration = Duration::from_millis(100);
@@ -2460,8 +2465,11 @@ mod tests {
         let out = retry.run(&ctx, "interpret TEST", || {
             calls.set(calls.get() + 1);
             if calls.get() == 1 {
+                // A two-context chain: the outermost context alone would say
+                // only "stage failed"; the innermost carries the cause.
                 Err(anyhow::Error::new(RetryClass::DaemonStatus)
-                    .context("local model returned 500: boom"))
+                    .context("local model returned 500: boom")
+                    .context("interpreting TEST failed"))
             } else {
                 Ok("ok")
             }
@@ -2471,18 +2479,27 @@ mod tests {
         let events = retry.take_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].stage, "interpret TEST");
-        assert_eq!(events[0].cause, RetryClass::DaemonStatus.to_string());
+        // The persisted cause opens with the class display and carries the
+        // whole chain, innermost included (attempt-8 Finding 1).
+        assert!(
+            events[0].cause.starts_with(&format!("{}: ", RetryClass::DaemonStatus)),
+            "{}",
+            events[0].cause
+        );
+        assert!(events[0].cause.contains("interpreting TEST failed"), "{}", events[0].cause);
+        assert!(events[0].cause.contains("500: boom"), "{}", events[0].cause);
         assert!(retry.take_events().is_empty(), "the drain empties the record");
-        // The fired retry left its own tracker row naming the re-attempt.
-        let noted = rec.messages().iter().any(|m| {
-            matches!(
-                &m.event,
-                ProgressEvent::RequestFinished { name, detail, .. }
-                    if name == "Local model retry"
-                        && detail.as_deref().is_some_and(|d| d.contains("retrying once"))
-            )
+        // The fired retry left its own tracker row naming the re-attempt, with
+        // the same full chain in its detail.
+        let detail = rec.messages().iter().find_map(|m| match &m.event {
+            ProgressEvent::RequestFinished { name, detail, .. }
+                if name == "Local model retry" => detail.clone(),
+            _ => None,
         });
-        assert!(noted, "a fired retry must be visible on the tracker");
+        let detail = detail.expect("a fired retry must be visible on the tracker");
+        assert!(detail.contains("retrying once"), "{detail}");
+        assert!(detail.contains("interpreting TEST failed"), "{detail}");
+        assert!(detail.contains("500: boom"), "{detail}");
     }
 
     #[test]

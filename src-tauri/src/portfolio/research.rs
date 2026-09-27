@@ -1656,7 +1656,11 @@ fn findings_return_shape(disconfirming: bool, ids: &[String]) -> String {
     } else {
         format!("<{}>", ids.join("|"))
     };
-    let mut shape = format!(r#"{{"findings":"","claims":[{{"claim":"","source_id":"{source_id}","fact_period":{{"kind":"<day|month|quarter|year|range|fiscal|unknown>","value":"","end":null}}}}]"#);
+    // The value placeholder lists one format per kind in the kind
+    // placeholder's order (`portfolio-v49`): attempt 8 showed the model
+    // quoting the prose format correctly and still writing the source's own
+    // wording at the point of writing, where the shape alone was in view.
+    let mut shape = format!(r#"{{"findings":"","claims":[{{"claim":"","source_id":"{source_id}","fact_period":{{"kind":"<day|month|quarter|year|range|fiscal|unknown>","value":"<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>","end":null}}}}]"#);
     if !disconfirming {
         shape.push_str(
             r#","followup_question":null,"followup_rationale":null"#,
@@ -2936,7 +2940,25 @@ impl ResearchRunner<'_> {
         let mut dropped = 0usize;
         for mut c in wire.claims {
             if !c.fact_period.valid() {
-                gaps.push(format!("topic {}: invalid fact period retained as unknown", ctx.topic.key));
+                // Name the rejected pair so the gap is attributable to the
+                // value the model wrote, not only to the topic (attempt-8
+                // Finding 2: 16 of 17 rejections were unattributable). The kind
+                // renders in its wire form; the value is capped since `valid`
+                // rejects over-long values too.
+                let kind = serde_json::to_value(&c.fact_period.kind)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                let (value, cut) = crate::data_sources::cap_chars(&c.fact_period.value, 80);
+                let end = match &c.fact_period.end {
+                    Some(end) => format!(", end {end:?}"),
+                    None => String::new(),
+                };
+                gaps.push(format!(
+                    "topic {}: invalid fact period retained as unknown (kind {kind}, value {value:?}{}{end})",
+                    ctx.topic.key,
+                    if cut { "…" } else { "" },
+                ));
                 c.fact_period = FactPeriod::default();
             }
             if claims.len() >= MAX_CLAIMS_PER_PASS {
@@ -3115,22 +3137,27 @@ fn synthesis_task(ctx: &PassContext<'_>, searching_rendered: bool, ids: &[String
 them as one JSON object in the shape at the end, with no code fence and no surrounding text.\n\n",
     );
     let unanswered = if searching_rendered { ", SEARCHING included" } else { "" };
+    // "written first and never left empty" sits on the item itself
+    // (`portfolio-v49`, ruled 2026-09-27): three attempt-8 syntheses opened on
+    // the claims array and failed the blank-findings guard, while every
+    // success followed the shape's order.
     if ctx.disconfirming {
         out.push_str(
-            "1. findings — how EVIDENCE bears on CLAIMS SO FAR: which claims it contradicts or \
-weakens and how, which it leaves standing, and any contrary evidence that stands on its own.",
+            "1. findings — written first and never left empty: how EVIDENCE bears on CLAIMS SO \
+FAR: which claims it contradicts or weakens and how, which it leaves standing, and any contrary \
+evidence that stands on its own.",
         );
     } else if ctx.followup.is_some() {
         out.push_str(&format!(
-            "1. findings — what EVIDENCE shows on the FOLLOW-UP question: the figures with their \
-dates and periods as the source states them, where sources disagree, and what the evidence \
-leaves unanswered{unanswered}."
+            "1. findings — written first and never left empty: what EVIDENCE shows on the \
+FOLLOW-UP question: the figures with their dates and periods as the source states them, where \
+sources disagree, and what the evidence leaves unanswered{unanswered}."
         ));
     } else {
         out.push_str(&format!(
-            "1. findings — what EVIDENCE shows on each question under TOPIC: the figures with \
-their dates and periods as the source states them, where sources disagree, and which questions \
-the evidence leaves unanswered{unanswered}."
+            "1. findings — written first and never left empty: what EVIDENCE shows on each \
+question under TOPIC: the figures with their dates and periods as the source states them, where \
+sources disagree, and which questions the evidence leaves unanswered{unanswered}."
         ));
     }
     // The governed source-quality rule reaches the call that authors the
@@ -3148,7 +3175,7 @@ is not a claim. fact_period names when the fact applies, never when it was retri
 when this analysis runs: kind day (YYYY-MM-DD, e.g. 2026-06-30), month (YYYY-MM, e.g. 2026-06), \
 quarter (calendar YYYY-Qn, e.g. 2026-Q2), year (YYYY, e.g. 2026), range \
 (value and end both YYYY-MM-DD, e.g. 2026-04-01 through 2026-06-30), fiscal \
-(the source's exact fiscal-period label, e.g. Q4 FY2025), or unknown (empty value). \
+(the source's fiscal-period label, e.g. Q4 FY2025), or unknown (empty value). \
 Use quarter only for a stated calendar quarter or a source-stated period that unambiguously \
 covers that calendar quarter. end is null except for a range. Preserve separate announcement and effective \
 dates as separate claims. Do not infer a calendar period from a fiscal label.\n\n",
@@ -3554,20 +3581,28 @@ fn plan_evidence(lengths: &[usize], available: usize, marker_len: usize) -> Vec<
         .collect()
 }
 
-/// A capped head of a model completion body for a diagnostic error message —
-/// so a residual synthesis parse failure carries what the model actually
-/// returned (Finding 4's failing-body capture) rather than an opaque serde EOF.
+/// A capped head and tail of a model completion body for a diagnostic error
+/// message — so a residual synthesis parse failure carries what the model
+/// actually returned (Finding 4's failing-body capture) rather than an opaque
+/// serde EOF. The tail is kept since attempt-8 Finding 1: a claims-first body
+/// puts the field that failed its guard at the very end, where a head-only
+/// snippet never reached.
 fn body_snippet(content: &str) -> String {
-    const SNIPPET_CAP: usize = 400;
-    let (head, cut) = crate::data_sources::cap_chars(content, SNIPPET_CAP);
-    if cut {
-        format!(
-            "{head} …(truncated, {} chars total)",
-            content.chars().count()
-        )
-    } else {
-        head
+    const HEAD_CAP: usize = 400;
+    const TAIL_CAP: usize = 200;
+    let total = content.chars().count();
+    if total <= HEAD_CAP + TAIL_CAP {
+        return content.to_string();
     }
+    let (head, _) = crate::data_sources::cap_chars(content, HEAD_CAP);
+    let tail_start = content
+        .char_indices()
+        .nth(total - TAIL_CAP)
+        .map(|(i, _)| i)
+        .unwrap_or(content.len());
+    let tail = &content[tail_start..];
+    let elided = total - HEAD_CAP - TAIL_CAP;
+    format!("{head} …({elided} chars elided, {total} chars total)… {tail}")
 }
 
 /// Render a source header with its admitted ID (or the largest possible ID
@@ -6256,6 +6291,12 @@ mod tests {
             let kinds: Vec<_> = periods.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
             assert_eq!(shape["claims"][0]["fact_period"]["kind"], format!("<{}>", kinds.join("|")));
             assert!(kinds.contains(&"quarter"));
+            // The value placeholder lists one format per kind, in the kind
+            // placeholder's order, so position maps kind to format at the
+            // point of writing (attempt-8 Finding 2, ruled 2026-09-27).
+            let value = shape["claims"][0]["fact_period"]["value"].as_str().unwrap();
+            assert_eq!(value, "<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>");
+            assert_eq!(value.trim_matches(['<', '>']).split('|').count(), kinds.len());
             // The system prompt names the outputs and never the grammar.
             let system = synthesis_system_prompt(disconfirming);
             assert!(!system.to_lowercase().contains("grammar"), "{system}");
@@ -6331,9 +6372,14 @@ mod tests {
             !part1.contains("treat coverage") && !part1.to_lowercase().contains("your "),
             "Part 1 instructs: {part1}"
         );
-        for item in ["1. findings", "2. claims", "3. followup_question", "RETURN SHAPE", ", SEARCHING included"] {
+        for item in [
+            "1. findings — written first and never left empty: what EVIDENCE shows",
+            "2. claims", "3. followup_question", "RETURN SHAPE", ", SEARCHING included",
+            "fiscal (the source's fiscal-period label, e.g. Q4 FY2025)",
+        ] {
             assert!(part2.contains(item), "Part 2 lacks {item}: {part2}");
         }
+        assert!(!part2.contains("exact"), "{part2}");
         assert!(
             part2.trim_end().ends_with(&findings_return_shape(false, &["S1".to_string()])),
             "{part2}"
@@ -6451,6 +6497,11 @@ mod tests {
             "claims": [
                 {"claim": "first", "source_id": "S1"},
                 {"claim": "second", "source_id": "S2"},
+                // A source-worded quarter against the `YYYY-Qn` format: kept
+                // as unknown, with the rejected pair named on the gap
+                // (attempt-8 Finding 2).
+                {"claim": "quartered", "source_id": "S2",
+                 "fact_period": {"kind": "quarter", "value": "Q1 2026", "end": null}},
                 {"claim": "last", "source_id": "S11"},
                 {"claim": "unknown", "source_id": "S12"},
                 {"claim": "URL is not an ID", "source_id": "https://example.com/a"}
@@ -6467,9 +6518,36 @@ mod tests {
         let allowed: Vec<_> = fetched.into_iter().filter(|(url, _, _)| resolved.contains_key(url)).collect();
         let findings = runner.validate_findings(wire, &ctx, &allowed, &Default::default(), &Default::default(), &mut gaps);
         let urls: Vec<_> = findings.claims.iter().map(|claim| claim.source_url.as_str()).collect();
-        assert_eq!(urls, ["https://example.com/a", "https://example.com/b1", "https://example.com/b10"]);
+        assert_eq!(urls, ["https://example.com/a", "https://example.com/b1", "https://example.com/b1", "https://example.com/b10"]);
+        assert_eq!(findings.claims[2].fact_period, FactPeriod::default());
+        assert!(
+            gaps.iter().any(|gap| gap
+                == "topic competitive-position: invalid fact period retained as unknown (kind quarter, value \"Q1 2026\")"),
+            "{gaps:?}"
+        );
         assert!(gaps.iter().any(|gap| gap.contains("unresolved source ID")));
         assert!(gaps.iter().any(|gap| gap.contains("omitted entirely")));
+    }
+
+    #[test]
+    fn a_body_snippet_keeps_the_head_and_the_tail() {
+        // Attempt-8 Finding 1: a claims-first body carries the field that
+        // failed its guard at the very end, so the snippet keeps both ends.
+        let short = "{\"findings\":\"ok\",\"claims\":[]}";
+        assert_eq!(body_snippet(short), short);
+        let body = format!("{{\"claims\":[{}],\"findings\":\"\"}}", "x".repeat(2_000));
+        let snippet = body_snippet(&body);
+        assert!(snippet.starts_with("{\"claims\":[xxx"), "{snippet}");
+        assert!(snippet.ends_with("],\"findings\":\"\"}"), "{snippet}");
+        assert!(snippet.contains(&format!("chars elided, {} chars total", body.chars().count())), "{snippet}");
+        assert!(snippet.chars().count() < 700, "{}", snippet.chars().count());
+        // Multi-byte content: the tail starts on a char boundary and both
+        // ends keep whole characters.
+        let wide = format!("{}{}", "é".repeat(700), "ü".repeat(100));
+        let snippet = body_snippet(&wide);
+        assert!(snippet.starts_with(&"é".repeat(400)), "{snippet}");
+        assert!(snippet.ends_with(&format!("{}{}", "é".repeat(100), "ü".repeat(100))), "{snippet}");
+        assert!(snippet.contains("200 chars elided, 800 chars total"), "{snippet}");
     }
 
     #[test]

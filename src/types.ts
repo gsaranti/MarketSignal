@@ -680,8 +680,10 @@ export interface DataHealth {
   summary: string;
 }
 
-// One fired bounded-retry: which stage re-attempted and for which failure
-// class. In a persisted run the re-attempt succeeded (a second failure is not
+// One fired bounded-retry: which stage re-attempted and why — the failure
+// class followed by the failed attempt's full error chain, so a parse
+// failure names its innermost cause. In a persisted run the re-attempt
+// succeeded (a second failure is not
 // listed — the Portfolio job drops a failed holding's retry events as it
 // isolates it), so entries measure the absorbed transient rate.
 export interface RetryEvent {

@@ -1642,7 +1642,7 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
         assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "Part 1 lacks {section}\n{part1}");
     }
     assert!(part1.contains("\nEVIDENCE GAPS (computed)\nno duration, credit or yield-curve data for this fund\n"), "{part1}");
-    assert!(part1.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: sell-all, trim, hold.\n"), "{part1}");
+    assert!(part1.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is outside that read.\n"), "{part1}");
     assert!(!part1.contains("Return "), "Part 1 instructs\n{part1}");
     assert!(!part2.contains("Name the returns you weighed"));
     for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "RETURN SHAPE (every value is a placeholder)"] {

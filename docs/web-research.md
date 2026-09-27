@@ -28,6 +28,9 @@ The app resolves only identifiers for evidence actually shown in that call, then
 A fact period preserves calendar precision, including a calendar quarter as `YYYY-Q1` through `YYYY-Q4`, or an unmapped fiscal label; missing dates remain unknown and never inherit retrieval or analysis time.
 A quarter requires source-stated calendar correspondence and a null `end`; fiscal quarter labels remain exact source labels with no guessed calendar mapping.
 The synthesis task illustrates every period kind, including `Q4 FY2025` as fiscal.
+Since `portfolio-v49`, the shape's fact-period value placeholder lists one format per kind in the kind placeholder's order, and the fiscal gloss names the source's label without calling it exact.
+Since `portfolio-v49`, the task's first item states that `findings` is written first and never left empty.
+A rejected fact period's gap names the kind and value that were rejected.
 The app validates period structure; semantic dating remains the model's responsibility.
 Unknown identifiers, URL strings supplied as identifiers, and identifiers for budget-omitted sources cannot become citations.
 Portfolio's synthesis message is one message in two parts on the frame every Portfolio prompt shares (`portfolio-v43`, ruled 2026-09-17).

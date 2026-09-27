@@ -4837,10 +4837,15 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     // The computed per-holding set as one data line (fix list 3.9, ruled
     // 2026-09-17: no permission sentence — the return shape's enum shows the
     // ladder). An outside-the-set rung persists as authored with the departure
-    // on the audit (`outside_set_annotation`), never a bar.
+    // on the audit (`outside_set_annotation`), never a bar. Since
+    // `portfolio-v49` (ruled 2026-09-27) the line says the list is complete
+    // and that an unlisted rung is outside the read: the attempt-8 PSX trace
+    // read the list as the whole ladder, looked for a pick it never carries,
+    // and tried to derive the set from CAPITAL EFFICIENCY instead.
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&format!(
-        "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: {}.\n",
+        "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: {}. \
+         A rung not listed is outside that read.\n",
         set.join(", ")
     ));
     // The cash row is deliberately not rendered: available capital is
@@ -9206,7 +9211,7 @@ pub(crate) mod tests {
         // (ruled 2026-09-17, F1).
         assert!(!action.contains("By rule:"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: sell-all, trim, hold.\n"),
+            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is outside that read.\n"),
             "{action}"
         );
         assert!(!action.contains("HARD TRIGGER TRIPPED"), "{action}");
@@ -9364,8 +9369,8 @@ pub(crate) mod tests {
         let set: Vec<&str> = engine_set.iter().map(Action::as_kebab).collect();
         assert!(
             user.contains(&format!(
-                "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its \
-                 own: {}.\n",
+                "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed \
+                 in full: {}. A rung not listed is outside that read.\n",
                 set.join(", ")
             )),
             "{user}"
@@ -9877,7 +9882,10 @@ pub(crate) mod tests {
         // as fields plus a name and renders its statement from the core, refusing
         // a core that already holds at authoring: the prompt, the persisted
         // condition (`label`) and the trail move to v45 / v12.
-        assert_eq!(PROMPT_VERSION, "portfolio-v48");
+        // Attempt-8 Slice A (2026-09-27) moves the synthesis task, its shape's
+        // value placeholder and the SUPPORTED ACTIONS line to v49; the retry
+        // cause grew as a string, so the trail stays at v15.
+        assert_eq!(PROMPT_VERSION, "portfolio-v49");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"
@@ -11135,7 +11143,7 @@ pub(crate) mod tests {
         assert!(action.contains("\nTHESIS (analyst)\nA standing thesis.\n"), "{action}");
         assert!(action.contains("- base (50%): base case conditions.\n"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: sell-all, trim, hold.\n"),
+            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is outside that read.\n"),
             "{action}"
         );
         assert!(
@@ -14521,7 +14529,7 @@ pub(crate) mod tests {
         assert!(!action.contains("conviction capped"), "{action}");
         assert!(!action.contains("computed action set"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports on its own: sell-all, trim.\n"),
+            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim. A rung not listed is outside that read.\n"),
             "{action}"
         );
         assert!(!action.contains("CONVICTION CEILING"), "{action}");

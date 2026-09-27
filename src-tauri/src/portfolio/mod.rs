@@ -2360,7 +2360,13 @@ pub struct HoldingAudit {
 /// `portfolio-v47`: distinct claim dates and evidence-reference reconciliation.
 /// `portfolio-v48`: append-only gathering countdown and roots-first research.
 /// Shared delivery stamp with the separately implemented attempt-7 prompt slice.
-pub const PROMPT_VERSION: &str = "portfolio-v48";
+/// `portfolio-v49` (attempt-8 Slice A, 2026-09-27): the synthesis task's first
+/// item says findings is written first and never left empty, the shape's
+/// fact-period value placeholder lists one format per kind, the fiscal gloss
+/// drops "exact", and the action packet's SUPPORTED ACTIONS line names its
+/// list as complete. Shared delivery stamp with the separately implemented
+/// attempt-8 latency slice (message order). The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v49";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

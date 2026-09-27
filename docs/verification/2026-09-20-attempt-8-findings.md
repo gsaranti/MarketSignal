@@ -31,6 +31,9 @@ The comparison set is attempt 7's TSLA and PSX (`~/Downloads/market-signal-attem
 - Change proposed.
   Telemetry: the retry line and the persisted retry cause carry the full error chain (`{err:#}`), and the snippet keeps a head and a tail of the body.
   Prompt: the synthesis task states that `findings` is written first and is never empty, before the claims.
+  Ruled 2026-09-27: the tracker detail and the persisted retry cause both carry the chain as `{class}: {err:#}`, with no new field, so no persisted-shape stamp moves.
+  Ruled 2026-09-27: the snippet keeps a 400-character head and a 200-character tail.
+  Ruled 2026-09-27: the findings-first rule sits on task item 1, at the point of writing.
 - Check, on attempt 9.
   Any synthesis parse failure names its cause in the dev log and in `model_retries`; no failed body opens with `claims`.
 - Stamp: `portfolio-v49` for the task sentence; none for the telemetry.
@@ -50,6 +53,8 @@ The comparison set is attempt 7's TSLA and PSX (`~/Downloads/market-signal-attem
   The shape template carries the value format inline: `"value":"<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|source label|empty>"`.
   The fiscal gloss no longer says "exact", so it does not prime copying source wording into the other kinds.
   The gap line records the rejected kind and value.
+  Ruled 2026-09-27: the value placeholder lists seven formats in the kind placeholder's order, `"value":"<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>"`.
+  Ruled 2026-09-27: the fiscal gloss drops `exact` and keeps the source reference.
 - Check, on attempt 9.
   Zero `invalid fact period` gaps on the first stocks; any that appear name the pair that was rejected.
 - Stamp: `portfolio-v49` (shape template and gloss text); none for the gap telemetry.
@@ -91,9 +96,13 @@ The comparison set is attempt 7's TSLA and PSX (`~/Downloads/market-signal-attem
   PSX's action trace: "Quality 8 vs Valuation 96 seems inconsistent if 0-100 … maybe a typo in input"; it then decides to trust the text.
   Computed quality was 7.7 on PSX and 10.0 on TSLA, with the model's own view at 6 and 28, so the doubt recurs wherever the score is low.
   Change proposed: the sub-score line states the scale and polarity once; separately, the quality score's construction is read across a fuller book before any calibration change (`grade-v2.3`).
+  Ruled 2026-09-27: no prompt change.
+  The action packet's SCORES section already states the 0 to 100 scale and every axis's polarity once (`pipeline.rs`, `scores_section`), and the PSX trace read that gloss and doubted the value, so the residual is the calibration read alone.
 - 5b. The supported-actions clause.
   "The rungs the computed read supports on its own" drew three markers on each stock; the trace tries to derive the set from capital efficiency instead of reading the list it is given.
   Change proposed: the clause names the list as given and says it is not derived.
+  Ruled 2026-09-27: the line reads `The rungs the computed read supports, listed in full: <set>. A rung not listed is outside that read.`
+  The PSX trace shows two confusions, that the list is the whole ladder and that a pick is missing, and the wording answers both.
 - Check, on attempt 9.
   No action trace questions the score scale or derives the supported set.
 - Stamp: `portfolio-v49` (shared).
@@ -102,11 +111,11 @@ The comparison set is attempt 7's TSLA and PSX (`~/Downloads/market-signal-attem
 
 The five findings are handled as two tasks, prompt content first and prompt order second, so the two never edit the synthesis prompt in opposite directions.
 Ruled 2026-09-20: the slices share one combined delivery stamp, `portfolio-v49`, while remaining separately planned and implemented tasks.
-Neither slice is planned yet; each takes its selector rulings at its own plan.
+Slice A was planned and implemented on 2026-09-27; Slice B is not planned yet and takes its selector rulings at its own plan.
 
 - Slice A — the synthesis contract and the action-packet glosses (Findings 1, 2, 5).
   The findings-first task sentence, the value-format hint in the shape template and the softened fiscal gloss (Findings 1, 2); the sub-score scale line and the supported-actions clause (Finding 5); and the two telemetry changes, the retry line and persisted cause carrying the full error chain with a head-and-tail body snippet, and the fact-period gap naming the rejected kind and value.
-  Findings 1, 2 and 5 are proposed and unruled, so this slice carries the selector rulings.
+  Findings 1, 2 and 5 took their selector rulings at this slice's plan on 2026-09-27; each ruling sits on its finding.
   It lands first because it changes what the synthesis prompt says.
   Stamp: `portfolio-v49`; none for the telemetry.
 - Slice B — latency (Findings 3, 4).
