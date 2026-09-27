@@ -34,13 +34,19 @@ A rejected fact period's gap names the kind and value that were rejected.
 The app validates period structure; semantic dating remains the model's responsibility.
 Unknown identifiers, URL strings supplied as identifiers, and identifiers for budget-omitted sources cannot become citations.
 Portfolio's synthesis message is one message in two parts on the frame every Portfolio prompt shares (`portfolio-v43`, ruled 2026-09-17).
-Part 1 carries the holding header with the analysis date, the topic's questions, on a follow-up pass the question it pursues, on the disconfirming pass the claims it tests, the searching note where gathering lost something, and the evidence.
+Since `portfolio-v49` (attempt-8 Finding 4, ruled 2026-09-27), Part 1 leads with the holding-constant text and ends with the topic's own: the holding header with the analysis date, then the evidence, then the topic's questions, on a follow-up pass the question it pursues, on the disconfirming pass the claims it tests, and the searching note where gathering lost something.
+The order serves the runtime's prompt cache: consecutive syntheses on one holding can then share their header and leading pages byte for byte, with the topic text after the evidence short enough to sit past the previous synthesis's saved checkpoint.
+A truncated or re-read page shortens that shared prefix, and the saving is an expectation of the runtime until a run's serve log confirms it.
 Each page's header states the tier (0 a primary source, 5 sentiment only), the publication date the search reported, the retrieval time, what the source is relied on for, the extraction quality and the stub flag, with the fields glossed once above the pages.
 Part 2 is the task in output order and the shape.
 It carries no prior findings, standing conditions, news leads or URL roster beyond the evidence, and no gathering-stage instruction: the write-up is of this pass's pages, and the distillation merges passes and priors.
 The distillation messages are the same frame (`portfolio-v44`, ruled 2026-09-17); their contract is canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation).
 Portfolio's initial gathering message is the same frame and renders once per pass, including its selected reuse block.
-Its Part 1 carries the holding header, the topic, on a follow-up pass the question it pursues and the claims so far, on the disconfirming pass the run's claims so far, on a continuity run the standing conditions and the prior findings, the news leads, and the tool results' fields glossed once.
+Since `portfolio-v49`, its Part 1 leads with the holding-constant text: the holding header, the news leads, on a continuity run the standing conditions, the tool results' fields glossed once, and the pages already retrieved.
+The topic's own text follows them: the topic, on a follow-up pass the question it pursues and the claims so far, on the disconfirming pass the run's claims so far, and on a continuity run the prior findings.
+Consecutive topic roots on one holding can then share their leading text through the reused pages, with the topic text after them short enough to sit past the previous root's saved checkpoint.
+On a continuity run the prior findings sit in that topic text and can carry it past the checkpoint distance, so the saving there depends on the seed's size.
+Either saving is an expectation of the runtime until a run's serve log confirms it.
 Its Part 2 states what to find, how to weigh a source (a lower tier number and a higher extraction quality preferred; a weak source lowers confidence, it does not exclude), the per-reply tool-call bound, and when to stop — a reply with no tool call.
 Since `portfolio-v46`, ordinary topic and follow-up gathering begins with a bounded selection of raw pages already retrieved while researching this holding, before another search is requested.
 The transient holding-scoped inventory retains capped page text together with the title, publication date, original retrieval timestamp, source annotation, requested/final URL lineage and truncation status; a successful document-cache read can populate it, but failed reads and empty bodies cannot supply reused evidence.
@@ -48,7 +54,10 @@ Selection follows first-retrieval order, rechecks current URL policy on the requ
 Unselected pages are counted in a plain omission note and persisted gap; shortened bodies carry the continuation marker and a gap, and the complete serialized gathering packet still passes the existing input guard before issue.
 No network attempt or extraction-telemetry sample is charged for this in-memory reuse.
 The inventory is discarded between holdings and is never persisted; an explicit successful re-fetch replaces a source's content and provenance together while preserving its requested aliases and first-retrieval position.
-Selected reused pages join the current pass's synthesis roster after explicitly requested pages, deduplicated by final URL, and pass through the same body admission, contiguous source-ID assignment and shown-source citation checks; original retrieval dates and seed lineage survive reuse.
+Since `portfolio-v49`, selected reused pages lead the current pass's synthesis roster in first-retrieval order, and the pass's explicitly requested pages follow in fetch order, deduplicated by final URL.
+An explicit re-read of a reused page keeps that page's position with the fresh read's provenance.
+Reused pages pass through the same body admission, contiguous source-ID assignment and shown-source citation checks, and original retrieval dates and seed lineage survive reuse.
+Explicitly requested pages keep first claim on the synthesis input budget (ruled 2026-09-27): under overflow a reused page's tail is cut before an explicit page loses text.
 Other topics' findings and transcripts are never supplied, and the disconfirming pass retains its dedicated contrary-search behavior without automatic page injection.
 Since `portfolio-v48`, before each gathering request the app appends a short user message stating the replies remaining in this pass, including the current reply (8 down to 1).
 The initial brief, selected reuse block and every previously issued message stay unchanged; each new countdown follows the initial brief or the completed tool-result batch.

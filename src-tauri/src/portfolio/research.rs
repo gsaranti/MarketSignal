@@ -1917,7 +1917,7 @@ struct PassContext<'a> {
     topic: &'a AgendaTopic,
     seed: Option<&'a TopicSeed>,
     seeds: &'a [ResearchSeed],
-    /// A follow-up pass's approved proposal (the pass brief leads with it).
+    /// A follow-up pass's approved proposal (rendered in the brief's topic block).
     followup: Option<&'a FollowupProposal>,
     /// Prior passes' claims for this topic — the ledger the pass reasons
     /// beside (append-only across passes).
@@ -2328,14 +2328,29 @@ impl ResearchRunner<'_> {
             }
         }
 
-        // Explicit requests have first claim on synthesis space. Reused pages
-        // enter the same admission planner, once per final URL, after them.
+        // The synthesis roster in render order (`portfolio-v49`, attempt-8
+        // Finding 4, ruled 2026-09-27): the reused pages first, in
+        // first-retrieval order — the order the brief showed them — then this
+        // pass's explicit fetches in fetch order, once per final URL. An
+        // explicit re-read of a reused page keeps the reused position with the
+        // fresh read's provenance. Explicit fetches keep first claim on
+        // synthesis space inside `synthesis_brief`.
+        let explicit: std::collections::HashSet<String> =
+            fetched.iter().map(|(url, _, _)| url.clone()).collect();
+        let mut roster: Vec<(String, String, Option<SourceAnnotation>)> = Vec::new();
         for source in reused {
             let key = source.key();
-            if !fetched.iter().any(|(url, _, _)| *url == key) {
-                fetched.push((key, source.page.retrieved_at, source.annotation));
+            match fetched.iter().find(|(url, _, _)| *url == key) {
+                Some(fresh) => roster.push(fresh.clone()),
+                None => roster.push((key, source.page.retrieved_at, source.annotation)),
             }
         }
+        for entry in fetched {
+            if !roster.iter().any(|(url, _, _)| *url == entry.0) {
+                roster.push(entry);
+            }
+        }
+        let fetched = roster;
 
         // ── Synthesis ──────────────────────────────────────────────────────
         // A fresh two-message conversation carrying only the gathered evidence
@@ -2390,6 +2405,7 @@ impl ResearchRunner<'_> {
         let (wire, shown) = self.synthesize_findings(
             ctx,
             &fetched,
+            &explicit,
             page_texts,
             page_meta,
             model_note.as_deref(),
@@ -2416,10 +2432,12 @@ impl ResearchRunner<'_> {
     /// bound, the tool loop used to carry. A persistent parse failure names the
     /// class and carries a snippet of the offending body, so a residual is
     /// diagnosable off the tracker.
+    #[allow(clippy::too_many_arguments)] // the roster and its first-claim set are one input split by kind (`portfolio-v49`)
     fn synthesize_findings(
         &self,
         ctx: &PassContext<'_>,
         fetched: &[(String, String, Option<SourceAnnotation>)],
+        explicit: &std::collections::HashSet<String>,
         page_texts: &std::collections::HashMap<String, String>,
         page_meta: &std::collections::HashMap<String, PageMeta>,
         degradation_note: Option<&str>,
@@ -2433,6 +2451,7 @@ impl ResearchRunner<'_> {
             ChatMessage::user(synthesis_brief(
                 ctx,
                 fetched,
+                explicit,
                 page_texts,
                 page_meta,
                 degradation_note,
@@ -3077,6 +3096,11 @@ figure that cannot be right is a defect of the source.";
 /// the cause).
 const PAGE_CONTINUES_MARKER: &str = "\n[the page continues beyond what is shown]";
 
+/// The one line a capped inputs block ends with (`portfolio-v43`): the fact,
+/// not the cause. Reserved inside the gathering brief's allowance so a cut
+/// never spends the space the questions need.
+const INPUTS_CONTINUE_MARKER: &str = "\n[the inputs continue beyond what is shown]\n";
+
 /// The app-computed source annotation as header fields, shared by the
 /// gathering page result and the synthesis source header: the tier, what the
 /// source is relied on for, the extraction quality and the stub flag. The
@@ -3194,18 +3218,32 @@ followup_rationale — why, or null.\n\n",
     out
 }
 
-/// The synthesis call's user message (`portfolio-v43`): one message in two
-/// parts. Part 1 is inputs only — the holding header, TOPIC, on a follow-up
-/// pass FOLLOW-UP, on the disconfirming pass CLAIMS SO FAR, SEARCHING where
-/// gathering lost something, and EVIDENCE: the retrieved pages with their
-/// headers, glossed once. Part 2 is the task in output order and the return
-/// shape. The evidence is sized against the model's input budget with the
-/// shared chars-per-token guard, Part 2 reserved first, and trimmed per-page
-/// only if it would overflow — the sanctioned lever, never raising `num_ctx`
-/// (BUILD §Standing constraints).
+/// The synthesis call's user message: one message in two parts. Part 1 is
+/// inputs only — since `portfolio-v49` (attempt-8 Finding 4, ruled
+/// 2026-09-27) in holding-constant-first order: the holding header, then
+/// EVIDENCE, the retrieved pages with their headers glossed once, in the
+/// order the gathering conversation showed them (the reused pages in
+/// first-retrieval order, then this pass's own fetches), then TOPIC, on a
+/// follow-up pass FOLLOW-UP, on the disconfirming pass CLAIMS SO FAR, and
+/// SEARCHING where gathering lost something. Part 2 is the task in output
+/// order and the return shape. The order serves the runtime's prefix cache:
+/// consecutive syntheses on one holding begin with the same header and the
+/// same leading pages, and the topic-variable tail after the evidence stays
+/// short, so the previous synthesis's saved checkpoint falls inside the
+/// shared text. The evidence is sized against the model's input budget with
+/// the shared chars-per-token guard, Part 2 and the topic block reserved
+/// first, and trimmed per-page only if it would overflow — the sanctioned
+/// lever, never raising `num_ctx` (BUILD §Standing constraints).
+#[allow(clippy::too_many_arguments)] // the roster and its first-claim set are one input split by kind (`portfolio-v49`)
 fn synthesis_brief(
     ctx: &PassContext<'_>,
+    // The roster in render order: the pass's reused pages in first-retrieval
+    // order, then its explicit fetches in fetch order (`run_pass`).
     fetched: &[(String, String, Option<SourceAnnotation>)],
+    // The URLs this pass fetched itself. They keep first claim on the input
+    // budget (ruled 2026-09-27): under overflow a reused page's tail is cut
+    // before a page the model chose for this topic loses a character.
+    explicit: &std::collections::HashSet<String>,
     page_texts: &std::collections::HashMap<String, String>,
     page_meta: &std::collections::HashMap<String, PageMeta>,
     // The gathering degradation (failed/empty searches, failed fetches,
@@ -3220,14 +3258,17 @@ fn synthesis_brief(
     // the synthesis never saw is rejected, not accepted (round-8).
     shown: &mut std::collections::HashMap<String, String>,
 ) -> String {
-    let mut out = synthesis_orientation(ctx);
+    let mut out = synthesis_lead(ctx);
+    // The topic block and the searching note close Part 1 after the evidence
+    // (`portfolio-v49`); both are reserved before the pages are sized.
+    let mut tail = synthesis_orientation(ctx);
     if let Some(note) = degradation_note {
         // State the coverage fact and stop: the findings author weighs what
         // partial coverage means for its own findings. Naming the loss informs
         // the model; prescribing the conclusion is not ours to do.
-        out.push_str("\nSEARCHING\n");
-        out.push_str(note);
-        out.push('\n');
+        tail.push_str("\nSEARCHING\n");
+        tail.push_str(note);
+        tail.push('\n');
     }
     let has_note = degradation_note.is_some();
     out.push_str("\nEVIDENCE\n");
@@ -3246,6 +3287,7 @@ fn synthesis_brief(
     // callers and tests only.
     if unique.is_empty() {
         out.push_str("No page was retrieved for this topic.\n");
+        out.push_str(&tail);
         out.push_str(&synthesis_task(ctx, has_note, &[]));
         return out;
     }
@@ -3279,6 +3321,7 @@ fn synthesis_brief(
     }
     if kept.is_empty() {
         out.push_str("The pages selected for this topic carried no usable text.\n");
+        out.push_str(&tail);
         out.push_str(&synthesis_task(ctx, has_note, &[]));
         return out;
     }
@@ -3330,6 +3373,7 @@ fn synthesis_brief(
     let all_ids: Vec<String> = (1..=kept.len()).map(|i| format!("S{i}")).collect();
     let task_reserve = synthesis_task(ctx, has_note, &all_ids).chars().count();
     let finish = |out: &mut String, shown: &std::collections::HashMap<String, String>| {
+        out.push_str(&tail);
         let mut ids: Vec<String> = shown.values().cloned().collect();
         ids.sort_by_key(|id| id[1..].parse::<usize>().unwrap_or(0));
         out.push_str(&synthesis_task(ctx, has_note, &ids));
@@ -3341,7 +3385,7 @@ fn synthesis_brief(
     // surviving bodies are water-filled, avoiding an all-header/no-evidence
     // collapse under a large cache-hit burst.
     const DROP_SUMMARY_RESERVE: usize = 200;
-    let prefix_len = out.chars().count() + task_reserve;
+    let prefix_len = out.chars().count() + tail.chars().count() + task_reserve;
     let marker_len = PAGE_CONTINUES_MARKER.chars().count();
     let texts: Vec<&str> = kept.iter().map(|(url, _, _)| text_of(url)).collect();
     let lengths: Vec<usize> = texts.iter().map(|text| text.chars().count()).collect();
@@ -3386,23 +3430,32 @@ fn synthesis_brief(
     let all_minimum_total = (0..kept.len()).fold(prefix_len, |total, index| {
         total.saturating_add(rendered_cost(index, minimum_body_cost(lengths[index])))
     });
+    // Admission order (ruled 2026-09-27): this pass's explicit fetches first,
+    // then the reused pages, each group in render order — the render order
+    // stays the roster's, so the leading pages read the same on every pass.
+    let first_claim: Vec<bool> =
+        kept.iter().map(|(url, _, _)| explicit.contains(url)).collect();
     let selected: Vec<usize> = if all_minimum_total <= budget {
         (0..kept.len()).collect()
     } else {
         // Reserve the factual omission summary first, then keep a deterministic
-        // in-order subset. Continue after an oversized source so a later compact
-        // source can still contribute evidence.
+        // subset in admission order. Continue after an oversized source so a
+        // later compact source can still contribute evidence.
         let mut room = budget
             .saturating_sub(prefix_len)
             .saturating_sub(DROP_SUMMARY_RESERVE);
         let mut selected = Vec::new();
-        for (index, &length) in lengths.iter().enumerate() {
-            let cost = rendered_cost(index, minimum_body_cost(length));
+        let admission = (0..kept.len())
+            .filter(|&index| first_claim[index])
+            .chain((0..kept.len()).filter(|&index| !first_claim[index]));
+        for index in admission {
+            let cost = rendered_cost(index, minimum_body_cost(lengths[index]));
             if cost <= room {
                 room -= cost;
                 selected.push(index);
             }
         }
+        selected.sort_unstable();
         selected
     };
 
@@ -3413,23 +3466,52 @@ fn synthesis_brief(
             ctx.topic.key
         ));
         out.push_str("The pages selected for this topic are too long to show.\n");
+        out.push_str(&tail);
         out.push_str(&synthesis_task(ctx, has_note, &[]));
         return out;
     }
 
-    let selected_lengths: Vec<usize> = selected.iter().map(|&i| lengths[i]).collect();
     let fixed = selected.iter().fold(prefix_len, |total, &index| {
         total.saturating_add(rendered_cost(index, 0))
     });
     let available = budget
         .saturating_sub(fixed)
         .saturating_sub(if omitted > 0 { DROP_SUMMARY_RESERVE } else { 0 });
-    let plans = plan_evidence(&selected_lengths, available, marker_len);
-    debug_assert!(plans.iter().all(|plan| !plan.dropped));
+    // Two tiers share `available` (ruled 2026-09-27): the explicit pages plan
+    // first against everything the reused pages' minimum bodies leave, and the
+    // reused pages take what the explicit plans did not use — a cut lands on a
+    // reused tail before an explicit page loses a character, while every
+    // selected page keeps at least its minimum body (the selection's
+    // invariant). One tier alone is the plain water-fill.
+    let plan_cost = |plan: PagePlan| plan.text + if plan.marker { marker_len } else { 0 };
+    let (tier_a, tier_b): (Vec<usize>, Vec<usize>) =
+        selected.iter().copied().partition(|&index| first_claim[index]);
+    let mut plan_of: Vec<Option<PagePlan>> = vec![None; kept.len()];
+    let mut assign = |indices: &[usize], room: usize| -> usize {
+        let lengths_of: Vec<usize> = indices.iter().map(|&index| lengths[index]).collect();
+        let plans = plan_evidence(&lengths_of, room, marker_len);
+        let used = plans.iter().map(|plan| plan_cost(*plan)).sum::<usize>();
+        for (plan, &index) in plans.into_iter().zip(indices) {
+            plan_of[index] = Some(plan);
+        }
+        used
+    };
+    if tier_a.is_empty() || tier_b.is_empty() {
+        assign(&selected, available);
+    } else {
+        let minimum_b: usize =
+            tier_b.iter().map(|&index| minimum_body_cost(lengths[index])).sum();
+        let used_a = assign(&tier_a, available.saturating_sub(minimum_b));
+        assign(&tier_b, available.saturating_sub(used_a));
+    }
+    debug_assert!(selected
+        .iter()
+        .all(|&index| plan_of[index].is_some_and(|plan| !plan.dropped)));
     let mut truncated = 0usize;
     let mut defensive_dropped = 0usize;
-    for (plan_index, &source_index) in selected.iter().enumerate() {
-        let plan = plans[plan_index];
+    for &source_index in &selected {
+        let plan = plan_of[source_index]
+            .unwrap_or(PagePlan { text: 0, marker: false, dropped: true });
         // Selection guarantees a usable body allocation today, but retain the
         // allow-set boundary in release builds too: if later allocator changes
         // violate that invariant, omit the source before its URL becomes citable.
@@ -3611,16 +3693,24 @@ fn synthesis_header(header: &str, id: &str) -> String {
     format!("\n=== {id}{header}")
 }
 
-/// Part 1 of the synthesis message up to the evidence (`portfolio-v43`): the
-/// holding header, TOPIC, on a follow-up pass FOLLOW-UP, and on the
-/// disconfirming pass CLAIMS SO FAR — this pass's own frame and nothing the
-/// write-up does not need: no prior findings, standing conditions or news
-/// leads (ruled 2026-09-17; the distillation merges passes and priors), no
-/// URL roster beyond the evidence, and no instruction.
-fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
+/// Part 1's opening (`portfolio-v49`): the holding header alone — the bytes
+/// every synthesis on the holding shares, so consecutive syntheses begin
+/// alike and the evidence that follows can extend a saved prefix.
+fn synthesis_lead(ctx: &PassContext<'_>) -> String {
     let mut out = String::from("======== PART 1: INPUTS ========\n");
     out.push_str(ctx.holding_brief);
-    out.push_str(&topic_section(ctx.topic));
+    out
+}
+
+/// The topic-variable block of Part 1, rendered after the evidence since
+/// `portfolio-v49` (attempt-8 Finding 4, ruled 2026-09-27): TOPIC, on a
+/// follow-up pass FOLLOW-UP, and on the disconfirming pass CLAIMS SO FAR —
+/// this pass's own frame and nothing the write-up does not need: no prior
+/// findings, standing conditions or news leads (ruled 2026-09-17; the
+/// distillation merges passes and priors), no URL roster beyond the
+/// evidence, and no instruction. Capped so the task always renders whole.
+fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
+    let mut out = topic_section(ctx.topic);
     if let Some(followup) = ctx.followup {
         out.push_str(&followup_section(followup));
     }
@@ -3647,16 +3737,22 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
     out
 }
 
-/// The gathering call's user message (`portfolio-v43`): one message in two
-/// parts. Part 1 is inputs only — the holding header, TOPIC, on a follow-up
-/// pass FOLLOW-UP and CLAIMS SO FAR, on the disconfirming pass CLAIMS SO FAR,
-/// on a continuity run STANDING CONDITIONS and PRIOR FINDINGS, NEWS LEADS,
-/// and the TOOL RESULTS gloss — each explained once and then its values, no
-/// instruction in it. Part 2 is the task: what to find, how to weigh a
-/// source, the per-reply bound and when to stop. The inputs are bounded (the
-/// claims block by count and chars, the seed by its budget) and the whole of
-/// Part 1 is capped so the task always renders whole under the input guard
-/// (Finding 1).
+/// The gathering call's user message: one message in two parts. Part 1 is
+/// inputs only — since `portfolio-v49` (attempt-8 Finding 4, ruled
+/// 2026-09-27) in holding-constant-first order: the holding header, NEWS
+/// LEADS, on a continuity run STANDING CONDITIONS, the TOOL RESULTS gloss,
+/// then the PAGES ALREADY RETRIEVED block, and only then the topic's own
+/// text — TOPIC, on a follow-up pass FOLLOW-UP and CLAIMS SO FAR, on the
+/// disconfirming pass CLAIMS SO FAR, on a continuity run PRIOR FINDINGS —
+/// each explained once and then its values, no instruction in it. Part 2 is
+/// the task: what to find, how to weigh a source, the per-reply bound and
+/// when to stop. The order serves the runtime's prefix cache: consecutive
+/// topic roots share their leading text through the reused pages, and the
+/// topic-variable tail that follows stays short, so the previous root's
+/// saved checkpoint falls inside the shared text. The inputs are bounded
+/// (the claims block by count and chars, the seed by its budget) and each
+/// block is capped so the task always renders whole (Finding 1); TOPIC
+/// leads the capped topic block, so the questions survive any cut.
 fn pass_brief(ctx: &PassContext<'_>) -> String {
     pass_brief_with_reuse(ctx, "")
 }
@@ -3665,22 +3761,64 @@ fn gathering_countdown(remaining: u32) -> ChatMessage {
     ChatMessage::user(format!("SEARCHING\nReplies remaining, including this one: {remaining}.\n"))
 }
 
-fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str) -> String {
-    let mut inputs = String::from("======== PART 1: INPUTS ========\n");
-    inputs.push_str(ctx.holding_brief);
-    inputs.push_str(&topic_section(ctx.topic));
+/// The holding-constant opening of Part 1: the header, NEWS LEADS, STANDING
+/// CONDITIONS and the TOOL RESULTS gloss — the same bytes on every pass of
+/// the holding, so a fresh root's prompt begins where the previous root's did.
+fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
+    let mut out = String::from("======== PART 1: INPUTS ========\n");
+    out.push_str(ctx.holding_brief);
+    if !ctx.seeds.is_empty() {
+        out.push_str(
+            "\nNEWS LEADS\nRecent headlines about the holding, each with its source and date. A \
+             headline is a lead, not evidence.\n",
+        );
+        for s in ctx.seeds {
+            out.push_str(&format!(
+                "- {} — {} ({}{})\n",
+                s.headline,
+                s.url,
+                s.source,
+                s.published
+                    .as_deref()
+                    .map(|p| format!(", {p}"))
+                    .unwrap_or_default()
+            ));
+        }
+    }
+    if let Some(seed) = ctx.seed {
+        if !seed.conditions.is_empty() {
+            out.push_str(
+                "\nSTANDING CONDITIONS\nConditions the thesis on this holding is being watched \
+                 against.\n",
+            );
+            for c in &seed.conditions {
+                out.push_str(&format!("- {c}\n"));
+            }
+        }
+    }
+    out.push_str("\nTOOL RESULTS\n");
+    out.push_str(TOOL_RESULTS_GLOSS);
+    out.push('\n');
+    out
+}
+
+/// The topic-variable block of Part 1: TOPIC, FOLLOW-UP, CLAIMS SO FAR and
+/// PRIOR FINDINGS — what changes from pass to pass, rendered after the reused
+/// pages.
+fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
+    let mut out = topic_section(ctx.topic);
     if let Some(f) = ctx.followup {
-        inputs.push_str(&followup_section(f));
+        out.push_str(&followup_section(f));
     }
     if ctx.disconfirming || !ctx.prior_claims.is_empty() {
-        inputs.push_str("\nCLAIMS SO FAR\n");
-        inputs.push_str(if ctx.disconfirming {
+        out.push_str("\nCLAIMS SO FAR\n");
+        out.push_str(if ctx.disconfirming {
             "What this run's research established on the holding, each with its source.\n"
         } else {
             "What this topic's earlier searching established, each with its source.\n"
         });
         if ctx.prior_claims.is_empty() {
-            inputs.push_str("None.\n");
+            out.push_str("None.\n");
         }
         // The ledger is accumulated model output (up to all claims from every
         // prior pass on the disconfirming pass), each claim string unbounded.
@@ -3695,76 +3833,67 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str) -> String {
                 break;
             }
             block += line.chars().count();
-            inputs.push_str(&line);
+            out.push_str(&line);
             shown += 1;
         }
         let omitted = ctx.prior_claims.len() - shown;
         if omitted > 0 {
-            inputs.push_str(&format!("(+{omitted} more claims not shown)\n"));
+            out.push_str(&format!("(+{omitted} more claims not shown)\n"));
         }
     }
     if let Some(seed) = ctx.seed {
-        if !seed.conditions.is_empty() {
-            inputs.push_str(
-                "\nSTANDING CONDITIONS\nConditions the thesis on this holding is being watched \
-                 against.\n",
-            );
-            for c in &seed.conditions {
-                inputs.push_str(&format!("- {c}\n"));
-            }
-        }
         if !seed.findings.is_empty() {
-            inputs.push_str(
+            out.push_str(
                 "\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic, each with \
                  its date and source.\n",
             );
             for f in &seed.findings {
-                inputs.push_str(&format!("- {f}\n"));
+                out.push_str(&format!("- {f}\n"));
             }
         }
     }
-    if !ctx.seeds.is_empty() {
-        inputs.push_str(
-            "\nNEWS LEADS\nRecent headlines about the holding, each with its source and date. A \
-             headline is a lead, not evidence.\n",
-        );
-        for s in ctx.seeds {
-            inputs.push_str(&format!(
-                "- {} — {} ({}{})\n",
-                s.headline,
-                s.url,
-                s.source,
-                s.published
-                    .as_deref()
-                    .map(|p| format!(", {p}"))
-                    .unwrap_or_default()
-            ));
-        }
-    }
-    inputs.push_str("\nTOOL RESULTS\n");
-    inputs.push_str(TOOL_RESULTS_GLOSS);
-    inputs.push('\n');
+    out
+}
 
+fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str) -> String {
     let task = gathering_task(ctx);
     // Hard backstop: bound the inputs so neither the gathering request (whose
     // user message IS this brief) nor its growth across turns can exceed the
     // input guard before evidence is even sized (Finding 1); the task is
-    // appended after the cap so it always renders whole. The head-cap preserves
-    // the framing that leads the inputs (holding, topic, questions); the
-    // trailing blocks truncate first.
+    // appended after the caps so it always renders whole. The reuse block was
+    // sized by `reuse_pages` against this pass's own brief, so it fits between
+    // the two capped blocks; the constant block's cap reserves the TOPIC
+    // section beside the task and countdown, and TOPIC leads the head-capped
+    // topic block, so the questions render whole under any cut.
     let prefix_cap = crate::portfolio::distill::input_budget_chars(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
     ) / 3;
     // Reserve the first appended countdown inside the initial allowance.
     // Later countdowns, like every other message, count in the full wire guard.
     let countdown_chars = gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count();
-    let inputs_cap = prefix_cap.saturating_sub(task.chars().count() + countdown_chars
-        + reuse.chars().count());
-    let (mut out, cut) = crate::data_sources::cap_chars(&inputs, inputs_cap);
-    if cut {
-        out.push_str("\n[the inputs continue beyond what is shown]\n");
+    let allowance = prefix_cap.saturating_sub(task.chars().count() + countdown_chars);
+    // Each cap reserves its own marker, so a cut block plus its marker still
+    // fits the allowance, and the constant block's cap also reserves the reuse
+    // block as rendered — in an overflow that is its heading and omission line
+    // — so the TOPIC reservation is never spent on a marker or on framing
+    // (Codex, Slice B review).
+    let marker = INPUTS_CONTINUE_MARKER.chars().count();
+    let topic_reserve = topic_section(ctx.topic).chars().count();
+    let (mut out, constant_cut) = crate::data_sources::cap_chars(
+        &gathering_constant_block(ctx),
+        allowance.saturating_sub(topic_reserve + 2 * marker + reuse.chars().count()),
+    );
+    if constant_cut {
+        out.push_str(INPUTS_CONTINUE_MARKER);
     }
     out.push_str(reuse);
+    let topic_cap = allowance.saturating_sub(out.chars().count() + marker);
+    let (topic_block, topic_cut) =
+        crate::data_sources::cap_chars(&gathering_topic_block(ctx), topic_cap);
+    out.push_str(&topic_block);
+    if topic_cut {
+        out.push_str(INPUTS_CONTINUE_MARKER);
+    }
     out.push_str(&task);
     out
 }
@@ -5135,7 +5264,7 @@ mod tests {
             .collect();
             let mut gaps = vec![];
             let (wire, _) = runner
-                .synthesize_findings(&ctx, &fetched, &pages, &meta, None, &mut gaps)
+                .synthesize_findings(&ctx, &fetched, &Default::default(), &pages, &meta, None, &mut gaps)
                 .unwrap();
             let found = runner.validate_findings(
                 wire,
@@ -5961,7 +6090,7 @@ mod tests {
     }
 
     #[test]
-    fn entry5_explicit_refetch_replaces_the_snapshot_and_precedes_reused_sources() {
+    fn entry5_explicit_refetch_replaces_the_snapshot_in_its_first_retrieval_position() {
         struct VersionedWeb {
             reads: Mutex<usize>,
         }
@@ -5993,6 +6122,11 @@ mod tests {
                 )))
             }
         }
+        // `portfolio-v49`: the re-read page keeps its first-retrieval position
+        // (second, after the page read first in topic a), so topic b's claim
+        // cites S2.
+        let mut refetch = simple_findings();
+        refetch["claims"][0]["source_id"] = json!("S2");
         let model = Entry5RecordingModel {
             inner: ScriptModel::new(vec![
                 turn_with_tools(json!([
@@ -6005,7 +6139,7 @@ mod tests {
                     json!([{"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/final"}}}]),
                 ),
                 gather_done(),
-                findings_turn(simple_findings()),
+                findings_turn(refetch),
                 gather_done(),
             ]),
             calls: Mutex::new(Vec::new()),
@@ -6039,8 +6173,12 @@ mod tests {
         assert_eq!(out.page_published[&claim.source_url], "2026-08-20");
         let calls = model.calls.lock().unwrap();
         let synthesis = &calls[5].1[1].content;
-        assert!(synthesis.contains("=== S1: https://reuters.com/final"));
-        assert!(synthesis.contains("=== S2: https://reuters.com/other"));
+        // The roster renders in first-retrieval order (`portfolio-v49`): the
+        // page read first in topic a leads, and the re-read page keeps its
+        // position with the fresh read's provenance.
+        assert!(synthesis.contains("=== S1: https://reuters.com/other"));
+        assert!(synthesis.contains("=== S2: https://reuters.com/final"));
+        assert!(synthesis.find("=== S1:").unwrap() < synthesis.find("=== S2:").unwrap());
         assert_eq!(synthesis.matches("=== S1:").count(), 1);
         assert!(!synthesis.contains("Original version"));
         assert!(synthesis.contains("Revised version") && synthesis.contains("10:00:03+00:00"));
@@ -6250,6 +6388,314 @@ mod tests {
         ));
     }
 
+    /// The bound the runtime's saved checkpoint needs: llama.cpp's server saves
+    /// a prompt's checkpoint 1,024 tokens before its end (its default
+    /// micro-batch; the app sets nothing), so the topic-variable text after the
+    /// shared prefix must stay under that — ≈3,000 chars at the shared
+    /// 3-chars-per-token estimate, pinned with margin (attempt-8 Finding 4).
+    const RESTORE_TAIL_CHARS: usize = 2_800;
+
+    #[test]
+    fn slice_b_consecutive_roots_and_syntheses_share_their_leading_text() {
+        // Attempt-8 Finding 4 (`portfolio-v49`, ruled 2026-09-27): every fresh
+        // conversation leads with the holding-constant text, so a topic root's
+        // brief begins with the previous root's brief through its reused pages,
+        // and a synthesis begins with the previous synthesis through its
+        // evidence; source ids follow first-retrieval order; and the tail after
+        // the shared text stays under the restore bound.
+        struct PerUrlWeb;
+        impl ResearchWeb for PerUrlWeb {
+            fn search(&self, _: &str) -> Result<Vec<SearchHit>> {
+                panic!("no search expected")
+            }
+            fn fetch(&self, url: &str, _: bool) -> FetchAttempt {
+                let n = url.rsplit('/').next().unwrap().to_string();
+                FetchAttempt::scripted(Ok((
+                    FetchedPage {
+                        final_url: url.into(),
+                        host: "example.com".into(),
+                        title: format!("Page {n}"),
+                        text: format!("Body of page {n}. ").repeat(40),
+                        extraction_quality: 0.9,
+                        thin_stub: false,
+                        retrieved_at: format!("2026-08-22T10:00:0{n}+00:00"),
+                    },
+                    false,
+                )))
+            }
+        }
+        let mut script = Vec::new();
+        for n in 1..=3 {
+            script.push(turn_with_tools(json!([
+                {"function": {"name": "web_fetch", "arguments": {"url": format!("https://example.com/{n}")}}}
+            ])));
+            script.push(gather_done());
+            script.push(findings_turn(simple_findings()));
+        }
+        script.push(gather_done()); // the disconfirming pass fetches nothing
+        let model = Entry5RecordingModel {
+            inner: ScriptModel::new(script),
+            calls: Mutex::new(Vec::new()),
+        };
+        let web = PerUrlWeb;
+        let clock = FrozenClock(Duration::from_secs(10));
+        let progress = RunContext::noop();
+        let r = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 10,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &progress,
+            step_label: "research TEST".into(),
+        };
+        let agenda = vec![
+            topic("a", "Alpha", &["qa"]),
+            topic("b", "Beta", &["qb"]),
+            topic("c", "Gamma", &["qc"]),
+        ];
+        let out = r
+            .run_holding(
+                "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n",
+                &agenda,
+                &seeds(),
+                &|_| None,
+            )
+            .unwrap();
+        assert_eq!(out.fetches_spent, 3);
+        let calls = model.calls.lock().unwrap();
+        let user = |stage_part: &str| -> String {
+            calls
+                .iter()
+                .find(|(stage, _, _)| stage.contains(stage_part))
+                .map(|(_, messages, _)| messages[1].content.clone())
+                .unwrap_or_else(|| panic!("no call for {stage_part}"))
+        };
+        let topic_at = |message: &str| message.find("\nTOPIC\n").expect("TOPIC");
+
+        // Roots: the constant text plus the reused pages is a byte prefix of
+        // the next root's brief; the topic text follows.
+        let (root_b, root_c) = (user(" b gathering turn 1"), user(" c gathering turn 1"));
+        let shared = &root_b[..topic_at(&root_b)];
+        assert!(
+            shared.contains("\nNEWS LEADS\n")
+                && shared.contains("\nTOOL RESULTS\n")
+                && shared.contains("\nPAGES ALREADY RETRIEVED\n")
+                && shared.contains("https://example.com/1"),
+            "{shared}"
+        );
+        assert!(root_c.starts_with(shared), "root c does not extend root b:\n{root_c}");
+        assert!(root_c.contains("https://example.com/2") && root_c.contains("\nTOPIC\nGamma\n"));
+        let tail = root_b[topic_at(&root_b)..].chars().count()
+            + gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count();
+        assert!(tail <= RESTORE_TAIL_CHARS, "gathering tail {tail} chars");
+
+        // Syntheses: the header plus the previous synthesis's whole evidence is
+        // a byte prefix of the next synthesis; ids follow first-retrieval
+        // order; EVIDENCE precedes TOPIC.
+        let (synth_b, synth_c) = (user(" b synthesis"), user(" c synthesis"));
+        let shared = &synth_b[..topic_at(&synth_b)];
+        assert!(
+            shared.contains("=== S1: https://example.com/1")
+                && shared.contains("=== S2: https://example.com/2"),
+            "{shared}"
+        );
+        assert!(synth_c.starts_with(shared), "synthesis c does not extend synthesis b:\n{synth_c}");
+        assert!(synth_c.contains("=== S3: https://example.com/3"));
+        assert!(synth_c.find("\nEVIDENCE\n").unwrap() < topic_at(&synth_c));
+        let tail = synth_b[topic_at(&synth_b)..].chars().count();
+        assert!(tail <= RESTORE_TAIL_CHARS, "synthesis tail {tail} chars");
+    }
+
+    #[test]
+    fn synthesis_brief_keeps_explicit_pages_whole_before_reused_tails() {
+        // Ruled 2026-09-27 (`portfolio-v49`): the roster renders reused pages
+        // first, but this pass's own fetches keep first claim on the input
+        // budget — under overflow the reused tails are cut and the explicit
+        // pages render whole, in render order, within the guard.
+        let budget = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        );
+        let mut fetched = Vec::new();
+        let mut page_texts = std::collections::HashMap::new();
+        for i in 0..25 {
+            let url = format!("https://example.com/reused/{i}");
+            fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
+            page_texts.insert(url, format!("R{i:02}-").repeat(2_200)); // 11,000 chars each
+        }
+        let own = ["https://example.com/own/a", "https://example.com/own/b"];
+        let explicit: std::collections::HashSet<String> =
+            own.iter().map(|url| url.to_string()).collect();
+        for url in own {
+            fetched.push((url.to_string(), "2026-08-22T10:00:00+00:00".to_string(), None));
+            let letter = url.rsplit('/').next().unwrap().to_uppercase();
+            page_texts.insert(url.to_string(), letter.repeat(11_000));
+        }
+        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &t,
+            seed: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false
+        };
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashMap::new();
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &explicit,
+            &page_texts,
+            &std::collections::HashMap::new(),
+            None,
+            &mut gaps,
+            &mut shown,
+        );
+        assert!(brief.chars().count() <= budget);
+        assert_eq!(shown.len(), 27);
+        assert_eq!(shown["https://example.com/own/a"], "S26");
+        assert_eq!(shown["https://example.com/own/b"], "S27");
+        assert!(
+            brief.contains(&"A".repeat(11_000)) && brief.contains(&"B".repeat(11_000)),
+            "an explicit page was cut"
+        );
+        assert_eq!(brief.matches(PAGE_CONTINUES_MARKER).count(), 25);
+        assert!(
+            gaps.iter().any(|g| g.contains("25 of 27 evidence page(s) truncated")),
+            "{gaps:?}"
+        );
+        assert!(
+            brief.find("=== S1: https://example.com/reused/0").unwrap()
+                < brief.find("=== S26: https://example.com/own/a").unwrap()
+        );
+    }
+
+    #[test]
+    fn slice_b_topic_renders_whole_when_the_constant_block_overflows() {
+        // Codex (Slice B review): with the truncation markers reserved inside
+        // the allowance, an oversized holding-constant block is cut and marked
+        // while the TOPIC section renders whole and the brief plus its first
+        // countdown stays within the initial allowance.
+        let agenda = one_topic_agenda();
+        let prefix_cap = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        ) / 3;
+        let flood = vec![ResearchSeed {
+            id: "seed-flood".into(),
+            headline: "h".repeat(prefix_cap),
+            url: "https://example.com/flood".into(),
+            source: "example.com".into(),
+            published: None,
+        }];
+        let ctx = PassContext {
+            holding_brief: "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n",
+            topic: &agenda[0],
+            seed: None,
+            seeds: &flood,
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false
+        };
+        let countdown = gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count();
+        let brief = pass_brief(&ctx);
+        assert!(brief.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &brief[brief.len() - 600..]);
+        assert_eq!(brief.matches(INPUTS_CONTINUE_MARKER.trim()).count(), 1);
+        assert!(brief.find(INPUTS_CONTINUE_MARKER).unwrap() < brief.find("\nTOPIC\n").unwrap());
+        assert!(brief.chars().count() + countdown <= prefix_cap);
+        assert!(brief.ends_with(&gathering_task(&ctx)));
+        // The production path on a later topic: the inventory is not empty, no
+        // page fits, and the reuse block is its heading and omission line —
+        // framing the constant block's cap reserves, so TOPIC still renders
+        // whole within the allowance (Codex, Slice B review, round 2).
+        let inventory = vec![ReusablePage {
+            page: FetchedPage {
+                final_url: "https://reuters.com/a".into(),
+                host: "reuters.com".into(),
+                title: "A".into(),
+                text: "Body of page A.".into(),
+                extraction_quality: 0.9,
+                thin_stub: false,
+                retrieved_at: "2026-08-22T10:00:00+00:00".into(),
+            },
+            requested_urls: vec!["https://reuters.com/a".into()],
+            published: None,
+            annotation: None,
+            truncated: false,
+        }];
+        let mut gaps = Vec::new();
+        let (block, selected) = reuse_pages(&ctx, &inventory, &mut gaps);
+        assert!(selected.is_empty() && block.contains("1 previously retrieved page(s) are not shown."), "{block}");
+        let brief = pass_brief_with_reuse(&ctx, &block);
+        assert!(brief.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &brief[brief.len() - 600..]);
+        assert!(brief.contains("\nPAGES ALREADY RETRIEVED\n"));
+        assert_eq!(brief.matches(INPUTS_CONTINUE_MARKER.trim()).count(), 1);
+        assert!(brief.chars().count() + countdown <= prefix_cap);
+        assert!(brief.ends_with(&gathering_task(&ctx)));
+    }
+
+    #[test]
+    fn synthesis_brief_admits_explicit_pages_before_reused_ones_when_pages_must_be_dropped() {
+        // Ruled 2026-09-27 (`portfolio-v49`): when even minimum bodies cannot
+        // all fit, admission runs explicit-first — this pass's own fetches land
+        // although they sit last in render order, and reused pages are the ones
+        // omitted; the brief stays within the guard.
+        let budget = crate::portfolio::distill::input_budget_chars(
+            crate::portfolio::pipeline::NUM_CTX_INTERPRET,
+        );
+        let mut fetched = Vec::new();
+        let mut page_texts = std::collections::HashMap::new();
+        let mut page_titles = std::collections::HashMap::new();
+        for i in 0..2000 {
+            let url = format!("https://example.com/reused/{i}");
+            fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
+            page_texts.insert(url.clone(), "b".to_string());
+            page_titles.insert(url, PageMeta { title: "T".repeat(5000), published: None });
+        }
+        let own = ["https://example.com/own/a", "https://example.com/own/b"];
+        let explicit: std::collections::HashSet<String> =
+            own.iter().map(|url| url.to_string()).collect();
+        for url in own {
+            fetched.push((url.to_string(), "2026-08-22T10:00:00+00:00".to_string(), None));
+            page_texts.insert(url.to_string(), "the page this topic asked for".to_string());
+        }
+        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let ctx = PassContext {
+            holding_brief: "HOLDING: WID",
+            topic: &t,
+            seed: None,
+            seeds: &[],
+            followup: None,
+            prior_claims: &[],
+            disconfirming: false
+        };
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashMap::new();
+        let brief = synthesis_brief(
+            &ctx,
+            &fetched,
+            &explicit,
+            &page_texts,
+            &page_titles,
+            None,
+            &mut gaps,
+            &mut shown,
+        );
+        assert!(brief.chars().count() <= budget);
+        assert!(shown.len() < 2002, "{}", shown.len());
+        assert!(shown.contains_key(own[0]) && shown.contains_key(own[1]), "{shown:?}");
+        assert!(gaps.iter().any(|g| g.contains("omitted entirely")), "{gaps:?}");
+        // Render order is still the roster's: the explicit pages take the last
+        // two ids, after every admitted reused page.
+        let last = shown.len();
+        assert_eq!(shown[own[0]], format!("S{}", last - 1));
+        assert_eq!(shown[own[1]], format!("S{last}"));
+        assert!(brief.contains("the page this topic asked for"));
+    }
+
     #[test]
     fn the_return_shape_carries_exactly_the_grammar_keys_on_both_passes() {
         // Attempt-5 Finding 5: the `format` grammar never reaches the model, so
@@ -6347,6 +6793,7 @@ mod tests {
         let user = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &pages,
             &meta,
             Some("Searching for this topic was incomplete: 1 search returned nothing."),
@@ -6358,6 +6805,13 @@ mod tests {
         for section in ["\nTOPIC\n", "\nSEARCHING\n", "\nEVIDENCE\n"] {
             assert!(part1.contains(section), "Part 1 lacks {section}: {part1}");
         }
+        // `portfolio-v49` (attempt-8 Finding 4): the evidence follows the header
+        // and precedes the topic's text; the searching note closes Part 1.
+        let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{section}"));
+        assert!(
+            at("\nEVIDENCE\n") < at("\nTOPIC\n") && at("\nTOPIC\n") < at("\nSEARCHING\n"),
+            "{part1}"
+        );
         assert!(
             part1.contains(
                 "=== S1: https://reuters.com/widget (published 2026-08-20 | retrieved \
@@ -6419,7 +6873,7 @@ mod tests {
         let pages = [("a".into(), "first".into()), ("empty".into(), String::new()),
             ("b".into(), "second".into())].into();
         let mut ids = std::collections::HashMap::new();
-        let brief = synthesis_brief(&ctx, &fetched, &pages, &Default::default(), None, &mut vec![], &mut ids);
+        let brief = synthesis_brief(&ctx, &fetched, &Default::default(), &pages, &Default::default(), None, &mut vec![], &mut ids);
         assert_eq!(ids.len(), 2);
         assert_eq!(ids["a"], "S1");
         assert_eq!(ids["b"], "S2");
@@ -6479,7 +6933,7 @@ mod tests {
         };
         let mut shown = std::collections::HashMap::new();
         let mut gaps = vec![];
-        let brief = synthesis_brief(&ctx, &fetched, &pages, &Default::default(), None, &mut gaps, &mut shown);
+        let brief = synthesis_brief(&ctx, &fetched, &Default::default(), &pages, &Default::default(), None, &mut gaps, &mut shown);
         assert!(brief.chars().count() <= budget);
         assert_eq!(shown.len(), 11);
         assert!(!shown.contains_key(&oversized));
@@ -6512,7 +6966,7 @@ mod tests {
         let progress = RunContext::noop();
         let runner = runner(&model, &web, &clock, &progress, 10);
         let (wire, resolved) = runner.synthesize_findings(
-            &ctx, &fetched, &pages, &Default::default(), None, &mut gaps,
+            &ctx, &fetched, &Default::default(), &pages, &Default::default(), None, &mut gaps,
         ).unwrap();
         assert_eq!(resolved, shown);
         let allowed: Vec<_> = fetched.into_iter().filter(|(url, _, _)| resolved.contains_key(url)).collect();
@@ -7118,6 +7572,7 @@ mod tests {
         let _ = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &std::collections::HashMap::new(),
             None,
@@ -7171,6 +7626,7 @@ mod tests {
         let brief = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &page_titles,
             None,
@@ -7221,6 +7677,7 @@ mod tests {
         let brief = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &std::collections::HashMap::new(),
             None,
@@ -7266,6 +7723,7 @@ mod tests {
         let brief = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &std::collections::HashMap::new(),
             None,
@@ -7319,6 +7777,7 @@ mod tests {
         let brief = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &std::collections::HashMap::new(),
             None,
@@ -7382,6 +7841,7 @@ mod tests {
         let brief = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &page_titles,
             None,
@@ -7446,6 +7906,7 @@ mod tests {
         let brief = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &page_titles,
             None,
@@ -7494,6 +7955,7 @@ mod tests {
         let brief = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &std::collections::HashMap::new(),
             Some("2 search(es) failed, 1 fetch(es) failed"),
@@ -7661,6 +8123,7 @@ mod tests {
         let synth = synthesis_brief(
             &ctx,
             &fetched,
+            &Default::default(),
             &page_texts,
             &std::collections::HashMap::new(),
             None,
@@ -8542,6 +9005,17 @@ mod tests {
         for section in ["\nTOPIC\n", "\nSTANDING CONDITIONS\n", "\nPRIOR FINDINGS\n", "\nNEWS LEADS\n", "\nTOOL RESULTS\n"] {
             assert!(part1.contains(section), "Part 1 lacks {section}: {part1}");
         }
+        // `portfolio-v49` (attempt-8 Finding 4): the holding-constant blocks
+        // lead — the header, the leads, the standing conditions, the
+        // tool-results gloss — and the topic's own text follows them.
+        let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{section}"));
+        assert!(
+            at("\nNEWS LEADS\n") < at("\nSTANDING CONDITIONS\n")
+                && at("\nSTANDING CONDITIONS\n") < at("\nTOOL RESULTS\n")
+                && at("\nTOOL RESULTS\n") < at("\nTOPIC\n")
+                && at("\nTOPIC\n") < at("\nPRIOR FINDINGS\n"),
+            "{part1}"
+        );
         assert!(part1.contains("- Falsifier: Gross margin falls below 30%.\n"), "{part1}");
         assert!(part1.contains("- 2026-08-01: Widget Co held 40% share. [https://example.com/share]\n"), "{part1}");
         assert!(part1.contains("- Widget beats — https://reuters.com/widget (fmp-news, 2026-08-20)\n"), "{part1}");
@@ -8942,7 +9416,9 @@ pub(crate) mod samples {
         ]
     }
 
-    /// The three synthesis passes on one topic, over two hand-written pages.
+    /// The three synthesis passes on one topic, over two hand-written pages —
+    /// the first reused from an earlier topic, the second fetched by this pass
+    /// (`portfolio-v49`: reused pages lead, in first-retrieval order).
     pub(crate) fn synthesis_messages(holding_brief: &str, topic: &AgendaTopic) -> Vec<Sample> {
         let claims = claims();
         let fu = followup();
@@ -8953,6 +9429,7 @@ pub(crate) mod samples {
             (IR_URL.to_string(), ir.retrieved_at.clone(), Some(annotation(0, &["filings", "financials"], 0.92, false))),
             (WSJ_URL.to_string(), wsj.retrieved_at.clone(), Some(annotation(1, &["event-verification"], 0.04, true))),
         ];
+        let explicit: std::collections::HashSet<String> = [WSJ_URL.to_string()].into();
         let texts: std::collections::HashMap<String, String> =
             [(IR_URL.to_string(), IR_TEXT.to_string()), (WSJ_URL.to_string(), WSJ_TEXT.to_string())].into();
         let meta: std::collections::HashMap<String, PageMeta> = [
@@ -8973,12 +9450,12 @@ pub(crate) mod samples {
             Sample {
                 label: format!("synthesis — {label}"),
                 system: synthesis_system_prompt(c.disconfirming),
-                user: synthesis_brief(c, &fetched, &texts, &meta, note.as_deref(), &mut gaps, &mut shown),
+                user: synthesis_brief(c, &fetched, &explicit, &texts, &meta, note.as_deref(), &mut gaps, &mut shown),
                 appended: Vec::new(),
             }
         };
         vec![
-            render("root pass, gathering incomplete", &ctx(holding_brief, topic, None, &[], None, &[], false), degraded.model_note()),
+            render("root pass on a later topic — a page reused from an earlier topic, then this pass's fetch; gathering incomplete", &ctx(holding_brief, topic, None, &[], None, &[], false), degraded.model_note()),
             render("follow-up pass, gathering clean", &ctx(holding_brief, topic, None, &[], Some(&fu), &claims, false), None),
             render("the disconfirming pass", &ctx(holding_brief, &disc, None, &[], None, &claims, true), None),
         ]

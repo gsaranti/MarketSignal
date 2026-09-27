@@ -6243,7 +6243,15 @@ const NUM_PREDICT_THINKING: u32 = 65_536;
 /// object: combined narrative, per-topic claims and URLs, typed side channels,
 /// and bounded observation excerpts. A reservation-bound stop gets one larger
 /// retry below; this first ceiling remains the runaway/latency guardrail.
-const NUM_PREDICT_DISTILL: u32 = 8_192;
+/// Raised from 8,192 after attempt 8 (Finding 3, ruled 2026-09-27): a
+/// six-topic stock's ordinary distillation ran to 8,055 tokens, so the old
+/// ceiling bound on ordinary work and the wasted first pass cost more than
+/// the guardrail protected. 12,288 leaves 1.5× that output, and beside the
+/// issue guard's input budget it still fits a 32 K fast-tier context
+/// (`distill::input_budget_chars`), so the exact-reservation stop stays the
+/// data-health signal for an oversized distillation rather than a routine
+/// event.
+const NUM_PREDICT_DISTILL: u32 = 12_288;
 /// One evidence-triggered distillation re-attempt after the normal reservation
 /// binds exactly. It issues on the reasoner's 128 K context so the prompt and
 /// this full ceiling fit together under the same 60% input sizing guard.
@@ -11994,6 +12002,23 @@ pub(crate) mod tests {
             ),
             "the expanded ceiling never activates a second expansion"
         );
+    }
+
+    #[test]
+    fn distill_ceiling_sits_in_the_ruled_band_and_fits_beside_the_input_budget() {
+        // Attempt-8 Finding 3 (ruled 2026-09-27): the normal ceiling sits in
+        // the 12,288–16,384 band, and on either distill context the prompt
+        // budget the issue guard admits plus the reservation fits the window,
+        // so a ceiling-bound stop is a reservation hit, never context
+        // exhaustion in disguise; the expanded ceiling fits the reasoner's.
+        assert!((12_288..=16_384).contains(&NUM_PREDICT_DISTILL));
+        let budget_tokens = |num_ctx: u32| {
+            (distill::input_budget_chars(num_ctx) as f64 / distill::CHARS_PER_TOKEN) as u32
+        };
+        for num_ctx in [NUM_CTX_DISTILL, NUM_CTX_INTERPRET] {
+            assert!(budget_tokens(num_ctx) + NUM_PREDICT_DISTILL <= num_ctx, "{num_ctx}");
+        }
+        assert!(budget_tokens(NUM_CTX_INTERPRET) + NUM_PREDICT_DISTILL_RETRY <= NUM_CTX_INTERPRET);
     }
 
     /// The output-budget guard: a `done_reason: "length"` response fails typed —

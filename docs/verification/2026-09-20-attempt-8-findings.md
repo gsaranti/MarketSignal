@@ -71,6 +71,9 @@ The comparison set is attempt 7's TSLA and PSX (`~/Downloads/market-signal-attem
 - Change proposed.
   Ruled 2026-09-20: raise the normal ceiling to a value in the 12,288–16,384 band so a six-topic distillation fits in one pass, keeping the exact-reservation expanded re-attempt as is.
   The exact value is a plan flag.
+  Ruled 2026-09-27: the normal ceiling is 12,288, 1.5 times the largest observed output and the value at which the issue guard's input budget plus the reservation still fits a 32 K fast-tier context, so that dormant path needs no guard.
+  16,384 was declined for exceeding that window.
+  Implemented 2026-09-27 in `pipeline.rs` (`NUM_PREDICT_DISTILL`), with a test pinning the band and the fit on both distill contexts.
 - Check, on attempt 9.
   No expanded re-attempt on a holding whose first pass produced under the new ceiling; the data-health read still counts any that fire.
 - Stamp: none (a constant; no prompt or persisted-shape change).
@@ -86,8 +89,24 @@ The comparison set is attempt 7's TSLA and PSX (`~/Downloads/market-signal-attem
   Ruled 2026-09-20: order each fresh conversation so the holding-constant text precedes the topic-variable text, and give the synthesis the same evidence order as its pass, so the header and the evidence already prefilled form the restorable prefix.
   The task text does not change in meaning; only its order moves.
   Ruled 2026-09-20, not taken for now: overlapping web fetches with model time, thinking off on gathering turns, a synthesis thinking cap and a lower gathering turn cap.
+- Cause, refined at the plan on 2026-09-27 from the serve log.
+  The runtime is llama.cpp's server (build b10091 under the pinned Ollama v0.32.5), which restores a fresh prompt only from a saved checkpoint of a cached conversation whose token-identical prefix the prompt extends.
+  It saves a checkpoint 1,024 tokens before each prompt's end (its default micro-batch; the app sets none), keeps a conversation's first checkpoint as the anchor, and hands a conversation back from its RAM cache only when the shared prefix is at least a quarter of that conversation's length.
+  Tools render inside the system turn ahead of the system text, so a gathering request and a synthesis request share three tokens, and attempt 8's fresh conversations restored nothing.
+  The reorder therefore reaches consecutive same-kind conversations: a synthesis extends the previous synthesis from a holding's second topic, and a topic root extends the previous root once the reused pages are a quarter of that root's whole conversation, roughly from the fourth topic.
+  Follow-up passes, whose topic text exceeds the 1,024 tokens, and the three closing calls, which have no same-kind neighbour, stay full-prefill.
+  On a continuity run the prior findings, up to the 4,000-character seed budget, sit in a root's topic text and can push its tail past the checkpoint distance, so root restores there depend on the seed's size.
+  A truncated tail page or an explicit re-read shortens the shared prefix on either message, on a debut as much as on a continuity run.
+  Attempt 9 is a debut, so only the continuity limit does not reach it.
+  Ruled 2026-09-27: reused pages render in first-retrieval order ahead of the pass's own fetches in the synthesis message and ahead of the topic text in the gathering brief, and the explicit fetches keep first claim on synthesis space under overflow.
+  Ruled 2026-09-27: the TOOL RESULTS gloss moves into the holding-constant block ahead of PAGES ALREADY RETRIEVED.
+  Ruled 2026-09-27: same-kind batching, every root gathering before any root synthesis, which would make the root case slot-local, is not taken.
+  It is the named follow-up if attempt 9's serve log shows roots not restoring.
+  Implemented 2026-09-27 in `research.rs`; a test pins the byte-prefix property across three topics and the topic text after the shared prefix under 2,800 characters.
 - Check, on attempt 9.
   Synthesis and topic-root prompt evaluation restores a checkpoint past the header; per-stock prompt-evaluation time drops below the attempt-8 band.
+  Read from the serve log: `restored context checkpoint` lines on synthesis tasks from a holding's second topic and on topic-root tasks from about its fourth, at positions past the header.
+  Follow-up and closing calls are expected to stay full-prefill.
 - Stamp: `portfolio-v49` (message order moves).
 
 ### Finding 5 — Two action-packet lines the model reads as ambiguous on every stock
@@ -111,7 +130,7 @@ The comparison set is attempt 7's TSLA and PSX (`~/Downloads/market-signal-attem
 
 The five findings are handled as two tasks, prompt content first and prompt order second, so the two never edit the synthesis prompt in opposite directions.
 Ruled 2026-09-20: the slices share one combined delivery stamp, `portfolio-v49`, while remaining separately planned and implemented tasks.
-Slice A was planned and implemented on 2026-09-27; Slice B is not planned yet and takes its selector rulings at its own plan.
+Slice A and Slice B were both planned and implemented on 2026-09-27; each finding's selector rulings sit on the finding.
 
 - Slice A — the synthesis contract and the action-packet glosses (Findings 1, 2, 5).
   The findings-first task sentence, the value-format hint in the shape template and the softened fiscal gloss (Findings 1, 2); the sub-score scale line and the supported-actions clause (Finding 5); and the two telemetry changes, the retry line and persisted cause carrying the full error chain with a head-and-tail body snippet, and the fact-period gap naming the rejected kind and value.
@@ -119,7 +138,7 @@ Slice A was planned and implemented on 2026-09-27; Slice B is not planned yet an
   It lands first because it changes what the synthesis prompt says.
   Stamp: `portfolio-v49`; none for the telemetry.
 - Slice B — latency (Findings 3, 4).
-  The normal distillation ceiling moves into the 12,288–16,384 band, the exact value a plan flag (Finding 3); each fresh conversation orders its holding-constant text before its topic-variable text and the synthesis carries its pass's evidence order (Finding 4).
+  The normal distillation ceiling moves to 12,288 (Finding 3); each fresh conversation orders its holding-constant text before its topic-variable text and the synthesis carries its pass's evidence order (Finding 4).
   Both are ruled; the remaining latency levers are ruled not-taken and stay out of the slice.
   It lands second because it changes where the synthesis prompt's parts sit, and works on Slice A's final text.
   Stamp: the shared `portfolio-v49` for Finding 4's message order; Finding 3 moves nothing.

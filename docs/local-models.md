@@ -102,7 +102,8 @@ An interpretation whose model arm falls outside its declared numeric domain clas
 The once is per issued call, and the legs compose only through re-issue: the research loop's findings-parse retry issues a fresh call carrying its own single re-attempt, so one logical terminal turn is hard-bounded at four calls.
 The classification is a whitelist: a deadline trip, a length stop, a cancelled run, and any unclassified failure never enter the general retry.
 A phase-limited length stop remains unattributed, not a reason to repeat the same request.
-Distillation has one narrower output-sizing exception outside that general retry: a call that reports exactly the normal 8,192-token reservation gets one re-attempt at a 32,768-token ceiling on the reasoner's 128 K context.
+Distillation has one narrower output-sizing exception outside that general retry: a call that reports exactly the normal 12,288-token reservation gets one re-attempt at a 32,768-token ceiling on the reasoner's 128 K context.
+The normal reservation moved from 8,192 to 12,288 after attempt 8, where a six-topic stock's ordinary distillation ran to the old ceiling and spent the wasted first pass (Finding 3, ruled 2026-09-27).
 A length stop below the normal reservation is context-bound or unattributable and fails without that re-attempt; any length stop on the expanded call also fails hard.
 The expanded attempt is final for that stage: the outer schema/transport gate cannot layer another request after it.
 The action call's blank-rationale guard keeps its fail-hard ruling outside the retry (ruled 2026-08-18).
