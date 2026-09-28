@@ -24,7 +24,9 @@ This packet renders no article or research text, so it carries no stub.
 ## System message
 
 ~~~~text
-You are an equity analyst deciding the portfolio action for one holding in a portfolio review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the shape to return. You will return action and rationale, as one JSON object.
+You are an equity analyst deciding the portfolio action for one holding in a portfolio review. Part
+1 of the message gives the inputs. Part 2 states what to determine from them and the shape to
+return. You will return action and rationale, as one JSON object.
 ~~~~
 
 ## User message (2338 chars)
@@ -36,7 +38,8 @@ BND (VANGUARD TOTAL BOND MARKET ETF).
 Price: $72.38 per share.
 Date: 2026-09-16.
 
-Two reads of this holding appear below: a computed read, derived from its financial data by fixed formulas, and an analyst's read of the same data and research.
+Two reads of this holding appear below: a computed read, derived from its financial data by fixed
+formulas, and an analyst's read of the same data and research.
 
 CLASS (computed)
 bond fund
@@ -48,7 +51,8 @@ EXPOSURE TILT (computed)
 United States 94%, Supranational 2%, Canada 1%
 
 RISK PROFILE (computed)
-Expense drag: 0.0003 (0.03%/yr) of assets per year. Observable risk: 0.022 (annualized realized volatility). Structural flag (leveraged / inverse or option-overlay path dependency): no.
+Expense drag: 0.0003 (0.03%/yr) of assets per year. Observable risk: 0.022 (annualized realized
+volatility). Structural flag (leveraged / inverse or option-overlay path dependency): no.
 
 EVIDENCE GAPS (computed)
 no duration, credit or yield-curve data for this fund
@@ -63,7 +67,8 @@ The conditions that define each case, with the analyst's probability for it.
 - bull (25%): Growth re-accelerates
 
 SUPPORTED ACTIONS (computed)
-The rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is outside that read.
+The rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is
+outside that read.
 
 INVESTOR PROFILE
 - objective: maximize profit (total return; no income or capital-preservation mandate)
@@ -72,9 +77,15 @@ INVESTOR PROFILE
 
 ======== PART 2: TASK ========
 
-Determine the following from the inputs and return them as one JSON object in the shape at the end, with no code fence and no surrounding text.
+Determine the following from the inputs and return them as one JSON object in the shape at the end,
+with no code fence and no surrounding text.
 
-1. action — one rung for this holding, from these inputs alone: "sell-all", "trim", "hold", "add" or "add-aggressively". The rung alone: no share count, dollar amount or portfolio weight. Decide it from CLASS, ROLE, EXPOSURE TILT and RISK PROFILE first, refined by EVIDENCE GAPS, THESIS, SCENARIOS, SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits add-aggressively where the other inputs support it. An add-side rung needs support from the vehicle's own attributes, stated in the rationale.
+1. action — one rung for this holding, from these inputs alone: "sell-all", "trim", "hold", "add" or
+"add-aggressively". The rung alone: no share count, dollar amount or portfolio weight. Decide it
+from CLASS, ROLE, EXPOSURE TILT and RISK PROFILE first, refined by EVIDENCE GAPS, THESIS, SCENARIOS,
+SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits add-aggressively where
+the other inputs support it. An add-side rung needs support from the vehicle's own attributes,
+stated in the rationale.
 
 2. rationale — one sentence giving the single investment reason for the rung.
 

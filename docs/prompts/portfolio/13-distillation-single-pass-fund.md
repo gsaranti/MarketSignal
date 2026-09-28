@@ -25,7 +25,9 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 ## System message
 
 ~~~~text
-You are an investment analyst consolidating the research on one holding for a portfolio review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the shape to return. You will return combined findings and findings per topic, as one JSON object.
+You are an investment analyst consolidating the research on one holding for a portfolio review. Part
+1 of the message gives the inputs. Part 2 states what to determine from them and the shape to
+return. You will return combined findings and findings per topic, as one JSON object.
 ~~~~
 
 ## User message (3232 chars)
@@ -42,26 +44,50 @@ Conditions the thesis on this holding is being watched against, each with its id
 - c-dur — Trigger: Effective duration rises above 7 years.
 
 TOPICS
-The research on this holding, one topic at a time: what its searches established, then its claims, each with the address of the page that states it. A claim marked "bears on" names the condition under STANDING CONDITIONS it is evidence on.
+The research on this holding, one topic at a time: what its searches established, then its claims,
+each with the address of the page that states it. A claim marked "bears on" names the condition
+under STANDING CONDITIONS it is evidence on.
 
 TOPIC fund-exposure-profile — Exposure profile
 Search 1:
 [stub: the root pass's findings on the fund's exposure profile]
 Claims:
-- [stub: claim 1 — one dated fact from its source] [https://investor.vanguard.com/investment-products/etfs/profile/bnd] — evidence_ref: E9dcc02ac89ec51165bc5c21754dcfb72484725409345ee85a1f938dfa9e15dc2 — publication (search/seed report): unknown; fact period: unknown
+- [stub: claim 1 — one dated fact from its source]
+[https://investor.vanguard.com/investment-products/etfs/profile/bnd] — evidence_ref:
+E9dcc02ac89ec51165bc5c21754dcfb72484725409345ee85a1f938dfa9e15dc2 — publication (search/seed
+report): unknown; fact period: unknown
 
 ======== PART 2: TASK ========
-Determine the following from the inputs and return them as one JSON object in the shape at the end, with no code fence and no surrounding text.
+Determine the following from the inputs and return them as one JSON object in the shape at the end,
+with no code fence and no surrounding text.
 
-1. combined_findings — what the research established on this holding, across every topic under TOPICS, as of the date under HOLDING: the figures with their dates and periods as the claims state them; where two claims cover the same fact, reconcile by fact period and publication as described below; and what the searches left unanswered.
+1. combined_findings — what the research established on this holding, across every topic under
+TOPICS, as of the date under HOLDING: the figures with their dates and periods as the claims state
+them; where two claims cover the same fact, reconcile by fact period and publication as described
+below; and what the searches left unanswered.
 
-2. topics — exactly one object per topic under TOPICS, in that order. topic_key is the key as shown. summary is what the topic's searches establish, as of the date under HOLDING. claims is every distinct statement the topic rests on, one per item, with source_url the address shown beside it under TOPICS: a fact two topics state is one claim, under the topic it belongs to. related_condition_id is the id of the condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or is at risk — else null.
+2. topics — exactly one object per topic under TOPICS, in that order. topic_key is the key as shown.
+summary is what the topic's searches establish, as of the date under HOLDING. claims is every
+distinct statement the topic rests on, one per item, with source_url the address shown beside it
+under TOPICS: a fact two topics state is one claim, under the topic it belongs to.
+related_condition_id is the id of the condition under STANDING CONDITIONS the claim is evidence on —
+that it has tripped, is holding, or is at risk — else null.
 
 
-For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate facts with different periods. Publication describes the source; fact period describes when the fact applies. An unknown date stays unknown. Compare periods only for the same measure and basis; different periods remain distinct observations, with the latest applicable period informing a current-state conclusion. For the same period, an explicit correction or revision supersedes its predecessor; a later publication alone does not establish a revision. Where sources still conflict or periods are incomparable, report the uncertainty and retain the conflicting claims with their own references. Retrieval order and the analysis date never select a factual winner or supply a missing fact date. Apply the same resolution in the combined findings, summaries, and every topic's claims.
+For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
+CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
+facts with different periods. Publication describes the source; fact period describes when the fact
+applies. An unknown date stays unknown. Compare periods only for the same measure and basis;
+different periods remain distinct observations, with the latest applicable period informing a
+current-state conclusion. For the same period, an explicit correction or revision supersedes its
+predecessor; a later publication alone does not establish a revision. Where sources still conflict
+or periods are incomparable, report the uncertainty and retain the conflicting claims with their own
+references. Retrieval order and the analysis date never select a factual winner or supply a missing
+fact date. Apply the same resolution in the combined findings, summaries, and every topic's claims.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)
-{"combined_findings":"","topics":[{"topic_key":"<fund-exposure-profile>","summary":"","claims":[{"claim":"","evidence_ref":"","source_url":"","related_condition_id":"<c-dur|null>"}]}]}
+{"combined_findings":"","topics":[{"topic_key":"<fund-exposure-profile>","summary":"","claims":[{"claim":"",
+"evidence_ref":"","source_url":"","related_condition_id":"<c-dur|null>"}]}]}
 ~~~~
 
 ## Response schema (`format`)

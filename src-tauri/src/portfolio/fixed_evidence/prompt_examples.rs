@@ -819,6 +819,55 @@ fn examples() -> Vec<Example> {
 
 // ---- Rendering ----
 
+/// The page width the fenced message text wraps to, for reading without a
+/// horizontal scroll. The model sees the unwrapped text; the `(N chars)`
+/// headings count it.
+const WRAP_WIDTH: usize = 100;
+
+/// Word-wrap a message for the page: a line past the width breaks at a space,
+/// and a space-free run past the width (the shape line's JSON) breaks after
+/// its next comma; a run with neither stays whole. Only line breaks are
+/// added — no character of the message is changed or dropped.
+fn wrap(text: &str) -> String {
+    let mut out = String::new();
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        wrap_line(line, &mut out);
+    }
+    out
+}
+
+fn wrap_line(line: &str, out: &mut String) {
+    let mut col = 0usize;
+    for (i, word) in line.split(' ').enumerate() {
+        let width = word.chars().count();
+        if i > 0 {
+            if col > 0 && col + 1 + width > WRAP_WIDTH {
+                out.push('\n');
+                col = 0;
+            } else {
+                out.push(' ');
+                col += 1;
+            }
+        }
+        if width <= WRAP_WIDTH {
+            out.push_str(word);
+            col += width;
+            continue;
+        }
+        for c in word.chars() {
+            out.push(c);
+            col += 1;
+            if c == ',' && col >= WRAP_WIDTH {
+                out.push('\n');
+                col = 0;
+            }
+        }
+    }
+}
+
 fn fence(lang: &str, s: &str) -> String {
     format!("~~~~{lang}\n{}\n~~~~\n\n", s.trim_end())
 }
@@ -891,7 +940,7 @@ fn render_messages(messages: &[ChatMessage]) -> String {
             other => out.push_str(&format!("## {other} message\n\n")),
         }
         if !m.content.is_empty() || m.tool_calls.is_none() {
-            out.push_str(&fence("text", &m.content));
+            out.push_str(&fence("text", &wrap(&m.content)));
         }
         if let Some(calls) = &m.tool_calls {
             out.push_str("`tool_calls`:\n\n");
@@ -941,7 +990,7 @@ fn render(ex: &Example) -> String {
     }
     for (heading, text) in &ex.extras {
         out.push_str(&format!("## {heading}\n\n"));
-        out.push_str(&fence("text", text));
+        out.push_str(&fence("text", &wrap(text)));
     }
     out.trim_end().to_string() + "\n"
 }
@@ -1018,4 +1067,24 @@ fn portfolio_prompt_examples_render() {
     }
     let contents = render_contents(&examples);
     assert_eq!(contents.matches("](").count(), examples.len());
+    // The wrap adds line breaks and nothing else: the non-whitespace text is
+    // the message's, every original line break survives, and a wrapped line
+    // past the width holds no space and no comma past it but the one it
+    // broke after.
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    for ex in &examples {
+        for m in &ex.request.messages {
+            let wrapped = wrap(&m.content);
+            assert_eq!(squash(&wrapped), squash(&m.content), "{}: the wrap changed a character", ex.file);
+            assert!(wrapped.lines().count() >= m.content.lines().count(), "{}", ex.file);
+            for line in wrapped.lines() {
+                let width = line.chars().count();
+                if width > WRAP_WIDTH {
+                    let tail: String = line.chars().skip(WRAP_WIDTH).collect();
+                    let inner = tail.strip_suffix(',').unwrap_or(&tail);
+                    assert!(!line.contains(' ') && !inner.contains(','), "{}: unwrapped line: {line}", ex.file);
+                }
+            }
+        }
+    }
 }

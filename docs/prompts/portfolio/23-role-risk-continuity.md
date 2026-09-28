@@ -23,7 +23,10 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 ## System message
 
 ~~~~text
-You are an investment analyst producing an independent read of one fund holding for a portfolio review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the shape to return. You will return role_summary, ledger, what_changed_entries and what_changed, as one JSON object.
+You are an investment analyst producing an independent read of one fund holding for a portfolio
+review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the
+shape to return. You will return role_summary, ledger, what_changed_entries and what_changed, as one
+JSON object.
 ~~~~
 
 ## User message (8267 chars)
@@ -46,25 +49,33 @@ The fund's largest weights, by sector where reported and otherwise by country.
 - Canada: 1.0%
 
 UNDERLYING POSITIONING (CFTC weekly, as of 2026-09-09)
-10-Year US Treasury Note — speculator net -650000 contracts (18.4% of OI long), w/w -22000; asset-manager net +1200000 (w/w +15000)
+10-Year US Treasury Note — speculator net -650000 contracts (18.4% of OI long), w/w -22000;
+asset-manager net +1200000 (w/w +15000)
 
 RISK PROFILE
 Annualized realized volatility: 0.022 (a fraction; 0.14 means 14% a year).
-Market-wide options sentiment (CBOE daily put/call, as of 2026-09-16): total 0.95, index 1.21, equity 0.62
+Market-wide options sentiment (CBOE daily put/call, as of 2026-09-16): total 0.95, index 1.21,
+equity 0.62
 
 EVIDENCE GAPS
 no duration, credit or yield-curve data for this fund
 
 FINANCIAL METRICS
 The market metrics are daily; the expense ratio is the fund's published figure.
-Each metric has a label in brackets and a confirmation rule, the number of prints past a level that count as a crossing; both are used by the ledger in Part 2.
-- daily realized return volatility [return-volatility]: 0.0014 — a daily fraction, never a percent (0.02 means 2% per day); confirmed by two consecutive daily closes
-- trailing price return [trailing-return]: -0.0142 — a fraction, never a percent (0.16 means 16%); confirmed by two consecutive daily closes
-- fund expense ratio [expense-ratio]: 0.0003 (0.03%/yr) — a fraction of assets per year, never a percent (0.0075 means 0.75%); confirmed by one filing
-- the holding's price (account currency) [price]: 72.38 — dollars per share; confirmed by two consecutive daily closes
+Each metric has a label in brackets and a confirmation rule, the number of prints past a level that
+count as a crossing; both are used by the ledger in Part 2.
+- daily realized return volatility [return-volatility]: 0.0014 — a daily fraction, never a percent
+(0.02 means 2% per day); confirmed by two consecutive daily closes
+- trailing price return [trailing-return]: -0.0142 — a fraction, never a percent (0.16 means 16%);
+confirmed by two consecutive daily closes
+- fund expense ratio [expense-ratio]: 0.0003 (0.03%/yr) — a fraction of assets per year, never a
+percent (0.0075 means 0.75%); confirmed by one filing
+- the holding's price (account currency) [price]: 72.38 — dollars per share; confirmed by two
+consecutive daily closes
 
 RESEARCH SUMMARY
-Web research unavailable (offline analyst); the read rests on the computed financials and the market analysis only.
+Web research unavailable (offline analyst); the read rests on the computed financials and the market
+analysis only.
 
 MARKET ANALYSIS
 A market-level analysis dated 2026-09-16, followed by the stance of the 3 most recent analyses.
@@ -107,31 +118,71 @@ CONDITION CROSSINGS THIS RUN
 
 ======== PART 2: TASK ========
 
-Determine the following from the inputs and return them as one JSON object in the shape at the end, with no code fence and no surrounding text.
+Determine the following from the inputs and return them as one JSON object in the shape at the end,
+with no code fence and no surrounding text.
 
-1. role_summary — a few sentences on the vehicle's mandate, the exposure it exists to supply, and the cost and risk of holding it, from CLASS, EXPOSURE TILT, RISK PROFILE, EVIDENCE GAPS, FINANCIAL METRICS and RESEARCH SUMMARY.
+1. role_summary — a few sentences on the vehicle's mandate, the exposure it exists to supply, and
+the cost and risk of holding it, from CLASS, EXPOSURE TILT, RISK PROFILE, EVIDENCE GAPS, FINANCIAL
+METRICS and RESEARCH SUMMARY.
 
-2. ledger — the position's thesis ledger, rewritten from PRIOR THESIS LEDGER against this analysis's inputs. Keep a condition's series, comparator, threshold and margin unless the condition itself has changed. The thesis is the current thesis; the original is kept separately.
-   - thesis: the standing thesis, in a few sentences, drawing on MARKET ANALYSIS for the market setup.
-   - key_drivers: what the thesis depends on — for a fund, the exposure it supplies, its cost and its fidelity to its mandate. Where a driver is one of the labelled metrics in FINANCIAL METRICS, series is its label; otherwise series is null.
-   - base, bear, bull: the conditions that define each case, with a probability in percent; the three sum to about 100.
-   - what_must_improve: what has to improve for the bull case. what_must_not_break: what has to hold for the base case.
-   - falsifiers: the observations that would show the thesis wrong. technology_class is true only for a third party's technology event (a competitor's or supplier's product or standard) and false otherwise. tripped is true only where CONDITION CROSSINGS THIS RUN shows a confirmed crossing for that condition, or, for a qualitative condition, where a finding in CHANGES SINCE THE PRIOR ANALYSIS marked research-supported evidences it; otherwise false.
-   - triggers: pre-committed conditions for trimming or selling, with family "trim" or "sell". fired follows the same rule as tripped.
+2. ledger — the position's thesis ledger, rewritten from PRIOR THESIS LEDGER against this analysis's
+inputs. Keep a condition's series, comparator, threshold and margin unless the condition itself has
+changed. The thesis is the current thesis; the original is kept separately.
+   - thesis: the standing thesis, in a few sentences, drawing on MARKET ANALYSIS for the market
+setup.
+   - key_drivers: what the thesis depends on — for a fund, the exposure it supplies, its cost and
+its fidelity to its mandate. Where a driver is one of the labelled metrics in FINANCIAL METRICS,
+series is its label; otherwise series is null.
+   - base, bear, bull: the conditions that define each case, with a probability in percent; the
+three sum to about 100.
+   - what_must_improve: what has to improve for the bull case. what_must_not_break: what has to hold
+for the base case.
+   - falsifiers: the observations that would show the thesis wrong. technology_class is true only
+for a third party's technology event (a competitor's or supplier's product or standard) and false
+otherwise. tripped is true only where CONDITION CROSSINGS THIS RUN shows a confirmed crossing for
+that condition, or, for a qualitative condition, where a finding in CHANGES SINCE THE PRIOR ANALYSIS
+marked research-supported evidences it; otherwise false.
+   - triggers: pre-committed conditions for trimming or selling, with family "trim" or "sell". fired
+follows the same rule as tripped.
 
    Every falsifier and trigger has a quant field.
-   A condition on one labelled metric is quantitative: quant holds series (one of return-volatility, trailing-return, expense-ratio, price), comparator ("below" or "above"), threshold and margin, and statement is a short name for the condition, without a figure. It is a single level on a single metric, a new one at a level the metric has not already crossed and a kept one unchanged even after a crossing, with no duration, volume or second condition ("for two weeks", "on elevated volume", "unless …").
-   Any other condition is qualitative: quant is null, and statement is the observation itself, specific enough to be researched. A condition that needs a duration, volume or second condition is qualitative.
+   A condition on one labelled metric is quantitative: quant holds series (one of return-volatility,
+trailing-return, expense-ratio, price), comparator ("below" or "above"), threshold and margin, and
+statement is a short name for the condition, without a figure. It is a single level on a single
+metric, a new one at a level the metric has not already crossed and a kept one unchanged even after
+a crossing, with no duration, volume or second condition ("for two weeks", "on elevated volume",
+"unless …").
+   Any other condition is qualitative: quant is null, and statement is the observation itself,
+specific enough to be researched. A condition that needs a duration, volume or second condition is
+qualitative.
    threshold: the level, in the metric's unit ("above 0.75%" on expense-ratio is 0.0075).
-   margin: the noise around the threshold that a crossing must clear, in the same unit — small relative to the level, for example 2 on a price of 100, 0.002 on a daily volatility of 0.02, or 0.0005 on an expense ratio of 0.0075.
-   Example, quantitative: statement "Price support", quant {"series": "price", "comparator": "below", "threshold": 38, "margin": 0.4}.
-   Example, qualitative: statement "The mandate drifts from the stated index methodology", quant null.
+   margin: the noise around the threshold that a crossing must clear, in the same unit — small
+relative to the level, for example 2 on a price of 100, 0.002 on a daily volatility of 0.02, or
+0.0005 on an expense ratio of 0.0075.
+   Example, quantitative: statement "Price support", quant {"series": "price", "comparator":
+"below", "threshold": 38, "margin": 0.4}.
+   Example, qualitative: statement "The mandate drifts from the stated index methodology", quant
+null.
 
-3. what_changed_entries — one row per intrinsic value that moved since the prior analysis: kind (which kind of value, from the alternatives in the shape), detail (which one — the role read, the scenario or the condition), old and new (the value before and after), attribution, and evidence. An attribution of market-data, company-information or research-narrative cites one bracketed id from CHANGES SINCE THE PRIOR ANALYSIS, or that entry's text verbatim, in evidence; a revision of your own prior read with no new fact is attribution self-correction with evidence empty. A thesis or scenario-weights row is for a material change to the standing thesis, never a rephrasing. No row repeats another, and no row has old equal to new.
+3. what_changed_entries — one row per intrinsic value that moved since the prior analysis: kind
+(which kind of value, from the alternatives in the shape), detail (which one — the role read, the
+scenario or the condition), old and new (the value before and after), attribution, and evidence. An
+attribution of market-data, company-information or research-narrative cites one bracketed id from
+CHANGES SINCE THE PRIOR ANALYSIS, or that entry's text verbatim, in evidence; a revision of your own
+prior read with no new fact is attribution self-correction with evidence empty. A thesis or
+scenario-weights row is for a material change to the standing thesis, never a rephrasing. No row
+repeats another, and no row has old equal to new.
    what_changed — one sentence summarizing those rows.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)
-{"role_summary":"","ledger":{"thesis":"","key_drivers":[{"name":"","series":"<return-volatility|trailing-return|expense-ratio|price|null>"}],"base":{"conditions":"","probability_pct":0},"bear":{"conditions":"","probability_pct":0},"bull":{"conditions":"","probability_pct":0},"what_must_improve":"","what_must_not_break":"","falsifiers":[{"statement":"","quant":{"series":"<return-volatility|trailing-return|expense-ratio|price>","comparator":"<below|above>","threshold":0,"margin":0},"technology_class":false,"tripped":false}],"triggers":[{"statement":"","family":"<trim|sell>","quant":{"series":"<return-volatility|trailing-return|expense-ratio|price>","comparator":"<below|above>","threshold":0,"margin":0},"fired":false}]},"what_changed_entries":[{"kind":"<role-read|scenario-weights|thesis|condition>","detail":"","old":"","new":"","attribution":"<market-data|company-information|research-narrative|self-correction>","evidence":""}],"what_changed":""}
+{"role_summary":"","ledger":{"thesis":"","key_drivers":[{"name":"","series":"<return-volatility|trailing-return|expense-ratio|price|null>"}],
+"base":{"conditions":"","probability_pct":0},"bear":{"conditions":"","probability_pct":0},"bull":{"conditions":"",
+"probability_pct":0},"what_must_improve":"","what_must_not_break":"","falsifiers":[{"statement":"","quant":{"series":"<return-volatility|trailing-return|expense-ratio|price>",
+"comparator":"<below|above>","threshold":0,"margin":0},"technology_class":false,"tripped":false}],"triggers":[{"statement":"",
+"family":"<trim|sell>","quant":{"series":"<return-volatility|trailing-return|expense-ratio|price>","comparator":"<below|above>",
+"threshold":0,"margin":0},"fired":false}]},"what_changed_entries":[{"kind":"<role-read|scenario-weights|thesis|condition>",
+"detail":"","old":"","new":"","attribution":"<market-data|company-information|research-narrative|self-correction>",
+"evidence":""}],"what_changed":""}
 ~~~~
 
 ## Response schema (`format`)

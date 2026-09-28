@@ -25,7 +25,9 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 ## System message
 
 ~~~~text
-You are an investment analyst consolidating one topic of research on one holding for a portfolio review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the shape to return. You will return a summary and claims, as one JSON object.
+You are an investment analyst consolidating one topic of research on one holding for a portfolio
+review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the
+shape to return. You will return a summary and claims, as one JSON object.
 ~~~~
 
 ## User message (4468 chars)
@@ -39,36 +41,71 @@ Date: 2026-09-16.
 
 STANDING CONDITIONS
 Conditions the thesis on this holding is being watched against, each with its id.
-- c-margin — Falsifier: Automotive gross margin ex-credits falls below 14% for two consecutive quarters.
+- c-margin — Falsifier: Automotive gross margin ex-credits falls below 14% for two consecutive
+quarters.
 - c-price — Trigger: Price closes below $250.
 
 TOPICS
-The research on this holding, one topic at a time: what its searches established, then its claims, each with the address of the page that states it. A claim marked "bears on" names the condition under STANDING CONDITIONS it is evidence on. Prior findings are from an earlier analysis of the topic, dated.
+The research on this holding, one topic at a time: what its searches established, then its claims,
+each with the address of the page that states it. A claim marked "bears on" names the condition
+under STANDING CONDITIONS it is evidence on. Prior findings are from an earlier analysis of the
+topic, dated.
 
 TOPIC competitive-position — Competitive / business position
 Search 1:
 [stub: the root pass's findings — what the search established, in prose]
 Claims:
-- [stub: claim 1 — one dated fact from its source] [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref: E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — publication (search/seed report): unknown; fact period: unknown
-- [stub: claim 2 — one dated fact from its source] [https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — evidence_ref: Ee7813b90e372fb8834d605e28d329f92e9739329009aefc4d3ba84ac1fe3d60b — publication (search/seed report): unknown; fact period: unknown
+- [stub: claim 1 — one dated fact from its source]
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
+E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — publication (search/seed
+report): unknown; fact period: unknown
+- [stub: claim 2 — one dated fact from its source]
+[https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — evidence_ref:
+Ee7813b90e372fb8834d605e28d329f92e9739329009aefc4d3ba84ac1fe3d60b — publication (search/seed
+report): unknown; fact period: unknown
 Search 2:
 [stub: the follow-up pass's findings]
 Claims:
-- [stub: claim 3 — one dated fact from its source] [https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14] — evidence_ref: Ea19800ab2b9e3b5267210688a3e7afaaa8ddbecc1a153964a24bd817c185c902 — publication (search/seed report): unknown; fact period: unknown
+- [stub: claim 3 — one dated fact from its source]
+[https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14] — evidence_ref:
+Ea19800ab2b9e3b5267210688a3e7afaaa8ddbecc1a153964a24bd817c185c902 — publication (search/seed
+report): unknown; fact period: unknown
 Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of this topic]
-- [stub: prior claim 1, tied to a standing condition] [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref: Ee6e3fba76d4e450c58965b9370cb4c76a84f83f8c38f91687372f8dccf413575 — publication (search/seed report): unknown; fact period: unknown — bears on c-margin
-- [stub: prior claim 2] [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] — evidence_ref: Ea5c488fde44478b33183a91e48849ae568b1a35f3496d0b205329462ff7cacde — publication (search/seed report): unknown; fact period: unknown
+- [stub: prior claim 1, tied to a standing condition]
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
+Ee6e3fba76d4e450c58965b9370cb4c76a84f83f8c38f91687372f8dccf413575 — publication (search/seed
+report): unknown; fact period: unknown — bears on c-margin
+- [stub: prior claim 2] [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] —
+evidence_ref: Ea5c488fde44478b33183a91e48849ae568b1a35f3496d0b205329462ff7cacde — publication
+(search/seed report): unknown; fact period: unknown
 
 ======== PART 2: TASK ========
-Determine the following from the inputs and return them as one JSON object in the shape at the end, with no code fence and no surrounding text.
+Determine the following from the inputs and return them as one JSON object in the shape at the end,
+with no code fence and no surrounding text.
 
-1. summary — what the topic's searches and prior findings establish, as of the date under HOLDING: the figures with their dates and periods as the claims state them; where two claims cover the same fact, reconcile by fact period and publication as described below, with prior findings assessed by the same date and conflict rules below; and what the searches left unanswered.
+1. summary — what the topic's searches and prior findings establish, as of the date under HOLDING:
+the figures with their dates and periods as the claims state them; where two claims cover the same
+fact, reconcile by fact period and publication as described below, with prior findings assessed by
+the same date and conflict rules below; and what the searches left unanswered.
 
-2. claims — every distinct statement the topic rests on, one per item, with source_url the address shown beside it under TOPICS: the claims from this time's searches and prior findings, reconciled by fact period and publication as described below. related_condition_id is the id of the condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or is at risk — else null.
+2. claims — every distinct statement the topic rests on, one per item, with source_url the address
+shown beside it under TOPICS: the claims from this time's searches and prior findings, reconciled by
+fact period and publication as described below. related_condition_id is the id of the condition
+under STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or is at risk
+— else null.
 
 
-For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate facts with different periods. Publication describes the source; fact period describes when the fact applies. An unknown date stays unknown. Compare periods only for the same measure and basis; different periods remain distinct observations, with the latest applicable period informing a current-state conclusion. For the same period, an explicit correction or revision supersedes its predecessor; a later publication alone does not establish a revision. Where sources still conflict or periods are incomparable, report the uncertainty and retain the conflicting claims with their own references. Retrieval order and the analysis date never select a factual winner or supply a missing fact date. Apply the same resolution in the combined findings, summaries, and every topic's claims.
+For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
+CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
+facts with different periods. Publication describes the source; fact period describes when the fact
+applies. An unknown date stays unknown. Compare periods only for the same measure and basis;
+different periods remain distinct observations, with the latest applicable period informing a
+current-state conclusion. For the same period, an explicit correction or revision supersedes its
+predecessor; a later publication alone does not establish a revision. Where sources still conflict
+or periods are incomparable, report the uncertainty and retain the conflicting claims with their own
+references. Retrieval order and the analysis date never select a factual winner or supply a missing
+fact date. Apply the same resolution in the combined findings, summaries, and every topic's claims.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)
 {"summary":"","claims":[{"claim":"","evidence_ref":"","source_url":"","related_condition_id":"<c-margin|c-price|null>"}]}
