@@ -2423,7 +2423,11 @@ pub struct HoldingAudit {
 /// items 1 and 3 say "the question", the brief carrying one; its CLAIMS SO
 /// FAR gloss names the two provenance fields in the follow-up pass's words.
 /// The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v55";
+/// `portfolio-v56` (prompt read-through, file 05, 2026-09-29): the PAGES
+/// ALREADY RETRIEVED gloss says each page is shown as web_fetch returns it,
+/// so the header fields point at the fetch description that defines them.
+/// The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v56";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

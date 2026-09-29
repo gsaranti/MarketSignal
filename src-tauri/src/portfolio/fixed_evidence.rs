@@ -1809,6 +1809,14 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert_no_routing_words(&s.label, &s.appended[0].content);
             if s.label.contains("previously retrieved pages") {
                 assert!(part1.contains("PAGES ALREADY RETRIEVED") && part1.contains("BEGIN PAGE TEXT"));
+                // `portfolio-v56`: the gloss names web_fetch as each page's shape.
+                assert!(
+                    part1.contains("\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding, each as web_fetch returns it.\n"),
+                    "{}: {part1}",
+                    s.label
+                );
+                // The sample's retrieval stamp sits on the analysis date, never after it.
+                assert!(part1.contains("retrieved 2026-09-16T") && !part1.contains("retrieved 2026-09-17"), "{}: {part1}", s.label);
             }
             // `portfolio-v50`: item 1 reads the shown pages only where one is shown,
             // naming the block; a brief with none asks to search first.

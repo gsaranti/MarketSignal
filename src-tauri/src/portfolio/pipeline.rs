@@ -9914,7 +9914,9 @@ pub(crate) mod tests {
         // File 04 (2026-09-29) gives the disconfirming pass a two-sentence
         // opening naming TOPIC and CLAIMS SO FAR, singular items and the
         // provenance gloss: v55, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v55");
+        // File 05 (2026-09-29) points the reused-pages gloss at web_fetch's
+        // header: v56, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v56");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

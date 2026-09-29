@@ -1867,7 +1867,11 @@ fn reuse_pages(
     let prefix_cap = crate::portfolio::distill::input_budget_chars(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
     ) / 3;
-    let heading = "\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding.\n";
+    // The gloss names web_fetch as the shape each page is shown in, so the
+    // header fields point at the one place they are defined, the fetch
+    // description (`portfolio-v56`).
+    let heading = "\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding, each as \
+                   web_fetch returns it.\n";
     // Reserve the omission line even when no omission is ultimately needed,
     // and size against the brief as it renders with a page shown — the longer
     // item 1 (`portfolio-v50`).
@@ -9531,7 +9535,7 @@ pub(crate) mod samples {
             text: text.into(),
             extraction_quality: quality,
             thin_stub: thin,
-            retrieved_at: "2026-09-17T15:04:11Z".into()
+            retrieved_at: "2026-09-16T15:04:11Z".into()
         }
     }
 
