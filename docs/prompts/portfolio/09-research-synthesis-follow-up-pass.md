@@ -1,6 +1,6 @@
 # Research synthesis — follow-up pass, gathering clean
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v53`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v54`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The synthesis call closes a pass: no tools, the findings grammar as the format, no history — the evidence packet is rebuilt from the run's store, and the model cites sources by the pass-local id the packet shows.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4019 chars — the messages and tools as serialized |
+| Prompt material | 4028 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ review. Part 1 of the message gives the inputs. Part 2 states what to determine 
 shape to return. You will return findings, claims and a follow-up proposal, as one JSON object.
 ~~~~
 
-## User message (3589 chars)
+## User message (3598 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -79,8 +79,8 @@ lowers confidence in what it says, it does not exclude it.
 
 2. claims — each specific statement the findings rest on, one per item, with source_id the id of the
 page in EVIDENCE that states it. A statement no page in EVIDENCE states is not a claim. fact_period
-names when the fact applies, never when it was retrieved or when this analysis runs: kind day
-(YYYY-MM-DD, e.g. 2026-06-30), month (YYYY-MM, e.g. 2026-06), quarter (calendar YYYY-Qn, e.g.
+names the period the fact applies to, never when it was retrieved or when this analysis runs: kind
+day (YYYY-MM-DD, e.g. 2026-06-30), month (YYYY-MM, e.g. 2026-06), quarter (calendar YYYY-Qn, e.g.
 2026-Q2), year (YYYY, e.g. 2026), range (value and end both YYYY-MM-DD, e.g. 2026-04-01 through
 2026-06-30), fiscal (the source's fiscal-period label, e.g. Q4 FY2025), or unknown (empty value).
 Use quarter only for a stated calendar quarter or a source-stated period that unambiguously covers

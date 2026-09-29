@@ -2407,7 +2407,16 @@ pub struct HoldingAudit {
 /// calls — the header's `source tier N | trusted on …` fields carry the
 /// relation, and the sentence only restated their link. The checkpoint
 /// trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v53";
+/// `portfolio-v54` (file 03, 2026-09-29): a prior claim under PRIOR FINDINGS
+/// takes the CLAIMS SO FAR shape — the claim and its source, then
+/// `published: …; fact period: …` under them — through one renderer the
+/// rendered example shares, and the gloss names the two fields; the
+/// fact-period gloss reads "the period the fact applies to" on every surface
+/// (CLAIMS SO FAR, PRIOR FINDINGS, the synthesis claims item, the
+/// distillation date rule); the continuity clause names the headings it
+/// draws on, PRIOR FINDINGS and STANDING CONDITIONS, only those the brief
+/// shows. The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v54";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

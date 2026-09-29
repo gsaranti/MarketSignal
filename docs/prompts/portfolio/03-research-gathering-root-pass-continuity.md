@@ -1,6 +1,6 @@
 # Research gathering — root pass on a continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v53`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v54`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over a prior analysis of 2026-09-01.
 A root pass on a continuity run: the topic's standing ledger conditions and the prior run's kept findings ride as the seed.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3560 chars — the messages and tools as serialized |
+| Prompt material | 3739 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (2072 chars)
+## User message (2249 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -58,11 +58,14 @@ Competitive / business position
 - Which competitors or substitutes are gaining or losing against it?
 
 PRIOR FINDINGS
-Findings from an earlier analysis of this topic, each with its date and source.
-- 2026-09-01: [stub: prior finding 1 — a claim the prior run kept]
+Findings from an earlier analysis of this topic, each with its source, the publication date the
+search or lead reported, and the period the fact applies to.
+- [stub: prior finding 1 — a claim the prior run kept]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results]
-- 2026-09-01: [stub: prior finding 2 — a claim the prior run kept]
+  published: 2026-07-22; fact period: 2026-Q2
+- [stub: prior finding 2 — a claim the prior run kept]
 [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/]
+  published: 2026-08-26; fact period: 2026-07
 
 ======== PART 2: TASK ========
 Find what the web shows on each question under TOPIC for this holding, as of the date under HOLDING.
@@ -70,8 +73,9 @@ Find what the web shows on each question under TOPIC for this holding, as of the
 1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS
 most likely to answer them. Prefer a source tier nearer 0 and an extraction quality nearer 1 where
 the questions allow; a weak source lowers confidence in what it says, it does not exclude it, and a
-figure that cannot be right is a defect of the source. Where a prior finding or a standing condition
-bears on a question, look for whether it still holds and for what is newer.
+figure that cannot be right is a defect of the source. Where a finding under PRIOR FINDINGS or a
+condition under STANDING CONDITIONS bears on a question, look for whether it still holds and for
+what is newer.
 2. At most 8 tool calls in one reply.
 3. Stop when the questions are answered, or when what remains cannot be found: reply with one
 sentence saying which, and no tool call.

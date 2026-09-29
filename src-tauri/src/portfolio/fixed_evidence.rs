@@ -1831,7 +1831,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     "{}: {part2}",
                     s.label
                 );
-                assert!(part1.contains("each with its source, the publication date the search or lead reported, and the period the fact covers.\n"), "{}: {part1}", s.label);
+                assert!(part1.contains("each with its source, the publication date the search or lead reported, and the period the fact applies to.\n"), "{}: {part1}", s.label);
                 assert!(part1.contains("\n  published: "), "{}: {part1}", s.label);
             } else if !s.label.contains("disconfirming") {
                 assert!(
@@ -1878,7 +1878,19 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         }
         if s.label.contains("continuity") {
             assert!(part1.contains("\nSTANDING CONDITIONS\n") && part1.contains("\nPRIOR FINDINGS\n"), "{}", s.label);
-            assert!(part2.contains("still holds and for what is newer"), "{}", s.label);
+            // `portfolio-v54`: the clause names the two headings it draws on, and
+            // PRIOR FINDINGS carries the CLAIMS SO FAR shape and gloss.
+            assert!(
+                part2.contains("Where a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS bears on a question, look for whether it still holds and for what is newer."),
+                "{}: {part2}",
+                s.label
+            );
+            assert!(
+                part1.contains("\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n- "),
+                "{}: {part1}",
+                s.label
+            );
+            assert!(part1.contains("]\n  published: 2026-07-22; fact period: 2026-Q2\n"), "{}: {part1}", s.label);
         }
         if s.label.contains("disconfirming") {
             assert!(part1.contains("\nCLAIMS SO FAR\n"), "{}", s.label);

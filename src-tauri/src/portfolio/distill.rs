@@ -2355,7 +2355,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
 const DATE_RECONCILIATION: &str = "\nFor each claim, evidence_ref copies the reference of the supporting claim shown under \
     TOPICS or CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact \
     and period; separate facts with different periods. Publication describes the source; \
-    fact period describes when the fact applies. An unknown date stays unknown. Compare \
+    fact period names the period the fact applies to. An unknown date stays unknown. Compare \
     periods only for the same measure and basis; different periods remain distinct \
     observations, with the latest applicable period informing a current-state conclusion. \
     For the same period, an explicit correction or revision supersedes its predecessor; a \

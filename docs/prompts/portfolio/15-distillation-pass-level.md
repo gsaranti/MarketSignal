@@ -1,6 +1,6 @@
 # Distillation — pass-level sub-distillation
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v51`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v54`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The pass-level sub-distillation, taken when a topic tree itself outgrows the tier-1 budget: one search of one topic, returning its summary and claims.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3489 chars — the messages and tools as serialized |
+| Prompt material | 3494 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ review. Part 1 of the message gives the inputs. Part 2 states what to determine 
 shape to return. You will return a summary and claims, as one JSON object.
 ~~~~
 
-## User message (3089 chars)
+## User message (3094 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -77,8 +77,8 @@ CONDITIONS the claim is evidence on — that it has tripped, is holding, or is a
 
 For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
 CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
-facts with different periods. Publication describes the source; fact period describes when the fact
-applies. An unknown date stays unknown. Compare periods only for the same measure and basis;
+facts with different periods. Publication describes the source; fact period names the period the
+fact applies to. An unknown date stays unknown. Compare periods only for the same measure and basis;
 different periods remain distinct observations, with the latest applicable period informing a
 current-state conclusion. For the same period, an explicit correction or revision supersedes its
 predecessor; a later publication alone does not establish a revision. Where sources still conflict

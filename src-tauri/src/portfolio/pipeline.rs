@@ -9908,7 +9908,10 @@ pub(crate) mod tests {
         // moves the subject-tier relation onto the task: v52, the trail unchanged.
         // The same file then drops that sentence from both calls, the header's
         // fields carrying the relation: v53, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v53");
+        // Then PRIOR FINDINGS takes the CLAIMS SO FAR shape and gloss, the
+        // fact-period gloss aligns across surfaces and the continuity clause
+        // names its headings: v54, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v54");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

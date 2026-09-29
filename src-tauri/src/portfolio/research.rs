@@ -799,6 +799,19 @@ impl TopicSeed {
 /// the topic's ledger conditions first (stored order), then prior claims tied
 /// to an open condition, then newest known publication date, then stored order. Returns
 /// `None` when the topic has no seedable content (cold).
+/// One prior claim as PRIOR FINDINGS shows it (`portfolio-v54`): the claim
+/// and its source on the first line, the provenance under it — the CLAIMS SO
+/// FAR shape, so a prior claim and a claim so far read alike. The rendered
+/// examples render through this same function.
+pub fn seed_finding_line(c: &DistilledClaim) -> String {
+    format!(
+        "{} [{}]\n  {}",
+        c.claim,
+        c.source_url,
+        claim_date_label(&c.publication, &c.fact_period)
+    )
+}
+
 pub fn assemble_topic_seed(
     prior: Option<&TopicDistillate>,
     ledger: Option<&ThesisLedger>,
@@ -848,12 +861,7 @@ pub fn assemble_topic_seed(
                 .then(ia.cmp(ib))
         });
         for (_, c) in claims {
-            findings.push(format!(
-                "{}: {} [{}]",
-                claim_date_label(&c.publication, &c.fact_period),
-                c.claim,
-                c.source_url
-            ));
+            findings.push(seed_finding_line(c));
         }
     }
 
@@ -3198,7 +3206,7 @@ confidence in what it says, it does not exclude it.",
     out.push_str(
         "\n\n2. claims — each specific statement the findings rest on, one per item, with \
 source_id the id of the page in EVIDENCE that states it. A statement no page in EVIDENCE states \
-is not a claim. fact_period names when the fact applies, never when it was retrieved or \
+is not a claim. fact_period names the period the fact applies to, never when it was retrieved or \
 when this analysis runs: kind day (YYYY-MM-DD, e.g. 2026-06-30), month (YYYY-MM, e.g. 2026-06), \
 quarter (calendar YYYY-Qn, e.g. 2026-Q2), year (YYYY, e.g. 2026), range \
 (value and end both YYYY-MM-DD, e.g. 2026-04-01 through 2026-06-30), fiscal \
@@ -3824,7 +3832,7 @@ fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
             "What this run's research established on the holding, each with its source.\n"
         } else {
             "What this topic's earlier searching established, each with its source, the publication \
-             date the search or lead reported, and the period the fact covers.\n"
+             date the search or lead reported, and the period the fact applies to.\n"
         });
         if ctx.prior_claims.is_empty() {
             out.push_str("None.\n");
@@ -3854,7 +3862,8 @@ fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
         if !seed.findings.is_empty() {
             out.push_str(
                 "\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic, each with \
-                 its date and source.\n",
+                 its source, the publication date the search or lead reported, and the period \
+                 the fact applies to.\n",
             );
             for f in &seed.findings {
                 out.push_str(&format!("- {f}\n"));
@@ -3977,11 +3986,21 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
          a weak source lowers confidence in what it says, it does not exclude it, and a figure \
          that cannot be right is a defect of the source."
     ));
-    if ctx.seed.is_some_and(|s| !s.is_empty()) {
-        item1.push_str(
-            " Where a prior finding or a standing condition bears on a question, look for whether \
-             it still holds and for what is newer.",
-        );
+    // The clause names the Part 1 headings it draws on, and only those the
+    // brief shows: PRIOR FINDINGS renders from the seed's findings and
+    // STANDING CONDITIONS from its conditions, each only where non-empty
+    // (`portfolio-v54`).
+    if let Some(seed) = ctx.seed.filter(|s| !s.is_empty()) {
+        let subject = match (!seed.findings.is_empty(), !seed.conditions.is_empty()) {
+            (true, true) => "a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS",
+            (true, false) => "a finding under PRIOR FINDINGS",
+            (false, true) => "a condition under STANDING CONDITIONS",
+            (false, false) => unreachable!("a non-empty seed has findings or conditions"),
+        };
+        item1.push_str(&format!(
+            " Where {subject} bears on a question, look for whether it still holds and for what \
+             is newer."
+        ));
     }
     format!(
         "\n======== PART 2: TASK ========\n{opening}\n\n{item1}\n2. At most \
@@ -9087,7 +9106,7 @@ mod tests {
         for item in [
             "1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS most likely to answer them.",
             "a weak source lowers confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect of the source.",
-            "still holds and for what is newer",
+            "Where a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS bears on a question, look for whether it still holds and for what is newer.",
             "2. At most 8 tool calls in one reply.",
             "3. Stop when the questions are answered",
         ] {
@@ -9134,7 +9153,7 @@ mod tests {
             "{fu}"
         );
         assert!(
-            fu.contains("\nCLAIMS SO FAR\nWhat this topic's earlier searching established, each with its source, the publication date the search or lead reported, and the period the fact covers.\n- Widget Co held 40% share. [https://example.com/share]\n  published: unknown; fact period: unknown\n"),
+            fu.contains("\nCLAIMS SO FAR\nWhat this topic's earlier searching established, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n- Widget Co held 40% share. [https://example.com/share]\n  published: unknown; fact period: unknown\n"),
             "{fu}"
         );
         assert!(
@@ -9304,7 +9323,9 @@ mod tests {
             "{condition}"
         );
         assert_eq!(seed.findings.len(), 1);
-        assert!(seed.findings[0].starts_with("published: unknown; fact period: unknown: Widget held share ["), "{}", seed.findings[0]);
+        // `portfolio-v54`: the claim and source lead, the provenance under them.
+        assert!(seed.findings[0].starts_with("Widget held share ["), "{}", seed.findings[0]);
+        assert!(seed.findings[0].ends_with("]\n  published: unknown; fact period: unknown"), "{}", seed.findings[0]);
         assert!(!seed.findings[0].contains("PRIOR FINDING"));
         // The budget holds a huge finding out while the condition stays.
         let big = TopicDistillate {
@@ -9417,21 +9438,39 @@ pub(crate) mod samples {
         ]
     }
 
+    /// The continuity seed: the conditions as the assembler labels them, and
+    /// the prior claims through `seed_finding_line` so the example carries the
+    /// running app's shape (`portfolio-v54`).
     fn seed(stub: bool) -> TopicSeed {
+        let prior_claim = |text: String, url: &str, published: &str, kind: PeriodPrecision, period: &str| DistilledClaim {
+            claim: text,
+            source_url: url.into(),
+            retrieved_at: "2026-09-01T14:00:00Z".into(),
+            publication: PublicationDate::from_reported(Some(published)),
+            fact_period: FactPeriod { kind, value: period.into(), end: None },
+            cached: false,
+            related_condition_id: None,
+        };
         TopicSeed {
             conditions: vec![
                 "Falsifier: Automotive gross margin ex-credits falls below 14% for two consecutive quarters.".into(),
                 "Trigger: Price closes below $250.".into(),
             ],
             findings: vec![
-                format!(
-                    "2026-09-01: {} [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results]",
-                    prose(stub, "prior finding 1 — a claim the prior run kept", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%.")
-                ),
-                format!(
-                    "2026-09-01: {} [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/]",
-                    prose(stub, "prior finding 2 — a claim the prior run kept", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month.")
-                ),
+                seed_finding_line(&prior_claim(
+                    prose(stub, "prior finding 1 — a claim the prior run kept", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%."),
+                    "https://ir.tesla.com/press-release/tesla-second-quarter-2026-results",
+                    "2026-07-22",
+                    PeriodPrecision::Quarter,
+                    "2026-Q2",
+                )),
+                seed_finding_line(&prior_claim(
+                    prose(stub, "prior finding 2 — a claim the prior run kept", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month."),
+                    "https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/",
+                    "2026-08-26",
+                    PeriodPrecision::Month,
+                    "2026-07",
+                )),
             ]
         }
     }
