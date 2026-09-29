@@ -1739,8 +1739,8 @@ fn research_messages_are_two_parts_with_no_app_concept() {
     // The descriptions state the extraction-quality range and carry no weighing
     // or safety instruction (`portfolio-v50`): the frame rides the page marker.
     assert!(tools.contains("extraction quality (0 to 1"), "{tools}");
-    // `portfolio-v52`: the subject field carries no bracket; the subject-tier
-    // relation is a sentence in the task of both calls.
+    // `portfolio-v52`: the subject field carries no bracket; since `portfolio-v53`
+    // the subject-tier relation is stated nowhere — the header's fields carry it.
     assert!(tools.contains("the subjects its source is trusted on; and its extraction quality"), "{tools}");
     assert!(!tools.contains("tier holds"), "{tools}");
     assert!(!tools.contains("quoted material") && !tools.contains("defect of the source"), "{tools}");
@@ -1765,9 +1765,10 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(part1.contains("0 is a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
             assert!(part1.contains("source tier from 0 to 5"), "{}: the tier scale's range is unstated\n{part1}", s.label);
             assert!(!part1.contains("tier holds"), "{}: {part1}", s.label);
-            // `portfolio-v52`: the synthesis task weighs by source tier and carries the subject-tier rule.
+            // `portfolio-v52`: the synthesis task weighs by source tier; `portfolio-v53`:
+            // no subject-tier sentence.
             assert!(
-                part2.contains("Weigh each page by its source tier and extraction quality") && part2.contains("A source tier applies to the subjects the source is trusted on."),
+                part2.contains("Weigh each page by its source tier and extraction quality") && !part2.contains("applies to the subjects"),
                 "{}: {part2}",
                 s.label
             );
@@ -1854,13 +1855,14 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 assert!(part2.contains("3. Stop when the questions are answered"), "{}: {part2}", s.label);
             }
             assert!(part2.contains("a weak source lowers confidence"), "{}: {part2}", s.label);
-            // `portfolio-v52`: the preference by the scales' endpoints, then the subject-tier rule.
+            // `portfolio-v52`: the preference by the scales' endpoints; `portfolio-v53`:
+            // no subject-tier sentence — the header's fields carry the relation.
             assert!(
                 part2.contains("Prefer a source tier nearer 0 and an extraction quality nearer 1 where") && !part2.contains("lower tier number"),
                 "{}: {part2}",
                 s.label
             );
-            assert!(part2.contains("A source tier applies to the subjects the source is trusted on."), "{}: {part2}", s.label);
+            assert!(!part2.contains("applies to the subjects"), "{}: {part2}", s.label);
             // `portfolio-v50`: the fallible-source clause rides the weighing sentence.
             assert!(part2.contains("a figure that cannot be right is a defect of the source"), "{}: {part2}", s.label);
         } else {

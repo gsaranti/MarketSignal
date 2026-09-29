@@ -3078,8 +3078,8 @@ them and the shape to return. You will return {names}, as one JSON object."
 
 /// The EVIDENCE section's gloss, once per synthesis message (`portfolio-v43`;
 /// the tier scale's range stated since `portfolio-v50`; the value named
-/// `source tier` and the subject-tier relation moved onto the task since
-/// `portfolio-v52`).
+/// `source tier` since `portfolio-v52`, the subject-tier relation carried by
+/// the header's two fields and stated nowhere since `portfolio-v53`).
 /// Extraction quality is glossed as the measure it is — extracted text
 /// against a full article's worth, clamped — and the stub flag as too little
 /// text to stand as the page (`web_research::fetch::quality_of`; Codex,
@@ -3193,8 +3193,7 @@ sources disagree, and which questions the evidence leaves unanswered{unanswered}
     // `portfolio-v43` round 1).
     out.push_str(
         " Weigh each page by its source tier and extraction quality: a weak source lowers \
-confidence in what it says, it does not exclude it. A source tier applies to the subjects the \
-source is trusted on.",
+confidence in what it says, it does not exclude it.",
     );
     out.push_str(
         "\n\n2. claims — each specific statement the findings rest on, one per item, with \
@@ -3970,14 +3969,13 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
         format!("1. Search for what {questions} {asks}, then fetch and read {candidates} most likely to answer {them}.")
     };
     // The preference is stated by the two scales' endpoints, in the words the
-    // results and headers carry, and the subject-tier relation is its own
-    // sentence here rather than a bracket on the fetch description
-    // (`portfolio-v52`).
+    // results and headers carry (`portfolio-v52`). The subject-tier relation is
+    // not stated: the header's `source tier N | trusted on …` fields carry it
+    // (`portfolio-v53`, ruled 2026-09-29).
     item1.push_str(&format!(
         " Prefer a source tier nearer 0 and an extraction quality nearer 1 where {allow}; \
          a weak source lowers confidence in what it says, it does not exclude it, and a figure \
-         that cannot be right is a defect of the source. A source tier applies to the subjects \
-         the source is trusted on."
+         that cannot be right is a defect of the source."
     ));
     if ctx.seed.is_some_and(|s| !s.is_empty()) {
         item1.push_str(
@@ -9075,9 +9073,11 @@ mod tests {
             tools.contains("The source tier runs from 0 to 5: 0 is a primary source") && tools.contains("extraction quality"),
             "{tools}"
         );
-        // `portfolio-v52`: the value is `source tier` on every surface, and the
-        // subject-tier relation is a task sentence, not a bracket on the description.
+        // `portfolio-v52`: the value is `source tier` on every surface and the
+        // description carries no subject-tier bracket; since `portfolio-v53` the
+        // relation is stated nowhere — the header's two fields carry it.
         assert!(!tools.contains("tier holds"), "{tools}");
+        assert!(!user.contains("applies to the subjects"), "{user}");
         assert!(tools.contains("its source tier (0 to 5, as on a search result); the subjects its source is trusted on; and its extraction quality"), "{tools}");
         assert!(
             !part1.to_lowercase().contains("your ") && !part1.contains("Search,"),
@@ -9086,7 +9086,7 @@ mod tests {
         assert!(part2.starts_with("Find what the web shows on each question under TOPIC"), "{part2}");
         for item in [
             "1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS most likely to answer them.",
-            "a weak source lowers confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect of the source. A source tier applies to the subjects the source is trusted on.",
+            "a weak source lowers confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect of the source.",
             "still holds and for what is newer",
             "2. At most 8 tool calls in one reply.",
             "3. Stop when the questions are answered",

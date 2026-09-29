@@ -9906,7 +9906,9 @@ pub(crate) mod tests {
         // File 03 (2026-09-29) names the value `source tier` on every model-facing
         // surface, states the weighing preference by the scales' endpoints and
         // moves the subject-tier relation onto the task: v52, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v52");
+        // The same file then drops that sentence from both calls, the header's
+        // fields carrying the relation: v53, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v53");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

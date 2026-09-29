@@ -1,6 +1,6 @@
 # Research gathering — root pass, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v52`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v53`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The first gathering turn of a holding's first research topic on a first analysis.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 2902 chars — the messages and tools as serialized |
+| Prompt material | 2838 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (1424 chars)
+## User message (1360 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -59,8 +59,7 @@ Find what the web shows on each question under TOPIC for this holding, as of the
 1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS
 most likely to answer them. Prefer a source tier nearer 0 and an extraction quality nearer 1 where
 the questions allow; a weak source lowers confidence in what it says, it does not exclude it, and a
-figure that cannot be right is a defect of the source. A source tier applies to the subjects the
-source is trusted on.
+figure that cannot be right is a defect of the source.
 2. At most 8 tool calls in one reply.
 3. Stop when the questions are answered, or when what remains cannot be found: reply with one
 sentence saying which, and no tool call.

@@ -39,7 +39,7 @@ The order serves the runtime's prompt cache: consecutive syntheses on one holdin
 A truncated or re-read page shortens that shared prefix, and the saving is an expectation of the runtime until a run's serve log confirms it.
 Each page's header states the source tier (0 to 5: 0 a primary source, 5 sentiment only), the publication date the search reported, the retrieval time, the subjects the source is trusted on, the extraction quality and the stub flag, with the fields glossed once above the pages.
 Since `portfolio-v50`, that subject field reads `trusted on`, and the fetch description and the gloss name it as the subjects the source is trusted on.
-Since `portfolio-v52` (ruled 2026-09-29), the synthesis task's weighing item carries the subject-tier relation as its own sentence: a source tier applies to the subjects the source is trusted on.
+Since `portfolio-v53` (ruled 2026-09-29), the relation between the tier and those subjects is stated nowhere in the prompts: the header's `source tier N | trusted on …` fields carry it side by side.
 Part 2 is the task in output order and the shape.
 It carries no prior findings, standing conditions, news leads or URL roster beyond the evidence, and no gathering-stage instruction: the write-up is of this pass's pages, and the distillation merges passes and priors.
 The distillation messages are the same frame (`portfolio-v44`, ruled 2026-09-17); their contract is canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation).
@@ -52,7 +52,7 @@ The topic's own text follows them: the topic, on a follow-up pass the question i
 Consecutive topic roots on one holding can then share their leading text through the reused pages, with the topic text after them short enough to sit past the previous root's saved checkpoint.
 On a continuity run the prior findings sit in that topic text and can carry it past the checkpoint distance, so the saving there depends on the seed's size.
 Either saving is an expectation of the runtime until a run's serve log confirms it.
-Its Part 2 states what to find, how to weigh a source (a source tier nearer 0 and an extraction quality nearer 1 preferred; a weak source lowers confidence, it does not exclude; a figure that cannot be right is a defect of the source; a source tier applies to the subjects the source is trusted on), the per-reply tool-call bound, and when to stop — a reply with no tool call.
+Its Part 2 states what to find, how to weigh a source (a source tier nearer 0 and an extraction quality nearer 1 preferred; a weak source lowers confidence, it does not exclude; a figure that cannot be right is a defect of the source), the per-reply tool-call bound, and when to stop — a reply with no tool call.
 Since `portfolio-v46`, ordinary topic and follow-up gathering begins with a bounded selection of raw pages already retrieved while researching this holding, before another search is requested.
 The transient holding-scoped inventory retains capped page text together with the title, publication date, original retrieval timestamp, source annotation, requested/final URL lineage and truncation status; a successful document-cache read can populate it, but failed reads and empty bodies cannot supply reused evidence.
 Selection follows first-retrieval order, rechecks current URL policy on the requested and final addresses, and fits complete page framing plus usable body text into the existing initial-message allowance after reserving the questions, task and first appended remaining-reply message.
@@ -80,7 +80,8 @@ Each claim's provenance line reads `published` and `fact period` on every surfac
 The countdown message states that pages fetched on the last reply are kept, since the loop executes the last reply's tool calls before gathering ends.
 Since `portfolio-v52` (ruled 2026-09-29), the source-quality value is named `source tier` on every surface the model sees: the two tool descriptions, each search result line, each page header in gathering and in the synthesis EVIDENCE block, the weighing sentences and the EVIDENCE gloss.
 The gathering weighing sentence prefers a source tier nearer 0 and an extraction quality nearer 1, stated by the two scales' endpoints in the words the results and headers carry.
-The subject-tier relation is no longer a bracket on the fetch description or a clause in the EVIDENCE gloss; it is its own sentence in the task of both calls, "A source tier applies to the subjects the source is trusted on."
+The subject-tier relation is no longer a bracket on the fetch description or a clause in the EVIDENCE gloss.
+Since `portfolio-v53` (ruled 2026-09-29), it is not a task sentence either: the header's two fields carry it, and the prompts state nothing about their link.
 All turn, tool-call, fetch, elapsed-time and context limits remain unchanged.
 The tool results are data in the same register: a search result's fields, a page's address, title, dates and annotation fields and its text framed as quoted material, and a failed search or fetch stated as such, with no instruction in any of them.
 The `format` grammar is a decoding constraint the model never sees.

@@ -2403,7 +2403,11 @@ pub struct HoldingAudit {
 /// bracket and the EVIDENCE gloss and rides the task of both calls as its
 /// own sentence, "A source tier applies to the subjects the source is
 /// trusted on." The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v52";
+/// `portfolio-v53` (file 03, 2026-09-29): that sentence is dropped from both
+/// calls — the header's `source tier N | trusted on …` fields carry the
+/// relation, and the sentence only restated their link. The checkpoint
+/// trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v53";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

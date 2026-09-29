@@ -1,6 +1,6 @@
 # Research synthesis — follow-up pass, gathering clean
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v52`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v53`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The synthesis call closes a pass: no tools, the findings grammar as the format, no history — the evidence packet is rebuilt from the run's store, and the model cites sources by the pass-local id the packet shows.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4083 chars — the messages and tools as serialized |
+| Prompt material | 4019 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ review. Part 1 of the message gives the inputs. Part 2 states what to determine 
 shape to return. You will return findings, claims and a follow-up proposal, as one JSON object.
 ~~~~
 
-## User message (3653 chars)
+## User message (3589 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -75,8 +75,7 @@ with no code fence and no surrounding text.
 1. findings — written first and never left empty: what EVIDENCE shows on the FOLLOW-UP question: the
 figures with their dates and periods as the source states them, where sources disagree, and what the
 evidence leaves unanswered. Weigh each page by its source tier and extraction quality: a weak source
-lowers confidence in what it says, it does not exclude it. A source tier applies to the subjects the
-source is trusted on.
+lowers confidence in what it says, it does not exclude it.
 
 2. claims — each specific statement the findings rest on, one per item, with source_id the id of the
 page in EVIDENCE that states it. A statement no page in EVIDENCE states is not a claim. fact_period
