@@ -2432,7 +2432,16 @@ pub struct HoldingAudit {
 /// fund exposure and stock results topics), "genuinely" (forward-thematic and
 /// technology), "exactly" and "real" (technology), "real" (forward-thematic)
 /// — the questions otherwise unchanged. The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v57";
+/// `portfolio-v58` (prompt read-through, file 07, 2026-09-29): a tool result
+/// never carries the operator's error text. A failed search returns one
+/// fixed sentence; a failed fetch returns one of five chosen by the
+/// failure's typed class (the site's HTTP answer with its status, an address
+/// the app does not fetch, a page that could not be read, an invalid
+/// address, no answer), a remembered failure replaying its class; the raw
+/// error rides the run tracker's request row. A search whose results all
+/// fall to the rank-time filter is an empty answer — "No results.", counted
+/// as empty, not failed. The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v58";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

@@ -9918,7 +9918,10 @@ pub(crate) mod tests {
         // header: v56, the trail unchanged.
         // File 06 (2026-09-29) drops the filler words from the agenda's topic
         // questions: v57, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v57");
+        // File 07 (2026-09-29) gives the failed tool results fixed sentences by
+        // class and makes the empty search an empty answer: v58, the trail
+        // unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v58");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

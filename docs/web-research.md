@@ -72,6 +72,13 @@ The topic's questions remain visible and the model judges what the shown pages l
 Since `portfolio-v50`, that item names the PAGES ALREADY RETRIEVED block it reads, and a brief with no page shown asks to search first.
 Since `portfolio-v56` (ruled 2026-09-29), that block's gloss says each page is shown as `web_fetch` returns it, so its header fields point at the fetch description that defines them.
 Since `portfolio-v57` (ruled 2026-09-29), the topic questions carry no filler word: "actually", "genuinely", "exactly" and "real" left the fund exposure, stock results, forward-thematic and technology questions, which are otherwise unchanged.
+Since `portfolio-v58` (ruled 2026-09-29), a tool result never carries the operator's error text.
+A failed search returns one fixed sentence, "SEARCH FAILED: the search did not complete."
+A failed fetch returns one of five, chosen by the failure's typed class: the site's HTTP answer with its status, an address the app does not fetch, a page that could not be read, an invalid address, or no answer, each ending "No text was retrieved."
+A remembered failure replays the class its live failure had, so the line reads the same either way.
+The raw error text rides the run tracker's request row, where it was already recorded.
+A search whose results all fall to the rank-time filter is an empty answer, rendered "No results." and counted as an empty search, not a failed one; before v58 it was an error whose text named SearXNG to the model.
+A call the app cannot read returns "ERROR: unknown or malformed tool call …" with the name it saw.
 Its fetch clause names the news leads as candidates beside the search results, under the one test of what is most likely to answer the questions.
 The gathering system message names the two tools its verbs map onto, `web_search` and `web_fetch`.
 The fetch tool's description states the extraction-quality range, 0 to 1, and the stub flag in plain words, and carries no weighing or safety instruction.

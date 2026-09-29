@@ -397,12 +397,12 @@ fn examples() -> Vec<Example> {
             sentences: lines(&[
                 "The second gathering request: the first request's messages, then the model's tool calls echoed back as an assistant message, one tool message per call in order, and the next countdown.",
                 "The history is never rewritten; each turn appends, and the whole packet is sized against the input guard before issue.",
-                "Shown here: a search that returned results and a fetch that served a page; the four other results a tool message can carry follow the request.",
+                "Shown here: a search that returned results and a fetch that served a page; the other results a tool message can carry follow the request — an empty search, a failed search, a thin stub, the five fetch failures by class, and a call the app could not read.",
             ]),
             stage,
             request: pipeline::research_turn_request(REASONER, messages, root.tools.as_ref(), None),
             variants: vec![],
-            extras: [1usize, 2, 4, 5]
+            extras: [1usize, 2, 4, 5, 6, 7, 8, 9, 10]
                 .iter()
                 .map(|&i| (format!("Tool message — {}", tool_results[i].0), tool_results[i].1.clone()))
                 .collect(),

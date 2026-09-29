@@ -1,11 +1,11 @@
 # Research gathering — the second turn, after tool results
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v56`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v58`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The second gathering request: the first request's messages, then the model's tool calls echoed back as an assistant message, one tool message per call in order, and the next countdown.
 The history is never rewritten; each turn appends, and the whole packet is sized against the input guard before issue.
-Shown here: a search that returned results and a fetch that served a page; the four other results a tool message can carry follow the request.
+Shown here: a search that returned results and a fetch that served a page; the other results a tool message can carry follow the request — an empty search, a failed search, a thin stub, the five fetch failures by class, and a call the app could not read.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 
 ## Request
@@ -180,7 +180,7 @@ No results.
 ## Tool message — web_search — failed
 
 ~~~~text
-SEARCH FAILED: <the error>.
+SEARCH FAILED: the search did not complete.
 ~~~~
 
 ## Tool message — web_fetch — a thin stub
@@ -194,8 +194,38 @@ event-verification | extraction quality 0.04 | stub
 --- END PAGE TEXT ---
 ~~~~
 
-## Tool message — web_fetch — failed
+## Tool message — web_fetch — failed, the site answered
 
 ~~~~text
-FETCH FAILED: <the error>. No text was retrieved.
+FETCH FAILED: the site answered HTTP 403. No text was retrieved.
+~~~~
+
+## Tool message — web_fetch — failed, not fetched
+
+~~~~text
+FETCH FAILED: this address is not fetched. No text was retrieved.
+~~~~
+
+## Tool message — web_fetch — failed, unreadable
+
+~~~~text
+FETCH FAILED: the page could not be read. No text was retrieved.
+~~~~
+
+## Tool message — web_fetch — failed, invalid address
+
+~~~~text
+FETCH FAILED: not a valid address. No text was retrieved.
+~~~~
+
+## Tool message — web_fetch — failed, no answer
+
+~~~~text
+FETCH FAILED: the site did not answer. No text was retrieved.
+~~~~
+
+## Tool message — a call the app could not read
+
+~~~~text
+ERROR: unknown or malformed tool call "web_search (missing query)".
 ~~~~

@@ -1135,6 +1135,10 @@ struct RememberedFailure {
     message: String,
     denial: Option<(u16, String)>,
     class: FailureClass,
+    /// The typed root of the original error, replayed as the root of every
+    /// remembered reply so the model-facing line reads the same class the
+    /// live failure did (`portfolio-v58`).
+    failure: Option<crate::web_research::fetch::FetchFailure>,
     until: Option<Duration>,
     retry_at: Duration,
 }
@@ -1143,7 +1147,10 @@ impl RememberedFailure {
     fn reply<T>(&self, disposition: FetchDisposition, attempted: bool, now: Duration) -> FetchAttempt<T> {
         FetchAttempt {
             denial: self.denial.clone(),
-            result: Err(anyhow::anyhow!(self.message.clone())),
+            result: Err(match self.failure {
+                Some(failure) => anyhow::Error::new(failure).context(self.message.clone()),
+                None => anyhow::anyhow!(self.message.clone()),
+            }),
             disposition,
             attempted,
             retry_delay: (disposition == FetchDisposition::Live
@@ -1320,6 +1327,7 @@ impl LiveResearchWeb {
                 .map(|v| v.detail.clone())
                 .unwrap_or_else(|| format!("{err:#}")),
             class,
+            failure: failure_of(&err),
             until: duration.map(|duration| now.saturating_add(duration.max(retry_after))),
             retry_at: now.saturating_add(Duration::from_secs(1).max(retry_after)),
         };
@@ -2592,10 +2600,10 @@ impl ResearchRunner<'_> {
                     &series,
                     &ctx.topic.key,
                     "failed",
-                    Some(e.to_string()),
+                    Some(format!("{e:#}")),
                     target(),
                 );
-                format!("SEARCH FAILED: {e:#}.")
+                SEARCH_FAILED_LINE.to_string()
             }
         }
     }
@@ -2950,9 +2958,7 @@ impl ResearchRunner<'_> {
                 }
                 render_page(&page, annotation.as_ref(), published.as_deref())
             }
-            Err(e) => {
-                format!("FETCH FAILED: {e:#}. No text was retrieved.")
-            }
+            Err(e) => fetch_failed_line(&e),
         }
     }
 
@@ -4016,6 +4022,34 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     )
 }
 
+/// The one line a failed search returns to the model (`portfolio-v58`, ruled
+/// 2026-09-29): a fixed sentence, never the operator's error text — that
+/// rides the run tracker's request row.
+pub(crate) const SEARCH_FAILED_LINE: &str = "SEARCH FAILED: the search did not complete.";
+
+/// The one line a failed fetch returns to the model (`portfolio-v58`, ruled
+/// 2026-09-29): a fixed sentence chosen by the failure's typed class — the
+/// site's own HTTP answer with its status (a paywall or a dead link reads
+/// differently from a site worth trying again), an address the app does not
+/// fetch, a document that could not be read, an invalid address, or no
+/// answer — never the operator's error text, which rides the tracker row.
+pub(crate) fn fetch_failed_line(err: &anyhow::Error) -> String {
+    use crate::web_research::fetch::{failure_of, FetchFailure};
+    let reason = match failure_of(err) {
+        Some(FetchFailure::Http(status)) => format!("the site answered HTTP {status}"),
+        Some(FetchFailure::Policy) => "this address is not fetched".to_string(),
+        Some(FetchFailure::Deterministic) => "the page could not be read".to_string(),
+        None if err
+            .chain()
+            .any(|cause| cause.downcast_ref::<url::ParseError>().is_some()) =>
+        {
+            "not a valid address".to_string()
+        }
+        None => "the site did not answer".to_string(),
+    };
+    format!("FETCH FAILED: {reason}. No text was retrieved.")
+}
+
 /// Render search hits as a tool result.
 fn render_hits(hits: &[SearchHit]) -> String {
     if hits.is_empty() {
@@ -4120,6 +4154,37 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::sync::Mutex;
+
+    /// `portfolio-v58`: the model-facing failure lines are fixed sentences by
+    /// class, and a remembered failure replays the class its live failure had.
+    #[test]
+    fn failed_tool_results_are_fixed_sentences_by_class() {
+        use crate::web_research::fetch::FetchFailure;
+        assert_eq!(SEARCH_FAILED_LINE, "SEARCH FAILED: the search did not complete.");
+        for (err, line) in [
+            (anyhow::Error::new(FetchFailure::Http(403)).context("fetch of https://x returned HTTP 403"), "FETCH FAILED: the site answered HTTP 403. No text was retrieved."),
+            (anyhow::Error::new(FetchFailure::Policy).context("fetch blocked: x is on the deny list"), "FETCH FAILED: this address is not fetched. No text was retrieved."),
+            (anyhow::Error::new(FetchFailure::Deterministic), "FETCH FAILED: the page could not be read. No text was retrieved."),
+            (anyhow::Error::new(url::ParseError::EmptyHost).context("unparseable URL \"http://\""), "FETCH FAILED: not a valid address. No text was retrieved."),
+            (anyhow::anyhow!("SearXNG unreachable at http://127.0.0.1:8080: connection refused"), "FETCH FAILED: the site did not answer. No text was retrieved."),
+        ] {
+            let rendered = fetch_failed_line(&err);
+            assert_eq!(rendered, line, "{err:#}");
+            assert!(!rendered.contains("SearXNG") && !rendered.contains("http"), "{rendered}");
+        }
+        let remembered = RememberedFailure {
+            message: "fetch of https://x returned HTTP 403".into(),
+            denial: Some((403, "https://x".into())),
+            class: FailureClass::Denied,
+            failure: Some(FetchFailure::Http(403)),
+            until: None,
+            retry_at: Duration::ZERO,
+        };
+        let replay: FetchAttempt<FetchedPage> = remembered.reply(FetchDisposition::Remembered, false, Duration::ZERO);
+        let err = replay.result.expect_err("a remembered failure replays as an error");
+        assert_eq!(fetch_failed_line(&err), "FETCH FAILED: the site answered HTTP 403. No text was retrieved.");
+        assert!(format!("{err:#}").contains("HTTP 403"), "{err:#}");
+    }
 
     /// The seed's lines as one text, for the seed tests' order and budget
     /// checks.
@@ -9679,13 +9744,21 @@ pub(crate) mod samples {
         ];
         let ir = page(IR_URL, &ir_title(stub), &ir_text(stub), 0.92, false);
         let wsj = page(WSJ_URL, &wsj_title(stub), &wsj_text(stub), 0.04, true);
+        use crate::web_research::fetch::FetchFailure;
+        // The failure lines render through the same classifier the loop uses,
+        // one per class, so the examples cannot drift from the code.
         vec![
             ("web_search — results".into(), render_hits(&hits)),
             ("web_search — no results".into(), render_hits(&[])),
-            ("web_search — failed".into(), "SEARCH FAILED: <the error>.".into()),
+            ("web_search — failed".into(), SEARCH_FAILED_LINE.into()),
             ("web_fetch — a served page".into(), render_page(&ir, Some(&annotation(0, &["filings", "financials"], 0.92, false)), Some("2026-07-22"))),
             ("web_fetch — a thin stub".into(), render_page(&wsj, Some(&annotation(1, &["event-verification"], 0.04, true)), Some("2026-09-03"))),
-            ("web_fetch — failed".into(), "FETCH FAILED: <the error>. No text was retrieved.".into()),
+            ("web_fetch — failed, the site answered".into(), fetch_failed_line(&anyhow::Error::new(FetchFailure::Http(403)))),
+            ("web_fetch — failed, not fetched".into(), fetch_failed_line(&anyhow::Error::new(FetchFailure::Policy))),
+            ("web_fetch — failed, unreadable".into(), fetch_failed_line(&anyhow::Error::new(FetchFailure::Deterministic))),
+            ("web_fetch — failed, invalid address".into(), fetch_failed_line(&anyhow::Error::new(url::ParseError::EmptyHost))),
+            ("web_fetch — failed, no answer".into(), fetch_failed_line(&anyhow::anyhow!("connection refused"))),
+            ("a call the app could not read".into(), "ERROR: unknown or malformed tool call \"web_search (missing query)\".".into()),
         ]
     }
 }

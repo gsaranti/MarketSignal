@@ -379,12 +379,14 @@ impl SearchTool {
     }
 
     /// One search, dedup-cached. The run-scoped cache short-circuits a repeated
-    /// query before any network call; only successful results are cached (a
-    /// failure stays retryable). "Returning nothing" is judged **after** the
-    /// rank-time filter: a result set surviving only as denied or malformed
-    /// entries is no more servable than a raw empty one, so it fails the same
-    /// way — and with no fallback, that failure reaches the loop as a degraded
-    /// search.
+    /// query before any network call; only answered searches are cached (a
+    /// failure stays retryable), an empty answer included. "Returning nothing"
+    /// is judged **after** the rank-time filter: a result set surviving only
+    /// as denied or malformed entries is no more servable than a raw empty one,
+    /// so both are the same empty answer — `Ok` and empty, which the loop
+    /// renders as "No results." and counts as an empty search, never a failed
+    /// one (`portfolio-v58`, ruled 2026-09-29; before it the empty set was an
+    /// error whose text named SearXNG to the model).
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         let key = normalize_query(query);
         if let Some(cached) = self.cache.lock().unwrap().get(&key).cloned() {
@@ -402,13 +404,7 @@ impl SearchTool {
 
     fn search_uncached(&self, query: &str) -> Result<Vec<SearchHit>> {
         match &self.searxng {
-            Some(client) => {
-                let filtered = filter_and_collapse(client.search_raw(query)?);
-                if filtered.is_empty() {
-                    bail!("SearXNG returned no usable results");
-                }
-                Ok(filtered)
-            }
+            Some(client) => Ok(filter_and_collapse(client.search_raw(query)?)),
             None => bail!("no SearXNG endpoint configured"),
         }
     }
@@ -535,18 +531,18 @@ mod tests {
     }
 
     #[test]
-    fn searxng_filtered_to_empty_is_a_degraded_error() {
+    fn searxng_filtered_to_empty_is_an_empty_answer() {
         // SearXNG responds, but every hit dies at the rank-time filter (a denied
-        // host) — as unservable as a raw empty set. SearXNG-only, so that
-        // reaches the loop as a degraded (failed) search, never a fallback.
+        // host) — as unservable as a raw empty set, and the same empty answer:
+        // `Ok` and empty, never an error (`portfolio-v58`).
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![("Content-Type", "application/json")],
             body: r#"{"results":[{"title":"Buy signal!","url":"https://stockinvest.us/x","content":""}]}"#,
         }]);
         let search = SearchTool::new(Some(SearxngClient::new(&server.base_url).unwrap()));
-        let err = search.search("widget co").unwrap_err().to_string();
-        assert!(err.contains("no usable results"), "{err}");
+        let hits = search.search("widget co").expect("an empty answer is not an error");
+        assert!(hits.is_empty(), "{hits:?}");
     }
 
     #[test]
