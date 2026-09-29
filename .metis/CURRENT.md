@@ -25,9 +25,8 @@ Nothing in flight; the working tree is clean at `1e40fc8`.
 
 ## Open questions
 
-- Whether the §Slices grouping belongs in the findings doc or only here — carried.
-- Whether `.metis/INDEX.md` gets a lookup row for the prompt examples (suggested under Local analysis suite: "Rendered prompt examples — prompts/README.md; prompts/portfolio/") — the user's call, carried.
-- Whether the stubbed MARKET ANALYSIS sections in the examples should render the report's real text instead — carried.
+None.
+Ruled 2026-09-28: the §Slices grouping question is closed as already completed; `.metis/INDEX.md` gets no row for the prompt examples; the examples keep the MARKET ANALYSIS sections stubbed.
 
 ## Where to start
 
