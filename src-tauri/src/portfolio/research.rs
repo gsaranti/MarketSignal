@@ -636,7 +636,7 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
                 "fund-exposure-profile",
                 "Exposure profile",
                 &[
-                    "What exposure does the fund actually supply — its largest holdings, its sector, country and factor tilts, and how they have shifted?",
+                    "What exposure does the fund supply — its largest holdings, its sector, country and factor tilts, and how they have shifted?",
                     "What direct or lower-cost vehicles supply the same exposure?",
                 ],
             ),
@@ -668,7 +668,7 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
             "results-revisions",
             "Recent results and estimate revisions",
             &[
-                "What did the most recent results actually show versus expectations?",
+                "What did the most recent results show versus expectations?",
                 "How are analyst estimates and guidance moving since?",
             ],
         ),
@@ -700,8 +700,8 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
             "forward-thematic",
             "Forward opportunity and thematic fit",
             &[
-                "How large and real is the forward opportunity (TAM, optionality)?",
-                "Which durable themes does the name genuinely expose, and how directly?",
+                "How large is the forward opportunity (TAM, optionality)?",
+                "Which durable themes does the name expose, and how directly?",
             ],
         ),
     ];
@@ -739,8 +739,8 @@ pub fn technology_topic() -> AgendaTopic {
         "technology-event",
         "Technology-event impact assessment",
         &[
-            "What exactly is the technology or announcement that repriced (or could reprice) this name?",
-            "Sizing the holding's real exposure: does this genuinely impair (or benefit) its economics, on what mechanism and timescale?",
+            "What is the technology or announcement that repriced (or could reprice) this name?",
+            "Sizing the holding's exposure: does this impair (or benefit) its economics, on what mechanism and timescale?",
         ],
     )
 }

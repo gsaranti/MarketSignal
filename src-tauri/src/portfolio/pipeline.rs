@@ -9916,7 +9916,9 @@ pub(crate) mod tests {
         // provenance gloss: v55, the trail unchanged.
         // File 05 (2026-09-29) points the reused-pages gloss at web_fetch's
         // header: v56, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v56");
+        // File 06 (2026-09-29) drops the filler words from the agenda's topic
+        // questions: v57, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v57");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

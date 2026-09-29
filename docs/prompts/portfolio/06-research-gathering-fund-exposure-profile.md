@@ -1,6 +1,6 @@
 # Research gathering — a fund's exposure-profile topic
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v53`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v57`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 The root-pass shape on a fund: the agenda's fund topics replace the stock topics, and the header names the fund.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 2866 chars — the messages and tools as serialized |
+| Prompt material | 2857 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (1388 chars)
+## User message (1379 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -48,8 +48,8 @@ https://www.reuters.com/markets/funds/vanguard-bond-index-fee-cut-2026-09-08/ (r
 
 TOPIC
 Exposure profile
-- What exposure does the fund actually supply — its largest holdings, its sector, country and factor
-tilts, and how they have shifted?
+- What exposure does the fund supply — its largest holdings, its sector, country and factor tilts,
+and how they have shifted?
 - What direct or lower-cost vehicles supply the same exposure?
 
 ======== PART 2: TASK ========

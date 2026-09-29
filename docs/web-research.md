@@ -71,6 +71,7 @@ A bounded transport retry repeats the identical packet and count without appendi
 The topic's questions remain visible and the model judges what the shown pages leave unanswered; where a page is shown, Part 2 asks it to read those pages before searching for the remaining answers, with no question-status tool or app-assigned answered list.
 Since `portfolio-v50`, that item names the PAGES ALREADY RETRIEVED block it reads, and a brief with no page shown asks to search first.
 Since `portfolio-v56` (ruled 2026-09-29), that block's gloss says each page is shown as `web_fetch` returns it, so its header fields point at the fetch description that defines them.
+Since `portfolio-v57` (ruled 2026-09-29), the topic questions carry no filler word: "actually", "genuinely", "exactly" and "real" left the fund exposure, stock results, forward-thematic and technology questions, which are otherwise unchanged.
 Its fetch clause names the news leads as candidates beside the search results, under the one test of what is most likely to answer the questions.
 The gathering system message names the two tools its verbs map onto, `web_search` and `web_fetch`.
 The fetch tool's description states the extraction-quality range, 0 to 1, and the stub flag in plain words, and carries no weighing or safety instruction.

@@ -2427,7 +2427,12 @@ pub struct HoldingAudit {
 /// ALREADY RETRIEVED gloss says each page is shown as web_fetch returns it,
 /// so the header fields point at the fetch description that defines them.
 /// The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v56";
+/// `portfolio-v57` (prompt read-through, file 06 and the agenda, 2026-09-29):
+/// the research topics' questions drop their filler words — "actually" (the
+/// fund exposure and stock results topics), "genuinely" (forward-thematic and
+/// technology), "exactly" and "real" (technology), "real" (forward-thematic)
+/// — the questions otherwise unchanged. The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v57";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
