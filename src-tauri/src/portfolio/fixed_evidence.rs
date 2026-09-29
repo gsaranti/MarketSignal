@@ -1789,7 +1789,11 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(!s.user.contains("Replies remaining"), "{}: {}", s.label, s.user);
             assert_eq!(s.appended.len(), 1);
             assert_eq!(s.appended[0].role, "user");
-            assert_eq!(s.appended[0].content, "SEARCHING\nReplies remaining, including this one: 8.\n");
+            // `portfolio-v51`: the countdown says a last-reply fetch still lands.
+            assert_eq!(
+                s.appended[0].content,
+                "SEARCHING\nReplies remaining, including this one: 8.\nPages fetched on the last reply are kept.\n"
+            );
             assert!(banned_hits(&s.appended[0].content).is_empty());
             assert_no_routing_words(&s.label, &s.appended[0].content);
             if s.label.contains("previously retrieved pages") {
@@ -1803,6 +1807,21 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     "{}: {part2}",
                     s.label
                 );
+            } else if s.label.contains("follow-up pass") {
+                // `portfolio-v51`: the follow-up pass's items name its one question.
+                assert!(
+                    part2.contains("1. Search for what the FOLLOW-UP question asks") && !part2.contains("Read the pages"),
+                    "{}: {part2}",
+                    s.label
+                );
+                assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
+                assert!(
+                    part2.contains("under HOLDING. The TOPIC questions are what the FOLLOW-UP question serves; this pass does not search them, and CLAIMS SO FAR need no second search."),
+                    "{}: {part2}",
+                    s.label
+                );
+                assert!(part1.contains("each with its source, the publication date the search or lead reported, and the period the fact covers.\n"), "{}: {part1}", s.label);
+                assert!(part1.contains("\n  published: "), "{}: {part1}", s.label);
             } else if !s.label.contains("disconfirming") {
                 assert!(
                     part2.contains("1. Search for what the questions ask") && !part2.contains("Read the pages"),
@@ -1819,7 +1838,11 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             // `portfolio-v50`: the leads ride the fetch clause, not a sentence of their own.
             assert!(!part2.contains("worth fetching"), "{}: {part2}", s.label);
             assert!(part2.contains("2. At most 8 tool calls in one reply."), "{}: {part2}", s.label);
-            assert!(part2.contains("3. Stop when the questions are answered"), "{}: {part2}", s.label);
+            if s.label.contains("follow-up pass") {
+                assert!(part2.contains("3. Stop when the FOLLOW-UP question is answered, or when what remains cannot be found:"), "{}: {part2}", s.label);
+            } else {
+                assert!(part2.contains("3. Stop when the questions are answered"), "{}: {part2}", s.label);
+            }
             assert!(part2.contains("a weak source lowers confidence"), "{}: {part2}", s.label);
             // `portfolio-v50`: the fallible-source clause rides the weighing sentence.
             assert!(part2.contains("a figure that cannot be right is a defect of the source"), "{}: {part2}", s.label);

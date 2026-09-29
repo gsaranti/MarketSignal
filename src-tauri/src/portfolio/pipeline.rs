@@ -9899,7 +9899,11 @@ pub(crate) mod tests {
         // its fetch clause, names the two tools in the gathering system message
         // and moves the fallible-source clause onto the weighing sentence, the
         // header's subject field reading `trusted on`: v50, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v50");
+        // File 02 of the read-through (2026-09-28) splits the follow-up pass's
+        // opening into two sentences, names the FOLLOW-UP question in its items,
+        // shortens the claim provenance label to `published` and glosses it,
+        // and adds the last-reply line to the countdown: v51, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v51");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

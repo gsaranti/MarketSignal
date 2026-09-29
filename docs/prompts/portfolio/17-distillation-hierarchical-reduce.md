@@ -1,6 +1,6 @@
 # Distillation — the final reduce over the tier-1 outputs
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v51`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The hierarchical route's final reduce: the tier-1 outputs stand in for the searches, with the dormant prior and the contrary-evidence pass, returning the combined findings and the topic layer.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8749 chars — the messages and tools as serialized |
+| Prompt material | 8657 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,7 +31,7 @@ return. You will return combined findings, findings per topic, a forward figure,
 and a fraud record, as one JSON object.
 ~~~~
 
-## User message (8159 chars)
+## User message (8067 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -63,8 +63,8 @@ Summary:
 Claims:
 - [stub: claim 1 — one dated fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — publication (search/seed
-report): unknown; fact period: unknown — bears on c-margin
+E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — published: unknown; fact period:
+unknown — bears on c-margin
 
 TOPIC results-revisions — Recent results and estimate revisions
 Summary:
@@ -72,24 +72,24 @@ Summary:
 Claims:
 - [stub: claim 5 — a forward figure from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E0711ed6c3ab6e8b950130ca758c345f2bf395179a65a13ae48db84ca873af40f — publication (search/seed
-report): unknown; fact period: unknown
+E0711ed6c3ab6e8b950130ca758c345f2bf395179a65a13ae48db84ca873af40f — published: unknown; fact period:
+unknown
 
 TOPIC catalysts-risks (not searched this time)
 Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of a topic not searched this time]
 - [stub: prior claim 3]
 [https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/] —
-evidence_ref: E89cc45455c1995489c28dba8b01330e7e3baafb83bfff0acc882595cbd4e7251 — publication
-(search/seed report): unknown; fact period: unknown
+evidence_ref: E89cc45455c1995489c28dba8b01330e7e3baafb83bfff0acc882595cbd4e7251 — published:
+unknown; fact period: unknown
 
 CONTRARY EVIDENCE
 What a search for evidence against the claims above found, then its claims.
 [stub: the disconfirming pass's findings — what contradicts the picture so far]
 - [stub: claim 6 — a contrary fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E7883c7409ee51bd7f5dff22afaa8273b01effb7966334bd1245e8752e10583a1 — publication (search/seed
-report): unknown; fact period: unknown
+E7883c7409ee51bd7f5dff22afaa8273b01effb7966334bd1245e8752e10583a1 — published: unknown; fact period:
+unknown
 
 SOURCE TEXT
 The text of the pages retrieved for this holding, each with its address and its publication date

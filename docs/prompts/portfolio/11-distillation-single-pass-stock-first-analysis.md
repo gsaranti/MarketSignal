@@ -1,6 +1,6 @@
 # Distillation — single pass, stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v51`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The reduce over every topic's searches at once — the single-pass route, taken when the whole input fits the budget.
@@ -21,7 +21,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7212 chars — the messages and tools as serialized |
+| Prompt material | 7074 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -32,7 +32,7 @@ return. You will return combined findings, findings per topic, a forward figure 
 as one JSON object.
 ~~~~
 
-## User message (6688 chars)
+## User message (6550 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -51,19 +51,19 @@ Search 1:
 Claims:
 - [stub: claim 1 — one dated fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — publication (search/seed
-report): unknown; fact period: unknown
+E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — published: unknown; fact period:
+unknown
 - [stub: claim 2 — one dated fact from its source]
 [https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — evidence_ref:
-Ee7813b90e372fb8834d605e28d329f92e9739329009aefc4d3ba84ac1fe3d60b — publication (search/seed
-report): unknown; fact period: unknown
+Ee7813b90e372fb8834d605e28d329f92e9739329009aefc4d3ba84ac1fe3d60b — published: unknown; fact period:
+unknown
 Search 2:
 [stub: the follow-up pass's findings]
 Claims:
 - [stub: claim 3 — one dated fact from its source]
 [https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14] — evidence_ref:
-Ea19800ab2b9e3b5267210688a3e7afaaa8ddbecc1a153964a24bd817c185c902 — publication (search/seed
-report): unknown; fact period: unknown
+Ea19800ab2b9e3b5267210688a3e7afaaa8ddbecc1a153964a24bd817c185c902 — published: unknown; fact period:
+unknown
 
 TOPIC results-revisions — Recent results and estimate revisions
 Search 1:
@@ -71,20 +71,20 @@ Search 1:
 Claims:
 - [stub: claim 4 — one dated fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-Ee8fe9bb7c833c5d61a9213b3a4ae7192c869434b957665ec0d0de11e26f5bd31 — publication (search/seed
-report): unknown; fact period: unknown
+Ee8fe9bb7c833c5d61a9213b3a4ae7192c869434b957665ec0d0de11e26f5bd31 — published: unknown; fact period:
+unknown
 - [stub: claim 5 — a forward figure from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E0711ed6c3ab6e8b950130ca758c345f2bf395179a65a13ae48db84ca873af40f — publication (search/seed
-report): unknown; fact period: unknown
+E0711ed6c3ab6e8b950130ca758c345f2bf395179a65a13ae48db84ca873af40f — published: unknown; fact period:
+unknown
 
 CONTRARY EVIDENCE
 What a search for evidence against the claims above found, then its claims.
 [stub: the disconfirming pass's findings — what contradicts the picture so far]
 - [stub: claim 6 — a contrary fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E7883c7409ee51bd7f5dff22afaa8273b01effb7966334bd1245e8752e10583a1 — publication (search/seed
-report): unknown; fact period: unknown
+E7883c7409ee51bd7f5dff22afaa8273b01effb7966334bd1245e8752e10583a1 — published: unknown; fact period:
+unknown
 
 SOURCE TEXT
 The text of the pages retrieved for this holding, each with its address and its publication date

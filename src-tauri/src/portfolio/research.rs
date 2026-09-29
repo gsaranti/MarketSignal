@@ -451,7 +451,7 @@ fn fact_period_schema() -> Value {
 
 pub fn claim_date_label(publication: &PublicationDate, period: &FactPeriod) -> String {
     format!(
-        "publication (search/seed report): {}; fact period: {}",
+        "published: {}; fact period: {}",
         if publication.reported.is_empty() {
             "unknown"
         } else {
@@ -3763,7 +3763,10 @@ fn pass_brief(ctx: &PassContext<'_>) -> String {
 }
 
 fn gathering_countdown(remaining: u32) -> ChatMessage {
-    ChatMessage::user(format!("SEARCHING\nReplies remaining, including this one: {remaining}.\n"))
+    ChatMessage::user(format!(
+        "SEARCHING\nReplies remaining, including this one: {remaining}.\nPages fetched on the last \
+         reply are kept.\n"
+    ))
 }
 
 /// The holding-constant opening of Part 1: the header, NEWS LEADS and STANDING
@@ -3817,7 +3820,8 @@ fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
         out.push_str(if ctx.disconfirming {
             "What this run's research established on the holding, each with its source.\n"
         } else {
-            "What this topic's earlier searching established, each with its source.\n"
+            "What this topic's earlier searching established, each with its source, the publication \
+             date the search or lead reported, and the period the fact covers.\n"
         });
         if ctx.prior_claims.is_empty() {
             out.push_str("None.\n");
@@ -3905,7 +3909,10 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, pages_shown: bool) 
 /// per-reply bound (an over-size batch ends gathering, so it is a requirement
 /// on the reply, not a hidden cap — ruled 2026-09-17), and when to stop.
 /// Item 1 opens on the pages under PAGES ALREADY RETRIEVED only where one is
-/// shown (`portfolio-v50`); a brief with none asks to search first.
+/// shown (`portfolio-v50`); a brief with none asks to search first. On a
+/// follow-up pass the opening's second sentence says what the TOPIC questions
+/// are for and that the pass does not search them, and items 1 and 3 name the
+/// FOLLOW-UP question (`portfolio-v51`).
 fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     let opening = if ctx.disconfirming {
         "Search for evidence against CLAIMS SO FAR for this holding, as of the date under HOLDING, \
@@ -3914,7 +3921,8 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     } else if ctx.followup.is_some() {
         format!(
             "Find what the web shows on the FOLLOW-UP question for this holding, as of the date \
-             under HOLDING; the TOPIC questions are its context{}.",
+             under HOLDING. The TOPIC questions are what the FOLLOW-UP question serves; this pass \
+             does not search them{}.",
             if ctx.prior_claims.is_empty() {
                 ""
             } else {
@@ -3935,18 +3943,33 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     } else {
         "the results and the leads under NEWS LEADS"
     };
+    // The noun the items search, weigh against and stop on: the one FOLLOW-UP
+    // question on a follow-up pass, the TOPIC questions otherwise, so "the
+    // questions" never points a follow-up pass back at the topic its opening
+    // said not to search (`portfolio-v51`).
+    let (questions, them, allow, answered) = if ctx.followup.is_some() {
+        (
+            "the FOLLOW-UP question",
+            "it",
+            "the question allows",
+            "the FOLLOW-UP question is answered",
+        )
+    } else {
+        ("the questions", "them", "the questions allow", "the questions are answered")
+    };
     let mut item1 = if ctx.disconfirming {
         format!("1. Search, then fetch and read {candidates} most likely to answer a question.")
     } else if pages_shown {
-        format!("1. Read the pages under PAGES ALREADY RETRIEVED against the questions. Search for what remains unanswered, then fetch and read {candidates} most likely to answer it.")
+        format!("1. Read the pages under PAGES ALREADY RETRIEVED against {questions}. Search for what remains unanswered, then fetch and read {candidates} most likely to answer it.")
     } else {
-        format!("1. Search for what the questions ask, then fetch and read {candidates} most likely to answer them.")
+        let asks = if ctx.followup.is_some() { "asks" } else { "ask" };
+        format!("1. Search for what {questions} {asks}, then fetch and read {candidates} most likely to answer {them}.")
     };
-    item1.push_str(
-        " Prefer a lower tier number and a higher extraction quality where the questions allow; \
+    item1.push_str(&format!(
+        " Prefer a lower tier number and a higher extraction quality where {allow}; \
          a weak source lowers confidence in what it says, it does not exclude it, and a figure \
-         that cannot be right is a defect of the source.",
-    );
+         that cannot be right is a defect of the source."
+    ));
     if ctx.seed.is_some_and(|s| !s.is_empty()) {
         item1.push_str(
             " Where a prior finding or a standing condition bears on a question, look for whether \
@@ -3955,9 +3978,8 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     }
     format!(
         "\n======== PART 2: TASK ========\n{opening}\n\n{item1}\n2. At most \
-         {MAX_TOOL_CALLS_PER_TURN} tool calls in one reply.\n3. Stop when the questions are \
-         answered, or when what remains cannot be found: reply with one sentence saying which, \
-         and no tool call.\n"
+         {MAX_TOOL_CALLS_PER_TURN} tool calls in one reply.\n3. Stop when {answered}, or when \
+         what remains cannot be found: reply with one sentence saying which, and no tool call.\n"
     )
 }
 
@@ -9099,14 +9121,37 @@ mod tests {
             "{fu}"
         );
         assert!(
-            fu.contains("\nCLAIMS SO FAR\nWhat this topic's earlier searching established, each with its source.\n- Widget Co held 40% share. [https://example.com/share]\n"),
+            fu.contains("\nCLAIMS SO FAR\nWhat this topic's earlier searching established, each with its source, the publication date the search or lead reported, and the period the fact covers.\n- Widget Co held 40% share. [https://example.com/share]\n  published: unknown; fact period: unknown\n"),
             "{fu}"
         );
         assert!(
-            fu.contains("Find what the web shows on the FOLLOW-UP question for this holding, as of the date under HOLDING; the TOPIC questions are its context, and CLAIMS SO FAR need no second search."),
+            fu.contains("Find what the web shows on the FOLLOW-UP question for this holding, as of the date under HOLDING. The TOPIC questions are what the FOLLOW-UP question serves; this pass does not search them, and CLAIMS SO FAR need no second search."),
             "{fu}"
         );
+        // `portfolio-v51`: the items name the one question the pass pursues.
+        assert!(
+            fu.contains("1. Search for what the FOLLOW-UP question asks, then fetch and read the results most likely to answer it. Prefer a lower tier number and a higher extraction quality where the question allows;"),
+            "{fu}"
+        );
+        assert!(fu.contains("3. Stop when the FOLLOW-UP question is answered, or when what remains cannot be found:"), "{fu}");
+        assert!(!fu.contains("the questions"), "{fu}");
         assert!(!fu.contains("NEWS LEADS") && !fu.contains("A lead under"), "{fu}");
+        // A follow-up whose root established no claim renders no CLAIMS SO FAR
+        // and its opening ends at the sentence about the TOPIC questions.
+        let fu_none = pass_brief(&PassContext {
+            holding_brief: "HOLDING\nWID.\n",
+            topic: &agenda[0],
+            seed: None,
+            seeds: &[],
+            followup: Some(&followup),
+            prior_claims: &[],
+            disconfirming: false
+        });
+        assert!(!fu_none.contains("CLAIMS SO FAR"), "{fu_none}");
+        assert!(
+            fu_none.contains("under HOLDING. The TOPIC questions are what the FOLLOW-UP question serves; this pass does not search them.\n"),
+            "{fu_none}"
+        );
         let disc = disconfirming_topic();
         let dc = pass_brief(&PassContext {
             holding_brief: "HOLDING\nWID.\n",
@@ -9246,7 +9291,7 @@ mod tests {
             "{condition}"
         );
         assert_eq!(seed.findings.len(), 1);
-        assert!(seed.findings[0].starts_with("publication (search/seed report): unknown; fact period: unknown: Widget held share ["), "{}", seed.findings[0]);
+        assert!(seed.findings[0].starts_with("published: unknown; fact period: unknown: Widget held share ["), "{}", seed.findings[0]);
         assert!(!seed.findings[0].contains("PRIOR FINDING"));
         // The budget holds a huge finding out while the condition stays.
         let big = TopicDistillate {

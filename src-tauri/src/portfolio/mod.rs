@@ -2381,7 +2381,18 @@ pub struct HoldingAudit {
 /// `trusted on`, named in the fetch description and the EVIDENCE gloss as
 /// the subjects the source is trusted on, within which its tier holds. The
 /// checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v50";
+/// `portfolio-v51` (prompt read-through, file 02, 2026-09-28): the follow-up
+/// pass's opening is two sentences — the second says the TOPIC questions are
+/// what the FOLLOW-UP question serves and that the pass does not search them,
+/// the CLAIMS SO FAR clause riding it where claims render — and its items 1
+/// and 3 name the FOLLOW-UP question where the other passes say "the
+/// questions"; the claim provenance line reads `published: …; fact period: …`
+/// on every surface that renders it (the gathering brief, the seed's prior
+/// findings and the distillation prompts), the follow-up pass's CLAIMS SO FAR
+/// gloss naming the two as the publication date the search or lead reported
+/// and the period the fact covers; the reply countdown states that pages
+/// fetched on the last reply are kept. The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v51";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

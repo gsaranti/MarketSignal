@@ -73,6 +73,10 @@ Its fetch clause names the news leads as candidates beside the search results, u
 The gathering system message names the two tools its verbs map onto, `web_search` and `web_fetch`.
 The fetch tool's description states the extraction-quality range, 0 to 1, and the stub flag in plain words, and carries no weighing or safety instruction.
 The quoted-material frame stays on each page's text marker, and the fallible-source clause rides Part 2's weighing sentence.
+Since `portfolio-v51` (ruled 2026-09-28), the follow-up pass's opening is two sentences: what to find on the FOLLOW-UP question, then that the TOPIC questions are what that question serves and are not searched on the pass, with the claims-so-far clause where claims render.
+On that pass items 1 and 3 name the FOLLOW-UP question; the root, continuity and disconfirming passes keep "the questions".
+Each claim's provenance line reads `published` and `fact period` on every surface that renders it, and the follow-up pass's CLAIMS SO FAR gloss names them as the publication date the search or lead reported and the period the fact covers.
+The countdown message states that pages fetched on the last reply are kept, since the loop executes the last reply's tool calls before gathering ends.
 All turn, tool-call, fetch, elapsed-time and context limits remain unchanged.
 The tool results are data in the same register: a search result's fields, a page's address, title, dates and annotation fields and its text framed as quoted material, and a failed search or fetch stated as such, with no instruction in any of them.
 The `format` grammar is a decoding constraint the model never sees.

@@ -1,6 +1,6 @@
 # Distillation — tier-1 call over one topic tree
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v51`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The hierarchical route's tier-1 call, taken per topic when the single-pass prompt outgrows the budget: one topic's searches with its prior, returning that topic's summary and claims.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4876 chars — the messages and tools as serialized |
+| Prompt material | 4761 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ review. Part 1 of the message gives the inputs. Part 2 states what to determine 
 shape to return. You will return a summary and claims, as one JSON object.
 ~~~~
 
-## User message (4468 chars)
+## User message (4353 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -57,28 +57,28 @@ Search 1:
 Claims:
 - [stub: claim 1 — one dated fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — publication (search/seed
-report): unknown; fact period: unknown
+E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — published: unknown; fact period:
+unknown
 - [stub: claim 2 — one dated fact from its source]
 [https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — evidence_ref:
-Ee7813b90e372fb8834d605e28d329f92e9739329009aefc4d3ba84ac1fe3d60b — publication (search/seed
-report): unknown; fact period: unknown
+Ee7813b90e372fb8834d605e28d329f92e9739329009aefc4d3ba84ac1fe3d60b — published: unknown; fact period:
+unknown
 Search 2:
 [stub: the follow-up pass's findings]
 Claims:
 - [stub: claim 3 — one dated fact from its source]
 [https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14] — evidence_ref:
-Ea19800ab2b9e3b5267210688a3e7afaaa8ddbecc1a153964a24bd817c185c902 — publication (search/seed
-report): unknown; fact period: unknown
+Ea19800ab2b9e3b5267210688a3e7afaaa8ddbecc1a153964a24bd817c185c902 — published: unknown; fact period:
+unknown
 Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of this topic]
 - [stub: prior claim 1, tied to a standing condition]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-Ee6e3fba76d4e450c58965b9370cb4c76a84f83f8c38f91687372f8dccf413575 — publication (search/seed
-report): unknown; fact period: unknown — bears on c-margin
+Ee6e3fba76d4e450c58965b9370cb4c76a84f83f8c38f91687372f8dccf413575 — published: unknown; fact period:
+unknown — bears on c-margin
 - [stub: prior claim 2] [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] —
-evidence_ref: Ea5c488fde44478b33183a91e48849ae568b1a35f3496d0b205329462ff7cacde — publication
-(search/seed report): unknown; fact period: unknown
+evidence_ref: Ea5c488fde44478b33183a91e48849ae568b1a35f3496d0b205329462ff7cacde — published:
+unknown; fact period: unknown
 
 ======== PART 2: TASK ========
 Determine the following from the inputs and return them as one JSON object in the shape at the end,

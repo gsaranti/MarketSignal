@@ -3333,7 +3333,7 @@ mod tests {
             for prompt in model.prompts() {
                 assert!(prompt.contains("fact period: 2026-Q2"));
                 assert!(prompt.contains("source label: Q4 FY2025"));
-                assert!(prompt.contains("publication (search/seed report): unknown; fact period: 2026-Q2"));
+                assert!(prompt.contains("published: unknown; fact period: 2026-Q2"));
                 assert!(prompt.contains("fact period: 2025-07"));
                 assert!(prompt.contains("2025-03-27"));
                 assert!(!prompt.contains("2026-09-16T12:00:00Z"));

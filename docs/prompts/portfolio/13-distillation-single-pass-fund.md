@@ -1,6 +1,6 @@
 # Distillation — single pass, fund
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v51`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 A fund's reduce is consolidation only: the combined findings and the topic layer, with the standing condition rendered for citation, and no source text or typed field.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3651 chars — the messages and tools as serialized |
+| Prompt material | 3628 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ You are an investment analyst consolidating the research on one holding for a po
 return. You will return combined findings and findings per topic, as one JSON object.
 ~~~~
 
-## User message (3232 chars)
+## User message (3209 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -54,8 +54,8 @@ Search 1:
 Claims:
 - [stub: claim 1 — one dated fact from its source]
 [https://investor.vanguard.com/investment-products/etfs/profile/bnd] — evidence_ref:
-E9dcc02ac89ec51165bc5c21754dcfb72484725409345ee85a1f938dfa9e15dc2 — publication (search/seed
-report): unknown; fact period: unknown
+E9dcc02ac89ec51165bc5c21754dcfb72484725409345ee85a1f938dfa9e15dc2 — published: unknown; fact period:
+unknown
 
 ======== PART 2: TASK ========
 Determine the following from the inputs and return them as one JSON object in the shape at the end,
