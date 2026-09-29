@@ -1,6 +1,6 @@
 # Research gathering — the second turn, after tool results
 
-*Generated from the code at `portfolio-v50` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The second gathering request: the first request's messages, then the model's tool calls echoed back as an assistant message, one tool message per call in order, and the next countdown.

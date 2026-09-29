@@ -1,6 +1,6 @@
 # Research gathering — root pass, first analysis
 
-*Generated from the code at `portfolio-v50` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The first gathering turn of a holding's first research topic on a first analysis.

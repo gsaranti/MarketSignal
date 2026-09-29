@@ -1,6 +1,6 @@
 //! The docs' rendered prompt examples — `docs/prompts/portfolio/`, one Markdown
 //! file per Portfolio Analysis call shape, generated from the code so the set
-//! is exact for the current `PROMPT_VERSION` and regenerates on every stamp
+//! is exact for the current `PROMPT_VERSION` and is regenerated on every stamp
 //! bump (ruled 2026-09-27; `docs/prompts/README.md` is the reader's guide).
 //!
 //! The non-research data is the fixed evidence set's: TSLA for the stock
@@ -15,10 +15,12 @@
 //!
 //! Regenerate from `src-tauri/` with
 //! `MARKET_SIGNAL_PROMPT_EXAMPLES_DIR=../docs/prompts/portfolio cargo test
-//! portfolio_prompt_examples_write -- --ignored`; the writer clears the
-//! directory's Markdown files first. The non-ignored
-//! `portfolio_prompt_examples_render` builds the same set on every gate, so
-//! the generator cannot rot beside the prompts it renders.
+//! portfolio_prompt_examples_write -- --ignored`; the writer removes files no
+//! longer in the set and rewrites only the files whose text changed up to the
+//! header's stamp, so an untouched prompt's file is never written and its
+//! header keeps the stamp at which it last changed (user rule, 2026-09-28).
+//! The non-ignored `portfolio_prompt_examples_render` builds the same set on
+//! every gate, so the generator cannot rot beside the prompts it renders.
 
 use super::*;
 use crate::local_model::{prompt_material_chars, ChatMessage, ChatRequest};
@@ -954,7 +956,7 @@ fn render(ex: &Example) -> String {
     let mut out = String::new();
     out.push_str(&format!("# {}\n\n", ex.title));
     out.push_str(&format!(
-        "*Generated from the code at `{}` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*\n\n",
+        "*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `{}`; regenerate rather than edit (`docs/prompts/README.md`).*\n\n",
         crate::portfolio::PROMPT_VERSION
     ));
     out.push_str(&format!("Holding: {}.\n", ex.holding));
@@ -999,7 +1001,7 @@ fn render_contents(examples: &[Example]) -> String {
     let mut out = String::new();
     out.push_str("# Portfolio Analysis prompts — contents\n\n");
     out.push_str(&format!(
-        "*Generated from the code at `{}` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*\n\n",
+        "*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `{}`; regenerate rather than edit (`docs/prompts/README.md`).*\n\n",
         crate::portfolio::PROMPT_VERSION
     ));
     out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then interpretation and the action call (Step 6f).\n");
@@ -1011,26 +1013,76 @@ fn render_contents(examples: &[Example]) -> String {
     out
 }
 
-/// Write the set to `MARKET_SIGNAL_PROMPT_EXAMPLES_DIR`, clearing the
-/// directory's Markdown files first.
+/// A file's text with the header's stamp token replaced by a fixed
+/// placeholder, so two renders that differ only in `PROMPT_VERSION` compare
+/// equal. The writer then touches only the files whose prompt changed, and a
+/// file whose prompt did not move keeps its header, so its stamp reads as the
+/// one at which it last changed and a regeneration's diff shows only the
+/// prompts that moved (user rule, 2026-09-28). Only the header line is
+/// normalized: a stamp cited in an example's own prose is history, not the
+/// current stamp.
+fn stamp_normalized(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.starts_with("*Generated from the code") {
+                if let Some(start) = line.find("`portfolio-v") {
+                    if let Some(len) = line[start + 1..].find('`') {
+                        return format!("{}`portfolio-vN`{}", &line[..start], &line[start + 1 + len + 1..]);
+                    }
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Write `text` to `path` unless the file there already holds the same text up
+/// to the header's stamp; returns whether it wrote.
+fn write_if_changed(path: &std::path::Path, text: &str) -> bool {
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        if stamp_normalized(&existing) == stamp_normalized(text) {
+            return false;
+        }
+    }
+    std::fs::write(path, text).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    true
+}
+
+/// Write the set to `MARKET_SIGNAL_PROMPT_EXAMPLES_DIR`: Markdown files no
+/// longer in the set are removed, and each file in the set is written only
+/// where its text changed up to the header's stamp (`write_if_changed`).
 #[test]
 #[ignore = "writes the docs prompt examples to MARKET_SIGNAL_PROMPT_EXAMPLES_DIR"]
 fn portfolio_prompt_examples_write() {
     let Ok(dir) = std::env::var("MARKET_SIGNAL_PROMPT_EXAMPLES_DIR") else { return };
     let dir = std::path::Path::new(&dir);
     std::fs::create_dir_all(dir).expect("create the examples directory");
+    let examples = examples();
+    let mut expected: HashSet<String> = examples.iter().map(|ex| format!("{}.md", ex.file)).collect();
+    expected.insert("00-contents.md".to_string());
     for entry in std::fs::read_dir(dir).expect("read the examples directory") {
         let path = entry.expect("a directory entry").path();
-        if path.extension().is_some_and(|e| e == "md") {
-            std::fs::remove_file(&path).expect("clear a stale example");
+        let stale = path.extension().is_some_and(|e| e == "md")
+            && !path.file_name().and_then(|n| n.to_str()).is_some_and(|n| expected.contains(n));
+        if stale {
+            std::fs::remove_file(&path).expect("remove an example no longer in the set");
         }
     }
-    let examples = examples();
+    let mut written = 0usize;
     for ex in &examples {
-        std::fs::write(dir.join(format!("{}.md", ex.file)), render(ex)).expect("write an example");
+        if write_if_changed(&dir.join(format!("{}.md", ex.file)), &render(ex)) {
+            written += 1;
+        }
     }
-    std::fs::write(dir.join("00-contents.md"), render_contents(&examples)).expect("write the contents");
-    println!("wrote {} examples to {}", examples.len(), dir.display());
+    if write_if_changed(&dir.join("00-contents.md"), &render_contents(&examples)) {
+        written += 1;
+    }
+    println!(
+        "wrote {written} of {} files to {} (the rest unchanged up to the header's stamp)",
+        examples.len() + 1,
+        dir.display()
+    );
 }
 
 /// The set builds and renders on every gate: every shape present, every file
@@ -1041,6 +1093,13 @@ fn portfolio_prompt_examples_write() {
 fn portfolio_prompt_examples_render() {
     let examples = examples();
     assert_eq!(examples.len(), 26);
+    // The header names the stamp this file last changed at, and the writer's
+    // comparison sets that stamp aside and nothing else.
+    let first = render(&examples[0]);
+    assert!(first.contains(&format!("; last changed at `{}`;", crate::portfolio::PROMPT_VERSION)), "{first}");
+    let restamped = first.replacen(crate::portfolio::PROMPT_VERSION, "portfolio-v0", 1);
+    assert_eq!(stamp_normalized(&first), stamp_normalized(&restamped));
+    assert_ne!(stamp_normalized(&first), stamp_normalized(&format!("{first}x")));
     let mut files = HashSet::new();
     for ex in &examples {
         assert!(files.insert(ex.file), "{}: duplicate file name", ex.file);

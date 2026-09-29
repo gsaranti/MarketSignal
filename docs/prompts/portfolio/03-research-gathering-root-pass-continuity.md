@@ -1,6 +1,6 @@
 # Research gathering — root pass on a continuity run
 
-*Generated from the code at `portfolio-v50` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over a prior analysis of 2026-09-01.
 A root pass on a continuity run: the topic's standing ledger conditions and the prior run's kept findings ride as the seed.

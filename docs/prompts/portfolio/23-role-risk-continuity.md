@@ -1,6 +1,6 @@
 # Role/risk interpretation — continuity run
 
-*Generated from the code at `portfolio-v50` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, on a continuity run over a stub first run of 2026-09-03.
 The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior read, the prior ledger with each condition's evaluation, the position sentence and the what-changed rows.

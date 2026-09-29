@@ -1,6 +1,7 @@
 # Rendered prompt examples
 
 One file per local-model call shape, rendered from the code, so each example is exactly what the running app sends at the current prompt stamp.
+Each file's header names the stamp at which that file last changed, not the current stamp: a file whose prompt did not move is never rewritten.
 The set is generated, never hand-edited: a prompt change lands in the code, and the files are regenerated from it.
 Today the set covers the Portfolio Analysis job, under `portfolio/`; the Trade Opportunities job's set lands beside it when that job is built.
 
@@ -28,7 +29,8 @@ cd src-tauri
 MARKET_SIGNAL_PROMPT_EXAMPLES_DIR=../docs/prompts/portfolio cargo test portfolio_prompt_examples_write -- --ignored
 ```
 
-The writer clears the directory's Markdown files first, then writes the set and `00-contents.md`.
+The writer removes Markdown files no longer in the set and writes each file in the set, `00-contents.md` included, only where its text changed with the header's stamp set aside.
+An untouched prompt's file is therefore never written, and a regeneration's diff shows only the prompts that moved (user rule, 2026-09-28).
 The non-ignored `portfolio_prompt_examples_render` test builds the same set on every `cargo test`, so the generator cannot rot beside the prompts.
 Regenerate whenever a prompt stamp moves; the diff is the review surface for the prompt change.
 

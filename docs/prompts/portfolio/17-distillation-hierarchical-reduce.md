@@ -1,6 +1,6 @@
 # Distillation — the final reduce over the tier-1 outputs
 
-*Generated from the code at `portfolio-v50` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The hierarchical route's final reduce: the tier-1 outputs stand in for the searches, with the dormant prior and the contrary-evidence pass, returning the combined findings and the topic layer.

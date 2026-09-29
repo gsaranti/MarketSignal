@@ -1,6 +1,6 @@
 # Portfolio Analysis prompts — contents
 
-*Generated from the code at `portfolio-v50` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then interpretation and the action call (Step 6f).
 Each file carries the request envelope, every message as sent, and the tools or the response schema.

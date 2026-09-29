@@ -1,6 +1,6 @@
 # Distillation — pass-level sub-distillation
 
-*Generated from the code at `portfolio-v50` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The pass-level sub-distillation, taken when a topic tree itself outgrows the tier-1 budget: one search of one topic, returning its summary and claims.

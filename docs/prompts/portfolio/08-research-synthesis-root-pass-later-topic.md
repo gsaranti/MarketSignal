@@ -1,6 +1,6 @@
 # Research synthesis — root pass on a later topic, gathering incomplete
 
-*Generated from the code at `portfolio-v50` by `fixed_evidence::prompt_examples`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The synthesis call closes a pass: no tools, the findings grammar as the format, no history — the evidence packet is rebuilt from the run's store, and the model cites sources by the pass-local id the packet shows.
