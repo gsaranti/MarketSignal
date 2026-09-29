@@ -3829,7 +3829,8 @@ fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
     if ctx.disconfirming || !ctx.prior_claims.is_empty() {
         out.push_str("\nCLAIMS SO FAR\n");
         out.push_str(if ctx.disconfirming {
-            "What this run's research established on the holding, each with its source.\n"
+            "What this run's research established on the holding, each with its source, the \
+             publication date the search or lead reported, and the period the fact applies to.\n"
         } else {
             "What this topic's earlier searching established, each with its source, the publication \
              date the search or lead reported, and the period the fact applies to.\n"
@@ -3927,8 +3928,9 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, pages_shown: bool) 
 /// FOLLOW-UP question (`portfolio-v51`).
 fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     let opening = if ctx.disconfirming {
-        "Search for evidence against CLAIMS SO FAR for this holding, as of the date under HOLDING, \
-         not for more evidence for them."
+        "Find what the web shows on the question under TOPIC for this holding, as of the date \
+         under HOLDING. The claims under CLAIMS SO FAR are what that question tests: search for \
+         evidence against them, not for more evidence for them."
             .to_string()
     } else if ctx.followup.is_some() {
         format!(
@@ -3956,9 +3958,10 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
         "the results and the leads under NEWS LEADS"
     };
     // The noun the items search, weigh against and stop on: the one FOLLOW-UP
-    // question on a follow-up pass, the TOPIC questions otherwise, so "the
-    // questions" never points a follow-up pass back at the topic its opening
-    // said not to search (`portfolio-v51`).
+    // question on a follow-up pass, so "the questions" never points that pass
+    // back at the topic its opening said not to search (`portfolio-v51`); the
+    // one question on the disconfirming pass, whose brief carries no other
+    // (`portfolio-v55`); the TOPIC questions otherwise.
     let (questions, them, allow, answered) = if ctx.followup.is_some() {
         (
             "the FOLLOW-UP question",
@@ -3966,15 +3969,15 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
             "the question allows",
             "the FOLLOW-UP question is answered",
         )
+    } else if ctx.disconfirming {
+        ("the question", "it", "the question allows", "the question is answered")
     } else {
         ("the questions", "them", "the questions allow", "the questions are answered")
     };
-    let mut item1 = if ctx.disconfirming {
-        format!("1. Search, then fetch and read {candidates} most likely to answer a question.")
-    } else if pages_shown {
+    let mut item1 = if pages_shown {
         format!("1. Read the pages under PAGES ALREADY RETRIEVED against {questions}. Search for what remains unanswered, then fetch and read {candidates} most likely to answer it.")
     } else {
-        let asks = if ctx.followup.is_some() { "asks" } else { "ask" };
+        let asks = if them == "it" { "asks" } else { "ask" };
         format!("1. Search for what {questions} {asks}, then fetch and read {candidates} most likely to answer {them}.")
     };
     // The preference is stated by the two scales' endpoints, in the words the
@@ -6144,7 +6147,7 @@ mod tests {
             assert!(!calls[7].1[1].content.contains("PAGES ALREADY RETRIEVED"));
             assert!(calls[7].1[1]
                 .content
-                .contains("Search for evidence against"));
+                .contains("are what that question tests: search for evidence against them"));
             assert!(model.inner.turns.lock().unwrap().borrow().is_empty());
         }
         assert_eq!(*web.calls.lock().unwrap(), 2);
@@ -9195,11 +9198,18 @@ mod tests {
             disconfirming: true
         });
         assert!(
-            dc.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with its source.\n"),
+            dc.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n"),
             "{dc}"
         );
         assert!(
-            dc.contains("Search for evidence against CLAIMS SO FAR for this holding, as of the date under HOLDING, not for more evidence for them."),
+            dc.contains("Find what the web shows on the question under TOPIC for this holding, as of the date under HOLDING. The claims under CLAIMS SO FAR are what that question tests: search for evidence against them, not for more evidence for them."),
+            "{dc}"
+        );
+        // `portfolio-v55`: the disconfirming items use the singular, as the brief carries one question.
+        assert!(
+            dc.contains("1. Search for what the question asks, then fetch and read the results most likely to answer it. Prefer a source tier nearer 0 and an extraction quality nearer 1 where the question allows;")
+                && dc.contains("3. Stop when the question is answered, or when what remains cannot be found:")
+                && !dc.contains("the questions"),
             "{dc}"
         );
         assert!(!dc.contains("DISCONFIRMING") && !dc.contains("emerging thesis"), "{dc}");

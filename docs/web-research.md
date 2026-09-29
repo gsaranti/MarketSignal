@@ -75,7 +75,7 @@ The gathering system message names the two tools its verbs map onto, `web_search
 The fetch tool's description states the extraction-quality range, 0 to 1, and the stub flag in plain words, and carries no weighing or safety instruction.
 The quoted-material frame stays on each page's text marker, and the fallible-source clause rides Part 2's weighing sentence.
 Since `portfolio-v51` (ruled 2026-09-28), the follow-up pass's opening is two sentences: what to find on the FOLLOW-UP question, then that the TOPIC questions are what that question serves and are not searched on the pass, with the claims-so-far clause where claims render.
-On that pass items 1 and 3 name the FOLLOW-UP question; the root, continuity and disconfirming passes keep "the questions".
+On that pass items 1 and 3 name the FOLLOW-UP question; the root and continuity passes keep "the questions".
 Each claim's provenance line reads `published` and `fact period` on every surface that renders it, and the follow-up pass's CLAIMS SO FAR gloss names them as the publication date the search or lead reported and the period the fact applies to.
 The countdown message states that pages fetched on the last reply are kept, since the loop executes the last reply's tool calls before gathering ends.
 Since `portfolio-v52` (ruled 2026-09-29), the source-quality value is named `source tier` on every surface the model sees: the two tool descriptions, each search result line, each page header in gathering and in the synthesis EVIDENCE block, the weighing sentences and the EVIDENCE gloss.
@@ -85,6 +85,8 @@ Since `portfolio-v53` (ruled 2026-09-29), it is not a task sentence either: the 
 Since `portfolio-v54` (ruled 2026-09-29), a prior claim under PRIOR FINDINGS takes the CLAIMS SO FAR shape, the claim and its source on one line and `published: …; fact period: …` under them, and its gloss names the two fields in the same words.
 The fact-period gloss reads "the period the fact applies to" wherever the field is glossed: CLAIMS SO FAR, PRIOR FINDINGS, the synthesis claims item and the distillation date rule.
 The continuity clause in item 1 names the headings it draws on, a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS, naming only the heading the brief shows.
+Since `portfolio-v55` (ruled 2026-09-29), the disconfirming pass's opening is two sentences: what to find on the question under TOPIC, then that the claims under CLAIMS SO FAR are what that question tests, searched for evidence against them and not for more evidence for them.
+Its items 1 and 3 say "the question", since that brief carries one, and its CLAIMS SO FAR gloss names the two provenance fields in the follow-up pass's words.
 All turn, tool-call, fetch, elapsed-time and context limits remain unchanged.
 The tool results are data in the same register: a search result's fields, a page's address, title, dates and annotation fields and its text framed as quoted material, and a failed search or fetch stated as such, with no instruction in any of them.
 The `format` grammar is a decoding constraint the model never sees.

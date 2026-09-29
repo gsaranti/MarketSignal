@@ -9911,7 +9911,10 @@ pub(crate) mod tests {
         // Then PRIOR FINDINGS takes the CLAIMS SO FAR shape and gloss, the
         // fact-period gloss aligns across surfaces and the continuity clause
         // names its headings: v54, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v54");
+        // File 04 (2026-09-29) gives the disconfirming pass a two-sentence
+        // opening naming TOPIC and CLAIMS SO FAR, singular items and the
+        // provenance gloss: v55, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v55");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

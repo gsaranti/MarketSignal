@@ -2416,7 +2416,14 @@ pub struct HoldingAudit {
 /// distillation date rule); the continuity clause names the headings it
 /// draws on, PRIOR FINDINGS and STANDING CONDITIONS, only those the brief
 /// shows. The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v54";
+/// `portfolio-v55` (prompt read-through, file 04, 2026-09-29): the
+/// disconfirming pass's opening is two sentences — what to find on the
+/// question under TOPIC, then that the claims under CLAIMS SO FAR are what
+/// that question tests, searched for evidence against and not for — and its
+/// items 1 and 3 say "the question", the brief carrying one; its CLAIMS SO
+/// FAR gloss names the two provenance fields in the follow-up pass's words.
+/// The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v55";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

@@ -1840,9 +1840,23 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     s.label
                 );
             } else {
+                // `portfolio-v55`: the disconfirming opening names TOPIC as the question
+                // and CLAIMS SO FAR as what it tests; the items use the singular, and
+                // the gloss names the two provenance fields.
                 assert!(
-                    part2.contains("1. Search, then fetch and read the results and the leads under NEWS LEADS most likely to answer a question."),
+                    part2.contains("Find what the web shows on the question under TOPIC for this holding, as of the date under HOLDING. The claims under CLAIMS SO FAR are what that question tests: search for evidence against them, not for more evidence for them."),
                     "{}: {part2}",
+                    s.label
+                );
+                assert!(
+                    part2.contains("1. Search for what the question asks, then fetch and read the results and the leads under NEWS LEADS most likely to answer it."),
+                    "{}: {part2}",
+                    s.label
+                );
+                assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
+                assert!(
+                    part1.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n"),
+                    "{}: {part1}",
                     s.label
                 );
             }
@@ -1851,6 +1865,8 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(part2.contains("2. At most 8 tool calls in one reply."), "{}: {part2}", s.label);
             if s.label.contains("follow-up pass") {
                 assert!(part2.contains("3. Stop when the FOLLOW-UP question is answered, or when what remains cannot be found:"), "{}: {part2}", s.label);
+            } else if s.label.contains("disconfirming") {
+                assert!(part2.contains("3. Stop when the question is answered, or when what remains cannot be found:"), "{}: {part2}", s.label);
             } else {
                 assert!(part2.contains("3. Stop when the questions are answered"), "{}: {part2}", s.label);
             }
