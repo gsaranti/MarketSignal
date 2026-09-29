@@ -9903,7 +9903,10 @@ pub(crate) mod tests {
         // opening into two sentences, names the FOLLOW-UP question in its items,
         // shortens the claim provenance label to `published` and glosses it,
         // and adds the last-reply line to the countdown: v51, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v51");
+        // File 03 (2026-09-29) names the value `source tier` on every model-facing
+        // surface, states the weighing preference by the scales' endpoints and
+        // moves the subject-tier relation onto the task: v52, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v52");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

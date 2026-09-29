@@ -1,6 +1,6 @@
 # Research gathering — a fund's exposure-profile topic
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v51`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v52`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 The root-pass shape on a fund: the agenda's fund topics replace the stock topics, and the header names the fund.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 2868 chars — the messages and tools as serialized |
+| Prompt material | 2930 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (1382 chars)
+## User message (1452 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -56,9 +56,10 @@ tilts, and how they have shifted?
 Find what the web shows on each question under TOPIC for this holding, as of the date under HOLDING.
 
 1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS
-most likely to answer them. Prefer a lower tier number and a higher extraction quality where the
-questions allow; a weak source lowers confidence in what it says, it does not exclude it, and a
-figure that cannot be right is a defect of the source.
+most likely to answer them. Prefer a source tier nearer 0 and an extraction quality nearer 1 where
+the questions allow; a weak source lowers confidence in what it says, it does not exclude it, and a
+figure that cannot be right is a defect of the source. A source tier applies to the subjects the
+source is trusted on.
 2. At most 8 tool calls in one reply.
 3. Stop when the questions are answered, or when what remains cannot be found: reply with one
 sentence saying which, and no tool call.
@@ -78,7 +79,7 @@ Pages fetched on the last reply are kept.
 [
   {
     "function": {
-      "description": "Search the web. Returns ranked results: title, url, tier, published date, snippet. The tier runs from 0 to 5: 0 is a primary source (a filing, the issuer, a regulator), 5 is sentiment only.",
+      "description": "Search the web. Returns ranked results: title, url, source tier, published date, snippet. The source tier runs from 0 to 5: 0 is a primary source (a filing, the issuer, a regulator), 5 is sentiment only.",
       "name": "web_search",
       "parameters": {
         "properties": {
@@ -96,7 +97,7 @@ Pages fetched on the last reply are kept.
   },
   {
     "function": {
-      "description": "Fetch a page and return its article text under a header of: the url and title; the published date, where the search reported one; when it was retrieved; its tier (0 to 5, as on a search result); the subjects its source is trusted on (its tier holds within them); and its extraction quality (0 to 1: the article text recovered against a full article's worth). A page marked stub did not yield its article (a paywall or script shell, or a fragment), so its text is not the page's content.",
+      "description": "Fetch a page and return its article text under a header of: the url and title; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5, as on a search result); the subjects its source is trusted on; and its extraction quality (0 to 1: the article text recovered against a full article's worth). A page marked stub did not yield its article (a paywall or script shell, or a fragment), so its text is not the page's content.",
       "name": "web_fetch",
       "parameters": {
         "properties": {

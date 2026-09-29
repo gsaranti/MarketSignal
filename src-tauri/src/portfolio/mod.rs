@@ -2392,7 +2392,18 @@ pub struct HoldingAudit {
 /// gloss naming the two as the publication date the search or lead reported
 /// and the period the fact covers; the reply countdown states that pages
 /// fetched on the last reply are kept. The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v51";
+/// `portfolio-v52` (prompt read-through, file 03, 2026-09-29): the source-
+/// quality value is named `source tier` on every surface the model sees —
+/// the two tool descriptions, each search result line, each page header in
+/// gathering and in the synthesis EVIDENCE block, the weighing sentences and
+/// the EVIDENCE gloss — so the word carries its object; the gathering
+/// weighing sentence prefers a source tier nearer 0 and an extraction
+/// quality nearer 1, stated by the scales' endpoints in the words the
+/// results carry; the subject-tier relation leaves the fetch description's
+/// bracket and the EVIDENCE gloss and rides the task of both calls as its
+/// own sentence, "A source tier applies to the subjects the source is
+/// trusted on." The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v52";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

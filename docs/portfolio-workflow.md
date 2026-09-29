@@ -255,6 +255,7 @@ The holding-only inventory, source provenance, budget allocation and synthesis a
 No other topic's findings or transcript is supplied, and the disconfirming pass retains its contrary-search behavior without automatic page injection.
 Part 2: what to find, how to weigh a source, the per-reply tool-call bound, and when to stop.
 Since `portfolio-v51`, on a follow-up pass Part 2 names the FOLLOW-UP question as what it searches and stops on and the TOPIC questions as what that question serves, each claim's provenance line reads `published` and `fact period`, and the countdown states that pages fetched on the last reply are kept; the wording is canonical at [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management).
+Since `portfolio-v52`, the source-quality value is named `source tier` on every surface the model sees, the weighing preference is stated by the scales' endpoints, and the subject-tier relation rides the task of the gathering and synthesis calls; wording canonical at the same section.
 Within a pass the model reasons over the fetched, readability-extracted page text and an **append-only evidence ledger** (each extracted claim + its source URL / timestamp); there is **no in-loop re-distillation of *this run's* findings** — the heavy consolidation is deferred to the Step-6d distillation, so research is never planned over its own already-distilled, lossy notes (the cross-run reuse seed above is a distinct prior-run object, not an in-loop summary).
 
 **Returns.**
