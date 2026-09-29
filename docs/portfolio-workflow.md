@@ -242,7 +242,7 @@ That synthesis packet jointly selects headers and bodies under the shared input 
 
 **Prompt — input.**
 The initial brief is one message in two parts on the frame every Portfolio prompt shares (`portfolio-v43`, ruled 2026-09-17; [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
-Part 1 carries the shared holding header with the analysis date, the news leads, on a continuity run the standing conditions, the tool results' fields glossed once, the pages already retrieved, and then **that topic's questions**, on a follow-up pass the question it pursues and the claims so far, on the disconfirming pass the run's claims so far, and on a continuity run the prior findings.
+Part 1 carries the shared holding header with the analysis date, the news leads, on a continuity run the standing conditions, the pages already retrieved, and then **that topic's questions**, on a follow-up pass the question it pursues and the claims so far, on the disconfirming pass the run's claims so far, and on a continuity run the prior findings.
 Since `portfolio-v49` the holding-constant text leads and the topic's own text follows it, so consecutive roots can share their leading text.
 The order is canonical at [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management).
 The standing conditions and prior findings are the deterministic **seed**, assembled from **that topic's own non-expired prior distilled object** where one exists (its tier-1 distillation, or its topic-keyed group from a single-pass run) plus the holding ledger's **entire standing condition list**, repeated into every topic under the bounded seed budget (Portfolio's designed reuse — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
@@ -250,7 +250,7 @@ The context remains isolated per topic even when no cached object exists and the
 Since `portfolio-v46`, Part 1 also supplies bounded raw pages already retrieved for this holding on ordinary topic and follow-up passes.
 Since `portfolio-v48`, the initial two-part brief and selected pages render once per pass and stay unchanged; a separate user message appended before each gathering request states the remaining replies, including that reply.
 Retries repeat the same messages and count, and all accumulated countdowns count toward the gathering input guard.
-The model judges which questions those pages leave unanswered; Part 2 asks it to read the shown pages before searching for the rest, with no question-status field or tool.
+The model judges which questions those pages leave unanswered; where a page is shown, Part 2 asks it to read the shown pages before searching for the rest, with no question-status field or tool.
 The holding-only inventory, source provenance, budget allocation and synthesis admission are canonical at [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management).
 No other topic's findings or transcript is supplied, and the disconfirming pass retains its contrary-search behavior without automatic page injection.
 Part 2: what to find, how to weigh a source, the per-reply tool-call bound, and when to stop.

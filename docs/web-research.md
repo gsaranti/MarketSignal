@@ -37,17 +37,21 @@ Portfolio's synthesis message is one message in two parts on the frame every Por
 Since `portfolio-v49` (attempt-8 Finding 4, ruled 2026-09-27), Part 1 leads with the holding-constant text and ends with the topic's own: the holding header with the analysis date, then the evidence, then the topic's questions, on a follow-up pass the question it pursues, on the disconfirming pass the claims it tests, and the searching note where gathering lost something.
 The order serves the runtime's prompt cache: consecutive syntheses on one holding can then share their header and leading pages byte for byte, with the topic text after the evidence short enough to sit past the previous synthesis's saved checkpoint.
 A truncated or re-read page shortens that shared prefix, and the saving is an expectation of the runtime until a run's serve log confirms it.
-Each page's header states the tier (0 a primary source, 5 sentiment only), the publication date the search reported, the retrieval time, what the source is relied on for, the extraction quality and the stub flag, with the fields glossed once above the pages.
+Each page's header states the tier (0 to 5: 0 a primary source, 5 sentiment only), the publication date the search reported, the retrieval time, the subjects the source is trusted on, the extraction quality and the stub flag, with the fields glossed once above the pages.
+Since `portfolio-v50`, that subject field reads `trusted on`, and the fetch description and the gloss name it as the subjects the source is trusted on, within which its tier holds.
 Part 2 is the task in output order and the shape.
 It carries no prior findings, standing conditions, news leads or URL roster beyond the evidence, and no gathering-stage instruction: the write-up is of this pass's pages, and the distillation merges passes and priors.
 The distillation messages are the same frame (`portfolio-v44`, ruled 2026-09-17); their contract is canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation).
 Portfolio's initial gathering message is the same frame and renders once per pass, including its selected reuse block.
-Since `portfolio-v49`, its Part 1 leads with the holding-constant text: the holding header, the news leads, on a continuity run the standing conditions, the tool results' fields glossed once, and the pages already retrieved.
+Since `portfolio-v49`, its Part 1 leads with the holding-constant text: the holding header, the news leads, on a continuity run the standing conditions, and the pages already retrieved.
+Since `portfolio-v50`, the brief carries no tool-results legend.
+The two tool descriptions state what a search result and a fetched page carry, with the tier scale's range, 0 to 5, beside its endpoints.
+The synthesis EVIDENCE gloss states the same range.
 The topic's own text follows them: the topic, on a follow-up pass the question it pursues and the claims so far, on the disconfirming pass the run's claims so far, and on a continuity run the prior findings.
 Consecutive topic roots on one holding can then share their leading text through the reused pages, with the topic text after them short enough to sit past the previous root's saved checkpoint.
 On a continuity run the prior findings sit in that topic text and can carry it past the checkpoint distance, so the saving there depends on the seed's size.
 Either saving is an expectation of the runtime until a run's serve log confirms it.
-Its Part 2 states what to find, how to weigh a source (a lower tier number and a higher extraction quality preferred; a weak source lowers confidence, it does not exclude), the per-reply tool-call bound, and when to stop — a reply with no tool call.
+Its Part 2 states what to find, how to weigh a source (a lower tier number and a higher extraction quality preferred; a weak source lowers confidence, it does not exclude; a figure that cannot be right is a defect of the source), the per-reply tool-call bound, and when to stop — a reply with no tool call.
 Since `portfolio-v46`, ordinary topic and follow-up gathering begins with a bounded selection of raw pages already retrieved while researching this holding, before another search is requested.
 The transient holding-scoped inventory retains capped page text together with the title, publication date, original retrieval timestamp, source annotation, requested/final URL lineage and truncation status; a successful document-cache read can populate it, but failed reads and empty bodies cannot supply reused evidence.
 Selection follows first-retrieval order, rechecks current URL policy on the requested and final addresses, and fits complete page framing plus usable body text into the existing initial-message allowance after reserving the questions, task and first appended remaining-reply message.
@@ -63,7 +67,12 @@ Since `portfolio-v48`, before each gathering request the app appends a short use
 The initial brief, selected reuse block and every previously issued message stay unchanged; each new countdown follows the initial brief or the completed tool-result batch.
 The initial allowance reserves the first countdown once, and the full serialized input guard counts every accumulated countdown alongside the other messages.
 A bounded transport retry repeats the identical packet and count without appending again, and a new pass starts at 8.
-The topic's questions remain visible and the model judges what the shown pages leave unanswered; Part 2 asks it to read those pages before searching for the remaining answers, with no question-status tool or app-assigned answered list.
+The topic's questions remain visible and the model judges what the shown pages leave unanswered; where a page is shown, Part 2 asks it to read those pages before searching for the remaining answers, with no question-status tool or app-assigned answered list.
+Since `portfolio-v50`, that item names the PAGES ALREADY RETRIEVED block it reads, and a brief with no page shown asks to search first.
+Its fetch clause names the news leads as candidates beside the search results, under the one test of what is most likely to answer the questions.
+The gathering system message names the two tools its verbs map onto, `web_search` and `web_fetch`.
+The fetch tool's description states the extraction-quality range, 0 to 1, and the stub flag in plain words, and carries no weighing or safety instruction.
+The quoted-material frame stays on each page's text marker, and the fallible-source clause rides Part 2's weighing sentence.
 All turn, tool-call, fetch, elapsed-time and context limits remain unchanged.
 The tool results are data in the same register: a search result's fields, a page's address, title, dates and annotation fields and its text framed as quoted material, and a failed search or fetch stated as such, with no instruction in any of them.
 The `format` grammar is a decoding constraint the model never sees.

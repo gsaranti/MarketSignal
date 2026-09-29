@@ -1718,7 +1718,8 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
 
 /// Every research message on the sample passes is two marked parts in order
 /// with no app concept (`portfolio-v43`): Part 1 the input sections with the
-/// dated holding header, the tier scale stated and no instruction; Part 2 the
+/// dated holding header, the tier scale stated on a synthesis pass (on a
+/// gathering pass it rides the tool descriptions) and no instruction; Part 2 the
 /// task — on a gathering pass the per-reply bound and the stopping rule, on a
 /// synthesis pass the numbered items and a shape whose keys carry the
 /// follow-up on a topic pass and not on the disconfirming pass — and neither
@@ -1727,6 +1728,20 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
 fn research_messages_are_two_parts_with_no_app_concept() {
     let samples = research_samples();
     assert_eq!(samples.len(), 9, "five gathering, three synthesis, one fund gathering");
+    // The tool descriptions are prompt text too (`portfolio-v50`): they state
+    // the tier scale and the page header's fields, and carry no banned word.
+    let tools = super::research::research_tools().to_string();
+    assert!(
+        tools.contains("from 0 to 5: 0 is a primary source") && tools.contains("extraction quality"),
+        "{tools}"
+    );
+    assert!(banned_hits(&tools).is_empty(), "tools carry {:?}\n{tools}", banned_hits(&tools));
+    // The descriptions state the extraction-quality range and carry no weighing
+    // or safety instruction (`portfolio-v50`): the frame rides the page marker.
+    assert!(tools.contains("extraction quality (0 to 1"), "{tools}");
+    assert!(tools.contains("the subjects its source is trusted on (its tier holds within them)"), "{tools}");
+    assert!(!tools.contains("quoted material") && !tools.contains("defect of the source"), "{tools}");
+    assert_no_routing_words("tools", &tools);
     for s in &samples {
         let (part1, part2) = s
             .user
@@ -1735,7 +1750,18 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{}: {part1}", s.label);
         assert!(part1.contains("\nDate: 2026-09-16.\n"), "{}: no date line\n{part1}", s.label);
         assert!(part1.contains("\nTOPIC\n"), "{}: no TOPIC\n{part1}", s.label);
-        assert!(part1.contains("0 is a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
+        if s.label.starts_with("gathering") {
+            // `portfolio-v50`: Part 1 is inputs only — the tool results' fields are
+            // glossed on the tool descriptions, not under a heading in Part 1.
+            assert!(
+                !part1.contains("TOOL RESULTS") && !part1.contains("0 is a primary source"),
+                "{}: a tool-results legend in Part 1\n{part1}",
+                s.label
+            );
+        } else {
+            assert!(part1.contains("0 is a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
+            assert!(part1.contains("tier from 0 to 5"), "{}: the tier scale's range is unstated\n{part1}", s.label);
+        }
         assert!(!part1.contains("recency"), "{}: recency rendered\n{part1}", s.label);
         assert!(
             !part1.contains("Return ") && !part1.to_lowercase().contains("your "),
@@ -1769,12 +1795,34 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             if s.label.contains("previously retrieved pages") {
                 assert!(part1.contains("PAGES ALREADY RETRIEVED") && part1.contains("BEGIN PAGE TEXT"));
             }
-            if !s.label.contains("disconfirming") {
-                assert!(part2.contains("Search for what remains unanswered"), "{}: {part2}", s.label);
+            // `portfolio-v50`: item 1 reads the shown pages only where one is shown,
+            // naming the block; a brief with none asks to search first.
+            if s.label.contains("previously retrieved pages") {
+                assert!(
+                    part2.contains("1. Read the pages under PAGES ALREADY RETRIEVED against the questions. Search for what remains unanswered"),
+                    "{}: {part2}",
+                    s.label
+                );
+            } else if !s.label.contains("disconfirming") {
+                assert!(
+                    part2.contains("1. Search for what the questions ask") && !part2.contains("Read the pages"),
+                    "{}: {part2}",
+                    s.label
+                );
+            } else {
+                assert!(
+                    part2.contains("1. Search, then fetch and read the results and the leads under NEWS LEADS most likely to answer a question."),
+                    "{}: {part2}",
+                    s.label
+                );
             }
+            // `portfolio-v50`: the leads ride the fetch clause, not a sentence of their own.
+            assert!(!part2.contains("worth fetching"), "{}: {part2}", s.label);
             assert!(part2.contains("2. At most 8 tool calls in one reply."), "{}: {part2}", s.label);
             assert!(part2.contains("3. Stop when the questions are answered"), "{}: {part2}", s.label);
             assert!(part2.contains("a weak source lowers confidence"), "{}: {part2}", s.label);
+            // `portfolio-v50`: the fallible-source clause rides the weighing sentence.
+            assert!(part2.contains("a figure that cannot be right is a defect of the source"), "{}: {part2}", s.label);
         } else {
             let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
             let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");

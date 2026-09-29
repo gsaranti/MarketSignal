@@ -9893,7 +9893,13 @@ pub(crate) mod tests {
         // Attempt-8 Slice A (2026-09-27) moves the synthesis task, its shape's
         // value placeholder and the SUPPORTED ACTIONS line to v49; the retry
         // cause grew as a string, so the trail stays at v15.
-        assert_eq!(PROMPT_VERSION, "portfolio-v49");
+        // The prompt read-through (2026-09-28) moves the gathering brief's
+        // tool-results legend onto the tool descriptions, states the tier scale's
+        // range, conditions item 1 on a shown page, folds the news leads into
+        // its fetch clause, names the two tools in the gathering system message
+        // and moves the fallible-source clause onto the weighing sentence, the
+        // header's subject field reading `trusted on`: v50, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v50");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

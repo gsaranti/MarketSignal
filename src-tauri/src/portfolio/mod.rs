@@ -2366,7 +2366,22 @@ pub struct HoldingAudit {
 /// drops "exact", and the action packet's SUPPORTED ACTIONS line names its
 /// list as complete. Shared delivery stamp with the separately implemented
 /// attempt-8 latency slice (message order). The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v49";
+/// `portfolio-v50` (prompt read-through, 2026-09-28): the gathering brief's
+/// Part 1 drops its TOOL RESULTS legend — the two tool descriptions state
+/// what a search result and a fetched page carry, the tier scale's range
+/// (0 to 5) beside its endpoints included — the synthesis EVIDENCE gloss
+/// states the same range, and the gathering task's item 1 reads the pages
+/// under PAGES ALREADY RETRIEVED only where one is shown, asking a brief
+/// with none to search first, and names the news leads as fetch candidates
+/// beside the search results under the one relevance test; the gathering
+/// system message names the two tools, web_search and web_fetch; the fetch
+/// tool's description states the extraction-quality range (0 to 1) and the
+/// stub flag in plain words, and the fallible-source clause moves from it
+/// onto Part 2's weighing sentence; the page header's subject field reads
+/// `trusted on`, named in the fetch description and the EVIDENCE gloss as
+/// the subjects the source is trusted on, within which its tier holds. The
+/// checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v50";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
