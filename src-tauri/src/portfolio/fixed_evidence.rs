@@ -1722,12 +1722,13 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
 /// gathering pass it rides the tool descriptions) and no instruction; Part 2 the
 /// task — on a gathering pass the per-reply bound and the stopping rule, on a
 /// synthesis pass the numbered items and a shape whose keys carry the
-/// follow-up on a topic pass and not on the disconfirming pass — and neither
+/// follow-up on a topic pass and not on the disconfirming pass or a topic's
+/// last pass under the depth cap (`portfolio-v60`) — and neither
 /// part, nor the system prompt, carries a banned word or a routing word.
 #[test]
 fn research_messages_are_two_parts_with_no_app_concept() {
     let samples = research_samples();
-    assert_eq!(samples.len(), 9, "five gathering, three synthesis, one fund gathering");
+    assert_eq!(samples.len(), 10, "five gathering, four synthesis, one fund gathering");
     // The tool descriptions are prompt text too (`portfolio-v50`): they state
     // the tier scale and the page header's fields, and carry no banned word.
     let tools = super::research::research_tools().to_string();
@@ -1837,15 +1838,16 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     s.label
                 );
             } else if s.label.contains("follow-up pass") {
-                // `portfolio-v51`: the follow-up pass's items name its one question.
+                // `portfolio-v51`: the follow-up pass's items name its one question;
+                // `portfolio-v60`: by the heading it sits under.
                 assert!(
-                    part2.contains("1. Search for what the FOLLOW-UP question asks") && !part2.contains("Read the pages"),
+                    part2.contains("1. Search for what the question under FOLLOW-UP asks") && !part2.contains("Read the pages"),
                     "{}: {part2}",
                     s.label
                 );
                 assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
                 assert!(
-                    part2.contains("under HOLDING. The TOPIC questions are what the FOLLOW-UP question serves; this pass does not search them, and CLAIMS SO FAR need no second search."),
+                    part2.contains("under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them, and the claims under CLAIMS SO FAR need no second search."),
                     "{}: {part2}",
                     s.label
                 );
@@ -1882,7 +1884,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(!part2.contains("worth fetching"), "{}: {part2}", s.label);
             assert!(part2.contains("2. At most 8 tool calls in one reply."), "{}: {part2}", s.label);
             if s.label.contains("follow-up pass") {
-                assert!(part2.contains("3. Stop when the FOLLOW-UP question is answered, or when what remains cannot be found:"), "{}: {part2}", s.label);
+                assert!(part2.contains("3. Stop when the question under FOLLOW-UP is answered, or when what remains cannot be found:"), "{}: {part2}", s.label);
             } else if s.label.contains("disconfirming") {
                 assert!(part2.contains("3. Stop when the question is answered, or when what remains cannot be found:"), "{}: {part2}", s.label);
             } else {
@@ -1903,12 +1905,12 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
             let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
             let keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
-            let disconfirming = s.label.contains("disconfirming");
-            assert_eq!(keys.contains(&"followup_question"), !disconfirming, "{}", s.label);
-            assert_eq!(part2.contains("3. followup_question"), !disconfirming, "{}", s.label);
+            let offers = !s.label.contains("disconfirming") && !s.label.contains("depth cap");
+            assert_eq!(keys.contains(&"followup_question"), offers, "{}", s.label);
+            assert_eq!(part2.contains("3. followup_question"), offers, "{}", s.label);
             assert!(part2.contains("1. findings") && part2.contains("2. claims"), "{}: {part2}", s.label);
             assert!(part1.contains("\nEVIDENCE\n") && part1.contains("=== S1: "), "{}: {part1}", s.label);
-            assert_eq!(s.system.contains("follow-up proposal"), !disconfirming, "{}", s.label);
+            assert_eq!(s.system.contains("follow-up proposal"), offers, "{}", s.label);
         }
         if s.label.contains("continuity") {
             assert!(part1.contains("\nSTANDING CONDITIONS\n") && part1.contains("\nPRIOR FINDINGS\n"), "{}", s.label);
@@ -1933,6 +1935,21 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         if s.label.starts_with("synthesis") {
             assert!(!part1.contains("SEARCHING") && !part2.contains("SEARCHING"), "{}", s.label);
         }
+        // `portfolio-v60`: the follow-up synthesis states its subject in the topic
+        // pass's construction, and no message uses a heading as an adjective.
+        if s.label.starts_with("synthesis") && s.label.contains("follow-up pass") {
+            assert!(
+                part2.contains("1. findings — write this first and never leave it empty. For the question under FOLLOW-UP, state what EVIDENCE shows. Where a page gives a figure,"),
+                "{}: {part2}",
+                s.label
+            );
+        }
+        assert!(
+            !s.user.contains("FOLLOW-UP question") && !s.user.contains("TOPIC questions"),
+            "{}: a heading used as an adjective\n{}",
+            s.label,
+            s.user
+        );
     }
     // The tool results carry no instruction either.
     for (label, text) in super::research::samples::tool_results(false) {

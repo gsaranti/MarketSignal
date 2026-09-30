@@ -9926,7 +9926,12 @@ pub(crate) mod tests {
         // on the weighing sentence, drops the SEARCHING note from the
         // synthesis brief and restates the task's items as plain sentences:
         // v59, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v59");
+        // File 09 (2026-09-29) points the follow-up pass at its headings as
+        // "the question under FOLLOW-UP", "the questions under TOPIC" and "the
+        // claims under CLAIMS SO FAR", in the synthesis subject and the
+        // gathering opening and items, and asks a topic's last pass under the
+        // depth cap for no follow-up proposal: v60, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v60");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

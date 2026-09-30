@@ -2466,7 +2466,22 @@ pub struct HoldingAudit {
 /// shape shows a string-or-null field's both alternatives inside quotes
 /// (`"end":"<YYYY-MM-DD|null>"`, `"followup_question":"<question|null>"`,
 /// `"followup_rationale":"<why|null>"`). The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v59";
+/// `portfolio-v60` (prompt read-through, file 09, 2026-09-29): the follow-up
+/// pass points at its headings as every other pass does, never with a
+/// heading as an adjective. The synthesis subject reads "For the question
+/// under FOLLOW-UP, state what EVIDENCE shows.", the topic pass's
+/// construction. The gathering opening reads "Find what the web shows on the
+/// question under FOLLOW-UP for this holding, as of the date under HOLDING.
+/// The questions under TOPIC are what that question serves; this pass does
+/// not search them, and the claims under CLAIMS SO FAR need no second
+/// search.", and items 1 and 3 name "the question under FOLLOW-UP". A topic's
+/// last pass under the depth cap asks for no follow-up proposal, as the
+/// disconfirming pass: a proposal there could never be spent, so its system
+/// message names findings and claims alone, its task has no follow-up item,
+/// and its shape and grammar carry no follow-up fields
+/// (`PassContext::offers_followup`, one depth test with the scheduler). The
+/// checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v60";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

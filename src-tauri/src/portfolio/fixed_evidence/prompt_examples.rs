@@ -427,16 +427,26 @@ fn examples() -> Vec<Example> {
     });
     out.push(Example {
         file: "09-research-synthesis-follow-up-pass",
-        title: "Research synthesis — follow-up pass, gathering clean",
+        title: "Research synthesis — follow-up pass",
         step: "6c",
         holding: tsla_holding,
         sentences: lines(&[
             synthesis_common,
-            "On a follow-up pass the approved question and the prior claims join the packet, and the shape still offers a follow-up proposal.",
+            "On a follow-up pass the approved question joins the packet under FOLLOW-UP, and the shape still offers a follow-up proposal unless the pass is the topic's last under the depth cap (the variant below).",
         ]),
         stage: s(1).stage.clone(),
         request: research_request(s(1)),
-        variants: vec![],
+        variants: vec![Variant {
+            heading: "Variant — the topic's last pass under the depth cap",
+            sentences: lines(&[
+                "The lines that differ from the system and user messages above on a topic's third pass, the last its depth cap allows (portfolio-v60).",
+                "A proposal there could never be spent, so the call asks for none, and the response schema drops `followup_question` and `followup_rationale`.",
+            ]),
+            diff: diff_lines(
+                &format!("{}\n{}", s(1).system, s(1).user),
+                &format!("{}\n{}", s(3).system, s(3).user),
+            ),
+        }],
         extras: vec![],
     });
     out.push(Example {

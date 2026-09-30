@@ -22,6 +22,8 @@ Until then the brief carried it as a SEARCHING note in plain words, rendered fro
 A pass that retrieved no page with body text spends no synthesis call: the app records the pass itself — a fixed sentence plus the plain-words note of what was lost, no claims, no follow-up — with the same gaps (fix list 4.3, ruled 2026-09-17).
 The synthesis message closes with the findings object's shape, every value a placeholder and the source id listing the ids the evidence shows, pinned to the grammar's key set by test; since `portfolio-v59` a string-or-null field shows both alternatives inside quotes.
 The object is the findings, the claims and, on a topic pass, the follow-up proposal; the disconfirming pass returns findings and claims only, and no field the app does not read is asked for (the topic-answered, material-forward-fact and model-attributed seed fields were retired 2026-09-17).
+Since `portfolio-v60` (ruled 2026-09-29), a topic's last pass under the depth cap returns findings and claims only as well, since no pass could take up its proposal.
+Its system message names findings and claims alone, its task has no follow-up item, and its shape and grammar carry no follow-up fields.
 For Portfolio, each rendered source has a contiguous pass-local `S1`, `S2`, … identifier assigned after evidence admission, and the synthesis wire cites `source_id` instead of copying a URL.
 The same rendered-source mapping supplies the prompt identifiers and their resolution; empty, duplicate and budget-omitted pages introduce no numbering gaps.
 The app resolves only identifiers for evidence actually shown in that call, then preserves the claim, final source URL, app-stamped retrieval time, search/seed-reported publication metadata, and source-stated fact period, including redirected seed lineage.
@@ -44,6 +46,7 @@ The synthesis brief carries no SEARCHING section since `portfolio-v59`; item 1 e
 Since `portfolio-v59` the task's items are plain sentences, each field defined where it is named: item 1 opens "findings — write this first and never leave it empty.", then the pass's subject, then that a figure is quoted with the date or period the page gives for it, where pages disagree, and what stays unanswered; item 2 opens "claims — the statements the findings rest on, one statement per claim, each stated by a page in EVIDENCE", defines source_id and fact_period, and lists the fact-period kinds as a semicolon list with each format bracketed, `end` null for every kind but range.
 The preamble says once that the names below are the returned object's fields, beside the clause forbidding a code fence and surrounding text, which stays because it cuts the model's thinking-time deliberation over the fence, a cost the grammar cannot remove (fix list 3.7, ruled 2026-09-16).
 The return shape shows a string-or-null field's both alternatives inside quotes, so a literal null never reads as the only value.
+Since `portfolio-v60` (ruled 2026-09-29), the follow-up pass's item 1 states its subject in the topic pass's construction: "For the question under FOLLOW-UP, state what EVIDENCE shows."
 Since `portfolio-v50`, that subject field reads `trusted on`, and the fetch description and the gloss name it as the subjects the source is trusted on.
 Since `portfolio-v53` (ruled 2026-09-29), the relation between the tier and those subjects is stated nowhere in the prompts: the header's `source tier N | trusted on …` fields carry it side by side.
 Part 2 is the task in output order and the shape.
@@ -102,6 +105,9 @@ The fact-period gloss reads "the period the fact applies to" wherever the field 
 The continuity clause in item 1 names the headings it draws on, a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS, naming only the heading the brief shows.
 Since `portfolio-v55` (ruled 2026-09-29), the disconfirming pass's opening is two sentences: what to find on the question under TOPIC, then that the claims under CLAIMS SO FAR are what that question tests, searched for evidence against them and not for more evidence for them.
 Its items 1 and 3 say "the question", since that brief carries one, and its CLAIMS SO FAR gloss names the two provenance fields in the follow-up pass's words.
+Since `portfolio-v60` (ruled 2026-09-29), the follow-up pass points at its headings as the disconfirming pass does, never using a heading as an adjective.
+Its opening asks what the web shows on the question under FOLLOW-UP, then says the questions under TOPIC are what that question serves, and where claims render that the claims under CLAIMS SO FAR need no second search.
+Its items 1 and 3 name the question under FOLLOW-UP.
 All turn, tool-call, fetch, elapsed-time and context limits remain unchanged.
 The tool results are data in the same register: a search result's fields, a page's address, title, dates and annotation fields and its text framed as quoted material, and a failed search or fetch stated as such, with no instruction in any of them.
 The `format` grammar is a decoding constraint the model never sees.

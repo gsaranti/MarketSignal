@@ -1,10 +1,10 @@
-# Research synthesis — follow-up pass, gathering clean
+# Research synthesis — follow-up pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v59`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v60`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The synthesis call closes a pass: no tools, the findings grammar as the format, no history — the evidence packet is rebuilt from the run's store, and the model cites sources by the pass-local id the packet shows.
-On a follow-up pass the approved question and the prior claims join the packet, and the shape still offers a follow-up proposal.
+On a follow-up pass the approved question joins the packet under FOLLOW-UP, and the shape still offers a follow-up proposal unless the pass is the topic's last under the depth cap (the variant below).
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 
 ## Request
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4242 chars — the messages and tools as serialized |
+| Prompt material | 4250 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ review. Part 1 of the message gives the inputs. Part 2 states what to determine 
 shape to return. You will return findings, claims and a follow-up proposal, as one JSON object.
 ~~~~
 
-## User message (3806 chars)
+## User message (3814 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -73,11 +73,11 @@ Because: [stub: why the question matters to the thesis]
 Determine the following from the inputs and return them as one JSON object in the shape under RETURN
 SHAPE, with no code fence and no surrounding text; the names below are its fields.
 
-1. findings — write this first and never leave it empty. State what EVIDENCE shows on the FOLLOW-UP
-question. Where a page gives a figure, quote it with the date or period the page gives for it. Say
-where pages disagree, and what stays unanswered. Weigh each page by its source tier and extraction
-quality; a weak source lowers confidence in what it says, it does not exclude it, and a figure that
-cannot be right is a defect of the source.
+1. findings — write this first and never leave it empty. For the question under FOLLOW-UP, state
+what EVIDENCE shows. Where a page gives a figure, quote it with the date or period the page gives
+for it. Say where pages disagree, and what stays unanswered. Weigh each page by its source tier and
+extraction quality; a weak source lowers confidence in what it says, it does not exclude it, and a
+figure that cannot be right is a defect of the source.
 
 2. claims — the statements the findings rest on, one statement per claim, each stated by a page in
 EVIDENCE. source_id is that page's id as EVIDENCE shows it. fact_period is the period the fact
@@ -176,4 +176,17 @@ label|empty>","end":"<YYYY-MM-DD|null>"}}],"followup_question":"<question|null>"
   ],
   "type": "object"
 }
+~~~~
+
+## Variant — the topic's last pass under the depth cap
+
+The lines that differ from the system and user messages above on a topic's third pass, the last its depth cap allows (portfolio-v60).
+A proposal there could never be spent, so the call asks for none, and the response schema drops `followup_question` and `followup_rationale`.
+
+~~~~text
+- You are an investment analyst writing up one topic of research on one holding for a portfolio review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the shape to return. You will return findings, claims and a follow-up proposal, as one JSON object.
+- 3. followup_question — one further question worth a search of its own, or null; followup_rationale — why, or null.
+- {"findings":"","claims":[{"claim":"","source_id":"<S1|S2>","fact_period":{"kind":"<day|month|quarter|year|range|fiscal|unknown>","value":"<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>","end":"<YYYY-MM-DD|null>"}}],"followup_question":"<question|null>","followup_rationale":"<why|null>"}
++ You are an investment analyst writing up one topic of research on one holding for a portfolio review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the shape to return. You will return findings and claims, as one JSON object.
++ {"findings":"","claims":[{"claim":"","source_id":"<S1|S2>","fact_period":{"kind":"<day|month|quarter|year|range|fiscal|unknown>","value":"<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>","end":"<YYYY-MM-DD|null>"}}]}
 ~~~~

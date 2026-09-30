@@ -1,6 +1,6 @@
 # Portfolio Analysis prompts — contents
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v59`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v60`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then interpretation and the action call (Step 6f).
 Each file carries the request envelope, every message as sent, and the tools or the response schema.
@@ -15,7 +15,7 @@ Each file carries the request envelope, every message as sent, and the tools or 
 | [06-research-gathering-fund-exposure-profile](06-research-gathering-fund-exposure-profile.md) | Research gathering — a fund's exposure-profile topic | 6c |
 | [07-research-gathering-tool-turn](07-research-gathering-tool-turn.md) | Research gathering — the second turn, after tool results | 6c |
 | [08-research-synthesis-root-pass-later-topic](08-research-synthesis-root-pass-later-topic.md) | Research synthesis — root pass on a later topic | 6c |
-| [09-research-synthesis-follow-up-pass](09-research-synthesis-follow-up-pass.md) | Research synthesis — follow-up pass, gathering clean | 6c |
+| [09-research-synthesis-follow-up-pass](09-research-synthesis-follow-up-pass.md) | Research synthesis — follow-up pass | 6c |
 | [10-research-synthesis-disconfirming-pass](10-research-synthesis-disconfirming-pass.md) | Research synthesis — the disconfirming pass | 6c |
 | [11-distillation-single-pass-stock-first-analysis](11-distillation-single-pass-stock-first-analysis.md) | Distillation — single pass, stock, first analysis | 6d |
 | [12-distillation-single-pass-stock-continuity](12-distillation-single-pass-stock-continuity.md) | Distillation — single pass, stock, continuity run with the overlay and the backfill obligation | 6d |

@@ -81,6 +81,13 @@ const GATHERING_PACKET_RESERVE_CHARS: usize = 2_048;
 /// Depth cap: a topic's root pass plus at most two follow-ups (≤3 passes).
 pub const MAX_PASSES_PER_TOPIC: usize = 3;
 
+/// Whether a proposal from a pass at `depth` (0 for a topic's root) can still
+/// be spent under the depth cap — the one test the scheduler queues a
+/// follow-up by and the synthesis asks for one by (`portfolio-v60`).
+fn followup_spendable(depth: usize) -> bool {
+    depth + 1 < MAX_PASSES_PER_TOPIC
+}
+
 /// Hits rendered into a search tool result (the filter already capped the
 /// tail; this bounds the tool message).
 const HITS_PER_SEARCH_RESULT: usize = 8;
@@ -1605,8 +1612,11 @@ pub fn research_tools() -> Value {
 /// pass only — the follow-up proposal: `topic_answered`, `material_forward_fact`
 /// and the model-attributed `seeded_by` were parsed and persisted and read by
 /// nothing (ruled 2026-09-17; fix list 4.1, 4.2, 4.6), and the disconfirming
-/// pass's follow-up was asked and discarded by contract.
-fn findings_schema(disconfirming: bool) -> Value {
+/// pass's follow-up was asked and discarded by contract. Since `portfolio-v60`
+/// the follow-up fields ride only a pass that offers one
+/// (`PassContext::offers_followup`): a topic's last pass under the depth cap
+/// drops them as the disconfirming pass does.
+fn findings_schema(offers_followup: bool) -> Value {
     let mut properties = json!({
         "findings": { "type": "string" },
         "claims": {
@@ -1622,7 +1632,7 @@ fn findings_schema(disconfirming: bool) -> Value {
             }
         }
     });
-    if !disconfirming {
+    if offers_followup {
         let followup = json!({
             "followup_question": { "type": ["string", "null"] },
             "followup_rationale": { "type": ["string", "null"] }
@@ -1674,7 +1684,7 @@ struct ClaimWire {
 /// planning its content, and the topic worked under that confusion dropped
 /// whole at reconciliation (attempt-5 Finding 5). Pinned to the grammar's key
 /// set by test, so the shape shown and the shape enforced cannot drift.
-fn findings_return_shape(disconfirming: bool, ids: &[String]) -> String {
+fn findings_return_shape(offers_followup: bool, ids: &[String]) -> String {
     let source_id = if ids.is_empty() {
         "<the id of a page in EVIDENCE>".to_string()
     } else {
@@ -1688,7 +1698,7 @@ fn findings_return_shape(disconfirming: bool, ids: &[String]) -> String {
     // shape stays valid JSON and a literal null never reads as the only value
     // (`portfolio-v59`, ruled 2026-09-29).
     let mut shape = format!(r#"{{"findings":"","claims":[{{"claim":"","source_id":"{source_id}","fact_period":{{"kind":"<day|month|quarter|year|range|fiscal|unknown>","value":"<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>","end":"<YYYY-MM-DD|null>"}}}}]"#);
-    if !disconfirming {
+    if offers_followup {
         shape.push_str(
             r#","followup_question":"<question|null>","followup_rationale":"<why|null>""#,
         );
@@ -1956,7 +1966,21 @@ struct PassContext<'a> {
     /// beside (append-only across passes).
     prior_claims: &'a [EvidenceClaim],
     /// The disconfirming pass's special framing.
-    disconfirming: bool
+    disconfirming: bool,
+    /// The pass's depth within its topic: 0 for the root, one more per
+    /// follow-up (`portfolio-v60`). The disconfirming pass sits outside every
+    /// topic's depth cap and carries 0.
+    depth: usize,
+}
+
+impl PassContext<'_> {
+    /// Whether the synthesis asks for a follow-up proposal: only where the
+    /// app can spend one — never on the disconfirming pass, and never on the
+    /// last pass a topic's depth cap allows (`portfolio-v60`, ruled
+    /// 2026-09-29), whose proposal no pass could take up.
+    fn offers_followup(&self) -> bool {
+        !self.disconfirming && followup_spendable(self.depth)
+    }
 }
 
 #[derive(Clone)]
@@ -2086,6 +2110,7 @@ impl ResearchRunner<'_> {
                 followup: work.research.passes.last().and_then(|p| p.followup.as_ref()),
                 prior_claims: &topic_claims,
                 disconfirming: false,
+                depth,
             };
             let pass = self.run_pass(
                 &ctx,
@@ -2097,7 +2122,7 @@ impl ResearchRunner<'_> {
                 &mut inventory,
                 &mut recovery,
             )?;
-            if pass.followup.is_some() && depth + 1 < MAX_PASSES_PER_TOPIC {
+            if pass.followup.is_some() && followup_spendable(depth) {
                 pending.insert((true, index, depth + 1));
             }
             work.research.passes.push(pass);
@@ -2127,7 +2152,8 @@ impl ResearchRunner<'_> {
                     seeds,
                     followup: None,
                     prior_claims: &all_claims,
-                    disconfirming: true
+                    disconfirming: true,
+                    depth: 0,
                 };
                 let pass = self.run_pass(
                     &ctx,
@@ -2479,11 +2505,11 @@ impl ResearchRunner<'_> {
         page_meta: &std::collections::HashMap<String, PageMeta>,
         gaps: &mut Vec<String>,
     ) -> Result<(FindingsWire, std::collections::HashMap<String, String>)> {
-        let schema = findings_schema(ctx.disconfirming);
+        let schema = findings_schema(ctx.offers_followup());
         let stage = research_retry_stage(&self.step_label, &ctx.topic.key, "synthesis");
         let mut shown = std::collections::HashMap::new();
         let messages = vec![
-            ChatMessage::system(synthesis_system_prompt(ctx.disconfirming)),
+            ChatMessage::system(synthesis_system_prompt(ctx.offers_followup())),
             ChatMessage::user(synthesis_brief(
                 ctx,
                 fetched,
@@ -3055,8 +3081,9 @@ impl ResearchRunner<'_> {
             findings: wire.findings,
             claims,
             // The disconfirming pass proposes no follow-ups by contract (it
-            // sits outside every topic's depth budget).
-            followup: if ctx.disconfirming { None } else { followup }
+            // sits outside every topic's depth budget), nor does a topic's last
+            // pass under the cap (`portfolio-v60`): neither is asked for one.
+            followup: if ctx.offers_followup() { followup } else { None }
         }
     }
 }
@@ -3083,15 +3110,16 @@ with web_search and fetch with web_fetch, and write nothing up in this conversat
 /// two-part shape and the output names — findings, claims and a follow-up
 /// proposal, or findings and claims alone on the disconfirming pass, whose
 /// follow-up the app never spends (nothing conditional on a case that is not
-/// this call). The object's shape closes Part 2 of the user message
+/// this call), and since `portfolio-v60` on a topic's last pass under the
+/// depth cap, for the same reason. The object's shape closes Part 2 of the user message
 /// (`synthesis_task`), pinned to the grammar's key set by test. The system
 /// prompt is not part of the brief's sized packet; it rides the slack above
 /// `input_budget_chars`, which a test keeps it well inside.
-fn synthesis_system_prompt(disconfirming: bool) -> String {
-    let names = if disconfirming {
-        "findings and claims"
-    } else {
+fn synthesis_system_prompt(offers_followup: bool) -> String {
+    let names = if offers_followup {
         "findings, claims and a follow-up proposal"
+    } else {
+        "findings and claims"
     };
     format!(
         "You are an investment analyst writing up one topic of research on one holding for a \
@@ -3189,7 +3217,10 @@ fn followup_section(f: &FollowupProposal) -> String {
 /// Since `portfolio-v59` (ruled 2026-09-29) the items are plain sentences:
 /// each field is defined where it is named, the figure clause says what a
 /// figure is quoted with, and the fact-period kinds are a semicolon list
-/// with each format bracketed.
+/// with each format bracketed. Since `portfolio-v60` (ruled 2026-09-29) the
+/// follow-up pass's subject reads "For the question under FOLLOW-UP, state
+/// what EVIDENCE shows.", the topic pass's construction, and item 3 renders
+/// only where the pass offers a follow-up (`PassContext::offers_followup`).
 fn synthesis_task(ctx: &PassContext<'_>, ids: &[String]) -> String {
     // The preamble says once that the names below are the object's fields, in
     // place of tagging each (`portfolio-v59`). The no-fence clause stays: the
@@ -3214,7 +3245,7 @@ weakens and how, which it leaves standing, and any contrary evidence that stands
         );
     } else {
         out.push_str(if ctx.followup.is_some() {
-            "State what EVIDENCE shows on the FOLLOW-UP question."
+            "For the question under FOLLOW-UP, state what EVIDENCE shows."
         } else {
             "For each question under TOPIC, state what EVIDENCE shows."
         });
@@ -3245,7 +3276,7 @@ when this analysis runs. Its kind is one of: day (value YYYY-MM-DD, e.g. 2026-06
 calendar quarter or a period that covers one without ambiguity, and never turn a fiscal label \
 into a calendar period. Keep an announcement date and an effective date as separate claims.\n\n",
     );
-    if !ctx.disconfirming {
+    if ctx.offers_followup() {
         out.push_str(
             "3. followup_question — one further question worth a search of its own, or null; \
 followup_rationale — why, or null.\n\n",
@@ -3254,7 +3285,7 @@ followup_rationale — why, or null.\n\n",
     out.push_str(
         "RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n",
     );
-    out.push_str(&findings_return_shape(ctx.disconfirming, ids));
+    out.push_str(&findings_return_shape(ctx.offers_followup(), ids));
     out.push('\n');
     out
 }
@@ -3941,7 +3972,10 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, pages_shown: bool) 
 /// shown (`portfolio-v50`); a brief with none asks to search first. On a
 /// follow-up pass the opening's second sentence says what the TOPIC questions
 /// are for and that the pass does not search them, and items 1 and 3 name the
-/// FOLLOW-UP question (`portfolio-v51`).
+/// FOLLOW-UP question (`portfolio-v51`). Since `portfolio-v60` (ruled
+/// 2026-09-29) that pass points at its headings as every other pass does —
+/// "the question under FOLLOW-UP", "the questions under TOPIC", "the claims
+/// under CLAIMS SO FAR" — never with a heading as an adjective.
 fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     let opening = if ctx.disconfirming {
         "Find what the web shows on the question under TOPIC for this holding, as of the date \
@@ -3950,13 +3984,13 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
             .to_string()
     } else if ctx.followup.is_some() {
         format!(
-            "Find what the web shows on the FOLLOW-UP question for this holding, as of the date \
-             under HOLDING. The TOPIC questions are what the FOLLOW-UP question serves; this pass \
+            "Find what the web shows on the question under FOLLOW-UP for this holding, as of the \
+             date under HOLDING. The questions under TOPIC are what that question serves; this pass \
              does not search them{}.",
             if ctx.prior_claims.is_empty() {
                 ""
             } else {
-                ", and CLAIMS SO FAR need no second search"
+                ", and the claims under CLAIMS SO FAR need no second search"
             }
         )
     } else {
@@ -3973,17 +4007,17 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     } else {
         "the results and the leads under NEWS LEADS"
     };
-    // The noun the items search, weigh against and stop on: the one FOLLOW-UP
-    // question on a follow-up pass, so "the questions" never points that pass
+    // The noun the items search, weigh against and stop on: the one question
+    // under FOLLOW-UP on a follow-up pass, so "the questions" never points that pass
     // back at the topic its opening said not to search (`portfolio-v51`); the
     // one question on the disconfirming pass, whose brief carries no other
     // (`portfolio-v55`); the TOPIC questions otherwise.
     let (questions, them, allow, answered) = if ctx.followup.is_some() {
         (
-            "the FOLLOW-UP question",
+            "the question under FOLLOW-UP",
             "it",
             "the question allows",
-            "the FOLLOW-UP question is answered",
+            "the question under FOLLOW-UP is answered",
         )
     } else if ctx.disconfirming {
         ("the question", "it", "the question allows", "the question is answered")
@@ -4336,6 +4370,7 @@ mod tests {
             followup: None,
             prior_claims: &[],
             disconfirming: false,
+            depth: 0,
         };
         runner.fetch_with_retry(url, &context, spent)
     }
@@ -5369,6 +5404,7 @@ mod tests {
                 followup: None,
                 prior_claims: &[],
                 disconfirming: false,
+                depth: 0,
             };
             let model = ScriptModel::new(vec![findings_turn(json!({
                 "findings": expected.claim, "claims": [{"claim": expected.claim,
@@ -5983,6 +6019,7 @@ mod tests {
             followup: None,
             prior_claims: &[],
             disconfirming: false,
+            depth: 0,
         };
         let issuer =
             crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://phillips66.com")
@@ -6070,6 +6107,7 @@ mod tests {
             followup: None,
             prior_claims: &[],
             disconfirming: false,
+            depth: 0,
         };
         let issuer =
             crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://phillips66.com")
@@ -6334,6 +6372,7 @@ mod tests {
             followup: None,
             prior_claims: &[],
             disconfirming: false,
+            depth: 0,
         };
         let long_url = format!("https://reuters.com/{}", "x".repeat(600_000));
         let page = ReusablePage {
@@ -6471,6 +6510,7 @@ mod tests {
             followup: None,
             prior_claims: &[],
             disconfirming: false,
+            depth: 0,
         };
         let source = ReusablePage {
             page: FetchedPage {
@@ -6681,7 +6721,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -6737,7 +6778,8 @@ mod tests {
             seeds: &flood,
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let countdown = gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count();
         let brief = pass_brief(&ctx);
@@ -6812,7 +6854,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -6841,12 +6884,13 @@ mod tests {
     fn the_return_shape_carries_exactly_the_grammar_keys_on_both_passes() {
         // Attempt-5 Finding 5: the `format` grammar never reaches the model, so
         // the shape that closes Part 2 is the only place the object's keys can
-        // — pin the shown keys to the enforced ones, on the topic pass and on
-        // the disconfirming pass (whose grammar and shape carry no follow-up,
-        // `portfolio-v43`), so the two cannot drift apart.
+        // — pin the shown keys to the enforced ones, on a pass that offers a
+        // follow-up and on one that does not (the disconfirming pass since
+        // `portfolio-v43`, a topic's last pass under the depth cap since
+        // `portfolio-v60`), so the two cannot drift apart.
         use std::collections::BTreeSet;
-        for disconfirming in [false, true] {
-            let schema = findings_schema(disconfirming);
+        for offers_followup in [true, false] {
+            let schema = findings_schema(offers_followup);
             let properties = schema["properties"].as_object().unwrap();
             let required: Vec<&str> = schema["required"]
                 .as_array()
@@ -6857,11 +6901,11 @@ mod tests {
             assert_eq!(required, ["findings", "claims"]);
             let ids = vec!["S1".to_string(), "S2".to_string()];
             let shape: serde_json::Value =
-                serde_json::from_str(&findings_return_shape(disconfirming, &ids)).unwrap();
+                serde_json::from_str(&findings_return_shape(offers_followup, &ids)).unwrap();
             assert_eq!(
                 shape.as_object().unwrap().keys().collect::<BTreeSet<_>>(),
                 properties.keys().collect::<BTreeSet<_>>(),
-                "disconfirming {disconfirming}"
+                "offers_followup {offers_followup}"
             );
             assert_eq!(shape["claims"][0]["source_id"], "<S1|S2>");
             assert_eq!(
@@ -6872,7 +6916,7 @@ mod tests {
                     .keys()
                     .collect::<BTreeSet<_>>()
             );
-            assert_eq!(!disconfirming, properties.contains_key("followup_question"));
+            assert_eq!(offers_followup, properties.contains_key("followup_question"));
             assert!(!properties.contains_key("followup_technology_event"));
             let periods = &schema["properties"]["claims"]["items"]["properties"]["fact_period"]["properties"]["kind"]["enum"];
             let kinds: Vec<_> = periods.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
@@ -6885,12 +6929,12 @@ mod tests {
             assert_eq!(value, "<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>");
             assert_eq!(value.trim_matches(['<', '>']).split('|').count(), kinds.len());
             // The system prompt names the outputs and never the grammar.
-            let system = synthesis_system_prompt(disconfirming);
+            let system = synthesis_system_prompt(offers_followup);
             assert!(!system.to_lowercase().contains("grammar"), "{system}");
-            assert_eq!(system.contains("follow-up proposal"), !disconfirming, "{system}");
+            assert_eq!(system.contains("follow-up proposal"), offers_followup, "{system}");
         }
         // With no page shown, the placeholder names the rule, never an id.
-        assert!(findings_return_shape(false, &[]).contains("<the id of a page in EVIDENCE>"));
+        assert!(findings_return_shape(true, &[]).contains("<the id of a page in EVIDENCE>"));
     }
 
     #[test]
@@ -6908,7 +6952,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let url = "https://reuters.com/widget".to_string();
         let fetched = vec![(
@@ -6976,7 +7021,7 @@ mod tests {
         }
         assert!(!part2.contains("exact"), "{part2}");
         assert!(
-            part2.trim_end().ends_with(&findings_return_shape(false, &["S1".to_string()])),
+            part2.trim_end().ends_with(&findings_return_shape(true, &["S1".to_string()])),
             "{part2}"
         );
         for word in [
@@ -6985,7 +7030,7 @@ mod tests {
         ] {
             assert!(!user.contains(word), "{word} leaked: {user}");
         }
-        assert!(!synthesis_system_prompt(false).contains("orchestrator"));
+        assert!(!synthesis_system_prompt(true).contains("orchestrator"));
     }
 
     #[test]
@@ -7000,7 +7045,7 @@ mod tests {
         }];
         let ctx = PassContext {
             holding_brief: "HOLDING: WID", topic: &agenda[0], seed: None,
-            seeds: &seeds, followup: None, prior_claims: &claims, disconfirming: true
+            seeds: &seeds, followup: None, prior_claims: &claims, disconfirming: true, depth: 0
         };
         let orientation = synthesis_orientation(&ctx);
         assert!(orientation.contains("\nCLAIMS SO FAR\n"), "{orientation}");
@@ -7030,7 +7075,7 @@ mod tests {
         };
         let render = |followup| synthesis_orientation(&PassContext {
             holding_brief: "HOLDING: WID", topic: &agenda[0], seed: None,
-            seeds: &[], followup: Some(followup), prior_claims: &[], disconfirming: true
+            seeds: &[], followup: Some(followup), prior_claims: &[], disconfirming: true, depth: 0
         });
         let orientation = render(&followup);
         assert!(
@@ -7070,7 +7115,7 @@ mod tests {
         let agenda = one_topic_agenda();
         let ctx = PassContext {
             holding_brief: "HOLDING: WID", topic: &agenda[0], seed: None,
-            seeds: &[], followup: None, prior_claims: &[], disconfirming: false
+            seeds: &[], followup: None, prior_claims: &[], disconfirming: false, depth: 0
         };
         let mut shown = std::collections::HashMap::new();
         let mut gaps = vec![];
@@ -7159,7 +7204,7 @@ mod tests {
             SYSTEM_PROMPT_CAP_CHARS * 10 <= slack,
             "cap {SYSTEM_PROMPT_CAP_CHARS} vs slack {slack}"
         );
-        let prompt_chars = synthesis_system_prompt(false).chars().count();
+        let prompt_chars = synthesis_system_prompt(true).chars().count();
         assert!(prompt_chars <= SYSTEM_PROMPT_CAP_CHARS, "{prompt_chars} chars");
     }
 
@@ -7706,7 +7751,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -7759,7 +7805,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -7809,7 +7856,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -7854,7 +7902,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -7907,7 +7956,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -7970,7 +8020,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -8034,7 +8085,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -8082,7 +8134,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
@@ -8232,7 +8285,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &claims,
-            disconfirming: true
+            disconfirming: true,
+            depth: 0
         };
         let brief = pass_brief(&ctx);
         assert!(
@@ -8815,6 +8869,75 @@ mod tests {
         assert!(out.disconfirming.is_some());
     }
 
+    /// A topic's last pass under the depth cap asks for no follow-up and keeps
+    /// none, even where the model returns one, as the disconfirming pass
+    /// (`portfolio-v60`, ruled 2026-09-29): its proposal could never be spent.
+    #[test]
+    fn the_last_pass_under_the_depth_cap_asks_for_no_followup() {
+        struct Recording {
+            // Each synthesis: its system message, grammar and user message.
+            syntheses: Mutex<Vec<(String, Value, String)>>,
+        }
+        impl ResearchModel for Recording {
+            fn research_turn(
+                &self,
+                stage: &str,
+                messages: &[ChatMessage],
+                tools: Option<&Value>,
+                format: Option<&Value>,
+            ) -> Result<ChatResponse> {
+                if tools.is_some() {
+                    if stage.ends_with("turn 1") {
+                        return Ok(turn_with_tools(json!([
+                            {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
+                        ])));
+                    }
+                    return Ok(gather_done());
+                }
+                self.syntheses.lock().unwrap().push((
+                    messages[0].content.clone(),
+                    format.cloned().expect("a synthesis grammar"),
+                    messages[1].content.clone(),
+                ));
+                Ok(findings_turn(json!({
+                    "findings": "partial",
+                    "claims": [],
+                    "followup_question": "dig into the supplier note",
+                    "followup_rationale": "a thread worth one more pass"
+                })))
+            }
+        }
+        let model = Recording { syntheses: Mutex::new(Vec::new()) };
+        let web = ScriptWeb::new();
+        let clock = FrozenClock(Duration::from_secs(1));
+        let progress = RunContext::noop();
+        let runner = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget { max_fetches: 10, max_wall: Duration::from_secs(3600), clock: &clock },
+            progress: &progress,
+            step_label: "research TEST".into(),
+        };
+        let out = runner
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+        let passes = &out.topics[0].passes;
+        assert_eq!(passes.len(), MAX_PASSES_PER_TOPIC);
+        assert!(passes[..MAX_PASSES_PER_TOPIC - 1].iter().all(|p| p.followup.is_some()));
+        assert!(passes[MAX_PASSES_PER_TOPIC - 1].followup.is_none());
+        let syntheses = model.syntheses.lock().unwrap();
+        // The topic's three passes, then the disconfirming pass.
+        assert_eq!(syntheses.len(), MAX_PASSES_PER_TOPIC + 1);
+        for (depth, (system, format, user)) in syntheses.iter().enumerate() {
+            let offers = depth + 1 < MAX_PASSES_PER_TOPIC;
+            assert_eq!(system.contains("follow-up proposal"), offers, "pass {depth}: {system}");
+            assert_eq!(format["properties"].get("followup_question").is_some(), offers, "pass {depth}");
+            assert_eq!(user.contains("3. followup_question"), offers, "pass {depth}: {user}");
+            assert_eq!(user.contains(r#""followup_question":"#), offers, "pass {depth}: {user}");
+        }
+        assert!(syntheses[MAX_PASSES_PER_TOPIC - 1].0.ends_with("You will return findings and claims, as one JSON object."));
+    }
+
     #[derive(Default)]
     struct SchedulingClock(std::sync::atomic::AtomicU64);
 
@@ -9128,7 +9251,8 @@ mod tests {
             seeds: &s,
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let user = pass_brief(&ctx);
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").expect("two parts");
@@ -9212,7 +9336,8 @@ mod tests {
             seeds: &[],
             followup: Some(&followup),
             prior_claims: &claims,
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         });
         assert!(
             fu.contains("\nFOLLOW-UP\nThe question this pass pursues, and why it was proposed.\nDid share hold in Q3?\nBecause: Q2 was the peak.\n"),
@@ -9223,19 +9348,21 @@ mod tests {
             "{fu}"
         );
         assert!(
-            fu.contains("Find what the web shows on the FOLLOW-UP question for this holding, as of the date under HOLDING. The TOPIC questions are what the FOLLOW-UP question serves; this pass does not search them, and CLAIMS SO FAR need no second search."),
+            fu.contains("Find what the web shows on the question under FOLLOW-UP for this holding, as of the date under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them, and the claims under CLAIMS SO FAR need no second search."),
             "{fu}"
         );
-        // `portfolio-v51`: the items name the one question the pass pursues.
+        // `portfolio-v51`: the items name the one question the pass pursues;
+        // `portfolio-v60`: by the heading it sits under.
         assert!(
-            fu.contains("1. Search for what the FOLLOW-UP question asks, then fetch and read the results most likely to answer it. Prefer a source tier nearer 0 and an extraction quality nearer 1 where the question allows;"),
+            fu.contains("1. Search for what the question under FOLLOW-UP asks, then fetch and read the results most likely to answer it. Prefer a source tier nearer 0 and an extraction quality nearer 1 where the question allows;"),
             "{fu}"
         );
-        assert!(fu.contains("3. Stop when the FOLLOW-UP question is answered, or when what remains cannot be found:"), "{fu}");
+        assert!(fu.contains("3. Stop when the question under FOLLOW-UP is answered, or when what remains cannot be found:"), "{fu}");
         assert!(!fu.contains("the questions"), "{fu}");
+        assert!(!fu.contains("FOLLOW-UP question") && !fu.contains("TOPIC questions"), "{fu}");
         assert!(!fu.contains("NEWS LEADS") && !fu.contains("A lead under"), "{fu}");
         // A follow-up whose root established no claim renders no CLAIMS SO FAR
-        // and its opening ends at the sentence about the TOPIC questions.
+        // and its opening ends at the sentence about the questions under TOPIC.
         let fu_none = pass_brief(&PassContext {
             holding_brief: "HOLDING\nWID.\n",
             topic: &agenda[0],
@@ -9243,11 +9370,12 @@ mod tests {
             seeds: &[],
             followup: Some(&followup),
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         });
         assert!(!fu_none.contains("CLAIMS SO FAR"), "{fu_none}");
         assert!(
-            fu_none.contains("under HOLDING. The TOPIC questions are what the FOLLOW-UP question serves; this pass does not search them.\n"),
+            fu_none.contains("under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.\n"),
             "{fu_none}"
         );
         let disc = disconfirming_topic();
@@ -9258,7 +9386,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &claims,
-            disconfirming: true
+            disconfirming: true,
+            depth: 0
         });
         assert!(
             dc.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n"),
@@ -9356,7 +9485,8 @@ mod tests {
             seeds: &[],
             followup: None,
             prior_claims: &[],
-            disconfirming: false
+            disconfirming: false,
+            depth: 0
         };
         let mut gaps = Vec::new();
         let mut spent = 0u32;
@@ -9608,7 +9738,7 @@ pub(crate) mod samples {
         prior_claims: &'a [EvidenceClaim],
         disconfirming: bool,
     ) -> PassContext<'a> {
-        PassContext { holding_brief, topic, seed, seeds, followup, prior_claims, disconfirming }
+        PassContext { holding_brief, topic, seed, seeds, followup, prior_claims, disconfirming, depth: 0 }
     }
 
     /// Two hand-written headlines for a bond-fund holding, so the fund sample
@@ -9676,9 +9806,11 @@ pub(crate) mod samples {
         ]
     }
 
-    /// The three synthesis passes on one topic, over two hand-written pages —
-    /// the first reused from an earlier topic, the second fetched by this pass
-    /// (`portfolio-v49`: reused pages lead, in first-retrieval order).
+    /// The synthesis passes on one topic, over two hand-written pages — the
+    /// first reused from an earlier topic, the second fetched by this pass
+    /// (`portfolio-v49`: reused pages lead, in first-retrieval order): the root,
+    /// a follow-up, the disconfirming pass, and the follow-up at the topic's
+    /// depth cap, which asks for no proposal (`portfolio-v60`).
     pub(crate) fn synthesis_messages(
         symbol: &str,
         holding_brief: &str,
@@ -9708,17 +9840,21 @@ pub(crate) mod samples {
             Sample {
                 label: format!("synthesis — {label}"),
                 stage: stage_of(symbol, &c.topic.key, "synthesis"),
-                system: synthesis_system_prompt(c.disconfirming),
+                system: synthesis_system_prompt(c.offers_followup()),
                 user: synthesis_brief(c, &fetched, &explicit, &texts, &meta, &mut gaps, &mut shown),
                 appended: Vec::new(),
                 tools: None,
-                format: Some(findings_schema(c.disconfirming)),
+                format: Some(findings_schema(c.offers_followup())),
             }
         };
         vec![
             render("root pass on a later topic — a page reused from an earlier topic, then this pass's fetch", &ctx(holding_brief, topic, None, &[], None, &[], false)),
             render("follow-up pass", &ctx(holding_brief, topic, None, &[], Some(&fu), &claims, false)),
             render("the disconfirming pass", &ctx(holding_brief, &disc, None, &[], None, &claims, true)),
+            render(
+                "follow-up pass, the topic's last under the depth cap",
+                &PassContext { depth: MAX_PASSES_PER_TOPIC - 1, ..ctx(holding_brief, topic, None, &[], Some(&fu), &claims, false) },
+            ),
         ]
     }
 
