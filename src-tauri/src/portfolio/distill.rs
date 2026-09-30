@@ -349,23 +349,31 @@ fn enum_strings(values: &[&str]) -> Value {
     Value::Array(values.iter().map(|v| json!(v)).collect())
 }
 
-/// A claim: `related_condition_id` rides only where the ledger renders
-/// conditions — nothing can be cited on a first analysis.
-fn claim_schema(condition_ids: &[&str]) -> Value {
+/// A claim: `evidence_id` is the pass-local id of the claim line it rests on,
+/// an enum of the ids the message shows (`portfolio-v63`, ruled 2026-09-29:
+/// an unshown id is impossible by construction, and the app resolves the id
+/// to the reference and address it rendered, so neither is copied);
+/// `related_condition_id` rides only where the ledger renders conditions —
+/// nothing can be cited on a first analysis.
+fn claim_schema(condition_ids: &[&str], claim_ids: &[&str]) -> Value {
+    let evidence_id = if claim_ids.is_empty() {
+        json!({ "type": "string" })
+    } else {
+        json!({ "type": "string", "enum": enum_strings(claim_ids) })
+    };
     let mut properties = json!({
         "claim": { "type": "string" },
-        "source_url": { "type": "string" },
-        "evidence_ref": { "type": "string" }
+        "evidence_id": evidence_id
     });
     if !condition_ids.is_empty() {
         let mut ids: Vec<Value> = condition_ids.iter().map(|id| json!(id)).collect();
         ids.push(Value::Null);
         properties["related_condition_id"] = json!({ "type": ["string", "null"], "enum": ids });
     }
-    json!({ "type": "object", "properties": properties, "required": ["claim", "source_url", "evidence_ref"] })
+    json!({ "type": "object", "properties": properties, "required": ["claim", "evidence_id"] })
 }
 
-fn topic_schema(topic_keys: &[&str], condition_ids: &[&str]) -> Value {
+fn topic_schema(topic_keys: &[&str], condition_ids: &[&str], claim_ids: &[&str]) -> Value {
     let key = if topic_keys.is_empty() {
         json!({ "type": "string" })
     } else {
@@ -376,20 +384,20 @@ fn topic_schema(topic_keys: &[&str], condition_ids: &[&str]) -> Value {
         "properties": {
             "topic_key": key,
             "summary": { "type": "string" },
-            "claims": { "type": "array", "items": claim_schema(condition_ids) }
+            "claims": { "type": "array", "items": claim_schema(condition_ids, claim_ids) }
         },
         "required": ["topic_key", "summary", "claims"]
     })
 }
 
 /// The tier-1 (and pass-level sub-distillation, and tree-level reduce) schema:
-/// one topic's portion.
-fn tier1_schema(condition_ids: &[&str]) -> Value {
+/// one topic's portion, its claim ids the ones that message shows.
+fn tier1_schema(condition_ids: &[&str], claim_ids: &[&str]) -> Value {
     json!({
         "type": "object",
         "properties": {
             "summary": { "type": "string" },
-            "claims": { "type": "array", "items": claim_schema(condition_ids) }
+            "claims": { "type": "array", "items": claim_schema(condition_ids, claim_ids) }
         },
         "required": ["summary", "claims"]
     })
@@ -400,11 +408,12 @@ const METRIC_KINDS: [&str; 6] =
 const PERIOD_SPANS: [&str; 6] =
     ["quarter", "half-year", "full-year", "year-to-date", "point-in-time", "unknown"];
 
-/// The reduce / single-pass schema, shaped per call by [`ReduceShape`].
-fn combined_schema(shape: &ReduceShape<'_>) -> Value {
+/// The reduce / single-pass schema, shaped per call by [`ReduceShape`], its
+/// claim ids the ones the message shows.
+fn combined_schema(shape: &ReduceShape<'_>, claim_ids: &[&str]) -> Value {
     let mut properties = json!({
         "combined_findings": { "type": "string" },
-        "topics": { "type": "array", "items": topic_schema(shape.topic_keys, shape.condition_ids) }
+        "topics": { "type": "array", "items": topic_schema(shape.topic_keys, shape.condition_ids, claim_ids) }
     });
     let mut required = vec!["combined_findings", "topics"];
     if shape.typed {
@@ -511,8 +520,15 @@ fn combined_schema(shape: &ReduceShape<'_>) -> Value {
 // Wire shapes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+/// A claim as a reply carries it and as the hops pass it on: the model writes
+/// `claim`, `evidence_id` and the tie; [`resolve_claim_ids`] fills
+/// `evidence_ref` and `source_url` from the message's [`ClaimIndex`], and
+/// every later reader — retention, provenance, the ties, the next hop's
+/// render — reads those two (`portfolio-v63`).
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct ClaimWire {
+    #[serde(default)]
+    evidence_id: String,
     #[serde(default)]
     evidence_ref: String,
     #[serde(default)]
@@ -605,27 +621,6 @@ fn fresh_ref(c: &EvidenceClaim) -> String {
 }
 fn prior_ref(c: &DistilledClaim) -> String {
     evidence_reference(&c.claim, &prior_evidence(c))
-}
-
-fn pass_refs(pass: &crate::portfolio::research::PassFindings) -> HashSet<String> {
-    pass.claims.iter().map(fresh_ref).collect()
-}
-fn prior_refs(prior: Option<&TopicDistillate>) -> HashSet<String> {
-    prior
-        .into_iter()
-        .flat_map(|p| p.claims.iter().map(prior_ref))
-        .collect()
-}
-fn topic_refs(
-    topic: &crate::portfolio::research::TopicResearch,
-    prior: Option<&TopicDistillate>,
-) -> HashSet<String> {
-    topic
-        .passes
-        .iter()
-        .flat_map(pass_refs)
-        .chain(prior_refs(prior))
-        .collect()
 }
 
 /// Provenance is resolved by an evidence occurrence, never URL-only. Ties are
@@ -753,7 +748,7 @@ fn retain_claims(
                 })
     });
     if claims.len() < before {
-        gaps.push(format!("distillation: {} claim(s) dropped (unshown/unknown evidence reference, source mismatch, invalid period, or expired retrieval)", before - claims.len()));
+        gaps.push(format!("distillation: {} claim(s) dropped (unknown evidence_id, invalid period, or expired retrieval)", before - claims.len()));
     }
 }
 
@@ -870,7 +865,7 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                         .map(|c| {
                             c.claim.chars().count()
                                 + c.source_url.chars().count()
-                                + 90
+                                + CLAIM_LINE_OVERHEAD_CHARS
                                 + claim_date_label(&c.publication, &c.fact_period)
                                     .chars()
                                     .count()
@@ -904,16 +899,12 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
         })
         .filter(|(message, _)| message.base_chars <= inputs.issue_budget_chars);
 
+    // What a reply may cite is what its message showed: each message's claim
+    // index is the allow-set of the hop that parses it (`portfolio-v63`).
     let (wire, shape, tier1_ties) = if let Some((message, scratch)) = single_pass {
         gaps.extend(scratch);
-        admitted_refs.extend(
-            inputs
-                .research
-                .topics
-                .iter()
-                .flat_map(|t| topic_refs(t, prior_by_key.get(t.topic_key.as_str()).copied())),
-        );
-        let wire: CombinedWire = call_parsed_with_retry(
+        admitted_refs.extend(message.prompt.claims.refs());
+        let mut wire: CombinedWire = call_parsed_with_retry(
             model,
             &format!("distill {}", inputs.symbol),
             &message.prompt,
@@ -921,6 +912,9 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
             "distillation response failed its schema parse",
         )
         .context("single-pass distillation failed")?;
+        for topic in &mut wire.topics {
+            resolve_claim_ids(&mut topic.claims, &message.prompt.claims);
+        }
         (wire, DistillShape::SinglePass, HashMap::new())
     } else {
         // Hierarchical: a tier-1 call per topic-tree (the prior merged there),
@@ -936,7 +930,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
             .map(|c| c.condition_id.as_str())
             .collect();
         let ids = condition_ids(inputs);
-        let t1_schema = tier1_schema(&ids);
         let mut tier1_calls = 0usize;
         let mut subdistilled_topics = 0usize;
         let mut dropped_passes = 0usize;
@@ -961,17 +954,16 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                 unsplit
             {
                 tier1_calls += 1;
-                (
-                    call_parsed_with_retry(
-                        model,
-                        &format!("distill {} {}", inputs.symbol, topic.topic_key),
-                        &prompt,
-                        &t1_schema,
-                        "tier-1 distillation response failed its schema parse",
-                    )
-                    .context("tier-1 distillation failed")?,
-                    topic_refs(topic, prior),
+                let mut wire: Tier1Wire = call_parsed_with_retry(
+                    model,
+                    &format!("distill {} {}", inputs.symbol, topic.topic_key),
+                    &prompt,
+                    &tier1_schema(&ids, &prompt.claims.ids()),
+                    "tier-1 distillation response failed its schema parse",
                 )
+                .context("tier-1 distillation failed")?;
+                resolve_claim_ids(&mut wire.claims, &prompt.claims);
+                (wire, prompt.claims.refs())
             } else {
                 // The within-topic fallback: sub-distill along the pass seam
                 // (each pass carrying its findings AND its ledger claims),
@@ -991,7 +983,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                     passes.truncate(allowed);
                 }
                 let mut pass_summaries: Vec<String> = Vec::new();
-                let mut tree_refs = prior_refs(prior);
                 for (i, pass) in passes.iter().enumerate() {
                     sub_calls_spent += 1;
                     let prompt = pass_message(inputs, topic, i, pass);
@@ -999,19 +990,19 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                         model,
                         &format!("distill {} {} pass {}", inputs.symbol, topic.topic_key, i),
                         &prompt,
-                        &t1_schema,
+                        &tier1_schema(&ids, &prompt.claims.ids()),
                     )
                     .context("pass-level sub-distillation failed")?;
                     if let Ok(mut pass_wire) = serde_json::from_str::<Tier1Wire>(&body) {
+                        resolve_claim_ids(&mut pass_wire.claims, &prompt.claims);
                         retain_claims(
                             &mut pass_wire.claims,
-                            &pass_refs(pass),
+                            &prompt.claims.refs(),
                             &provenance,
                             inputs.now,
                             &mut gaps,
                         );
                         harvest_ties(&pass_wire, &known, &mut ties);
-                        tree_refs.extend(pass_wire.claims.iter().map(|c| c.evidence_ref.clone()));
                         pass_summaries.push(serde_json::to_string(&pass_wire)?);
                     } else {
                         gaps.push(
@@ -1051,17 +1042,16 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                 subdistilled_topics += 1;
                 tier1_calls += 1;
                 let prompt = tree_reduce_message(inputs, topic, &pass_summaries, prior);
-                (
-                    call_parsed_with_retry(
-                        model,
-                        &format!("distill {} {} reduce", inputs.symbol, topic.topic_key),
-                        &prompt,
-                        &t1_schema,
-                        "tier-1 distillation response failed its schema parse",
-                    )
-                    .context("topic tree reduce failed")?,
-                    tree_refs,
+                let mut wire: Tier1Wire = call_parsed_with_retry(
+                    model,
+                    &format!("distill {} {} reduce", inputs.symbol, topic.topic_key),
+                    &prompt,
+                    &tier1_schema(&ids, &prompt.claims.ids()),
+                    "tier-1 distillation response failed its schema parse",
                 )
+                .context("topic tree reduce failed")?;
+                resolve_claim_ids(&mut wire.claims, &prompt.claims);
+                (wire, prompt.claims.refs())
             };
             retain_claims(
                 &mut wire.claims,
@@ -1070,7 +1060,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                 inputs.now,
                 &mut gaps,
             );
-            admitted_refs.extend(wire.claims.iter().map(|c| c.evidence_ref.clone()));
             harvest_ties(&wire, &known, &mut ties);
             tier1_outputs.push((topic.topic_key.clone(), wire));
         }
@@ -1085,7 +1074,7 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
             &analyzed_keys,
             &mut gaps,
         );
-        let wire: CombinedWire = call_parsed_with_retry(
+        let mut wire: CombinedWire = call_parsed_with_retry(
             model,
             &format!("distill {} reduce", inputs.symbol),
             &message.prompt,
@@ -1093,6 +1082,10 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
             "reduce response failed its schema parse",
         )
         .context("reduce distillation failed")?;
+        for topic in &mut wire.topics {
+            resolve_claim_ids(&mut topic.claims, &message.prompt.claims);
+        }
+        admitted_refs.extend(message.prompt.claims.refs());
         (
             wire,
             DistillShape::Hierarchical {
@@ -1104,10 +1097,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
         )
     };
 
-    admitted_refs.extend(inputs.research.disconfirming.iter().flat_map(pass_refs));
-    for prior in dormant_priors_of(inputs.priors, &analyzed_keys) {
-        admitted_refs.extend(prior_refs(Some(prior)));
-    }
     Ok(validate_combined(
         wire,
         inputs,
@@ -1162,7 +1151,7 @@ fn topic_input_chars_prior(prior: &TopicDistillate) -> usize {
         + prior
             .claims
             .iter()
-            .map(|c| c.claim.chars().count() + c.source_url.chars().count() + 90 + claim_date_label(&c.publication, &c.fact_period).chars().count())
+            .map(|c| c.claim.chars().count() + c.source_url.chars().count() + CLAIM_LINE_OVERHEAD_CHARS + tie_chars(c.related_condition_id.as_deref()) + claim_date_label(&c.publication, &c.fact_period).chars().count())
             .sum::<usize>()
 }
 
@@ -1179,7 +1168,7 @@ fn topic_input_chars(
             p.findings.chars().count()
                 + p.claims
                     .iter()
-                    .map(|c| c.claim.chars().count() + c.source_url.chars().count() + 90 + claim_date_label(&c.publication, &c.fact_period).chars().count())
+                    .map(|c| c.claim.chars().count() + c.source_url.chars().count() + CLAIM_LINE_OVERHEAD_CHARS + claim_date_label(&c.publication, &c.fact_period).chars().count())
                     .sum::<usize>()
         })
         .sum();
@@ -1188,7 +1177,7 @@ fn topic_input_chars(
             p.summary.chars().count()
                 + p.claims
                     .iter()
-                    .map(|c| c.claim.chars().count() + c.source_url.chars().count() + 90 + claim_date_label(&c.publication, &c.fact_period).chars().count())
+                    .map(|c| c.claim.chars().count() + c.source_url.chars().count() + CLAIM_LINE_OVERHEAD_CHARS + tie_chars(c.related_condition_id.as_deref()) + claim_date_label(&c.publication, &c.fact_period).chars().count())
                     .sum::<usize>()
         })
         .unwrap_or(0);
@@ -1792,11 +1781,75 @@ fn vintage_within_window(vintage: &str, now: chrono::DateTime<chrono::Utc>) -> b
 // dates it can use (a prior's analysis date, a page's publication date).
 // ---------------------------------------------------------------------------
 
-/// One distillation request's two messages.
+/// The claim lines one distillation message shows, each under a pass-local
+/// id the model cites — `C1`, `C2`, … in render order, restarting in every
+/// message (`portfolio-v63`, ruled 2026-09-29, the synthesis's page ids
+/// applied to claims): the id resolves app-side to the evidence reference and
+/// source URL the line was rendered from, so the reply copies neither, and
+/// what the message shows is exactly what it can cite (the index is the
+/// retention allow-set, as the synthesis's `shown` map is its validator's).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClaimIndex {
+    /// (id, evidence reference, source URL), in render order.
+    entries: Vec<(String, String, String)>,
+}
+
+impl ClaimIndex {
+    /// Register the next claim line; returns its id.
+    fn push(&mut self, evidence_ref: String, source_url: String) -> String {
+        let id = format!("C{}", self.entries.len() + 1);
+        self.entries.push((id.clone(), evidence_ref, source_url));
+        id
+    }
+    /// The ids shown, in render order — the grammar's enum.
+    fn ids(&self) -> Vec<&str> {
+        self.entries.iter().map(|(id, _, _)| id.as_str()).collect()
+    }
+    /// The references shown — the retention allow-set.
+    fn refs(&self) -> HashSet<String> {
+        self.entries.iter().map(|(_, r, _)| r.clone()).collect()
+    }
+    /// The reference and address an id was rendered from.
+    fn resolve(&self, id: &str) -> Option<(&str, &str)> {
+        self.entries
+            .iter()
+            .find(|(i, _, _)| i == id)
+            .map(|(_, r, u)| (r.as_str(), u.as_str()))
+    }
+    /// The id a reference and address were shown under, where they were —
+    /// how a scripted reply in the tests cites what a model would read off
+    /// the prompt.
+    #[cfg(test)]
+    pub(crate) fn id_of(&self, evidence_ref: &str, source_url: &str) -> Option<&str> {
+        let url = crate::web_research::store::normalize_url(source_url);
+        self.entries
+            .iter()
+            .find(|(_, r, u)| r == evidence_ref && *u == url)
+            .map(|(id, _, _)| id.as_str())
+    }
+}
+
+/// Fill each returned claim's reference and address from the id it cites, in
+/// place; an id the message did not show leaves both empty, and the claim
+/// falls at [`retain_claims`].
+fn resolve_claim_ids(claims: &mut [ClaimWire], index: &ClaimIndex) {
+    for c in claims.iter_mut() {
+        let (reference, url) = index
+            .resolve(&c.evidence_id)
+            .map(|(r, u)| (r.to_string(), u.to_string()))
+            .unwrap_or_default();
+        c.evidence_ref = reference;
+        c.source_url = url;
+    }
+}
+
+/// One distillation request's two messages, with the claim lines its Part 1
+/// shows (`claims`), which its grammar enumerates and its reply cites.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DistillPrompt {
     pub system: String,
     pub user: String,
+    pub claims: ClaimIndex,
 }
 
 impl DistillPrompt {
@@ -1904,7 +1957,7 @@ pub(crate) const CONTINUES: &str = "[the page continues beyond what is shown]";
 /// renderer ordering every object's keys by it (`placeholder_shape`).
 const DISTILL_KEY_ORDER: &[&str] = &[
     "combined_findings", "topics", "forward_assumption", "leading_indicator", "forensic_event",
-    "pre_profit_observations", "backfill", "topic_key", "summary", "claims", "claim", "evidence_ref",
+    "pre_profit_observations", "backfill", "topic_key", "summary", "claims", "claim", "evidence_id",
     "fact_type", "affects", "metric_name", "value", "direction", "kind", "issuer", "event_date",
     "metric_kind", "observation_role", "polarity", "numeric_value", "stated_low", "stated_high",
     "units", "period", "period_span", "issuer_scope", "as_of", "source_url", "source_excerpt",
@@ -1970,9 +2023,9 @@ fn render_drivers(drivers: &[&crate::portfolio::KeyDriver]) -> String {
 fn topics_gloss(conditions: bool, priors: bool, dormant: bool) -> String {
     let mut g = String::from(
         "\nTOPICS\nThe research on this holding, one topic at a time: what its searches \
-         established, then its claims, each with the address of the page that states it, its \
-         reference, the publication date the search or lead reported and the period the fact \
-         applies to.",
+         established, then its claims, each with its id, the address of the page that states \
+         it, the publication date the search or lead reported and the period the fact applies \
+         to.",
     );
     if conditions {
         g.push_str(
@@ -2003,36 +2056,62 @@ fn analysis_date(vintage: &str) -> &str {
     vintage.get(..10).filter(|d| d.len() == 10).unwrap_or(vintage)
 }
 
-fn render_prior(prior: &TopicDistillate) -> String {
+fn render_prior(prior: &TopicDistillate, index: &mut ClaimIndex) -> String {
     let mut out = format!(
         "Prior findings (analysis of {}):\n{}\n",
         analysis_date(&prior.vintage),
         prior.summary
     );
     for c in &prior.claims {
-        out.push_str(&format!(
-            "- {} [{}] — evidence_ref: {} — {}{}\n",
-            c.claim,
-            c.source_url,
-            prior_ref(c),
-            claim_date_label(&c.publication, &c.fact_period),
-            render_tie(c.related_condition_id.as_deref())
+        out.push_str(&claim_line(
+            index.push(prior_ref(c), crate::web_research::store::normalize_url(&c.source_url)),
+            &c.claim,
+            &c.source_url,
+            &claim_date_label(&c.publication, &c.fact_period),
+            c.related_condition_id.as_deref(),
         ));
     }
     out
 }
 
-fn render_search(i: usize, pass: &crate::portfolio::research::PassFindings) -> String {
+/// What a rendered claim line adds beyond its claim, address and provenance
+/// label — the dash, an id of up to three digits with its colon, the
+/// brackets, the separators and the newline — the per-claim constant the
+/// routing estimators count (`topic_input_chars`); a ledger tie counts on top
+/// by its own id (`tie_chars`). It was 90 while the line carried the 64-hex
+/// reference, which left it at `portfolio-v63`.
+const CLAIM_LINE_OVERHEAD_CHARS: usize = 16;
+
+/// The characters a claim's ledger tie adds to its line (` — bears on <id>`),
+/// none without one. Production condition ids are UUIDs, so the id is
+/// counted, never assumed short (Codex, `portfolio-v63`).
+fn tie_chars(related_condition_id: Option<&str>) -> usize {
+    related_condition_id.map_or(0, |id| " — bears on ".chars().count() + id.chars().count())
+}
+
+/// One claim line under its pass-local id: the id, the claim, the page's
+/// address, the provenance label and the tie where one stands
+/// (`portfolio-v63`; the evidence reference no longer renders — the id
+/// stands for it).
+fn claim_line(id: String, claim: &str, source_url: &str, dates: &str, tie: Option<&str>) -> String {
+    format!("- {id}: {claim} [{source_url}] — {dates}{}\n", render_tie(tie))
+}
+
+fn render_search(
+    i: usize,
+    pass: &crate::portfolio::research::PassFindings,
+    index: &mut ClaimIndex,
+) -> String {
     let mut out = format!("Search {}:\n{}\n", i + 1, pass.findings);
     if !pass.claims.is_empty() {
         out.push_str("Claims:\n");
         for c in &pass.claims {
-            out.push_str(&format!(
-                "- {} [{}] — evidence_ref: {} — {}\n",
-                c.claim,
-                c.source_url,
-                fresh_ref(c),
-                claim_date_label(&c.publication, &c.fact_period)
+            out.push_str(&claim_line(
+                index.push(fresh_ref(c), crate::web_research::store::normalize_url(&c.source_url)),
+                &c.claim,
+                &c.source_url,
+                &claim_date_label(&c.publication, &c.fact_period),
+                None,
             ));
         }
     }
@@ -2046,18 +2125,23 @@ fn topic_line(key: &str, title: &str) -> String {
 fn render_topic_searches(
     topic: &crate::portfolio::research::TopicResearch,
     prior: Option<&TopicDistillate>,
+    index: &mut ClaimIndex,
 ) -> String {
     let mut out = topic_line(&topic.topic_key, &topic.title);
     for (i, pass) in topic.passes.iter().enumerate() {
-        out.push_str(&render_search(i, pass));
+        out.push_str(&render_search(i, pass, index));
     }
     if let Some(prior) = prior {
-        out.push_str(&render_prior(prior));
+        out.push_str(&render_prior(prior, index));
     }
     out
 }
 
-fn render_claim_lines(claims: &[ClaimWire], inputs: &DistillInputs<'_>) -> String {
+fn render_claim_lines(
+    claims: &[ClaimWire],
+    inputs: &DistillInputs<'_>,
+    index: &mut ClaimIndex,
+) -> String {
     let provenance = Provenance::build(
         inputs.research,
         inputs.priors,
@@ -2068,16 +2152,15 @@ fn render_claim_lines(claims: &[ClaimWire], inputs: &DistillInputs<'_>) -> Strin
     if !claims.is_empty() {
         out.push_str("Claims:\n");
         for c in claims {
-            out.push_str(&format!(
-                "- {} [{}] — evidence_ref: {} — {}{}\n",
-                c.claim,
-                c.source_url,
-                c.evidence_ref,
-                provenance
+            out.push_str(&claim_line(
+                index.push(c.evidence_ref.clone(), crate::web_research::store::normalize_url(&c.source_url)),
+                &c.claim,
+                &c.source_url,
+                &provenance
                     .resolve(&c.evidence_ref, &c.source_url)
                     .map(|e| claim_date_label(&e.publication, &e.fact_period))
                     .unwrap_or_else(|| "dates unknown".into()),
-                render_tie(c.related_condition_id.as_deref())
+                c.related_condition_id.as_deref(),
             ));
         }
     }
@@ -2090,22 +2173,26 @@ fn render_topic_summary(
     title: &str,
     wire: &Tier1Wire,
     inputs: &DistillInputs<'_>,
+    index: &mut ClaimIndex,
 ) -> String {
     let mut out = topic_line(key, title);
     out.push_str(&format!("Summary:\n{}\n", wire.summary));
-    out.push_str(&render_claim_lines(&wire.claims, inputs));
+    out.push_str(&render_claim_lines(&wire.claims, inputs, index));
     out
 }
 
-fn render_dormant(prior: &TopicDistillate) -> String {
+fn render_dormant(prior: &TopicDistillate, index: &mut ClaimIndex) -> String {
     format!(
         "\nTOPIC {} (not searched this time)\n{}",
         prior.topic_key,
-        render_prior(prior)
+        render_prior(prior, index)
     )
 }
 
-fn render_contrary(d: &crate::portfolio::research::PassFindings) -> String {
+fn render_contrary(
+    d: &crate::portfolio::research::PassFindings,
+    index: &mut ClaimIndex,
+) -> String {
     let mut out = String::from(
         "\nCONTRARY EVIDENCE\nWhat a search for evidence against the claims above found, then \
          its claims in the form under TOPICS.\n",
@@ -2113,7 +2200,13 @@ fn render_contrary(d: &crate::portfolio::research::PassFindings) -> String {
     out.push_str(&d.findings);
     out.push('\n');
     for c in &d.claims {
-        out.push_str(&format!("- {} [{}] — evidence_ref: {} — {}\n", c.claim, c.source_url, fresh_ref(c), claim_date_label(&c.publication, &c.fact_period)));
+        out.push_str(&claim_line(
+            index.push(fresh_ref(c), crate::web_research::store::normalize_url(&c.source_url)),
+            &c.claim,
+            &c.source_url,
+            &claim_date_label(&c.publication, &c.fact_period),
+            None,
+        ));
     }
     out
 }
@@ -2250,8 +2343,8 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     } else {
         "the topic's searches"
     };
-    let sources = if shape.typed {
-        "under TOPICS or SOURCE TEXT"
+    let cited = if ctx.contrary {
+        "under TOPICS or CONTRARY EVIDENCE"
     } else {
         "under TOPICS"
     };
@@ -2282,7 +2375,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         "\n2. topics — exactly one object per topic under TOPICS, in that order{dormant_included}. \
          topic_key is the key as shown. summary is what {summary_basis} establish, as of the \
          date under HOLDING. claims is every distinct statement the topic rests on, one \
-         statement per claim, with source_url the address shown beside it {sources}: \
+         statement per claim, each with evidence_id the id of the claim {cited} it rests on: \
          {claims_rule}.{tie}\
          {dormant_rule}\n"
     ));
@@ -2365,9 +2458,9 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
 
 /// The claim rules every distillation task states once, under their own
 /// heading since `portfolio-v62` so the items point at it by name, as every
-/// other pointer in these prompts does.
-const DATE_RECONCILIATION: &str = "\nCLAIM RULES\nFor each claim, evidence_ref copies the reference of the supporting claim shown under \
-    TOPICS or CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact \
+/// other pointer in these prompts does. The reference-copying sentence left
+/// at `portfolio-v63`: item 2 defines evidence_id where it names it.
+const DATE_RECONCILIATION: &str = "\nCLAIM RULES\nKeep each claim to one fact \
     and period; separate facts with different periods. Publication describes the source; \
     fact period names the period the fact applies to. An unknown date stays unknown. Compare \
     periods only for the same measure and basis; different periods remain distinct \
@@ -2375,7 +2468,7 @@ const DATE_RECONCILIATION: &str = "\nCLAIM RULES\nFor each claim, evidence_ref c
     For the same period, an explicit correction or revision supersedes its predecessor; a \
     later publication alone does not establish a revision. Where sources still conflict or \
     periods are incomparable, report the uncertainty and retain the conflicting claims with \
-    their own references. Retrieval order and the analysis date never select a factual \
+    their own ids. Retrieval order and the analysis date never select a factual \
     winner or supply a missing fact date. Apply the same resolution in the combined \
     findings, summaries, and every topic's claims.\n\n";
 
@@ -2390,7 +2483,7 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
         );
         t.push_str(
             "\n2. claims — every distinct statement the search rests on, one statement per \
-             claim, with source_url the address shown beside it under TOPICS.",
+             claim, each with evidence_id the id of the claim under TOPICS it rests on.",
         );
     } else {
         let basis = if priors {
@@ -2417,7 +2510,7 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
         };
         t.push_str(&format!(
             "\n2. claims — every distinct statement the topic rests on, one statement per \
-             claim, with source_url the address shown beside it under TOPICS{rule}."
+             claim, each with evidence_id the id of the claim under TOPICS it rests on{rule}."
         ));
     }
     if conditions {
@@ -2442,15 +2535,17 @@ pub(crate) fn tier1_message(
     prior: Option<&TopicDistillate>,
 ) -> DistillPrompt {
     let ids = condition_ids(inputs);
+    let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
     user.push_str(&topics_gloss(!ids.is_empty(), prior.is_some(), false));
-    user.push_str(&render_topic_searches(topic, prior));
+    user.push_str(&render_topic_searches(topic, prior, &mut claims));
     user.push_str(PART_2);
-    user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids)));
+    user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids, &claims.ids())));
     DistillPrompt {
         system: system_prompt(false, "summary and claims"),
         user,
+        claims,
     }
 }
 
@@ -2462,16 +2557,18 @@ pub(crate) fn pass_message(
     pass: &crate::portfolio::research::PassFindings,
 ) -> DistillPrompt {
     let ids = condition_ids(inputs);
+    let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
     user.push_str(&topics_gloss(!ids.is_empty(), false, false));
     user.push_str(&topic_line(&topic.topic_key, &topic.title));
-    user.push_str(&render_search(i, pass));
+    user.push_str(&render_search(i, pass, &mut claims));
     user.push_str(PART_2);
-    user.push_str(&topic_task(!ids.is_empty(), false, true, &tier1_schema(&ids)));
+    user.push_str(&topic_task(!ids.is_empty(), false, true, &tier1_schema(&ids, &claims.ids())));
     DistillPrompt {
         system: system_prompt(false, "summary and claims"),
         user,
+        claims,
     }
 }
 
@@ -2485,6 +2582,7 @@ pub(crate) fn tree_reduce_message(
     prior: Option<&TopicDistillate>,
 ) -> DistillPrompt {
     let ids = condition_ids(inputs);
+    let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
     user.push_str(&topics_gloss(!ids.is_empty(), prior.is_some(), false));
@@ -2493,19 +2591,20 @@ pub(crate) fn tree_reduce_message(
         match serde_json::from_str::<Tier1Wire>(body) {
             Ok(wire) => {
                 user.push_str(&format!("Search {} (summary):\n{}\n", i + 1, wire.summary));
-                user.push_str(&render_claim_lines(&wire.claims, inputs));
+                user.push_str(&render_claim_lines(&wire.claims, inputs, &mut claims));
             }
             Err(_) => user.push_str(&format!("Search {}:\n{body}\n", i + 1)),
         }
     }
     if let Some(prior) = prior {
-        user.push_str(&render_prior(prior));
+        user.push_str(&render_prior(prior, &mut claims));
     }
     user.push_str(PART_2);
-    user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids)));
+    user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids, &claims.ids())));
     DistillPrompt {
         system: system_prompt(false, "summary and claims"),
         user,
+        claims,
     }
 }
 
@@ -2562,7 +2661,6 @@ fn reduce_message(
         overlay: inputs.overlay_eligible,
         backfill_required: inputs.backfill_required,
     };
-    let schema = combined_schema(&shape);
     let priors_render = tier1.is_none()
         && inputs
             .research
@@ -2577,6 +2675,7 @@ fn reduce_message(
         hierarchical: tier1.is_some(),
     };
 
+    let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
     if shape.indicator() {
@@ -2593,7 +2692,7 @@ fn reduce_message(
                     .find(|t| &t.topic_key == key)
                     .map(|t| t.title.as_str())
                     .unwrap_or(key);
-                user.push_str(&render_topic_summary(key, title, wire, inputs));
+                user.push_str(&render_topic_summary(key, title, wire, inputs, &mut claims));
             }
         }
         None => {
@@ -2604,16 +2703,20 @@ fn reduce_message(
                 user.push_str(&render_topic_searches(
                     topic,
                     prior_by_key.get(topic.topic_key.as_str()).copied(),
+                    &mut claims,
                 ));
             }
         }
     }
     for prior in dormant_priors {
-        user.push_str(&render_dormant(prior));
+        user.push_str(&render_dormant(prior, &mut claims));
     }
     if let Some(d) = &inputs.research.disconfirming {
-        user.push_str(&render_contrary(d));
+        user.push_str(&render_contrary(d, &mut claims));
     }
+    // The grammar enumerates the claim ids Part 1 showed, so it is built once
+    // Part 1 has rendered (`portfolio-v63`).
+    let schema = combined_schema(&shape, &claims.ids());
     let task = format!("{PART_2}{}", reduce_task(&shape, &ctx, &schema));
     let system = system_prompt(true, &shape.outputs());
     let base_chars = system.chars().count() + user.chars().count() + task.chars().count();
@@ -2627,7 +2730,7 @@ fn reduce_message(
     }
     user.push_str(&task);
     ReduceMessage {
-        prompt: DistillPrompt { system, user },
+        prompt: DistillPrompt { system, user, claims },
         schema,
         base_chars,
     }
@@ -2903,7 +3006,12 @@ pub(crate) mod samples {
         let topic = &research.topics[0];
         let prior = priors.iter().find(|p| p.topic_key == topic.topic_key);
         let topic_ids = condition_ids(&continuity);
-        let topic_schema = tier1_schema(&topic_ids);
+        // Each topic message's grammar enumerates the claim ids that message
+        // shows (`portfolio-v63`).
+        let topic_call = |prompt: DistillPrompt| {
+            let schema = tier1_schema(&topic_ids, &prompt.claims.ids());
+            (prompt, schema)
+        };
         let pass_bodies = vec![
             json!({"summary":prose(stub, "pass 1's summary, as the pass-level call returned it", "Margin ex-credits 14.6% in Q2 2026, down from 17.2%; BYD outsold Tesla in Europe a fourth month in August."),"claims":[{"claim":prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),"source_url":research_samples::IR_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[0].claims[0]),"related_condition_id":"c-margin"}]}).to_string(),
             json!({"summary":prose(stub, "pass 2's summary, as the pass-level call returned it", "No September price action found; NHTSA opened PE26-014 on FSD v14."),"claims":[{"claim":prose(stub, "claim 3 — one dated fact from its source", "NHTSA opened Preliminary Evaluation PE26-014 covering about 2.4 million FSD v14 vehicles after 11 intersection-crash reports."),"source_url":NHTSA_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[1].claims[0]),"related_condition_id":null}]}).to_string(),
@@ -2914,6 +3022,7 @@ pub(crate) mod samples {
                 Tier1Wire {
                     summary: prose(stub, "the tier-1 summary of the first topic", "Margin ex-credits 14.6% in Q2 2026; BYD outsold Tesla in Europe a fourth month; NHTSA PE on FSD v14."),
                     claims: vec![ClaimWire {
+                        evidence_id: String::new(),
                         evidence_ref: fresh_ref(&research.topics[0].passes[0].claims[0]),
                         claim: prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),
                         source_url: research_samples::IR_URL.into(),
@@ -2926,6 +3035,7 @@ pub(crate) mod samples {
                 Tier1Wire {
                     summary: prose(stub, "the tier-1 summary of the second topic", "Q2 2026 revenue $25.5B (+3%), FCF $0.9B, 2026 capex above $12B."),
                     claims: vec![ClaimWire {
+                        evidence_id: String::new(),
                         evidence_ref: fresh_ref(&research.topics[1].passes[0].claims[1]),
                         claim: prose(stub, "claim 5 — a forward figure from its source", "Tesla expects 2026 capital expenditures to exceed $12B."),
                         source_url: research_samples::IR_URL.into(),
@@ -2939,9 +3049,9 @@ pub(crate) mod samples {
             sample("reduce — stock, continuity run, overlay-eligible with the backfill obligation, single pass", "distill TSLA".into(), reduce(&continuity, None)),
             sample("reduce — stock, first analysis, no overlay", "distill TSLA".into(), reduce(&debut, None)),
             sample("reduce — fund (SYNTHETIC BND), one topic, one standing condition", "distill BND".into(), reduce(&fund_inputs, None)),
-            sample("tier-1 — one topic-tree with its prior", format!("distill TSLA {}", topic.topic_key), (tier1_message(&continuity, topic, prior), topic_schema.clone())),
-            sample("pass — one search of one topic", format!("distill TSLA {} pass 0", topic.topic_key), (pass_message(&continuity, topic, 0, &topic.passes[0]), topic_schema.clone())),
-            sample("tree-level reduce — two pass outputs with the prior", format!("distill TSLA {} reduce", topic.topic_key), (tree_reduce_message(&continuity, topic, &pass_bodies, prior), topic_schema)),
+            sample("tier-1 — one topic-tree with its prior", format!("distill TSLA {}", topic.topic_key), topic_call(tier1_message(&continuity, topic, prior))),
+            sample("pass — one search of one topic", format!("distill TSLA {} pass 0", topic.topic_key), topic_call(pass_message(&continuity, topic, 0, &topic.passes[0]))),
+            sample("tree-level reduce — two pass outputs with the prior", format!("distill TSLA {} reduce", topic.topic_key), topic_call(tree_reduce_message(&continuity, topic, &pass_bodies, prior))),
             sample("reduce — stock, hierarchical over the tier-1 outputs, the dormant prior and the contrary-evidence pass", "distill TSLA reduce".into(), reduce(&hierarchical, Some(&tier1_outputs))),
         ]
     }
@@ -3019,41 +3129,52 @@ mod tests {
         }
     }
 
-    // Older fixtures specify a source URL. Complete their wire reference from
-    // the actual prompt, as a model would; explicitly supplied refs are never
-    // changed. The entry-3 regressions use explicit refs, including invalid ones.
-    fn fixture_references(body: String, prompt: &str) -> String {
+    // The scripted replies name the claim they rest on the way the fixtures
+    // always did — by its evidence reference, or by its source URL (and claim
+    // text) alone — and this adapter turns that into the `evidence_id` a
+    // model would read off the prompt (`portfolio-v63`): the id the message
+    // shows for that reference and address, or, where the fixture cites a
+    // reference the message never showed or pairs it with the wrong address,
+    // the raw citation as an id nothing resolves — the drop the fixture
+    // intends. The reference and address keys leave the reply, as they have
+    // left the grammar.
+    fn fixture_references(body: String, prompt: &DistillPrompt) -> String {
         let Ok(mut value) = serde_json::from_str::<Value>(&body) else {
             return body;
         };
-        fn fill(value: &mut Value, prompt: &str) {
+        fn fill(value: &mut Value, prompt: &DistillPrompt) {
             if let Some(object) = value.as_object_mut() {
-                if object.contains_key("claim")
-                    && object.contains_key("source_url")
-                    && !object.contains_key("evidence_ref")
-                {
-                    let url = object["source_url"].as_str().unwrap_or("");
-                    let text = object["claim"].as_str().unwrap_or("");
-                    let candidates: Vec<&str> = prompt
-                        .lines()
-                        .filter(|l| {
-                            l.contains(&format!("[{url}]")) && l.contains(" — evidence_ref: ")
-                        })
-                        .collect();
-                    let line = candidates
-                        .iter()
-                        .find(|l| l.starts_with(&format!("- {text} [")))
-                        .or_else(|| candidates.first());
-                    if let Some(line) = line {
-                        let reference = line
-                            .split(" — evidence_ref: ")
-                            .nth(1)
-                            .unwrap()
-                            .split(" — ")
-                            .next()
-                            .unwrap();
-                        object.insert("evidence_ref".into(), json!(reference));
-                    }
+                if object.contains_key("claim") && !object.contains_key("evidence_id") {
+                    let url = object.get("source_url").and_then(Value::as_str).unwrap_or("").to_string();
+                    let reference = object.get("evidence_ref").and_then(Value::as_str).map(str::to_string);
+                    let text = object["claim"].as_str().unwrap_or("").to_string();
+                    let id = match &reference {
+                        Some(reference) => prompt
+                            .claims
+                            .id_of(reference, &url)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("{reference}@{url}")),
+                        None => {
+                            // By address, preferring the line whose text the reply
+                            // repeats; else the first line from that page.
+                            let lines: Vec<&str> = prompt
+                                .user
+                                .lines()
+                                .filter(|l| l.starts_with("- C") && l.contains(&format!(" [{url}]")))
+                                .collect();
+                            let line = lines
+                                .iter()
+                                .find(|l| l.contains(&format!(": {text} [")))
+                                .or_else(|| lines.first());
+                            line.and_then(|l| l.strip_prefix("- "))
+                                .and_then(|l| l.split(':').next())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("?@{url}"))
+                        }
+                    };
+                    object.insert("evidence_id".into(), json!(id));
+                    object.remove("evidence_ref");
+                    object.remove("source_url");
                 }
                 for child in object.values_mut() {
                     fill(child, prompt);
@@ -3082,7 +3203,7 @@ mod tests {
             if bodies.is_empty() {
                 anyhow::bail!("distill script exhausted");
             }
-            Ok(fixture_references(bodies.remove(0), &prompt.user))
+            Ok(fixture_references(bodies.remove(0), prompt))
         }
     }
 
@@ -3198,6 +3319,99 @@ mod tests {
             .user
     }
 
+    /// Every claim line one message shows sits under a pass-local id, numbered
+    /// in render order across the topics, the prior findings and the contrary
+    /// pass, each id resolving to the reference and address it was rendered
+    /// from; no reference renders, and the grammar enumerates exactly those
+    /// ids (`portfolio-v63`, ruled 2026-09-29).
+    #[test]
+    fn claim_lines_carry_sequential_ids_the_index_resolves_and_the_grammar_enumerates() {
+        let mut research = research_one_topic();
+        research.topics[0].passes[0].claims.push(evidence(
+            "Q3 bookings were 120 units",
+            "https://reuters.com/widget",
+            "2026-08-22T10:00:00+00:00",
+        ));
+        research.disconfirming = Some(pass(
+            "A rival gained share.",
+            vec![evidence("Rival share rose to 30%", "https://example.com/rival", "2026-08-23T10:00:00+00:00")],
+        ));
+        let prior = TopicDistillate {
+            topic_key: "competitive-position".into(),
+            vintage: "2026-08-10T00:00:00Z".into(),
+            summary: "prior".into(),
+            claims: vec![DistilledClaim {
+                claim: "Q2 revenue was $1.1B".into(),
+                source_url: "https://reuters.com/widget-q2".into(),
+                retrieved_at: "2026-08-10T00:00:00Z".into(),
+                publication: PublicationDate::from_reported(Some("2026-08-01")),
+                fact_period: FactPeriod::default(),
+                cached: false,
+                related_condition_id: None,
+            }],
+        };
+        let priors = vec![prior.clone()];
+        let ins = inputs(&research, &priors, &[]);
+        let analyzed = analyzed_of(&ins);
+        let prior_by_key: HashMap<&str, &TopicDistillate> = [("competitive-position", &priors[0])].into();
+        let message = reduce_message(&ins, None, &prior_by_key, &[], &analyzed, &mut Vec::new());
+        let user = &message.prompt.user;
+        let index = &message.prompt.claims;
+        // Render order: the two fresh claims, the prior claim, the contrary claim.
+        assert_eq!(index.ids(), ["C1", "C2", "C3", "C4"]);
+        let fresh = &research.topics[0].passes[0].claims;
+        assert_eq!(index.resolve("C1"), Some((fresh_ref(&fresh[0]).as_str(), "https://reuters.com/widget")));
+        assert_eq!(index.resolve("C2"), Some((fresh_ref(&fresh[1]).as_str(), "https://reuters.com/widget")));
+        assert_eq!(index.resolve("C3"), Some((prior_ref(&prior.claims[0]).as_str(), "https://reuters.com/widget-q2")));
+        let contrary = &research.disconfirming.as_ref().unwrap().claims[0];
+        assert_eq!(index.resolve("C4"), Some((fresh_ref(contrary).as_str(), "https://example.com/rival")));
+        assert_eq!(index.resolve("C5"), None);
+        assert_eq!(index.id_of(&fresh_ref(&fresh[1]), "https://reuters.com/widget"), Some("C2"));
+        assert_eq!(index.id_of(&fresh_ref(&fresh[1]), "https://example.com/rival"), None);
+        for (id, text) in [
+            ("C1", "Q3 revenue was $1.2B [https://reuters.com/widget] — "),
+            ("C2", "Q3 bookings were 120 units [https://reuters.com/widget] — "),
+            ("C3", "Q2 revenue was $1.1B [https://reuters.com/widget-q2] — "),
+            ("C4", "Rival share rose to 30% [https://example.com/rival] — "),
+        ] {
+            assert!(user.contains(&format!("\n- {id}: {text}")), "{id}: {user}");
+        }
+        assert!(!user.contains("evidence_ref") && !user.contains("\u{2014} E"), "{user}");
+        let ids = message.schema["properties"]["topics"]["items"]["properties"]["claims"]["items"]["properties"]["evidence_id"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["C1", "C2", "C3", "C4"]);
+        // The tier-1 and pass messages number their own lines from C1.
+        let tier1 = tier1_message(&ins, &research.topics[0], Some(&priors[0]));
+        assert_eq!(tier1.claims.ids(), ["C1", "C2", "C3"]);
+        let pass_prompt = pass_message(&ins, &research.topics[0], 0, &research.topics[0].passes[0]);
+        assert_eq!(pass_prompt.claims.ids(), ["C1", "C2"]);
+    }
+
+    /// A reply citing an id the message never showed keeps no claim, with the
+    /// drop recorded; the same reply's shown ids resolve to their reference
+    /// and address, which the reply itself no longer carries (`portfolio-v63`).
+    #[test]
+    fn an_unshown_evidence_id_drops_the_claim_and_a_shown_one_resolves() {
+        let research = research_one_topic();
+        let ins = inputs(&research, &[], &[]);
+        let body = combined_body(json!({"topics":[{"topic_key":"competitive-position", "summary":"s", "claims":[
+            {"claim":"Q3 revenue restated", "evidence_id":"C1"},
+            {"claim":"from nowhere", "evidence_id":"C7"}
+        ]}]}));
+        let model = ScriptDistill::new(vec![body]);
+        let out = distill(&model, &ins).unwrap();
+        let claims = &out.topic_layer[0].claims;
+        assert_eq!(claims.len(), 1, "{claims:?}");
+        assert_eq!(claims[0].claim, "Q3 revenue restated");
+        assert_eq!(claims[0].source_url, "https://reuters.com/widget");
+        assert_eq!(claims[0].retrieved_at, research.topics[0].passes[0].claims[0].retrieved_at);
+        assert!(out.gaps.iter().any(|g| g.contains("1 claim(s) dropped (unknown evidence_id")), "{:?}", out.gaps);
+    }
+
     /// The single-pass reduce's size before SOURCE TEXT — what the fallback
     /// compares against the issue budget.
     fn reduce_base(ins: &DistillInputs<'_>) -> usize {
@@ -3233,6 +3447,7 @@ mod tests {
         let tier = Tier1Wire {
             summary: "July revenue was 11".into(),
             claims: vec![ClaimWire {
+                evidence_id: String::new(),
                 claim: fresh.claim.clone(),
                 source_url: fresh.source_url.clone(),
                 evidence_ref: fresh_ref(fresh),
@@ -3342,7 +3557,9 @@ mod tests {
                     &properties["claims"]["items"]["properties"]
                 };
                 let keys: Vec<_> = claim.as_object().unwrap().keys().map(String::as_str).collect();
-                assert_eq!(keys, ["claim", "evidence_ref", "source_url"], "route {route}");
+                // `portfolio-v63`: a claim cites a shown id; it carries no reference or address.
+                assert_eq!(keys, ["claim", "evidence_id"], "route {route}");
+                assert!(claim["evidence_id"]["enum"].as_array().is_some_and(|ids| !ids.is_empty()), "route {route}: {claim}");
             }
             for prompt in model.prompts() {
                 assert!(prompt.contains("fact period: 2026-Q2"));
@@ -3457,11 +3674,10 @@ mod tests {
         ]);
         let out = distill(&model, &ins).unwrap();
         assert_eq!(out.topic_layer[0].claims.len(), 1);
-        assert!(!model
-            .prompts()
-            .last()
-            .unwrap()
-            .contains(&format!("evidence_ref: {other_ref}")));
+        // The injected claim never reached the reduce message as a citable line.
+        let reduce_prompt = model.prompts().last().unwrap().clone();
+        assert!(!reduce_prompt.contains(": other claim [https://example.com/other]"), "{reduce_prompt}");
+        assert!(reduce_prompt.contains(": own [https://reuters.com/widget]"), "{reduce_prompt}");
     }
 
     #[test]
@@ -3694,7 +3910,7 @@ mod tests {
                 overlay,
                 backfill_required: backfill,
             };
-            let schema = combined_schema(&shape);
+            let schema = combined_schema(&shape, &["C1", "C2"]);
             let rendered = crate::portfolio::placeholder_shape(&schema, DISTILL_KEY_ORDER);
             let value: Value = serde_json::from_str(&rendered).unwrap();
             let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
@@ -3714,6 +3930,7 @@ mod tests {
             assert_eq!(keys.contains(&"pre_profit_observations"), typed && overlay);
             assert_eq!(keys.contains(&"backfill"), typed && overlay && backfill);
             assert_eq!(value["topics"][0]["topic_key"], "<competitive-position>");
+            assert_eq!(value["topics"][0]["claims"][0]["evidence_id"], "<C1|C2>");
             let claim = &value["topics"][0]["claims"][0];
             assert_eq!(claim.get("related_condition_id").is_some(), conditions, "{rendered}");
             if conditions {
@@ -3739,13 +3956,15 @@ mod tests {
             assert_eq!(outputs.contains("leading_indicator"), typed && drivers, "{outputs}");
             assert_eq!(outputs.contains("backfill"), typed && overlay && backfill, "{outputs}");
         }
+        // `portfolio-v63`: the claim cites a shown id — an enum of the message's
+        // ids, the shape listing them — and carries no reference or address.
         assert_eq!(
-            crate::portfolio::placeholder_shape(&tier1_schema(&["c1"]), DISTILL_KEY_ORDER),
-            r#"{"summary":"","claims":[{"claim":"","evidence_ref":"","source_url":"","related_condition_id":"<c1|null>"}]}"#
+            crate::portfolio::placeholder_shape(&tier1_schema(&["c1"], &["C1", "C2"]), DISTILL_KEY_ORDER),
+            r#"{"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2>","related_condition_id":"<c1|null>"}]}"#
         );
         assert_eq!(
-            crate::portfolio::placeholder_shape(&tier1_schema(&[]), DISTILL_KEY_ORDER),
-            r#"{"summary":"","claims":[{"claim":"","evidence_ref":"","source_url":""}]}"#
+            crate::portfolio::placeholder_shape(&tier1_schema(&[], &[]), DISTILL_KEY_ORDER),
+            r#"{"summary":"","claims":[{"claim":"","evidence_id":""}]}"#
         );
     }
 
@@ -3963,6 +4182,7 @@ mod tests {
             Tier1Wire {
                 summary: "t1".into(),
                 claims: vec![ClaimWire {
+                    evidence_id: String::new(),
                     evidence_ref: fresh_ref(&research.topics[0].passes[0].claims[0]),
                     claim: "Q3 revenue was $1.2B".into(),
                     source_url: "https://reuters.com/widget".into(),
@@ -3971,7 +4191,7 @@ mod tests {
             },
         )];
         let reduce = reduce_user(&ins, Some(&tier1), &HashMap::new(), &[]);
-        assert!(reduce.contains("[https://reuters.com/widget] — evidence_ref:") && reduce.contains("— bears on c1\n"), "{reduce}");
+        assert!(reduce.contains(": Q3 revenue was $1.2B [https://reuters.com/widget] — ") && reduce.contains("— bears on c1\n"), "{reduce}");
     }
 
     #[test]
@@ -3993,8 +4213,9 @@ mod tests {
             }],
         };
         // Rendered for the model to carry forward…
-        assert!(render_prior(&prior).contains("— bears on c1"));
-        assert!(render_prior(&prior).starts_with("Prior findings (analysis of 2026-08-10):\n"));
+        let mut index = ClaimIndex::default();
+        assert!(render_prior(&prior, &mut index).contains("— bears on c1"));
+        assert!(render_prior(&prior, &mut index).starts_with("Prior findings (analysis of 2026-08-10):\n"));
         // …and inherited app-side when the re-emission omits it.
         let priors = vec![prior];
         let body = combined_body(json!({
@@ -4934,7 +5155,7 @@ mod tests {
             overlay: true,
             backfill_required: true,
         };
-        let schema = combined_schema(&shape);
+        let schema = combined_schema(&shape, &[]);
         let row = &schema["properties"]["pre_profit_observations"]["items"];
         assert_eq!(row["properties"]["source_excerpt"]["type"], "string");
         assert_eq!(row["properties"]["period_span"]["type"], "string");

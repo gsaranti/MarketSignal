@@ -1,6 +1,6 @@
 # Distillation — the final reduce over the tier-1 outputs
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v63`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The hierarchical route's final reduce: the tier-1 outputs stand in for the searches, with the dormant prior and the contrary-evidence pass, returning the combined findings and the topic layer.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8792 chars — the messages and tools as serialized |
+| Prompt material | 8328 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,7 +31,7 @@ one JSON object. Part 1 of the message gives the inputs. Part 2 defines those ou
 shape to return.
 ~~~~
 
-## User message (8220 chars)
+## User message (7760 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -53,44 +53,40 @@ What the thesis on this holding rests on, each with its id.
 
 TOPICS
 The research on this holding, one topic at a time: what its searches established, then its claims,
-each with the address of the page that states it, its reference, the publication date the search or
-lead reported and the period the fact applies to. A claim marked "bears on" names the condition
-under STANDING CONDITIONS it is evidence on. Prior findings are from an earlier analysis of the
-topic, dated. A topic not searched this time carries its prior findings only.
+each with its id, the address of the page that states it, the publication date the search or lead
+reported and the period the fact applies to. A claim marked "bears on" names the condition under
+STANDING CONDITIONS it is evidence on. Prior findings are from an earlier analysis of the topic,
+dated. A topic not searched this time carries its prior findings only.
 
 TOPIC competitive-position — Competitive / business position
 Summary:
 [stub: the tier-1 summary of the first topic]
 Claims:
-- [stub: claim 1 — one dated fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — published: unknown; fact period:
-unknown — bears on c-margin
+- C1: [stub: claim 1 — one dated fact from its source]
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
+period: unknown — bears on c-margin
 
 TOPIC results-revisions — Recent results and estimate revisions
 Summary:
 [stub: the tier-1 summary of the second topic]
 Claims:
-- [stub: claim 5 — a forward figure from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E0711ed6c3ab6e8b950130ca758c345f2bf395179a65a13ae48db84ca873af40f — published: unknown; fact period:
-unknown
+- C2: [stub: claim 5 — a forward figure from its source]
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
+period: unknown
 
 TOPIC catalysts-risks (not searched this time)
 Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of a topic not searched this time]
-- [stub: prior claim 3]
+- C3: [stub: prior claim 3]
 [https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/] —
-evidence_ref: E89cc45455c1995489c28dba8b01330e7e3baafb83bfff0acc882595cbd4e7251 — published:
-unknown; fact period: unknown
+published: unknown; fact period: unknown
 
 CONTRARY EVIDENCE
 What a search for evidence against the claims above found, then its claims in the form under TOPICS.
 [stub: the disconfirming pass's findings — what contradicts the picture so far]
-- [stub: claim 6 — a contrary fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E7883c7409ee51bd7f5dff22afaa8273b01effb7966334bd1245e8752e10583a1 — published: unknown; fact period:
-unknown
+- C4: [stub: claim 6 — a contrary fact from its source]
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
+period: unknown
 
 SOURCE TEXT
 The text of the pages retrieved for this holding, each with its address and its publication date
@@ -120,12 +116,12 @@ weakens; and what the searches left unanswered.
 2. topics — exactly one object per topic under TOPICS, in that order, the topics not searched this
 time included. topic_key is the key as shown. summary is what the topic's claims establish, as of
 the date under HOLDING. claims is every distinct statement the topic rests on, one statement per
-claim, with source_url the address shown beside it under TOPICS or SOURCE TEXT: the claims shown
-under the topic; where two topics' claims cover the same fact, reconcile them by the rules under
-CLAIM RULES and keep the fact under the topic it belongs to. related_condition_id is the id of the
-condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or
-is at risk — else null. A topic not searched this time keeps its prior findings, changed only where
-a claim under another topic supersedes one, with nothing added.
+claim, each with evidence_id the id of the claim under TOPICS or CONTRARY EVIDENCE it rests on: the
+claims shown under the topic; where two topics' claims cover the same fact, reconcile them by the
+rules under CLAIM RULES and keep the fact under the topic it belongs to. related_condition_id is the
+id of the condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is
+holding, or is at risk — else null. A topic not searched this time keeps its prior findings, changed
+only where a claim under another topic supersedes one, with nothing added.
 
 3. forward_assumption — the latest forward figure for the issuer's earnings per share or revenue
 that a page under SOURCE TEXT naming the issuer states as issued guidance, a signed contract or a
@@ -149,21 +145,20 @@ as the document names it; event_date; source_url the document's address.
 
 
 CLAIM RULES
-For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
-CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
-facts with different periods. Publication describes the source; fact period names the period the
-fact applies to. An unknown date stays unknown. Compare periods only for the same measure and basis;
-different periods remain distinct observations, with the latest applicable period informing a
-current-state conclusion. For the same period, an explicit correction or revision supersedes its
-predecessor; a later publication alone does not establish a revision. Where sources still conflict
-or periods are incomparable, report the uncertainty and retain the conflicting claims with their own
-references. Retrieval order and the analysis date never select a factual winner or supply a missing
-fact date. Apply the same resolution in the combined findings, summaries, and every topic's claims.
+Keep each claim to one fact and period; separate facts with different periods. Publication describes
+the source; fact period names the period the fact applies to. An unknown date stays unknown. Compare
+periods only for the same measure and basis; different periods remain distinct observations, with
+the latest applicable period informing a current-state conclusion. For the same period, an explicit
+correction or revision supersedes its predecessor; a later publication alone does not establish a
+revision. Where sources still conflict or periods are incomparable, report the uncertainty and
+retain the conflicting claims with their own ids. Retrieval order and the analysis date never select
+a factual winner or supply a missing fact date. Apply the same resolution in the combined findings,
+summaries, and every topic's claims.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply; a field is null
 where its input is absent)
 {"combined_findings":"","topics":[{"topic_key":"<competitive-position|results-revisions|catalysts-risks>",
-"summary":"","claims":[{"claim":"","evidence_ref":"","source_url":"","related_condition_id":"<c-margin|c-price|null>"}]}],
+"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4>","related_condition_id":"<c-margin|c-price|null>"}]}],
 "forward_assumption":{"fact_type":"<guidance|contract|filing>","affects":"<eps|revenue>","numeric_value":0,
 "stated_low":0,"stated_high":0,"units":"","as_of":"","source_url":""},"leading_indicator":{"metric_name":"",
 "value":0,"direction":"<inflecting-up|inflecting-down>","as_of":"","source_url":"","confirms_driver_id":"<d-robotaxi|d-energy>",
@@ -319,7 +314,13 @@ where its input is absent)
                 "claim": {
                   "type": "string"
                 },
-                "evidence_ref": {
+                "evidence_id": {
+                  "enum": [
+                    "C1",
+                    "C2",
+                    "C3",
+                    "C4"
+                  ],
                   "type": "string"
                 },
                 "related_condition_id": {
@@ -332,15 +333,11 @@ where its input is absent)
                     "string",
                     "null"
                   ]
-                },
-                "source_url": {
-                  "type": "string"
                 }
               },
               "required": [
                 "claim",
-                "source_url",
-                "evidence_ref"
+                "evidence_id"
               ],
               "type": "object"
             },

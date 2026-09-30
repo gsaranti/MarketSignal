@@ -221,7 +221,7 @@ fn distill_request(s: &distill::samples::Sample) -> ChatRequest {
         FAST,
         pipeline::distill_num_ctx(FAST, REASONER),
         pipeline::NUM_PREDICT_DISTILL,
-        &distill::DistillPrompt { system: s.system.clone(), user: s.user.clone() },
+        &distill::DistillPrompt { system: s.system.clone(), user: s.user.clone(), claims: Default::default() },
         &s.schema,
     )
 }

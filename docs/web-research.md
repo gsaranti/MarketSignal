@@ -25,6 +25,7 @@ The object is the findings, the claims and, on a topic pass, the follow-up propo
 Since `portfolio-v60` (ruled 2026-09-29), a topic's last pass under the depth cap returns findings and claims only as well, since no pass could take up its proposal.
 Its system message names findings and claims alone, its task has no follow-up item, and its shape and grammar carry no follow-up fields.
 For Portfolio, each rendered source has a contiguous pass-local `S1`, `S2`, … identifier assigned after evidence admission, and the synthesis wire cites `source_id` instead of copying a URL.
+Since `portfolio-v63` the distillation's claim lines carry the same kind of id (`C1`, `C2`, …), cited as `evidence_id` in place of the evidence reference and URL (canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation)).
 The same rendered-source mapping supplies the prompt identifiers and their resolution; empty, duplicate and budget-omitted pages introduce no numbering gaps.
 The app resolves only identifiers for evidence actually shown in that call, then preserves the claim, final source URL, app-stamped retrieval time, search/seed-reported publication metadata, and source-stated fact period, including redirected seed lineage.
 A fact period preserves calendar precision, including a calendar quarter as `YYYY-Q1` through `YYYY-Q4`, or an unmapped fiscal label; missing dates remain unknown and never inherit retrieval or analysis time.

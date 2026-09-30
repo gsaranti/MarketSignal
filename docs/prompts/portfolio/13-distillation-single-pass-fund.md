@@ -1,6 +1,6 @@
 # Distillation — single pass, fund
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v63`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 A fund's reduce is consolidation only: the combined findings and the topic layer, with the standing condition rendered for citation, and no source text or typed field.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3764 chars — the messages and tools as serialized |
+| Prompt material | 3519 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ will return combined_findings and topics, as one JSON object. Part 1 of the mess
 inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (3363 chars)
+## User message (3122 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -45,18 +45,17 @@ Conditions the thesis on this holding is being watched against, each with its id
 
 TOPICS
 The research on this holding, one topic at a time: what its searches established, then its claims,
-each with the address of the page that states it, its reference, the publication date the search or
-lead reported and the period the fact applies to. A claim marked "bears on" names the condition
-under STANDING CONDITIONS it is evidence on.
+each with its id, the address of the page that states it, the publication date the search or lead
+reported and the period the fact applies to. A claim marked "bears on" names the condition under
+STANDING CONDITIONS it is evidence on.
 
 TOPIC fund-exposure-profile — Exposure profile
 Search 1:
 [stub: the root pass's findings on the fund's exposure profile]
 Claims:
-- [stub: claim 1 — one dated fact from its source]
-[https://investor.vanguard.com/investment-products/etfs/profile/bnd] — evidence_ref:
-E9dcc02ac89ec51165bc5c21754dcfb72484725409345ee85a1f938dfa9e15dc2 — published: unknown; fact period:
-unknown
+- C1: [stub: claim 1 — one dated fact from its source]
+[https://investor.vanguard.com/investment-products/etfs/profile/bnd] — published: unknown; fact
+period: unknown
 
 ======== PART 2: TASK ========
 Determine the following from the inputs and return them as one JSON object in the shape under RETURN
@@ -69,27 +68,26 @@ the searches left unanswered.
 
 2. topics — exactly one object per topic under TOPICS, in that order. topic_key is the key as shown.
 summary is what the topic's searches establish, as of the date under HOLDING. claims is every
-distinct statement the topic rests on, one statement per claim, with source_url the address shown
-beside it under TOPICS: a fact two topics state is one claim, under the topic it belongs to.
+distinct statement the topic rests on, one statement per claim, each with evidence_id the id of the
+claim under TOPICS it rests on: a fact two topics state is one claim, under the topic it belongs to.
 related_condition_id is the id of the condition under STANDING CONDITIONS the claim is evidence on —
 that it has tripped, is holding, or is at risk — else null.
 
 
 CLAIM RULES
-For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
-CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
-facts with different periods. Publication describes the source; fact period names the period the
-fact applies to. An unknown date stays unknown. Compare periods only for the same measure and basis;
-different periods remain distinct observations, with the latest applicable period informing a
-current-state conclusion. For the same period, an explicit correction or revision supersedes its
-predecessor; a later publication alone does not establish a revision. Where sources still conflict
-or periods are incomparable, report the uncertainty and retain the conflicting claims with their own
-references. Retrieval order and the analysis date never select a factual winner or supply a missing
-fact date. Apply the same resolution in the combined findings, summaries, and every topic's claims.
+Keep each claim to one fact and period; separate facts with different periods. Publication describes
+the source; fact period names the period the fact applies to. An unknown date stays unknown. Compare
+periods only for the same measure and basis; different periods remain distinct observations, with
+the latest applicable period informing a current-state conclusion. For the same period, an explicit
+correction or revision supersedes its predecessor; a later publication alone does not establish a
+revision. Where sources still conflict or periods are incomparable, report the uncertainty and
+retain the conflicting claims with their own ids. Retrieval order and the analysis date never select
+a factual winner or supply a missing fact date. Apply the same resolution in the combined findings,
+summaries, and every topic's claims.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)
 {"combined_findings":"","topics":[{"topic_key":"<fund-exposure-profile>","summary":"","claims":[{"claim":"",
-"evidence_ref":"","source_url":"","related_condition_id":"<c-dur|null>"}]}]}
+"evidence_id":"<C1>","related_condition_id":"<c-dur|null>"}]}]}
 ~~~~
 
 ## Response schema (`format`)
@@ -109,7 +107,10 @@ RETURN SHAPE (every value is a placeholder; an array holds as many items as appl
                 "claim": {
                   "type": "string"
                 },
-                "evidence_ref": {
+                "evidence_id": {
+                  "enum": [
+                    "C1"
+                  ],
                   "type": "string"
                 },
                 "related_condition_id": {
@@ -121,15 +122,11 @@ RETURN SHAPE (every value is a placeholder; an array holds as many items as appl
                     "string",
                     "null"
                   ]
-                },
-                "source_url": {
-                  "type": "string"
                 }
               },
               "required": [
                 "claim",
-                "source_url",
-                "evidence_ref"
+                "evidence_id"
               ],
               "type": "object"
             },

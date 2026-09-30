@@ -7017,7 +7017,7 @@ pub(crate) mod tests {
             routed,
             num_ctx,
             NUM_PREDICT_DISTILL,
-            &distill::DistillPrompt { system: "s".into(), user: "wide prompt".into() },
+            &distill::DistillPrompt { system: "s".into(), user: "wide prompt".into(), claims: Default::default() },
             &serde_json::json!({"type": "object"}),
         );
         analyst.record_model_call(&distill);
@@ -9940,7 +9940,11 @@ pub(crate) mod tests {
         // TOPICS gloss names its claim-line fields, the task opens in the
         // synthesis's words, "one statement per claim", and the claim rules
         // get the CLAIM RULES heading: v62, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v62");
+        // Item 1 of file 11 (2026-09-29) gives every distillation claim line a
+        // pass-local id the reply cites as evidence_id, an enum of the shown
+        // ids, in place of the copied reference and address: v63, the trail
+        // unchanged (the persisted claim carries no reference).
+        assert_eq!(PROMPT_VERSION, "portfolio-v63");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"
@@ -11888,7 +11892,7 @@ pub(crate) mod tests {
             "fast-model",
             NUM_CTX_DISTILL,
             NUM_PREDICT_DISTILL,
-            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into(), claims: Default::default() },
             &schema,
         );
         assert_eq!(distill.think, Some(false));
@@ -12003,7 +12007,7 @@ pub(crate) mod tests {
             "fast-tier",
             NUM_CTX_DISTILL,
             NUM_PREDICT_DISTILL,
-            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into(), claims: Default::default() },
             &schema,
         );
         let response = |eval_count| crate::local_model::ChatResponse {
@@ -12031,7 +12035,7 @@ pub(crate) mod tests {
             "reasoner",
             NUM_CTX_INTERPRET,
             NUM_PREDICT_DISTILL_RETRY,
-            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into(), claims: Default::default() },
             &schema,
         );
         assert_eq!(

@@ -1,6 +1,6 @@
 # Distillation — tree-level reduce over the pass outputs
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v63`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The tree-level reduce that follows the pass-level calls: each pass output renders as its summary and claims, the prior merges here, and the call returns the topic's summary and claims.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4657 chars — the messages and tools as serialized |
+| Prompt material | 4187 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ review. You will return summary and claims, as one JSON object. Part 1 of the me
 inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (4258 chars)
+## User message (3792 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -47,35 +47,32 @@ quarters.
 
 TOPICS
 The research on this holding, one topic at a time: what its searches established, then its claims,
-each with the address of the page that states it, its reference, the publication date the search or
-lead reported and the period the fact applies to. A claim marked "bears on" names the condition
-under STANDING CONDITIONS it is evidence on. Prior findings are from an earlier analysis of the
-topic, dated.
+each with its id, the address of the page that states it, the publication date the search or lead
+reported and the period the fact applies to. A claim marked "bears on" names the condition under
+STANDING CONDITIONS it is evidence on. Prior findings are from an earlier analysis of the topic,
+dated.
 
 TOPIC competitive-position — Competitive / business position
 Search 1 (summary):
 [stub: pass 1's summary, as the pass-level call returned it]
 Claims:
-- [stub: claim 1 — one dated fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-E1e6ce8151b7a246c52dbf433fd04714be016be6e9ce474e498888431ff70e841 — published: unknown; fact period:
-unknown — bears on c-margin
+- C1: [stub: claim 1 — one dated fact from its source]
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
+period: unknown — bears on c-margin
 Search 2 (summary):
 [stub: pass 2's summary, as the pass-level call returned it]
 Claims:
-- [stub: claim 3 — one dated fact from its source]
-[https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14] — evidence_ref:
-Ea19800ab2b9e3b5267210688a3e7afaaa8ddbecc1a153964a24bd817c185c902 — published: unknown; fact period:
+- C2: [stub: claim 3 — one dated fact from its source]
+[https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14] — published: unknown; fact period:
 unknown
 Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of this topic]
-- [stub: prior claim 1, tied to a standing condition]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
-Ee6e3fba76d4e450c58965b9370cb4c76a84f83f8c38f91687372f8dccf413575 — published: unknown; fact period:
-unknown — bears on c-margin
-- [stub: prior claim 2] [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] —
-evidence_ref: Ea5c488fde44478b33183a91e48849ae568b1a35f3496d0b205329462ff7cacde — published:
-unknown; fact period: unknown
+- C3: [stub: prior claim 1, tied to a standing condition]
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
+period: unknown — bears on c-margin
+- C4: [stub: prior claim 2]
+[https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] — published: unknown; fact
+period: unknown
 
 ======== PART 2: TASK ========
 Determine the following from the inputs and return them as one JSON object in the shape under RETURN
@@ -86,27 +83,26 @@ the figures with their dates and periods as the claims state them; where two cla
 fact, reconcile them by the rules under CLAIM RULES, prior findings assessed by the same rules; and
 what the searches left unanswered.
 
-2. claims — every distinct statement the topic rests on, one statement per claim, with source_url
-the address shown beside it under TOPICS: the claims from this time's searches and prior findings,
-reconciled by the rules under CLAIM RULES. related_condition_id is the id of the condition under
-STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or is at risk — else
-null.
+2. claims — every distinct statement the topic rests on, one statement per claim, each with
+evidence_id the id of the claim under TOPICS it rests on: the claims from this time's searches and
+prior findings, reconciled by the rules under CLAIM RULES. related_condition_id is the id of the
+condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or
+is at risk — else null.
 
 
 CLAIM RULES
-For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
-CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
-facts with different periods. Publication describes the source; fact period names the period the
-fact applies to. An unknown date stays unknown. Compare periods only for the same measure and basis;
-different periods remain distinct observations, with the latest applicable period informing a
-current-state conclusion. For the same period, an explicit correction or revision supersedes its
-predecessor; a later publication alone does not establish a revision. Where sources still conflict
-or periods are incomparable, report the uncertainty and retain the conflicting claims with their own
-references. Retrieval order and the analysis date never select a factual winner or supply a missing
-fact date. Apply the same resolution in the combined findings, summaries, and every topic's claims.
+Keep each claim to one fact and period; separate facts with different periods. Publication describes
+the source; fact period names the period the fact applies to. An unknown date stays unknown. Compare
+periods only for the same measure and basis; different periods remain distinct observations, with
+the latest applicable period informing a current-state conclusion. For the same period, an explicit
+correction or revision supersedes its predecessor; a later publication alone does not establish a
+revision. Where sources still conflict or periods are incomparable, report the uncertainty and
+retain the conflicting claims with their own ids. Retrieval order and the analysis date never select
+a factual winner or supply a missing fact date. Apply the same resolution in the combined findings,
+summaries, and every topic's claims.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)
-{"summary":"","claims":[{"claim":"","evidence_ref":"","source_url":"","related_condition_id":"<c-margin|c-price|null>"}]}
+{"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4>","related_condition_id":"<c-margin|c-price|null>"}]}
 ~~~~
 
 ## Response schema (`format`)
@@ -120,7 +116,13 @@ RETURN SHAPE (every value is a placeholder; an array holds as many items as appl
           "claim": {
             "type": "string"
           },
-          "evidence_ref": {
+          "evidence_id": {
+            "enum": [
+              "C1",
+              "C2",
+              "C3",
+              "C4"
+            ],
             "type": "string"
           },
           "related_condition_id": {
@@ -133,15 +135,11 @@ RETURN SHAPE (every value is a placeholder; an array holds as many items as appl
               "string",
               "null"
             ]
-          },
-          "source_url": {
-            "type": "string"
           }
         },
         "required": [
           "claim",
-          "source_url",
-          "evidence_ref"
+          "evidence_id"
         ],
         "type": "object"
       },

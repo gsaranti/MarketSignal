@@ -272,6 +272,11 @@ Part 2 opens in the synthesis's words ("in the shape under RETURN SHAPE, with no
 The system message names the outputs by their keys, as every object-returning call does.
 A field nothing can fill on the call is asked for nowhere: no condition tie on a first analysis, no leading indicator without key drivers, no typed field on a fund or a role/risk holding, no backfill record without the obligation.
 The app resolves each ordinary claim's dates through its cited evidence reference and source URL, with publication metadata and fact period rendered beside fresh and prior claims at every reduction hop.
+Since `portfolio-v63` (ruled 2026-09-29), the reply cites neither.
+Every claim line a message shows sits under a pass-local id (`C1`, `C2`, … in render order, restarting in every message).
+The returned claim carries `evidence_id`, an enum of the ids that message showed, and the app resolves the id to the reference and address it rendered.
+What a message shows is exactly what its reply can cite, and a claim citing an id the message did not show is dropped with a gap.
+The typed items still cite a page under SOURCE TEXT by its address.
 The distillation claim output contains no retrieval, publication or fact-period fields; synthesis supplies the fact period, and the app preserves it through consolidation.
 An unknown publication stays unknown; no model-authored publication fallback is requested for ordinary claims.
 Typed extraction retains its own source-stated dates, including the forensic event date and the pre-profit observations' publication dates and reporting periods.

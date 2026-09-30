@@ -2050,11 +2050,19 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
         // under their own heading, pointed at by name; the gloss names the claim
         // line's fields; "one statement per claim".
         assert!(part2.starts_with("\nDetermine the following from the inputs and return them as one JSON object in the shape under RETURN SHAPE, with no code fence and no surrounding text; the names below are its fields.\n"), "{}: {part2}", s.label);
-        assert!(part2.contains("\nCLAIM RULES\nFor each claim, evidence_ref copies the reference") && !part2.contains("as described below") && !part2.contains("one per item"), "{}: {part2}", s.label);
+        assert!(part2.contains("\nCLAIM RULES\nKeep each claim to one fact and period") && !part2.contains("as described below") && !part2.contains("one per item"), "{}: {part2}", s.label);
         // A task that reconciles points at the rules by their heading; the
         // single-search pass has nothing to reconcile.
         assert_eq!(part2.contains("by the rules under CLAIM RULES"), part2.contains("reconcile"), "{}: {part2}", s.label);
-        assert!(part1.contains("then its claims, each with the address of the page that states it, its reference, the publication date the search or lead reported and the period the fact applies to."), "{}: {part1}", s.label);
+        assert!(part1.contains("then its claims, each with its id, the address of the page that states it, the publication date the search or lead reported and the period the fact applies to."), "{}: {part1}", s.label);
+        // `portfolio-v63`: every claim line opens on its pass-local id, no evidence
+        // reference renders anywhere, item 2 asks for the id, and the shape lists
+        // the ids the message showed.
+        assert!(part1.contains("\n- C1: "), "{}: {part1}", s.label);
+        assert!(!s.user.contains("evidence_ref") && !s.system.contains("evidence_ref"), "{}: {}", s.label, s.user);
+        assert!(part2.contains("each with evidence_id the id of the claim under TOPICS"), "{}: {part2}", s.label);
+        assert!(part2.contains(r#""evidence_id":"<C1"#), "{}: {part2}", s.label);
+        assert!(!part2.contains("source_url the address shown beside it"), "{}: {part2}", s.label);
         let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
         let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
         let keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();

@@ -2509,7 +2509,21 @@ pub struct HoldingAudit {
 /// the claims items read "one statement per claim"; and the claim rules sit
 /// under their own heading, CLAIM RULES, which the items point at by name in
 /// place of "as described below". The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v62";
+/// `portfolio-v63` (prompt read-through, file 11, item 1, 2026-09-29): every
+/// claim line a distillation message shows sits under a pass-local id — `C1`,
+/// `C2`, … in render order, restarting in every message — and a returned
+/// claim cites that id as `evidence_id`, an enum of the ids the message
+/// showed, in place of copying the 64-hex evidence reference and the page's
+/// address (attempt 8, W9: 12 claims dropped on a mis-copied reference or
+/// address). The app resolves the id to the reference and address it
+/// rendered (`distill::ClaimIndex`, the retention allow-set), so the claim
+/// object is `claim`, `evidence_id` and the tie; the reference no longer
+/// renders; the TOPICS gloss names the id first; item 2 defines evidence_id
+/// where it names it and CLAIM RULES loses the reference-copying sentence.
+/// The typed items still cite pages by address. The persisted claim carries
+/// no reference (it is derived at match time), so the checkpoint trail is
+/// unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v63";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
