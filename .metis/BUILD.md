@@ -452,7 +452,8 @@ Each is easy to break by accident, so a plan should say how it honors them:
   synthesizing, the synthesis prompt showing the object's shape since the
   grammar never reaches the model (every schema-constrained Portfolio call
   shows a schema-derived shape template, and the synthesis cites sources by
-  pass-local id, resolved app-side to the persisted URL) — and the app
+  pass-local id, resolved app-side to the persisted URL, as the distillation
+  cites the claim lines it shows since `portfolio-v63`) — and the app
   re-validates the grammar-required fields and nonblank prose/claim semantics
   before a pass can complete. Every research gap
   persists on the holding audit and contributes typed counts to the run-level

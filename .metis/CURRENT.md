@@ -6,22 +6,22 @@ The prompt-by-prompt read-through of `docs/prompts/portfolio/` (26 files in `00-
 
 ## What happened
 
-The session (2026-09-28/29) landed files 02 to 08, one stamp per file, `portfolio-v51` through `portfolio-v59` (`74a526a` … `88267dd`; each commit message carries its rulings).
-The calls the next session builds on: the follow-up and disconfirming openings are two sentences that name what each Part 1 block is for, and their items use the singular; the source-quality value is `source tier` on every model-facing surface, the weighing preference stated by the scales' endpoints, the subject-tier relation stated nowhere; a prior claim under PRIOR FINDINGS takes the CLAIMS SO FAR shape through one renderer the examples share (the example had been a hand-built stand-in); the agenda's questions carry no filler word; a failed tool result is a fixed sentence by typed failure class and an empty search is an empty answer, the raw error riding the tracker row; the synthesis EVIDENCE gloss is the fetch description's semicolon shape naming TOPIC; SEARCHING left the synthesis brief, since a fresh conversation cannot attribute aggregate losses to a question, the degradation staying a data-health gap; the synthesis items are plain sentences behind their dashes, the fields named once in the preamble, a string-or-null field's shape showing both alternatives.
-The no-fence clause stays everywhere on fix list 3.7's measured thinking-time effect: a sentence the grammar cannot enforce is not dead text when it shapes the model's thinking.
-The checkpoint trail is unchanged throughout.
+The session (2026-09-29) landed files 09 to 11, `portfolio-v60` through `portfolio-v63` (`122db00`, `ceda5cb`, `8505555`, `a327f4f`; each commit message carries its rulings).
+The calls the next session builds on: a Part 1 heading is pointed at as "the X under HEADING", never as an adjective ("the question under FOLLOW-UP", not "the FOLLOW-UP question"); a topic's last pass under the depth cap asks for no follow-up proposal, as the disconfirming pass does; every object-returning system message reads role line, then "You will return <the object's keys>, as one JSON object.", then the shared frame "Part 1 of the message gives the inputs. Part 2 defines those outputs and gives the shape to return." (`TWO_PART_FRAME`); the distillation task opens in the synthesis's words, its claims items read "one statement per claim", its rules sit under CLAIM RULES and are pointed at by name.
+The one structural change: distillation claim lines carry pass-local ids (`C1`, `C2`, … per message) and a returned claim cites `evidence_id`, an enum of the shown ids, in place of copying the 64-hex reference and the URL (attempt 8's W9 drops); `ClaimIndex` resolves the id app-side at every hop.
+The checkpoint trail is unchanged throughout (`checkpoint-v15`).
 
 ## Current state
 
-Nothing in flight; the working tree is clean at `88267dd`.
+Nothing in flight; the working tree is clean at `a327f4f`.
 
-- **Debut stamp set:** `portfolio-v59` / `checkpoint-v15` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability 11.
-- **Review method:** the user reads the file and comments; nothing is analysed or proposed unasked until the user asks for thoughts; "go ahead" authorises the builder edit, its pins, the docs mirror, the regenerated examples and the full gate, all left in the working tree; commit and push only after the user has reviewed the diff and says so (ruled 2026-09-29); one stamp bump per commit, the next being `portfolio-v60`.
-- **Carry-overs for later files (raise when the file comes up):** files 14 to 17 say "one per item" in their claims items and show `published` with no gloss of its meaning; files 18 and 19 render `Falsifier:` and `Trigger:` with no gloss of the two words; the no-page app-recorded findings still append the plain-words loss note (offered to drop, not ruled).
+- **Debut stamp set:** `portfolio-v63` / `checkpoint-v15` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability 11.
+- **Review method:** the user reads the file and comments; nothing is analysed or proposed unasked until the user asks for thoughts; "go ahead" authorises the builder edit, its pins, the docs mirror, the regenerated examples and the full gate, all left in the working tree; commit and push only after the user has reviewed the diff and says so; one stamp bump per commit, the next being `portfolio-v64`.
+- **Carry-overs for later files:** files 18 to 26 still open their task with "in the shape at the end" (the distillation and synthesis say "in the shape under RETURN SHAPE, … the names below are its fields"); files 18 and 19 render `Falsifier:` and `Trigger:` with no gloss of the two words; the no-page app-recorded findings still append the plain-words loss note (offered to drop, not ruled).
+- **Deferred by ruling:** page ids for the typed items' `source_url` (forward_assumption, forensic_event, pre_profit_observations, backfill.sources), only if attempt 9 shows drops there.
 - **Store:** attempt 8's three checkpoint holding rows persist under `portfolio-v48`, `portfolio_runs` 0, `job_runs` max 8; attempt 9 needs a re-wipe to a clean debut (user's call). Prod untouched.
-- **Named follow-up:** same-kind batching if attempt 9's serve log shows roots not restoring.
-- **Attempt-9 latency witness:** serve-log `restored context checkpoint` lines on synthesis tasks from a holding's second topic and on root tasks from about its fourth; no expanded distillation on a holding whose first pass stays under 12,288; per-stock prompt-evaluation time below the attempt-8 band.
-- **Watches carried (no change):** 40-fetch budget exhausted before follow-ups and the disconfirming pass; distillation claim drops; funds not faster than stocks; quality sub-score ≤10 on both stocks; empty issuer descriptions.
+- **Attempt-9 witnesses:** serve-log `restored context checkpoint` lines on synthesis tasks from a holding's second topic and on root tasks from about its fourth; no expanded distillation on a holding whose first pass stays under 12,288; per-stock prompt-evaluation time below the attempt-8 band; the "unknown evidence_id" distillation drop class at zero.
+- **Watches carried (no change):** 40-fetch budget exhausted before follow-ups and the disconfirming pass; funds not faster than stocks; quality sub-score ≤10 on both stocks; empty issuer descriptions.
 
 ## Open questions
 
@@ -29,5 +29,5 @@ None.
 
 ## Where to start
 
-Continue the read-through at `09-research-synthesis-follow-up-pass.md`: load the file and the synthesis builders that render it, then wait for the user's comments; file 10 follows, then the distillation files from 11.
+Give `11-distillation-single-pass-stock-first-analysis.md` one last sweep: load the file and the `distill.rs` builders, then wait for the user's comments; file 12 follows, then 13 to 17 (the same builders, so most rulings already reach them).
 Attempt 9 stays the user's call (re-wipe the dev store first, bring the stack up per the runbook, the user clicks Run); never propose the run.
