@@ -413,12 +413,12 @@ fn examples() -> Vec<Example> {
         "The synthesis call closes a pass: no tools, the findings grammar as the format, no history — the evidence packet is rebuilt from the run's store, and the model cites sources by the pass-local id the packet shows.";
     out.push(Example {
         file: "08-research-synthesis-root-pass-later-topic",
-        title: "Research synthesis — root pass on a later topic, gathering incomplete",
+        title: "Research synthesis — root pass on a later topic",
         step: "6c",
         holding: tsla_holding,
         sentences: lines(&[
             synthesis_common,
-            "The packet lists the reused page first and this pass's fetch after it (portfolio-v49), and carries the gathering degradation note when gathering ended on a bound rather than the model's own stop.",
+            "The packet lists the reused page first and this pass's fetch after it (portfolio-v49); what gathering lost is a persisted data-health gap and reaches no model (portfolio-v59).",
         ]),
         stage: s(0).stage.clone(),
         request: research_request(s(0)),

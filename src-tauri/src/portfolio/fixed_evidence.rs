@@ -1763,7 +1763,17 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             );
         } else {
             assert!(part1.contains("0 is a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
-            assert!(part1.contains("source tier from 0 to 5"), "{}: the tier scale's range is unstated\n{part1}", s.label);
+            // `portfolio-v59`: the gloss names the TOPIC heading, states the fields in
+            // the fetch description's shape, and carries no weighing clause.
+            assert!(part1.contains("source tier (0 to 5: 0 is a primary source"), "{}: the tier scale's range is unstated\n{part1}", s.label);
+            assert!(
+                part1.contains("\nEVIDENCE\nThe pages retrieved for the questions under TOPIC, each under a header of: its id; its address; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:"),
+                "{}: {part1}",
+                s.label
+            );
+            assert!(part1.contains("and its extraction quality (0 to 1: the article text recovered against a full article's worth). A page marked stub did not yield its article"), "{}: {part1}", s.label);
+            assert!(!part1.contains("defect of the source") && !part1.contains("pages shown"), "{}: {part1}", s.label);
+            assert!(part2.contains("it does not exclude it, and a figure that cannot be right is a defect of the source."), "{}: {part2}", s.label);
             assert!(!part1.contains("tier holds"), "{}: {part1}", s.label);
             // `portfolio-v52`: the synthesis task weighs by source tier; `portfolio-v53`:
             // no subject-tier sentence.
@@ -1919,9 +1929,9 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         if s.label.contains("disconfirming") {
             assert!(part1.contains("\nCLAIMS SO FAR\n"), "{}", s.label);
         }
-        if s.label.contains("incomplete") {
-            assert!(part1.contains("\nSEARCHING\nSearching for this topic was incomplete: "), "{}", s.label);
-            assert!(part2.contains(", SEARCHING included"), "{}", s.label);
+        // `portfolio-v59`: no synthesis message carries a SEARCHING note.
+        if s.label.starts_with("synthesis") {
+            assert!(!part1.contains("SEARCHING") && !part2.contains("SEARCHING"), "{}", s.label);
         }
     }
     // The tool results carry no instruction either.

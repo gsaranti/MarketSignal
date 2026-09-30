@@ -9921,7 +9921,12 @@ pub(crate) mod tests {
         // File 07 (2026-09-29) gives the failed tool results fixed sentences by
         // class and makes the empty search an empty answer: v58, the trail
         // unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v58");
+        // File 08 (2026-09-29) restates the synthesis EVIDENCE gloss in the
+        // fetch description's shape, naming TOPIC, the fallible-source clause
+        // on the weighing sentence, drops the SEARCHING note from the
+        // synthesis brief and restates the task's items as plain sentences:
+        // v59, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v59");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

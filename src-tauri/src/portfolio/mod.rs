@@ -2441,7 +2441,32 @@ pub struct HoldingAudit {
 /// error rides the run tracker's request row. A search whose results all
 /// fall to the rank-time filter is an empty answer — "No results.", counted
 /// as empty, not failed. The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v58";
+/// `portfolio-v59` (prompt read-through, file 08, 2026-09-29): the synthesis
+/// EVIDENCE gloss names the TOPIC heading its pages were retrieved for (the
+/// order unchanged, for the cache) and states the page header's fields in
+/// the fetch description's words and shape — a semicolon list with each
+/// explanation bracketed, in the header's order — with the stub flag glossed
+/// as on the fetch description; the fallible-source clause moves from the
+/// gloss onto the task's weighing sentence. The synthesis brief carries no
+/// SEARCHING note: the synthesis is a fresh conversation that never saw
+/// which search or fetch served which question, so a note of aggregate
+/// losses could only be guessed onto a gap; the degradation stays a
+/// persisted data-health gap, and item 1 ends at what the evidence leaves
+/// unanswered. The task's items are plain sentences: "findings. Write this
+/// first and never leave it empty." then the pass's subject, the figure
+/// clause ("Where a page gives a figure, quote it with the date or period
+/// the page gives for it"), disagreement and what stays unanswered; "claims.
+/// The statements the findings rest on, one statement per claim, each
+/// stated by a page in EVIDENCE" with source_id and fact_period each
+/// defined where named, the kinds a semicolon list with each format
+/// bracketed, "end is null for every kind but range"; the headings keep
+/// their dashes; the preamble says once that the names below are the
+/// object's fields, keeping the no-fence clause (fix list 3.7: it cuts the
+/// model's thinking-time deliberation, which the grammar cannot); and the
+/// shape shows a string-or-null field's both alternatives inside quotes
+/// (`"end":"<YYYY-MM-DD|null>"`, `"followup_question":"<question|null>"`,
+/// `"followup_rationale":"<why|null>"`). The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v59";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
