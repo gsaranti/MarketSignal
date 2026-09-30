@@ -2018,12 +2018,18 @@ fn render_drivers(drivers: &[&crate::portfolio::KeyDriver]) -> String {
 
 /// The TOPICS gloss, each clause only where the section carries the thing
 /// glossed.
-fn topics_gloss(conditions: bool, priors: bool, dormant: bool) -> String {
-    let mut g = String::from(
-        "\nTOPICS\nThe research on this holding, one topic at a time, each headed by its key \
-         and its title: what its searches established, then its claims. Each claim carries: its \
-         id; the address of the page that states it; the publication date the search or lead \
-         reported; and the period the fact applies to.",
+fn topics_gloss(one_topic: bool, conditions: bool, priors: bool, dormant: bool) -> String {
+    // `portfolio-v66`: the tier-1, pass-level and tree-level calls carry one
+    // topic, as their system message says; the reduce keeps the many-topic form.
+    let scope = if one_topic {
+        "The research on one topic of this holding, headed by its key and its title"
+    } else {
+        "The research on this holding, one topic at a time, each headed by its key and its title"
+    };
+    let mut g = format!(
+        "\nTOPICS\n{scope}: what its searches established, then its claims. Each claim carries: \
+         its id; the address of the page that states it; the publication date the search or \
+         lead reported; and the period the fact applies to."
     );
     if conditions {
         g.push_str(
@@ -2463,7 +2469,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         }
     }
     t.push('\n');
-    t.push_str(DATE_RECONCILIATION);
+    t.push_str(&claim_rules(true));
     t.push_str(&render_shape(schema, shape.typed));
     t
 }
@@ -2472,7 +2478,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
 /// heading since `portfolio-v62` so the items point at it by name, as every
 /// other pointer in these prompts does. The reference-copying sentence left
 /// at `portfolio-v63`: item 2 defines evidence_id where it names it.
-const DATE_RECONCILIATION: &str = "\nCLAIM RULES\nKeep each claim to one fact \
+const CLAIM_RULES_BODY: &str = "\nCLAIM RULES\nKeep each claim to one fact \
     and period; separate facts with different periods. Publication describes the source; \
     fact period names the period the fact applies to. An unknown date stays unknown. Compare \
     periods only for the same measure and basis; different periods remain distinct \
@@ -2481,8 +2487,19 @@ const DATE_RECONCILIATION: &str = "\nCLAIM RULES\nKeep each claim to one fact \
     later publication alone does not establish a revision. Where sources still conflict or \
     periods are incomparable, report the uncertainty and retain the conflicting claims with \
     their own ids. Retrieval order and the analysis date never select a factual \
-    winner or supply a missing fact date. Apply the same resolution in the combined \
-    findings, summaries, and every topic's claims.\n\n";
+    winner or supply a missing fact date.";
+
+/// The CLAIM RULES paragraph, closed on the outputs the call returns
+/// (`portfolio-v66`): the reduce's combined findings, summaries and every
+/// topic's claims; a one-topic call's summary and claims.
+fn claim_rules(whole_holding: bool) -> String {
+    let outputs = if whole_holding {
+        "the combined findings, summaries, and every topic's claims"
+    } else {
+        "the summary and the claims"
+    };
+    format!("{CLAIM_RULES_BODY} Apply the same resolution in {outputs}.\n\n")
+}
 
 /// Part 2 of the tier-1, pass-level and tree-level calls.
 fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Value) -> String {
@@ -2528,7 +2545,7 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
         );
     }
     t.push_str("\n\n");
-    t.push_str(DATE_RECONCILIATION);
+    t.push_str(&claim_rules(false));
     t.push_str(&render_shape(schema, false));
     t
 }
@@ -2546,7 +2563,7 @@ pub(crate) fn tier1_message(
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(!ids.is_empty(), prior.is_some(), false));
+    user.push_str(&topics_gloss(true, !ids.is_empty(), prior.is_some(), false));
     user.push_str(&render_topic_searches(topic, prior, &mut claims));
     user.push_str(PART_2);
     user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids, &claims.ids())));
@@ -2568,7 +2585,7 @@ pub(crate) fn pass_message(
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(!ids.is_empty(), false, false));
+    user.push_str(&topics_gloss(true, !ids.is_empty(), false, false));
     user.push_str(&topic_line(&topic.topic_key, &topic.title));
     user.push_str(&render_search(i, pass, &mut claims));
     user.push_str(PART_2);
@@ -2593,7 +2610,7 @@ pub(crate) fn tree_reduce_message(
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(!ids.is_empty(), prior.is_some(), false));
+    user.push_str(&topics_gloss(true, !ids.is_empty(), prior.is_some(), false));
     user.push_str(&topic_line(&topic.topic_key, &topic.title));
     for (i, body) in pass_bodies.iter().enumerate() {
         match serde_json::from_str::<Tier1Wire>(body) {
@@ -2689,7 +2706,7 @@ fn reduce_message(
     if shape.indicator() {
         user.push_str(&render_drivers(&drivers));
     }
-    user.push_str(&topics_gloss(ctx.conditions, ctx.priors, ctx.dormant));
+    user.push_str(&topics_gloss(false, ctx.conditions, ctx.priors, ctx.dormant));
     match tier1 {
         Some(outputs) => {
             for (key, wire) in outputs {
@@ -3526,10 +3543,18 @@ mod tests {
                     "a later publication alone does not establish a revision",
                     "report the uncertainty and retain the conflicting claims",
                     "Retrieval order and the analysis date never select a factual winner",
-                    "Apply the same resolution in the combined findings, summaries, and every topic's claims",
                 ] {
                     assert!(task.contains(rule), "{route}: {task}");
                 }
+                // `portfolio-v66`: the close names the call's own outputs — the
+                // whole-holding routes return combined findings, the topic routes
+                // a summary and claims.
+                let close = if task.contains("\n1. combined_findings — ") {
+                    "Apply the same resolution in the combined findings, summaries, and every topic's claims."
+                } else {
+                    "Apply the same resolution in the summary and the claims."
+                };
+                assert!(task.contains(close), "{route}: {task}");
                 if route != "global" {
                     assert!(prompt.contains("July revenue was 10"), "{route}");
                     assert!(prompt.contains("July revenue was 11"), "{route}");

@@ -294,6 +294,8 @@ Where a topic rides dormant, the one-claim rule binds the searched topics ("A fa
 Item 6 glosses confidence's referent ("confidence, 0 to 1, that the excerpt states that metric, value and period"), the value the engine's selection among competing rows for one metric and period reads.
 Item 7 states coverage's denominator ("complete where all four periods are found, partial where fewer") and the checked periods' date form (`YYYY-MM-DD`).
 Item 1 drops "prior findings assessed by the same rules"; item 2 binds every statement to CLAIM RULES already.
+Since `portfolio-v66` (ruled 2026-09-30), the tier-1, pass-level and tree-level calls, each carrying one topic, open the TOPICS gloss on that scope ("The research on one topic of this holding, headed by its key and its title"), as their system message says; the reduce keeps "one topic at a time, each headed by its key and its title".
+On the same three calls CLAIM RULES closes "Apply the same resolution in the summary and the claims."; the reduce keeps "in the combined findings, summaries, and every topic's claims".
 The distillation claim output contains no retrieval, publication or fact-period fields; synthesis supplies the fact period, and the app preserves it through consolidation.
 An unknown publication stays unknown; no model-authored publication fallback is requested for ordinary claims.
 Typed extraction retains its own source-stated dates, including the forensic event date and the pre-profit observations' publication dates and reporting periods.

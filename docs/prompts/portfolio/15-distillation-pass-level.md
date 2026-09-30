@@ -1,6 +1,6 @@
 # Distillation — pass-level sub-distillation
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v66`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The pass-level sub-distillation, taken when a topic tree itself outgrows the tier-1 budget: one search of one topic, returning its summary and claims.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3388 chars — the messages and tools as serialized |
+| Prompt material | 3343 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ review. You will return summary and claims, as one JSON object. Part 1 of the me
 inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (3000 chars)
+## User message (2955 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -46,10 +46,10 @@ quarters.
 - c-price — Trigger: Price closes below $250.
 
 TOPICS
-The research on this holding, one topic at a time, each headed by its key and its title: what its
-searches established, then its claims. Each claim carries: its id; the address of the page that
-states it; the publication date the search or lead reported; and the period the fact applies to. A
-claim marked "bears on" names the condition under STANDING CONDITIONS it is evidence on.
+The research on one topic of this holding, headed by its key and its title: what its searches
+established, then its claims. Each claim carries: its id; the address of the page that states it;
+the publication date the search or lead reported; and the period the fact applies to. A claim marked
+"bears on" names the condition under STANDING CONDITIONS it is evidence on.
 
 TOPIC competitive-position — Competitive / business position
 Search 1:
@@ -83,8 +83,8 @@ the latest applicable period informing a current-state conclusion. For the same 
 correction or revision supersedes its predecessor; a later publication alone does not establish a
 revision. Where sources still conflict or periods are incomparable, report the uncertainty and
 retain the conflicting claims with their own ids. Retrieval order and the analysis date never select
-a factual winner or supply a missing fact date. Apply the same resolution in the combined findings,
-summaries, and every topic's claims.
+a factual winner or supply a missing fact date. Apply the same resolution in the summary and the
+claims.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)
 {"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2>","related_condition_id":"<c-margin|c-price|null>"}]}

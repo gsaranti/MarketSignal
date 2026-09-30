@@ -9958,7 +9958,10 @@ pub(crate) mod tests {
         // dormant, glosses confidence's referent, states coverage's
         // denominator, and drops item 1's prior-findings clause: v65, the
         // trail at v16 (the persisted indicator loses the model-authored name).
-        assert_eq!(PROMPT_VERSION, "portfolio-v65");
+        // File 14 (2026-09-30) opens the TOPICS gloss on one topic and closes
+        // CLAIM RULES on the call's own outputs on the tier-1, pass-level and
+        // tree-level calls: v66, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v66");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v16"

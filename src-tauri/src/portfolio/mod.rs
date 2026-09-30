@@ -2570,7 +2570,17 @@ pub struct HoldingAudit {
 /// partial where fewer") and the checked periods' date form; item 1 drops
 /// "prior findings assessed by the same rules", item 2 binding every
 /// statement to CLAIM RULES already. Files 12, 14, 16 and 17 regenerated.
-pub const PROMPT_VERSION: &str = "portfolio-v65";
+/// `portfolio-v66` (prompt read-through, file 14, 2026-09-30): the tier-1,
+/// pass-level and tree-level calls each carry one topic, as their system
+/// message says, so on those three the TOPICS gloss opens on that scope ("The
+/// research on one topic of this holding, headed by its key and its title")
+/// and CLAIM RULES closes on the call's own outputs ("Apply the same
+/// resolution in the summary and the claims."), where both sentences were
+/// the reduce's ("one topic at a time, each headed by …"; "in the combined
+/// findings, summaries, and every topic's claims") and pointed at outputs
+/// the call never returns. The reduce keeps both. Files 14, 15 and 16
+/// regenerated. The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v66";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

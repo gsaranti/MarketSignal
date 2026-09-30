@@ -2054,7 +2054,24 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
         // A task that reconciles points at the rules by their heading; the
         // single-search pass has nothing to reconcile.
         assert_eq!(part2.contains("by the rules under CLAIM RULES"), part2.contains("reconcile"), "{}: {part2}", s.label);
-        assert!(part1.contains("one topic at a time, each headed by its key and its title: what its searches established, then its claims. Each claim carries: its id; the address of the page that states it; the publication date the search or lead reported; and the period the fact applies to."), "{}: {part1}", s.label);
+        // `portfolio-v66`: the gloss opens on the call's scope — one topic on the
+        // tier-1, pass-level and tree-level calls, "one topic at a time" on the
+        // reduce — and CLAIM RULES closes on the call's own outputs.
+        let reduce = s.label.starts_with("reduce");
+        let gloss_scope = if reduce {
+            "\nTOPICS\nThe research on this holding, one topic at a time, each headed by its key and its title: what its searches established, then its claims. Each claim carries: "
+        } else {
+            "\nTOPICS\nThe research on one topic of this holding, headed by its key and its title: what its searches established, then its claims. Each claim carries: "
+        };
+        assert!(part1.contains(gloss_scope), "{}: {part1}", s.label);
+        assert!(part1.contains("Each claim carries: its id; the address of the page that states it; the publication date the search or lead reported; and the period the fact applies to."), "{}: {part1}", s.label);
+        let rules_close = if reduce {
+            "Apply the same resolution in the combined findings, summaries, and every topic's claims.\n"
+        } else {
+            "Apply the same resolution in the summary and the claims.\n"
+        };
+        assert!(part2.contains(rules_close), "{}: {part2}", s.label);
+        assert!(reduce || (!part1.contains("one topic at a time") && !part2.contains("every topic's claims")), "{}: {}", s.label, s.user);
         // The list constructions are gone; the single-field "each with its id." on
         // STANDING CONDITIONS and KEY DRIVERS stays.
         assert!(!s.user.contains("each with its id, ") && !s.user.contains("each with its source"), "{}: an each-with list survives\n{}", s.label, s.user);
