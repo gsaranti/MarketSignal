@@ -6,18 +6,18 @@ The prompt-by-prompt read-through of `docs/prompts/portfolio/` (26 files in `00-
 
 ## What happened
 
-The session (2026-09-28) opened the read-through at file 01, the gathering brief's first-root shape, and landed its eight rulings as one stamp bump, `portfolio-v50` (`69d6055`): the tier scale states its range; the TOOL RESULTS legend left Part 1 and the two tool descriptions now state what a search result and a fetched page carry, the page header's subject field renamed `trusted on`; item 1 reads the pages under PAGES ALREADY RETRIEVED only where one is shown and names the news leads as fetch candidates beside the search results under one relevance test; the fallible-source clause moved from the fetch description onto Part 2's weighing sentence; the gathering system message names `web_search` and `web_fetch`.
-The principles behind them, to apply to every later file: state what the model would otherwise infer; Part 1 holds inputs only and every heading in it is named by Part 2; a legend about a tool's result lives on the tool description; Part 2 never points at absent content; one instruction, one test; safety text sits by the data and weighing text in the task, neither in a tool description; the same words across description, header and gloss; semicolon lists with bracketed explanations.
-A second commit (`1e40fc8`) changed the examples writer: it rewrites only the files whose text changed with the header's stamp set aside, so an untouched prompt's file is never written and its header reads "last changed at `portfolio-vNN`" (user rule).
-The checkpoint trail is unchanged.
+The session (2026-09-28/29) landed files 02 to 08, one stamp per file, `portfolio-v51` through `portfolio-v59` (`74a526a` … `88267dd`; each commit message carries its rulings).
+The calls the next session builds on: the follow-up and disconfirming openings are two sentences that name what each Part 1 block is for, and their items use the singular; the source-quality value is `source tier` on every model-facing surface, the weighing preference stated by the scales' endpoints, the subject-tier relation stated nowhere; a prior claim under PRIOR FINDINGS takes the CLAIMS SO FAR shape through one renderer the examples share (the example had been a hand-built stand-in); the agenda's questions carry no filler word; a failed tool result is a fixed sentence by typed failure class and an empty search is an empty answer, the raw error riding the tracker row; the synthesis EVIDENCE gloss is the fetch description's semicolon shape naming TOPIC; SEARCHING left the synthesis brief, since a fresh conversation cannot attribute aggregate losses to a question, the degradation staying a data-health gap; the synthesis items are plain sentences behind their dashes, the fields named once in the preamble, a string-or-null field's shape showing both alternatives.
+The no-fence clause stays everywhere on fix list 3.7's measured thinking-time effect: a sentence the grammar cannot enforce is not dead text when it shapes the model's thinking.
+The checkpoint trail is unchanged throughout.
 
 ## Current state
 
-Nothing in flight; the working tree is clean at `1e40fc8`.
+Nothing in flight; the working tree is clean at `88267dd`.
 
-- **Debut stamp set:** `portfolio-v50` / `checkpoint-v15` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability 11.
-- **Review method:** the user reads the file and comments; nothing is analysed or proposed unasked; a ruling that changes prompt text lands as the builder edit, its pins (the research tests and the fixed-evidence harness), the docs mirror (`web-research.md`, `portfolio-workflow.md`, sentence-per-line with a `Since` record), a history line on `portfolio::PROMPT_VERSION` and its `pipeline.rs` pin, the regenerated examples and the full gate; one stamp bump per commit, the next being `portfolio-v51`.
-- **Carry-overs for later files (raise when the file comes up):** file 02 — item 1's "the questions" is ambiguous between the FOLLOW-UP question and TOPIC; file 08 — the synthesis EVIDENCE gloss still has the unstated extraction-quality range, the opaque stub sentence, the frame sentence inside a Part 1 gloss and the comma-list shape (only its `trusted on` phrase was aligned, for the shared header renderer).
+- **Debut stamp set:** `portfolio-v59` / `checkpoint-v15` / `evidence-floor-v5` / `grade-v2.3` / `targets-v6` / `pre-profit-v4` / `quick-check-v4`, portability 11.
+- **Review method:** the user reads the file and comments; nothing is analysed or proposed unasked until the user asks for thoughts; "go ahead" authorises the builder edit, its pins, the docs mirror, the regenerated examples and the full gate, all left in the working tree; commit and push only after the user has reviewed the diff and says so (ruled 2026-09-29); one stamp bump per commit, the next being `portfolio-v60`.
+- **Carry-overs for later files (raise when the file comes up):** files 14 to 17 say "one per item" in their claims items and show `published` with no gloss of its meaning; files 18 and 19 render `Falsifier:` and `Trigger:` with no gloss of the two words; the no-page app-recorded findings still append the plain-words loss note (offered to drop, not ruled).
 - **Store:** attempt 8's three checkpoint holding rows persist under `portfolio-v48`, `portfolio_runs` 0, `job_runs` max 8; attempt 9 needs a re-wipe to a clean debut (user's call). Prod untouched.
 - **Named follow-up:** same-kind batching if attempt 9's serve log shows roots not restoring.
 - **Attempt-9 latency witness:** serve-log `restored context checkpoint` lines on synthesis tasks from a holding's second topic and on root tasks from about its fourth; no expanded distillation on a holding whose first pass stays under 12,288; per-stock prompt-evaluation time below the attempt-8 band.
@@ -26,9 +26,8 @@ Nothing in flight; the working tree is clean at `1e40fc8`.
 ## Open questions
 
 None.
-Ruled 2026-09-28: the §Slices grouping question is closed as already completed; `.metis/INDEX.md` gets no row for the prompt examples; the examples keep the MARKET ANALYSIS sections stubbed.
 
 ## Where to start
 
-Continue the read-through at `02-research-gathering-follow-up-pass.md`: load the file and the builders that render it, then wait for the user's comments; raise the file-02 carry-over only when they reach item 1.
+Continue the read-through at `09-research-synthesis-follow-up-pass.md`: load the file and the synthesis builders that render it, then wait for the user's comments; file 10 follows, then the distillation files from 11.
 Attempt 9 stays the user's call (re-wipe the dev store first, bring the stack up per the runbook, the user clicks Run); never propose the run.
