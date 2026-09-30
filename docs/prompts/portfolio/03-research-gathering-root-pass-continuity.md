@@ -1,6 +1,6 @@
 # Research gathering — root pass on a continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v54`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over a prior analysis of 2026-09-01.
 A root pass on a continuity run: the topic's standing ledger conditions and the prior run's kept findings ride as the seed.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3739 chars — the messages and tools as serialized |
+| Prompt material | 3749 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (2249 chars)
+## User message (2259 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -58,8 +58,8 @@ Competitive / business position
 - Which competitors or substitutes are gaining or losing against it?
 
 PRIOR FINDINGS
-Findings from an earlier analysis of this topic, each with its source, the publication date the
-search or lead reported, and the period the fact applies to.
+Findings from an earlier analysis of this topic. Each claim carries: its source; the publication
+date the search or lead reported; and the period the fact applies to.
 - [stub: prior finding 1 — a claim the prior run kept]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results]
   published: 2026-07-22; fact period: 2026-Q2

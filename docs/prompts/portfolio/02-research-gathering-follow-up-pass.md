@@ -1,6 +1,6 @@
 # Research gathering — follow-up pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v60`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The follow-up pass on the same topic, taken when the root pass's synthesis proposed a question worth one more pass.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3730 chars — the messages and tools as serialized |
+| Prompt material | 3740 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (2240 chars)
+## User message (2250 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -58,8 +58,8 @@ The question this pass pursues, and why it was proposed.
 Because: [stub: why the question matters to the thesis]
 
 CLAIMS SO FAR
-What this topic's earlier searching established, each with its source, the publication date the
-search or lead reported, and the period the fact applies to.
+What this topic's earlier searching established. Each claim carries: its source; the publication
+date the search or lead reported; and the period the fact applies to.
 - [stub: claim 1 — one dated fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results]
   published: unknown; fact period: unknown

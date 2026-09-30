@@ -1,6 +1,6 @@
 # Distillation — single pass, stock, continuity run with the overlay and the backfill obligation
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v63`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over a prior analysis of 2026-09-01, overlay-eligible.
 The single-pass reduce on a continuity run: the standing conditions and key drivers render for citation, the prior topic objects merge at their topic, a prior topic not searched this time rides as dormant, and the contrary-evidence pass follows the topics.
@@ -21,7 +21,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 12038 chars — the messages and tools as serialized |
+| Prompt material | 12164 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -32,7 +32,7 @@ pre_profit_observations and backfill, as one JSON object. Part 1 of the message 
 Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (11339 chars)
+## User message (11461 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -53,22 +53,23 @@ What the thesis on this holding rests on, each with its id.
 - d-energy — Energy storage growth
 
 TOPICS
-The research on this holding, one topic at a time: what its searches established, then its claims,
-each with its id, the address of the page that states it, the publication date the search or lead
-reported and the period the fact applies to. A claim marked "bears on" names the condition under
-STANDING CONDITIONS it is evidence on. Prior findings are from an earlier analysis of the topic,
-dated. A topic not searched this time carries its prior findings only.
+The research on this holding, one topic at a time, each headed by its key and its title: what its
+searches established, then its claims. Each claim carries: its id; the address of the page that
+states it; the publication date the search or lead reported; and the period the fact applies to. A
+claim marked "bears on" names the condition under STANDING CONDITIONS it is evidence on. Prior
+findings are from an earlier analysis of the topic, dated. A topic not searched this time carries
+its prior findings only.
 
 TOPIC competitive-position — Competitive / business position
 Search 1:
 [stub: the root pass's findings — what the search established, in prose]
 Claims:
 - C1: [stub: claim 1 — one dated fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026-Q2
 - C2: [stub: claim 2 — one dated fact from its source]
-[https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — published: unknown;
-fact period: unknown
+[https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — published: 2026-09-03;
+fact period: 2026-08
 Search 2:
 [stub: the follow-up pass's findings]
 Claims:
@@ -78,36 +79,36 @@ unknown
 Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of this topic]
 - C4: [stub: prior claim 1, tied to a standing condition]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown — bears on c-margin
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026-Q2 — bears on c-margin
 - C5: [stub: prior claim 2]
-[https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] — published: unknown; fact
-period: unknown
+[https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] — published: 2026-08-26;
+fact period: 2026-07
 
 TOPIC results-revisions — Recent results and estimate revisions
 Search 1:
 [stub: the root pass's findings on the second topic]
 Claims:
 - C6: [stub: claim 4 — one dated fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026-Q2
 - C7: [stub: claim 5 — a forward figure from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026
 
 TOPIC catalysts-risks (not searched this time)
 Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of a topic not searched this time]
 - C8: [stub: prior claim 3]
 [https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/] —
-published: unknown; fact period: unknown
+published: 2026-09-10; fact period: unknown
 
 CONTRARY EVIDENCE
 What a search for evidence against the claims above found, then its claims in the form under TOPICS.
 [stub: the disconfirming pass's findings — what contradicts the picture so far]
 - C9: [stub: claim 6 — a contrary fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026-Q2
 
 SOURCE TEXT
 The text of the pages retrieved for this holding, each with its address and its publication date
@@ -135,18 +136,18 @@ CLAIM RULES, prior findings assessed by the same rules; what CONTRARY EVIDENCE c
 weakens; and what the searches left unanswered.
 
 2. topics — exactly one object per topic under TOPICS, in that order, the topics not searched this
-time included. topic_key is the key as shown. summary is what the topic's searches and prior
-findings establish, as of the date under HOLDING. claims is every distinct statement the topic rests
-on, one statement per claim, each with evidence_id the id of the claim under TOPICS or CONTRARY
-EVIDENCE it rests on: the claims from this time's searches and prior findings, reconciled by the
-rules under CLAIM RULES, whichever topic they came under; a fact two topics state is one claim,
-under the topic it belongs to. related_condition_id is the id of the condition under STANDING
-CONDITIONS the claim is evidence on — that it has tripped, is holding, or is at risk — else null. A
-topic not searched this time keeps its prior findings, changed only where a claim under another
-topic supersedes one, with nothing added.
+time included. topic_key is the topic's key under TOPICS. summary is what the topic's searches and
+prior findings establish, as of the date under HOLDING. claims is every distinct statement the topic
+rests on, one statement per claim. The statements come from this time's searches and the prior
+findings, whichever topic they came under, reconciled by the rules under CLAIM RULES. evidence_id is
+the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two topics
+state is one claim, under the topic it belongs to. related_condition_id is the id of the condition
+under STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or is at risk
+— else null. A topic not searched this time keeps its prior findings, changed only where a claim
+under another topic supersedes one, with nothing added.
 
 3. forward_assumption — the latest forward figure for the issuer's earnings per share or revenue
-that a page under SOURCE TEXT naming the issuer states as issued guidance, a signed contract or a
+that a page under SOURCE TEXT naming the issuer states as issued guidance, a signed contract, or a
 filed figure, or null where no page states one. fact_type <guidance|contract|filing>; affects
 <eps|revenue>; numeric_value as the page prints it, and where the page prints a range, stated_low
 and stated_high as its ends as printed with numeric_value between them, else both null; units as the
@@ -162,7 +163,7 @@ on, and confirms_driver that driver's name.
 
 5. forensic_event — a fraud matter concerning the issuer that a document under SOURCE TEXT from a
 regulator or court (the SEC, the Department of Justice, the FTC, the CFTC, FINRA, a US court, the
-OCC or the FDIC) records, or null where no such document is under SOURCE TEXT. kind "fraud"; issuer
+OCC, or the FDIC) records, or null where no such document is under SOURCE TEXT. kind "fraud"; issuer
 as the document names it; event_date; source_url the document's address.
 
 6. pre_profit_observations — each operating observation of the issuer that a page under SOURCE TEXT
@@ -174,14 +175,14 @@ numeric_value with its sign; units as printed; period, the end date of the perio
 covers, YYYY-MM-DD, and period_span, the length of that period, unknown only where the page does not
 establish it; issuer_scope, the issuer as a whole or the segment or subsidiary named; source_url;
 source_excerpt, the page's own words unchanged, at most 400 characters, the shortest span that names
-the metric and states the value with its sign and no other number — no year, quarter, percentage or
+the metric and states the value with its sign and no other number — no year, quarter, percentage, or
 prior-period figure beside it — except that a guidance-low or guidance-high row quotes the range's
-two ends joined by "to", "-" or "and"; published_at, the date the page was published, YYYY-MM-DD, a
+two ends joined by "to", "-", or "and"; published_at, the date the page was published, YYYY-MM-DD, a
 guidance row's issue date; confidence, 0 to 1. An observation a claim states and no page under
 SOURCE TEXT states is not a row.
 
 7. backfill — the issuer's principal guided operating metric over its latest four reported periods
-at the span the guidance uses: metric_kind, units and issuer_scope as in item 6; period_span the
+at the span the guidance uses: metric_kind, units, and issuer_scope as in item 6; period_span the
 span the guidance uses; checked_periods the periods found, each as its end date; sources the
 addresses of the pages under SOURCE TEXT that state them; coverage <complete|partial|unscorable>,
 unscorable where the periods could not be established at that span.
@@ -203,7 +204,7 @@ where its input is absent)
 {"combined_findings":"","topics":[{"topic_key":"<competitive-position|results-revisions|catalysts-risks>",
 "summary":"","claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4|C5|C6|C7|C8|C9>","related_condition_id":"<c-margin|c-price|null>"}]}],
 "forward_assumption":{"fact_type":"<guidance|contract|filing>","affects":"<eps|revenue>","numeric_value":0,
-"stated_low":0,"stated_high":0,"units":"","as_of":"","source_url":""},"leading_indicator":{"metric_name":"",
+"stated_low":"<0|null>","stated_high":"<0|null>","units":"","as_of":"","source_url":""},"leading_indicator":{"metric_name":"",
 "value":0,"direction":"<inflecting-up|inflecting-down>","as_of":"","source_url":"","confirms_driver_id":"<d-robotaxi|d-energy>",
 "confirms_driver":""},"forensic_event":{"kind":"<fraud>","issuer":"","event_date":"","source_url":""},
 "pre_profit_observations":[{"metric_kind":"<production|deliveries|bookings|backlog|reservations|unit-economics>",

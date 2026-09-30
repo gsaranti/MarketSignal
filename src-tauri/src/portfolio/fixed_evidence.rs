@@ -1855,7 +1855,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     "{}: {part2}",
                     s.label
                 );
-                assert!(part1.contains("each with its source, the publication date the search or lead reported, and the period the fact applies to.\n"), "{}: {part1}", s.label);
+                assert!(part1.contains(". Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n"), "{}: {part1}", s.label);
                 assert!(part1.contains("\n  published: "), "{}: {part1}", s.label);
             } else if !s.label.contains("disconfirming") {
                 assert!(
@@ -1879,7 +1879,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 );
                 assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
                 assert!(
-                    part1.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n"),
+                    part1.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n"),
                     "{}: {part1}",
                     s.label
                 );
@@ -1935,7 +1935,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 s.label
             );
             assert!(
-                part1.contains("\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n- "),
+                part1.contains("\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n- "),
                 "{}: {part1}",
                 s.label
             );
@@ -1948,7 +1948,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         // provenance fields its lines carry, in the gathering brief's words.
         if s.label.starts_with("synthesis") && s.label.contains("disconfirming") {
             assert!(
-                part1.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with the publication date the search or lead reported and the period the fact applies to.\n"),
+                part1.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim carries: the publication date the search or lead reported; and the period the fact applies to.\n"),
                 "{}: {part1}",
                 s.label
             );
@@ -2054,13 +2054,18 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
         // A task that reconciles points at the rules by their heading; the
         // single-search pass has nothing to reconcile.
         assert_eq!(part2.contains("by the rules under CLAIM RULES"), part2.contains("reconcile"), "{}: {part2}", s.label);
-        assert!(part1.contains("then its claims, each with its id, the address of the page that states it, the publication date the search or lead reported and the period the fact applies to."), "{}: {part1}", s.label);
+        assert!(part1.contains("one topic at a time, each headed by its key and its title: what its searches established, then its claims. Each claim carries: its id; the address of the page that states it; the publication date the search or lead reported; and the period the fact applies to."), "{}: {part1}", s.label);
+        // The list constructions are gone; the single-field "each with its id." on
+        // STANDING CONDITIONS and KEY DRIVERS stays.
+        assert!(!s.user.contains("each with its id, ") && !s.user.contains("each with its source"), "{}: an each-with list survives\n{}", s.label, s.user);
         // `portfolio-v63`: every claim line opens on its pass-local id, no evidence
         // reference renders anywhere, item 2 asks for the id, and the shape lists
         // the ids the message showed.
         assert!(part1.contains("\n- C1: "), "{}: {part1}", s.label);
         assert!(!s.user.contains("evidence_ref") && !s.system.contains("evidence_ref"), "{}: {}", s.label, s.user);
-        assert!(part2.contains("each with evidence_id the id of the claim under TOPICS"), "{}: {part2}", s.label);
+        // `portfolio-v64`: evidence_id defined in its own sentence; no "the key
+        // as shown" (item 2 points at the heading's key the gloss names).
+        assert!(part2.contains("evidence_id is the id of the claim under TOPICS") && !part2.contains("each with evidence_id") && !part2.contains("the key as shown"), "{}: {part2}", s.label);
         assert!(part2.contains(r#""evidence_id":"<C1"#), "{}: {part2}", s.label);
         assert!(!part2.contains("source_url the address shown beside it"), "{}: {part2}", s.label);
         let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
@@ -2068,6 +2073,7 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
         let keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
         if s.label.starts_with("reduce") {
             assert!(part2.contains("\n1. combined_findings — ") && part2.contains("\n2. topics — exactly one object per topic under TOPICS, in that order"), "{}: {part2}", s.label);
+            assert!(part2.contains("topic_key is the topic's key under TOPICS. summary is what "), "{}: {part2}", s.label);
             assert!(s.system.contains("You will return combined_findings") && s.system.contains("topics"), "{}", s.system);
             assert!(keys.contains(&"combined_findings") && keys.contains(&"topics"), "{}", s.label);
         } else {
@@ -2085,11 +2091,26 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
             assert!(shape_line.contains(r#""topic_key":"<competitive-position|results-revisions|catalysts-risks>""#), "{shape_line}");
             assert!(shape_line.contains(r#""related_condition_id":"<c-margin|c-price|null>""#), "{shape_line}");
             assert!(shape_line.contains(r#""confirms_driver_id":"<d-robotaxi|d-energy>""#), "{shape_line}");
+            // `portfolio-v64`: the continuity claims item names where its statements
+            // come from; the prior findings carry their dates and periods.
+            assert!(part2.contains("one statement per claim. The statements come from this time's searches and the prior findings, whichever topic they came under, reconciled by the rules under CLAIM RULES. evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two topics state is one claim, under the topic it belongs to. related_condition_id is "), "{}: {part2}", s.label);
+            assert!(part1.contains("published: 2026-08-26; fact period: 2026-07\n"), "{}: {part1}", s.label);
+            assert!(shape_line.contains(r#""numeric_value":0,"stated_low":"<0|null>","stated_high":"<0|null>""#), "{shape_line}");
             assert!(s.system.contains("You will return combined_findings, topics, forward_assumption, leading_indicator, forensic_event, pre_profit_observations and backfill, as one JSON object."), "{}", s.system);
         }
         if s.label.contains("first analysis") {
             assert!(!part1.contains("STANDING CONDITIONS") && !part1.contains("KEY DRIVERS") && !part1.contains("Prior findings"), "{}: {part1}", s.label);
             assert!(part2.contains("\n3. forward_assumption — ") && part2.contains("\n4. forensic_event — "), "{}: {part2}", s.label);
+            // `portfolio-v64`: the serial comma on the typed items' lists, the
+            // nullable numbers' both halves in the shape, one sentence per rule
+            // on the claims item, and claim lines carrying the dates and
+            // periods a run renders (quarter, month, year and unknown forms).
+            assert!(part2.contains("issued guidance, a signed contract, or a filed figure, or null") && part2.contains("a US court, the OCC, or the FDIC)"), "{}: {part2}", s.label);
+            assert!(shape_line.contains(r#""numeric_value":0,"stated_low":"<0|null>","stated_high":"<0|null>""#), "{shape_line}");
+            assert!(part2.contains("one statement per claim. evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two topics state is one claim, under the topic it belongs to.\n"), "{}: {part2}", s.label);
+            for line in ["published: 2026-07-22; fact period: 2026-Q2\n", "published: 2026-09-03; fact period: 2026-08\n", "published: 2026-07-22; fact period: 2026\n", "published: unknown; fact period: unknown\n"] {
+                assert!(part1.contains(line), "{}: no {line:?}\n{part1}", s.label);
+            }
             assert!(!s.user.contains("leading_indicator") && !s.user.contains("related_condition_id") && !s.user.contains("backfill"), "{}: {}", s.label, s.user);
             assert!(part1.contains("\nSOURCE TEXT\n"), "{}", s.label);
         }

@@ -1,6 +1,6 @@
 # Distillation — single pass, stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v63`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The reduce over every topic's searches at once — the single-pass route, taken when the whole input fits the budget.
@@ -21,7 +21,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 6623 chars — the messages and tools as serialized |
+| Prompt material | 6724 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,7 +31,7 @@ will return combined_findings, topics, forward_assumption and forensic_event, as
 Part 1 of the message gives the inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (6119 chars)
+## User message (6216 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -41,20 +41,20 @@ Price: $358.97 per share.
 Date: 2026-09-16.
 
 TOPICS
-The research on this holding, one topic at a time: what its searches established, then its claims,
-each with its id, the address of the page that states it, the publication date the search or lead
-reported and the period the fact applies to.
+The research on this holding, one topic at a time, each headed by its key and its title: what its
+searches established, then its claims. Each claim carries: its id; the address of the page that
+states it; the publication date the search or lead reported; and the period the fact applies to.
 
 TOPIC competitive-position — Competitive / business position
 Search 1:
 [stub: the root pass's findings — what the search established, in prose]
 Claims:
 - C1: [stub: claim 1 — one dated fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026-Q2
 - C2: [stub: claim 2 — one dated fact from its source]
-[https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — published: unknown;
-fact period: unknown
+[https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — published: 2026-09-03;
+fact period: 2026-08
 Search 2:
 [stub: the follow-up pass's findings]
 Claims:
@@ -67,18 +67,18 @@ Search 1:
 [stub: the root pass's findings on the second topic]
 Claims:
 - C4: [stub: claim 4 — one dated fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026-Q2
 - C5: [stub: claim 5 — a forward figure from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026
 
 CONTRARY EVIDENCE
 What a search for evidence against the claims above found, then its claims in the form under TOPICS.
 [stub: the disconfirming pass's findings — what contradicts the picture so far]
 - C6: [stub: claim 6 — a contrary fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026-Q2
 
 SOURCE TEXT
 The text of the pages retrieved for this holding, each with its address and its publication date
@@ -104,14 +104,14 @@ TOPICS and CONTRARY EVIDENCE, as of the date under HOLDING: the figures with the
 as the claims state them; where two claims cover the same fact, reconcile them by the rules under
 CLAIM RULES; what CONTRARY EVIDENCE contradicts or weakens; and what the searches left unanswered.
 
-2. topics — exactly one object per topic under TOPICS, in that order. topic_key is the key as shown.
-summary is what the topic's searches establish, as of the date under HOLDING. claims is every
-distinct statement the topic rests on, one statement per claim, each with evidence_id the id of the
-claim under TOPICS or CONTRARY EVIDENCE it rests on: a fact two topics state is one claim, under the
-topic it belongs to.
+2. topics — exactly one object per topic under TOPICS, in that order. topic_key is the topic's key
+under TOPICS. summary is what the topic's searches establish, as of the date under HOLDING. claims
+is every distinct statement the topic rests on, one statement per claim. evidence_id is the id of
+the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two topics state is one
+claim, under the topic it belongs to.
 
 3. forward_assumption — the latest forward figure for the issuer's earnings per share or revenue
-that a page under SOURCE TEXT naming the issuer states as issued guidance, a signed contract or a
+that a page under SOURCE TEXT naming the issuer states as issued guidance, a signed contract, or a
 filed figure, or null where no page states one. fact_type <guidance|contract|filing>; affects
 <eps|revenue>; numeric_value as the page prints it, and where the page prints a range, stated_low
 and stated_high as its ends as printed with numeric_value between them, else both null; units as the
@@ -120,7 +120,7 @@ figure, YYYY-MM-DD; source_url that page's address.
 
 4. forensic_event — a fraud matter concerning the issuer that a document under SOURCE TEXT from a
 regulator or court (the SEC, the Department of Justice, the FTC, the CFTC, FINRA, a US court, the
-OCC or the FDIC) records, or null where no such document is under SOURCE TEXT. kind "fraud"; issuer
+OCC, or the FDIC) records, or null where no such document is under SOURCE TEXT. kind "fraud"; issuer
 as the document names it; event_date; source_url the document's address.
 
 
@@ -139,8 +139,8 @@ RETURN SHAPE (every value is a placeholder; an array holds as many items as appl
 where its input is absent)
 {"combined_findings":"","topics":[{"topic_key":"<competitive-position|results-revisions>","summary":"",
 "claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4|C5|C6>"}]}],"forward_assumption":{"fact_type":"<guidance|contract|filing>",
-"affects":"<eps|revenue>","numeric_value":0,"stated_low":0,"stated_high":0,"units":"","as_of":"","source_url":""},
-"forensic_event":{"kind":"<fraud>","issuer":"","event_date":"","source_url":""}}
+"affects":"<eps|revenue>","numeric_value":0,"stated_low":"<0|null>","stated_high":"<0|null>","units":"",
+"as_of":"","source_url":""},"forensic_event":{"kind":"<fraud>","issuer":"","event_date":"","source_url":""}}
 ~~~~
 
 ## Response schema (`format`)

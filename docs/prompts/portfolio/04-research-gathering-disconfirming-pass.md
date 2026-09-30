@@ -1,6 +1,6 @@
 # Research gathering — the disconfirming pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v55`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The disconfirming pass, run once per holding after its topics: the run's claims so far are the target and the task is to find what contradicts them.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3463 chars — the messages and tools as serialized |
+| Prompt material | 3473 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (1979 chars)
+## User message (1989 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -53,8 +53,8 @@ Contrary evidence
 data, claims that have failed, credible bear arguments?
 
 CLAIMS SO FAR
-What this run's research established on the holding, each with its source, the publication date the
-search or lead reported, and the period the fact applies to.
+What this run's research established on the holding. Each claim carries: its source; the publication
+date the search or lead reported; and the period the fact applies to.
 - [stub: claim 1 — one dated fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results]
   published: unknown; fact period: unknown

@@ -9944,7 +9944,14 @@ pub(crate) mod tests {
         // pass-local id the reply cites as evidence_id, an enum of the shown
         // ids, in place of the copied reference and address: v63, the trail
         // unchanged (the persisted claim carries no reference).
-        assert_eq!(PROMPT_VERSION, "portfolio-v63");
+        // The last sweep of file 11 (2026-09-30) names the topic heading's key
+        // in the TOPICS gloss and points item 2 at it, splits the claims item
+        // into one sentence per rule, states a claim line's fields as one
+        // semicolon list in the CLAIMS SO FAR, PRIOR FINDINGS and TOPICS
+        // glosses, adds the serial comma to the distillation's other lists,
+        // and shows a nullable number's both halves in the shape ("<0|null>"):
+        // v64, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v64");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

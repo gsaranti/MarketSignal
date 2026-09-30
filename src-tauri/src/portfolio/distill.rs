@@ -2022,10 +2022,10 @@ fn render_drivers(drivers: &[&crate::portfolio::KeyDriver]) -> String {
 /// glossed.
 fn topics_gloss(conditions: bool, priors: bool, dormant: bool) -> String {
     let mut g = String::from(
-        "\nTOPICS\nThe research on this holding, one topic at a time: what its searches \
-         established, then its claims, each with its id, the address of the page that states \
-         it, the publication date the search or lead reported and the period the fact applies \
-         to.",
+        "\nTOPICS\nThe research on this holding, one topic at a time, each headed by its key \
+         and its title: what its searches established, then its claims. Each claim carries: its \
+         id; the address of the page that states it; the publication date the search or lead \
+         reported; and the period the fact applies to.",
     );
     if conditions {
         g.push_str(
@@ -2348,16 +2348,25 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     } else {
         "under TOPICS"
     };
-    let claims_rule = if ctx.hierarchical {
-        "the claims shown under the topic; where two topics' claims cover the same fact, \
-         reconcile them by the rules under CLAIM RULES and keep the fact under the topic it \
-         belongs to"
-    } else if ctx.priors {
-        "the claims from this time's searches and prior findings, reconciled by the rules \
-         under CLAIM RULES, whichever topic they came under; a fact two topics state is one \
-         claim, under the topic it belongs to"
+    // `portfolio-v64`: one sentence per rule — what claims is, where its
+    // statements come from, what evidence_id is, and the one-claim-per-fact
+    // rule — where one sentence carried them all before.
+    let statements_from = if ctx.hierarchical {
+        ", from the claims shown under the topic"
     } else {
-        "a fact two topics state is one claim, under the topic it belongs to"
+        ""
+    };
+    let sources_rule = if ctx.priors && !ctx.hierarchical {
+        " The statements come from this time's searches and the prior findings, whichever \
+         topic they came under, reconciled by the rules under CLAIM RULES."
+    } else {
+        ""
+    };
+    let one_claim_rule = if ctx.hierarchical {
+        " Where two topics' claims cover the same fact, reconcile them by the rules under \
+         CLAIM RULES and keep the fact under the topic it belongs to."
+    } else {
+        " A fact two topics state is one claim, under the topic it belongs to."
     };
     let tie = if ctx.conditions {
         " related_condition_id is the id of the condition under STANDING CONDITIONS the claim \
@@ -2373,10 +2382,10 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     };
     t.push_str(&format!(
         "\n2. topics — exactly one object per topic under TOPICS, in that order{dormant_included}. \
-         topic_key is the key as shown. summary is what {summary_basis} establish, as of the \
-         date under HOLDING. claims is every distinct statement the topic rests on, one \
-         statement per claim, each with evidence_id the id of the claim {cited} it rests on: \
-         {claims_rule}.{tie}\
+         topic_key is the topic's key under TOPICS. summary is what {summary_basis} establish, \
+         as of the date under HOLDING. claims is every distinct statement the topic rests on, \
+         one statement per claim{statements_from}.{sources_rule} evidence_id is the id of the \
+         claim {cited} the statement rests on.{one_claim_rule}{tie}\
          {dormant_rule}\n"
     ));
     let mut n = 3;
@@ -2384,7 +2393,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         t.push_str(&format!(
             "\n{n}. forward_assumption — the latest forward figure for the issuer's earnings per \
              share or revenue that a page under SOURCE TEXT naming the issuer states as issued \
-             guidance, a signed contract or a filed figure, or null where no page states one. \
+             guidance, a signed contract, or a filed figure, or null where no page states one. \
              fact_type <guidance|contract|filing>; affects <eps|revenue>; numeric_value as the \
              page prints it, and where the page prints a range, stated_low and stated_high as \
              its ends as printed with numeric_value between them, else both null; units as the \
@@ -2408,7 +2417,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         t.push_str(&format!(
             "\n{n}. forensic_event — a fraud matter concerning the issuer that a document under \
              SOURCE TEXT from a regulator or court (the SEC, the Department of Justice, the FTC, \
-             the CFTC, FINRA, a US court, the OCC or the FDIC) records, or null where no such \
+             the CFTC, FINRA, a US court, the OCC, or the FDIC) records, or null where no such \
              document is under SOURCE TEXT. kind \"fraud\"; issuer as the document names it; \
              event_date; source_url the document's address.\n"
         ));
@@ -2427,9 +2436,9 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
                  issuer_scope, the issuer as a whole or the segment or subsidiary named; \
                  source_url; source_excerpt, the page's own words unchanged, at most {cap} \
                  characters, the shortest span that names the metric and states the value with \
-                 its sign and no other number — no year, quarter, percentage or prior-period \
+                 its sign and no other number — no year, quarter, percentage, or prior-period \
                  figure beside it — except that a guidance-low or guidance-high row quotes the \
-                 range's two ends joined by \"to\", \"-\" or \"and\"; published_at, the date the \
+                 range's two ends joined by \"to\", \"-\", or \"and\"; published_at, the date the \
                  page was published, YYYY-MM-DD, a guidance row's issue date; confidence, 0 to \
                  1. An observation a claim states and no page under SOURCE TEXT states is not a \
                  row.\n",
@@ -2440,7 +2449,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
                 t.push_str(&format!(
                     "\n{n}. backfill — the issuer's principal guided operating metric over its \
                      latest four reported periods at the span the guidance uses: metric_kind, \
-                     units and issuer_scope as in item {prev}; period_span the span the \
+                     units, and issuer_scope as in item {prev}; period_span the span the \
                      guidance uses; checked_periods the periods found, each as its end date; \
                      sources the addresses of the pages under SOURCE TEXT that state them; \
                      coverage <complete|partial|unscorable>, unscorable where the periods \
@@ -2483,7 +2492,7 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
         );
         t.push_str(
             "\n2. claims — every distinct statement the search rests on, one statement per \
-             claim, each with evidence_id the id of the claim under TOPICS it rests on.",
+             claim. evidence_id is the id of the claim under TOPICS the statement rests on.",
         );
     } else {
         let basis = if priors {
@@ -2502,15 +2511,16 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
              same fact, reconcile them by the rules under CLAIM RULES{prior_clause}; and what \
              the searches left unanswered.\n"
         ));
-        let rule = if priors {
-            ": the claims from this time's searches and prior findings, reconciled by the \
-             rules under CLAIM RULES"
+        let sources_rule = if priors {
+            " The statements come from this time's searches and the prior findings, \
+             reconciled by the rules under CLAIM RULES."
         } else {
             ""
         };
         t.push_str(&format!(
             "\n2. claims — every distinct statement the topic rests on, one statement per \
-             claim, each with evidence_id the id of the claim under TOPICS it rests on{rule}."
+             claim.{sources_rule} evidence_id is the id of the claim under TOPICS the \
+             statement rests on."
         ));
     }
     if conditions {
@@ -2766,10 +2776,33 @@ pub(crate) mod samples {
     const JULY_URL: &str = "https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/";
     const BND_URL: &str = "https://investor.vanguard.com/investment-products/etfs/profile/bnd";
 
-    fn claim(claim: &str, url: &str, at: &str) -> EvidenceClaim {
+    /// The provenance a run renders beside a claim line: the publication date
+    /// the search reported (`None` where it reported none) and the period the
+    /// fact applies to, so the rendered examples show the forms a run shows in
+    /// place of `unknown` throughout (`portfolio-v64`).
+    fn provenance(
+        published: Option<&str>,
+        period: Option<(crate::portfolio::research::PeriodPrecision, &str)>,
+    ) -> (crate::portfolio::research::PublicationDate, crate::portfolio::research::FactPeriod) {
+        (
+            crate::portfolio::research::PublicationDate::from_reported(published),
+            period
+                .map(|(kind, value)| crate::portfolio::research::FactPeriod { kind, value: value.into(), end: None })
+                .unwrap_or_default(),
+        )
+    }
+
+    fn claim(
+        claim: &str,
+        url: &str,
+        at: &str,
+        published: Option<&str>,
+        period: Option<(crate::portfolio::research::PeriodPrecision, &str)>,
+    ) -> EvidenceClaim {
+        let (publication, fact_period) = provenance(published, period);
         EvidenceClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
+            publication,
+            fact_period,
             claim: claim.into(),
             source_url: url.into(),
             retrieved_at: at.into(),
@@ -2795,9 +2828,12 @@ pub(crate) mod samples {
     }
 
     fn stock_research(stub: bool) -> HoldingResearch {
+        use crate::portfolio::research::PeriodPrecision;
         let mut root = research_samples::claims(stub);
-        let acea = root.pop().expect("the ACEA claim");
-        let margin = root.pop().expect("the margin claim");
+        let mut acea = root.pop().expect("the ACEA claim");
+        let mut margin = root.pop().expect("the margin claim");
+        (margin.publication, margin.fact_period) = provenance(Some("2026-07-22"), Some((PeriodPrecision::Quarter, "2026-Q2")));
+        (acea.publication, acea.fact_period) = provenance(Some("2026-09-03"), Some((PeriodPrecision::Month, "2026-08")));
         HoldingResearch {
             topics: vec![
                 TopicResearch {
@@ -2816,6 +2852,8 @@ pub(crate) mod samples {
                                 &prose(stub, "claim 3 — one dated fact from its source", "NHTSA opened Preliminary Evaluation PE26-014 covering about 2.4 million FSD v14 vehicles after 11 intersection-crash reports."),
                                 NHTSA_URL,
                                 "2026-09-16T02:19:52Z",
+                                None,
+                                None,
                             )],
                             followup: None,
                         },
@@ -2829,8 +2867,8 @@ pub(crate) mod samples {
                     passes: vec![PassFindings {
                         findings: prose(stub, "the root pass's findings on the second topic", "Q2 2026 revenue was $25.5B (+3% YoY), energy storage revenue $4.2B (+41%), free cash flow $0.9B; 2026 capex is guided above $12B. Estimate revisions since the print could not be found."),
                         claims: vec![
-                            claim(&prose(stub, "claim 4 — one dated fact from its source", "Q2 2026 total revenues were $25.5B, up 3% year over year."), research_samples::IR_URL, "2026-09-16T02:11:40Z"),
-                            claim(&prose(stub, "claim 5 — a forward figure from its source", "Tesla expects 2026 capital expenditures to exceed $12B."), research_samples::IR_URL, "2026-09-16T02:11:40Z"),
+                            claim(&prose(stub, "claim 4 — one dated fact from its source", "Q2 2026 total revenues were $25.5B, up 3% year over year."), research_samples::IR_URL, "2026-09-16T02:11:40Z", Some("2026-07-22"), Some((PeriodPrecision::Quarter, "2026-Q2"))),
+                            claim(&prose(stub, "claim 5 — a forward figure from its source", "Tesla expects 2026 capital expenditures to exceed $12B."), research_samples::IR_URL, "2026-09-16T02:11:40Z", Some("2026-07-22"), Some((PeriodPrecision::Year, "2026"))),
                         ],
                         followup: None,
                     }],
@@ -2843,6 +2881,8 @@ pub(crate) mod samples {
                     &prose(stub, "claim 6 — a contrary fact from its source", "Energy generation and storage revenue grew 41% to $4.2B in Q2 2026 with record 12.4 GWh deployed."),
                     research_samples::IR_URL,
                     "2026-09-16T02:31:07Z",
+                    Some("2026-07-22"),
+                    Some((PeriodPrecision::Quarter, "2026-Q2")),
                 )],
                 followup: None,
             }),
@@ -2864,14 +2904,18 @@ pub(crate) mod samples {
     }
 
     fn stock_priors(stub: bool) -> Vec<TopicDistillate> {
-        let prior = |claim: &str, url: &str, tie: Option<&str>| DistilledClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-            claim: claim.into(),
-            source_url: url.into(),
-            retrieved_at: "2026-09-01T00:00:00+00:00".into(),
-            cached: false,
-            related_condition_id: tie.map(str::to_string),
+        use crate::portfolio::research::PeriodPrecision;
+        let prior = |claim: &str, url: &str, tie: Option<&str>, published: Option<&str>, period: Option<(PeriodPrecision, &str)>| {
+            let (publication, fact_period) = provenance(published, period);
+            DistilledClaim {
+                publication,
+                fact_period,
+                claim: claim.into(),
+                source_url: url.into(),
+                retrieved_at: "2026-09-01T00:00:00+00:00".into(),
+                cached: false,
+                related_condition_id: tie.map(str::to_string),
+            }
         };
         vec![
             TopicDistillate {
@@ -2879,8 +2923,8 @@ pub(crate) mod samples {
                 vintage: "2026-09-01T00:00:00+00:00".into(),
                 summary: prose(stub, "the prior run's summary of this topic", "Tesla's margin ex-credits compressed to 14.6% in Q2 2026; BYD outsold Tesla in Europe in July for a third month."),
                 claims: vec![
-                    prior(&prose(stub, "prior claim 1, tied to a standing condition", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%."), research_samples::IR_URL, Some("c-margin")),
-                    prior(&prose(stub, "prior claim 2", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month."), JULY_URL, None),
+                    prior(&prose(stub, "prior claim 1, tied to a standing condition", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%."), research_samples::IR_URL, Some("c-margin"), Some("2026-07-22"), Some((PeriodPrecision::Quarter, "2026-Q2"))),
+                    prior(&prose(stub, "prior claim 2", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month."), JULY_URL, None, Some("2026-08-26"), Some((PeriodPrecision::Month, "2026-07"))),
                 ],
             },
             TopicDistillate {
@@ -2890,6 +2934,8 @@ pub(crate) mod samples {
                 claims: vec![prior(
                     &prose(stub, "prior claim 3", "Cybercab production began at Giga Texas ahead of a Q4 2026 launch."),
                     "https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/",
+                    None,
+                    Some("2026-09-10"),
                     None,
                 )],
             },
@@ -2911,6 +2957,7 @@ pub(crate) mod samples {
     }
 
     fn fund_research(stub: bool) -> HoldingResearch {
+        use crate::portfolio::research::PeriodPrecision;
         HoldingResearch {
             topics: vec![TopicResearch {
                 topic_key: "fund-exposure-profile".into(),
@@ -2922,6 +2969,8 @@ pub(crate) mod samples {
                         &prose(stub, "claim 1 — one dated fact from its source", "BND's effective duration was 6.0 years at 2026-08-31 with 68% in Treasury and agency issues."),
                         BND_URL,
                         "2026-09-16T04:02:11Z",
+                        None,
+                        Some((PeriodPrecision::Day, "2026-08-31")),
                     )],
                     followup: None,
                 }],
@@ -5218,11 +5267,11 @@ mod tests {
         assert!(
             prompt.contains(
                 "states the value with its sign and no other number — no year, quarter, \
-                 percentage or prior-period figure beside it"
+                 percentage, or prior-period figure beside it"
             ),
             "{prompt}"
         );
-        assert!(prompt.contains("quotes the range's two ends joined by \"to\", \"-\" or \"and\""), "{prompt}");
+        assert!(prompt.contains("quotes the range's two ends joined by \"to\", \"-\", or \"and\""), "{prompt}");
         // The item rides the overlay-eligible branch alone.
         ins.overlay_eligible = false;
         let prompt = reduce_user(&ins, None, &HashMap::new(), &[]);
@@ -5733,6 +5782,30 @@ mod tests {
                 .any(|g| g.contains("unknown topic \"catalysts-risks\"")),
             "{:?}",
             out.gaps
+        );
+    }
+
+    #[test]
+    fn the_shape_shows_a_nullable_scalars_both_halves() {
+        // `portfolio-v64`: a number the reply may leave null renders "<0|null>",
+        // never a bare 0 that reads as the expected value; a plain number stays
+        // 0 and a nullable enum keeps its "<a|b|null>" form. The typed shape's
+        // stated_low and stated_high are the served fields that take the form.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "n": { "type": ["number", "null"] },
+                "i": { "type": ["integer", "null"] },
+                "b": { "type": ["boolean", "null"] },
+                "s": { "type": ["string", "null"] },
+                "plain": { "type": "number" },
+                "e": { "type": ["string", "null"], "enum": ["a", "b", null] }
+            }
+        });
+        let shape = crate::portfolio::placeholder_shape(&schema, &["n", "i", "b", "s", "plain", "e"]);
+        assert_eq!(
+            shape,
+            r#"{"n":"<0|null>","i":"<0|null>","b":"<false|null>","s":"<text|null>","plain":0,"e":"<a|b|null>"}"#
         );
     }
 }

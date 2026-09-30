@@ -1,6 +1,6 @@
 # Distillation — pass-level sub-distillation
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v63`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The pass-level sub-distillation, taken when a topic tree itself outgrows the tier-1 budget: one search of one topic, returning its summary and claims.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3329 chars — the messages and tools as serialized |
+| Prompt material | 3388 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ review. You will return summary and claims, as one JSON object. Part 1 of the me
 inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (2941 chars)
+## User message (3000 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -46,21 +46,21 @@ quarters.
 - c-price — Trigger: Price closes below $250.
 
 TOPICS
-The research on this holding, one topic at a time: what its searches established, then its claims,
-each with its id, the address of the page that states it, the publication date the search or lead
-reported and the period the fact applies to. A claim marked "bears on" names the condition under
-STANDING CONDITIONS it is evidence on.
+The research on this holding, one topic at a time, each headed by its key and its title: what its
+searches established, then its claims. Each claim carries: its id; the address of the page that
+states it; the publication date the search or lead reported; and the period the fact applies to. A
+claim marked "bears on" names the condition under STANDING CONDITIONS it is evidence on.
 
 TOPIC competitive-position — Competitive / business position
 Search 1:
 [stub: the root pass's findings — what the search established, in prose]
 Claims:
 - C1: [stub: claim 1 — one dated fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: unknown; fact
-period: unknown
+[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
+period: 2026-Q2
 - C2: [stub: claim 2 — one dated fact from its source]
-[https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — published: unknown;
-fact period: unknown
+[https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/] — published: 2026-09-03;
+fact period: 2026-08
 
 ======== PART 2: TASK ========
 Determine the following from the inputs and return them as one JSON object in the shape under RETURN
@@ -69,8 +69,8 @@ SHAPE, with no code fence and no surrounding text; the names below are its field
 1. summary — what this search established, as of the date under HOLDING: the figures with their
 dates and periods as the claims state them, and what it left unanswered.
 
-2. claims — every distinct statement the search rests on, one statement per claim, each with
-evidence_id the id of the claim under TOPICS it rests on. related_condition_id is the id of the
+2. claims — every distinct statement the search rests on, one statement per claim. evidence_id is
+the id of the claim under TOPICS the statement rests on. related_condition_id is the id of the
 condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or
 is at risk — else null.
 

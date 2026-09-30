@@ -3790,8 +3790,9 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
         // gathering brief's words; the lines carry no source here
         // (`portfolio-v60`, ruled 2026-09-29).
         out.push_str(
-            "\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with the \
-             publication date the search or lead reported and the period the fact applies to.\n",
+            "\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim \
+             carries: the publication date the search or lead reported; and the period the fact \
+             applies to.\n",
         );
         if ctx.prior_claims.is_empty() {
             out.push_str("None.\n");
@@ -3895,11 +3896,12 @@ fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
     if ctx.disconfirming || !ctx.prior_claims.is_empty() {
         out.push_str("\nCLAIMS SO FAR\n");
         out.push_str(if ctx.disconfirming {
-            "What this run's research established on the holding, each with its source, the \
-             publication date the search or lead reported, and the period the fact applies to.\n"
+            "What this run's research established on the holding. Each claim carries: its source; \
+             the publication date the search or lead reported; and the period the fact applies \
+             to.\n"
         } else {
-            "What this topic's earlier searching established, each with its source, the publication \
-             date the search or lead reported, and the period the fact applies to.\n"
+            "What this topic's earlier searching established. Each claim carries: its source; the \
+             publication date the search or lead reported; and the period the fact applies to.\n"
         });
         if ctx.prior_claims.is_empty() {
             out.push_str("None.\n");
@@ -3928,9 +3930,9 @@ fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
     if let Some(seed) = ctx.seed {
         if !seed.findings.is_empty() {
             out.push_str(
-                "\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic, each with \
-                 its source, the publication date the search or lead reported, and the period \
-                 the fact applies to.\n",
+                "\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic. Each claim \
+                 carries: its source; the publication date the search or lead reported; and the \
+                 period the fact applies to.\n",
             );
             for f in &seed.findings {
                 out.push_str(&format!("- {f}\n"));
@@ -7098,7 +7100,7 @@ mod tests {
         });
         let orientation = render(&followup);
         assert!(
-            orientation.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with the publication date the search or lead reported and the period the fact applies to.\nNone.\n"),
+            orientation.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim carries: the publication date the search or lead reported; and the period the fact applies to.\nNone.\n"),
             "{orientation}"
         );
         assert!(!orientation.contains("Because:"));
@@ -9363,7 +9365,7 @@ mod tests {
             "{fu}"
         );
         assert!(
-            fu.contains("\nCLAIMS SO FAR\nWhat this topic's earlier searching established, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n- Widget Co held 40% share. [https://example.com/share]\n  published: unknown; fact period: unknown\n"),
+            fu.contains("\nCLAIMS SO FAR\nWhat this topic's earlier searching established. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n- Widget Co held 40% share. [https://example.com/share]\n  published: unknown; fact period: unknown\n"),
             "{fu}"
         );
         assert!(
@@ -9409,7 +9411,7 @@ mod tests {
             depth: 0
         });
         assert!(
-            dc.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with its source, the publication date the search or lead reported, and the period the fact applies to.\n"),
+            dc.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n"),
             "{dc}"
         );
         assert!(

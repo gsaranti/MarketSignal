@@ -2523,7 +2523,28 @@ pub struct HoldingAudit {
 /// The typed items still cite pages by address. The persisted claim carries
 /// no reference (it is derived at match time), so the checkpoint trail is
 /// unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v63";
+/// `portfolio-v64` (prompt read-through, file 11, 2026-09-30): the TOPICS
+/// gloss names each topic's heading as its key and its title, and item 2
+/// points at it ("topic_key is the topic's key under TOPICS") where before it
+/// read "the key as shown", a key nothing in Part 1 named; the claims item
+/// is one sentence per rule — what claims is; on a continuity run, where its
+/// statements come from; what evidence_id is ("evidence_id is the id of the
+/// claim under TOPICS or CONTRARY EVIDENCE the statement rests on"); then
+/// that a fact two topics state is one claim — where one sentence carried
+/// them all, and the tier-1, pass-level and tree-level items split the same
+/// way; the CLAIMS SO FAR, PRIOR FINDINGS and TOPICS glosses state a line's
+/// fields as one colon-introduced semicolon list ("Each claim carries: its
+/// source; the publication date the search or lead reported; and the period
+/// the fact applies to."), the shape the synthesis EVIDENCE gloss took at
+/// `portfolio-v59`, where "each with a, b, and c" ran two lists on one
+/// comma; the distillation's other lists carry the serial comma; and the
+/// shared placeholder renderer shows a nullable
+/// scalar's both halves ("<0|null>" on stated_low and stated_high), as the
+/// synthesis shape shows a string-or-null field's since `portfolio-v59`. The
+/// rendered examples' claim lines carry the publication dates and fact
+/// periods a run renders (a fixture change, no prompt change). The
+/// checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v64";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -3128,12 +3149,22 @@ pub(crate) fn placeholder_shape(schema: &Value, order: &[&str]) -> String {
         let kind = schema["type"].as_str().or_else(|| {
             schema["type"].as_array()?.iter().filter_map(Value::as_str).find(|t| *t != "null")
         });
-        match kind {
+        let placeholder = match kind {
             Some("number" | "integer") => json!(0),
             Some("boolean") => json!(false),
             Some("string") => json!(""),
-            _ => Value::Null,
+            _ => return Value::Null,
+        };
+        let nullable = schema["type"].as_array().is_some_and(|ts| ts.iter().any(|t| t == "null"));
+        if nullable {
+            // A nullable scalar shows both halves too — "<0|null>" — so a
+            // number the reply may leave null never reads as 0
+            // (`portfolio-v64`). No served schema carries a nullable plain
+            // string today; one would read "<text|null>".
+            let shown = if kind == Some("string") { "text".to_string() } else { placeholder.to_string() };
+            return json!(format!("<{shown}|null>"));
         }
+        placeholder
     }
     fn write(v: &Value, order: &[&str]) -> String {
         match v {
@@ -3566,7 +3597,8 @@ mod tests {
         // The priced branch's contract is the output-name sentence, and its
         // shape is the placeholder-only return shape (`portfolio-v40`): exactly
         // the declared keys, every enum its alternatives as "<a|b|c>", a
-        // nullable enum "<…|null>", and no field notes or template narration.
+        // nullable enum "<…|null>" (a nullable scalar "<0|null>", none here),
+        // and no field notes or template narration.
         fn placeholders_only(v: &Value, path: &str) {
             match v {
                 Value::String(s) => assert!(

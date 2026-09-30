@@ -277,6 +277,13 @@ Every claim line a message shows sits under a pass-local id (`C1`, `C2`, … in 
 The returned claim carries `evidence_id`, an enum of the ids that message showed, and the app resolves the id to the reference and address it rendered.
 What a message shows is exactly what its reply can cite, and a claim citing an id the message did not show is dropped with a gap.
 The typed items still cite a page under SOURCE TEXT by its address.
+Since `portfolio-v64` (ruled 2026-09-30), the TOPICS gloss names each topic's heading as its key and its title, and item 2 points at it: "topic_key is the topic's key under TOPICS".
+The claims item is one sentence per rule: what claims is; on a continuity run, where its statements come from; what evidence_id is ("evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on"); then that a fact two topics state is one claim.
+The tier-1, pass-level and tree-level claims items split the same way.
+The gloss states a claim line's fields as one colon-introduced semicolon list ("Each claim carries: its id; the address of the page that states it; the publication date the search or lead reported; and the period the fact applies to."), the shape the synthesis EVIDENCE gloss took at `portfolio-v59`, where "each with a, b, and c" ran two lists on one comma.
+The CLAIMS SO FAR and PRIOR FINDINGS glosses take the same sentence with their own fields (canonical at [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
+The typed items' lists carry the serial comma.
+The return shape shows a number-or-null field's both alternatives (`"<0|null>"`), as the synthesis shape shows a string-or-null field's since `portfolio-v59`; a nullable object keeps its item's "or null".
 The distillation claim output contains no retrieval, publication or fact-period fields; synthesis supplies the fact period, and the app preserves it through consolidation.
 An unknown publication stays unknown; no model-authored publication fallback is requested for ordinary claims.
 Typed extraction retains its own source-stated dates, including the forensic event date and the pre-profit observations' publication dates and reporting periods.
