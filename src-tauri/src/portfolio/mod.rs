@@ -2544,7 +2544,33 @@ pub struct HoldingAudit {
 /// rendered examples' claim lines carry the publication dates and fact
 /// periods a run renders (a fixture change, no prompt change). The
 /// checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v64";
+/// `portfolio-v65` (prompt read-through, file 12, 2026-09-30): the
+/// distillation names the current analysis's side without "this time", a
+/// phrase Part 1 defined only by contrast with the gloss's "an earlier
+/// analysis": item 2's sources sentence reads "The statements come from the
+/// searches and the prior findings" — "the searches" is the gloss's word for
+/// the Search blocks, bare as item 1's "what the searches left unanswered"
+/// and the summary sentence already use it, and the tier-1 item reads the
+/// same — and a topic with prior findings only is "not searched in this
+/// analysis" on the TOPICS gloss, the topic heading and item 2's two
+/// sentences, so the two sides ride one noun. Item 4 asks for a measure
+/// whose latest change "confirms" a driver, the word the field and the cap
+/// rule use, where it read "bears on" (the engine reads the id alone, so a
+/// measure turning against the driver still lifted the cap), and for the
+/// driver's id alone — the model-authored name (`confirms_driver`) is gone
+/// from the schema, the struct and the rendered line, the app resolving the
+/// name from the id, so the persisted indicator's shape moves the trail to
+/// `checkpoint-v16` and the archive to format v12; metric_name carries a
+/// gloss. Where a topic rides dormant the one-claim rule binds the searched
+/// topics ("A fact two searched topics state is one claim"), so the dormant
+/// rule's kept copy no longer collides with it. Item 6 glosses confidence's
+/// referent ("that the excerpt states that metric, value and period" — the
+/// engine's selection among competing rows reads it); item 7 states
+/// coverage's denominator ("complete where all four periods are found,
+/// partial where fewer") and the checked periods' date form; item 1 drops
+/// "prior findings assessed by the same rules", item 2 binding every
+/// statement to CLAIM RULES already. Files 12, 14, 16 and 17 regenerated.
+pub const PROMPT_VERSION: &str = "portfolio-v65";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

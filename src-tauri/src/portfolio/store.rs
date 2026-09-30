@@ -236,7 +236,10 @@ pub struct CheckpointHeader {
 /// app measurements and raw API counters; no v12 row can resume this shape.
 /// `checkpoint-v14`: claim retrieval, publication, and fact-period fields.
 /// `checkpoint-v15`: calendar-quarter values in persisted claim fact periods.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v15";
+/// `checkpoint-v16` (`portfolio-v65`): the persisted leading indicator loses
+/// the model-authored driver name (`confirms_driver`); the app resolves the
+/// name from `confirms_driver_id`.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v16";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header

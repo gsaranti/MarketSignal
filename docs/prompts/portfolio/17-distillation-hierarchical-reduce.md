@@ -1,6 +1,6 @@
 # Distillation — the final reduce over the tier-1 outputs
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v65`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The hierarchical route's final reduce: the tier-1 outputs stand in for the searches, with the dormant prior and the contrary-evidence pass, returning the combined findings and the topic layer.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8431 chars — the messages and tools as serialized |
+| Prompt material | 8397 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,7 +31,7 @@ one JSON object. Part 1 of the message gives the inputs. Part 2 defines those ou
 shape to return.
 ~~~~
 
-## User message (7859 chars)
+## User message (7829 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -56,8 +56,8 @@ The research on this holding, one topic at a time, each headed by its key and it
 searches established, then its claims. Each claim carries: its id; the address of the page that
 states it; the publication date the search or lead reported; and the period the fact applies to. A
 claim marked "bears on" names the condition under STANDING CONDITIONS it is evidence on. Prior
-findings are from an earlier analysis of the topic, dated. A topic not searched this time carries
-its prior findings only.
+findings are from an earlier analysis of the topic, dated. A topic not searched in this analysis
+carries its prior findings only.
 
 TOPIC competitive-position — Competitive / business position
 Summary:
@@ -75,9 +75,9 @@ Claims:
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
 period: 2026
 
-TOPIC catalysts-risks (not searched this time)
+TOPIC catalysts-risks (not searched in this analysis)
 Prior findings (analysis of 2026-09-01):
-[stub: the prior run's summary of a topic not searched this time]
+[stub: the prior run's summary of a topic not searched in this analysis]
 - C3: [stub: prior claim 3]
 [https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/] —
 published: 2026-09-10; fact period: unknown
@@ -111,18 +111,18 @@ SHAPE, with no code fence and no surrounding text; the names below are its field
 1. combined_findings — what the research established on this holding, across every topic under
 TOPICS and CONTRARY EVIDENCE, as of the date under HOLDING: the figures with their dates and periods
 as the claims state them; where two claims cover the same fact, reconcile them by the rules under
-CLAIM RULES, prior findings assessed by the same rules; what CONTRARY EVIDENCE contradicts or
-weakens; and what the searches left unanswered.
+CLAIM RULES; what CONTRARY EVIDENCE contradicts or weakens; and what the searches left unanswered.
 
-2. topics — exactly one object per topic under TOPICS, in that order, the topics not searched this
-time included. topic_key is the topic's key under TOPICS. summary is what the topic's claims
-establish, as of the date under HOLDING. claims is every distinct statement the topic rests on, one
-statement per claim, from the claims shown under the topic. evidence_id is the id of the claim under
-TOPICS or CONTRARY EVIDENCE the statement rests on. Where two topics' claims cover the same fact,
-reconcile them by the rules under CLAIM RULES and keep the fact under the topic it belongs to.
-related_condition_id is the id of the condition under STANDING CONDITIONS the claim is evidence on —
-that it has tripped, is holding, or is at risk — else null. A topic not searched this time keeps its
-prior findings, changed only where a claim under another topic supersedes one, with nothing added.
+2. topics — exactly one object per topic under TOPICS, in that order, the topics not searched in
+this analysis included. topic_key is the topic's key under TOPICS. summary is what the topic's
+claims establish, as of the date under HOLDING. claims is every distinct statement the topic rests
+on, one statement per claim, from the claims shown under the topic. evidence_id is the id of the
+claim under TOPICS or CONTRARY EVIDENCE the statement rests on. Where two searched topics' claims
+cover the same fact, reconcile them by the rules under CLAIM RULES and keep the fact under the topic
+it belongs to. related_condition_id is the id of the condition under STANDING CONDITIONS the claim
+is evidence on — that it has tripped, is holding, or is at risk — else null. A topic not searched in
+this analysis keeps its prior findings, changed only where a claim under another topic supersedes
+one, with nothing added.
 
 3. forward_assumption — the latest forward figure for the issuer's earnings per share or revenue
 that a page under SOURCE TEXT naming the issuer states as issued guidance, a signed contract, or a
@@ -133,11 +133,11 @@ page prints them (per share, or the currency and its magnitude); as_of the date 
 figure, YYYY-MM-DD; source_url that page's address.
 
 4. leading_indicator — a countable, dated measure that a page under SOURCE TEXT from a source other
-than the issuer states, whose latest change bears on a driver under KEY DRIVERS, or null where no
-page states one. metric_name; value as the page prints it; direction of its latest change
-<inflecting-up|inflecting-down>; as_of the day or month the measure is for, YYYY-MM-DD or YYYY-MM;
-source_url that page's address; confirms_driver_id the id of the driver under KEY DRIVERS it bears
-on, and confirms_driver that driver's name.
+than the issuer states, whose latest change confirms a driver under KEY DRIVERS, or null where no
+page states one. metric_name as the page names the measure; value as the page prints it; direction
+of its latest change <inflecting-up|inflecting-down>; as_of the day or month the measure is for,
+YYYY-MM-DD or YYYY-MM; source_url that page's address; confirms_driver_id the id of the driver under
+KEY DRIVERS it confirms.
 
 5. forensic_event — a fraud matter concerning the issuer that a document under SOURCE TEXT from a
 regulator or court (the SEC, the Department of Justice, the FTC, the CFTC, FINRA, a US court, the
@@ -162,8 +162,8 @@ where its input is absent)
 "summary":"","claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4>","related_condition_id":"<c-margin|c-price|null>"}]}],
 "forward_assumption":{"fact_type":"<guidance|contract|filing>","affects":"<eps|revenue>","numeric_value":0,
 "stated_low":"<0|null>","stated_high":"<0|null>","units":"","as_of":"","source_url":""},"leading_indicator":{"metric_name":"",
-"value":0,"direction":"<inflecting-up|inflecting-down>","as_of":"","source_url":"","confirms_driver_id":"<d-robotaxi|d-energy>",
-"confirms_driver":""},"forensic_event":{"kind":"<fraud>","issuer":"","event_date":"","source_url":""}}
+"value":0,"direction":"<inflecting-up|inflecting-down>","as_of":"","source_url":"","confirms_driver_id":"<d-robotaxi|d-energy>"},
+"forensic_event":{"kind":"<fraud>","issuer":"","event_date":"","source_url":""}}
 ~~~~
 
 ## Response schema (`format`)
@@ -265,9 +265,6 @@ where its input is absent)
         "as_of": {
           "type": "string"
         },
-        "confirms_driver": {
-          "type": "string"
-        },
         "confirms_driver_id": {
           "enum": [
             "d-robotaxi",
@@ -298,8 +295,7 @@ where its input is absent)
         "direction",
         "as_of",
         "source_url",
-        "confirms_driver_id",
-        "confirms_driver"
+        "confirms_driver_id"
       ],
       "type": [
         "object",

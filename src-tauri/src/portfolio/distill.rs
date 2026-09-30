@@ -114,11 +114,10 @@ pub struct ValidatedLeadingIndicator {
     pub direction: IndicatorDirection,
     pub as_of: String,
     pub source_url: String,
-    /// The thesis-ledger key driver it confirms (prose — model-attributed
-    /// context; the id below carries the referential claim).
-    pub confirms_driver: String,
     /// The cited ledger driver's app-assigned `driver_id` (ruled 2026-08-24):
-    /// the model picks it from the ids rendered in the prompt.
+    /// the model picks it from the ids rendered in the prompt, and the app
+    /// resolves the driver's name from it — the model-authored name that rode
+    /// beside it is gone since `portfolio-v65` (`checkpoint-v16`).
     #[serde(default)]
     pub confirms_driver_id: String,
     /// **App-computed at validation, never model-set** (absent from the
@@ -445,11 +444,10 @@ fn combined_schema(shape: &ReduceShape<'_>, claim_ids: &[&str]) -> Value {
                     // The cited ledger driver's app-assigned id, from the
                     // rendered list (`driver_verified` is app-computed and
                     // deliberately NOT in this schema).
-                    "confirms_driver_id": { "type": "string", "enum": enum_strings(shape.driver_ids) },
-                    "confirms_driver": { "type": "string" }
+                    "confirms_driver_id": { "type": "string", "enum": enum_strings(shape.driver_ids) }
                 },
                 "required": ["metric_name", "value", "direction", "as_of", "source_url",
-                              "confirms_driver_id", "confirms_driver"]
+                              "confirms_driver_id"]
             });
             required.push("leading_indicator");
         }
@@ -1521,9 +1519,9 @@ fn assumption_rejection(
 /// sub-1 value also tries its percent render). Deliberately **not** a
 /// names-the-holding check — a legitimate indicator can be industry-level (a
 /// commodity turn, sector shipments) and never name the issuer.
-/// `confirms_driver` stays model-attributed context: ledger key drivers are
-/// prose, so a deterministic identity check on them would be a fuzzy match,
-/// not validation.
+/// The driver tie is the id alone (`portfolio-v65`): ledger key drivers are
+/// prose, so a name check would be a fuzzy match, not validation, and the app
+/// resolves the name from the verified id.
 fn indicator_rejection(
     l: &ValidatedLeadingIndicator,
     provenance: &Provenance,
@@ -1961,7 +1959,7 @@ const DISTILL_KEY_ORDER: &[&str] = &[
     "fact_type", "affects", "metric_name", "value", "direction", "kind", "issuer", "event_date",
     "metric_kind", "observation_role", "polarity", "numeric_value", "stated_low", "stated_high",
     "units", "period", "period_span", "issuer_scope", "as_of", "source_url", "source_excerpt",
-    "published_at", "confidence", "related_condition_id", "confirms_driver_id", "confirms_driver",
+    "published_at", "confidence", "related_condition_id", "confirms_driver_id",
     "checked_periods", "sources", "coverage",
 ];
 
@@ -2037,7 +2035,7 @@ fn topics_gloss(conditions: bool, priors: bool, dormant: bool) -> String {
         g.push_str(" Prior findings are from an earlier analysis of the topic, dated.");
     }
     if dormant {
-        g.push_str(" A topic not searched this time carries its prior findings only.");
+        g.push_str(" A topic not searched in this analysis carries its prior findings only.");
     }
     g.push('\n');
     g
@@ -2183,7 +2181,7 @@ fn render_topic_summary(
 
 fn render_dormant(prior: &TopicDistillate, index: &mut ClaimIndex) -> String {
     format!(
-        "\nTOPIC {} (not searched this time)\n{}",
+        "\nTOPIC {} (not searched in this analysis)\n{}",
         prior.topic_key,
         render_prior(prior, index)
     )
@@ -2315,11 +2313,6 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     } else {
         "across every topic under TOPICS"
     };
-    let prior_clause = if ctx.priors {
-        ", prior findings assessed by the same rules"
-    } else {
-        ""
-    };
     let contrary_clause = if ctx.contrary {
         " what CONTRARY EVIDENCE contradicts or weakens;"
     } else {
@@ -2329,10 +2322,10 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         "\n1. combined_findings — what the research established on this holding, {scope}, as of \
          the date under HOLDING: the figures with their dates and periods as the claims state \
          them; where two claims cover the same fact, reconcile them by the rules under CLAIM \
-         RULES{prior_clause};{contrary_clause} and what the searches left unanswered.\n"
+         RULES;{contrary_clause} and what the searches left unanswered.\n"
     ));
     let dormant_included = if ctx.dormant {
-        ", the topics not searched this time included"
+        ", the topics not searched in this analysis included"
     } else {
         ""
     };
@@ -2356,17 +2349,27 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     } else {
         ""
     };
+    // `portfolio-v65`: the current analysis's side is "the searches" (the
+    // gloss's word for the Search blocks, bare as item 1 and the summary
+    // sentence use it) and "in this analysis" where the dormant topic is
+    // named, pairing with the gloss's "an earlier analysis"; no "this time".
     let sources_rule = if ctx.priors && !ctx.hierarchical {
-        " The statements come from this time's searches and the prior findings, whichever \
+        " The statements come from the searches and the prior findings, whichever \
          topic they came under, reconciled by the rules under CLAIM RULES."
     } else {
         ""
     };
+    // `portfolio-v65`: where a topic rides dormant, the rule binds the searched
+    // topics — the dormant topic keeps its copy, updated where superseded, so
+    // the two rules no longer meet on a fact both state.
+    let topics_word = if ctx.dormant { "searched topics" } else { "topics" };
     let one_claim_rule = if ctx.hierarchical {
-        " Where two topics' claims cover the same fact, reconcile them by the rules under \
-         CLAIM RULES and keep the fact under the topic it belongs to."
+        format!(
+            " Where two {topics_word}' claims cover the same fact, reconcile them by the \
+             rules under CLAIM RULES and keep the fact under the topic it belongs to."
+        )
     } else {
-        " A fact two topics state is one claim, under the topic it belongs to."
+        format!(" A fact two {topics_word} state is one claim, under the topic it belongs to.")
     };
     let tie = if ctx.conditions {
         " related_condition_id is the id of the condition under STANDING CONDITIONS the claim \
@@ -2375,7 +2378,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         ""
     };
     let dormant_rule = if ctx.dormant {
-        " A topic not searched this time keeps its prior findings, changed only where a claim \
+        " A topic not searched in this analysis keeps its prior findings, changed only where a claim \
          under another topic supersedes one, with nothing added."
     } else {
         ""
@@ -2404,13 +2407,12 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         if shape.indicator() {
             t.push_str(&format!(
                 "\n{n}. leading_indicator — a countable, dated measure that a page under SOURCE \
-                 TEXT from a source other than the issuer states, whose latest change bears on \
-                 a driver under KEY DRIVERS, or null where no page states one. metric_name; \
-                 value as the page prints it; direction of its latest change \
-                 <inflecting-up|inflecting-down>; as_of the day or month the measure is for, \
-                 YYYY-MM-DD or YYYY-MM; source_url that page's address; confirms_driver_id the \
-                 id of the driver under KEY DRIVERS it bears on, and confirms_driver that \
-                 driver's name.\n"
+                 TEXT from a source other than the issuer states, whose latest change confirms \
+                 a driver under KEY DRIVERS, or null where no page states one. metric_name as \
+                 the page names the measure; value as the page prints it; direction of its \
+                 latest change <inflecting-up|inflecting-down>; as_of the day or month the \
+                 measure is for, YYYY-MM-DD or YYYY-MM; source_url that page's address; \
+                 confirms_driver_id the id of the driver under KEY DRIVERS it confirms.\n"
             ));
             n += 1;
         }
@@ -2440,8 +2442,8 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
                  figure beside it — except that a guidance-low or guidance-high row quotes the \
                  range's two ends joined by \"to\", \"-\", or \"and\"; published_at, the date the \
                  page was published, YYYY-MM-DD, a guidance row's issue date; confidence, 0 to \
-                 1. An observation a claim states and no page under SOURCE TEXT states is not a \
-                 row.\n",
+                 1, that the excerpt states that metric, value and period. An observation a \
+                 claim states and no page under SOURCE TEXT states is not a row.\n",
                 cap = crate::portfolio::pre_profit::SOURCE_EXCERPT_CAP_CHARS
             ));
             n += 1;
@@ -2450,9 +2452,10 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
                     "\n{n}. backfill — the issuer's principal guided operating metric over its \
                      latest four reported periods at the span the guidance uses: metric_kind, \
                      units, and issuer_scope as in item {prev}; period_span the span the \
-                     guidance uses; checked_periods the periods found, each as its end date; \
-                     sources the addresses of the pages under SOURCE TEXT that state them; \
-                     coverage <complete|partial|unscorable>, unscorable where the periods \
+                     guidance uses; checked_periods the periods found, each as its end date, \
+                     YYYY-MM-DD; sources the addresses of the pages under SOURCE TEXT that \
+                     state them; coverage <complete|partial|unscorable>, complete where all \
+                     four periods are found, partial where fewer, unscorable where the periods \
                      could not be established at that span.\n",
                     prev = n - 1
                 ));
@@ -2500,19 +2503,14 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
         } else {
             "the topic's searches"
         };
-        let prior_clause = if priors {
-            ", prior findings assessed by the same rules"
-        } else {
-            ""
-        };
         t.push_str(&format!(
             "\n1. summary — what {basis} establish, as of the date under HOLDING: the figures \
              with their dates and periods as the claims state them; where two claims cover the \
-             same fact, reconcile them by the rules under CLAIM RULES{prior_clause}; and what \
+             same fact, reconcile them by the rules under CLAIM RULES; and what \
              the searches left unanswered.\n"
         ));
         let sources_rule = if priors {
-            " The statements come from this time's searches and the prior findings, \
+            " The statements come from the searches and the prior findings, \
              reconciled by the rules under CLAIM RULES."
         } else {
             ""
@@ -2930,7 +2928,7 @@ pub(crate) mod samples {
             TopicDistillate {
                 topic_key: "catalysts-risks".into(),
                 vintage: "2026-09-01T00:00:00+00:00".into(),
-                summary: prose(stub, "the prior run's summary of a topic not searched this time", "The Cybercab launch (Q4 2026) and the lower-cost model (H2 2026) are the dated catalysts; the NHTSA FSD evaluation is the named risk."),
+                summary: prose(stub, "the prior run's summary of a topic not searched in this analysis", "The Cybercab launch (Q4 2026) and the lower-cost model (H2 2026) are the dated catalysts; the NHTSA FSD evaluation is the named risk."),
                 claims: vec![prior(
                     &prose(stub, "prior claim 3", "Cybercab production began at Giga Texas ahead of a Q4 2026 launch."),
                     "https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/",
@@ -4468,8 +4466,7 @@ mod tests {
             "leading_indicator": {
                 "metric_name": "widget bookings", "value": 120.0,
                 "direction": "inflecting-up", "as_of": "2026-08-20",
-                "source_url": "https://unfetched.example/x", "confidence": 0.8,
-                "confirms_driver": "demand"
+                "source_url": "https://unfetched.example/x", "confidence": 0.8
             },
             "forensic_event": null
         }));
@@ -4813,8 +4810,7 @@ mod tests {
                 "leading_indicator": {
                     "metric_name": "widget bookings", "value": value,
                     "direction": "inflecting-up", "as_of": "2026-08-20",
-                    "source_url": "https://reuters.com/widget", "confidence": 0.8,
-                    "confirms_driver": "demand"
+                    "source_url": "https://reuters.com/widget", "confidence": 0.8
                 }
             }))
         };
@@ -4846,8 +4842,7 @@ mod tests {
             "leading_indicator": {
                 "metric_name": "widget bookings", "value": 120.0,
                 "direction": "inflecting-up", "as_of": "2026-08-20",
-                "source_url": "https://ir.widget.com/q3", "confidence": 0.8,
-                "confirms_driver": "demand"
+                "source_url": "https://ir.widget.com/q3", "confidence": 0.8
             }
         }))]);
         let out = distill(&model, &inputs(&ir_research, &[], &[])).unwrap();
@@ -4874,8 +4869,7 @@ mod tests {
             "leading_indicator": {
                 "metric_name": "widget bookings", "value": 120.0,
                 "direction": "inflecting-up", "as_of": "2026-08-20",
-                "source_url": "https://widget.com/newsroom/q3", "confidence": 0.8,
-                "confirms_driver": "demand"
+                "source_url": "https://widget.com/newsroom/q3", "confidence": 0.8
             }
         }))]);
         let out = distill(&model, &inputs(&root_research, &[], &[])).unwrap();
@@ -4906,8 +4900,7 @@ mod tests {
             "leading_indicator": {
                 "metric_name": "machine shipments", "value": 120.0,
                 "direction": "inflecting-up", "as_of": "2026-08-20",
-                "source_url": "https://ibm.com/newsroom/q3", "confidence": 0.8,
-                "confirms_driver": "demand"
+                "source_url": "https://ibm.com/newsroom/q3", "confidence": 0.8
             }
         }))]);
         let out = distill(&model, &ins).unwrap();
@@ -4959,8 +4952,7 @@ mod tests {
                 "leading_indicator": {
                     "metric_name": "widget bookings", "value": value,
                     "direction": "inflecting-up", "as_of": "2026-08-20",
-                    "source_url": "https://reuters.com/widget", "confidence": 0.8,
-                    "confirms_driver": "demand"
+                    "source_url": "https://reuters.com/widget", "confidence": 0.8
                 }
             }))
         };
@@ -4991,8 +4983,7 @@ mod tests {
                 "leading_indicator": {
                     "metric_name": "industry bookings", "value": 0.29,
                     "direction": "inflecting-up", "as_of": as_of,
-                    "source_url": "https://reuters.com/widget", "confidence": 0.8,
-                    "confirms_driver": "demand"
+                    "source_url": "https://reuters.com/widget", "confidence": 0.8
                 }
             }))
         };
@@ -5687,7 +5678,7 @@ mod tests {
         );
         let reduce_prompt = model.prompts().last().cloned().unwrap();
         assert!(
-            reduce_prompt.contains("\nTOPIC catalysts-risks (not searched this time)\n"),
+            reduce_prompt.contains("\nTOPIC catalysts-risks (not searched in this analysis)\n"),
             "the retained prior rides the reduce as a dormant object:\n{reduce_prompt}"
         );
         assert!(reduce_prompt.contains("FDA decision due in Q4"));

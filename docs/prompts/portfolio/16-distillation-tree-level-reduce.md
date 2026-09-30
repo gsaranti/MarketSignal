@@ -1,6 +1,6 @@
 # Distillation — tree-level reduce over the pass outputs
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v65`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The tree-level reduce that follows the pass-level calls: each pass output renders as its summary and claims, the prior merges here, and the call returns the topic's summary and claims.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4262 chars — the messages and tools as serialized |
+| Prompt material | 4211 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ review. You will return summary and claims, as one JSON object. Part 1 of the me
 inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (3867 chars)
+## User message (3816 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -80,11 +80,10 @@ SHAPE, with no code fence and no surrounding text; the names below are its field
 
 1. summary — what the topic's searches and prior findings establish, as of the date under HOLDING:
 the figures with their dates and periods as the claims state them; where two claims cover the same
-fact, reconcile them by the rules under CLAIM RULES, prior findings assessed by the same rules; and
-what the searches left unanswered.
+fact, reconcile them by the rules under CLAIM RULES; and what the searches left unanswered.
 
 2. claims — every distinct statement the topic rests on, one statement per claim. The statements
-come from this time's searches and the prior findings, reconciled by the rules under CLAIM RULES.
+come from the searches and the prior findings, reconciled by the rules under CLAIM RULES.
 evidence_id is the id of the claim under TOPICS the statement rests on. related_condition_id is the
 id of the condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is
 holding, or is at risk — else null.

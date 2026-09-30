@@ -2066,6 +2066,16 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
         // `portfolio-v64`: evidence_id defined in its own sentence; no "the key
         // as shown" (item 2 points at the heading's key the gloss names).
         assert!(part2.contains("evidence_id is the id of the claim under TOPICS") && !part2.contains("each with evidence_id") && !part2.contains("the key as shown"), "{}: {part2}", s.label);
+        // `portfolio-v65`: no "this time" anywhere — the current analysis's side is
+        // "the searches" (bare, the gloss's word for the Search blocks) and "in this
+        // analysis", pairing with the gloss's "an earlier analysis".
+        assert!(!s.user.contains("this time") && !s.system.contains("this time"), "{}: {}", s.label, s.user);
+        if part2.contains("The statements come from") {
+            assert!(part2.contains("The statements come from the searches and the prior findings"), "{}: {part2}", s.label);
+        }
+        // `portfolio-v65`: item 1 no longer restates that prior findings take the
+        // rules — item 2 binds every statement to CLAIM RULES.
+        assert!(!part2.contains("assessed by the same rules"), "{}: {part2}", s.label);
         assert!(part2.contains(r#""evidence_id":"<C1"#), "{}: {part2}", s.label);
         assert!(!part2.contains("source_url the address shown beside it"), "{}: {part2}", s.label);
         let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
@@ -2082,7 +2092,7 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
             assert_eq!(keys, ["claims", "summary"], "{}", s.label);
         }
         if s.label.contains("continuity") {
-            for section in ["\nSTANDING CONDITIONS\n", "\nKEY DRIVERS\n", "Prior findings (analysis of 2026-09-01):\n", "\nTOPIC catalysts-risks (not searched this time)\n", "\nCONTRARY EVIDENCE\n", "\nSOURCE TEXT\n", " (published 2026-07-22) ===\n", "— bears on c-margin\n"] {
+            for section in ["\nSTANDING CONDITIONS\n", "\nKEY DRIVERS\n", "Prior findings (analysis of 2026-09-01):\n", "\nTOPIC catalysts-risks (not searched in this analysis)\n", "\nCONTRARY EVIDENCE\n", "\nSOURCE TEXT\n", " (published 2026-07-22) ===\n", "— bears on c-margin\n"] {
                 assert!(part1.contains(section), "{}: no {section:?}\n{part1}", s.label);
             }
             for item in ["\n3. forward_assumption — ", "\n4. leading_indicator — ", "\n5. forensic_event — ", "\n6. pre_profit_observations — ", "\n7. backfill — "] {
@@ -2093,7 +2103,20 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
             assert!(shape_line.contains(r#""confirms_driver_id":"<d-robotaxi|d-energy>""#), "{shape_line}");
             // `portfolio-v64`: the continuity claims item names where its statements
             // come from; the prior findings carry their dates and periods.
-            assert!(part2.contains("one statement per claim. The statements come from this time's searches and the prior findings, whichever topic they came under, reconciled by the rules under CLAIM RULES. evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two topics state is one claim, under the topic it belongs to. related_condition_id is "), "{}: {part2}", s.label);
+            assert!(part2.contains("one statement per claim. The statements come from the searches and the prior findings, whichever topic they came under, reconciled by the rules under CLAIM RULES. evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two searched topics state is one claim, under the topic it belongs to. related_condition_id is "), "{}: {part2}", s.label);
+            // `portfolio-v65`: the dormant topic is "not searched in this analysis" on the
+            // gloss, the heading and both item-2 sentences.
+            assert!(part1.contains("Prior findings are from an earlier analysis of the topic, dated. A topic not searched in this analysis carries its prior findings only.\n"), "{}: {part1}", s.label);
+            assert!(part2.contains(", in that order, the topics not searched in this analysis included. topic_key is the topic's key under TOPICS."), "{}: {part2}", s.label);
+            assert!(part2.contains(" A topic not searched in this analysis keeps its prior findings, changed only where a claim under another topic supersedes one, with nothing added."), "{}: {part2}", s.label);
+            // `portfolio-v65`: item 4 says "confirms" as the field and the cap rule do, and
+            // asks for the driver's id alone; metric_name carries a gloss; item 6 glosses
+            // confidence's referent; item 7 states coverage's denominator and the periods'
+            // date form.
+            assert!(part2.contains("whose latest change confirms a driver under KEY DRIVERS") && part2.contains("confirms_driver_id the id of the driver under KEY DRIVERS it confirms.\n") && !part2.contains("bears on a driver"), "{}: {part2}", s.label);
+            assert!(part2.contains("metric_name as the page names the measure;") && !s.user.contains("confirms_driver\""), "{}: {}", s.label, s.user);
+            assert!(part2.contains("confidence, 0 to 1, that the excerpt states that metric, value and period."), "{}: {part2}", s.label);
+            assert!(part2.contains("each as its end date, YYYY-MM-DD;") && part2.contains("complete where all four periods are found, partial where fewer, unscorable where"), "{}: {part2}", s.label);
             assert!(part1.contains("published: 2026-08-26; fact period: 2026-07\n"), "{}: {part1}", s.label);
             assert!(shape_line.contains(r#""numeric_value":0,"stated_low":"<0|null>","stated_high":"<0|null>""#), "{shape_line}");
             assert!(s.system.contains("You will return combined_findings, topics, forward_assumption, leading_indicator, forensic_event, pre_profit_observations and backfill, as one JSON object."), "{}", s.system);

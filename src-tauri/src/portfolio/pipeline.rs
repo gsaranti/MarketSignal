@@ -498,9 +498,9 @@ pub(crate) fn render_leading_indicator(
                         .find(|d| d.driver_id == ind.confirms_driver_id.trim())
                 })
                 .map(|d| d.name.as_str())
-                .unwrap_or(ind.confirms_driver.as_str())
+                .unwrap_or(ind.confirms_driver_id.trim())
         })
-        .map(|name| format!(", bearing on the driver \"{name}\""))
+        .map(|name| format!(", confirming the driver \"{name}\""))
         .unwrap_or_default();
     format!(
         "Leading indicator: {} = {} ({direction}, as of {}){driver}; source {}.",
@@ -9951,10 +9951,17 @@ pub(crate) mod tests {
         // glosses, adds the serial comma to the distillation's other lists,
         // and shows a nullable number's both halves in the shape ("<0|null>"):
         // v64, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v64");
+        // File 12 (2026-09-30) names the current analysis's side "the searches"
+        // and "in this analysis" (no "this time"), says the leading indicator
+        // "confirms" a driver as the field does and asks for its id alone,
+        // binds the one-claim rule to the searched topics where one rides
+        // dormant, glosses confidence's referent, states coverage's
+        // denominator, and drops item 1's prior-findings clause: v65, the
+        // trail at v16 (the persisted indicator loses the model-authored name).
+        assert_eq!(PROMPT_VERSION, "portfolio-v65");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v15"
+            "checkpoint-v16"
         );
     }
 
@@ -13357,7 +13364,6 @@ pub(crate) mod tests {
             direction: IndicatorDirection::InflectingUp,
             as_of: "2026-08".into(),
             source_url: "https://www.acea.auto/august".into(),
-            confirms_driver: "the model's own wording".into(),
             confirms_driver_id: "d-energy".into(),
             driver_verified: false,
         };
@@ -13377,7 +13383,7 @@ pub(crate) mod tests {
         );
         ind.driver_verified = true;
         let verified = render_leading_indicator(&ind, Some(&ledger));
-        assert!(verified.contains(", bearing on the driver \"Energy storage growth\"; source"), "{verified}");
+        assert!(verified.contains(", confirming the driver \"Energy storage growth\"; source"), "{verified}");
         for line in [&unverified, &verified] {
             assert!(crate::portfolio::fixed_evidence::banned_hits(line).is_empty(), "{line}");
         }

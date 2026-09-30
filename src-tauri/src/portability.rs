@@ -70,12 +70,14 @@ use crate::storage;
 /// statement (`checkpoint-v12`), so a v7 archive's runs would not decode under
 /// the current condition shape.
 /// v9: complete physical-attempt telemetry in run data health (checkpoint-v13).
-/// Every pre-release shape below the current one — v2 through v10, none of which
+/// Every pre-release shape below the current one — v2 through v11, none of which
 /// a shipped build wrote — is refused outright (`check_format_version`, the
 /// 2026-08-29 no-compat ruling).
 /// v10: explicit dates in persisted research claims, including topic seeds.
 /// v11: calendar-quarter values in persisted claim fact periods.
-pub const FORMAT_VERSION: u32 = 11;
+/// v12: the persisted leading indicator inside `portfolio_runs.run_json` loses
+/// the model-authored driver name (checkpoint-v16).
+pub const FORMAT_VERSION: u32 = 12;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -1213,7 +1215,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 2..=10) {
+    if matches!(manifest.format_version, 2..=11) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -2382,7 +2384,7 @@ mod tests {
         export_archive(&source, &dest, None, None).unwrap();
         let mut entries = read_archive_entries(&dest);
         let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        for version in 2..=10 {
+        for version in 2..=11 {
             manifest.format_version = version;
             entries.insert(
                 "manifest.json".to_string(),

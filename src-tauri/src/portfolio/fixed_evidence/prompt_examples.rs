@@ -503,7 +503,7 @@ fn examples() -> Vec<Example> {
         step: "6d",
         holding: "TSLA, on a continuity run over a prior analysis of 2026-09-01, overlay-eligible",
         sentences: with_common(&[
-            "The single-pass reduce on a continuity run: the standing conditions and key drivers render for citation, the prior topic objects merge at their topic, a prior topic not searched this time rides as dormant, and the contrary-evidence pass follows the topics.",
+            "The single-pass reduce on a continuity run: the standing conditions and key drivers render for citation, the prior topic objects merge at their topic, a prior topic not searched in this analysis rides as dormant, and the contrary-evidence pass follows the topics.",
             "The overlay-eligible stock with the backfill obligation asks for every typed field: the forward assumption, the leading indicator, the forensic event, the pre-profit observation rows and the backfill record.",
         ]),
         stage: d(0).stage.clone(),
