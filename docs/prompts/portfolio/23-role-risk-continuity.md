@@ -1,6 +1,6 @@
 # Role/risk interpretation — continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, on a continuity run over a stub first run of 2026-09-03.
 The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior read, the prior ledger with each condition's evaluation, the position sentence and the what-changed rows.
@@ -18,15 +18,15 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8915 chars — the messages and tools as serialized |
+| Prompt material | 8908 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
 You are an investment analyst producing an independent read of one fund holding for a portfolio
-review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the
-shape to return. You will return role_summary, ledger, what_changed_entries and what_changed, as one
-JSON object.
+review. You will return role_summary, ledger, what_changed_entries and what_changed, as one JSON
+object. Part 1 of the message gives the inputs. Part 2 defines those outputs and gives the shape to
+return.
 ~~~~
 
 ## User message (8267 chars)

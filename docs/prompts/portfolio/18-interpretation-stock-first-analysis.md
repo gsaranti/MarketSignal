@@ -1,6 +1,6 @@
 # Interpretation — stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The interpretation is a thinking call under the schema grammar: Part 1 the computed evidence, the options read, the research summary and the market analysis; Part 2 the read to return.
@@ -18,15 +18,15 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8990 chars — the messages and tools as serialized |
+| Prompt material | 8983 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
-You are an equity analyst producing an independent read of one holding for a portfolio review. Part
-1 of the message gives the inputs. Part 2 states what to determine from them and the shape to
-return. You will return conviction, horizon_outlook, financial_summary, model_target_rationale,
-ledger, model_sub_scores, model_price_targets and self_assessment, as one JSON object.
+You are an equity analyst producing an independent read of one holding for a portfolio review. You
+will return conviction, horizon_outlook, financial_summary, model_target_rationale, ledger,
+model_sub_scores, model_price_targets and self_assessment, as one JSON object. Part 1 of the message
+gives the inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
 ## User message (8249 chars)

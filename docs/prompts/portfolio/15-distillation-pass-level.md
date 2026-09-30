@@ -1,6 +1,6 @@
 # Distillation — pass-level sub-distillation
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v54`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The pass-level sub-distillation, taken when a topic tree itself outgrows the tier-1 budget: one search of one topic, returning its summary and claims.
@@ -20,17 +20,17 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3494 chars — the messages and tools as serialized |
+| Prompt material | 3649 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
 You are an investment analyst consolidating one topic of research on one holding for a portfolio
-review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the
-shape to return. You will return a summary and claims, as one JSON object.
+review. You will return summary and claims, as one JSON object. Part 1 of the message gives the
+inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (3094 chars)
+## User message (3257 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -47,7 +47,8 @@ quarters.
 
 TOPICS
 The research on this holding, one topic at a time: what its searches established, then its claims,
-each with the address of the page that states it. A claim marked "bears on" names the condition
+each with the address of the page that states it, its reference, the publication date the search or
+lead reported and the period the fact applies to. A claim marked "bears on" names the condition
 under STANDING CONDITIONS it is evidence on.
 
 TOPIC competitive-position — Competitive / business position
@@ -64,17 +65,19 @@ Ee7813b90e372fb8834d605e28d329f92e9739329009aefc4d3ba84ac1fe3d60b — published:
 unknown
 
 ======== PART 2: TASK ========
-Determine the following from the inputs and return them as one JSON object in the shape at the end,
-with no code fence and no surrounding text.
+Determine the following from the inputs and return them as one JSON object in the shape under RETURN
+SHAPE, with no code fence and no surrounding text; the names below are its fields.
 
 1. summary — what this search established, as of the date under HOLDING: the figures with their
 dates and periods as the claims state them, and what it left unanswered.
 
-2. claims — every distinct statement the search rests on, one per item, with source_url the address
-shown beside it under TOPICS. related_condition_id is the id of the condition under STANDING
-CONDITIONS the claim is evidence on — that it has tripped, is holding, or is at risk — else null.
+2. claims — every distinct statement the search rests on, one statement per claim, with source_url
+the address shown beside it under TOPICS. related_condition_id is the id of the condition under
+STANDING CONDITIONS the claim is evidence on — that it has tripped, is holding, or is at risk — else
+null.
 
 
+CLAIM RULES
 For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
 CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
 facts with different periods. Publication describes the source; fact period names the period the

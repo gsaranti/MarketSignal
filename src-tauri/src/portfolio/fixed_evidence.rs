@@ -1593,13 +1593,15 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
         assert_eq!(keys, declared, "{label}");
         assert!(
             system.starts_with(
-                "You are an investment analyst producing an independent read of one fund holding for a portfolio review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the shape to return. You will return role_summary"
+                "You are an investment analyst producing an independent read of one fund holding for a portfolio review. You will return role_summary"
             ),
             "{label}: {system}"
         );
         for k in &declared {
             assert!(system.contains(k), "{label}: system prompt does not name {k}\n{system}");
         }
+        // `portfolio-v62`: the names first, then the shared frame.
+        assert!(system.ends_with(crate::portfolio::TWO_PART_FRAME), "{label}: {system}");
     }
     // The continuity specifics: the position sentence, the prior class and
     // role read as data, the changes with their ids.
@@ -1912,7 +1914,16 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert_eq!(part2.contains("3. followup_question"), offers, "{}", s.label);
             assert!(part2.contains("1. findings") && part2.contains("2. claims"), "{}: {part2}", s.label);
             assert!(part1.contains("\nEVIDENCE\n") && part1.contains("=== S1: "), "{}: {part1}", s.label);
-            assert_eq!(s.system.contains("follow-up proposal"), offers, "{}", s.label);
+            assert_eq!(s.system.contains("followup_question and followup_rationale"), offers, "{}", s.label);
+            // `portfolio-v62`: the output names precede the shared frame, which
+            // closes the system message.
+            assert!(
+                s.system.contains(", as one JSON object. Part 1 of the message gives the inputs.")
+                    && s.system.ends_with(crate::portfolio::TWO_PART_FRAME),
+                "{}: {}",
+                s.label,
+                s.system
+            );
         }
         if s.label.contains("continuity") {
             assert!(part1.contains("\nSTANDING CONDITIONS\n") && part1.contains("\nPRIOR FINDINGS\n"), "{}", s.label);
@@ -2029,17 +2040,31 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
             );
         }
         assert!(s.system.starts_with("You are an investment analyst consolidating "), "{}", s.system);
-        assert!(part2.starts_with("\nDetermine the following from the inputs and return them as one JSON object in the shape at the end, with no code fence and no surrounding text.\n"), "{}: {part2}", s.label);
+        assert!(
+            s.system.contains(", as one JSON object. Part 1 of the message gives the inputs.")
+                && s.system.ends_with(crate::portfolio::TWO_PART_FRAME),
+            "{}",
+            s.system
+        );
+        // `portfolio-v62`: the preamble in the synthesis's words, and the claim rules
+        // under their own heading, pointed at by name; the gloss names the claim
+        // line's fields; "one statement per claim".
+        assert!(part2.starts_with("\nDetermine the following from the inputs and return them as one JSON object in the shape under RETURN SHAPE, with no code fence and no surrounding text; the names below are its fields.\n"), "{}: {part2}", s.label);
+        assert!(part2.contains("\nCLAIM RULES\nFor each claim, evidence_ref copies the reference") && !part2.contains("as described below") && !part2.contains("one per item"), "{}: {part2}", s.label);
+        // A task that reconciles points at the rules by their heading; the
+        // single-search pass has nothing to reconcile.
+        assert_eq!(part2.contains("by the rules under CLAIM RULES"), part2.contains("reconcile"), "{}: {part2}", s.label);
+        assert!(part1.contains("then its claims, each with the address of the page that states it, its reference, the publication date the search or lead reported and the period the fact applies to."), "{}: {part1}", s.label);
         let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
         let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
         let keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
         if s.label.starts_with("reduce") {
             assert!(part2.contains("\n1. combined_findings — ") && part2.contains("\n2. topics — exactly one object per topic under TOPICS, in that order"), "{}: {part2}", s.label);
-            assert!(s.system.contains("combined findings") && s.system.contains("findings per topic"), "{}", s.system);
+            assert!(s.system.contains("You will return combined_findings") && s.system.contains("topics"), "{}", s.system);
             assert!(keys.contains(&"combined_findings") && keys.contains(&"topics"), "{}", s.label);
         } else {
             assert!(part2.contains("\n1. summary — ") && part2.contains("\n2. claims — "), "{}: {part2}", s.label);
-            assert!(s.system.contains("a summary and claims"), "{}", s.system);
+            assert!(s.system.contains("You will return summary and claims, as one JSON object."), "{}", s.system);
             assert_eq!(keys, ["claims", "summary"], "{}", s.label);
         }
         if s.label.contains("continuity") {
@@ -2052,7 +2077,7 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
             assert!(shape_line.contains(r#""topic_key":"<competitive-position|results-revisions|catalysts-risks>""#), "{shape_line}");
             assert!(shape_line.contains(r#""related_condition_id":"<c-margin|c-price|null>""#), "{shape_line}");
             assert!(shape_line.contains(r#""confirms_driver_id":"<d-robotaxi|d-energy>""#), "{shape_line}");
-            assert!(s.system.contains("a forward figure, a leading indicator, a fraud record, operating observations and a backfill record"), "{}", s.system);
+            assert!(s.system.contains("You will return combined_findings, topics, forward_assumption, leading_indicator, forensic_event, pre_profit_observations and backfill, as one JSON object."), "{}", s.system);
         }
         if s.label.contains("first analysis") {
             assert!(!part1.contains("STANDING CONDITIONS") && !part1.contains("KEY DRIVERS") && !part1.contains("Prior findings"), "{}: {part1}", s.label);

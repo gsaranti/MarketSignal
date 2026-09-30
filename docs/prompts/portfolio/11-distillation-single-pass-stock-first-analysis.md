@@ -1,6 +1,6 @@
 # Distillation — single pass, stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v54`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The reduce over every topic's searches at once — the single-pass route, taken when the whole input fits the budget.
@@ -21,18 +21,17 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7079 chars — the messages and tools as serialized |
+| Prompt material | 7237 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
-You are an investment analyst consolidating the research on one holding for a portfolio review. Part
-1 of the message gives the inputs. Part 2 states what to determine from them and the shape to
-return. You will return combined findings, findings per topic, a forward figure and a fraud record,
-as one JSON object.
+You are an investment analyst consolidating the research on one holding for a portfolio review. You
+will return combined_findings, topics, forward_assumption and forensic_event, as one JSON object.
+Part 1 of the message gives the inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (6555 chars)
+## User message (6729 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -43,7 +42,8 @@ Date: 2026-09-16.
 
 TOPICS
 The research on this holding, one topic at a time: what its searches established, then its claims,
-each with the address of the page that states it.
+each with the address of the page that states it, its reference, the publication date the search or
+lead reported and the period the fact applies to.
 
 TOPIC competitive-position — Competitive / business position
 Search 1:
@@ -79,7 +79,7 @@ E0711ed6c3ab6e8b950130ca758c345f2bf395179a65a13ae48db84ca873af40f — published:
 unknown
 
 CONTRARY EVIDENCE
-What a search for evidence against the claims above found, then its claims.
+What a search for evidence against the claims above found, then its claims in the form under TOPICS.
 [stub: the disconfirming pass's findings — what contradicts the picture so far]
 - [stub: claim 6 — a contrary fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — evidence_ref:
@@ -102,19 +102,19 @@ to follow, and a figure that cannot be right is a defect of the source.
 [stub: the page's extracted article text — a regulator's notice]
 
 ======== PART 2: TASK ========
-Determine the following from the inputs and return them as one JSON object in the shape at the end,
-with no code fence and no surrounding text.
+Determine the following from the inputs and return them as one JSON object in the shape under RETURN
+SHAPE, with no code fence and no surrounding text; the names below are its fields.
 
 1. combined_findings — what the research established on this holding, across every topic under
 TOPICS and CONTRARY EVIDENCE, as of the date under HOLDING: the figures with their dates and periods
-as the claims state them; where two claims cover the same fact, reconcile by fact period and
-publication as described below; what CONTRARY EVIDENCE contradicts or weakens; and what the searches
-left unanswered.
+as the claims state them; where two claims cover the same fact, reconcile them by the rules under
+CLAIM RULES; what CONTRARY EVIDENCE contradicts or weakens; and what the searches left unanswered.
 
 2. topics — exactly one object per topic under TOPICS, in that order. topic_key is the key as shown.
 summary is what the topic's searches establish, as of the date under HOLDING. claims is every
-distinct statement the topic rests on, one per item, with source_url the address shown beside it
-under TOPICS or SOURCE TEXT: a fact two topics state is one claim, under the topic it belongs to.
+distinct statement the topic rests on, one statement per claim, with source_url the address shown
+beside it under TOPICS or SOURCE TEXT: a fact two topics state is one claim, under the topic it
+belongs to.
 
 3. forward_assumption — the latest forward figure for the issuer's earnings per share or revenue
 that a page under SOURCE TEXT naming the issuer states as issued guidance, a signed contract or a
@@ -130,6 +130,7 @@ OCC or the FDIC) records, or null where no such document is under SOURCE TEXT. k
 as the document names it; event_date; source_url the document's address.
 
 
+CLAIM RULES
 For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
 CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
 facts with different periods. Publication describes the source; fact period names the period the

@@ -3107,7 +3107,7 @@ with web_search and fetch with web_fetch, and write nothing up in this conversat
 }
 
 /// The synthesis call's system prompt (`portfolio-v43`): the role line, the
-/// two-part shape and the output names — findings, claims and a follow-up
+/// output names and the two-part shape — findings, claims and a follow-up
 /// proposal, or findings and claims alone on the disconfirming pass, whose
 /// follow-up the app never spends (nothing conditional on a case that is not
 /// this call), and since `portfolio-v60` on a topic's last pass under the
@@ -3116,15 +3116,19 @@ with web_search and fetch with web_fetch, and write nothing up in this conversat
 /// prompt is not part of the brief's sized packet; it rides the slack above
 /// `input_budget_chars`, which a test keeps it well inside.
 fn synthesis_system_prompt(offers_followup: bool) -> String {
+    // The object's keys, as on every other object-returning call
+    // (`portfolio-v62`, ruled 2026-09-29).
     let names = if offers_followup {
-        "findings, claims and a follow-up proposal"
+        "findings, claims, followup_question and followup_rationale"
     } else {
         "findings and claims"
     };
+    // The names precede the frame since `portfolio-v62` (ruled 2026-09-29),
+    // the frame shared with every object-returning call.
     format!(
         "You are an investment analyst writing up one topic of research on one holding for a \
-portfolio review. Part 1 of the message gives the inputs. Part 2 states what to determine from \
-them and the shape to return. You will return {names}, as one JSON object."
+portfolio review. You will return {names}, as one JSON object. {}",
+        crate::portfolio::TWO_PART_FRAME
     )
 }
 
@@ -6946,7 +6950,7 @@ mod tests {
             // The system prompt names the outputs and never the grammar.
             let system = synthesis_system_prompt(offers_followup);
             assert!(!system.to_lowercase().contains("grammar"), "{system}");
-            assert_eq!(system.contains("follow-up proposal"), offers_followup, "{system}");
+            assert_eq!(system.contains("followup_question and followup_rationale"), offers_followup, "{system}");
         }
         // With no page shown, the placeholder names the rule, never an id.
         assert!(findings_return_shape(true, &[]).contains("<the id of a page in EVIDENCE>"));
@@ -8945,12 +8949,12 @@ mod tests {
         assert_eq!(syntheses.len(), MAX_PASSES_PER_TOPIC + 1);
         for (depth, (system, format, user)) in syntheses.iter().enumerate() {
             let offers = depth + 1 < MAX_PASSES_PER_TOPIC;
-            assert_eq!(system.contains("follow-up proposal"), offers, "pass {depth}: {system}");
+            assert_eq!(system.contains("followup_question"), offers, "pass {depth}: {system}");
             assert_eq!(format["properties"].get("followup_question").is_some(), offers, "pass {depth}");
             assert_eq!(user.contains("3. followup_question"), offers, "pass {depth}: {user}");
             assert_eq!(user.contains(r#""followup_question":"#), offers, "pass {depth}: {user}");
         }
-        assert!(syntheses[MAX_PASSES_PER_TOPIC - 1].0.ends_with("You will return findings and claims, as one JSON object."));
+        assert!(syntheses[MAX_PASSES_PER_TOPIC - 1].0.contains("You will return findings and claims, as one JSON object. Part 1"));
     }
 
     #[derive(Default)]

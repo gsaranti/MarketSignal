@@ -1,6 +1,6 @@
 # Research synthesis — the disconfirming pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v61`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The synthesis call closes a pass: no tools, the findings grammar as the format, no history — the evidence packet is rebuilt from the run's store, and the model cites sources by the pass-local id the packet shows.
@@ -18,14 +18,14 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4150 chars — the messages and tools as serialized |
+| Prompt material | 4143 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
 You are an investment analyst writing up one topic of research on one holding for a portfolio
-review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the
-shape to return. You will return findings and claims, as one JSON object.
+review. You will return findings and claims, as one JSON object. Part 1 of the message gives the
+inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
 ## User message (3745 chars)

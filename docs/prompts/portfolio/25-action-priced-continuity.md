@@ -1,6 +1,6 @@
 # Action — priced holding, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior read of 2026-09-02.
 The action call is the investor profile's one entry point: the finished verdict, the holding's own evidence, the engine's supported set and the profile decide the rung and one rationale — never a comparison with other holdings.
@@ -19,14 +19,14 @@ This packet renders no article or research text, so it carries no stub.
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7253 chars — the messages and tools as serialized |
+| Prompt material | 7246 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
-You are an equity analyst deciding the portfolio action for one holding in a portfolio review. Part
-1 of the message gives the inputs. Part 2 states what to determine from them and the shape to
-return. You will return action and rationale, as one JSON object.
+You are an equity analyst deciding the portfolio action for one holding in a portfolio review. You
+will return action and rationale, as one JSON object. Part 1 of the message gives the inputs. Part 2
+defines those outputs and gives the shape to return.
 ~~~~
 
 ## User message (6830 chars)

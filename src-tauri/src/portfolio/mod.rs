@@ -2490,7 +2490,26 @@ pub struct HoldingAudit {
 /// question under TOPIC", the one its topic holds; that synthesis opens on
 /// its own system message, so the wording costs no shared prefix. The
 /// checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v61";
+/// `portfolio-v62` (prompt read-through, file 11, 2026-09-29): on every
+/// object-returning call — synthesis, distillation, interpretation, role/risk
+/// and action — the system message names the outputs before the two-part
+/// frame, and the frame says where their definitions and shape sit: "You
+/// will return …, as one JSON object. Part 1 of the message gives the
+/// inputs. Part 2 defines those outputs and gives the shape to return."
+/// (`TWO_PART_FRAME`, shared by the five builders). Before, the frame came
+/// first and said Part 2 "states what to determine from them and the shape
+/// to return", which the next sentence then stated. The gathering call
+/// keeps its own frame. Every system message names the outputs by the
+/// object's keys (the distillation and synthesis named them in English). On
+/// the distillation prompts: the TOPICS gloss names the fields each claim
+/// line carries (the address, its reference, the publication date the
+/// search or lead reported and the period the fact applies to) and CONTRARY
+/// EVIDENCE points at that form; the task opens in the synthesis's words
+/// ("in the shape under RETURN SHAPE, … the names below are its fields");
+/// the claims items read "one statement per claim"; and the claim rules sit
+/// under their own heading, CLAIM RULES, which the items point at by name in
+/// place of "as described below". The checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v62";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -3003,6 +3022,16 @@ pub(crate) fn complete_debut_response(body: &mut Value) {
     }
 }
 
+/// The frame sentences every object-returning call's system prompt closes
+/// with, after the role line and the output-name sentence (`portfolio-v62`,
+/// ruled 2026-09-29): the outputs are named once, up front, so the model
+/// knows what it reads Part 1 for, and the frame then says where their
+/// definitions and the shape sit — before v62 the frame preceded the names
+/// and said Part 2 "states what to determine", which the next sentence then
+/// stated. The gathering call, which returns no object, keeps its own frame.
+pub(crate) const TWO_PART_FRAME: &str =
+    "Part 1 of the message gives the inputs. Part 2 defines those outputs and gives the shape to return.";
+
 /// The priced branch's response-contract line, generated from
 /// [`interpretation_keys`]: the output names the system prompt states once, so
 /// the model knows what it is reading Part 1 for (`portfolio-v40`, ruled
@@ -3014,9 +3043,10 @@ pub fn interpretation_response_contract(debut: bool) -> String {
     response_contract_line(&interpretation_keys(debut))
 }
 
-/// The output-name sentence every two-part message's system prompt closes
-/// with, from the call's declared key list — one form for the priced,
-/// role/risk and action contracts.
+/// The output-name sentence of every two-part message's system prompt, from
+/// the call's declared key list — one form for the priced, role/risk and
+/// action contracts. Since `portfolio-v62` it follows the role line and
+/// precedes [`TWO_PART_FRAME`].
 fn response_contract_line(keys: &[&str]) -> String {
     let (last, head) = keys.split_last().expect("the key list is never empty");
     format!("You will return {} and {last}, as one JSON object.", head.join(", "))

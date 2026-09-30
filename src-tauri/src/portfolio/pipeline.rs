@@ -3191,31 +3191,33 @@ pub(crate) fn validate_what_changed(
 // ---- Prompt construction (pure, testable) ------------------------------------
 
 /// The system prompt for the interpretation stage (`portfolio-v40`): the role,
-/// the two-part shape of the message, and the output names — nothing that
+/// the output names and the two-part shape of the message — nothing that
 /// describes the data the message carries. The output-name line is
 /// [`crate::portfolio::interpretation_response_contract`], built from the same
-/// key list as the schema's required set.
+/// key list as the schema's required set; the frame is
+/// [`crate::portfolio::TWO_PART_FRAME`] (`portfolio-v62`).
 pub fn interpretation_system_prompt(_is_fund: bool, debut: bool) -> String {
     format!(
         "You are an equity analyst producing an independent read of one holding for a \
-         portfolio review. Part 1 of the message gives the inputs. Part 2 states what to \
-         determine from them and the shape to return. {}",
-        crate::portfolio::interpretation_response_contract(debut)
+         portfolio review. {} {}",
+        crate::portfolio::interpretation_response_contract(debut),
+        crate::portfolio::TWO_PART_FRAME
     )
 }
 
 /// The system prompt for the `role_risk_only` interpretation (`portfolio-v42`):
-/// the role line, the two-part shape of the message and the output names — the
+/// the role line, the output names and the two-part shape of the message — the
 /// same footing as [`interpretation_system_prompt`], the vehicle named as a fund
 /// since this branch is a fund by construction (ruled 2026-09-17). The
 /// output-name line is [`crate::portfolio::role_risk_response_contract`], built
-/// from the same key list as the schema's required set.
+/// from the same key list as the schema's required set; the frame is
+/// [`crate::portfolio::TWO_PART_FRAME`] (`portfolio-v62`).
 pub fn role_risk_system_prompt(debut: bool) -> String {
     format!(
         "You are an investment analyst producing an independent read of one fund holding \
-         for a portfolio review. Part 1 of the message gives the inputs. Part 2 states what \
-         to determine from them and the shape to return. {}",
-        crate::portfolio::role_risk_response_contract(debut)
+         for a portfolio review. {} {}",
+        crate::portfolio::role_risk_response_contract(debut),
+        crate::portfolio::TWO_PART_FRAME
     )
 }
 
@@ -4726,7 +4728,7 @@ fn nav_premium_line(premium: f64) -> String {
 }
 
 /// The system prompt for the **per-holding action call** (`portfolio-v41`):
-/// the role, the two-part shape of the message and the output names — the
+/// the role, the output names and the two-part shape of the message — the
 /// same footing as [`interpretation_system_prompt`]. The ladder, the
 /// one-sentence rationale and the profile tie-break are the message's Part 2;
 /// the app's words about arms, evidence and departures are gone
@@ -4734,9 +4736,9 @@ fn nav_premium_line(premium: f64) -> String {
 pub fn action_system_prompt() -> String {
     format!(
         "You are an equity analyst deciding the portfolio action for one holding in a \
-         portfolio review. Part 1 of the message gives the inputs. Part 2 states what to \
-         determine from them and the shape to return. {}",
-        crate::portfolio::action_response_contract()
+         portfolio review. {} {}",
+        crate::portfolio::action_response_contract(),
+        crate::portfolio::TWO_PART_FRAME
     )
 }
 
@@ -8781,20 +8783,18 @@ pub(crate) mod tests {
         assert!(!crate::portfolio::interpretation_keys(false).contains(&"action"));
         assert!(!user.contains("portfolio action"), "{user}");
 
-        // The system prompt: the role, the two-part shape and the output names —
-        // nothing that describes the data or the app.
+        // The system prompt: the role, the output names and the two-part shape
+        // (`portfolio-v62`: the names first, then the frame) — nothing that
+        // describes the data or the app.
         let system = interpretation_system_prompt(false, false);
-        assert!(
-            system.starts_with(
+        assert_eq!(
+            system,
+            format!(
                 "You are an equity analyst producing an independent read of one holding for a \
-                 portfolio review. Part 1 of the message gives the inputs. Part 2 states what \
-                 to determine from them and the shape to return. "
-            ),
-            "{system}"
-        );
-        assert!(
-            system.ends_with(&crate::portfolio::interpretation_response_contract(false)),
-            "{system}"
+                 portfolio review. {} Part 1 of the message gives the inputs. Part 2 defines \
+                 those outputs and gives the shape to return.",
+                crate::portfolio::interpretation_response_contract(false)
+            )
         );
         for narration in [
             "TWO ARMS",
@@ -9289,9 +9289,9 @@ pub(crate) mod tests {
         assert_eq!(
             system,
             "You are an equity analyst deciding the portfolio action for one holding in a \
-             portfolio review. Part 1 of the message gives the inputs. Part 2 states what to \
-             determine from them and the shape to return. You will return action and \
-             rationale, as one JSON object."
+             portfolio review. You will return action and rationale, as one JSON object. \
+             Part 1 of the message gives the inputs. Part 2 defines those outputs and gives \
+             the shape to return."
         );
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").unwrap();
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
@@ -9934,7 +9934,13 @@ pub(crate) mod tests {
         // File 10 (2026-09-29) glosses the disconfirming synthesis's CLAIMS SO
         // FAR fields and names its one question in the EVIDENCE gloss: v61,
         // the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v61");
+        // File 11 (2026-09-29) puts the output names — the object's keys — before
+        // the two-part frame on every object-returning call's system message,
+        // the frame then saying Part 2 defines those outputs; the distillation
+        // TOPICS gloss names its claim-line fields, the task opens in the
+        // synthesis's words, "one statement per claim", and the claim rules
+        // get the CLAIM RULES heading: v62, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v62");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

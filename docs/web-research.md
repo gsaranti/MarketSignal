@@ -36,6 +36,7 @@ A rejected fact period's gap names the kind and value that were rejected.
 The app validates period structure; semantic dating remains the model's responsibility.
 Unknown identifiers, URL strings supplied as identifiers, and identifiers for budget-omitted sources cannot become citations.
 Portfolio's synthesis message is one message in two parts on the frame every Portfolio prompt shares (`portfolio-v43`, ruled 2026-09-17).
+Since `portfolio-v62` its system message names the outputs before that frame, as every object-returning call does (canonical at [portfolio-workflow.md §Step 6f](portfolio-workflow.md#step-6f-interpretation-and-grading)).
 Since `portfolio-v49` (attempt-8 Finding 4, ruled 2026-09-27), Part 1 leads with the holding-constant text and ends with the topic's own: the holding header with the analysis date, then the evidence, then the topic's questions, on a follow-up pass the question it pursues, on the disconfirming pass the claims it tests (and, until `portfolio-v59`, the searching note where gathering lost something).
 The order serves the runtime's prompt cache: consecutive syntheses on one holding can then share their header and leading pages byte for byte, with the topic text after the evidence short enough to sit past the previous synthesis's saved checkpoint.
 A truncated or re-read page shortens that shared prefix, and the saving is an expectation of the runtime until a run's serve log confirms it.

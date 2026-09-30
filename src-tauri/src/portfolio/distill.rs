@@ -1841,23 +1841,25 @@ impl ReduceShape<'_> {
     fn backfill(&self) -> bool {
         self.observations() && self.backfill_required
     }
-    /// The output names the system line carries, in the task's order.
+    /// The output names the system line carries, in the task's order — the
+    /// object's keys, the names Part 2's items then carry, as on every other
+    /// object-returning call (`portfolio-v62`, ruled 2026-09-29).
     fn outputs(&self) -> String {
-        let mut names = vec!["combined findings", "findings per topic"];
+        let mut names = vec!["combined_findings", "topics"];
         if self.typed {
-            names.push("a forward figure");
+            names.push("forward_assumption");
         }
         if self.indicator() {
-            names.push("a leading indicator");
+            names.push("leading_indicator");
         }
         if self.typed {
-            names.push("a fraud record");
+            names.push("forensic_event");
         }
         if self.observations() {
-            names.push("operating observations");
+            names.push("pre_profit_observations");
         }
         if self.backfill() {
-            names.push("a backfill record");
+            names.push("backfill");
         }
         join_names(&names)
     }
@@ -1871,7 +1873,8 @@ fn join_names(names: &[&str]) -> String {
     }
 }
 
-/// The role line: the scope, the two-part shape and the output names.
+/// The role line: the scope, the output names and the two-part shape (the
+/// names first, then the shared frame, since `portfolio-v62`).
 fn system_prompt(whole_holding: bool, outputs: &str) -> String {
     let scope = if whole_holding {
         "the research on one holding"
@@ -1879,17 +1882,20 @@ fn system_prompt(whole_holding: bool, outputs: &str) -> String {
         "one topic of research on one holding"
     };
     format!(
-        "You are an investment analyst consolidating {scope} for a portfolio review. Part 1 of \
-         the message gives the inputs. Part 2 states what to determine from them and the shape \
-         to return. You will return {outputs}, as one JSON object."
+        "You are an investment analyst consolidating {scope} for a portfolio review. You will \
+         return {outputs}, as one JSON object. {}",
+        crate::portfolio::TWO_PART_FRAME
     )
 }
 
 const PART_1: &str = "======== PART 1: INPUTS ========\n";
 const PART_2: &str = "\n======== PART 2: TASK ========\n";
+/// The preamble every distillation task opens with, in the synthesis's words
+/// since `portfolio-v62`: the shape named by its heading, the no-fence clause
+/// (fix list 3.7), and once that the names below are the object's fields.
 const TASK_OPENING: &str = "Determine the following from the inputs and return them as one JSON \
-                            object in the shape at the end, with no code fence and no surrounding \
-                            text.\n";
+                            object in the shape under RETURN SHAPE, with no code fence and no \
+                            surrounding text; the names below are its fields.\n";
 /// A page cut to fit ends with this line — the research's marker (ruling 17 of
 /// the v44 rewrite; the wording is the v43 plan's A5).
 pub(crate) const CONTINUES: &str = "[the page continues beyond what is shown]";
@@ -1964,7 +1970,9 @@ fn render_drivers(drivers: &[&crate::portfolio::KeyDriver]) -> String {
 fn topics_gloss(conditions: bool, priors: bool, dormant: bool) -> String {
     let mut g = String::from(
         "\nTOPICS\nThe research on this holding, one topic at a time: what its searches \
-         established, then its claims, each with the address of the page that states it.",
+         established, then its claims, each with the address of the page that states it, its \
+         reference, the publication date the search or lead reported and the period the fact \
+         applies to.",
     );
     if conditions {
         g.push_str(
@@ -2100,7 +2108,7 @@ fn render_dormant(prior: &TopicDistillate) -> String {
 fn render_contrary(d: &crate::portfolio::research::PassFindings) -> String {
     let mut out = String::from(
         "\nCONTRARY EVIDENCE\nWhat a search for evidence against the claims above found, then \
-         its claims.\n",
+         its claims in the form under TOPICS.\n",
     );
     out.push_str(&d.findings);
     out.push('\n');
@@ -2215,7 +2223,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         "across every topic under TOPICS"
     };
     let prior_clause = if ctx.priors {
-        ", with prior findings assessed by the same date and conflict rules below"
+        ", prior findings assessed by the same rules"
     } else {
         ""
     };
@@ -2227,8 +2235,8 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     t.push_str(&format!(
         "\n1. combined_findings — what the research established on this holding, {scope}, as of \
          the date under HOLDING: the figures with their dates and periods as the claims state \
-         them; where two claims cover the same fact, reconcile by fact period and publication as described below{prior_clause};{contrary_clause} and what the searches left \
-         unanswered.\n"
+         them; where two claims cover the same fact, reconcile them by the rules under CLAIM \
+         RULES{prior_clause};{contrary_clause} and what the searches left unanswered.\n"
     ));
     let dormant_included = if ctx.dormant {
         ", the topics not searched this time included"
@@ -2248,11 +2256,13 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
         "under TOPICS"
     };
     let claims_rule = if ctx.hierarchical {
-        "the claims shown under the topic; where two topics' claims cover the same fact, reconcile by fact period and publication as described below, under the topic it belongs to"
+        "the claims shown under the topic; where two topics' claims cover the same fact, \
+         reconcile them by the rules under CLAIM RULES and keep the fact under the topic it \
+         belongs to"
     } else if ctx.priors {
-        "the claims from this time's searches and prior findings, reconciled by fact period \
-         and publication as described below, whichever topic they came under; a fact two \
-         topics state is one claim, under the topic it belongs to"
+        "the claims from this time's searches and prior findings, reconciled by the rules \
+         under CLAIM RULES, whichever topic they came under; a fact two topics state is one \
+         claim, under the topic it belongs to"
     } else {
         "a fact two topics state is one claim, under the topic it belongs to"
     };
@@ -2271,8 +2281,9 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     t.push_str(&format!(
         "\n2. topics — exactly one object per topic under TOPICS, in that order{dormant_included}. \
          topic_key is the key as shown. summary is what {summary_basis} establish, as of the \
-         date under HOLDING. claims is every distinct statement the topic rests on, one per \
-         item, with source_url the address shown beside it {sources}: {claims_rule}.{tie}\
+         date under HOLDING. claims is every distinct statement the topic rests on, one \
+         statement per claim, with source_url the address shown beside it {sources}: \
+         {claims_rule}.{tie}\
          {dormant_rule}\n"
     ));
     let mut n = 3;
@@ -2352,7 +2363,10 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     t
 }
 
-const DATE_RECONCILIATION: &str = "\nFor each claim, evidence_ref copies the reference of the supporting claim shown under \
+/// The claim rules every distillation task states once, under their own
+/// heading since `portfolio-v62` so the items point at it by name, as every
+/// other pointer in these prompts does.
+const DATE_RECONCILIATION: &str = "\nCLAIM RULES\nFor each claim, evidence_ref copies the reference of the supporting claim shown under \
     TOPICS or CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact \
     and period; separate facts with different periods. Publication describes the source; \
     fact period names the period the fact applies to. An unknown date stays unknown. Compare \
@@ -2375,8 +2389,8 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
              unanswered.\n",
         );
         t.push_str(
-            "\n2. claims — every distinct statement the search rests on, one per item, with \
-             source_url the address shown beside it under TOPICS.",
+            "\n2. claims — every distinct statement the search rests on, one statement per \
+             claim, with source_url the address shown beside it under TOPICS.",
         );
     } else {
         let basis = if priors {
@@ -2385,25 +2399,25 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
             "the topic's searches"
         };
         let prior_clause = if priors {
-            ", with prior findings assessed by the same date and conflict rules below"
+            ", prior findings assessed by the same rules"
         } else {
             ""
         };
         t.push_str(&format!(
             "\n1. summary — what {basis} establish, as of the date under HOLDING: the figures \
              with their dates and periods as the claims state them; where two claims cover the \
-             same fact, reconcile by fact period and publication as described below\
-             {prior_clause}; and what the searches left unanswered.\n"
+             same fact, reconcile them by the rules under CLAIM RULES{prior_clause}; and what \
+             the searches left unanswered.\n"
         ));
         let rule = if priors {
-            ": the claims from this time's searches and prior findings, reconciled by fact \
-             period and publication as described below"
+            ": the claims from this time's searches and prior findings, reconciled by the \
+             rules under CLAIM RULES"
         } else {
             ""
         };
         t.push_str(&format!(
-            "\n2. claims — every distinct statement the topic rests on, one per item, with \
-             source_url the address shown beside it under TOPICS{rule}."
+            "\n2. claims — every distinct statement the topic rests on, one statement per \
+             claim, with source_url the address shown beside it under TOPICS{rule}."
         ));
     }
     if conditions {
@@ -2435,7 +2449,7 @@ pub(crate) fn tier1_message(
     user.push_str(PART_2);
     user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids)));
     DistillPrompt {
-        system: system_prompt(false, "a summary and claims"),
+        system: system_prompt(false, "summary and claims"),
         user,
     }
 }
@@ -2456,7 +2470,7 @@ pub(crate) fn pass_message(
     user.push_str(PART_2);
     user.push_str(&topic_task(!ids.is_empty(), false, true, &tier1_schema(&ids)));
     DistillPrompt {
-        system: system_prompt(false, "a summary and claims"),
+        system: system_prompt(false, "summary and claims"),
         user,
     }
 }
@@ -2490,7 +2504,7 @@ pub(crate) fn tree_reduce_message(
     user.push_str(PART_2);
     user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids)));
     DistillPrompt {
-        system: system_prompt(false, "a summary and claims"),
+        system: system_prompt(false, "summary and claims"),
         user,
     }
 }
@@ -3721,9 +3735,9 @@ mod tests {
             }
             // The system line names exactly the outputs the grammar carries.
             let outputs = shape.outputs();
-            assert_eq!(outputs.contains("a forward figure"), typed, "{outputs}");
-            assert_eq!(outputs.contains("a leading indicator"), typed && drivers, "{outputs}");
-            assert_eq!(outputs.contains("a backfill record"), typed && overlay && backfill, "{outputs}");
+            assert_eq!(outputs.contains("forward_assumption"), typed, "{outputs}");
+            assert_eq!(outputs.contains("leading_indicator"), typed && drivers, "{outputs}");
+            assert_eq!(outputs.contains("backfill"), typed && overlay && backfill, "{outputs}");
         }
         assert_eq!(
             crate::portfolio::placeholder_shape(&tier1_schema(&["c1"]), DISTILL_KEY_ORDER),

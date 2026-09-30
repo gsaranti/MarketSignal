@@ -1,6 +1,6 @@
 # Distillation — single pass, fund
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v54`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 A fund's reduce is consolidation only: the combined findings and the topic layer, with the standing condition rendered for citation, and no source text or typed field.
@@ -20,17 +20,17 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3633 chars — the messages and tools as serialized |
+| Prompt material | 3764 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
-You are an investment analyst consolidating the research on one holding for a portfolio review. Part
-1 of the message gives the inputs. Part 2 states what to determine from them and the shape to
-return. You will return combined findings and findings per topic, as one JSON object.
+You are an investment analyst consolidating the research on one holding for a portfolio review. You
+will return combined_findings and topics, as one JSON object. Part 1 of the message gives the
+inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (3214 chars)
+## User message (3363 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -45,7 +45,8 @@ Conditions the thesis on this holding is being watched against, each with its id
 
 TOPICS
 The research on this holding, one topic at a time: what its searches established, then its claims,
-each with the address of the page that states it. A claim marked "bears on" names the condition
+each with the address of the page that states it, its reference, the publication date the search or
+lead reported and the period the fact applies to. A claim marked "bears on" names the condition
 under STANDING CONDITIONS it is evidence on.
 
 TOPIC fund-exposure-profile — Exposure profile
@@ -58,22 +59,23 @@ E9dcc02ac89ec51165bc5c21754dcfb72484725409345ee85a1f938dfa9e15dc2 — published:
 unknown
 
 ======== PART 2: TASK ========
-Determine the following from the inputs and return them as one JSON object in the shape at the end,
-with no code fence and no surrounding text.
+Determine the following from the inputs and return them as one JSON object in the shape under RETURN
+SHAPE, with no code fence and no surrounding text; the names below are its fields.
 
 1. combined_findings — what the research established on this holding, across every topic under
 TOPICS, as of the date under HOLDING: the figures with their dates and periods as the claims state
-them; where two claims cover the same fact, reconcile by fact period and publication as described
-below; and what the searches left unanswered.
+them; where two claims cover the same fact, reconcile them by the rules under CLAIM RULES; and what
+the searches left unanswered.
 
 2. topics — exactly one object per topic under TOPICS, in that order. topic_key is the key as shown.
 summary is what the topic's searches establish, as of the date under HOLDING. claims is every
-distinct statement the topic rests on, one per item, with source_url the address shown beside it
-under TOPICS: a fact two topics state is one claim, under the topic it belongs to.
+distinct statement the topic rests on, one statement per claim, with source_url the address shown
+beside it under TOPICS: a fact two topics state is one claim, under the topic it belongs to.
 related_condition_id is the id of the condition under STANDING CONDITIONS the claim is evidence on —
 that it has tripped, is holding, or is at risk — else null.
 
 
+CLAIM RULES
 For each claim, evidence_ref copies the reference of the supporting claim shown under TOPICS or
 CONTRARY EVIDENCE; source_url copies its address. Keep each claim to one fact and period; separate
 facts with different periods. Publication describes the source; fact period names the period the

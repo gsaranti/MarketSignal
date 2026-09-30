@@ -1,6 +1,6 @@
 # Role/risk interpretation — first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v50`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 The role/risk branch of the intrinsic verdict, taken for a vehicle class the engine cannot price: the fund readout stands where the computed scores would, and the model returns the role read and the ledger, never a grade or a target.
@@ -18,14 +18,14 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 6275 chars — the messages and tools as serialized |
+| Prompt material | 6268 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
 You are an investment analyst producing an independent read of one fund holding for a portfolio
-review. Part 1 of the message gives the inputs. Part 2 states what to determine from them and the
-shape to return. You will return role_summary and ledger, as one JSON object.
+review. You will return role_summary and ledger, as one JSON object. Part 1 of the message gives the
+inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
 ## User message (5718 chars)
