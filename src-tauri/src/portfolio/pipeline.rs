@@ -9931,7 +9931,10 @@ pub(crate) mod tests {
         // claims under CLAIMS SO FAR", in the synthesis subject and the
         // gathering opening and items, and asks a topic's last pass under the
         // depth cap for no follow-up proposal: v60, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v60");
+        // File 10 (2026-09-29) glosses the disconfirming synthesis's CLAIMS SO
+        // FAR fields and names its one question in the EVIDENCE gloss: v61,
+        // the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v61");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v15"

@@ -1767,8 +1767,10 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             // `portfolio-v59`: the gloss names the TOPIC heading, states the fields in
             // the fetch description's shape, and carries no weighing clause.
             assert!(part1.contains("source tier (0 to 5: 0 is a primary source"), "{}: the tier scale's range is unstated\n{part1}", s.label);
+            // `portfolio-v60`: the disconfirming pass's gloss names its one question.
+            let questions = if s.label.contains("disconfirming") { "the question" } else { "the questions" };
             assert!(
-                part1.contains("\nEVIDENCE\nThe pages retrieved for the questions under TOPIC, each under a header of: its id; its address; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:"),
+                part1.contains(&format!("\nEVIDENCE\nThe pages retrieved for {questions} under TOPIC, each under a header of: its id; its address; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:")),
                 "{}: {part1}",
                 s.label
             );
@@ -1930,6 +1932,15 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         }
         if s.label.contains("disconfirming") {
             assert!(part1.contains("\nCLAIMS SO FAR\n"), "{}", s.label);
+        }
+        // `portfolio-v60`: the synthesis CLAIMS SO FAR gloss names the two
+        // provenance fields its lines carry, in the gathering brief's words.
+        if s.label.starts_with("synthesis") && s.label.contains("disconfirming") {
+            assert!(
+                part1.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding, each with the publication date the search or lead reported and the period the fact applies to.\n"),
+                "{}: {part1}",
+                s.label
+            );
         }
         // `portfolio-v59`: no synthesis message carries a SEARCHING note.
         if s.label.starts_with("synthesis") {

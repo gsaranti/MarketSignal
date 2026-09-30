@@ -1,6 +1,6 @@
 # Research synthesis — the disconfirming pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v59`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v61`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The synthesis call closes a pass: no tools, the findings grammar as the format, no history — the evidence packet is rebuilt from the run's store, and the model cites sources by the pass-local id the packet shows.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4056 chars — the messages and tools as serialized |
+| Prompt material | 4150 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ review. Part 1 of the message gives the inputs. Part 2 states what to determine 
 shape to return. You will return findings and claims, as one JSON object.
 ~~~~
 
-## User message (3651 chars)
+## User message (3745 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -38,7 +38,7 @@ Price: $358.97 per share.
 Date: 2026-09-16.
 
 EVIDENCE
-The pages retrieved for the questions under TOPIC, each under a header of: its id; its address; the
+The pages retrieved for the question under TOPIC, each under a header of: its id; its address; the
 published date, where the search reported one; when it was retrieved; its source tier (0 to 5: 0 is
 a primary source — a filing, the issuer, a regulator — and 5 is sentiment only); the subjects its
 source is trusted on; and its extraction quality (0 to 1: the article text recovered against a full
@@ -64,7 +64,8 @@ Contrary evidence
 data, claims that have failed, credible bear arguments?
 
 CLAIMS SO FAR
-What this run's research established on the holding.
+What this run's research established on the holding, each with the publication date the search or
+lead reported and the period the fact applies to.
 - [stub: claim 1 — one dated fact from its source]
   published: unknown; fact period: unknown
 - [stub: claim 2 — one dated fact from its source]

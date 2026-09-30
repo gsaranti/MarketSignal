@@ -2481,7 +2481,16 @@ pub struct HoldingAudit {
 /// and its shape and grammar carry no follow-up fields
 /// (`PassContext::offers_followup`, one depth test with the scheduler). The
 /// checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v60";
+/// `portfolio-v61` (prompt read-through, file 10, 2026-09-29): the
+/// disconfirming synthesis's CLAIMS SO FAR gloss names the two provenance
+/// fields its lines carry, in the gathering brief's words and without the
+/// source those lines do not show ("What this run's research established on
+/// the holding, each with the publication date the search or lead reported
+/// and the period the fact applies to."), and its EVIDENCE gloss names "the
+/// question under TOPIC", the one its topic holds; that synthesis opens on
+/// its own system message, so the wording costs no shared prefix. The
+/// checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v61";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
