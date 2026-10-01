@@ -2051,15 +2051,19 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
         // line's fields; "one statement per claim".
         assert!(part2.starts_with("\nDetermine the following from the inputs and return them as one JSON object in the shape under RETURN SHAPE, with no code fence and no surrounding text; the names below are its fields.\n"), "{}: {part2}", s.label);
         assert!(part2.contains("\nCLAIM RULES\nKeep each claim to one fact and period") && !part2.contains("as described below") && !part2.contains("one per item"), "{}: {part2}", s.label);
-        // A task that reconciles points at the rules by their heading; the
-        // single-search pass has nothing to reconcile.
-        assert_eq!(part2.contains("by the rules under CLAIM RULES"), part2.contains("reconcile"), "{}: {part2}", s.label);
+        // A task that reconciles points at the rules by their heading; since
+        // `portfolio-v67` every distillation task reconciles, the single search
+        // included (one search fetches several pages).
+        assert!(part2.contains("where two claims cover the same fact, reconcile them by the rules under CLAIM RULES;"), "{}: {part2}", s.label);
         // `portfolio-v66`: the gloss opens on the call's scope — one topic on the
         // tier-1, pass-level and tree-level calls, "one topic at a time" on the
         // reduce — and CLAIM RULES closes on the call's own outputs.
         let reduce = s.label.starts_with("reduce");
         let gloss_scope = if reduce {
             "\nTOPICS\nThe research on this holding, one topic at a time, each headed by its key and its title: what its searches established, then its claims. Each claim carries: "
+        } else if s.label.starts_with("pass") {
+            // `portfolio-v67`: the pass-level call shows one of the topic's searches.
+            "\nTOPICS\nThe research on one topic of this holding, headed by its key and its title: what one of its searches established, then its claims. Each claim carries: "
         } else {
             "\nTOPICS\nThe research on one topic of this holding, headed by its key and its title: what its searches established, then its claims. Each claim carries: "
         };
@@ -2167,7 +2171,8 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
             assert!(part1.contains("\nSearch 1 (summary):\n") && part1.contains("\nSearch 2 (summary):\n"), "{}: {part1}", s.label);
         }
         if s.label.starts_with("pass") {
-            assert!(part2.contains("what this search established"), "{}: {part2}", s.label);
+            assert!(part2.contains("\n1. summary — what this search established, as of the date under HOLDING: the figures with their dates and periods as the claims state them; where two claims cover the same fact, reconcile them by the rules under CLAIM RULES; and what it left unanswered.\n"), "{}: {part2}", s.label);
+            assert!(!part1.contains("what its searches established"), "{}: {part1}", s.label);
         }
     }
 }

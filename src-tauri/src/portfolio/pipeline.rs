@@ -9961,7 +9961,10 @@ pub(crate) mod tests {
         // File 14 (2026-09-30) opens the TOPICS gloss on one topic and closes
         // CLAIM RULES on the call's own outputs on the tier-1, pass-level and
         // tree-level calls: v66, the trail unchanged.
-        assert_eq!(PROMPT_VERSION, "portfolio-v66");
+        // File 15 (2026-09-30) says the pass-level call shows one of the
+        // topic's searches and makes its summary item reconcile, pointing at
+        // CLAIM RULES: v67, the trail unchanged.
+        assert_eq!(PROMPT_VERSION, "portfolio-v67");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v16"

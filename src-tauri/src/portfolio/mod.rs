@@ -2580,7 +2580,16 @@ pub struct HoldingAudit {
 /// findings, summaries, and every topic's claims") and pointed at outputs
 /// the call never returns. The reduce keeps both. Files 14, 15 and 16
 /// regenerated. The checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v66";
+/// `portfolio-v67` (prompt read-through, file 15, 2026-09-30): the pass-level
+/// call shows one of the topic's searches, so its TOPICS gloss says so ("what
+/// one of its searches established, then its claims"), pairing with its items'
+/// "this search" where the gloss read "what its searches established" over one
+/// Search block; and its summary item reconciles ("where two claims cover the
+/// same fact, reconcile them by the rules under CLAIM RULES"), since one search
+/// fetches several pages, so CLAIM RULES is pointed at on every distillation
+/// call where before it sat on this one unreferenced. File 15 regenerated. The
+/// checkpoint trail is unchanged.
+pub const PROMPT_VERSION: &str = "portfolio-v67";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

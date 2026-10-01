@@ -2018,18 +2018,36 @@ fn render_drivers(drivers: &[&crate::portfolio::KeyDriver]) -> String {
 
 /// The TOPICS gloss, each clause only where the section carries the thing
 /// glossed.
-fn topics_gloss(one_topic: bool, conditions: bool, priors: bool, dormant: bool) -> String {
+/// The scope the TOPICS gloss opens on: the reduce's whole holding, a tier-1
+/// or tree-level call's one topic, the pass-level call's one search of it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GlossScope {
+    WholeHolding,
+    OneTopic,
+    OneSearch,
+}
+
+fn topics_gloss(scope: GlossScope, conditions: bool, priors: bool, dormant: bool) -> String {
     // `portfolio-v66`: the tier-1, pass-level and tree-level calls carry one
     // topic, as their system message says; the reduce keeps the many-topic form.
-    let scope = if one_topic {
-        "The research on one topic of this holding, headed by its key and its title"
-    } else {
-        "The research on this holding, one topic at a time, each headed by its key and its title"
+    // `portfolio-v67`: the pass-level call shows one of the topic's searches,
+    // and its gloss says so, pairing with its items' "this search".
+    let subject = match scope {
+        GlossScope::WholeHolding => {
+            "The research on this holding, one topic at a time, each headed by its key and its title"
+        }
+        GlossScope::OneTopic | GlossScope::OneSearch => {
+            "The research on one topic of this holding, headed by its key and its title"
+        }
+    };
+    let established = match scope {
+        GlossScope::OneSearch => "what one of its searches established",
+        _ => "what its searches established",
     };
     let mut g = format!(
-        "\nTOPICS\n{scope}: what its searches established, then its claims. Each claim carries: \
-         its id; the address of the page that states it; the publication date the search or \
-         lead reported; and the period the fact applies to."
+        "\nTOPICS\n{subject}: {established}, then its claims. Each claim carries: its id; the \
+         address of the page that states it; the publication date the search or lead reported; \
+         and the period the fact applies to."
     );
     if conditions {
         g.push_str(
@@ -2505,10 +2523,13 @@ fn claim_rules(whole_holding: bool) -> String {
 fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Value) -> String {
     let mut t = String::from(TASK_OPENING);
     if single_search {
+        // `portfolio-v67`: one search fetches several pages, two of which can
+        // state one fact, so the item reconciles and points at CLAIM RULES.
         t.push_str(
             "\n1. summary — what this search established, as of the date under HOLDING: the \
-             figures with their dates and periods as the claims state them, and what it left \
-             unanswered.\n",
+             figures with their dates and periods as the claims state them; where two claims \
+             cover the same fact, reconcile them by the rules under CLAIM RULES; and what it \
+             left unanswered.\n",
         );
         t.push_str(
             "\n2. claims — every distinct statement the search rests on, one statement per \
@@ -2563,7 +2584,7 @@ pub(crate) fn tier1_message(
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(true, !ids.is_empty(), prior.is_some(), false));
+    user.push_str(&topics_gloss(GlossScope::OneTopic, !ids.is_empty(), prior.is_some(), false));
     user.push_str(&render_topic_searches(topic, prior, &mut claims));
     user.push_str(PART_2);
     user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids, &claims.ids())));
@@ -2585,7 +2606,7 @@ pub(crate) fn pass_message(
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(true, !ids.is_empty(), false, false));
+    user.push_str(&topics_gloss(GlossScope::OneSearch, !ids.is_empty(), false, false));
     user.push_str(&topic_line(&topic.topic_key, &topic.title));
     user.push_str(&render_search(i, pass, &mut claims));
     user.push_str(PART_2);
@@ -2610,7 +2631,7 @@ pub(crate) fn tree_reduce_message(
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
     user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(true, !ids.is_empty(), prior.is_some(), false));
+    user.push_str(&topics_gloss(GlossScope::OneTopic, !ids.is_empty(), prior.is_some(), false));
     user.push_str(&topic_line(&topic.topic_key, &topic.title));
     for (i, body) in pass_bodies.iter().enumerate() {
         match serde_json::from_str::<Tier1Wire>(body) {
@@ -2706,7 +2727,7 @@ fn reduce_message(
     if shape.indicator() {
         user.push_str(&render_drivers(&drivers));
     }
-    user.push_str(&topics_gloss(false, ctx.conditions, ctx.priors, ctx.dormant));
+    user.push_str(&topics_gloss(GlossScope::WholeHolding, ctx.conditions, ctx.priors, ctx.dormant));
     match tier1 {
         Some(outputs) => {
             for (key, wire) in outputs {

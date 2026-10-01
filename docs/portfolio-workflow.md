@@ -296,6 +296,8 @@ Item 7 states coverage's denominator ("complete where all four periods are found
 Item 1 drops "prior findings assessed by the same rules"; item 2 binds every statement to CLAIM RULES already.
 Since `portfolio-v66` (ruled 2026-09-30), the tier-1, pass-level and tree-level calls, each carrying one topic, open the TOPICS gloss on that scope ("The research on one topic of this holding, headed by its key and its title"), as their system message says; the reduce keeps "one topic at a time, each headed by its key and its title".
 On the same three calls CLAIM RULES closes "Apply the same resolution in the summary and the claims."; the reduce keeps "in the combined findings, summaries, and every topic's claims".
+Since `portfolio-v67` (ruled 2026-09-30), the pass-level call's gloss says "what one of its searches established", pairing with its items' "this search".
+Its summary item reconciles ("where two claims cover the same fact, reconcile them by the rules under CLAIM RULES"), since one search fetches several pages, so CLAIM RULES is pointed at on every distillation call.
 The distillation claim output contains no retrieval, publication or fact-period fields; synthesis supplies the fact period, and the app preserves it through consolidation.
 An unknown publication stays unknown; no model-authored publication fallback is requested for ordinary claims.
 Typed extraction retains its own source-stated dates, including the forensic event date and the pre-profit observations' publication dates and reporting periods.
