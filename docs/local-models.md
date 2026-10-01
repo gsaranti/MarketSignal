@@ -42,19 +42,19 @@ Embedding the inference engine directly (mlx / llama.cpp linked as a Rust crate)
 The suite routes each kind of work to the model that does it best rather than running one model for everything.
 The default roster:
 
-- **`Qwen3.5-122B-A10B`** — the primary reasoner: deep research (with tool use), financial analysis, and synthesis/writing.
-  Run in its **thinking mode** for multi-step financial reasoning and in non-thinking mode for firm, directed prose.
-- **`Qwen3.5-35B-A3B`** — an **optional** fast tier for the cheap, high-throughput steps (distilling raw research into compact findings, routine routing).
+- **`Qwen3.5-122B-A10B`** — the primary reasoner: deep research (with tool use), financial analysis, and writing.
+  Run in its **thinking mode** for research, the write-ups, the analysis, the review, the thesis document and the action call, and in non-thinking mode for distilling write-ups and for transcribing the thesis document's stated values into the typed appendix.
+- **`Qwen3.5-35B-A3B`** — an **optional** fast tier for the cheap, high-throughput steps (distilling write-ups, routine routing).
   Demoted from the default resident set — see *One brain, two modes* below.
 - **`Qwen3-Embedding-4B`** — embeddings for the suite's vector memory (see [§Run history and continuity](#run-history-and-continuity)).
 
 **One brain, two modes — not two brains.**
-The default resident set is **the 122B reasoner plus the embedding model**, and the 122B fills *every* reasoning role — research, distillation, and interpretation — switching by **mode** (thinking for multi-step research and interpretation, non-thinking for the cheap consolidation steps) rather than by model.
-*(Version discipline — Ollama bug #14645: the fix is verified on the pinned v0.32.5 and non-thinking distillation is wired (2026-08-01), but any Ollama bump re-locks a `format`-carrying `think: false` call until the schema-integrity check passes on the new version.
+The default resident set is **the 122B reasoner plus the embedding model**, and the 122B fills *every* reasoning role — research, distillation, analysis, review, interpretation and the action call — switching by **mode** (thinking for the research and the documents, non-thinking for distilling write-ups and for the typed appendix) rather than by model.
+*(Version discipline — Ollama bug #14645: the fix is verified on the pinned v0.32.5, so a `format`-carrying `think: false` call is permitted on that version; the typed appendix is that call, and any Ollama bump re-locks it until the schema-integrity check passes on the new version.
 See [local-model-operations.md](local-model-operations.md).)*
 This is the deliberate default for two reasons.
 First, it sidesteps the co-residency question entirely: one 122B at the target quantization plus the embedder fits 128 GB with comfortable headroom, where two large models never co-fit.
-Second — because a single holding runs its per-topic research passes (thinking mode) and then distillation (non-thinking mode — one pass, or the shared hierarchical tier-1 → reduce when research is large; see [web-research.md](web-research.md)) on the same model — a single resident model pays **no model-swap cost** switching modes within a holding, whereas a second large model not co-resident would.
+Second — because a single holding runs its research and synthesis conversations (thinking mode), where the analysis prompt is over budget the distillation of its write-ups (non-thinking mode — the merged write-ups, or each write-up first; see [web-research.md](web-research.md)), then its analysis, review, thesis document and action call (thinking mode) and the typed appendix (non-thinking mode) on the same model — a single resident model pays **no model-swap cost** switching modes within a holding, whereas a second large model not co-resident would.
 The fast 35B tier is therefore an **option, not a requirement**: it is reintroduced only if (a) distillation wall-clock proves a measured bottleneck on the target hardware *and* (b) a 122B + 35B + embedder set **co-resides cleanly on an on-device benchmark** — otherwise the swap cost it adds would exceed the throughput it saves.
 Either way the roster never runs more than one large reasoner; the only open question is whether a *small* second model earns its residency.
 
@@ -98,71 +98,71 @@ No derived deadline goes under the ten-minute backstop, which a request declarin
 The streaming path takes the prompt-evaluation term alone, since its tokens arrive as they generate, and that same value bounds each body read as an idle limit.
 The floors are drafted from the pinned serving path's measured throughput and move only with it ([local-model-operations.md §M5 pre-flight checklist](local-model-operations.md#m5-pre-flight-checklist)).
 The transport deadline composes with a **bounded retry-once** above it: a failed chat call re-attempts exactly once when the failure classifies as transient — a transport-level connection failure, a daemon error status, an empty completion body, a schema-parse failure of the returned content, or a broken stream — after a short drafted pause, each attempt deriving its own deadline.
-An interpretation whose model arm falls outside its declared numeric domain classifies transient too, as its own class, so the data-health read tells an off-domain value from malformed content (the domain is canonical at [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict)).
-The once is per issued call, and the legs compose only through re-issue: the research loop's findings-parse retry issues a fresh call carrying its own single re-attempt, so one logical terminal turn is hard-bounded at four calls.
+A typed appendix whose value falls outside its declared domain classifies transient too, as its own class, so the data-health read tells an off-domain value from malformed content (the domain is canonical at [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict)).
+The once is per issued call, and no call path nests a second retry layer.
 The classification is a whitelist: a deadline trip, a length stop, a cancelled run, and any unclassified failure never enter the general retry.
 A phase-limited length stop remains unattributed, not a reason to repeat the same request.
 Distillation has one narrower output-sizing exception outside that general retry: a call that reports exactly the normal 12,288-token reservation gets one re-attempt at a 32,768-token ceiling on the reasoner's 128 K context.
-The normal reservation moved from 8,192 to 12,288 after attempt 8, where a six-topic stock's ordinary distillation ran to the old ceiling and spent the wasted first pass (Finding 3, ruled 2026-09-27).
 A length stop below the normal reservation is context-bound or unattributable and fails without that re-attempt; any length stop on the expanded call also fails hard.
 The expanded attempt is final for that stage: the outer schema/transport gate cannot layer another request after it.
-The action call's blank-rationale guard keeps its fail-hard ruling outside the retry (ruled 2026-08-18).
+The action call's blank-rationale guard keeps its fail-hard posture outside the retry.
 A second failure fails hard as before, annotated with the first attempt's class, so the failure detail stays attributable — the seam is job-agnostic; what a hard failure fails (the report run, or one Portfolio holding isolated) is each job's §Failure posture.
 Every fired retry emits its own tracker row and lands on the run's data-health read as a summary line plus structured events — the big confirmation run's transient-rate measurement.
-Each event names the stage that re-attempted, and a research-loop event names the holding step, the topic, and the leg — a gathering turn or the synthesis call — so a parse retry is attributable to the topic it failed on, not only to the holding (attempt-5 Finding 5).
-The tracker row's detail and each event's cause carry the class name followed by the failed attempt's full error chain, so a parse failure names its innermost message and a head-and-tail snippet of the body (attempt-8 Finding 1).
+Each event names the stage that re-attempted, and a research-loop event names the holding step, the topic, and the leg — a gathering turn or the synthesis call — so a retry is attributable to the topic it fired on, not only to the holding.
+The tracker row's detail and each event's cause carry the class name followed by the failed attempt's full error chain, so a parse failure names its innermost message and a head-and-tail snippet of the body.
 A resumed run's read covers the calls behind the finished run's verdicts — every restored row's and every call of the resumed process — and omits only the superseded calls of holdings the resumed process re-analyzed ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)).
 
 Every distillation call is also **sized at issue**: the adapter measures the rendered prompt in chars against its model's input budget before any request exists.
-The measure is the whole rendered prompt — instruction scaffolding, ledger conditions, and distillates together.
-The budget is the same threshold-and-chars-per-token budget the single-vs-hierarchical routing uses ([configuration.md §Research Context Management](configuration.md#research-context-management-hierarchical-distillation)).
+The measure is the whole rendered prompt — the instruction scaffolding and the write-ups it distills together.
+The budget is the same threshold-and-chars-per-token budget the consolidation routing uses ([configuration.md §Research Context Management](configuration.md#research-context-management-hierarchical-distillation)).
 A prompt within the fast tier's budget issues there.
 One over it but within the reasoner's issues on the resident reasoner at its interpretation context — a model choice, never a `num_ctx` change, so no runner reloads and the one-`num_ctx`-per-model rule stands.
 The fast tier co-resides by the roster's own precondition ([§The model roster and per-task routing](#the-model-roster-and-per-task-routing)), so a route-up costs no swap.
 A prompt over the widest budget is refused before issue as an unclassified failure — never retried, since the outcome is deterministic — and fails hard under the job's hard model-call posture (the report run, or one Portfolio holding isolated — each job's §Failure posture).
-The guard covers every 6d call — the final reduce, the tree-level reduce, the pass calls, and the tier-1 calls — closing the daemon's silent front-truncation off from distillation as far as a chars-per-token estimate can close it.
+The guard covers every distillation call — the merge distillation and each per-write-up distillation — closing the daemon's silent front-truncation off from distillation as far as a chars-per-token estimate can close it.
 The budget is that estimate — the chars-per-token constant is rough and the guard counts characters — so token-dense input can fit the threshold and still overflow the context.
 The data-health likely-front-truncation read therefore stays the runtime witness for every stage, distillation included.
-A single-pass or tier-1 prompt that outgrows the widest issuable budget once rendered — the reasoner's on a distinct roster — takes the next smaller shape before it reaches the guard: hierarchical, or that topic's pass-seam sub-distillation ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
-One over the fast tier's budget but within the reasoner's still issues and routes up, so the sub-distillation cap is never spent on a prompt the reasoner could serve.
-The guard therefore binds only where no smaller shape remains.
+A merge distillation that outgrows the widest issuable budget once rendered — the reasoner's on a distinct roster — takes the next smaller shape before it reaches the guard: each write-up distilled first, then the merge of those outputs ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
+One over the fast tier's budget but within the reasoner's still issues and routes up, so the smaller shape is never taken for a prompt the reasoner could serve.
+A single write-up is bounded by the synthesis reservation that wrote it, so the guard binds only where no smaller shape remains.
 On the default roster (a blank fast tier) the two rungs are one budget, and only the refusal is live.
 
 ## Schema-constrained output
 
-Every structured hand-off between stages is a **schema-validated JSON object**, produced with grammar-constrained decoding (Ollama's native `format` schema).
-The grammar is the generation constraint, not the application's only validator: attempt 4 demonstrated that a served call can still return an empty or otherwise non-decodable body, so the app parses every response and classifies a structural violation at the stage boundary.
-For the research findings stage, grammar-required keys are required again by the Rust wire type and prose/claim fields that the local grammar cannot constrain to nonblank are checked explicitly; a violation is the same bounded-retry `SchemaParse` class as malformed JSON.
-For a financial pipeline whose downstream stages and persisted records depend on well-formed grades, targets, and actions, deterministic structure is load-bearing — a free-form-JSON parse-and-pray path is not acceptable here.
+The suite's typed outputs — the thesis document's appendix of conviction and the three expected prices, and the action call's rung and rationale — are **schema-validated JSON objects**, produced with grammar-constrained decoding (Ollama's native `format` schema).
+The research documents — the write-ups, the analysis, the review and the thesis document — are prose and carry no grammar.
+The grammar is the generation constraint, not the application's only validator: a served call can still return an empty or otherwise non-decodable body, so the app parses every typed response and classifies a structural violation at the stage boundary as the bounded-retry `SchemaParse` class.
+The appendix keeps only the type check — each expected price finite and strictly positive, since the scoreboard divides by it — and the action call's rung must be one of its five values with a nonblank rationale.
+For a financial pipeline whose persisted records and outcome scoring depend on well-formed prices and actions, deterministic structure is load-bearing wherever structure is asked for — a free-form-JSON parse-and-pray path is not acceptable here.
 
 ## Prompt posture
 
 Grammar constrains an output's *structure*; the prompt supplies the model's *inputs* — the evidence, the engine's reads, the deterministic facts, and any degradation in them — and states the task's constraints.
 Governed prompt content is traceable to a canonical project contract: field meanings, output requirements, source-provenance policy, continuity rules, and explicitly ruled decision frameworks such as Portfolio action precedence.
 Ungoverned prompt content does not belong: app or downstream-consumer architecture, meta-reasoning instructions, author-added financial preferences, or weighting and conclusion nudges without a canonical contract.
-Within the governed constraints, the model draws the inference from the supplied facts; the prompt does not add an unruled conclusion for it to reproduce (attempt-4 Finding 3).
-The research pass's gathering degradation held this line while it reached the synthesis as a note, stating what coverage was lost and stopping; since `portfolio-v59` it is a persisted gap only, and the findings state what the evidence leaves unanswered ([web-research.md §The research loop](web-research.md#the-research-loop-and-context-management)).
-The reviewed Portfolio Analysis prompt surface — the interpretation, role/risk, action, research and distillation prompts with their evidence sections — keeps its governed contracts while cutting pipeline-architecture narration, meta-reasoning, and ungoverned how-to-weigh nudges (attempt-4 Finding 3 and its follow-ups).
+Within the governed constraints, the model draws the inference from the supplied facts; the prompt does not add an unruled conclusion for it to reproduce.
+The research pass's gathering degradation is a persisted gap only; the write-up states what the evidence leaves unanswered ([web-research.md §The research loop](web-research.md#the-research-loop-and-context-management)).
+No Portfolio prompt names an app concept: each is one message in two parts, the data with its glosses and then the task, a typed call closing on a placeholder-only return shape, and none carries pipeline-architecture narration, meta-reasoning, or an ungoverned how-to-weigh nudge.
 This is the same "informs, never dictates" stance the suite takes with values (§Context-memory discipline) and with source quality ([web-research.md §Source quality and evidence weighting](web-research.md#source-quality-and-evidence-weighting)): the app surfaces the fact and the model judges.
 
 ## Context-memory discipline
 
-The suite's stages chain through **distilled, schema-shaped hand-offs**, never raw transcripts.
-Each stage emits a compact validated object; the next stage receives only that object plus the specific evidence it needs — not the prior model's full output.
+The suite's stages chain through **bounded documents and typed objects**, never raw transcripts.
+Each stage emits a bounded document — a write-up, the analysis, the review, the thesis document — or a validated typed object; the next stage receives only that plus the specific evidence it needs — not the prior stage's full conversation.
 Four rules enforce this:
 
 - **Deterministic packet assembly.**
   Per-item evidence packets (e.g. a holding's dossier) are assembled by the Rust application layer, the same way the report pipeline builds its condensed research packet deterministically rather than letting the agent gather unbounded context (see [report-workflow.md](report-workflow.md)).
 - **Retrieve, don't dump.**
   Market Signal Report context enters a stage through a **deterministic last-X-report load** — the latest report's relevant sections plus recent report summaries, reusing the report pipeline's own recent-reports loader — never by vector-searching the report's memory.
-  Continuity context from the job's *own* prior runs enters through **vector retrieval of the relevant slice** of that job's partition, not by replaying whole runs.
+  Continuity context from the job's *own* prior runs enters two ways: an item's own prior documents — for Portfolio, the holding's prior position, prior analysis and prior and debut thesis documents — load **deterministically by identity**, and anything else enters through **vector retrieval of the relevant slice** of that job's partition, never by replaying whole runs.
 - **Forward only what's needed.**
-  A research stage's output is condensed (by the reasoner in non-thinking mode, or the fast 35B tier if resident) into a findings object before the interpretation stage sees it, so interpretation reasons over evidence, not over the research transcript.
-  (The distill call runs non-thinking — wired 2026-08-01 with an explicit `think: false` on the wire, unlocked by the #14645 verification on the pinned Ollama; the version-discipline rule in [local-model-operations.md](local-model-operations.md) re-locks a `format`-carrying non-thinking call on any unverified version bump.)
-- **Compute, don't guess — and since `portfolio-v7`, compute the baseline.**
+  A holding's research reaches interpretation as its analysis — one document consolidating the topics' write-ups, which are distilled first (by the reasoner in non-thinking mode, or the fast 35B tier if resident) only where the analysis prompt is over budget — so interpretation reasons over the research's account of the evidence, never over the research conversations.
+  (The distill call runs non-thinking with an explicit `think: false` on the wire and no grammar; the version-discipline rule in [local-model-operations.md](local-model-operations.md) governs the one `format`-carrying non-thinking call, the typed appendix, re-locking it on any unverified version bump.)
+- **Compute, don't guess — and compute the baseline.**
   Quantitative finance — metrics, sub-scores, risk tiers, valuation multiples, volatility, concentration, and scenario price targets — is computed by the Rust application layer (a deterministic financial-analysis engine), never adopted from model output: every **baseline-arm** value is computed, and the model's own arm is authored beside that baseline, never in place of it.
-  **Both suite jobs are now two-arm**: the engine's values are the **baseline arm**, and the model additionally authors its **own** clearly-typed arm of the judgment fields — in **Portfolio Analysis** the sub-scores, target bands, conviction, outlook, and action; in **Trade Opportunities** the sub-scores, target bands, implied-expectations read, conviction, and — since the placement ruling (2026-08-19) — the risk tier, horizon, and business-runway read, the tier × horizon placing the matrix card while the engine's rule-derived pair stays the baseline and the gate's scale ([trade-opportunities.md §The opportunity space](trade-opportunities.md#the-opportunity-space)) — unrestricted, validated structurally and on each field's declared domain but never against the engine's values ([portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict)), with a deterministic scoreboard scoring both arms against realized outcomes.
-  What that scoreboard actually scores is the **target bands** (an interval scorer over each arm's entry-vintage values, plus Portfolio's outlook-direction read); **sub-scores, conviction, and Trade Opportunities' authored tier / horizon / runway are recorded unscored**, behind the shared ≥ 30-unique-issuer bar, because a reliability rule for them is a calibration-tier question neither job has settled — recording them now is what makes settling it possible later.
+  **Both suite jobs are two-arm**: the engine's values are the **baseline arm**, and the model additionally authors its **own** clearly-typed arm of the judgment fields — in **Portfolio Analysis** the conviction and the expected share price at three months, twelve months and three years, argued in its thesis document, and the action with its own one-line rationale from a separate call; in **Trade Opportunities** the sub-scores, target bands, implied-expectations read, conviction, and the risk tier, horizon, and business-runway read, the tier × horizon placing the matrix card while the engine's rule-derived pair stays the baseline and the gate's scale ([trade-opportunities.md §The opportunity space](trade-opportunities.md#the-opportunity-space)) — unrestricted, validated structurally and on each field's declared domain but never against the engine's values ([portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict)), with a deterministic scoreboard scoring both arms against realized outcomes.
+  What that scoreboard scores is each arm's price view at its authored horizon — the engine's bands and Trade Opportunities' model-arm bands by an interval scorer over their entry-vintage values, Portfolio's model-arm expected prices by direction and percentage error at each of the three horizons; **conviction and Trade Opportunities' authored tier / horizon / runway are recorded unscored**, behind the shared ≥ 30-unique-issuer bar, because a reliability rule for them is a calibration-tier question neither job has settled — recording them now is what makes settling it possible later.
   Two rules hold on both sides: engine-owned values are **app-stamped directly, never echoed through the model** (so no exact-equality echo check is needed on either job — the round-trip that made one necessary is gone), and the model arm's judgment values never alter or bind the engine baseline, which is what keeps a missing input a gap rather than a fabricated level on the arm the machinery trusts.
   Each job single-homes its own boundary statement, with its intentional downstream consumers and its typed validated channels: [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict) and [trade-opportunities.md §The opportunity](trade-opportunities.md#the-opportunity).
   The line is not engine-versus-model but **fact-versus-judgment**: facts and their arithmetic stay single-valued (a second version of a price or an Altman Z is fabrication, not judgment), as does each job's outcome machinery — whoever keeps score cannot also be a player — while judgments about the future are carried twice.
@@ -176,11 +176,11 @@ Each local job persists its results as a **run**, retaining the most recent N ru
 Two uses follow:
 
 - **Continuity input.**
-  The prior run's per-item verdict feeds the next run.
-  A change in a grade, action, target, or opportunity status must be justified by what materially changed — the same conviction-with-continuity doctrine the report thesis follows ([thesis-continuity.md](thesis-continuity.md)), applied per holding and per opportunity.
+  The prior run's per-item verdict feeds the next run — for Portfolio, the holding's prior position, its prior analysis and its prior and debut thesis documents.
+  A change in action, conviction, expected price, or opportunity status must be justified by what materially changed — the same conviction-with-continuity doctrine the report thesis follows ([thesis-continuity.md](thesis-continuity.md)), applied per holding and per opportunity.
   Output is firm and directed; it does not swing between runs absent hard supporting data.
 - **Semantic recall.**
-  Run results are embedded into vector memory so a later run of *the same job* can retrieve the relevant prior analysis for a given item.
+  Run results are embedded into vector memory so a later run of *the same job* can retrieve relevant prior-run material for a given item.
 
 **Each job's learning memory is isolated to that job.**
 Vector memory holds each job's accumulated continuity learnings across three independent partitions — the Market Signal Report, Portfolio Analysis, and Trade Opportunities — and a job writes and reads **only its own**.

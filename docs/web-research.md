@@ -8,169 +8,119 @@ The tool is **keyless, local-first, and cost-free** by default.
 ## The research loop and context management
 
 A research stage runs as a bounded, multi-turn loop.
-The stage's **agenda** — the specific topics the research must answer for the item under study — is **assembled deterministically by the orchestrator** from that stage's documented topic list (fixed topics plus deterministically triggered conditional ones, e.g. Portfolio's technology-event topic); the reasoner (the 122B model in thinking mode) *works* the agenda, never authors it, **one topic at a time**: each topic gets its own focused **research pass** over a clean conversation (the dossier facts, that topic's questions, Portfolio's bounded raw-page reuse described below, and any orienting **reuse seed** the job's contract defines — e.g. Portfolio's per-topic prior distilled object, [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
-One carve-out: Trade Opportunities' discovery routes have no documented topic list, so there the Step-3b planning call **proposes each route's topics and the app validates them** like the route list itself — still a model-proposes / app-validates agenda, never the research model authoring topics mid-loop ([trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research); ruled 2026-08-19).
-A pass is itself a bounded multi-turn tool loop — the model emits `web_search` / `web_fetch` calls, the orchestrator executes them and returns the results as tool messages for the next turn, until the topic is answered or the budget (below) is spent.
+The stage's **agenda** — the topics the research must answer for the item under study — is **assembled deterministically by the orchestrator** from that stage's documented topic list: fixed topics plus deterministically triggered conditional ones, such as Portfolio's technology-event topic, which the engine's event pre-flag alone makes eligible.
+The reasoner (the 122B model in thinking mode) *works* the agenda, never authors it, **one topic at a time**: each topic gets its own focused **research pass** over a clean conversation.
+One carve-out: Trade Opportunities' discovery routes have no documented topic list, so there the Step-3b planning call **proposes each route's topics and the app validates them** like the route list itself — still a model-proposes / app-validates agenda, never the research model authoring topics mid-loop ([trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research)).
+A pass is itself a bounded multi-turn tool loop — the model emits `web_search` / `web_fetch` calls, the orchestrator executes them and returns the results as tool messages for the next turn, until the topic is answered or the budget (below) is spent — followed by a separate synthesis conversation that writes the pass's **write-up**, the topic's running account of what its research established.
+
+**The gathering brief.**
+Portfolio's gathering brief is one message in two parts on the frame every Portfolio prompt shares: the data with its glosses, then the task.
+Part 1 leads with the text that is constant across the holding's topics and ends with the topic's own.
+The constant text is the holding header with the analysis date; the fetched values the holding's dossier carries, as [portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research) lists them; the news leads; on a continuity run the prior analysis and the prior thesis document; and the pages already retrieved while researching this holding.
+The topic's text follows: the topic's questions; on a follow-up pass the question it pursues and the topic's write-up so far; on the disconfirming pass the run's write-ups so far.
+The order serves the runtime's prompt cache: consecutive topic conversations on one holding share their leading text byte for byte, and the topic text after it stays short enough to sit past the previous conversation's saved checkpoint ([local-model-operations.md §Serving & memory](local-model-operations.md#serving--memory-apple-silicon-128-gb)).
+A truncated or re-read page shortens that shared prefix, and the saving is an expectation of the runtime until a run's serve log confirms it.
+Part 2 states what to find, how to weigh a source (a source tier nearer 0 and an extraction quality nearer 1 preferred; a weak source lowers confidence, it does not exclude; a figure that cannot be right is a defect of the source), the per-reply tool-call bound, and when to stop — a reply with no tool call.
+Where pages are shown, it asks the model to read them before searching for the remaining answers; a brief with no page shown asks to search first.
+The model judges what the shown pages leave unanswered; there is no question-status tool and no app-assigned answered list.
+The follow-up pass's opening states what to find on the follow-up question, then that the topic's questions are what that question serves and are not searched on the pass.
+The disconfirming pass's opening states what to find on its question, then that the write-ups are what that question tests, searched for evidence against them and not for more evidence for them.
+The fetch clause names the news leads as candidates beside the search results, under the one test of what is most likely to answer the questions.
+The gathering system message names the two tools its verbs map onto, `web_search` and `web_fetch`.
+The two tool descriptions state what a search result and a fetched page carry, with the tier scale's range, 0 to 5, beside its endpoints; the fetch description states the extraction-quality range, 0 to 1, and the stub flag in plain words, and carries no weighing or safety instruction.
+Each fetched page is shown as `web_fetch` returns it: a header stating the address, the title, the publication date the search reported, the retrieval time, the source tier, the subjects the source is trusted on, the extraction quality and the stub flag, then the page's text framed as quoted material.
+The tool results are data in the same register — a search result's fields, a page's header and quoted text, and a failed search or fetch stated as such — with no instruction in any of them.
+A tool result never carries the operator's error text.
+A failed search returns one fixed sentence, "SEARCH FAILED: the search did not complete."
+A failed fetch returns one of five, chosen by the failure's typed class: the site's HTTP answer with its status, an address the app does not fetch, a page that could not be read, an invalid address, or no answer, each ending "No text was retrieved."
+A remembered failure replays the class its live failure had, so the line reads the same either way.
+The raw error text rides the run tracker's request row, where it is already recorded.
+A search whose results all fall to the rank-time filter is an empty answer, rendered "No results." and counted as an empty search, not a failed one.
+A call the app cannot read returns "ERROR: unknown or malformed tool call …" with the name it saw.
+
+**Gathering is bounded before every request, never by the server's own truncation.**
 One gathering response may request at most **8 tool calls** (`MAX_TOOL_CALLS_PER_TURN`): the orchestrator executes the deterministic head, records the omitted tail as partial coverage, and moves directly to synthesis rather than silently continuing after an over-large batch.
 Before every gathering model call, the orchestrator serializes the complete growing message history plus the tool schema and refuses to issue the request if it would cross the shared input-budget guard (with a fixed request-envelope reserve); it applies the same check before retaining each assistant tool-call turn and tool result, then stops gathering and records any omitted result or unexecuted call as degradation when the next addition would overflow.
 The same message-and-tool serializer feeds the run's prompt-size telemetry, so assistant tool calls and the tool schema cannot disappear from the likely-front-truncation read merely because their visible message content is empty.
 Search titles, snippets, dates, and display URLs plus fetched-page titles, dates, and display URLs are capped or omitted in gathering tool results, so untrusted metadata cannot consume the packet independently of the page-text cap.
-The pass's findings are then authored by a **separate synthesis call** — a fresh conversation carrying the gathered evidence and the findings grammar but no tool-call history — so a tool-using gathering turn and the findings grammar never share one request (attempt 4 Finding 4, fix B: the production joint shape emitted empty or fenced bodies on roughly 70% of the first seven holdings; the short pre-flight had passed 8/8, so this is protocol isolation around the observed joint condition, not a claim that Ollama universally rejects tools plus `format`; `research.rs`, `synthesize_findings`).
-The degradation the discarded gathering history carried — failed or empty searches, failed fetches, a per-page fetch truncated at the text cap, capped or budget-skipped calls — is recorded as a persisted gap.
-Since `portfolio-v59` (ruled 2026-09-29), it reaches no model: the synthesis is a fresh conversation that never saw which search or fetch served which question, so a note of aggregate losses could only be guessed onto a gap, and the findings state what the evidence leaves unanswered without a reason.
-Until then the brief carried it as a SEARCHING note in plain words, rendered from the same record as the persisted gap.
-A pass that retrieved no page with body text spends no synthesis call: the app records the pass itself — a fixed sentence plus the plain-words note of what was lost, no claims, no follow-up — with the same gaps (fix list 4.3, ruled 2026-09-17).
-The synthesis message closes with the findings object's shape, every value a placeholder and the source id listing the ids the evidence shows, pinned to the grammar's key set by test; since `portfolio-v59` a string-or-null field shows both alternatives inside quotes.
-The object is the findings, the claims and, on a topic pass, the follow-up proposal; the disconfirming pass returns findings and claims only, and no field the app does not read is asked for (the topic-answered, material-forward-fact and model-attributed seed fields were retired 2026-09-17).
-Since `portfolio-v60` (ruled 2026-09-29), a topic's last pass under the depth cap returns findings and claims only as well, since no pass could take up its proposal.
-Its system message names findings and claims alone, its task has no follow-up item, and its shape and grammar carry no follow-up fields.
-For Portfolio, each rendered source has a contiguous pass-local `S1`, `S2`, … identifier assigned after evidence admission, and the synthesis wire cites `source_id` instead of copying a URL.
-Since `portfolio-v63` the distillation's claim lines carry the same kind of id (`C1`, `C2`, …), cited as `evidence_id` in place of the evidence reference and URL (canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation)).
-Since `portfolio-v64` its return shape shows a number-or-null field's both alternatives (`"<0|null>"`), as the synthesis shape shows a string-or-null field's (canonical at the same section).
-The same rendered-source mapping supplies the prompt identifiers and their resolution; empty, duplicate and budget-omitted pages introduce no numbering gaps.
-The app resolves only identifiers for evidence actually shown in that call, then preserves the claim, final source URL, app-stamped retrieval time, search/seed-reported publication metadata, and source-stated fact period, including redirected seed lineage.
-A fact period preserves calendar precision, including a calendar quarter as `YYYY-Q1` through `YYYY-Q4`, or an unmapped fiscal label; missing dates remain unknown and never inherit retrieval or analysis time.
-A quarter requires source-stated calendar correspondence and a null `end`; fiscal quarter labels remain exact source labels with no guessed calendar mapping.
-The synthesis task illustrates every period kind, including `Q4 FY2025` as fiscal.
-Since `portfolio-v49`, the shape's fact-period value placeholder lists one format per kind in the kind placeholder's order, and the fiscal gloss names the source's label without calling it exact.
-Since `portfolio-v49`, the task's first item states that `findings` is written first and never left empty.
-A rejected fact period's gap names the kind and value that were rejected.
-The app validates period structure; semantic dating remains the model's responsibility.
-Unknown identifiers, URL strings supplied as identifiers, and identifiers for budget-omitted sources cannot become citations.
-Portfolio's synthesis message is one message in two parts on the frame every Portfolio prompt shares (`portfolio-v43`, ruled 2026-09-17).
-Since `portfolio-v62` its system message names the outputs before that frame, as every object-returning call does (canonical at [portfolio-workflow.md §Step 6f](portfolio-workflow.md#step-6f-interpretation-and-grading)).
-Since `portfolio-v49` (attempt-8 Finding 4, ruled 2026-09-27), Part 1 leads with the holding-constant text and ends with the topic's own: the holding header with the analysis date, then the evidence, then the topic's questions, on a follow-up pass the question it pursues, on the disconfirming pass the claims it tests (and, until `portfolio-v59`, the searching note where gathering lost something).
-The order serves the runtime's prompt cache: consecutive syntheses on one holding can then share their header and leading pages byte for byte, with the topic text after the evidence short enough to sit past the previous synthesis's saved checkpoint.
-A truncated or re-read page shortens that shared prefix, and the saving is an expectation of the runtime until a run's serve log confirms it.
-Each page's header states the source tier (0 to 5: 0 a primary source, 5 sentiment only), the publication date the search reported, the retrieval time, the subjects the source is trusted on, the extraction quality and the stub flag, with the fields glossed once above the pages.
-Since `portfolio-v59` (ruled 2026-09-29), that gloss names the TOPIC heading the pages were retrieved for, a forward reference since EVIDENCE leads Part 1 for the cache, and states the fields in the fetch description's words and shape: a semicolon list, each explanation bracketed, in the header's order, the stub flag glossed as a page that did not yield its article.
-Since `portfolio-v61` (ruled 2026-09-29), the disconfirming synthesis's gloss names "the question under TOPIC", the one its topic holds; that synthesis opens on its own system message, so the wording costs no shared prefix.
-Its CLAIMS SO FAR gloss names the two provenance fields each line carries, the publication date the search or lead reported and the period the fact applies to, in the gathering brief's words and without the source its lines do not show.
-The fallible-source clause rides the synthesis task's weighing sentence, not the gloss, as it does on the gathering side.
-The synthesis brief carries no SEARCHING section since `portfolio-v59`; item 1 ends at what the evidence leaves unanswered.
-Since `portfolio-v59` the task's items are plain sentences, each field defined where it is named: item 1 opens "findings — write this first and never leave it empty.", then the pass's subject, then that a figure is quoted with the date or period the page gives for it, where pages disagree, and what stays unanswered; item 2 opens "claims — the statements the findings rest on, one statement per claim, each stated by a page in EVIDENCE", defines source_id and fact_period, and lists the fact-period kinds as a semicolon list with each format bracketed, `end` null for every kind but range.
-The preamble says once that the names below are the returned object's fields, beside the clause forbidding a code fence and surrounding text, which stays because it cuts the model's thinking-time deliberation over the fence, a cost the grammar cannot remove (fix list 3.7, ruled 2026-09-16).
-The return shape shows a string-or-null field's both alternatives inside quotes, so a literal null never reads as the only value.
-Since `portfolio-v60` (ruled 2026-09-29), the follow-up pass's item 1 states its subject in the topic pass's construction: "For the question under FOLLOW-UP, state what EVIDENCE shows."
-Since `portfolio-v50`, that subject field reads `trusted on`, and the fetch description and the gloss name it as the subjects the source is trusted on.
-Since `portfolio-v53` (ruled 2026-09-29), the relation between the tier and those subjects is stated nowhere in the prompts: the header's `source tier N | trusted on …` fields carry it side by side.
-Part 2 is the task in output order and the shape.
-It carries no prior findings, standing conditions, news leads or URL roster beyond the evidence, and no gathering-stage instruction: the write-up is of this pass's pages, and the distillation merges passes and priors.
-The distillation messages are the same frame (`portfolio-v44`, ruled 2026-09-17); their contract is canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation).
-Portfolio's initial gathering message is the same frame and renders once per pass, including its selected reuse block.
-Since `portfolio-v49`, its Part 1 leads with the holding-constant text: the holding header, the news leads, on a continuity run the standing conditions, and the pages already retrieved.
-Since `portfolio-v50`, the brief carries no tool-results legend.
-The two tool descriptions state what a search result and a fetched page carry, with the tier scale's range, 0 to 5, beside its endpoints.
-The synthesis EVIDENCE gloss states the same range.
-The topic's own text follows them: the topic, on a follow-up pass the question it pursues and the claims so far, on the disconfirming pass the run's claims so far, and on a continuity run the prior findings.
-Consecutive topic roots on one holding can then share their leading text through the reused pages, with the topic text after them short enough to sit past the previous root's saved checkpoint.
-On a continuity run the prior findings sit in that topic text and can carry it past the checkpoint distance, so the saving there depends on the seed's size.
-Either saving is an expectation of the runtime until a run's serve log confirms it.
-Its Part 2 states what to find, how to weigh a source (a source tier nearer 0 and an extraction quality nearer 1 preferred; a weak source lowers confidence, it does not exclude; a figure that cannot be right is a defect of the source), the per-reply tool-call bound, and when to stop — a reply with no tool call.
-Since `portfolio-v46`, ordinary topic and follow-up gathering begins with a bounded selection of raw pages already retrieved while researching this holding, before another search is requested.
-The transient holding-scoped inventory retains capped page text together with the title, publication date, original retrieval timestamp, source annotation, requested/final URL lineage and truncation status; a successful document-cache read can populate it, but failed reads and empty bodies cannot supply reused evidence.
-Selection follows first-retrieval order, rechecks current URL policy on the requested and final addresses, and fits complete page framing plus usable body text into the existing initial-message allowance after reserving the questions, task and first appended remaining-reply message.
-Unselected pages are counted in a plain omission note and persisted gap; shortened bodies carry the continuation marker and a gap, and the complete serialized gathering packet still passes the existing input guard before issue.
-No network attempt or extraction-telemetry sample is charged for this in-memory reuse.
-The inventory is discarded between holdings and is never persisted; an explicit successful re-fetch replaces a source's content and provenance together while preserving its requested aliases and first-retrieval position.
-Since `portfolio-v49`, selected reused pages lead the current pass's synthesis roster in first-retrieval order, and the pass's explicitly requested pages follow in fetch order, deduplicated by final URL.
-An explicit re-read of a reused page keeps that page's position with the fresh read's provenance.
-Reused pages pass through the same body admission, contiguous source-ID assignment and shown-source citation checks, and original retrieval dates and seed lineage survive reuse.
-Explicitly requested pages keep first claim on the synthesis input budget (ruled 2026-09-27): under overflow a reused page's tail is cut before an explicit page loses text.
-Other topics' findings and transcripts are never supplied, and the disconfirming pass retains its dedicated contrary-search behavior without automatic page injection.
-Since `portfolio-v48`, before each gathering request the app appends a short user message stating the replies remaining in this pass, including the current reply (8 down to 1).
-The initial brief, selected reuse block and every previously issued message stay unchanged; each new countdown follows the initial brief or the completed tool-result batch.
+Before each gathering request the app appends a short user message stating the replies remaining in this pass, including the current reply (8 down to 1), and that pages fetched on the last reply are kept, since the loop executes the last reply's tool calls before gathering ends.
+The initial brief, the reuse block and every previously issued message stay unchanged; each new countdown follows the initial brief or the completed tool-result batch.
 The initial allowance reserves the first countdown once, and the full serialized input guard counts every accumulated countdown alongside the other messages.
 A bounded transport retry repeats the identical packet and count without appending again, and a new pass starts at 8.
-The topic's questions remain visible and the model judges what the shown pages leave unanswered; where a page is shown, Part 2 asks it to read those pages before searching for the remaining answers, with no question-status tool or app-assigned answered list.
-Since `portfolio-v50`, that item names the PAGES ALREADY RETRIEVED block it reads, and a brief with no page shown asks to search first.
-Since `portfolio-v56` (ruled 2026-09-29), that block's gloss says each page is shown as `web_fetch` returns it, so its header fields point at the fetch description that defines them.
-Since `portfolio-v57` (ruled 2026-09-29), the topic questions carry no filler word: "actually", "genuinely", "exactly" and "real" left the fund exposure, stock results, forward-thematic and technology questions, which are otherwise unchanged.
-Since `portfolio-v58` (ruled 2026-09-29), a tool result never carries the operator's error text.
-A failed search returns one fixed sentence, "SEARCH FAILED: the search did not complete."
-A failed fetch returns one of five, chosen by the failure's typed class: the site's HTTP answer with its status, an address the app does not fetch, a page that could not be read, an invalid address, or no answer, each ending "No text was retrieved."
-A remembered failure replays the class its live failure had, so the line reads the same either way.
-The raw error text rides the run tracker's request row, where it was already recorded.
-A search whose results all fall to the rank-time filter is an empty answer, rendered "No results." and counted as an empty search, not a failed one; before v58 it was an error whose text named SearXNG to the model.
-A call the app cannot read returns "ERROR: unknown or malformed tool call …" with the name it saw.
-Its fetch clause names the news leads as candidates beside the search results, under the one test of what is most likely to answer the questions.
-The gathering system message names the two tools its verbs map onto, `web_search` and `web_fetch`.
-The fetch tool's description states the extraction-quality range, 0 to 1, and the stub flag in plain words, and carries no weighing or safety instruction.
-The quoted-material frame stays on each page's text marker, and the fallible-source clause rides Part 2's weighing sentence.
-Since `portfolio-v51` (ruled 2026-09-28), the follow-up pass's opening is two sentences: what to find on the FOLLOW-UP question, then that the TOPIC questions are what that question serves and are not searched on the pass, with the claims-so-far clause where claims render.
-On that pass items 1 and 3 name the FOLLOW-UP question; the root and continuity passes keep "the questions".
-Each claim's provenance line reads `published` and `fact period` on every surface that renders it, and the follow-up pass's CLAIMS SO FAR gloss names them as the publication date the search or lead reported and the period the fact applies to.
-The countdown message states that pages fetched on the last reply are kept, since the loop executes the last reply's tool calls before gathering ends.
-Since `portfolio-v52` (ruled 2026-09-29), the source-quality value is named `source tier` on every surface the model sees: the two tool descriptions, each search result line, each page header in gathering and in the synthesis EVIDENCE block, the weighing sentences and the EVIDENCE gloss.
-The gathering weighing sentence prefers a source tier nearer 0 and an extraction quality nearer 1, stated by the two scales' endpoints in the words the results and headers carry.
-The subject-tier relation is no longer a bracket on the fetch description or a clause in the EVIDENCE gloss.
-Since `portfolio-v53` (ruled 2026-09-29), it is not a task sentence either: the header's two fields carry it, and the prompts state nothing about their link.
-Since `portfolio-v54` (ruled 2026-09-29), a prior claim under PRIOR FINDINGS takes the CLAIMS SO FAR shape, the claim and its source on one line and `published: …; fact period: …` under them, and its gloss names the two fields in the same words.
-The fact-period gloss reads "the period the fact applies to" wherever the field is glossed: CLAIMS SO FAR, PRIOR FINDINGS, the synthesis claims item and the distillation date rule.
-Since `portfolio-v64` (ruled 2026-09-30), the CLAIMS SO FAR and PRIOR FINDINGS glosses state a line's fields as one colon-introduced semicolon list, the EVIDENCE gloss's shape: "What this run's research established on the holding. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to." (the disconfirming synthesis's without the source its lines do not show), where "each with a, b, and c" ran two lists on one comma.
-The distillation TOPICS gloss takes the same sentence with its own fields (canonical at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation)).
-The continuity clause in item 1 names the headings it draws on, a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS, naming only the heading the brief shows.
-Since `portfolio-v55` (ruled 2026-09-29), the disconfirming pass's opening is two sentences: what to find on the question under TOPIC, then that the claims under CLAIMS SO FAR are what that question tests, searched for evidence against them and not for more evidence for them.
-Its items 1 and 3 say "the question", since that brief carries one, and its CLAIMS SO FAR gloss names the two provenance fields in the follow-up pass's words.
-Since `portfolio-v60` (ruled 2026-09-29), the follow-up pass points at its headings as the disconfirming pass does, never using a heading as an adjective.
-Its opening asks what the web shows on the question under FOLLOW-UP, then says the questions under TOPIC are what that question serves, and where claims render that the claims under CLAIMS SO FAR need no second search.
-Its items 1 and 3 name the question under FOLLOW-UP.
-All turn, tool-call, fetch, elapsed-time and context limits remain unchanged.
-The tool results are data in the same register: a search result's fields, a page's address, title, dates and annotation fields and its text framed as quoted material, and a failed search or fetch stated as such, with no instruction in any of them.
-The `format` grammar is a decoding constraint the model never sees.
-A model told only that a grammar existed planned its content around a guessed Markdown serialization (attempt-5 Finding 5; `research.rs`, `findings_return_shape`).
-The app independently requires the grammar's two required findings keys and rejects blank findings or blank claim fields as `SchemaParse`, under the same bounded synthesis re-issue as malformed JSON; a syntactically valid empty object therefore cannot become a completed pass.
-Its evidence planner jointly selects source headers and body allocations: every selected source must fit its header, fixed markers, and usable body text, omitted headers are reclaimed before the surviving bodies are water-filled, and every truncation or omission is shown inline and persisted as a gap.
-Those persisted per-holding research gaps are counted without matching their prose into `DataHealth.research_degraded_holdings` and `research_gap_count`, and the existing Portfolio roll-up summary renders the result; the counts remain informational rather than an attention trigger because research is additive and fail-soft.
-When a pass surfaces a sub-thread worth pursuing, it may spawn an **app-governed follow-up pass**, bounded to **depth ≤2** — a topic's root pass plus at most two follow-ups, so **≤3 passes per topic**.
+
+**Pages already retrieved on the holding are reused before another search is requested.**
+Ordinary topic and follow-up gathering begins with a bounded selection of raw pages already retrieved while researching this holding.
+The transient holding-scoped inventory retains capped page text together with the title, publication date, original retrieval timestamp, source annotation, requested/final URL lineage and truncation status; a successful document-cache read can populate it, but failed reads and empty bodies cannot supply reused evidence.
+Selection follows first-retrieval order, rechecks current URL policy on the requested and final addresses, and fits complete page framing plus usable body text into the initial-message allowance after reserving the questions, task and first countdown message.
+Unselected pages are counted in a plain omission note and persisted gap; shortened bodies carry the continuation marker and a gap, and the complete serialized gathering packet still passes the input guard before issue.
+No network attempt or extraction-telemetry sample is charged for this in-memory reuse.
+The inventory is discarded between holdings and is never persisted; an explicit successful re-fetch replaces a source's content and provenance together while preserving its requested aliases and first-retrieval position.
+Other topics' write-ups and transcripts are never supplied to a topic pass; the disconfirming pass alone carries the run's write-ups, and it keeps its dedicated contrary-search behavior without automatic page injection.
+
+**The synthesis conversation writes the pass's write-up.**
+The write-up is authored by a **separate synthesis conversation** — a fresh conversation carrying the gathered evidence but no tool-call history and no tools, so a tool-using gathering turn and the write-up never share one request — in thinking mode, with no output grammar: the write-up is prose.
+Its first message is one message in two parts on the shared frame.
+Part 1 leads with the holding header and the fetched values, then the evidence, and ends with the topic's own text: the topic's questions; on a follow-up pass the question it pursues and the topic's write-up so far; on the disconfirming pass the write-ups it tests.
+Consecutive syntheses on one holding can then share their header, fetched values and leading pages byte for byte, under the same cache expectation as the gathering brief.
+The evidence is every page the pass's gathering conversation carried — the reused pages in first-retrieval order, then the pages the pass requested in fetch order, deduplicated by final URL, an explicit re-read of a reused page keeping that page's position with the fresh read's provenance — each under the header `web_fetch` gave it, the header fields glossed once above the pages.
+The evidence planner jointly selects source headers and body allocations: every selected source must fit its header, fixed markers, and usable body text, omitted headers are reclaimed before the surviving bodies are water-filled, and every truncation or omission is shown inline and persisted as a gap.
+Explicitly requested pages keep first claim on that budget: under overflow a reused page's tail is cut before an explicit page loses text.
+Part 2 is the task: the write-up states what the research established on the topic's questions, quotes each figure with the date or period its source gives for it and names that source — the address of the page that states it, or the fetched values where the figure comes from them — says where pages disagree, and says what the evidence leaves unanswered, within a length band stated as an instruction ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
+On a follow-up pass the model rewrites the topic's write-up whole, folding the new evidence into what the write-up so far established, so a topic has one write-up at any time.
+The app reads the write-up as text and validates nothing in it — whether it cites faithfully is the model's own doing — and an empty body is the adapter's transient class ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
+The second message of the same conversation asks whether the research has a follow-up question.
+The reply is the question as plain text and nothing else, or the one word `none`, which is the only reply the app interprets: anything else is the follow-up question verbatim, and it becomes the next pass's question.
+The second message is not sent on a topic's last pass under the depth cap, since no pass could take up its question, nor on the disconfirming pass.
+A pass that retrieved no page with body text spends no synthesis conversation: the topic's write-up so far stands, the pass leaves none of its own, and its losses persist as gaps.
+The degradation the gathering history carried — failed or empty searches, failed fetches, a per-page fetch truncated at the text cap, capped or budget-skipped calls — is recorded as a persisted gap and reaches no model: the synthesis never saw which search or fetch served which question, so the write-up states what the evidence leaves unanswered without a reason.
+Those persisted per-holding research gaps are counted into `DataHealth.research_degraded_holdings` and `research_gap_count`, and the Portfolio roll-up summary renders the result; the counts remain informational rather than an attention trigger because research is additive and fail-soft.
+
+**Follow-ups are app-governed and bounded by depth.**
+When a pass asks a follow-up question, it spawns an **app-governed follow-up pass**, bounded to **depth ≤2** — a topic's root pass plus at most two follow-ups, so **≤3 passes per topic**.
 That cap counts passes (branches), *not* raw LLM turns: the turns and fetches inside each pass are governed by the per-item budget below, not the depth cap.
-A follow-up is the model's *proposal*, carried as a structured field the orchestrator reads and decides whether to spend; the model never recurses on its own.
+A follow-up is the model's *question*; the orchestrator reads it and decides whether to spend it, and the model never recurses on its own.
 Portfolio schedules passes by root-before-follow-up priority, then agenda order, then depth: every eligible root precedes pending follow-ups, and each topic's follow-ups retain its priority through the depth cap.
-Since `portfolio-v48`, Portfolio determines technology-topic eligibility when assembling the agenda, from the engine event pre-flag or a standing technology-class falsifier.
-Synthesis requests no `followup_technology_event` field, and a follow-up proposal cannot add a technology topic mid-loop.
-An initially eligible technology root shares the roots-first queue; ordinary follow-ups retain their existing depth limit.
-Each pass still begins a clean conversation with only its own topic's prior claims and seed, plus the bounded holding-scoped raw-page reuse.
+Technology-topic eligibility is settled when the agenda is assembled, from the engine's event pre-flag; a follow-up question cannot add a topic mid-loop.
+Each pass begins a clean conversation with the holding-constant text, its own topic's text and write-up so far, and the bounded holding-scoped page reuse.
 Budget exhaustion records skipped roots separately from unspent follow-ups; roots themselves may exhaust the budget, so the ordering does not guarantee complete coverage.
-The disconfirming pass retains its final placement after the topic work, under the same budget ([portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research)).
-**Terminology:** a topic is worked in **isolation** from other topics — its own pass loop over a clean conversation, with Portfolio's bounded raw-source reuse but no other topic's findings or transcript, plus that pass's separate synthesis call; where a workflow doc says *one call per topic*, it means this per-topic isolation — within which each **turn** is one model request and the orchestrator owns every tool execution — never a single-request contract.
+The disconfirming pass runs last, after the topic work, under the same budget: one gathering conversation that searches for evidence against the run's write-ups so far, then its own synthesis conversation, which writes its write-up and asks no follow-up ([portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research)).
+**Terminology:** a topic is worked in **isolation** from other topics — its own pass loop over a clean conversation, with Portfolio's bounded raw-page reuse but no other topic's write-up or transcript, plus each pass's separate synthesis conversation; where a workflow doc says *one call per topic*, it means this per-topic isolation — within which each **turn** is one model request and the orchestrator owns every tool execution — never a single-request contract.
 
 The orchestrator — not the model — owns every request, so the loop is bounded the way the report's research executor is.
 Several ceilings work together: the per-pass turn, per-turn tool-call, and aggregate-history bounds above; the per-topic depth cap (a quality guard against rabbit-holing one topic); and a **per-item budget that binds first** — a cap on **web-fetch attempts and wall-clock per item** (a failed live attempt spends like a served one, so failing URLs can't ride for free; a document-cache hit or remembered failure spends nothing; a retry spends another attempt), spent across all topics in priority order and polled at each request boundary (see [report-workflow.md](report-workflow.md)).
 That boundary poll is a *between-requests gate*, never a mid-request kill — a model call or fetch already in flight always runs to completion.
-A spent budget then stops further fetches, any follow-up pass, and the move to the next topic, but does not suppress the current pass's findings synthesis.
-That synthesis is the separate model call over the gathered evidence, not a tool turn — the rule the per-job logic flows already state, *once the topic is answered or the budget is spent, the pass's findings are authored* — so a budget-interrupted pass still yields findings, not nothing.
+A spent budget then stops further fetches, any follow-up pass, and the move to the next topic, but does not suppress the current pass's synthesis.
+That synthesis is the separate conversation over the gathered evidence, not a tool turn — *once the topic is answered or the budget is spent, the pass's write-up is authored* — so a budget-interrupted pass still yields a write-up, not nothing.
 A genuinely hung request is still abandoned by a *separate* per-call stuck-daemon timeout, so honoring in-flight completion never hands a non-responding call an unbounded lease.
 When the budget drains, the lowest-priority remaining topics are skipped fail-soft (recorded as a degraded-input gap, lower conviction), never failing the run.
 The model decides *what* to look up; the application decides *how much* it is allowed to.
 The fetch-count, topic, depth, turn, and per-turn tool-call caps are pinned defaults; the wall-clock cap is calibrated against measured local throughput on first runs.
 
-**Context stays bounded by extraction and an evidence ledger — not by re-distilling findings mid-loop.**
-Local models have finite context, so the orchestrator never hands the model raw source documents or an unbounded turn-by-turn transcript: each fetched page is **readability-extracted** to its article text, and every extracted claim is appended to a per-item **evidence ledger** (claim + source URL + timestamp).
-Within a topic's bounded pass the reasoner works over that topic's extracted page text and the ledger; as-built pressure is bounded by the per-result field and page-text caps, the 8-call per-turn cap, the turn cap, and the aggregate gathering-packet guard before every request, while a pressure-driven roll-off of older raw page text remains unnecessary and unbuilt.
-Crucially, the loop does **not** run an in-between model step that re-summarizes the model's own findings — each topic's pass emits its **full findings response**, preserved whole and carried (with its ledger entries) to the **distillation stage downstream**.
-That per-topic response is **assembled deterministically** — the orchestrator accumulates each pass's findings as distinct, ledger-linked entries across the topic's ≤3 passes (append-only, structure preserved so a heavy route can later sub-distill along its seam), **never a topic-close model synthesis** — so the **first** model consolidation of the findings, for any stage, is the downstream call (per-candidate distillation, or discovery's card formation).
-That is the deliberate division of labor: the only mid-loop reduction is the deterministic page extraction a finite context forces, the model's reasoning output is never re-distilled *during the research loop*, so research is never planned over *this run's* lossy, already-summarized notes *and* distillation sees each topic's complete context (a persisted *prior*-run distilled object seeding a later loop, where a job's reuse contract defines it, is a distinct cross-run mechanism outside this in-loop rule).
-The loop stops when the agenda's questions are answered or the budget is spent; the per-topic full findings — each claim carrying its source URL and timestamp — are what flow to that downstream distillation (the "forward only what's needed" rule from [local-models.md §Context-memory discipline](local-models.md#context-memory-discipline) is applied **after** research, not inside it).
+**Context stays bounded by extraction and by bounded documents — never by a transcript.**
+Local models have finite context, so the orchestrator never hands the model raw source documents or an unbounded turn-by-turn transcript: each fetched page is **readability-extracted** to its article text and capped, and each topic's research accumulates in one bounded document, its write-up.
+Within a pass the reasoner works over the pages its conversation carries and the write-up so far; pressure is bounded by the per-result field and page-text caps, the 8-call per-turn cap, the turn cap, and the aggregate gathering-packet guard before every request, while a pressure-driven roll-off of older raw page text remains unnecessary and unbuilt.
+The only reductions inside the loop are the deterministic page extraction a finite context forces and the model's own rewrite of its topic's write-up over the new pages.
+Research is never planned over a distillate: the gathering brief carries pages and the write-up so far, never a shortened copy of either, and the first consolidation across topics is the downstream analysis (below).
+The loop stops when the agenda's questions are answered or the budget is spent; the topics' write-ups are what flow to that consolidation (the "forward only what's needed" rule from [local-models.md §Context-memory discipline](local-models.md#context-memory-discipline) is applied **after** research, not inside it).
+Provenance rides the page and its roster, not a typed claim: every page the model reads carries its address, the publication date the search reported and the retrieval time in its header; the write-up is instructed to name the source of each dated fact — the page that states it, or the fetched values where the fact comes from them — and whether it does so faithfully is the model's own doing; and the app persists on the holding's audit record the roster of pages shown to the model, each with its address, title, publication date, retrieval time and source tier, never its text ([storage.md](storage.md)).
 
-**Seeds that orient a loop are recorded as leads, distinct from evidence.**
-Some research loops are *seeded* by a structured feed — a stage opens a topic primed with ticker-tagged, dated headlines that point at what to pursue (most visibly Trade Opportunities' discovery routes, seeded by the FMP news / articles feeds and the macro-release calendar — [trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research)).
-A seed is a **lead, not a citation**: it orients the research, but the conviction-bearing content must still come from the web tool's deep-read of the underlying source, so a seed is **never written into the evidence ledger as a claim** — that would re-admit a thin, second-hand snippet as if it were verified evidence.
-Each loop instead keeps a small, typed **seed-lineage lane** beside the ledger, populated two ways: **(1)** *deterministically* — whenever the model deep-reads a seed's URL, the resulting ledger claim carries a **`surfaced_by`** back-pointer to that seed (its feed source, headline, URL, timestamp), so "what oriented this finding" is recoverable at ~no cost; and **(2)** *model-attributed* — a Trade Opportunities discovery route may name the bounded set of seeds it judges to have shaped its hypothesis even where it did not fetch them, capped by config so seed provenance can't bloat the working context ([configuration.md §Research Context Management](configuration.md#research-context-management-hierarchical-distillation)).
-Portfolio's loop records the deterministic leg only: its model-attributed field was retired 2026-09-17, since a fresh synthesis conversation cannot see which seeds guided a gathering history it never saw and nothing read the field.
-Because model-attributed lineage is the one **fabricable** leg, it is **validated, not trusted**: the orchestrator assigns every seed it feeds a loop a **stable seed ID**, a `seeded_by` entry must reference one of that loop's known IDs, and the app **drops and logs any unknown reference** — so the reasoner can attribute among the *real* seeds but cannot invent one (the same model-proposes / app-validates split the hypothesis score uses).
-Distillation reads the seed-lineage lane as **provenance, never as scored evidence**; a useful by-product is that the gap between a seed's claim and what its deep-read actually found is itself a narrative-vs-reality signal.
-The lineage rides the stage's structured output into the run audit record — and, in discovery, onto the opportunity-graph node ([trade-opportunities.md §Discovery memory](trade-opportunities.md#discovery-memory-the-opportunity-graph)).
+**Leads orient a loop; they are not evidence.**
+Portfolio's gathering brief names the holding's news leads — dated headlines with their addresses — as fetch candidates beside the search results.
+A lead is a lead, not a citation: it points at what to pursue, and a write-up rests on the pages the model read, never on a lead's headline or snippet.
+Trade Opportunities' discovery routes are seeded the same way from the FMP news and articles feeds and the macro-release calendar, and what that job keeps of a seed is specified in its own documents ([trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research)).
 
-**The downstream distillation may be hierarchical.**
-Consolidation is one reusable primitive — *distill one complete research topic-tree (a top-level topic plus its ≤3 looped passes) into a compact, structured object* — applied wherever a single consolidation call would overflow the model's working context.
-When the per-item research is small the stage is a **single pass** over every topic-tree's full findings, exactly as before.
-When it is large (many topics, or a deep tree), the stage becomes **map-reduce**: a **tier-1** distillation per topic-tree, then a **tier-2 reduce** over those tier-1 outputs into the one object the next stage reads.
-This lets research grow without any single call overloading, and lets the model focus on a coherent subset at a time.
-Two invariants keep it faithful to the no-mid-loop-re-distillation rule above: **(1)** the tier-1 distillation of a topic-tree covers that tree's **complete** findings (never an in-loop summary) — sub-distilling along its **pass seam** (a pass-level map — each pass carrying its findings *and* its ledger-linked entries, each map call counted against the sub-distillation cap — then a tree-level reduce, which is not counted) only where one tree's **complete** tier-1 input (its findings, their evidence-ledger entries, and any job-specific input such as Portfolio's reuse prior) would itself overflow a single call — and runs only *after* that tree's research is done, so research is still never planned over *this run's* distilled notes; and **(2)** any reasoning that must span topics — most importantly Trade Opportunities' **cross-lens contradiction check**, which only bites once all lenses share a context ([trade-opportunities.md §Reconciling the lenses](trade-opportunities.md#reconciling-the-lenses-the-contradiction-check)) — lives at the **tier-2 reduce**, the first place the trees meet, with each tier-1 output a **structured, field-preserving** reduction (per-lens claims with their sources and confidence, plus any internal-tension flag) so nothing the reduce depends on is lost.
-The orchestrator decides single-vs-hierarchical **deterministically** — the consolidation call's **full input size** (every topic's findings and the accumulated evidence ledger, plus whatever job-specific inputs join them — Portfolio's per-topic reuse priors, Trade Opportunities' engine reads) against its input budget — never the model; the thresholds are config knobs ([configuration.md §Local Analysis Suite Configuration](configuration.md#local-analysis-suite-configuration)).
-That routing sizes the content.
-The rendered single-pass and tier-1 prompts are then sized once more against the widest budget the adapter can issue — the reasoner's where a distinct fast tier is resident, the same budget otherwise — and one that outgrows it — the content sum omits the instruction scaffolding — takes the next smaller shape rather than issuing: hierarchical for the single pass, that topic's pass-seam sub-distillation for a tier-1 call.
-The adapter seam then sizes each rendered consolidation prompt at issue, routing up to a wider resident model or refusing before any request exists ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
+**Consolidation distills write-ups, and only when the analysis prompt is over budget.**
+After a holding's research, the analysis call reads the topics' write-ups, the fetched values and, on a continuity run, the prior analysis ([portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation)).
+Before it issues, the orchestrator sizes that prompt against the call's input budget.
+Within budget, the write-ups go in as written.
+Over it, the merged write-ups are distilled into one shorter document; where the merged write-ups themselves exceed what one distillation call can take, each write-up is distilled first and the merge of those outputs is distilled again.
+The prior analysis is never distilled: it is the holding's research memory, and the write-ups are what this run can afford to shorten.
+Because the write-ups and the analysis each carry a length band, the check has a bound to work against; without one it would distill the write-ups to nothing to make room for a growing analysis.
+The shape is the orchestrator's choice, made deterministically from the input's size against the thresholds in [configuration.md §Research Context Management](configuration.md#research-context-management-hierarchical-distillation); the model never chooses.
+Each distillation call runs in non-thinking mode with no output grammar and returns prose.
+The adapter seam sizes each rendered distillation prompt once more at issue, routing an over-budget prompt up to a wider resident model or refusing it before any request exists ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
+The chosen shape and call count are logged to the run's audit record, so a distillation is never silent.
+The analysis is the only research artifact the next run reads; the write-ups persist on the audit record as written, never as distilled.
 
 ## Search backend: SearXNG
 
@@ -324,7 +274,7 @@ Because the model chooses what to fetch, fetching is treated as an untrusted ope
 - **Untrusted content.**
   Fetched page text is data, not instructions: it is inserted into the prompt as quoted evidence and never interpreted as a directive, so a page carrying injected instructions cannot redirect the analysis.
 - **Provenance.**
-  Every research finding carries its **source URL and retrieval timestamp**, so a verdict or opportunity can be traced to what it was based on and when — feeding the run's audit record (see [portfolio-analysis.md](portfolio-analysis.md), [storage.md](storage.md)).
+  Every page the model reads carries its **source URL and retrieval timestamp** in the prompt, and the holding's audit record persists the roster of pages shown to the model — address, title, publication date, retrieval time and source tier, never the page text — so a verdict or opportunity can be traced to what the model had in front of it and when; the write-up names the source of each dated fact, a page or the fetched values, as an instruction the app does not check (see [portfolio-analysis.md](portfolio-analysis.md), [storage.md](storage.md)).
 
 ## Source quality and evidence weighting
 
@@ -342,15 +292,15 @@ The discipline mirrors the suite's existing stance — positioning held out of t
 **The evidence annotation, split by who can know it.**
 Each fetched document is annotated, and the split is strict:
 - **App-computed (deterministic):** `sourceTier` (from the registry / default heuristic), `extractionQuality` (0–1, how much real article body the readability pass recovered vs a thin paywall / JS stub), `recencyScore` (0–1, against the source's `freshnessSlaDays`), `primarySourceBonus`, and a paywall / JS-stub flag.
-  Portfolio's research prompts render the tier, the evidence kinds, the extraction quality and the stub flag beside the page's publication and retrieval dates; the recency score is computed and persisted but not rendered (ruled 2026-09-17: the dates say more).
-- **Model-derived (judgment):** `claimSpecificity`, `contradictionFlag`, and which claim IDs a document supports — these are reasoning, so they stay model-side and are never dressed up as app-computed.
+  Portfolio's research prompts render the tier, the evidence kinds, the extraction quality and the stub flag beside the page's publication and retrieval dates; the recency score is computed and persisted but not rendered, since the dates say more.
+- **Model-derived (judgment):** how specific a page's statements are, whether it contradicts another page, and which of the write-up's statements rest on it — these are reasoning, carried in the model's write-up, and never dressed up as app-computed.
 
 The model sees the app's source-quality judgment **alongside** the text and weighs evidence accordingly — a Tier-0 filing outweighs a Tier-4 blog on a reported number, while a Tier-3 specialist outweighs a Tier-2 generalist on its own vertical (the `evidenceKinds` match).
 
 **Lane policy.**
 The same source is treated differently by lane:
 - **Discovery** — **soft preference**, never a hard floor: breadth is the point, so a promising lead from a low-tier source is still pursued, only weighted down.
-- **Per-candidate / per-holding validation** — **stricter weighting**: a name's verdict should rest on higher-tier corroboration, and a claim resting only on Tier-4/5 sources is flagged low-confidence (still surfaced, with the gap recorded — informing, not gating).
+- **Per-candidate / per-holding validation** — **stricter weighting**: a name's verdict should rest on higher-tier corroboration, and a statement resting only on Tier-4/5 sources is written as low-confidence (still surfaced — informing, not gating).
 - **Portfolio** leans to primary filings, company IR, transcripts, and material-event reporting; **Trade Opportunities** leans to specialist and value-chain sources.
   These are the per-route source strategies of [trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research), now expressed through the registry's `evidenceKinds`.
 
@@ -359,7 +309,7 @@ Five outlets reprinting one Reuters wire are **one** independent source, not fiv
 The loop collapses near-duplicate and same-canonical-origin hits so apparent corroboration can't be inflated by syndication — independence is counted by *origin*, not by *URL count*.
 
 **A disconfirming-fetch pass.**
-Beyond the existing bear case and adversarial passes ([trade-opportunities.md §The research method](trade-opportunities.md#the-research-method)), once a thesis is formed the loop spends one bounded pass searching specifically for **what would disprove it** — a disconfirming *fetch*, not just a disconfirming *prompt*.
+Beyond the existing bear case and adversarial passes ([trade-opportunities.md §The research method](trade-opportunities.md#the-research-method)), once the topics are written up the loop spends one bounded pass searching specifically for **what would disprove them** — a disconfirming *fetch*, not just a disconfirming *prompt*.
 It is **spent from the existing per-item / per-route fetch + wall-clock budget, never added on top of the ceilings** ([§The research loop and context management](#the-research-loop-and-context-management)): a high-priority item *within* that budget that **fail-softs to a recorded gap (and lower conviction) when the budget is already exhausted**, so a thesis is tested against contrary evidence before it earns conviction without ever breaching the loop's hard bound.
 Portfolio's placement of the pass — per holding, after its topics — is specified at [portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research).
 Trade Opportunities' placement — per candidate, after its Step-5d topics — is specified at [trade-opportunities-workflow.md §Step 5d](trade-opportunities-workflow.md#step-5d-bounded-web-research).
@@ -400,7 +350,7 @@ The operational caveat below still binds — a publisher may fingerprint or inva
 **Spend guidance** (which subscriptions earn their keep — the same *pay-for-information-not-analysis* logic): **The Economist** for the macro / regime worldview; **Morningstar** when the portfolio holds funds / ETFs or for moat / fair-value context; **one or two vertical sources matched to actual exposure** (SemiAnalysis for semis / AI-infra, STAT / Endpoints for biotech, Platts / Argus / Wood Mackenzie for energy / materials); **FT or WSJ** if already subscribed — not assumed the highest marginal edge over primary data plus Reuters / AP-style factual reporting.
 A subscription is only worth its rank where the **health test shows real extraction yield**.
 
-Authenticated fetch holds the same safety posture as the rest of the loop ([§Safety and provenance](#safety-and-provenance)): SSRF guards still apply, fetched content is still data-not-instructions, and every finding still carries its source URL + timestamp.
+Authenticated fetch holds the same safety posture as the rest of the loop ([§Safety and provenance](#safety-and-provenance)): SSRF guards still apply, fetched content is still data-not-instructions, and every page read still enters the roster with its source URL + timestamp.
 The one honest caveat is operational and outside the app's control — automated access to a subscription can run against a publisher's terms and sessions can be invalidated server-side, so Connected Sources is **best-effort enrichment**, never a guaranteed source.
 
 ## Failure posture

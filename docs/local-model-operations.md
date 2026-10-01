@@ -78,25 +78,24 @@ The mechanic is asymmetric: Ollama applies the `format` GBNF grammar mask **only
 - **`think: false` + `format` is BROKEN in every release through v0.31.2** — bug #14645, *"format is ignored when think is disabled for qwen3.5 series."*
   Root cause (maintainer-confirmed): Ollama defers the `format` grammar mask until a thinking→content transition that never fires when `think: false` (the qwen3-family template pre-closes the `<think>` block), so `format` never engages and the model returns **free-form text where you asked for schema-valid JSON** — the exact "parse-and-pray" failure the suite forbids, and *silent*.
   Worse, the failure is **probabilistic** (a 0.30.7 repro failed ~1 in 3 calls on `/api/chat`): a run of clean responses is model compliance, not enforcement.
-  The trap: the intuitive "fast, non-thinking distill" call (`think: false` + `format`) is precisely the bugged configuration — and it is also how [local-models.md](local-models.md)'s "non-thinking distillation" mode would naively be wired.
+  The trap: the intuitive non-thinking transcription call (`think: false` + `format`) is precisely the bugged configuration — and it is how the suite's **typed appendix** is wired, the one call that asks for a grammar-constrained object without a thinking phase ([local-models.md §Schema-constrained output](local-models.md#schema-constrained-output)).
   **The fix merged upstream 2026-07-07** (PR #15901, *"apply format constraint for all thinking parsers when think=false"*, commit `892e7f6`; issue closed by the maintainer) and **first ships in v0.32.0** (tagged 2026-07-11; the release notes don't name it, but the merge commit is confirmed an ancestor of the tag via the GitHub compare API).
   **[verified live on M5 2026-07-28, v0.32.5: 24/24 `think:false` + `format` calls returned schema-valid output (vs the historical ~1-in-3 failure rate — pass probability ≈ 0.006% were the bug live), and a malformed schema is rejected HTTP 400, not silently passed through — the fix *behaves*, not just ships]**
-- **The fix is confirmed on the pinned v0.32.5, so non-thinking distillation is unlocked *on this version*.**
+- **The fix is confirmed on the pinned v0.32.5, so the typed appendix's non-thinking `format` call is unlocked *on this version*.**
   The rule survives as a version discipline rather than a standing prohibition: every call that carries `format` may now run `think: false`, **but any Ollama version bump re-locks it until the schema-integrity check passes on the new version** — a run of clean responses on an unverified version is model compliance, not enforcement.
   **Never ship a `think: false` + `format` call on an unverified version.**
-  On the verified pinned version, a `format`-carrying call runs `think: false` directly — the wired default mapping (see [§Sampling settings](#sampling-settings-vendor)).
+  On the verified pinned version, the typed appendix runs `think: false` with `format` directly — the default mapping (see [§Sampling settings](#sampling-settings-vendor)).
   Two **fallback patterns** cover a re-locked (unverified-bump) version:
   1. **Two-step (heavy stages).**
      A thinking call reasons freely (no `format`), then a **second `format`-carrying call — thinking kept on** — distills into the schema object.
-     This is the suite's research/interpretation → schema-distillation split with the distill call temporarily riding thinking-on until the new version re-verifies.
+     This is the suite's thesis document → typed appendix split with the appendix call temporarily riding thinking-on until the new version re-verifies.
   2. **Reasoning-field-first (light stages).**
      For a stage wanting a little reasoning *and* structure in one call, put a `reasoning` string field **first** in the schema (`{"reasoning": "...", ...}`) so the model reasons into that field before the structured fields — naturally a thinking-on call.
 
-  One additional repro was flagged before trusting `format` on the agentic path: a single uncorroborated report (v0.20.2) of `format` being ignored even with `think: true` **when `tools` are passed in the same call** — the shape the research loop *used to* issue.
+  One additional repro was flagged before trusting `format` on the agentic path: a single uncorroborated report (v0.20.2) of `format` being ignored even with `think: true` **when `tools` are passed in the same call**.
   **[verified clean on M5 2026-07-28, v0.32.5: 8/8 `think:true` + `tools` + `format` calls schema-valid — the report does not reproduce at that sample]**
-  At 47-holding scale, though, that combined shape did misbehave — the terminal turn returned empty or fenced bodies at ~70% (attempt-4 Finding 4) — so **fix B retired it**: the research gathering turns now carry `tools` with no `format`, and a separate synthesis call carries `format` with no `tools`, so the research path no longer relies on the two co-existing (`docs/verification/2026-08-31-big-run-attempt-4-findings.md` §Finding 4).
-  The contrast between the clean short probe and the failed production shape means this is protocol isolation around the observed joint condition, not proof of a universal tools-plus-`format` incompatibility; the synthesis parser independently rejects missing grammar-required keys and blank findings/claim fields under the bounded schema retry.
-  The growing gathering conversation is independently bounded: one response contributes at most 8 accepted tool calls, and the complete serialized messages plus tool schema are checked against the shared input budget before every issued call and retained result; a bound ends gathering as a recorded degradation and still takes the fresh synthesis call.
+  The suite issues no call with both: the research gathering turns carry `tools` with no `format`, the synthesis conversation carries neither, since the write-up is prose, and the one thinking-on `format` call on a holding — the action call — carries no tools, so no path relies on the two co-existing.
+  The growing gathering conversation is independently bounded: one response contributes at most 8 accepted tool calls, and the complete serialized messages plus tool schema are checked against the shared input budget before every issued call and retained result; a bound ends gathering as a recorded degradation and still takes the fresh synthesis conversation.
 
 ## Sampling settings [vendor]
 
@@ -111,7 +110,7 @@ Greedy decoding is **explicitly warned against** — temperature 0 / disabled sa
 | Non-thinking — reasoning | 1.0 | 1.0 | 40 | 0.0 | 2.0 |
 
 - `presence_penalty` may be tuned 0–2 to curb repetition; **too high causes language-mixing and quality loss.**
-- Default mapping for our stages: **research / interpretation → thinking-general**; **consolidation / distillation → non-thinking-general** (wired 2026-08-01 — the #14645 fix is verified on the pinned v0.32.5, so distillation sends an explicit `think: false`; the version-discipline rule above still re-locks a `format`-carrying `think: false` call on any unverified Ollama bump).
+- Default mapping for our stages: **research, synthesis, the analysis, the review, the thesis document and the action call → thinking-general**; **distillation and the typed appendix → non-thinking-general** (both send an explicit `think: false`; the appendix is the one `format`-carrying `think: false` call, so the version-discipline rule above re-locks it on any unverified Ollama bump).
   The two rows ship as adapter option profiles (`local_model::options`), so stages never hand-roll sampling literals.
 
 ### Capturing effective sampling parameters
@@ -150,7 +149,7 @@ Default-on MLX doesn't help a model with no MLX build: our 122B runs on Ollama's
   If you hit cache instability, `--cache-type-k bf16 --cache-type-v bf16` is the fallback.
   **[community]**
 - **`OLLAMA_NUM_PARALLEL=1`** — pin a single inference slot.
-  The suite is strictly single-stream: the global run slot serializes jobs, holdings run in sequence, and the per-holding calls (research → distillation → interpretation → action) are sequential, so extra slots buy no throughput.
+  The suite is strictly single-stream: the global run slot serializes jobs, holdings run in sequence, and the per-holding calls (research → consolidation → review → interpretation → action) are sequential, so extra slots buy no throughput.
   Left unset, Ollama auto-picks **1 or 4** from detected memory.
   A 4-slot pick multiplies the KV cache the memory budget above plans at one slot.
   It also round-robins requests across slots, so a call can miss the slot holding the previous prompt's cached prefix — defeating the within-pass research-turn prefix reuse.
