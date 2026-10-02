@@ -2,28 +2,28 @@
 
 ## Active task
 
-The Portfolio essay design is written into `docs/`; the docs-first pass is complete over its four sessions.
-Next is the implementation slice, planned with `/metis-plan-task` in a fresh session.
+The Portfolio essay design is written into `docs/`, and the human-readable logic flow now matches it.
+Next is the Metis plugin upgrade and the `.metis/` migration, then `/metis-plan-task` for the implementation slice.
 
 ## What happened
 
-Sessions 3 and 4 landed (`118bc08`, `44e1f9d`), closing the pass.
-`portfolio-analysis.md` now describes the job as designed: the two-arm verdict (the engine's grade, bands at three months, twelve months and three years, tier, hurdle read, hard-forensic state and rung beside the model's thesis document, conviction and three expected prices), the action call as the one packet that sees the position's economics, the quick check as two engine monitors, the per-holding pipeline as seven stages, and outcome learning as an append-only episode store with per-holding accuracy scores.
-Storage, data-portability, interface, data-sources, local-models, configuration, run-tracking, schwab-integration and the README follow it; the Trade Opportunities docs stay loose by ruling until that job is built.
-The pass also moved the design record in nine places — the debut thesis document dropped everywhere, accuracy scores in the self-review alone with dated repeats and a none-landed sentence, a pending-versus-unscorable rule for checks with no offline-check promise, base-only episode values with an anchor close, an explicit forensic branch in the engine rung rule, statement-leg severe deterioration, a reasoner-only Portfolio gate with the embedder as Trade Opportunities' requirement, the three-month and three-year band functions, and drafted length bands.
-Every ruling (32) is in auto-memory `docs-first-essay-redesign.md`, which overrides the design record `research-essay-direction-adopted.md` where they disagree.
+`logic-flow-docs/portfolio-analysis-logic-flow.md` was rewritten to the essay design (`8e21acd`, 1,694 → 1,254 lines): one coherent designed flow with no build markers or ruling dates, step numbering mirroring the workflow's Steps 1–8, a table of the eight model calls with a sees/returns block each, every engine rule and threshold kept with the derivations trimmed.
+Its review produced one design ruling (`6756744`): the accuracy checks run **before the per-holding loop** (end of Step 5, through the price-bar cache) so this run's self-reviews read every check that has come due, and only episode opening stays after the loop; `docs/portfolio-workflow.md` (Step 5, Step 7 renamed "Open Episodes, then Persist Run and Audit", the 6a/6b/6e glosses), `docs/portfolio-analysis.md` §Outcome learning and §Starting parameters, and `docs/storage.md` carry it.
+The read-through surfaced seven `docs/` inconsistencies, still unfixed; auto-memory `logic-flow-rewrite-and-docs-nits.md` lists them.
 
 ## Current state
 
-Working tree clean at `44e1f9d`; code unchanged since `a9f5037` (debut stamps `portfolio-v67` / `checkpoint-v16`, portability 12).
+Working tree clean at `6756744`; code unchanged since `a9f5037` (debut stamps `portfolio-v67` / `checkpoint-v16`, portability 12).
 Nothing of the redesign is implemented.
-`BUILD.md` and `INDEX.md` predate the design: BUILD's §Local analysis suite, §Seams and several §Standing constraints describe machinery the docs no longer carry (the typed ledger and its model→engine channels, the scoreboard and calibration path, the vector lane, the stand-in arm, the debut document); INDEX rows still point at the dropped §The position thesis ledger and §What changed and at the Step-6a semantic retrieval.
+`BUILD.md` and `INDEX.md` still predate the design — the ledger, the typed model→engine channels, the scoreboard and calibration path, the vector lane, the stand-in arm, the debut document; INDEX rows for the dropped sections — and do not carry the accuracy-checks ruling.
+The user is upgrading the Metis plugin from 0.5.2 between sessions and updating `.metis/config.yaml`, `CLAUDE.md` and `AGENTS.md` by hand; every other `.metis/` file stays in the old shape until migrated.
 
 ## Open questions
 
-- Does `BUILD.md` update before the implementation plan or with it? The plan reads §Seams and §Standing constraints, several of which now describe removed machinery; BUILD edits are user-run.
+- Which new-Metis files replace `BUILD.md` and `INDEX.md`, and how the migration carries the design content (the removed machinery out, the essay design and the accuracy-checks ruling in) in the same pass — settled by reading the upgraded skills next session.
 
 ## Where to start
 
-Run `/metis-plan-task` for the Portfolio essay implementation slice in a fresh session, with `docs/portfolio-analysis.md` and `docs/portfolio-workflow.md` as the spec and auto-memory `docs-first-essay-redesign.md` for the rulings; the design is settled, so only implementation flags go to the selector.
-Attempt 9 stays the user's call, after the slice and a store re-wipe; never propose the run.
+Run `/metis-session-start`; the mismatch between the upgraded skills and these old-shape `.metis/` files is expected, not an anomaly — report it in one line and run no `/metis-init` or migration unprompted.
+Then read the updated Metis skills the user names and migrate `.metis/` with the design content updated in the same pass (auto-memory `metis-upgrade-transition.md`).
+`/metis-plan-task` for the implementation slice follows the migration; attempt 9 stays the user's call after the slice and a store re-wipe; never propose the run.
