@@ -3,7 +3,7 @@
 > This describes the designed job behavior.  
 > Some parts are not implemented yet.
 
-`Gate → Pull holdings → Classify positions → Compare with prior run → Load context → Analyze each holding and decide its action → Score past forecasts → Save → Display`
+`Gate → Pull holdings → Classify positions → Compare with prior run → Load context and score due forecasts → Analyze each holding: engine → research → review the prior call → thesis → action → Roll up and open episodes → Save → Display`
 
 ## How to read this document
 
@@ -211,7 +211,8 @@
   - The broad-market put/call ratio, a venue-level sentiment backdrop.
 
 - **SearXNG**
-  - The only web search for holding research: self-hosted, keyless, with a paid Google SERP engine wired in as its reliable floor.
+  - The only web search for holding research: a self-hosted, keyless metasearch instance.
+  - Serper, a paid Google-results API, is wired inside it as a keyed engine that fires on every query, the reliable floor; the keyless engines stay as redundancy, and the key lives outside the repo.
   - Tavily is the report job's and is never called by this job.
 
 - **Local storage**
@@ -345,9 +346,9 @@
 
 ---
 
-## Step 5 — Load shared market context
+## Step 5 — Load shared market context and score due forecasts
 
-Loaded once per run and shared across every holding.
+Loaded once per run and shared across every holding; the accuracy checks run here too, before any per-holding work, so this run's reviews see every check that has come due.
 
 - **Data retrieved from local storage**
   - The house view: the latest Market Signal Report's Thesis, Investment Strategy, and Forward Outlook sections, plus up to three recent reports' date, thesis stance, and risk posture.
@@ -384,11 +385,38 @@ Loaded once per run and shared across every holding.
   - `DGS2` or `DGS10` still unavailable after the shared bounded retries → fail the run before any per-holding work.
   - Everything else degrades softly.
 
+### Accuracy checks (engine-only, before the loop)
+
+Engine-computed over the append-only episode store. No model. Opening new episodes happens after the loop (Step 7), since it needs this run's new prices.
+
+- **Find due horizons**
+  - An episode's horizon dates are its creation date plus three, twelve, and thirty-six calendar months.
+  - A horizon is due when its date is on or before the run's ET session date and nothing has been written for it. One query over the store; nothing is ever re-scored.
+
+- **Refresh prices**
+  - The dated daily series is refreshed through the shared price-bar cache for every symbol with a due horizon: held, exited, and unselected carried holdings alike. A user's exit never stops measurement.
+
+- **Write the check**
+  - Read the close on the horizon date, or the last session at or before it within 5 sessions.
+  - Bridge the episode's prices across any split since creation using its anchor close.
+  - Per-check score = 100 × (1 − |expected − actual| ÷ actual), floored at 0, for the model's price and the engine's base value alike.
+  - Write onto the episode: horizon, check date, the close, both expected values, both scores.
+
+- **Pending versus unscorable**
+  - A failed refresh leaves the horizon pending; it is due again next run. Never a run failure.
+  - A served series with no close inside the window, or whose anchor bar it no longer carries, writes the horizon unscorable at once with its cause. It leaves the due set, counts in no score, and the symbol spends no further pull.
+
+- **Derive the scores**
+  - Per holding, per horizon, per arm: the mean of its per-check scores, 0–100. "No score yet" before the first check.
+  - Each score carries the date of the last check that moved it and whether the prior analysis read it. Because the checks precede the loop, every check this run writes is new to this run's review.
+  - The scores persist with the holding, render on its card, and reach the model in the self-review alone (Step 6e).
+
 - **Model**
   - None.
 
 - **Output**
   - One shared context packet.
+  - The episode store updated with this run's checks, and each holding's current accuracy scores.
 
 ---
 
@@ -418,7 +446,7 @@ A single holding's model failure isolates into a failed card; the run continues.
   - **Badges** (the quick check sweeps the carried tail to inform, never to re-analyze)
     - Attention flag — the hurdle newly reads fails, or spot's relation to the frozen twelve-month band changed.
     - Unknown family — a signal family could not be checked, so the sweep cannot vouch for the carried verdict.
-    - Unexamined evidence event — new information since the holding's last full pass.
+    - Unexamined evidence event — new information since the holding's last full pass, detected by the quick check's own re-pulls (earnings, estimates, filings; a fund's info and weightings) against the holding's vintage date.
     - Side reversed — the carried long-side verdict now sits on a net-short position.
     - Stale vintage — the carried verdict is over-age.
     - Each is non-blocking; the user acts by selecting the holding or running a full analysis.
@@ -548,10 +576,11 @@ The deterministic engine runs the holding down one of three routes: priced stock
 
 Computed and persisted for every priced stock; only an eligible read binds.
 
-- **Who enters** (either arm admits)
+- **Who enters** (either condition admits)
   - TTM operating income ≤ 0.
   - Or no positive forward-EPS consensus and TTM free cash flow < 0.
-  - Funds and role-risk-only holdings never enter. A missing input yields `unscorable`, not entry.
+  - A satisfied condition admits even while the other condition's inputs are missing; a missing input never infers entry and is recorded as a gap.
+  - Funds and role-risk-only holdings never enter.
 
 - **Engine reads**
   - Liquid resources = cash + short-term investments.
@@ -608,14 +637,14 @@ Bear, base, and bull prices at three months, twelve months, and three years. A t
   - Needs at least 8 admissible quarters; fewer falls back to raw-multiple percentiles. An observation whose multiple exceeds today's by more than 3× is excluded. A near-zero denominator falls back to the raw percentile for that scenario.
   - A crossed band is sorted as a repair and recorded; scenario identity never comes from sorting.
 
+- **Three-month band**
+  - Base = spot × (1 + the twelve-month base price return ÷ 4), so the twelve-month band below is computed first.
+  - Half-band = daily volatility × 2 × √63, clamped [3.5%, 26%], 8.7% when volatility cannot be computed.
+
 - **Twelve-month band**
   - Price = driver × multiple per scenario.
   - A dispersion floor widens bear and bull to at least a half-spread of annualized volatility × 0.5, clamped 5–20%, never narrows.
   - Total return = (price + trailing-twelve-month dividends per share) ÷ spot − 1.
-
-- **Three-month band**
-  - Base = spot × (1 + twelve-month base price return ÷ 4).
-  - Half-band = daily volatility × 2 × √63, clamped [3.5%, 26%], 8.7% when volatility cannot be computed.
 
 - **Three-year band** (declared extrapolation)
   - Each scenario's twelve-month driver compounded two further years at the growth the two coming fiscal-year rows imply, under the same clamp, times the same scenario multiple.
@@ -729,7 +758,7 @@ Bear, base, and bull prices at three months, twelve months, and three years. A t
 - Every stored engine value then and now: metrics, sub-scores, grade, bands, tier, hurdle state. A real move never reads as equality.
 - For each of the prior position's expected prices: whether its horizon has passed, and if so the close on that date and its score, else the path so far.
 - The holding's six accuracy scores, each with the date of the last check that moved it and whether the prior analysis read it.
-- The checks written since the prior analysis was written, newest by horizon date, up to 12.
+- The checks written since the prior analysis was written, this run's own Step 5 checks included, newest by horizon date, up to 12.
 - A parameter-boundary line naming what a grade or target stamp change moved for this holding, absent where it moved nothing.
 
 - **Split bridge**
@@ -832,7 +861,7 @@ The reasoner works a deterministic agenda over the web tool, one topic at a time
   - FETCHED VALUES — stock: the profile line; the quarterly statements' headline lines (revenue, operating income, net income, diluted EPS, operating cash flow, capex, cash, total debt, diluted shares) for the latest eight quarters as reported; the forward consensus for the next two fiscal years; the last four dividends; the quote with its 52-week range and the closes on the prior run's date and three, twelve, and thirty-six months back; the trailing year's 8-K filings by date and item; the latest short-interest print. Fund: `etf/info`, the weightings, NAV and price, the profile line. Both: `DGS10` and `DGS2`. Never an engine computation.
   - NEWS LEADS — dated headlines with addresses, fetch candidates only.
   - On a continuity run, PRIOR ANALYSIS and PRIOR THESIS verbatim with their dates and any split-context line.
-  - PAGES ALREADY RETRIEVED — a bounded, holding-scoped block of pages earlier passes fetched, in first-retrieval order.
+  - PAGES ALREADY RETRIEVED — pages fetched for this holding earlier in this run, by other topics or earlier passes, in first-retrieval order; held in memory and discarded between holdings. A prior run's page reaches the model only when the model requests its address again and the document cache serves it.
   - TOPIC; on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR; on the disconfirming pass WRITE-UPS SO FAR.
 - **Sees (Part 2)**
   - What to find, how to weigh a source (tier nearer 0 and extraction quality nearer 1 preferred; a weak source lowers confidence, never excludes), the per-reply tool-call bound, and when to stop.
@@ -857,7 +886,8 @@ The reasoner works a deterministic agenda over the web tool, one topic at a time
 #### The fetch layer
 
 - **Search**
-  - SearXNG only, over its JSON API on loopback. Queries are paced with jitter against upstream rate limits; a repeated query within a run is served from a per-run cache.
+  - SearXNG only, over its JSON API on loopback. It fans each query to its keyless engines plus Serper, the keyed Google-results engine that fires on every query as the reliable floor.
+  - Queries are paced with jitter against upstream rate limits; a repeated query within a run is served from a per-run cache.
   - A down or misconfigured instance returns empty; the loop proceeds thinner. No Tavily, ever.
 
 - **Fetch and extraction**
@@ -939,7 +969,7 @@ Before this run's thesis document is written, the reasoner reviews its prior pos
   - PRIOR POSITION — the prior run's date and the price then, its action and rationale, its conviction, and its three expected prices each with its horizon date.
   - PRIOR THESIS — the prior thesis document verbatim, with any split-context line.
   - ANALYSIS — this run's analysis.
-  - REALIZED — the engine's realized data: the price now and its move; for each prior expected price whether its horizon has passed and, if so, the close and its score, else the path so far; the six accuracy scores each with its last-moved date and whether the prior analysis read it; the checks written since the prior analysis was written, newest by horizon date up to 12, under a heading stating every line is new, or one fixed sentence when none landed naming what the prior analysis read; the engine's own values then and now; any parameter-boundary line.
+  - REALIZED — the engine's realized data: the price now and its move; for each prior expected price whether its horizon has passed and, if so, the close and its score, else the path so far; the six accuracy scores each with its last-moved date and whether the prior analysis read it; the checks written since the prior analysis was written, this run's Step 5 checks included, newest by horizon date up to 12, under a heading stating every line is new, or one fixed sentence when none landed naming what the prior analysis read; the engine's own values then and now; any parameter-boundary line.
   - A role-risk-only holding sees the prior action and rationale, the fund's realized price, NAV, exposure, and expense reads then and now, and no accuracy scores.
 - **Returns**
   - The review, 400–900 words: each expected price against what happened; each falsifier and trigger the prior document named, tripped or not by the numbers; whether the thesis survives; where the prior read was right or wrong and why; what to revise; and what should change in how this holding is analyzed.
@@ -1025,9 +1055,9 @@ Three model calls. The first two share one conversation and author the intrinsic
 
 ---
 
-## Step 7 — Roll up the run, score past forecasts, save
+## Step 7 — Roll up the run, open episodes, save
 
-Every action is final by now; this step decides none. It builds the book-level summary, runs the accuracy pass, and persists the run.
+Every action is final by now; this step decides none. It builds the book-level summary, opens this run's episodes, and persists the run.
 
 ### Roll-up
 
@@ -1038,35 +1068,15 @@ Every action is final by now; this step decides none. It builds the book-level s
   - The run-level data-health read: how targets were sourced (rate-anchored, raw-percentile, current-multiple carry), dispersion-floor engagements, deep-history failures, a run-wide rate-history gap, research-degraded holdings and total research gaps, every physical model-call attempt with its counters, fired retries, the peak prompt fill, and context pressure (a call at or past 90% of its context, or a prompt count too small for the characters sent).
   - An attention state on infrastructure degradation: a deep-history failure, a multiple-carry target, a rate-history gap, a context-pressured call, a length-stopped generation. Research gaps are counted, never flagged.
 
-### Accuracy pass
+### Open episodes
 
-Engine-computed over the append-only episode store. No model.
+Engine-computed over the append-only episode store. No model. The checks on existing episodes ran at Step 5.
 
 - **Open episodes**
   - For every priced holding analyzed this run with no episode, or whose latest episode is a month or more old.
   - An episode records: symbol, creation date, that day's spot, the anchor close with its bar date, the model's expected price at three, twelve, and thirty-six months, and the engine's base value at the same horizons.
-  - Role-risk-only holdings and abstentions open none.
-
-- **Find due horizons**
-  - A horizon is due when its date (creation plus three, twelve, or thirty-six calendar months) is on or before the run's ET session date and nothing has been written for it. One query; nothing is ever re-scored.
-
-- **Refresh prices**
-  - The dated daily series is refreshed through the shared price-bar cache for every symbol with a due horizon the run did not already fetch: exited names and unselected carried holdings alike. A user's exit never stops measurement.
-
-- **Write the check**
-  - Read the close on the horizon date, or the last session at or before it within 5 sessions.
-  - Bridge the episode's prices across any split since creation using its anchor close.
-  - Per-check score = 100 × (1 − |expected − actual| ÷ actual), floored at 0, for the model's price and the engine's base value alike.
-  - Write onto the episode: horizon, check date, the close, both expected values, both scores.
-
-- **Pending versus unscorable**
-  - A failed refresh leaves the horizon pending; it is due again next run.
-  - A served series with no close inside the window, or whose anchor bar it no longer carries, writes the horizon unscorable at once with its cause. It leaves the due set, counts in no score, and the symbol spends no further pull.
-
-- **Derive the scores**
-  - Per holding, per horizon, per arm: the mean of its per-check scores, 0–100. "No score yet" before the first check.
-  - Each score carries the date of the last check that moved it and whether the prior analysis read it (run order, since a run's pass follows its review).
-  - The scores persist with the holding, render on its card, and reach the model in the next run's review alone.
+  - Role-risk-only holdings and abstentions open none. A holding re-priced between the monthly points is not recorded, so the scored forecast is the monthly snapshot.
+  - An episode is never updated or deleted; the checks are written onto it once each. The store is the log.
 
 - **Three disciplines**
   - The engine keeps score and never plays; nothing the model writes alters a check.
@@ -1082,7 +1092,7 @@ Engine-computed over the append-only episode store. No model.
   - The roll-up and the data-health aggregate.
   - Every holding's audit record, and the run's failed-holdings list with causes.
   - Model, prompt, grade, target, overlay, and evidence-floor versions.
-  - The episodes opened, the checks and unscorable states written, and each holding's accuracy scores.
+  - The episodes opened, the checks and unscorable states written at Step 5, and each holding's accuracy scores.
 
 - **Rules**
   - The write validates before it lands: a record that would not read back is refused, naming the holding.
