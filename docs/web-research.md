@@ -110,7 +110,7 @@ A lead is a lead, not a citation: it points at what to pursue, and a write-up re
 Trade Opportunities' discovery routes are seeded the same way from the FMP news and articles feeds and the macro-release calendar, and what that job keeps of a seed is specified in its own documents ([trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research)).
 
 **Consolidation distills write-ups, and only when the analysis prompt is over budget.**
-After a holding's research, the analysis call reads the topics' write-ups, the fetched values and, on a continuity run, the prior analysis ([portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation)).
+After a holding's research, the analysis call reads the topics' write-ups, the fetched values and, on a continuity run, the prior analysis ([portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-consolidation)).
 Before it issues, the orchestrator sizes that prompt against the call's input budget.
 Within budget, the write-ups go in as written.
 Over it, the merged write-ups are distilled into one shorter document; where the merged write-ups themselves exceed what one distillation call can take, each write-up is distilled first and the merge of those outputs is distilled again.
