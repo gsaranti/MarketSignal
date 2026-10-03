@@ -3,34 +3,28 @@
 ## Active task
 
 Engine arm at three horizons — the first *To build* item, not started.
-A docs-only Trade Opportunities refactor precedes its planning (see *Where to start*).
+The docs-only Trade Opportunities refactor that precedes its planning is half done (see *Current state*).
 
 ## What happened
 
-The Metis plugin moved to 0.6.0 and `.metis/` was migrated by hand, no reconcile or build-spec run.
-`SYNTHESIS.md` was rewritten to its final form: the target system only, nothing that goes stale as items complete.
-`INDEX.md` was walked against the docs' headings: ten rows for concepts the essay design removed were deleted, nine re-pointed, four Trade-Opportunities-only rows moved to that section, fourteen design rows and twenty rows for never-indexed headings added; every citation resolves.
-`BUILD.md` is now the two-list backlog: eleven items under *To build*, *Built* empty by ruling (built history is not carried; the old brief stays readable at `6d3b26e`).
-The six Portfolio refactor items lead (engine arm at three horizons → the holding verdict → the research chain → outcome learning → the self-review → the removal sweep), then the three paid-tier report enrichments, the streaming-agent retry-once and the bounded baseline-history render.
-The brief's two rules with no docs home moved to `CLAUDE.md` / `AGENTS.md`: the pre-release no-compat posture and three code disciplines.
-Auto-memory was cleaned to match.
+The Trade Opportunities design was walked step by step against the Portfolio essay design before any doc was touched — Steps 1–10, 3a–3c, 5a–5h, the audit flow, then the design-doc sections — and every change ruled through the selector; the full ruling record is in auto-memory (`to-docs-refactor-rulings.md`).
+The three open questions are answered: typed is the route plan, the archetype, the hypothesis appendix, the watchlist and refresh decisions, and the opportunity appendix (tier, horizon, conviction, three expected prices, detection mode, leading metric and class, carried status); the episode is Portfolio's price record plus a decision class (picked / gate-reject / excluded); the embedder leaves the suite's roster.
+`docs/trade-opportunities.md` (`4b4fe07`) and `docs/trade-opportunities-workflow.md` (`36249d5`) are rewritten, Codex-approved and pushed: the evidence floor runs engine-only at 5c, the engine tier and horizon are assigned there, Step 6 is computed-only, the self-review sits at 5f, interpretation is the thesis document plus a typed appendix with no action call, and every ordinary gate-reject debut joins the watchlist for the next review to decide.
 
 ## Current state
 
-Code unchanged since `a9f5037` (debut stamps `portfolio-v67` / `checkpoint-v16`, portability 12); nothing of the design is implemented and no item is in progress.
-Trade Opportunities has no backlog items yet by decision: its docs still describe the machinery the Portfolio design retired, so the TO design is refactored first, docs only, and its items are derived afterwards.
-Owed after that refactor: the INDEX rows in the TO section re-walked; the seven `docs/` inconsistencies in auto-memory `logic-flow-rewrite-and-docs-nits.md` proposed as one batch.
-The big confirmation run (attempt 9) waits behind the whole Portfolio backlog and a dev-store re-wipe; the user names its session.
+Code unchanged since `a9f5037`; nothing of either design is implemented.
+Remaining in the TO refactor, docs only: `logic-flow-docs/trade-opportunities-logic-flow.md` (1407 lines, unread this session — derive it from the two committed docs as the Portfolio one was at `8e21acd`); then the shared docs' TO legs — storage and data-sources (both still link the retired `#step-5e-distillation` and `#step-6-matrix-assembly--completeness-validation` anchors), configuration, local-models (the roster minus the embedder), web-research line 110, interface, scheduling, data-portability.
+Owed after that: INDEX's TO rows re-walked; SYNTHESIS's "an embedder Trade Opportunities needs" sentence; the seven `docs/` inconsistencies in auto-memory `logic-flow-rewrite-and-docs-nits.md` as one batch; TO items into `BUILD.md` behind the report items.
+Attempt 9 waits behind the whole Portfolio backlog and a dev-store re-wipe; the user names its session.
 
 ## Open questions
 
-- What stays typed in Trade Opportunities: the matrix cell, the archive decision and the floor admission are structural — which stay an appendix, which become prose?
-- What a TO episode scores: TO has no book, so picked and turned-away names can both be scored — does Portfolio's price-record episode cover it, or does a reduced shadow record survive?
-- Does TO still need the embedder, or does its discovery memory go prose too, taking the embedder out of the roster?
+—
 
 ## Where to start
 
 Run `/metis-session-start`.
-Then the Trade Opportunities docs-only refactor to the Portfolio strategies (prose model outputs, episodes, the shared research primitives): `trade-opportunities.md`, `trade-opportunities-workflow.md`, the TO logic-flow doc and the TO legs of the shared docs, under the docs-first cadence — propose per doc, go ahead, selector rulings, edit, diff review, Codex, commit on the user's word — with no Metis skills and no redesign language.
-After it: INDEX's TO rows, TO items into `BUILD.md` behind the report items, then `/metis-plan-task "Engine arm at three horizons"`.
+Then rewrite the TO logic-flow doc from the two committed TO docs under the same cadence — propose, go ahead, edit, diff review, Codex, commit on the user's word, no Metis skills, no redesign language — then the shared docs' TO legs, fixing the two retired anchors.
+After them: INDEX's TO rows, the SYNTHESIS sentence, the docs nits, TO items into `BUILD.md`, then `/metis-plan-task "Engine arm at three horizons"`.
 Never propose the run.
