@@ -86,7 +86,11 @@ the ones a session still needs.*
 - Tavily — data-sources.md §Tavily
 - GDELT — data-sources.md §GDELT
 - LLM providers — data-sources.md §LLM Providers
-- Gated-adapter retry/backoff — data-sources.md (intro retry paragraph); BUILD.md §Module boundaries (adapters)
+- FMP Articles — data-sources.md §FMP Articles
+- Charles Schwab (Trader API) — data-sources.md §Charles Schwab (Trader API)
+- Endpoints by job — data-sources.md §Endpoints by job
+- Market Signal Report endpoint surface — data-sources.md §Market Signal Report — endpoint surface
+- Gated-adapter retry/backoff — data-sources.md (intro retry paragraph)
 - Planned report enrichment — data-sources.md §Planned report enrichment; report-workflow.md §Step 3, §Step 16
 
 ## Research documents
@@ -114,10 +118,12 @@ the ones a session still needs.*
 
 ## Storage & retention
 - Markdown file storage + naming — storage.md §Markdown File Storage; export.md §Export Naming
+- Storage location (app-data directory) — storage.md §Storage Location
 - SQLite — storage.md §SQLite
 - risk_posture / market_cycle fixed vocabularies — storage.md §SQLite
 - Report summary metadata schema — storage.md §Report Summary Metadata Schema
 - Report retention — storage.md §SQLite
+- Legacy report-file naming migration — storage.md §Legacy Naming Migration
 - Per-report baseline snapshots + change view — storage.md §Baseline Snapshots; report-workflow.md §Step 3
 - Baseline-snapshot retention — storage.md §Baseline Snapshots
 - Vector memory — storage.md §Vector Memory; report-workflow.md §Steps 4, 10, 17
@@ -126,7 +132,7 @@ the ones a session still needs.*
 ## Interface
 - Main layout tree — interface.md §Main Layout
 - Latest Report View / Recent Reports Sidebar — interface.md; report-workflow.md §Step 18
-- Shared-history sidebar / Portfolio-runs history — interface.md §Main Layout; portfolio-analysis.md §Storage and display
+- Shared-history sidebar / Portfolio-runs history — interface.md §The shared-history sidebar and the Portfolio runs history; portfolio-analysis.md §Storage and display
 - Run Tracker — interface.md; run-tracking.md
 - Persistent Warning Area — interface.md §Persistent Warning Area; scheduling.md §Error Handling
 
@@ -138,15 +144,17 @@ the ones a session still needs.*
 - Per-report export vs whole-corpus backup (unrelated features) — export.md (intro)
 
 ## Data portability (whole-corpus export / import)
-- Data portability overview — data-portability.md; BUILD.md §Data model & storage
+- Data portability overview — data-portability.md
 - What moves vs excluded — data-portability.md §What moves, and what deliberately does not
 - Structured versioned archive — data-portability.md §The archive, §Why a structured archive, not a DB-file copy, §Import flow, §Build-order placement
 - Optional passphrase encryption — data-portability.md §Optional passphrase encryption
 - Export flow — data-portability.md §Export flow
 - Import flow — data-portability.md §Import flow
+- Replace-all import semantics — data-portability.md §Why replace-all, not merge (for v1)
+- Portability verification suite — data-portability.md §Verification
 - Vector-memory embedder binding on import — data-portability.md §Vector memory is embedder-bound; storage.md §Local Vector Memory
 - Build placement — data-portability.md §Build-order placement
-- Confirmation dialog — market-signal-design-system (colors_and_type.css, preview/confirmation-dialog.html); data-portability.md §Import flow; BUILD.md §Module boundaries (frontend)
+- Confirmation dialog — market-signal-design-system (colors_and_type.css, preview/confirmation-dialog.html); data-portability.md §Import flow
 
 ## Local analysis suite
 
@@ -159,11 +167,17 @@ build status lives in `BUILD.md`.*
 - Local-model per-stage options wiring — local-model-operations.md §Sampling settings, §The `num_ctx` trap, §M5 pre-flight checklist
 - Model residency default — local-models.md §The model roster and per-task routing
 - Local-model adapter seam — local-models.md §The local-model adapter seam
+- Local-model prompt posture — local-models.md §Prompt posture
+- Local-model web access — local-models.md §Web access
+- Local models settings — configuration.md §Local Models
+- Price data settings — configuration.md §Price Data
 - Distillation issue guard (prompt sizing at issue — the §The local-model adapter seam statement is canonical) — local-models.md §The local-model adapter seam; web-research.md §The research loop and context management; configuration.md §Research Context Management; portfolio-workflow.md §Step 6d
 - Schema-constrained output — local-models.md §Schema-constrained output
 - Context-memory discipline — local-models.md §Context-memory discipline
 - Per-job isolated vector memory — local-models.md §Run history and continuity; storage.md §Local Vector Memory
 - Web research tool — web-research.md
+- SearXNG search backend — web-research.md §Search backend: SearXNG; data-sources.md §SearXNG (local web search)
+- Fetch and extraction — web-research.md §Fetch and extraction
 - SSRF protection and the fetch URL policy — web-research.md §Safety and provenance
 - Pre-run web-research notice — interface.md §Pre-run web-research notice; web-research.md §Tavily fallback
 - Local-suite connection indicators (Ollama / SearXNG) — interface.md §Connection status
@@ -173,15 +187,30 @@ build status lives in `BUILD.md`.*
 - Connected Sources — web-research.md §Connected sources; configuration.md §Connected Sources (subscriptions)
 - Charles Schwab integration — schwab-integration.md
 - Schwab connection requirement — schwab-integration.md §A connected Schwab account is required
+- Schwab fetch-on-demand posture — schwab-integration.md §Fetched on demand, never automatically
+- Schwab authorization (OAuth) — schwab-integration.md §Authorization; configuration.md §Charles Schwab Connection
+- Schwab token lifecycle — schwab-integration.md §Token lifecycle
+- Schwab fundamentals boundary — schwab-integration.md §Fundamentals stay with FMP
+- Schwab failure posture — schwab-integration.md §Failure posture
 - Manual holdings import — schwab-integration.md §Manual import (supplement)
 - Options-activity signal — schwab-integration.md; data-sources.md §CBOE; portfolio-analysis.md
 
 ### Portfolio Analysis
 - Portfolio Analysis job — portfolio-analysis.md
 - Portfolio Analysis workflow — portfolio-workflow.md
+- Portfolio run gate — portfolio-workflow.md §Step 1; local-models.md §Serving runtime
+- Portfolio local-model call contracts (the Local-model call headings under each step) — portfolio-workflow.md §Step 6c, §Step 6d, §Step 6e, §Step 6f
+- Research write-ups and the analysis (Portfolio) — portfolio-workflow.md §Step 6c, §Step 6d; portfolio-analysis.md §The per-holding pipeline, §Starting parameters; web-research.md §The research loop and context management; local-models.md §Context-memory discipline
+- Page roster — portfolio-workflow.md §Step 6c, §Step 6g, §Step 7; portfolio-analysis.md §Storage and display; storage.md §Local Analysis Suite Storage
+- Self-review — portfolio-workflow.md §Step 6e; portfolio-analysis.md §The holding verdict, §Outcome learning, §Starting parameters
+- Thesis document — portfolio-analysis.md §The holding verdict, §Storage and display; portfolio-workflow.md §Step 6f; storage.md §Local Analysis Suite Storage; interface.md §Persistent Warning Area (the holding card)
+- Typed appendix — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6f; local-models.md §The local-model adapter seam
+- Episode store — storage.md §Local Analysis Suite Storage; portfolio-analysis.md §Outcome learning; portfolio-workflow.md §Step 7; data-portability.md §What moves, and what deliberately does not, §Build-order placement
+- Accuracy checks and accuracy scores — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 5, §Step 6e; storage.md §Local Analysis Suite Storage
+- Continuity and isolation (Portfolio) — portfolio-analysis.md §Continuity and isolation
 - Holding verdict schema — portfolio-analysis.md §The holding verdict
 - Two-arm verdict — Portfolio form (the boundary statement is single-homed) — portfolio-analysis.md §The holding verdict, §Intrinsic verdict, §Portfolio action, §Outcome learning, §Storage and display, §Starting parameters; portfolio-workflow.md §Step 6d, §Step 6f, §Step 6g, §Step 7; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage
-- Model-arm numeric domain (the §The holding verdict statement is canonical) — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6f; local-models.md §The local-model adapter seam
+- Typed-appendix type check (the §The holding verdict statement is canonical) — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6f; local-models.md §The local-model adapter seam
 - Intrinsic-verdict vs portfolio-action separation — portfolio-analysis.md §Intrinsic verdict, §Portfolio action; portfolio-workflow.md §Step 6f
 - Intrinsic-verdict discriminated union — portfolio-analysis.md §Intrinsic verdict, §Asset eligibility; portfolio-workflow.md §Step 6f; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Portfolio action — the per-holding action call — portfolio-analysis.md §Portfolio action; portfolio-workflow.md §Step 6f
@@ -191,28 +220,18 @@ build status lives in `BUILD.md`.*
 - Grade bands & parameter versioning — portfolio-analysis.md §Starting parameters; data-sources.md §SEC EDGAR, §Portfolio Analysis — endpoint surface
 - Scenario-target parameter versioning and boundary attribution (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6b, §Step 6f
 - Interpretation-prompt contract — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6f
-- Position thesis ledger — portfolio-analysis.md §The position thesis ledger, §Storage and display; portfolio-workflow.md §Step 6a, §Step 6f, §Step 6g; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
-- Condition continuity stamps — statement basis and equity source (the §The position thesis ledger statement is canonical) — portfolio-analysis.md §The position thesis ledger, §Starting parameters; portfolio-workflow.md §Step 6f, §Step 6g; storage.md §Local Analysis Suite Storage
-- Key-driver identity keys (`driver_id`) — portfolio-analysis.md §The position thesis ledger; portfolio-workflow.md §Step 6d; portfolio-analysis.md §Starting parameters
-- Ledger executability validation — portfolio-workflow.md §Step 6f, §Step 6g; portfolio-analysis.md §The position thesis ledger, §The quick check
 - Portfolio quick check — portfolio-analysis.md §The quick check; portfolio-workflow.md §The quick check; interface.md §Connection status
 - Selective re-analysis + mixed-vintage safety — portfolio-analysis.md §Triggering; portfolio-workflow.md §Step 6, §Step 7
 - Evidence events — portfolio-analysis.md §Starting parameters
 - Portfolio pre-profit execution / financing overlay — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g; data-sources.md §Portfolio Analysis — endpoint surface; storage.md §Local Analysis Suite Storage
-- Pre-profit observation source excerpt (the §Step 6e statement is canonical) — portfolio-workflow.md §Step 6e, §Step 6d; portfolio-analysis.md §Starting parameters; storage.md §Local Analysis Suite Storage
-- Pre-profit observation admission stamp (the §Step 6e statement is canonical) — portfolio-workflow.md §Step 6e; portfolio-analysis.md §Starting parameters; storage.md §Local Analysis Suite Storage; BUILD.md §Standing constraints
-- Guidance vintage policy (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6d, §Step 6e; storage.md §Local Analysis Suite Storage
-- Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 7; storage.md §Local Analysis Suite Storage
+- Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 5, §Step 6e, §Step 7; storage.md §Local Analysis Suite Storage
 - Portfolio hard-forensic outcome — portfolio-analysis.md §Portfolio action, §Starting parameters; portfolio-workflow.md §Step 6g; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
 - Narrative-vs-reality read — Portfolio form (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6b, §Step 6f, §Step 6g; trade-opportunities.md §The two non-negotiables; storage.md §Local Analysis Suite Storage
 - Implied-expectations read — Portfolio form — portfolio-analysis.md §Starting parameters, §The per-holding pipeline, §Intrinsic verdict; portfolio-workflow.md §Step 6b, §Step 6f; storage.md §Local Analysis Suite Storage
 - Same-underlying option overlay (the data-sources chains row is canonical for the standalone-option stance) — portfolio-analysis.md §The per-holding pipeline, §Asset eligibility; portfolio-workflow.md §Step 6a, §Step 6f; data-sources.md §Portfolio Analysis — endpoint surface; schwab-integration.md §What is pulled
-- What-changed audit — portfolio-analysis.md §What changed; portfolio-workflow.md §Step 6g; storage.md §Local Analysis Suite Storage
-- Step-6a semantic continuity retrieval + per-holding summary embeddings — portfolio-workflow.md §Step 6a, §Step 7; storage.md §Local Vector Memory
 - Run audit record provenance (source labels, model ids) — storage.md §Local Analysis Suite Storage; portfolio-workflow.md §Step 7
-- Degraded-run persistence + constructed marker (removed by the fresh-start slice) — BUILD.md §Runtime, observability & failure posture
 - Holdings normalization / book-level netting — schwab-integration.md §What is pulled, §Manual import (supplement); portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
-- Holdings change tracking — portfolio-analysis.md §Holdings change tracking
+- Holdings change tracking — portfolio-analysis.md §Holdings change tracking; portfolio-workflow.md §Step 4
 - Net-short equity handling — portfolio-analysis.md §Asset eligibility, §Triggering, §Holdings change tracking, §Outcome learning
 - Not-rated positions in roll-up — portfolio-analysis.md §Asset eligibility, §Portfolio roll-up; schwab-integration.md §What is pulled
 - Fund path — portfolio-analysis.md §Asset eligibility
@@ -222,10 +241,9 @@ build status lives in `BUILD.md`.*
 - Listing-resolution guard — portfolio-analysis.md §Asset eligibility, §Starting parameters; portfolio-workflow.md §Step 3, §Step 6a
 - Quote / NAV usability floor and the evidence-floor version stamp (the §Evidence floor statement is canonical) — portfolio-analysis.md §Evidence floor, §Failure posture; storage.md §Local Analysis Suite Storage
 - House-view freshness gate — portfolio-workflow.md §Step 5
-- Post-research target refinement — shadow mode (the §Step 6e statement is canonical) — portfolio-workflow.md §Step 6e; portfolio-analysis.md §The per-holding pipeline, §The holding verdict; trade-opportunities-workflow.md §Step 5f
-- Research-fed fraud claim — advisory (the §Step 5c statement is canonical) — trade-opportunities-workflow.md §Step 5c; portfolio-workflow.md §Step 6d, §Step 6g; portfolio-analysis.md §Starting parameters; trade-opportunities.md §Starting parameters
-- Portfolio technology-event impact — portfolio-analysis.md §The position thesis ledger, §The per-holding pipeline; portfolio-workflow.md §Step 6c
-- Research reuse (Portfolio) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6
+- Research-fed fraud claim — advisory (the §Step 5c statement is canonical) — trade-opportunities-workflow.md §Step 5c; portfolio-analysis.md §Starting parameters; trade-opportunities.md §Starting parameters
+- Portfolio technology-event impact — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6c
+- Research reuse (Portfolio) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6c; web-research.md §The research loop and context management
 - New-money admission test — portfolio-analysis.md §Starting parameters
 - Portfolio per-holding/per-fund endpoint surface — data-sources.md §Portfolio Analysis — endpoint surface
 - Investor profile default preset — configuration.md §Investor Profile; interface.md §Main Layout (Settings tree)
@@ -283,6 +301,11 @@ build status lives in `BUILD.md`.*
 - TO research-target scenario bridge — trade-opportunities.md §The opportunity, §Starting parameters; trade-opportunities-workflow.md §Step 5e, §Step 5f, §Step 5g, §Step 5h, §Step 7, §ATO: the audit flow; storage.md §Local Analysis Suite Storage
 - Entry asymmetry threshold — trade-opportunities.md §Starting parameters, §The opportunity; trade-opportunities-workflow.md §Step 5h, §Step 2
 - TO research cache — trade-opportunities.md §Failure posture, §Starting parameters; trade-opportunities-workflow.md §Step 3c, §Step 5, §ATO; storage.md §Local Analysis Suite Storage (web-research document cache)
+- Post-research target refinement — shadow mode — trade-opportunities-workflow.md §Step 5f
+- Target-band interval scorer — trade-opportunities.md §Outcome learning; trade-opportunities-workflow.md §Step 7; local-models.md §Context-memory discipline
+- Re-check class resolution contract — trade-opportunities-workflow.md §Step 3c, §Step 5h
+- Seed lineage — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 3b; configuration.md §Research Context Management; storage.md §Local Analysis Suite Storage; trade-opportunities.md §The opportunity, §Signal inputs, §Discovery memory
+- Trade Opportunities discovery-breadth settings — configuration.md §Trade Opportunities — Discovery Breadth
 - Trade Opportunities persisted structures — storage.md §Local Analysis Suite Storage; trade-opportunities-workflow.md §Step 9
 
 ### Shared across both jobs
@@ -291,26 +314,27 @@ build status lives in `BUILD.md`.*
 - Evidence-floor freshness basis — trade-opportunities.md §Starting parameters, §Evidence floor; trade-opportunities-workflow.md §Step 5h; web-research.md §Source quality and evidence weighting; portfolio-analysis.md §Evidence floor
 - Deterministic risk-tier assignment — the engine arm's rule (the TO form is canonical) — trade-opportunities.md §The opportunity space, §Starting parameters; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6b
 - Scenario-target function — portfolio-analysis.md §Starting parameters, §Evidence floor; trade-opportunities.md §Starting parameters, §Evidence floor; portfolio-workflow.md §Step 6b; trade-opportunities-workflow.md §Step 5c; data-sources.md (both `analyst-estimates` rows, both `dividends` rows)
-- Target-band interval scorer (the portfolio-analysis.md §Outcome learning definition is canonical) — portfolio-analysis.md §Outcome learning; trade-opportunities.md §Outcome learning; trade-opportunities-workflow.md §Step 7; local-models.md §Context-memory discipline
 - Rate-anchor failure rule — portfolio-analysis.md §Failure posture, §Starting parameters, §The quick check; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §ATO: the audit flow; data-sources.md §Portfolio Analysis — endpoint surface (FRED), §Trade Opportunities — endpoint surface (FRED)
 - Factor normalization basis — trade-opportunities-workflow.md §Step 5c; trade-opportunities.md §Starting parameters, §The lenses; storage.md §Local Analysis Suite Storage
 - ET session dating — data-sources.md (intro session-dating rule); portfolio-analysis.md §The quick check, §Triggering, §Outcome learning; portfolio-workflow.md §The quick check
 - Run data-health roll-up — portfolio-analysis.md §Portfolio roll-up, §Starting parameters, §Failure posture; interface.md §Main Layout
-- Re-check class resolution contract — trade-opportunities-workflow.md §Step 3c, §Step 5h; portfolio-workflow.md §Step 6g
 - Per-item checkpoint/resume + research caching, both jobs — portfolio-analysis.md §Failure posture (the Portfolio contract is canonical), §Starting parameters; portfolio-workflow.md §Step 2, §Step 6, §Step 6g; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §Step 5; run-tracking.md §Cancellation; storage.md §Local Analysis Suite Storage; data-portability.md §What moves, and what deliberately does not
-- Checkpoint trail resume contract and format stamp (the §Failure posture statement is canonical) — portfolio-analysis.md §Failure posture; BUILD.md §Seams a plan builds on
+- Checkpoint trail resume contract and format stamp (the §Failure posture statement is canonical) — portfolio-analysis.md §Failure posture
 - Research loop & context management — web-research.md §The research loop and context management
-- Findings-synthesis prompt shape (the §The research loop statement is canonical) — web-research.md §The research loop and context management; local-models.md §Schema-constrained output
+- Write-up synthesis prompt shape (the §The research loop statement is canonical) — web-research.md §The research loop and context management; portfolio-workflow.md §Step 6c; local-models.md §Schema-constrained output
 - Research agenda — portfolio-analysis.md; trade-opportunities.md
-- Seed lineage — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 3b; configuration.md §Research Context Management; storage.md §Local Analysis Suite Storage; trade-opportunities.md §The opportunity, §Signal inputs, §Discovery memory
 - Hierarchical distillation — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 5e; portfolio-workflow.md §Step 6d; configuration.md §Research Context Management
 - Disconfirming-fetch pass (each job's placement is canonical in its own workflow) — portfolio-workflow.md §Step 6c; trade-opportunities-workflow.md §Step 5d; web-research.md §Source quality and evidence weighting
 - Heavy-route sub-distillation — trade-opportunities-workflow.md §Step 3b, §Step 4; configuration.md §Research Context Management
+- Web-research document cache — storage.md §Local Analysis Suite Storage; web-research.md §The research loop and context management; data-portability.md §What moves, and what deliberately does not
+- Failed-fetch memory and bounded retry — web-research.md §Failed fetch memory and bounded retry; portfolio-workflow.md §Step 6a, §Step 6c
+- Portfolio earnings-release recovery (EDGAR) — web-research.md §Portfolio earnings-release recovery; data-sources.md §SEC EDGAR
+- Local-suite failure posture (model layer and web tool) — local-models.md §Failure posture; web-research.md §Failure posture
 - SEC EDGAR primary source — data-sources.md §SEC EDGAR
 - SEC EDGAR role for Trade Opportunities — data-sources.md §SEC EDGAR
 - FMP paid-tier suite signals — data-sources.md §Local analysis suite — shared sourcing, §FMP — current paid-plan tier audit
 - FMP paid-plan tier audit — data-sources.md §FMP — current paid-plan tier audit
-- FINRA short interest — data-sources.md §FINRA (canonical, retrieval mechanics included); data-sources.md §Portfolio Analysis — endpoint surface; portfolio-workflow.md §Step 5, §Step 6a; portfolio-analysis.md §The quick check (the dormant sweep leg)
+- FINRA short interest — data-sources.md §FINRA (canonical, retrieval mechanics included); data-sources.md §Portfolio Analysis — endpoint surface; portfolio-workflow.md §Step 5, §Step 6a; portfolio-analysis.md §The per-holding pipeline
 - Benchmark / sector / commodity identities + adjustment convention — data-sources.md §Financial Modeling Prep
 - Suite data dispersal — data-sources.md §Local analysis suite — shared sourcing
 - Local analysis suite configuration — configuration.md §Local Analysis Suite Configuration, §Research Context Management

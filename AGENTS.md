@@ -37,6 +37,24 @@ line, continuation sentences indented to the bullet's content column;
 headings, fenced blocks, and tables stay verbatim — maintain this on every
 docs edit (format-only reflow commits are listed in `.git-blame-ignore-revs`).
 
+## Pre-release data posture
+
+No local-suite data compat before release. The dev store is wiped before a
+run, so a new persisted field is required and always written: no serde
+default, no "a record persisted before the field reads as X" branch, no
+archive rung for a format no shipped build wrote. Only model-written and
+provider-written JSON stays lenient; shipped-report compat and the loud skip
+stay. The refused pre-release archive rungs are at `docs/data-portability.md`.
+
+## Code disciplines
+
+- Every session-keyed date reads the ET session through `market_clock`;
+  fetch-range upper bounds deliberately stay UTC, annotated where they occur.
+- The frontend ET-date mirror (`src/etDate.ts`) is behaviorally equivalent to
+  `market_clock` on the pinned contract, not a port: change one side and
+  re-pin both case tables.
+- `run-finished` is emitted before any job-history write error can propagate.
+
 ## Design system
 
 This project has a design package at `./market-signal-design-system/`.
@@ -83,15 +101,16 @@ introducing, and any gaps or conflicts you noticed.
 This project uses Metis — a lightweight toolset for keeping a project's intent, status, and history legible across agent sessions.
 
 **State on disk** lives in `.metis/`:
-- `BUILD.md` — what we're building (forward-looking architecture brief).
-- `CURRENT.md` — session handoff. Read first on any new session.
-- `SYNTHESIS.md`, `INDEX.md`, `CONTRADICTIONS.md`, `QUESTIONS.md`, `RESOLVED.md` — reconciliation artifacts for the project's `docs/` corpus (created when one exists).
+- `SYNTHESIS.md` — what we're building (the standing orientation).
+- `BUILD.md` — the build backlog: tasks under *To build* / *Built*.
+- `CURRENT.md` — session handoff and the active-task pointer. Read first on any new session.
+- `INDEX.md`, `CONTRADICTIONS.md`, `QUESTIONS.md`, `RESOLVED.md` — reconciliation artifacts for the project's `docs/` corpus (created when one exists).
 - `config.yaml` — project name and Metis version pin.
 
 **Workflow primitives** (type `$metis-` for the full list):
 - `$metis-session-start` — load `.metis/CURRENT.md` and orient.
 - `$metis-reconcile` — read `docs/`, surface contradictions and open questions.
-- `$metis-build-spec` — produce `.metis/BUILD.md`.
+- `$metis-build-spec` — finalize `.metis/SYNTHESIS.md` and produce the `.metis/BUILD.md` backlog.
 - `$metis-plan-task`, `$metis-implement-task`, `$metis-review-task` — the per-task loop.
 - `$metis-session-end` — update `.metis/CURRENT.md` for next session.
 
