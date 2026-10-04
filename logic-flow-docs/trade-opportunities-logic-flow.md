@@ -3,166 +3,168 @@
 > This describes the designed job behavior.  
 > Trade Opportunities is not yet built — every step below is designed and none is as-built, so the doc carries no built-vs-designed markers.
 
-`Gate → Load context → Discover names → Narrow list → Deep-check each name → Build matrix → Maintain old ideas → Mark owned → Save → Display`
+`Gate → Load context and score due forecasts → Discover names: screens, the watchlist review, routes, the refresh lane → Narrow the slate → Validate each name: archetype → engine and floor → research → analysis → review the prior call → thesis → gate → Order the survivors → Refresh the rest and open episodes → Mark owned → Save → Display`
+
+## How to read this document
+
+- The job is built as a **research instrument**: it tests whether a local reasoner, given primary-source data and the open web, can find a name before the market rewards it, write a defensible thesis for it, and price it.
+- Two jobs share one page. **Discover** runs the whole funnel; **Audit** re-evaluates the opportunities the user selects, reusing Discover's stages.
+- Every opportunity carries the judgment **twice**, as two arms with different provenance:
+  - The **engine arm** is a deterministic Rust calculator over primary-source data — an archetype-weighted quant composite and value-creation read, scenario bands at three horizons, an implied-expectations range, a narrative-versus-reality read, a forensic state, a rule-derived risk tier and horizon, and on a carried name the since-flagged read. It never consults the model.
+  - The **model arm** is the reasoner's own prose — a thesis document — and the typed appendix transcribed from it: the risk tier and horizon that place the card, the conviction, the expected price at each horizon, the detection mode, the leading metric with its class, and on a carried name the status. The app checks it on **type alone**, never on content.
+- Placement is the model's and the admission yardstick is the engine's: the card sits in the model arm's tier × horizon cell, while the entry gate's required return, haircut, and horizon window read the engine's legs on both arms, so the model never lowers its own bar.
+- Four rules keep the experiment honest:
+  - Nothing the model writes ever alters or binds an engine value.
+  - A name clearing **either** arm's entry gate is admitted; the evidence floor and the hard triggers bind both arms absolutely.
+  - Both arms are scored the same way against the same realized prices.
+  - The model reads its own track record and the engine's before it writes again.
+- One local model does every reasoning job by switching mode: **thinking** for route planning, research, the write-ups, the hypothesis documents, the watchlist review, archetype confirmation, the analysis, the review, and the thesis document; **non-thinking** for distilling write-ups and for transcribing a document's stated values into a typed object or a decision.
+- Every model prompt is **one message in two parts**: the data with a one-time gloss of each section, then the task. No prompt names the app, its stages, or its arms.
+- The canonical specification is `docs/trade-opportunities.md` and `docs/trade-opportunities-workflow.md`, with `docs/portfolio-analysis.md`, `docs/web-research.md`, `docs/local-models.md`, `docs/storage.md`, `docs/data-sources.md`, and `docs/schwab-integration.md` behind them. This document is the plain-language map, not the specification.
 
 ## Important terms
 
 - **DTO — Discover Trade Opportunities**
-  - Finds new ideas.
-  - Maintains existing ideas.
+  - Finds new ideas and maintains existing ones.
   - Runs the full workflow.
 
 - **ATO — Audit Trade Opportunities**
-  - Rechecks opportunities you select.
-  - Has Quick and Deep modes.
-  - Does not discover new names.
-  - Shares one `trade_opportunities` job identity with DTO — each run record carries its mode (`discover` / `audit-quick` / `audit-deep`), so history, retention, and the page footer's last-run stamp read one mode-labeled pool (ruled 2026-08-19).
+  - Rechecks opportunities you select, in a Quick or a Deep mode.
+  - Discovers nothing.
+  - Shares one `trade_opportunities` job identity with DTO; each run record carries its mode (`discover` / `audit-quick` / `audit-deep`), so history, retention, and the page footer's last-run stamp read one mode-labeled pool.
 
 - **Candidate**
-  - A company being investigated.
-  - Not yet approved as an opportunity.
+  - A company being investigated. Not yet an opportunity.
 
 - **Opportunity**
-  - A candidate that passed every required check and sits in the matrix.
+  - A candidate that cleared the floor, the hard triggers, and either arm's entry gate, and sits in the matrix.
 
 - **Debut**
-  - A candidate with no live opportunity record — new to the matrix this run.
-  - Only a debut can be held out at the entry gate or the evidence floor; a carry instead takes a warning or holds its verdict — it leaves only when a deep pass judges it invalidated (model-judged, or app-forced by a validated hard trigger).
+  - A candidate with no live opportunity record.
+  - Only a debut can be held out at the evidence floor, excluded by a hard trigger, or turned away at the entry gate.
 
 - **Carried-forward (a carry)**
-  - An existing live opportunity loaded from the prior run.
-  - Gets either a deep pass (a rotation pick, a budget-winning re-surfacer, or a Deep Audit) or the cheap re-derivation.
+  - A live opportunity loaded from the prior run.
+  - Gets a deep pass (a rotation pick, a budget-winning re-surfacer, or a Deep Audit) or the cheap re-derivation.
+  - Leaves the matrix only when a deep pass judges it invalidated.
 
 - **Hypothesis**
-  - A testable investment idea.
-  - Example: “AI data-center growth will benefit cooling suppliers.”
+  - A testable investment idea: a world change, the mechanism, who captures the margin, the leading metric that would prove it, the public-company expressions, the bear case, the falsifiers.
 
-- **Hypothesis card**
-  - The structured form a research route produces: world change → mechanism → who captures the margin → leading metric → candidate names → bear case → falsifiers → sources.
-  - Scored before any ticker is named.
+- **Hypothesis document**
+  - The prose a route's research is consolidated into: every hypothesis the route formed, argued in full, with its decision — promote, watchlist, or none.
+  - Read as text and validated by nothing. Persisted on the audit and into the opportunity graph.
 
-- **Hypothesis score**
-  - Equal-weighted mean of six 0–1 components: magnitude, durability, horizon fit, leading-metric observability, 1 − crowding, margin-capture clarity.
-  - Promote at ≥ 0.60; watchlist at ≥ 0.40.
+- **Hypothesis appendix**
+  - The hypothesis document's stated values transcribed into a typed object: per hypothesis the title, the decision, the candidate symbols, the leading metric with its re-check class, and for an event-impact hypothesis each name's side and the gate fields.
+  - Type-checked only.
 
 - **Route**
-  - A research direction the discovery lane spends budget on.
-  - Examples: policy / regulatory, supply chain, technical bottleneck, procurement / capex, customer capex, industry history, failure analogue, event-impact repricing.
-  - Each route carries its own source strategy (which source types it targets).
+  - A research direction the discovery lane spends budget on: policy / regulatory, supply chain, technical bottleneck, procurement / capex, customer capex, industry history, failure analogue, event-impact repricing.
+  - Each carries its own source strategy and is worked as a list of topics.
 
 - **Outside-view route**
-  - The one mandatory route every run, run graph-blind (it never sees prior hypotheses).
-  - Exists so the discovery memory cannot anchor the job to its own past.
+  - The one mandatory route every run, run graph-blind: it never sees prior hypotheses.
+  - Keeps the discovery memory from anchoring the job to its own past.
 
-- **Coverage debt**
-  - A route class, broad industry, or active theme not successfully researched within the coverage window (~4 weeks, calendar time).
-  - Causes the app to reserve the next route slot after the outside-view route.
-
-- **Coverage ledger**
-  - Per route class and per coverage subject: first seen, last attempted, last successfully completed, computed debt.
-  - A completed route pays debt even when it finds nothing; a failed route does not.
-
-- **Seed lineage**
-  - Which structured-feed headlines surfaced or oriented a hypothesis.
-  - A lead, never evidence: a seed's claim counts only once its source is deep-read.
-
-- **Technology read (`technology_read`)**
-  - The sized read an event-impact route attaches to each affected name: substitute / complement / mix-shift, exposed revenue or profit pool, deployment timeline, switching costs, the margin-capturing node.
-  - Present only when the name came through that lens.
+- **Coverage debt and the coverage ledger**
+  - A route class, broad industry, or active theme not successfully researched within the coverage window (~4 weeks, calendar time) is in debt; the app reserves the next route slot after the outside-view route for the oldest.
+  - The ledger records, per class and subject, first seen, last attempted, last successfully completed, and the computed debt. A completed route pays debt even when it finds nothing; a failed route does not.
 
 - **Opportunity graph**
-  - The job’s discovery memory.
-  - Stores hypotheses with their value-chain traces, watchlist names, and their relationships.
+  - The job's discovery memory: hypothesis nodes with their document sections and appendix fields, and company nodes with a status, a leading metric, refresh timestamps, and a hypothesis link.
 
 - **Watchlist node**
-  - A worthy-but-unpicked name remembered in the graph: hypothesis lineage, a named leading metric (with its re-check class), falsifiers, why deferred, the latest validation gap.
-  - Re-checked at its metric’s cadence every later run.
+  - A worthy-but-unpicked name remembered in the graph: its hypothesis section, its leading metric with its class, its status, and its refresh timestamps.
+  - Re-read every later run by the watchlist review.
 
-- **Research-watchlist refresh**
-  - A small current-search check on one stored `research`-class metric (drafted: one node per DTO run).
-  - Does not decide whether the company is investable.
+- **Watchlist review**
+  - One thinking conversation per DTO run over every live watchlist node, returning a prose review and, by transcription, a typed decision per node: promote, keep, or retire.
 
-- **Limited-history evidence**
-  - Older evidence for a new listing, spin-off, or changed business perimeter.
-  - Must map cleanly to the current company; app-declared eligibility, never a looser floor.
+- **Refresh write-up**
+  - The prose the research-watchlist refresh lane writes for one selected `research`-class node: what current evidence says about its named metric and falsifiers.
+  - Persisted onto the node as its latest observation, with its vintage.
 
 - **Archetype**
-  - The type of business or opportunity — secular compounder, AI / secular-cyclical infra, commodity cyclical, category disruptor, quality compounder.
-  - Determines which financial signals matter most and which valuation lens applies.
+  - The kind of business or opportunity: secular compounder, AI / secular-cyclical infra, commodity cyclical, category disruptor, quality compounder.
+  - Decides which signals matter and which valuation lens applies. Never an input to the risk tier.
 
 - **Leading metric**
   - A countable, dated, third-party-verifiable number expected to move before profits or the stock price.
   - Examples: backlog, bookings, subscriber additions, estimate revisions, segment revenue.
-  - Its absence makes a candidate a story stock — it abstains `insufficient-evidence` on the evidence floor, whose validated-leading-metric leg this is.
+  - A name without one is a story stock.
 
 - **Re-check class**
-  - How a leading metric, falsifier, or milestone condition can be refreshed: `structured` (an engine series, every run), `filing` (a statement field, on filing cadence, model-free), `research` (only a web pass can refresh it).
-  - An app-validated claim: a class that does not resolve is downgraded to `research`, never dropped.
+  - How a leading metric can be refreshed: `structured` (an engine series, every run), `filing` (a standardized statement line, on filing cadence, model-free), `research` (only a web pass can refresh it).
+  - A type, not a claim: a `structured` metric is chosen from the engine's series menu, a `filing` metric from the statement-line menu, and anything else is `research` by construction.
 
-- **Catalyst**
-  - A typed claim `{ description, date (optional), payoff_bearing }` for why the market may notice the opportunity now.
-  - Example: earnings, product launch, contract, regulatory decision.
+- **Story stock (`no-inflecting-metric`)**
+  - A debut whose structured metric family is measurable and not inflecting. Held out at the engine, before any research is spent.
 
-- **Thesis milestone**
-  - One step in the expected path from today to the thesis paying off, in a typed ordered plan with one named payoff milestone.
-  - May include an evidence-backed expected window; an unsupported date becomes undated, never invented.
+- **Insufficient evidence (`insufficient-evidence`)**
+  - A debut missing a floor-bearing input, or carrying stale or conflicting data. An abstention, never a low-conviction guess.
 
-- **Falsifier**
-  - A measurable condition that would show the thesis is wrong, typed by re-check class.
-  - Example: backlog declines for two reporting periods.
+- **Inconclusive refresh**
+  - A carried name whose deep re-read falls below the floor on missing or stale evidence. It holds its last verdict, stamps nothing, clears nothing, and opens no episode.
 
-- **Condition ID**
-  - App-controlled identity for a machine-checkable falsifier or milestone condition.
-  - Preserves evaluation history when the machine core is unchanged; a changed core starts fresh with a `supersedes` link.
+- **Engine arm**
+  - The deterministic baseline: the composite and sub-scores, the value-creation read, the leading-metric series and its inflecting read, the bear / base / bull bands at three months, twelve months, and three years, the implied-expectations range, the narrative-versus-reality read, the forensic state, the rule-derived risk tier and horizon, and the since-flagged read.
+  - App-stamped onto the record directly, never echoed through the model.
 
-- **Engine arm (baseline)**
-  - The deterministic side of every judgment field: archetype-weighted sub-scores, the v2 scenario targets (structured-only and research-informed), the implied-expectations range, a mechanical conviction stand-in, the rule-derived risk tier, the milestone-derived horizon, and the proxy-mapped `business_runway`.
-  - Always obeys its own caps and rules; nothing the model returns alters it.
+- **Model arm**
+  - The thesis document plus its typed appendix.
+  - Authored with the engine's values and their methodology in the prompt as evidence, never as bounds.
+  - Checked on type alone; its tier × horizon place the card.
 
-- **Model arm (model view)**
-  - The reasoner’s own read of the same fields — sub-scores, bear / base / bull bands, implied-expectations read, conviction, risk tier, horizon, and business-runway read — authored with the engine’s values in view as evidence (the engine tier and horizon excepted: both are 5h assignments, so placement is authored unanchored).
-  - Validated structurally and on each field’s declared domain (`docs/trade-opportunities.md` §The opportunity); never checked against the engine’s numbers; its target bands are scored head-to-head against the engine baseline by the outcome scoreboard, the other authored reads recorded unscored.
-  - Its tier × horizon place the card (the placement ruling, 2026-08-19); the engine’s derived pair renders beside them.
+- **Thesis document**
+  - The model's prose record of its view on a candidate: the directional thesis, the detection mode, the leading metric and its trend, why now, the drivers, the scenarios with probabilities, the bear case, the falsifiers and triggers in words, what the price already assumes, the tier and horizon argued from payoff timing and measurable risk, the expected prices and conviction argued in the text, the entry consideration, and on a carried name what changed.
+  - Read as text and validated by nothing. Each deep pass's document supersedes the prior one.
+
+- **Typed appendix**
+  - The thesis document's stated values transcribed into a typed object: risk tier, horizon, conviction, the expected price at each horizon, the detection mode, the leading metric with its class, and on a carried name the status.
+  - Type-checked only.
 
 - **Conviction**
-  - Confidence in the thesis — High, Medium, or Low.
-  - Carried in both arms: the model’s own value stands as authored; the engine stand-in carries every cap.
-  - Separate from risk.
+  - The model's confidence in its own thesis: high, medium, or low.
+  - Its own and bidirectional; never clamped, never derived by the app.
 
-- **Engine conviction stand-in**
-  - The engine arm’s mechanical conviction: a count of disclosed degraded inputs and the entry gate’s distance-to-threshold, the lower rung winning.
-  - Exists so the ceilings have a bearer that is not the model’s value.
-
-- **Admission provenance (`admitted_by`)**
-  - Which arm’s entry gate let a name in: `engine-and-model`, `engine-only`, or `model-only`.
-  - A name clearing either arm’s gate is admitted; both arms’ gate vectors persist either way.
+- **Expected price**
+  - The model's single-point expected share price at three months, twelve months, and three years.
+  - Finite and strictly positive, or the appendix is rejected.
 
 - **Risk tier**
-  - How risky the company appears — High, Medium, or Low; carried in both arms.
-  - The model’s own tier sets the matrix row (the placement ruling, 2026-08-19); the engine’s rule-derived tier sets the required return at the gate and renders beside the placement as the baseline.
+  - High, Medium, or Low, carried in both arms.
+  - The model's own tier sets the matrix row; the engine's rule-derived tier scales the entry gate's required return on both arms and renders beside the placement as the baseline.
 
 - **Horizon**
-  - When the thesis is expected to pay — Short, Mid, or Long; carried in both arms.
-  - The model’s own horizon sets the matrix column (the placement ruling, 2026-08-19); the engine derives its own from the validated payoff milestone or catalyst, and that derivation’s basis still sets the gate’s H.
+  - Short, Mid, or Long, carried in both arms.
+  - The model's own horizon sets the matrix column; the engine's follows a drafted rule over the archetype and dated transaction events, and sets the gate's **H** on both arms.
 
-- **Gate**
-  - A mandatory rule.
-  - Failure prevents a debut from entering the matrix; a carried name failing the entry gate instead takes a warning (only a deep pass's invalidated verdict — model-judged, or app-forced by a hard trigger — removes a carry).
+- **Detection mode**
+  - Early: a leading metric inflecting before the income statement and the multiple, while a bear narrative still suppresses the price.
+  - Continuation: demand-visibility signals that license buying a move already underway.
 
 - **Evidence floor**
-  - The minimum evidence a candidate needs before any judgment is written: price + history, a validated leading metric, current sources, and statements (or an archetype-defined operating substitute).
-  - Below it the candidate abstains as `insufficient-evidence`; binds both arms absolutely.
+  - The minimum evidence a candidate needs before any judgment is written: a current quote and price history, a measurable and fresh structured metric family where the archetype's tell lives in one, and the statements or their archetype substitute.
+  - Engine-only, run before research. Binds both arms absolutely.
 
 - **Entry gate (entry asymmetry)**
-  - The required forward return a name must clear: `DGS2` + 8 / 16 / 30 points by risk tier, plus the shape, liquidity, and (emerging track) double-over-horizon legs.
-  - Run once per arm; re-run on every cheap pass.
+  - The required twelve-month forward return a name must clear: `DGS2` plus 8, 16, or 30 points by engine risk tier, with the shape, liquidity, and double-over-horizon legs.
+  - Run once per arm; a name clearing either is admitted. Re-run on every cheap pass.
+
+- **Admission provenance (`admitted_by`)**
+  - Which arm's gate let a name in: `engine-and-model`, `engine-only`, or `model-only`.
+
+- **Hard triggers**
+  - A restatement or auditor change from the item-classified filings, and on a carried name anchorless `hype`.
+  - Exclude a debut outright; force a carried name to `invalidated`. Bind both arms.
 
 - **Cheap re-derivation**
-  - Fast, model-free refresh of the engine-computed fields and both arms’ gates.
+  - Fast, model-free refresh of the engine fields and both arms' gates.
   - Can raise a warning; cannot re-rate, re-place, or remove an opportunity.
 
 - **Deep re-evaluation**
-  - The full per-candidate loop (Steps 5a–5h) on an existing opportunity.
+  - The full per-candidate loop on an existing opportunity.
   - The only process allowed to rewrite the model-authored fields or archive.
 
 - **Attention warning**
@@ -170,62 +172,75 @@
   - Never changes the verdict; cleared by the next floor-clearing deep pass.
 
 - **Since-flagged read**
-  - Running return since the name became an opportunity (absolute, vs sector, vs market), its maximum drawdown, and whether the leading metric continued.
-  - Reconstructed from daily bars each run; cap-only in scoring — it can hold or lower conviction, never raise it.
+  - Running return since the name became an opportunity (absolute, vs sector, vs market), its maximum drawdown, and the continuation state of the engine's metric family.
+  - Reconstructed from daily bars each run; cap-only in the thesis document — it can hold or lower conviction, never raise it.
+
+- **Write-up**
+  - The prose a research pass produces on one topic. Rewritten whole on a follow-up pass, so a topic has one write-up at a time.
+
+- **Analysis**
+  - One document consolidating a candidate's write-ups for this run. The only research artifact the next deep pass reads.
+
+- **Review**
+  - The model's assessment of its prior call on a carried name against what actually happened, written before this run's thesis document.
+  - Where the accuracy record reaches the model.
+
+- **Distillation**
+  - A non-thinking shortening of write-ups, used only when the consuming prompt is over budget.
+
+- **Fetched values**
+  - The candidate's provider data as returned, glossed once and never engine-computed.
+  - The same block, byte for byte, leads the research, synthesis, and thesis-document prompts.
+
+- **Page roster**
+  - Every page shown to the model for a route or a candidate: address, title, publication date, retrieval time, and source tier. Never page text. The durable provenance on the audit record.
 
 - **Episode**
-  - A dated record of a decision, used later to measure whether the decision worked.
-  - A picked episode records an accepted opportunity; a shadow episode records a name turned away.
+  - A price record opened for a candidate whose appendix carried prices: the symbol and lifecycle, the decision class, the creation date, that day's spot, an anchor close, the model's three expected prices, and the engine's three base values.
+  - Append-only. Never updated or deleted.
 
-- **Lifecycle ID**
-  - App-assigned identity for one stretch of a ticker being live — from entry to departure.
+- **Decision class**
+  - The tag an episode carries: `picked`, `gate-reject`, or `excluded`. A tag, never a verdict on the decision.
+
+- **Check**
+  - A comparison written onto an episode when a horizon date passes: the close on that date and both arms' scores.
+
+- **Accuracy score**
+  - A lifecycle's mean per-check score at a horizon, 0–100, kept separately for the model and the engine.
+
+- **Lifecycle id**
+  - App-assigned identity for one stretch of a ticker being live, from entry to departure.
   - A re-entry from the archive is a new lifecycle; nothing from the old one carries.
 
-- **Outcome label**
-  - Engine-calculated result at 1, 3, 6, and 12 months: return (absolute, vs sector, vs market), maximum drawdown, whether the leading metric continued, and the resolution mode.
+- **Divergence tag**
+  - The quiet card badge raised when the arms materially disagree: conviction level, the twelve-month prices' gap, or a tier / horizon pair.
 
-- **Resolution mode**
-  - A deterministic first-match label for how a matured window resolved: terminal event → forensic materialization → leading-metric rollover → multiple unwind → market beta → thesis played out → no dominant mode (or the typed unscorable states).
-
-- **Shadow ledger**
-  - Stores every name the funnel affirmatively turned away, one typed episode per turn-away: gate reject, abstention, deferral, dedup substitute, retired hypothesis.
-  - Used to detect missed winners; calibration-only, never a feeder.
+- **Status-override divergence**
+  - The record kept when a hard trigger forces a carried name to `invalidated` against the model's proposed status: the proposed status, the forced status, the matched trigger, the filing.
 
 - **Archive**
-  - The price-tracked record of departed picks (most recent 100).
-  - A name leaves the matrix for it only on a failed deep re-evaluation; re-entry is a fresh start.
-
-- **Continuity weight**
-  - How hard a deep pass leans on the prior record, banded by the age of its last deep research: ≤ ~1 week continued research, ~1–4 weeks blended, > ~4 weeks fresh look.
-  - Frames interpretation only; every engine number is recomputed.
+  - The price-tracked record of departed picks, the most recent 100.
+  - A name leaves the matrix for it only on a deep pass that judges it invalidated; re-entry is a fresh start.
 
 - **Rotation slice**
-  - The reserved share of the deep-research budget (default ~20%, never below one slot) spent first on live opportunities in maintenance-priority order.
-  - Backstopped by a max-age service level.
+  - The reserved share of the deep-research budget (default ~20%, never below one slot) spent first on live opportunities in maintenance-priority order, backstopped by a max-age service level.
 
 - **Deep-research set**
-  - The run-scoped list of tickers deep-researched this run.
-  - A ticker in it is never also cheap-swept: at most one deep pass per ticker per run.
+  - The run-scoped list of tickers deep-researched this run. A ticker in it is never also cheap-swept.
 
 - **Research cache**
-  - The cross-run web-document cache: fetched, readability-extracted pages keyed by normalized URL, under ~4 weeks old, carrying their original retrieval timestamp.
-  - Document-level only — a cached page can be reused, a judgment never is; searches always run live.
+  - The cross-run document cache: fetched, readability-extracted pages keyed by normalized URL, under ~4 weeks old, carrying their original retrieval time.
+  - Document-level only: a page can be reused, a judgment never is; searches always run live.
+
+- **Split bridge**
+  - The conversion that brings every stored price onto today's basis after a stock split, from an anchor bar stamped at authoring against the same bar in a fresh fetch.
 
 - **House view**
-  - Current Market Signal thesis and major market themes.
-  - Omitted (and recorded as a gap) when older than one week.
-
-- **Investor profile**
-  - Risk tolerance, horizon, objective, tax posture, cash posture — a fixed default preset for now.
-  - Shapes entry framing and conviction emphasis; never which opportunities qualify.
+  - The current Market Signal thesis and major market themes. Omitted, and recorded as a gap, when older than one week.
 
 - **Reasoning model**
-  - Local 122B model, thinking mode for research and scoring, non-thinking for distillation.
-  - Fills every reasoning role by switching mode.
-
-- **Embedding model**
-  - Local 4B model.
-  - Finds relevant prior analysis; performs no investment reasoning.
+  - The local 122B model: thinking mode for research and every document, non-thinking for distillation and transcription.
+  - Fills every model role by switching mode. The job makes no embedding call.
 
 ## Main data sources
 
@@ -233,25 +248,25 @@
   - `company-screener` — universe definition, tradability gate, and market-cap-band / sector stratification (coarse fields only — no valuation or growth filter; `*-bulk` pre-scoring is off-plan).
   - `insider-trading/latest` — market-wide newest Form 4s for insider cluster buys.
   - `biggest-gainers`, `biggest-losers`, `most-actives` — movers.
-  - `earnings-calendar` — upcoming catalysts, and read backward as the post-earnings surprise screen.
-  - `mergers-acquisitions-latest`, `sec-filings-8k`, `ipos-calendar` — fresh catalysts.
-  - `available-sectors`, `industry-classification-search`, `all-industry-classification`, `stock-peers` — map a theme onto its exposed names; expand a name to its peers.
-  - `news/general-latest`, `news/stock-latest`, `fmp-articles` — ticker-tagged, dated headlines that seed the discovery routes (leads the web tool deep-reads; never evidence).
+  - `earnings-calendar` — upcoming reporters, and read backward as the post-earnings surprise screen.
+  - `mergers-acquisitions-latest`, `sec-filings-8k`, `ipos-calendar` — fresh corporate events; the M&A feed and the 8-K sweep also supply the engine horizon's transaction-close input.
+  - `available-sectors`, `industry-classification-search`, `all-industry-classification`, `stock-peers` — map a hypothesis onto its exposed names; verify each symbol.
+  - `news/general-latest`, `news/stock-latest`, `fmp-articles` — ticker-tagged, dated headlines that ride the discovery routes as leads: what to pursue, never evidence a write-up may rest on.
 
 - **FMP — per-candidate surface (the budget driver; fires only for the narrowed set)**
   - `profile` — sector, industry, beta, description.
   - `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement` — the core statements.
-  - `key-metrics`, `ratios` (+ TTM), `financial-scores` (Altman Z, Piotroski), `owner-earnings`, `enterprise-values`, `discounted-cash-flow`, `financial-growth` (multi-year per-share CAGRs), `dividends` (trailing distributions — the targets' twelve-month payout proxy, not a forward estimate).
-  - `revenue-product-segmentation`, `revenue-geographic-segmentation` — annual only; the quarterly segment series is research-extracted.
+  - `key-metrics`, `ratios` (+ TTM), `financial-scores` (Altman Z, Piotroski), `owner-earnings`, `enterprise-values`, `discounted-cash-flow`, `financial-growth` (multi-year per-share CAGRs), `dividends` (trailing distributions — the bands' twelve-month payout proxy, not a forward estimate).
+  - `revenue-product-segmentation`, `revenue-geographic-segmentation` — annual only.
   - `analyst-estimates` (snapshotted run to run for revision velocity), `grades`, `grades-historical`, `grades-consensus`, `price-target-consensus`, `price-target-summary`, `ratings-snapshot`, `ratings-historical`, `earnings` (next date + surprise history).
-  - `news/stock` — symbol-scoped headlines seeding the candidate’s narrative read.
+  - `news/stock` — symbol-scoped headlines, the candidate's news leads.
   - `insider-trading/search`, `insider-trading/statistics`, `acquisition-of-beneficial-ownership` (13D / 13G), `senate-trades`, `house-trades`, `shares-float`; optionally `historical-employee-count`, `key-executives`.
   - `quote` — the live price the engine prices targets and runs the gate against.
-  - `historical-price-eod/light` (dated) — deep daily price history, through the shared price-bar cache.
+  - `historical-price-eod/light` (dated) — the deep daily history, through the shared price-bar cache.
 
 - **FMP — run-level series**
   - Commodity series `HGUSD` (copper), `GCUSD` (gold), `SIUSD` (silver) — daily price turns for the cyclical sleeve.
-  - Benchmark series `^GSPC` and the SPDR sector ETFs — the outcome labels’ and since-flagged read’s market / sector legs.
+  - Benchmark series `^GSPC` and the SPDR sector ETFs — the since-flagged read's market and sector legs.
 
 - **FRED**
   - `DGS2` and `DGS10` Treasury yields; the anchor-window `DGS10` history for the valuation multiples.
@@ -262,6 +277,7 @@
   - Submissions — 10-K / 10-Q / 8-K, item-classified (Item 4.01 auditor change, Item 4.02 restatement); S-1 / Form 10 history for an eligible new listing or separation.
   - XBRL company facts — the authoritative statement cross-check.
   - 13F — run-level, optional, coarse; held out of the grade.
+  - Earnings-release recovery: an 8-K exhibit fetched when an issuer's own site blocks the research fetch.
 
 - **FINRA**
   - The consolidated short-interest file, fetched once per run: level, trend, days-to-cover per name.
@@ -276,154 +292,163 @@
 - **Charles Schwab**
   - Per-candidate option chains (volume, open interest, implied volatility) → the options-activity signal.
   - Current holdings, pulled fresh at Step 8 for the owned / not-owned label only.
+  - Read-only by construction: the only calls are the chains read and the positions read.
 
 - **SearXNG**
-  - Keyless local web search for discovery and per-candidate research.
-
-- **Tavily**
-  - Not used by the local suite: the suite's web search is SearXNG-only, and Tavily is reserved for the report job.
+  - The only web search for discovery and candidate research: a self-hosted, keyless metasearch instance.
+  - Serper, a paid Google-results API, is wired inside it as a keyed engine that fires on every query, the reliable floor; the keyless engines stay as redundancy, and the key lives outside the repo.
+  - Tavily is the report job's and is never called by this job. No GDELT.
 
 - **Local storage**
-  - The prior run’s matrix, the opportunity graph, the coverage ledger, the archive, the shadow ledger, and the picked-episode store (the six persisted structures).
-  - The shared price-bar cache, the web-document research cache, the factor-distribution store, and the web-research source state.
-  - The Market Signal house view and recent report summaries, the investor profile, and the Trade Opportunities vector-memory partition.
+  - The prior run's matrix, the opportunity graph, the coverage ledger, the archive, and the episode store — the five persisted structures.
+  - The shared price-bar cache, the document cache, the factor-distribution store, and the web-research source state.
+  - The house view and recent report summaries.
+  - Each carried name's prior thesis document, analysis, and appendix values, by lifecycle id.
 
 ---
 
 ## The research loop (shared by Steps 3b, 3c, 5d, and Deep Audit)
 
-Four stages reach the open web, and all of them run the **same bounded loop** — the one Portfolio Analysis’s Step 6c runs: Step 3b’s discovery routes, Step 3c’s targeted watchlist refresh, Step 5d’s per-candidate research, and ATO’s Deep Audit (Step 5d on the user’s selection). The mechanics are written once here; each step states only what is its own — its agenda, its budget scope, its seeds, its search backend, and what comes out — and points back.
+Four stages reach the open web, and all of them run the same bounded loop Portfolio Analysis runs at its Step 6c: Step 3b's discovery routes, Step 3c's refresh lane, Step 5d's per-candidate research, and a Deep Audit (Step 5d on the user's selection). The mechanics are written once here; each step states only what is its own — its agenda, its budget, its leads, and what comes out — and points back.
 
 ### What differs per stage
 
-- **Step 3b — discovery** — the unit of work is a **route**, worked as one or more topics (`route ⊃ topic ⊃ pass ⊃ fetch`). One **per-run discovery** fetch + wall-clock ceiling is shared across every route, spent in route-priority order. Search is **keyless SearXNG only** — no Tavily; a down SearXNG means fewer candidates, never a keyed fallback. Seeds are the FMP `news/general-latest`, `news/stock-latest`, and `fmp-articles` feeds plus the macro-release calendar. The route’s findings are consolidated by its **card-formation call** into hypothesis cards (Step 3b), not by Step 5e.
-- **Step 3c — the refresh lane** — one selected watchlist node, one isolated bounded conversation, spent from the same discovery ceiling, SearXNG only. It is given only the node’s stored hypothesis, named metric, falsifiers, relevant milestone, latest gap, and this run’s matching structured-event seeds, and returns one typed `watchlist_research_refresh` object.
-- **Step 5d — per-candidate (and Deep Audit)** — the unit is the candidate’s agenda (the topic list at Step 5d). A **per-candidate** fetch + wall-clock budget, spent in topic-priority order (leading metric and bear case first). Search is **SearXNG only**. Seeds are the candidate’s `news/stock` headlines. Every worked topic’s full findings flow to Step 5e distillation.
-- **No cross-run findings seed.** The cross-run research cache is **document-level only** (below): no step receives a prior run’s distilled object as a seed — Portfolio’s seed-and-merge layer does not exist in this job; every loop starts from its framing inputs and works the open web.
+- **Step 3b — discovery.** The unit of work is a route, worked as its topic list: `route ⊃ topic ⊃ pass ⊃ fetch`. One per-run discovery fetch and wall-clock ceiling is shared across every route, spent in route-priority order. The leads are the FMP news feeds and the macro-release calendar. After a route's topics, one disconfirming pass runs for the route. The route's write-ups flow to its card-formation conversation.
+- **Step 3c — the refresh lane.** One selected watchlist node, one isolated bounded conversation, spent from the same discovery ceiling after the routes. It is given the node's hypothesis section and its named metric and falsifiers as the questions, and returns a refresh write-up and a typed decision.
+- **Step 5d — per-candidate (and Deep Audit).** The unit is the candidate's agenda. A per-candidate fetch and wall-clock budget, spent in topic-priority order, the leading metric and the bear case first. The leads are the candidate's `news/stock` headlines. After the topics, one disconfirming pass runs for the candidate. The write-ups flow to Step 5e.
+- **No cross-run findings seed.** The cross-run cache is document-level only. A carried name's prior analysis and prior thesis document ride the prompts verbatim, dated; no distilled object from a prior run seeds a loop.
 
 ### Build the agenda
 
-The orchestrator assembles the topic list from the stage’s documented list; the reasoner works it one topic at a time. At Step 5d that list is fixed — the candidate’s topics plus its deterministically triggered conditional one (limited-history reconstruction) — and the orchestrator assembles it deterministically. At Step 3b there is no documented topic list, so the route agenda *and* each route’s topic list are the **planning call’s proposal, app-validated** (ruled 2026-08-19) — with the outside-view and coverage-rotation routes app-inserted — the one agenda in the suite the reasoner proposes; inside the loop the research model still never authors a topic.
+- The orchestrator assembles the topic list from the stage's documented list, and the reasoner works it one topic at a time. At Step 5d the list is fixed: the candidate's topics plus the deterministically triggered reconstruction topic. At Step 3b the route agenda and each route's topic list are the planning call's proposal, app-validated — the one agenda in the suite the reasoner proposes; inside the loop the model never authors a topic.
 
 ### Work each topic — the loop
 
-The orchestrator works the agenda **one topic at a time**. Each topic is worked in isolation over a clean context — a gathering loop plus that pass's separate synthesis call, sharing no context with other topics — and the orchestrator — never the model — owns every search and fetch, stopping at the stage’s budget.
-
 - **Two nested levels**
-  - **Topic** — worked in isolation per agenda topic (its gathering loop plus that pass's separate synthesis call); topics never share a context.
-  - **Pass** — each topic's conversation is a bounded multi-turn tool loop: one root pass plus up to two follow-up passes, so three passes per topic at most. The cap counts passes (branches), not model calls — a single pass runs a bounded gathering loop of tool turns (each one model call requesting a search or fetch the orchestrator runs), then a **separate synthesis call** authors the pass's findings from the gathered evidence over a fresh, tool-history-free conversation (the shared research loop's fix B — the gathering turns and the findings grammar never share a request; `research.rs`, `synthesize_findings`).
+  - A topic is worked in isolation over a clean context — its gathering loop plus that pass's separate synthesis conversation. Topics never share a context, and no other topic's write-up is fed in; topics meet only downstream, at the consolidating call.
+  - A topic's root pass plus at most two follow-ups: three passes per topic. The cap counts passes, not searches.
 
-- **What each topic conversation is given (its inputs)**
-  - The stage's framing facts — identical for every topic of the item: at Step 5d the candidate's dossier facts, archetype, and computed leading-metric reads; at Step 3b the house view, the carried-forward opportunity graph (withheld from the outside-view route), and the route's source strategy.
-  - That topic's own questions — different per topic.
-  - The stage's seeds, as leads — the structured-feed headlines orient the topic (and carry their stable seed IDs), never as evidence: a seed's claim counts only once the model deep-reads its underlying source.
-  - No other topic's findings — a later topic gets nothing from an earlier one. The topics meet only downstream, at the consolidating call (Step 5e distillation, or Step 3b's card formation).
+- **Scheduling**
+  - Every eligible root runs before any follow-up; then follow-ups in topic-priority order.
+  - A follow-up is the model's own question, spent only if the orchestrator's budget allows; on exhaustion it is simply not spent.
 
-- **What is retrieved during a pass (the data)**
-  - Live web-page text — the pages the model deep-reads, fetched by a plain HTTP GET with a browser-like header set and readability-extracted in Rust to the article body (navigation, ads, and boilerplate stripped). This is what "current web sources" means.
-  - Cached pages — a URL under about four weeks old comes from the **document cache** instead of the network, keyed by normalized URL and carrying its original retrieval timestamp (the vintage is never rewritten on reuse); new URLs are fetched live, and **searches always run live** — the cache satisfies only the re-fetch of an unchanged URL a current search re-surfaces. Each pass records its reused-vs-freshly-fetched split in the run audit.
-  - A thin result (a paywall or a JavaScript-rendered page) escalates to a **rendered fetch** in the app's embedded webview — only the pages the extraction telemetry flags, never blanket — and an optional Connected Source (the user's own subscription session, from the Keychain) may carry the fetch past a paywall; both hold the same safety posture as the plain GET.
-  - Search is a backend, not a separate data source: SearXNG-only at every step.
+- **Gathering conversation** (thinking, tools, no grammar)
+  - The model asks for `web_search` and `web_fetch` calls; the orchestrator executes them and returns the results as data. The model never touches the network.
+  - At most 8 replies per pass, counted down by a short app message before each request. Pages fetched on the last reply are kept.
+  - At most 8 tool calls per reply; a larger batch has its head executed, its tail recorded as partial coverage, and the pass moves to synthesis.
+  - The whole growing conversation plus the tool schema is sized against the shared input guard before every request and before each retained result; an overflow ends gathering as a recorded degradation.
+  - Search and page metadata (titles, snippets, dates) are capped so untrusted text cannot consume the packet.
+  - Prior `<think>` blocks are stripped from history, never accumulated across turns.
+  - A pass ends on a reply with no tool call or at a bound.
 
-- **Who owns the context, and what persists**
-  - The orchestrator owns the prompt: on every gathering turn it appends the tool results and the model's tool request, threading the growing context forward — the model only requests tools, it never touches the network; the shared loop accepts at most 8 calls from one response and checks the complete serialized message history plus tool schema against the input-budget guard before every issued request and retained result. Crossing either bound ends gathering with the omitted tail/results recorded as partial coverage; the pass's findings are not part of this growing context — they are authored by a separate synthesis call over a fresh conversation (the shared research loop's attempt-4 Finding 4, fix B). Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
-  - Carried across the topic's passes: the append-only **evidence ledger** (each extracted claim + its source URL + retrieval timestamp; a claim deep-read from a seed's URL additionally carries a `surfaced_by` back-pointer to that seed) and the accumulated per-pass findings, which the orchestrator assembles for the consolidating call. The framing inputs anchor the conversation from its start.
-  - Raw fetched page text is the bulky working material: it may roll off the context as a pass proceeds, and the durable record of what a page yielded is its claims in the ledger, not the page text itself.
+- **Synthesis conversation** (thinking, no tools, no grammar)
+  - A fresh conversation over the gathered pages writes the pass's write-up. A tool-using turn and the write-up never share a request.
+  - On a follow-up pass the topic's write-up is rewritten whole with the new evidence folded in.
+  - A second message asks whether the research has a follow-up question: the question verbatim, or the one word `none` — the only reply the app interprets. Not sent on a topic's last pass or on the disconfirming pass.
+  - A pass that retrieved no page spends no synthesis; the write-up so far stands.
+
+- **What a conversation is given**
+  - The stage's constant block, identical for every topic of the item: at Step 5d the candidate header, FETCHED VALUES, NEWS LEADS, and on a carry the prior analysis and prior thesis document; at Step 3b the route header, MARKET ANALYSIS, PRIOR HYPOTHESES (withheld from the outside-view route), the route's source-strategy rubric, and NEWS LEADS.
+  - PAGES ALREADY RETRIEVED — pages fetched for this item earlier in this run, by other topics or earlier passes, in first-retrieval order; held in memory and discarded between items. Supplied to ordinary topic and follow-up gathering only: the disconfirming pass gets no automatic page injection, so its contrary search stays its own.
+  - That topic's own questions; on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR; on the disconfirming pass WRITE-UPS SO FAR.
+  - Part 2: what to find, how to weigh a source, the per-reply tool-call bound, and when to stop.
+
+- **Leads are leads, not citations**
+  - A headline points at what to pursue; a write-up rests on the pages the model read, never on a lead's headline or snippet.
 
 - **Fitting the fixed context window**
-  - `num_ctx` is fixed per model and never raised to make room — raising it reloads the runner and starves memory (`docs/local-model-operations.md` §The num_ctx trap); context pressure is answered by dropping content, not by growing the window.
-  - As built, untrusted tool-result metadata and each page body are capped at insertion, tool calls per turn and turns per pass are capped, and the aggregate gathering packet stops before overflow; no server-side or mid-pass roll-off is relied on.
-  - The fresh synthesis packet jointly selects source headers and body allocations: a source survives only with usable body text, omitted headers are reclaimed before the selected bodies are water-filled, and every omission or truncation is carried inline and into data health.
-  - It never relies on the model server's own truncation, which silently front-drops the prompt's head and leaves the model to hallucinate over the gap.
+  - `num_ctx` is fixed per model and never raised to make room; context pressure is answered by dropping content, not by growing the window.
+  - Each page body and each tool-result header is capped at insertion, tool calls per reply and replies per pass are capped, and the gathering packet stops before overflow.
+  - The synthesis packet budgets page headers and bodies together: a source survives only with usable body text, omitted headers are reclaimed before the bodies are filled, and every omission or truncation is shown inline and recorded as a gap.
+  - The model server's own truncation is never relied on: it silently drops the prompt's head and leaves the model to hallucinate over the gap.
 
-- **What each model call returns**
-  - Inside a pass, each gathering turn requests `web_search` / `web_fetch` calls — the orchestrator executes them and returns the results for the next turn — until the topic is answered or the budget is spent; then a separate synthesis call authors that pass's findings from the gathered evidence (the shared research loop's fix B).
-  - The model authors each pass's findings write-up; the orchestrator only accumulates them — there is **no topic-close model synthesis**, so the first model consolidation of the findings is the stage's downstream call (Step 5e distillation, or Step 3b's card formation).
-  - Each ledger entry is a hybrid: the model supplies the claim, the orchestrator stamps its provenance (the source URL / timestamp, and any seed back-pointer).
-
-- **Follow-up passes**
-  - A follow-up is the model's **proposal** — a structured field the orchestrator reads and decides whether to spend; the model never recurses on its own.
-  - It is granted only while depth remains (≤2 follow-ups) **and** the stage's budget has room; on exhaustion it is simply not spent (fail-soft, no follow-up).
-
-- **Seeds are leads, and their lineage is validated**
-  - A seed is never written into the evidence ledger as a claim — a second-hand snippet is not verified evidence.
-  - Lineage is kept in a small typed lane beside the ledger, two ways: deterministically, via the `surfaced_by` stamp whenever a seed's URL is deep-read; and model-attributed, via a bounded `seeded_by` list (config-capped) naming the seeds the reasoner judges oriented it even if it never fetched them.
-  - `seeded_by` is validated, not trusted: each entry must reference one of the stable seed IDs the orchestrator fed this loop; an unknown reference is dropped and logged, so lineage can't be fabricated.
-  - Distillation reads the lineage as provenance, never as scored evidence; the gap between a seed's headline and what its deep-read found is itself a narrative-vs-reality tell.
-
-- **Source quality informs, it never gates**
-  - Every fetched document carries app-computed annotations — `sourceTier` (0–5, from the source registry), `extractionQuality` (0–1, how much article body was recovered), `recencyScore` (against the source's freshness SLA), `primarySourceBonus`, a paywall / JS-stub flag — beside the model-derived ones (`claimSpecificity`, `contradictionFlag`, which claim IDs a document supports).
-  - A low tier lowers conviction; it never removes a claim or candidate. The one exclusion is the explicit `deny` list (SEO mills, AI quote pages, PR spam) — keeping non-sources out, not gating on quality.
-  - Lane policy: **discovery** takes a soft preference (a low-tier lead is still pursued, weighted down); **per-candidate validation** weights stricter (a claim resting only on tier-4/5 sources is flagged low-confidence, still surfaced). Trade Opportunities leans to specialist and value-chain sources.
-  - Syndication is collapsed: five outlets reprinting one wire are one independent source — independence is counted by origin, not URL count.
-  - Claim **freshness** is a different question: whether a floor-bearing input is current enough is decided by the evidence floor's typed freshness basis (Step 5h), never by the tier weights.
-
-- **Safety**
-  - Fetches are SSRF-guarded — `http`/`https` only, public hosts only (the app's own Ollama and SearXNG run on loopback), redirects capped and re-validated, responses bounded by size and content type.
-  - Fetched text is data, never instructions — inserted as quoted evidence, so an injected page can't redirect the analysis.
+- **Disconfirming pass**
+  - Once per route and once per candidate, after the topics: a gathering conversation searching for evidence against the write-ups so far, then its own synthesis conversation writing its own write-up and asking no follow-up.
+  - Spent from the stage's budget, outside any topic's depth, fail-soft to a recorded gap when the budget is exhausted.
 
 - **Stops at the budget**
-  - The stage's fetch + wall-clock budget binds first, polled at each request boundary and spent in priority order — topic priority at Step 5d (leading metric and bear case first), route priority at Step 3b. When it drains, the lowest-priority remaining topics or routes are skipped fail-soft, each recorded as a degraded-input gap (lower conviction), never failing the run.
-  - The per-topic depth cap (≤2 follow-ups, ≤3 passes) works alongside it, guarding against rabbit-holing one topic.
-  - The fetch-count, topic, and depth caps are pinned defaults; the wall-clock cap is calibrated against measured local throughput on first runs.
+  - The stage's fetch and wall-clock budget binds first, polled between requests, never mid-request, and spent in priority order. When it drains, the lowest-priority remaining topics or routes are skipped as a recorded gap; the current pass still gets its synthesis.
+  - A failed live attempt spends like a served one; a cache hit or a remembered failure spends nothing; a retry spends another.
 
-- **Disconfirming-fetch pass (placed at Step 5d)**
-  - Once per candidate, after its topics, the loop spends one bounded pass searching specifically for what would disprove the thesis — a disconfirming *fetch*, not just a disconfirming prompt.
-  - It is spent from the candidate's fetch / wall-clock budget, is not counted against any topic's three-pass depth, and fail-softs to a recorded gap when the budget is already exhausted. Step 3b's adversarial passes (*why already priced? · why is the obvious beneficiary wrong? · who captures the margin instead? · is the impairment real or panic?*) are prompt-side discipline inside card formation, not fetch passes.
+### The fetch layer
 
-- **Failure**
-  - Web failure reduces evidence; it may lower conviction; it does not fail the run.
-  - A hard model failure inside a required per-candidate path fails the run; the per-candidate checkpoint (Step 5h) lets a resume pick up the unfinished candidates.
+- **Search**
+  - SearXNG only, over its JSON API on loopback. It fans each query to its keyless engines plus Serper, the keyed Google-results engine that fires on every query as the reliable floor.
+  - Queries are paced with jitter against upstream rate limits; a repeated query within a run is served from a per-run cache.
+  - A down or misconfigured instance returns a typed search failure — one fixed sentence, never the operator's error text — distinct from an empty search's `No results.`, so unavailable research never reads as absent results; either way the loop proceeds thinner. No Tavily, no GDELT, no keyed fallback.
 
-## Distillation (shared by Steps 3b, 5e, and Deep Audit)
+- **Fetch and extraction**
+  - A plain HTTP GET with browser-like headers and a timeout, then a Rust readability extraction to the article body. SEC hosts get the app's declared identity.
+  - Paywalled or JavaScript-heavy pages return thin text; a selective render tier escalates pages the extraction telemetry flags as thin, reusing the app's embedded webview.
+  - Optional Connected Sources attach a stored login session for a domain; never part of the gate.
 
-Consolidation is one reusable primitive — *distill one complete research topic-tree (a topic plus its ≤3 passes) into a compact, structured object* — applied wherever research must be condensed before a reasoning call reads it: Step 5e (the per-candidate distilled findings object), Step 3b's heavy routes (tier-1 sub-distillation before card formation), and a Deep Audit (Step 5e again).
+- **Safety**
+  - Only `http` and `https` to public hosts; private, loopback, and reserved ranges are blocked. Redirects are capped and re-validated. Responses are bounded by size and type.
+  - Page text is data, not instructions: inserted as quoted evidence, so an injected page cannot redirect the analysis.
 
-- **Model**
-  - The 122B reasoner in non-thinking mode (the optional 35B fast tier if resident).
-  - Consolidates evidence; performs no new searches; calculates no financial numbers.
+- **Source quality informs, never gates**
+  - Every domain carries a tier 0–5 (0 primary filings and regulators; 1 licensed data providers; 2 high-trust reporting; 3 specialist industry sources; 4 opinion; 5 sentiment only). A low tier weights down; it never removes a page or a candidate.
+  - The explicit `deny` list (SEO mills, AI-generated quote pages, press-release spam) is the one categorical exclusion.
+  - Syndicated reprints of one wire count as one source.
+  - This job leans to specialist and value-chain sources: discovery takes a soft preference, candidate research weights stricter.
 
-- **Single or hierarchical — chosen deterministically**
-  - The orchestrator, never the model, sizes the stage's **full input** — every worked topic's findings, the accumulated evidence ledger, and the job-specific inputs that join them (Step 5e: the engine's computed reads) — against the call's input budget; above the configured overflow threshold it routes hierarchical. Growth *across* topics trips the hierarchical path rather than overflowing one call.
-  - **Single pass:** one call over every topic's findings — the only call that sees the whole input.
-  - **Hierarchical (large input):** a **tier-1** distillation per topic-tree (each call seeing one tree's complete findings + ledger entries, no cross-tree context), then one **tier-2 reduce** over the tier-1 objects into the one object the next stage reads. Tier-1 outputs are structured and field-preserving — per-lens claims with sources and confidence plus any internal-tension flag — so nothing the reduce depends on is lost.
-  - Any reasoning that must span topics lives at the consolidating pass that first sees them all — the single call, or the tier-2 reduce (never tier-1): for this job, the cross-lens contradiction check (Step 5e).
-  - Either path preserves each claim's citations end to end.
+- **Reuse and memory**
+  - A shared cross-run document cache serves repeat fetches inside a ~4-week window, each page carrying its original retrieval time; the vintage is never rewritten on reuse. Searches always run live. Each pass records its reused-versus-fresh split on the audit.
+  - An item-scoped in-memory inventory feeds the pages-already-retrieved block and is discarded between items.
+  - Failed-fetch memory spans the run: a 401 or 403 puts the host in a five-minute cooldown; a 408, 429, or 5xx, a timeout, or a reset gets one retry after one second; other failures are remembered and not retried.
 
-- **If one topic's own input overflows a call**
-  - Trigger — the topic's complete input *summed* (all its passes' findings plus their ledger entries) would exceed one call.
-  - Map — one distillation call per pass, condensing that pass's findings and ledger entries into a compact per-pass object.
-  - Reduce — one more call combines the per-pass objects into the topic's tier-1 object, which joins the outer reduce like any other. So an overflowing topic costs one map call per pass plus one reduce — two to four calls — against the single call a normal topic uses.
-  - The cap, not a further overflow check, is what drops passes — the per-item sub-distillation cap (Bounds and audit, below) is a budget of pass-level map calls shared across the item's overflowing topics; a topic whose passes exceed what remains fail-softs its lowest-priority whole passes to a recorded gap, each taking its findings and ledger entries with it, and the tree-level reduce is never sized.
+- **Earnings-release recovery**
+  - When an issuer's own site blocks the fetch of an identifiable earnings release, the loop may recover the matching 8-K Item 2.02 exhibit from EDGAR, within ten extra attempts under the item's budget, cited under the SEC address.
 
-- **Bounds and audit**
-  - A per-item sub-distillation cap (config), spent from the stage's existing budget (wall-clock binds first); the chosen shape and tier count are logged to the run audit, so the fan-out is never silent.
+### Failure and output
 
-- **Where it is used, and what comes out**
-  - Step 5e — the candidate's single schema-validated distilled findings object plus the typed research claims (listed there).
-  - Step 3b — a heavy route sub-distills along its natural seam (per side or sub-agenda — tier-1), then the route-level reduce is the card-formation call in its reduce form (listed there).
+- Research is fail-soft: a failed search, a timed-out fetch, a drained budget, or an unreachable SearXNG thins the evidence and never fails the run.
+- A hard model failure inside a required per-candidate path fails the run; the per-candidate checkpoint lets a resume pick up the unfinished candidates.
+- Output: one write-up per worked topic plus the disconfirming pass's, flowing whole to the stage's consolidating call.
+- Every page shown enters the page roster, persisted on the audit record; every degradation persists as a gap and counts into the run's data health.
+
+## Consolidation (shared by Steps 3b, 5e, and Deep Audit)
+
+Write-ups are consolidated by a thinking call that reads them whole: the hypothesis document at Step 3b, the analysis at Step 5e. Distillation happens only when that call's prompt is over budget, and it condenses write-ups, never already-distilled notes.
+
+- **Budget check**
+  - The orchestrator sizes the consuming prompt — the write-ups plus the stage's other inputs — against the call's input budget.
+  - Within budget: the write-ups go in as written.
+  - Over: the merged write-ups are distilled into one shorter document.
+  - Where the merged write-ups exceed one distillation call's budget: each write-up is distilled first and the merge of those outputs is distilled again.
+  - A prior analysis is never distilled.
+  - The shape is chosen deterministically from size, never by the model, and logged to the audit with its call count.
+
+- **Call: distillation** (non-thinking, no grammar)
+  - **Sees** — the item header, then the write-ups to distill under their topic headings: the merged write-ups, or one write-up on a per-write-up call. The task: a shorter document that keeps every dated figure with its source, every disagreement between pages, and every open question.
+  - **Returns** — prose at most half its input and at most 1,200 words. Consolidation, not new reasoning. Validated by nothing.
+  - **Model** — the resident 122B in non-thinking mode by default; the fast 35B tier is a benchmark-gated option. A rendered prompt over the fast tier's budget issues on the resident reasoner; over the widest budget it takes the per-write-up shape, or is refused as a hard failure where no smaller shape remains. A length stop at the normal 12,288-token output reservation gets one re-attempt at 32,768.
+
+- **The write-ups persist on the audit as written, never as distilled.**
 
 ---
 
 # DTO: Discover Trade Opportunities
 
-## Step 1 — Start and safety checks
+## Step 1 — Start and gate
 
 - **Data retrieved**
   - No investment data yet.
 
-- **Checks** (the same gate Portfolio Analysis clears)
-  - The single global run slot is free — no report, Portfolio Analysis, or other Trade Opportunities job is running.
-  - Local reasoning and embedding models are configured (presence) and the daemon is reachable with the roster pulled (connectivity, checked here at the run-gate — never at startup).
-    - That availability probe — a local-only daemon call, no investment-data API — is the suite's one check before the run slot is claimed; every external fetch happens inside the slot.
-  - Schwab is connected and its seven-day refresh token is still valid — needed only for the per-candidate option chains and the Step-8 holdings label, but a hard precondition all the same.
-  - FMP and FRED credentials exist (presence only; Tavily deliberately does not gate the local suite).
-  - SearXNG is **not** on the gate: an unreachable instance raises a pre-run notice (model-led discovery can't run and per-candidate validation researches blind — the local suite is SearXNG-only, so a degraded run is always flagged *not recommended*) and the run proceeds degraded, never blocked.
+- **Presence checks** (lock the Discover and Audit buttons and raise a persistent warning until fixed)
+  - The Ollama endpoint and the reasoner model id are configured. The job makes no embedding call.
+  - Schwab is connected and its seven-day refresh token is still valid — needed only for the per-candidate option chains and the Step 8 holdings label, but a hard precondition all the same.
+  - FMP and FRED credentials exist. Tavily deliberately does not gate the local suite.
+  - Each failure has its own warning category: local models not configured, Schwab connection, missing provider credentials.
 
-- **Failure logic**
-  - Missing configuration (daemon endpoint or roster id unset, Schwab not connected or token lapsed, FMP / FRED credential missing) locks the Run buttons and shows a persistent warning *before* this step — one per category.
-  - A live connectivity failure caught here (daemon unreachable, a rostered model not pulled) blocks the attempt inline, not as a persistent warning.
-  - Schwab API reachability is not tested here — it surfaces when the option-chain or holdings fetch runs.
+- **Run-time checks**
+  - No other job holds the single global run slot.
+  - The local daemon answers and the reasoner is pulled. This local-only probe runs before the slot is claimed; every external fetch happens inside the slot. A failure blocks the attempt inline, never as a persistent warning. A Quick Audit, which makes no model call, skips it.
+  - Schwab API reachability is not tested here; an outage surfaces when the option-chain or holdings fetch runs.
+
+- **Pre-run notice**
+  - The app probes the SearXNG instance. If it cannot serve search, a confirm dialog says the run will discover and research blind and is not recommended, with Proceed or Cancel. A consent step, never a block.
+  - The notice also surfaces the rotation backlog's count and oldest research age when a backlog exists (Step 4).
 
 - **Model**
   - None.
@@ -434,63 +459,89 @@ Consolidation is one reusable primitive — *distill one complete research topic
 
 ---
 
-## Step 2 — Load shared market context
+## Step 2 — Load shared context and score due forecasts
 
-Loaded once per run and shared across every candidate; nothing here is re-requested per name.
+Loaded once per run and shared across every candidate; nothing here is re-requested per name. The accuracy checks run here too, before any discovery, so this run's reviews see every check that has come due.
 
 - **Data retrieved from local storage**
-  - The Market Signal house view — the latest report's Thesis, Investment Strategy, and Forward Outlook sections plus recent report summaries (`thesis_stance`, `forward_outlook_themes`, `key_risks`), with the report's creation date; loaded deterministically from the report store, never by vector search.
-  - The fixed investor-profile preset — long-term horizon, profit-maximization objective, medium-to-high ("aggressive") risk tolerance, cash treated as always available, no tax modeling.
+  - The house view — the latest report's Thesis, Investment Strategy, and Forward Outlook sections plus recent report summaries (`thesis_stance`, `forward_outlook_themes`, `key_risks`), with the report's creation date; loaded deterministically from the report store, never by vector search.
   - The prior run's persisted opportunity matrix (the live carries).
-  - The opportunity graph — prior hypotheses with their value-chain traces, and the watchlist nodes with each one's leading metric, re-check class, falsifiers, latest gap, and refresh timestamps.
-  - The discovery-coverage ledger — last-attempted / last-successfully-completed per route class and per coverage subject.
+  - The opportunity graph — prior hypothesis documents with their appendix fields, and the watchlist nodes with each one's leading metric, class, status, and refresh timestamps.
+  - The discovery-coverage ledger.
+  - The investor profile is not loaded: the opportunity record is profile-independent, and no prompt in the job carries it.
 
 - **Data retrieved from FRED**
-  - Current `DGS2` (one print) and `DGS10` (one print), plus the anchor-window `DGS10` history as dated observations (one date-ranged request) the v2 spread percentiles join against.
+  - Current `DGS2` (one print) and `DGS10` (one print), plus the anchor-window `DGS10` history as dated observations (one date-ranged request) the spread percentiles join against.
   - The macro-release calendar (`/release/dates` — names + dates).
   - Daily energy prices `DCOILWTICO` (WTI) and `DHHNGSP` (Henry Hub); monthly IMF metals `PCOPPUSDM`, `PALUMUSDM`, `PNICKUSDM`, `PIORECRUSDM`, `PURANUSDM`.
 
 - **Data retrieved from FMP**
-  - The daily commodity series `HGUSD` (copper), `GCUSD` (gold), `SIUSD` (silver) — a *series*, not a point level, because the cyclical sleeve reads a turn.
+  - The daily commodity series `HGUSD` (copper), `GCUSD` (gold), `SIUSD` (silver) — a series, not a point level, because the cyclical sleeve reads a turn.
 
 - **Data retrieved from CFTC and CBOE**
   - CFTC Commitments of Traders — `gpe5-46if` (E-mini S&P 500, Nasdaq-100, 10Y / 2Y Treasuries, USD index) and `72hh-3qpy` (gold, WTI crude, copper).
   - CBOE daily put/call ratios (total, equity, index).
 
 - **Logic**
-  - Omit the house view when the report is older than one week — recorded as a gap, never fed as current.
+  - Omit the house view when the report is older than one week, counted in whole ET session days on both sides — recorded as a gap, never fed as current.
   - Normalize rates into decimal form (`N pts = N ⁄ 100`); every later return and threshold reads that representation.
   - The house view's `market_cycle` × `risk_posture` is the job's macro / regime backbone — reused, never recomputed; the forward thematic map that completes the worldview is built at Step 3b.
 
 - **What each context input feeds (later steps, not here)**
-  - House view → the Step 3b planning and route prompts (steers *where* the job hunts, never a number the engine consumes), the Step 5g scoring prompt, and the Step 6 ranking prompt.
-  - Investor profile → Step 5g scoring and Step 6 ranking — entry framing and conviction emphasis only, never which candidates qualify; because cash is unconstrained, full-size entries are never gated on observed Schwab cash.
-  - `DGS10` and its history → the v2 scenario multiples at Steps 5c / 5f and every cheap re-derivation (Step 7, Quick Audit).
-  - `DGS2` → the entry-asymmetry gate at Step 5h and every cheap re-derivation.
+  - House view → rendered as a market-level analysis, never named by product, in the Step 3b planning, route, and card-formation prompts, the Step 3c review and refresh prompts, and the Step 5g thesis-document prompt. It steers where the job hunts; it is never a number the engine consumes.
+  - `DGS10` and its history → the scenario multiples at Step 5c and every cheap re-derivation (Step 7, Quick Audit).
+  - `DGS2` → the entry gate at Step 5h and every cheap re-derivation.
   - Commodity series (FRED + FMP) → the Step 3a commodity-turn feeder and per-candidate context for a commodity cyclical (Step 5c); Step 2 is the sole commodity owner — nothing re-fetches them.
-  - CFTC positioning → the commodity-cyclical candidate's underlying-positioning read (Step 5c) and the macro / rates / FX backdrop for the Step 3b theme scan.
-  - CBOE put/call → a venue-level sentiment backdrop for the worldview — broad-market context, never a per-name signal.
-  - Macro-release calendar → seed input to the Step 3b routes.
-  - Prior matrix → the Step 4 budget split (the rotation slice and re-surfacer reconciliation), the Step 5b carried dossier, and the Step 7 carry-forward.
-  - Opportunity graph → Step 3b (extend or retire prior theses; withheld from the outside-view route), Step 3c (the watchlist re-check), and the Step 7 reconcile.
+  - CFTC positioning → the Step 3a washed-out-sentiment read and the commodity-cyclical candidate's underlying-positioning read (Step 5c).
+  - CBOE put/call → a venue-level sentiment backdrop, never a per-name signal.
+  - Macro-release calendar → leads for the Step 3b routes.
+  - Prior matrix → the Step 4 budget split, the Step 5b carried dossier, and the Step 7 carry-forward.
+  - Opportunity graph → Step 3c's review, Step 3b's planning and routes (withheld from the outside-view route), and the Step 7 reconcile.
   - Coverage ledger → the Step 3b coverage rotation.
 
 - **Failure rule**
   - `DGS2` or `DGS10` still unavailable after the shared bounded retries → fail the run here, before any per-candidate work (DTO and Deep Audit; the Quick Audit instead fail-softs to a cached print — see ATO).
   - Optional market context (commodities, CFTC, CBOE, the calendar) fails softly to a gap.
 
+### Accuracy checks (engine-only, before discovery, in every mode)
+
+Engine-computed over the append-only episode store. No model. They run in Discover, Deep Audit, and the engine-only Quick Audit alike. Opening new episodes happens after the loop (Step 7), since it needs this run's new prices.
+
+- **Find due horizons**
+  - An episode's horizon dates are its creation date plus three, twelve, and thirty-six calendar months.
+  - A horizon is due when its date is on or before the run's ET session date and nothing has been written for it. One query over the store; nothing is ever re-scored, and a horizon is scored by the first run on or after its date, however many runs later that is.
+  - Every episode in the store is visited — a live pick, a departed one, and a turned-away name alike, since the record measures the forecast.
+
+- **Refresh prices**
+  - The dated daily series is refreshed through the shared price-bar cache for every symbol with a due horizon.
+
+- **Write the check**
+  - Read the close on the horizon date, or the last session at or before it within 5 sessions.
+  - Bridge the episode's prices across any split since creation using its anchor close.
+  - Per-check score = 100 × (1 − |expected − actual| ÷ actual), floored at 0, for the model's price and the engine's base value alike.
+  - Write onto the episode: horizon, check date, the close, both expected values, both scores.
+
+- **Pending versus unscorable**
+  - A failed refresh leaves the horizon pending; it is due again next run. Never a run failure.
+  - A served series with no close inside the window — a delisting, an acquisition, a ticker change, a symbol the source never covered — or whose anchor bar it no longer carries, writes the horizon unscorable at once with its cause. It leaves the due set, counts in no score, and the symbol spends no further pull.
+
+- **Derive the scores**
+  - Per lifecycle, per horizon, per arm: the mean of its per-check scores, 0–100. "No score yet" before the first check.
+  - Each score carries the date of the last check that moved it and whether the prior analysis read it. Because the checks precede the loop, every check this run writes is new to this run's reviews.
+  - A pick's scores persist with the opportunity, render on its card, and reach the model in the self-review alone (Step 5f). A turned-away name's checks and scores sit in the store with their decision class and reach no prompt and no card.
+
 - **Model**
   - None.
 
 - **Output**
-  - One shared context packet.
-  - Reused for every candidate.
+  - One shared context packet, reused for every candidate.
+  - The episode store updated with this run's checks, and each lifecycle's current accuracy scores.
 
 ---
 
 ## Step 3 — Discover candidates
 
-Three feeders run and converge: the bottom-up structured screens (3a), the model-led hypothesis-research lane (3b — the job's edge, where names are *found* by reasoning rather than looked up), and the carried-forward watchlist (3c — the discovery memory). All three are fail-soft — a failed screen, route, or re-check means fewer candidates, never a failed run — and each reduces to a candidate set with the signal that surfaced each name attached.
+Three feeders run and converge: the bottom-up structured screens (3a), the model-led hypothesis-research lane (3b — the job's edge, where names are *found* by reasoning rather than looked up), and the carried-forward watchlist (3c — the discovery memory). In execution order the 3a screens and 3c's engine refresh and watchlist review run first, so 3b's planner reads the review's decisions; the 3b routes follow; and 3c's research refresh lane runs last, from whatever discovery budget the routes leave. All three are fail-soft — a failed screen, route, or review means fewer candidates, never a failed run — and each reduces to a candidate set with the signal that surfaced each name attached.
 
 ### Step 3a — Structured market screens
 
@@ -504,13 +555,13 @@ Three feeders run and converge: the bottom-up structured screens (3a), the model
   - The commodity series already loaded at Step 2 — read, not re-fetched.
 
 - **Logic**
-  - **Universe and stratification** — the screener applies the hard tradability gates (price / volume / market-cap floors, `isActivelyTrading`, the allowed exchange set, equities only — the floor values are not yet drafted) and tags every eligible name with its **market-cap band and sector / industry**. This is the breadth backbone — it defines the strata Step 4 fills, not a ranked shortlist: the screener carries no valuation, profitability, or growth field, and the `*-bulk` universe-scoring endpoints are off-plan, so the universe **cannot be pre-scored**.
+  - **Universe and stratification** — the screener applies the hard tradability gates (price / volume / market-cap floors, `isActivelyTrading`, the allowed exchange set, equities only) and tags every eligible name with its **market-cap band and sector / industry**. This is the breadth backbone — it defines the strata Step 4 fills, not a ranked shortlist: the screener carries no valuation, profitability, or growth field, and the `*-bulk` universe-scoring endpoints are off-plan, so the universe **cannot be pre-scored**.
   - **Insider-buy clusters** — open-market buys by multiple insiders from the Form-4 feed.
   - **Short-interest extremes** — from the FINRA file: level, trend (current vs prior settlement), and days-to-cover (short interest ÷ average daily volume). Short interest is a **bearish-by-default** factor; the squeeze reading is a narrow conditional setup (an inflecting leading metric + a near-term catalyst + evidence the bear case is breaking) decided per candidate at Step 5, never here.
-  - **Post-earnings surprise screen** — for each recent reporter, the surprise is **standardized** against the name's own surprise history (SUE-style — the surprise scaled by the dispersion of its past surprises, never a raw percentage; the scaling window is not yet drafted); large positive surprises surface as **continuation-mode** candidates, prioritized where the revenue surprise agrees with the EPS surprise (post-earnings drift is markedly stronger when both point the same way). The beat-and-raise streak itself is confirmed per candidate at Step 5c from `earnings`. This feeder skews coincident / lagging by construction — a defect for early detection, exactly right for continuation.
+  - **Post-earnings surprise screen** — for each recent reporter, the surprise is **standardized** against the name's own surprise history (SUE-style — the surprise scaled by the dispersion of its past surprises, never a raw percentage); large positive surprises surface as **continuation-mode** candidates, prioritized where the revenue surprise agrees with the EPS surprise (post-earnings drift is markedly stronger when both point the same way). The beat-and-raise streak itself is confirmed per candidate at Step 5c from `earnings`. This feeder skews coincident / lagging by construction — a defect for early detection, exactly right for continuation.
   - **Corporate events** — M&A deal flow, 8-K material events, movers, recently priced and upcoming IPOs → fresh-catalyst candidates.
-  - **Commodity-price turns** — over the Step-2 FRED / FMP series, a spot / contract-price turn at washed-out sentiment (CFTC positioning) surfaces commodity-cyclical candidates. [note: the turn read's exact rule is not yet drafted; the docs name the read, not its threshold.]
-  - **No fundamental scoring here** — the multi-factor composite and the forensic gate are computed per candidate at Step 5c, on the narrowed set only; the activist (13D / 13G) and congressional feeds are symbol-keyed on the current plan, so they enter per candidate at Step 5b, never as discovery feeders.
+  - **Commodity-price turns** — over the Step-2 FRED / FMP series, a spot / contract-price turn at washed-out sentiment (CFTC positioning) surfaces commodity-cyclical candidates.
+  - **No fundamental scoring here** — the multi-factor composite and the forensic reads are computed per candidate at Step 5c, on the narrowed set only; the activist (13D / 13G) and congressional feeds are symbol-keyed on the current plan, so they enter per candidate at Step 5b, never as discovery feeders.
 
 - **Model**
   - None.
@@ -523,115 +574,174 @@ Three feeders run and converge: the bottom-up structured screens (3a), the model
 
 ### Step 3b — Model-led hypothesis discovery
 
-The job's edge: a research-active feeder that forms investable **hypotheses** and reasons its way to names — *worldview → hypothesis → mechanism → value-chain node → leading metric → candidate* — so the model commits to a hypothesis before it commits to a ticker. It runs in three movements: a planning call chooses the routes, each route is researched in the shared loop and consolidated into hypothesis cards, and the app validates and promotes.
+The job's edge: a research-active feeder that forms investable **hypotheses** and reasons its way to names — *worldview → hypothesis → mechanism → value-chain node → leading metric → candidate* — so the model commits to a hypothesis before it commits to a ticker. It runs in three movements: a planning call chooses the routes, each route is researched in the shared loop, and each route's research is consolidated into a hypothesis document whose appendix the app checks on type and promotes from.
 
 - **Data retrieved**
-  - Seeds — ticker-tagged, dated headline / snippet / URL rows from `news/general-latest`, `news/stock-latest`, and `fmp-articles`, plus the macro-release calendar from Step 2; each seed the orchestrator feeds a route gets a stable seed ID.
-  - The house view, the opportunity graph, and the coverage ledger from Step 2.
-  - Live web pages through the shared loop — **keyless SearXNG only** (no Tavily, no GDELT); a down SearXNG means this lane yields fewer candidates.
+  - Leads — ticker-tagged, dated headline / snippet / URL rows from `news/general-latest`, `news/stock-latest`, and `fmp-articles`, plus the macro-release calendar from Step 2.
+  - The house view, the opportunity graph with the watchlist review's decisions from this run, and the coverage ledger from Step 2.
+  - Live web pages through the shared loop — **keyless SearXNG only**; a down SearXNG means this lane yields fewer candidates, never a keyed fallback.
   - FMP industry classification (`industry-classification-search`, `all-industry-classification`, `available-sectors`) and `stock-peers` to resolve a hypothesis to its exposed public names; the screener fields to verify each name (exists, US-listed, clears the tradability gate).
 
-#### Movement 1 — Research-strategy planning (one model call, thinking, no web tool)
+#### Movement 1 — Research-strategy planning
 
-- **Exact inputs**
-  - The house view (regime, themes, forward outlook).
-  - The carried-forward opportunity graph (prior hypotheses + watchlist status).
-  - The route menu with each route's source-strategy rubric — *policy / regulatory* → legislation, agency notices, procurement databases; *supply chain* → trade journals, filings, customer / supplier commentary; *technical bottleneck* → standards bodies, engineering blogs, patent / product docs; *procurement / grant / capex*; *customer capex*; *industry history*; *failure analogue*; *event-impact / value-chain repricing* → the announcing company's primary materials, standards bodies, teardowns, the affected names' segment disclosures.
-  - The app-computed coverage ages per route class and per coverage subject, and any app-inserted overdue route.
-  - The run's route cap and discovery-budget posture.
-
-- **Returns**
-  - A priority-ordered route list under the route cap — each route with its source strategy, selection rationale, `selection_origin` (`outside-view` / `coverage-rotation` / `model`), any coverage-unit ids it is expected to work, and its **topic list** (the focused questions the route is worked as, each topic one isolated conversation).
-  - App-validated, like the route list: the planning call proposes the topics, the app validates them (ruled 2026-08-19) — the one agenda in the suite the reasoner proposes.
+- **Call: route planning** (thinking, grammar, no web tool — once per run, before any route executes; planning spends none of the discovery budget)
+  - **Sees (Part 1)**
+    - MARKET ANALYSIS — the house view.
+    - The carried-forward opportunity graph — each live hypothesis's document section with its decision, and the watchlist review's decisions from this run (promote / keep / retire); the departed tombstones included as dead theses.
+    - The route menu with each route's source-strategy rubric — *policy / regulatory* → legislation, agency notices, procurement databases; *supply chain* → trade journals, filings, customer / supplier commentary; *technical bottleneck* → standards bodies, engineering blogs, patent / product docs, trade publications; *procurement / grant / capex*; *customer capex*; *industry history*; *failure analogue*; *event-impact / value-chain repricing* → the announcing company's primary materials (spec sheets, reference designs, keynote / launch docs), standards bodies, teardown / engineering analysis, the affected names' segment disclosures.
+    - The app-computed coverage ages per route class and per coverage subject, and any app-inserted overdue route.
+    - The run's route cap and discovery-budget posture.
+  - **Sees (Part 2)**
+    - The route list to return and its shape, closing on a placeholder-only return shape.
+  - **Returns**
+    - A priority-ordered route list under the route cap — each route with its source strategy, selection rationale, `selection_origin` (`outside-view` / `coverage-rotation` / `model`), any coverage-unit ids it is expected to work, and its **topic list** — the focused questions the route is worked as, each topic one isolated conversation. The one place in the suite where the reasoner proposes an agenda's topics.
+    - The app checks the list on type — route ids from the menu, the cap, the origin enum, non-empty topic strings — and nothing else.
 
 - **App-enforced clauses (never model discretion)**
-  - The **outside-view route** is always present and marked graph-blind — inserted if the model omitted it — so the discovery memory can't anchor the job to its own prior theses.
-  - The **coverage-rotation route** is app-owned: the model may refine its questions and source plan but cannot remove it, substitute a less-overdue unit, or claim its debt cleared.
-  - The **event-impact route** may be chosen speculatively — its materiality gate is research-derived and unknowable at planning time, so it is enforced at card formation (below).
+  - The **outside-view route** is always present and marked graph-blind — inserted if the model omitted it: "assume the carried-forward graph is stale: what world-change are we missing?"
+  - The **coverage-rotation route** is app-owned: the model may refine its questions and source plan but cannot remove it, substitute a less-overdue unit, or claim its debt cleared; only the orchestrator's completed-route record updates the ledger.
+  - The **event-impact route** may be chosen speculatively — its materiality gate is research-derived and unknowable at planning time, so it is checked at card formation (below). A scheduled route whose research surfaces no qualifying event emits nothing and stays dormant.
 
 - **Coverage rotation — how the inserted route is chosen**
   - Age is tracked separately for each canonical route class and each coverage subject (the stable broad-industry taxonomy plus currently active house-view themes), in calendar time against the ~4-week window — never run count.
   - When debt exists the app pairs the oldest compatible overdue class + subject and inserts that route in the first slot after the outside-view route; ties break by canonical route order, then stable subject id; a model-proposed duplicate merges into the inserted route rather than taking a second slot.
   - A newly active theme starts due; a successfully completed route advances every unit it actually researched even when it correctly emits no hypothesis; a failed or budget-exhausted route records an attempt and does not clear its debt.
   - If the route cap leaves no slot beyond the outside-view route, the debt stays overdue and the run audit surfaces it — liveness is best-effort under the cap, never bought by dropping the outside-view guard.
-  - Coverage can force research, never a hypothesis, promotion, or opportunity.
+  - The inserted route consumes the normal cap and budget. Coverage can force research, never a hypothesis, promotion, or opportunity.
 
-#### Movement 2 — Route research and card formation (the shared loop, aimed at discovery)
+#### Movement 2 — Route research (the shared loop, aimed at discovery)
 
 - **The loop, as it runs here** (mechanics in *The research loop*, above)
-  - Nesting is `route ⊃ topic ⊃ pass ⊃ fetch`: each route is worked as its topic list, each topic its own isolated conversation of a root pass plus ≤2 follow-ups, each pass a bounded tool loop of `web_search` / `web_fetch` requests the orchestrator executes.
-  - Each topic conversation is given the house view, the opportunity graph (withheld from the outside-view route), the route's source strategy, that topic's questions, and the seeds relevant to the route — and nothing from any other topic or route.
-  - Two ceilings bind: per-topic depth ≤2 (≤3 passes per topic, counting passes, not searches), and the **per-run discovery fetch + wall-clock budget** across every route, spent in route-priority order, fail-soft on exhaustion.
-  - The Step-2 house view steers the hunt without confining it; a seed whose URL is deep-read stamps the resulting claim `surfaced_by`.
+  - Nesting is `route ⊃ topic ⊃ pass ⊃ fetch`: each route is worked as its validated topic list, each topic its own isolated conversation of a root pass plus at most two follow-ups, each pass a bounded tool loop of `web_search` / `web_fetch` requests the orchestrator executes, then a separate synthesis conversation writing the pass's write-up.
+  - Two ceilings bind: per-topic depth (three passes per topic, counting passes, not searches, and not per route), and the **per-run discovery fetch + wall-clock budget** across every route, spent in route-priority order, fail-soft on exhaustion.
+  - After a route's topics, one disconfirming pass runs for the route, from the same budget and outside any topic's depth.
+  - The Step-2 house view steers the hunt without confining it. Routes never share a context.
 
-- **Card formation (one consolidating call per route)**
-  - Inputs: the route's accumulated topic findings and their evidence-ledger entries, whole — or, for a heavy route, the tier-1 sub-distillates in its reduce form (no further web-tool turns) — plus the route's fed seed records with their stable seed ids (the `seeded_by` validation set, riding the call directly in either form so an oriented-but-never-fetched seed stays attributable).
-  - Returns: a schema-validated set of **hypothesis cards**, each — *what is changing in the world* → *the affected system / mechanism* → *the economic value-chain trace* (margin capture, bargaining power, capacity constraint / bottleneck, pricing power **versus mere exposure** — past the crowded pure-plays to the picks-and-shovels enablers, often mid / small cap) → *the leading metric that would prove it* (tagged with its re-check class) → *the likely public-company expressions* → *bear case* → *key falsifiers + sources*.
-  - Each card also carries its **hypothesis score** — the equal-weighted mean of magnitude, durability, horizon fit, leading-metric observability, 1 − crowding, and margin-capture clarity, each 0–1 — scored on the hypothesis's own merits *before any ticker*; its **adversarial-pass verdicts** — *why is this already priced?*, *why might the obvious beneficiary be the wrong expression?*, *who actually captures the margin instead?* — and a bounded, config-capped **`seeded_by`** list (the seeds the reasoner judges oriented it, each validated against the route's fed seed IDs; unknown references dropped and logged).
-  - An **event-impact route's cards are two-sided**: they trace the chain into **beneficiaries**, **feared losers** (the names that sold off, with the *actually-exposed* revenue / profit pool sized), and **latent names** (chain nodes that did not move but should be affected); each affected name carries its side and a typed **`technology_read`** — `{ technical claim, deployment timeline, substitute / complement / mix-shift, affected workload or use case, exposed revenue / profit estimate, adoption constraints, switching costs, margin-capturing node, source confidence, leading metric to monitor }` — and a feared-loser name gets the symmetric pass: *is the impairment real or panic, and what is the actually-exposed pool?*
-  - The model proposes hypotheses and names; it fetches no per-symbol data and scores no name here.
+- **Call: route research gathering** (thinking, tools, no grammar — once per topic on the route's topic list)
+  - **Sees (Part 1, the route-constant block first, then the topic)**
+    - The route header with the run date.
+    - MARKET ANALYSIS — the house view, rendered as a market-level analysis.
+    - PRIOR HYPOTHESES — the carried-forward graph's live hypothesis sections and watchlist names relevant to the route, so the model extends or retires existing theses rather than re-deriving blind. Withheld on the outside-view route.
+    - The route's source-strategy rubric.
+    - NEWS LEADS — the structured news and macro-release headlines relevant to the route, with their addresses. Fetch candidates only.
+    - PAGES ALREADY RETRIEVED — the bounded route-scoped reuse block; absent on the disconfirming pass.
+    - TOPIC, the topic's questions; on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR; on the disconfirming pass WRITE-UPS SO FAR, the route's write-ups.
+    - Before each gathering request the app appends a short user message stating the replies remaining in this pass; the brief and every previously issued message stay unchanged.
+  - **Sees (Part 2)**
+    - What to find, how to weigh a source, the per-reply tool-call bound, and when to stop.
+  - **Returns**
+    - Tool calls until a reply carries none, or a bound.
 
-- **Heavy routes sub-distill first** (the shared distillation primitive)
-  - Classified heavy **deterministically**, after the route's loop completes and before card formation: when its accumulated findings + ledger would overflow a single card-formation call's input budget (a byte / token measure against a configured fraction), **or** it spans more than one substantial sub-agenda (a side whose ledger size crosses the per-side threshold; the event-impact route's beneficiary / feared-loser / latent sides count substantial whenever populated), **or** it resolves to more than *K* distinct hypotheses.
-  - Tier-1 sub-distillation per side / sub-agenda, then the route-level reduce **is** the card-formation call in its reduce form — it still emits many distinct cards (structure within the route, never a cross-route merge); bounded by the per-route sub-distillation cap from the discovery budget, the classification and sub-unit count logged.
+- **Call: route synthesis** (thinking, no tools, no grammar — a fresh conversation per pass)
+  - **Sees**
+    - The route header and MARKET ANALYSIS.
+    - EVIDENCE — every page the pass's gathering conversation carried, the reused pages first, each under the header `web_fetch` gave it.
+    - The topic's own text.
+  - **Returns**
+    - The pass's write-up, 400–900 words: what the research established on the topic's questions, each figure with the date or period its source gives for it and that source, where pages disagree, and what the evidence leaves unanswered. On a follow-up pass the write-up rewritten whole.
+    - A second message asks for a follow-up question: the question verbatim, or the one word `none`. Not sent on the topic's last pass or on the disconfirming pass.
+    - Validated by nothing. A topic ends with one write-up; the route ends with one per worked topic plus the disconfirming pass's, flowing whole to card formation.
+    - Every page shown enters the route's page roster, persisted on the audit record.
 
-#### Movement 3 — App validation and promotion
+#### Movement 3 — Card formation: the hypothesis document and its appendix
 
-- **Per card**
-  - Score ≥ 0.60 **and** the adversarial passes survived → **promoted**: its names are resolved against FMP's industry classification / peers and each is verified — exists, US-listed, clears the tradability gate — before it can earn enrichment budget.
-  - 0.40 ≤ score < 0.60, or a failing pass → recorded in the opportunity graph with its score, falsifiers, and the failing pass; it may seed a **watchlist node** if it meets the discovery-worthiness bar (Step 3c).
-  - Score < 0.40 → recorded in the graph only.
-  - An **event-impact card** must carry the typed material-event evidence — the announcement plus at least one corroborating condition (meaningful group repricing, credible primary-source documentation, a customer-adoption signal, clear value-chain exposure), with source lineage — or it is **dropped and logged**; a route whose research surfaces no qualifying event emits nothing and stays dormant.
+One conversation per route, after the route's topic conversations and its disconfirming pass complete: the first model consolidation of the route's research, and the call that authors the route's hypotheses. The adversarial passes are the document's own discipline, not fetch passes.
+
+- **Budget check**
+  - The orchestrator sizes the card-formation prompt — the route's write-ups, the house view, the graph context — against the call's input budget. Over it, the write-ups are distilled under the shared shapes (*Consolidation*, above); the write-ups persist on the audit as written.
+
+- **Call: the hypothesis document** (thinking, no grammar)
+  - **Sees (Part 1, in page order)**
+    - The route header; MARKET ANALYSIS; PRIOR HYPOTHESES (withheld from the outside-view route); the route's source-strategy rubric.
+    - WRITE-UPS — the route's write-ups, or their distillate, each under its topic's heading, the disconfirming pass's last.
+  - **Sees (Part 2)**
+    - The document to write: for each hypothesis the world-change, the mechanism, the economic value-chain trace (margin capture, bargaining power, capacity constraint, pricing power versus mere exposure — past the crowded pure-plays to the picks-and-shovels enablers at the constrained, margin-capturing nodes, often mid or small cap), the leading metric that would prove it with the kind of series it is, the likely public-company expressions, the bear case, the key falsifiers, the adversarial passes' answers — *why is this already priced? · why might the obvious beneficiary be the wrong expression? · who actually captures the margin instead?* — and the decision with its reasons — promote, watchlist, or none — in the model's priority order. The dimensions the task names are magnitude, durability, time horizon, leading-metric observability, crowding, and margin-capture clarity.
+    - For an event-impact route: the document is two-sided — beneficiaries, feared losers (the names that sold off, with the actually-exposed revenue / profit pool sized), and latent names (chain nodes that did not move but should be affected) — with each affected name's technology read sized in prose: the technical claim, the deployment timeline, substitute / complement / mix-shift, the affected workload, the exposed pool, the adoption constraints, the switching costs, the margin-capturing node, the source confidence, and the leading metric to monitor; and for a feared-loser name the symmetric pass — *is the impairment real or panic, and what is the actually-exposed pool?*
+    - Within the hypothesis document's length band, drafted at plan time.
+  - **Returns**
+    - The hypothesis document as prose, read as text and validated by nothing, persisted on the audit and into the opportunity graph.
+
+- **Call: the hypothesis appendix** (the same conversation's second message, thinking off, under a grammar — a transcription, not a judgment)
+  - **Sees**
+    - A request for the appendix as the document states it, closing on a placeholder-only return shape.
+  - **Returns**
+    - Per hypothesis: the title, the decision (`promote` / `watchlist` / `none`) in document order, the candidate symbols, the leading metric by name and its re-check class — chosen from the engine's series menu (`structured`), the standardized statement-line menu (`filing`), or free text (`research`) — and, for an event-impact hypothesis, each name's side (`beneficiary` / `feared-loser` / `latent`) and the announcement and corroborating condition.
+    - The app keeps only the type check: the enums; each symbol resolving against FMP's industry classification (exists, US-listed, clears the tradability gate) before it can earn enrichment budget; and the presence of the gate fields on an event-impact entry — an entry that leaves them blank is dropped and logged. The materiality gate is checked on presence, never read. An off-domain value re-issues the message once.
+
+- **Promotion (app)**
+  - A promoted hypothesis's candidate names — each with its hypothesis link and surfacing rationale — flow into Step 4 alongside the screens and the watchlist, in the model's priority order.
+  - Every hypothesis is written to the opportunity graph with its document section and appendix fields. A hypothesis decided `watchlist`, or `promote` without a validation slot, becomes a watchlist node (Step 3c).
+  - The hypothesis documents are retained as run-level worldview context for the per-candidate thesis document (Step 5g), which carries the section a name expresses.
+  - The model proposes hypotheses and names; it neither fetches per-symbol data nor scores them here.
 
 - **Model**
-  - The 122B reasoner in thinking mode — once for planning, per topic conversation in the loop, once per route for card formation (plus tier-1 calls for a heavy route).
+  - The 122B reasoner — once for planning (thinking, grammar), per topic conversation in the loop (thinking), and once per route for the hypothesis document (thinking) and its appendix (non-thinking, grammar).
 
 - **Output**
-  - Promoted candidate names, each with hypothesis lineage, surfacing rationale, and source URLs → Step 4.
-  - Every card written to the opportunity graph (the persisted discovery memory), with its seed lineage and, for an event-impact card, its `technology_read` and side.
-  - Watchlist-bar hypotheses → Step 3c admission.
-  - The hypothesis set retained as run-level worldview context for Step 5d's thematic-fit topic.
-  - A completed-route record per route → the coverage ledger.
+  - Promoted candidate names with hypothesis lineage → Step 4.
+  - Every hypothesis in the opportunity graph; watchlist-decided hypotheses → Step 3c admission.
+  - A completed-route record per route → the coverage ledger; the route's write-ups and page roster → the audit.
 
 ---
 
 ### Step 3c — Recheck the old watchlist
 
-Discovery is stateful: every worthy-but-unpicked name from prior runs is a watchlist node, re-checked here at its metric's cadence — so a deferred name that quietly starts compounding is caught rather than left to chance.
+Discovery is stateful: every worthy-but-unpicked name from prior runs is a watchlist node, re-read here every run by the watchlist review — so a deferred name that quietly starts compounding is caught rather than left to chance. The step runs in three movements: the engine refreshes the prints, the review judges every node, and the refresh lane researches one.
+
+- **Who is on the watchlist (typed facts alone)**
+  - A node qualifies with a named leading metric with its class, and one of: a hypothesis decision of `watchlist`; `promote` without a validation slot; or an ordinary `gate-reject` at Step 5h — a debut no arm's gate admitted, never a hard-trigger exclusion and never a floor hold-out. The mechanism and falsifiers live in the document the review reads: the hypothesis section, or the thesis document for a gate-rejected debut.
+  - Whether a gate-rejected debut's thesis is still worth watching is not a question the app can read off its prose; the next run's review decides it, typed, like every other node's fate.
 
 - **Data retrieved**
   - The watchlist nodes from the Step-2 graph.
   - For a **`structured`-class** node — the engine's structured feeds: `analyst-estimates` (revision velocity), `earnings` (surprise), dated-EOD bars through the shared price-bar cache (relative strength), and the once-per-run FINRA file (short interest).
   - For a **`filing`-class** node — on the filing-cadence rider: when the swept `earnings` row shows a new reported period, the statement-derived rows re-pull (`income-statement` / `balance-sheet-statement` / `cash-flow-statement`, `key-metrics` / `ratios`, `financial-scores`, `financial-growth` — the rider is FMP-only; SEC submissions / company-facts stay per-candidate).
-  - For a **`research`-class** node — nothing (no engine feed), unless the refresh lane selects it.
+  - For a **`research`-class** node — nothing, unless the refresh lane selects it.
+  - Evidence events tied to a watchlist name — a new item-classified 8-K or a material filing from the shared sweep.
   - The swept population is **one union** — every live matrix carry (Step 7's cheap re-derivation) plus every recheckable watchlist node — with cache / dedup applied per distinct symbol after the union; a `research`-class node never enters the per-symbol sweep.
 
-- **Watchlist admission (this step, over the Step-3b returns)**
-  - The discovery-worthiness bar is app-enforced: a node qualifies only with a named, countable, dated leading metric (tagged by re-check class), a stated economic mechanism, at least one falsifier, and a hypothesis score ≥ 0.40.
-  - Class resolution: a `structured` claim must resolve to an engine series the sweep re-pulls; a `filing` claim to a standardized field the filing-cadence feeds carry model-free; a claim that doesn't resolve exactly is **re-classed `research` and logged, never dropped**. The filing-derived quarterly segment series rides the `research` class (its observations exist only where a deep pass extracted them).
+- **Movement 1 — the engine refresh (no model)**
+  - Every `structured`- and `filing`-class node's print is refreshed at its class's cadence; a failed refresh types that print `unknown`, never a fabricated value.
+  - Evidence events are collected per name.
+  - A node whose **carry horizon** has elapsed — a configurable cap counted in the leading metric's own reporting periods (drafted ~4), never runs — retires regardless of the review.
 
-- **Per `structured` / `filing` node — re-pull at class cadence, then one of three outcomes**
-  - Metric **inflected or continued** (the hypothesis is confirming) → promoted as a **priority feeder** into Step 4.
-  - **Falsifiers tripped, metric dead or stale, or the carry horizon elapsed** (drafted ~4 of the metric's own reporting periods — never runs; a `research`-class metric counts calendar time) → **retired**: removed from active monitoring, kept in history, one retirement-class shadow episode opened so the forward path still teaches the gates.
-  - Otherwise → stays on the watchlist with a refreshed timestamp.
+- **Movement 2 — Call: the watchlist review** (thinking, no tools, no grammar; then a non-thinking transcription — once per DTO run, before route planning, over every live node)
+  - **Sees (Part 1, in page order)**
+    - The run date; MARKET ANALYSIS — the house view.
+    - Per node: its header (symbol, first-surfaced date, last refresh); HYPOTHESIS — the document section the node expresses, verbatim with its date; THEN AND NOW — the node's `structured` / `filing` prints at admission and as refreshed this run, glossed once, with any print the refresh could not serve stated as unknown; EVENTS — the evidence events tied to the name since its last refresh, if any; OBSERVATION — the node's latest refresh write-up where the lane has produced one, verbatim with its vintage.
+  - **Sees (Part 2)**
+    - For each node: whether the leading metric is confirming, whether a falsifier the hypothesis named has tripped by the numbers in front of it, whether the hypothesis survives, and the decision — promote, keep, or retire — with its reason. Within the review's length band, drafted at plan time.
+  - **Returns**
+    - The review as prose, read as text and validated by nothing, persisted on the audit record.
+    - A second message, thinking off, under a grammar, asks for the decisions as the review states them, closing on a placeholder-only return shape: per node id one of `promote` / `keep` / `retire`. The app checks the ids and the enum and nothing else.
+  - **What the decisions do**
+    - **Promote** — the node enters Step 4 as a priority feeder (flagged *maturing watchlist*), so a maturing thesis is never missed for want of a fresh trigger. Promotion buys only normal Step-4 candidacy; every Step-5 floor, gate, and trigger still binds.
+    - **Keep** — carried forward. Its refresh timestamp advances only on a successful evidence refresh — a served `structured` / `filing` print this run, or a refresh write-up from the lane — never on the review alone; the review's own date is recorded separately.
+    - **Retire** — removed from active monitoring, kept in history, with the review as its reason.
 
-- **The research-watchlist refresh lane (`research`-class nodes only)**
-  - Selects at most the configured number of nodes (drafted **one per DTO run**), deterministically and in priority order: a newly detected filing / contract / material event tied to the node → a catalyst or validated milestone entering its expected window → a prior result close to promotion or an entry gate → highest hypothesis score; ties by oldest successful research refresh, then ticker.
-  - Runs the shared loop per node (SearXNG only; spent from the discovery ceiling) — inputs: the node's stored hypothesis, named leading metric, key falsifiers, relevant milestone / catalyst, latest validation gap, prior observation vintage, and this run's matching structured-event seeds; no dossier, target methodology, conviction, or opportunity record.
-  - Returns one typed **`watchlist_research_refresh`** `{ node_id, dated metric observations, falsifier facts, milestone facts, source lineage, result — confirming / falsified / unchanged / insufficient }`; the app revalidates identity, dates, units, sources, and linkage to the named claim, drops and logs out-of-scope fields, and **never** moves a node on the bare result: a confirmed metric promotes into Step 4, a validated falsifier may retire, and no result / a failed call / ambiguous evidence leaves the node unchanged without advancing `last_successful_research_refresh_at`.
-  - It is a discovery refresh, not a deep re-evaluation: it never stamps `last_deep_researched_at`, rewrites an opportunity record, clears a warning, or archives — and promotion buys only normal Step-4 candidacy.
+- **Movement 3 — the research-watchlist refresh lane (`research`-class nodes only; after the Step-3b routes, from the discovery budget they leave)**
+  - Selects at most the configured number of nodes (drafted **one per DTO run**), deterministically and in priority order: a newly detected filing or material event tied to the node first, then the oldest successful research refresh, then ticker.
+  - It is a discovery refresh, not a deep re-evaluation: it never stamps `last_deep_researched_at`, rewrites an opportunity record, clears an attention warning, or archives anything.
+
+- **Call: the targeted refresh** (thinking, tools, no grammar; then synthesis; then a non-thinking transcription — one isolated bounded conversation per selected node on the shared loop, SearXNG only)
+  - **Sees**
+    - The node's header, MARKET ANALYSIS, HYPOTHESIS — its document section verbatim with its date — any evidence event from this run, and the topic's text: the node's named `research`-class leading metric and the falsifiers the hypothesis states, as the questions to pursue. No per-candidate dossier, no engine reads, no opportunity record.
+    - The synthesis message follows the shared loop's form and asks for the refresh write-up — what current evidence says about the named metric and each falsifier, dated and sourced — and the decision with its reason.
+  - **Returns**
+    - The refresh write-up as prose, persisted on the audit and onto the node as its latest observation with its vintage.
+    - The decision under the grammar — `promote` / `keep` / `retire` — applied as the review's are: a confirmed metric promotes the node into Step 4, a tripped falsifier may retire it, and no result or a failed call leaves it unchanged without advancing its refresh timestamp.
+    - Searches are current; a cached document may help extraction but never substitutes for the live search that establishes the refresh.
 
 - **Capacity logic**
-  - The watchlist retention cap is enforced deterministically at add time, after the pruning above: the **lowest hypothesis score** retires first, ties by oldest successful metric refresh then ticker, persisted reason `capacity-evicted`, graph history retained, exactly one retirement-class shadow episode.
+  - The watchlist retention cap is enforced deterministically at add time, after the pruning above: when it binds, the node with the **oldest successful refresh** retires first, tie-broken by ticker, persisted reason `capacity-evicted`, graph history retained. No episode opens, since a watchlist node carries no prices.
 
 - **Model**
-  - None for `structured` and `filing` checks.
-  - The reasoner (thinking) plus the web tool for the selected `research` nodes only.
+  - None for the engine refresh.
+  - The reasoner for the review (thinking, then non-thinking) and for the selected `research` node's refresh (thinking with the web tool, then non-thinking).
 
 - **Output**
-  - Promoted watchlist candidates (flagged *maturing watchlist*) → Step 4.
-  - The updated watchlist, retired nodes, and their shadow episodes.
-  - The refresh-lane audit — every node considered / selected / skipped, its priority inputs, evidence result, and timestamp decision.
+  - Promoted watchlist candidates → Step 4.
+  - The review and its decisions, the refresh write-up where the lane ran, the retired nodes, and the lane's audit — every node considered, selected, or skipped, with its result and timestamp decision.
 
 ---
 
@@ -646,21 +756,21 @@ Discovery is stateful: every worthy-but-unpicked name from prior runs is a watch
   - Tag each surviving name with **every** signal that surfaced it — which screen, which hypothesis, the positioning flag, whether it is a maturing watchlist name — plus its cap band and sector / industry.
   - Reconcile against the live matrix: a name **already live** is a **re-surfacer** (reconciled against its record, never re-discovered blind); a name matching a **departed (archived)** ticker is a fresh **debut** — nothing from the archive carries.
   - Assign a **provisional archetype** deterministically from sector / industry + the surfacing tags — used only for the archetype quota below; Step 5a's confirmed archetype is authoritative from 5c on.
-  - This is the cross-feeder reduce and it is deliberately computed: distinct hypotheses are never collapsed by a model, which would destroy auditable breadth and could silently drop a name.
+  - This is the cross-feeder reduce and it is deliberately computed: distinct hypotheses are never collapsed by a model, which would destroy auditable breadth and could silently drop a name. The only model-side consolidation in discovery is within a route's own card formation.
 
 - **The deep-research budget (a Settings knob — how many names get the expensive Step-5 loop this run)**
   - Spent in three slices, in this order:
-    1. **The rotation slice** — a configured share (default ~20%, never rounding below one slot) on **live opportunities** in maintenance-priority order: warning-bearing names first (a tripped falsifier or continuation break never queues behind an uneventful stale name), then catalyst proximity, then names near the entry threshold, then stalest by `last_deep_researched_at`. A **max-age service level** force-promotes any live name whose research age exceeds the configured bound whether or not it re-surfaced (ties by `became_opportunity_at`, then ticker). When more names are overdue than the slice can carry, the slice does **not** expand — the overflow forms an **overdue backlog drained stalest-first through a reserved overdue sub-slot**: each run's slice holds at least one slot for the backlog's stalest name (ruled 2026-08-19), so a fresh warning outranks everything except that reservation, liveness is structural rather than best-effort, and the backlog's count and oldest research age surface in the run audit and the pre-run notice.
+    1. **The rotation slice** — a configured share (default ~20%, never rounding below one slot) on **live opportunities** in maintenance-priority order: warning-bearing names first (a tripwire or continuation break never queues behind an uneventful stale name), then proximity to the next earnings date, then names near the entry threshold, then stalest by `last_deep_researched_at`. A **max-age service level** force-promotes any live name whose research age exceeds the configured bound whether or not it re-surfaced (ties by `became_opportunity_at`, then ticker). When more names are overdue than the slice can carry, the slice does **not** expand — the overflow forms an **overdue backlog drained stalest-first through a reserved overdue sub-slot**: each run's slice holds at least one slot for the backlog's stalest name, so a fresh warning outranks everything except that reservation, liveness is structural rather than best-effort, and the backlog's count and oldest research age surface in the run audit and the pre-run notice.
     2. **New names** — the remainder, filled under the diversity guardrails below.
     3. **Leftover** → re-surfaced existing opportunities, oldest `last_deep_researched_at` first.
-  - **Diversity guardrails (new-name slice only)** — each a floor or ceiling, never a single ranking: mid / small-cap **floor ≥ 40%** of the new-name slots and a mega-cap **ceiling ≤ 30%**; **per feeder ≤ 50%** (no one screen, the hypothesis lane, the watchlist, or a positioning scan may supply more); **per (provisional) archetype ≤ 40%**; **per sector / theme ≤ 35%**. Within each floor and ceiling names rank by **signal strength × house-view fit**, ties resolving by ticker. Default allocation is **equal per cap-band × sector bucket** (proportional-to-population and signal-adaptive variants are calibration knobs). The rounding rule, the relaxation order when a small slate makes the ceilings jointly infeasible, the multi-tag counting rule, and the ranking score's exact formula are **not yet drafted**.
-  - Why stratify rather than rank: no universe-wide composite exists at this point (the fundamental score and forensic gate are computed per candidate at 5c), so a flat top-N on the cheap surfacing signals would collapse the funnel onto whatever is loudest — mega-cap momentum, the most-covered AI names, one crowded theme — and throw away the breadth that is the job's edge.
+  - **Diversity guardrails (new-name slice only)** — each a floor or ceiling, never a single ranking: mid / small-cap **floor ≥ 40%** of the new-name slots and a mega-cap **ceiling ≤ 30%**; **per feeder ≤ 50%** (no one screen, the hypothesis lane, the watchlist, or a positioning scan may supply more); **per (provisional) archetype ≤ 40%**; **per sector / theme ≤ 35%**. Within each floor and ceiling names rank by **signal strength × house-view fit**, ties resolving by ticker; hypothesis-lane names rank within their feeder by the model's priority order. Default allocation is **equal per cap-band × sector bucket**. The rounding rule, the relaxation order when a small slate makes the ceilings jointly infeasible, the multi-tag counting rule, and the ranking score's exact formula are **not yet drafted**.
+  - Why stratify rather than rank: no universe-wide composite exists at this point (the fundamental score and forensic reads are computed per candidate at 5c), so a flat top-N on the cheap surfacing signals would collapse the funnel onto whatever is loudest — mega-cap momentum, the most-covered AI names, one crowded theme — and throw away the breadth that is the job's edge.
   - The **maintenance spend** (the rotation slice and the re-surfacer leftover) is **exempt from diversity** — a quota never blocks a warning-bearing or max-age-promoted name.
-  - All three classes enter the **same Step-5 loop** as candidates; a rotation pick or re-surfacer is flagged carried-forward so Step 5b loads its prior record and `continuity_weight`. A carried name's deep pass therefore runs in Step 5, before matrix assembly, not in Step 7.
+  - All three classes enter the **same Step-5 loop** as candidates; a rotation pick or re-surfacer is flagged carried-forward so Step 5b loads its prior record. A carried name's deep pass therefore runs in Step 5, before matrix assembly, not in Step 7.
   - Every ticker deep-researched — rotation, new, or re-surfaced — is recorded in the **run-scoped deep-research set**, so Step 7 never also cheap-sweeps it: at most one deep pass per ticker per run.
 
 - **Deferred names**
-  - Not rejected — nothing is validated yet. A genuinely worthy deferral (a real hypothesis + an identified leading metric, meeting the watchlist bar) is written to the opportunity graph as a **watchlist node** and re-checked every later run; a name not worth watchlisting carries no state and is simply re-derivable. A re-surfacer that wins no leftover slot falls to the Step-7 cheap re-derivation, its re-surfacing raising the attention warning so the user can choose a Deep Audit.
+  - Not rejected — nothing is validated yet. A genuinely worthy deferral (a hypothesis the document decided `watchlist` or `promote`, with a named leading metric) is already a watchlist node and is re-read every later run; a name not worth watchlisting carries no state and is simply re-derivable. A re-surfacer that wins no leftover slot falls to the Step-7 cheap re-derivation, its re-surfacing raising the attention warning so the user can choose a Deep Audit.
 
 - **Model**
   - None.
@@ -668,23 +778,46 @@ Discovery is stateful: every worthy-but-unpicked name from prior runs is a watch
 - **Output**
   - The narrowed candidate slate — debuts plus carried names — each with its tags and provisional archetype, receiving Step-5 validation.
   - The run-scoped deep-research set, and the rotation backlog record.
-  - Watchlist writes for worthy deferrals.
   - The budget bounds how many names get **researched**, never how many validated opportunities reach the matrix — the gates alone set that (Step 6).
 
 ---
 
 ## Step 5 — Deep validation loop
 
-The following sequence runs once for every candidate on the Step-4 slate — debuts and carried names alike.
+The following sequence runs once for every candidate on the Step-4 slate — debuts and carried names alike. The loop's order is deliberate: the engine and its floor run before any research is spent, the research meets the engine's reads only at the thesis document, and the entry gate runs on both arms after the model has written.
 
 - **Checkpoint and resume**
-  - Each candidate's completed stages persist (the checkpoint is written at Step 5h), so a cancellation or a single model failure resumes the unfinished candidates rather than restarting the run. Resume reopens the interrupted run's ID and pins everything upstream of the loop — the Step-2 context, the Step-3 feeder outputs and route plan, the Step-4 slate with its budget allocation — for a drafted ~48-hour window; a new Discover run discards the old checkpoints. The document-level research cache survives independently.
+  - Each candidate's completed stages persist (the checkpoint is written at Step 5h), so a cancellation or a single model failure resumes the unfinished candidates rather than restarting the run.
+  - Resume reopens the interrupted run's id and pins everything upstream of the loop — the Step-2 context, the Step-3 feeder outputs, the watchlist review's decisions and the route plan, the Step-4 slate with its budget allocation and rotation backlog, every source's as-of timestamps, and the model and prompt versions — for a drafted ~48-hour window; past it, Discover starts a new run. A new Discover run discards any interrupted run's checkpoints. The document cache survives independently.
 
 - **One model, switched by mode**
-  - The resident 122B reasoner fills every model role in the loop — archetype confirmation (thinking), the research passes (thinking), distillation (non-thinking), scoring (thinking) — so moving a candidate through them pays no model-swap cost. The fixed 4B embedder handles continuity retrieval.
+  - The resident 122B reasoner fills every model role in the loop — archetype confirmation (thinking, grammar), the research passes and write-ups (thinking), distillation (non-thinking, only where over budget), the analysis (thinking), the review (thinking), the thesis document (thinking) and its appendix (non-thinking, grammar) — so moving a candidate through them pays no model-swap cost.
 
 - **The engine is shared with Portfolio Analysis**
-  - The same Rust financial-analysis engine computes every number; the difference is the **archetype**, which selects which signals it weights and which valuation lens it applies. The engine's values are the **engine arm** — a disclosed baseline the model reads as evidence at Step 5g and against which it authors its own arm. Nothing the model returns alters an engine value.
+  - The same Rust financial-analysis engine computes every number; the difference is the **archetype**, which selects which signals it weights and which valuation lens it applies. Everything it produces is the **engine arm** — a disclosed baseline the model reads as evidence at Step 5g and against which it authors its own arm. Nothing the model returns alters an engine value.
+
+### The model calls at a glance
+
+| Call | Step | Mode | Returns | App check |
+|---|---|---|---|---|
+| Archetype confirmation | 5a | thinking, grammar | label + rationale | label on the enum; an invalid or failed call adopts the provisional archetype |
+| Research gathering | 5d | thinking, tools, no grammar | tool calls, then a reply with none | none |
+| Synthesis (write-up) | 5d | thinking, no tools, no grammar | prose write-up; a follow-up question or `none` | none |
+| Distillation | 5e | non-thinking, no grammar | shorter prose | none |
+| The analysis | 5e | thinking, no grammar | prose | none |
+| Self-review | 5f | thinking, no grammar | prose | none |
+| Thesis document | 5g | thinking, no grammar | prose | none |
+| Typed appendix | 5g | non-thinking, grammar | tier, horizon, conviction, three prices, detection mode, leading metric + class, status on a carry | the enums; each price finite and positive; reissue once |
+
+- **Rules every call shares**
+  - One message in two parts: data with glosses, then the task. A typed call closes on a placeholder-only return shape.
+  - The deadline derives from the call's own reservations (context over a prefill floor, plus output over a decode floor on the non-streaming path), never a fixed backstop.
+  - A transient failure (connection, daemon error, empty body, broken stream, schema parse, an off-domain appendix) re-attempts exactly once. A deadline trip, a length stop, a cancel, or anything unclassified fails on first occurrence. A second failure fails the run; the per-candidate checkpoint lets a resume pick up the unfinished candidates.
+  - Every fired retry is evidence: a tracker row plus a data-health event.
+  - One context size per model; context pressure is answered by compressing documents or picking a smaller shape, never by raising it.
+  - Prompts put the candidate-constant text first and keep the per-conversation text short, so consecutive conversations on one candidate reuse the server's prompt cache.
+  - Sampling: thinking calls at temperature 1.0, top-p 0.95, top-k 20; non-thinking calls at 0.7, 0.8, 20. Greedy decoding is forbidden.
+  - A grammar-carrying transcription runs thinking off on the pinned Ollama version; an Ollama version bump re-locks such calls to thinking-enabled until the schema-integrity check passes on the new version.
 
 ---
 
@@ -702,25 +835,25 @@ The lens that decides which signals matter for this candidate.
   - Recurring-revenue structure — the share of revenue in recurring / platform segments, from the annual segment rows.
   - Cyclicality — the variability of revenue and margin across the statement history.
   - The signals that surfaced the name (the Step-4 tags).
-  - [note: the docs name these feature families, not their exact formulas — the cut-points are implementation-time.]
 
-- **Model — archetype confirmation (one call, thinking, no web access)**
-  - Exact inputs: the classification features and surfacing signals only — a compact, clean context; for a carried name, also the prior archetype.
-  - Returns: one archetype label — secular compounder / AI-infra / commodity cyclical / disruptor / quality compounder — plus a short rationale and a confidence; the rationale may name a runner-up lens as diagnostics riding the audit only, never a second lens in targets, weights, or gates.
-
-- **Validation — the branch is total: one authoritative archetype always emerges**
-  - A valid but **low-confidence** label stands as authoritative, the record carrying an `archetype_low_confidence` degraded-input flag that Step 5g weighs interpretively — lowering conviction weight, never gating, never touching an engine number.
-  - A **contradictory or schema-invalid** confirmation, or a **failed call**, adopts the Step-4 deterministic provisional archetype, flagged and logged — a deterministic fallback, never a model retry.
-  - A **carried name's archetype is sticky**: the call is an affirm-or-overturn; an overturn must cite the classification feature that changed, and the app validates that the cited feature actually moved in the input delta. An unvalidated overturn does **not** take effect — the prior label holds — and is recorded as a **divergence** (the proposed label, its cited feature, the validator's reason) beside the label that held, so a lens the model repeatedly disputes is a visible, scoreable pattern.
+- **Call: archetype confirmation** (thinking, grammar, no web access — a classification, not research)
+  - **Sees**
+    - The classification features and surfacing signals only — a compact, clean context; for a carried name, the prior label beside them.
+  - **Returns**
+    - One archetype label under the grammar — secular compounder / AI-infra / commodity cyclical / disruptor / quality compounder — plus a short rationale as prose.
+    - The branch is total: one authoritative archetype always emerges. The label stands for 5c–5h; its doubt and any runner-up lens live in the rationale, which rides the audit only, never a second lens in targets, weights, or gates.
+    - A schema-invalid confirmation or a failed call adopts the Step-4 provisional archetype as authoritative, flagged and logged — a deterministic fallback, never a model retry.
+    - For a carried name the rationale affirms or overturns the prior label, and the prior and current labels both persist on the record, so a lens that churns between passes on a borderline name is visible on the card and the audit rather than policed.
 
 - **What the archetype decides downstream**
-  - The composite's **signal weighting** and the **valuation lens** for 5c–5g: a commodity cyclical is judged on P/B, P/NAV, and mid-cycle EPS with trailing P/E suppressed; an AI-infra name on segment-revenue acceleration and forward P/E against its revision rate; a secular compounder on PEG and revisions-vs-multiple; a disruptor on its leading operating metric rather than EPS; a quality compounder on operating-income-decoupling with valuation as a risk gate, not an entry.
-  - The **target driver override** on the shared v2 scenario-target function (Step 5c).
-  - The **engine horizon rule's Long branch** (a compounder archetype can earn Long on multi-year compounding — Step 5h).
+  - The composite's **signal weighting** and the **valuation lens** for 5c–5g: a commodity cyclical is judged on P/B, P/NAV, and mid-cycle EPS with trailing P/E suppressed; an AI-infra name on segment-revenue acceleration and forward P/E against its revision rate; a secular compounder on PEG and revisions-vs-multiple; a disruptor on its leading operating metric rather than EPS; a quality compounder on operating-income decoupling with valuation as a risk gate, not an entry.
+  - The **target driver override** on the shared scenario-target function (Step 5c).
+  - The **engine horizon rule's Long branch** — a compounder archetype earns Long (Step 5c).
+  - The archetype's **track** at the thesis document — proven economics or emerging economics (Step 5g).
   - The **engine risk tier takes no archetype input** — any archetype–tier correlation is emergent through the rule's measurable legs.
 
 - **Output**
-  - The authoritative archetype, its confidence and rationale, and any recorded overturn divergence.
+  - The authoritative archetype and its rationale; on a carry, the prior label beside it.
   - The cached classification responses, reused by Step 5b.
 
 ---
@@ -730,13 +863,13 @@ The lens that decides which signals matter for this candidate.
 The application assembles the candidate's evidence packet deterministically; the Step-5a responses are reused from the run cache, and every per-candidate row fires once. This is the per-candidate surface — the budget driver — so it runs only for the narrowed slate, never the discovery longlist.
 
 - **Data retrieved from FMP**
-  - Fundamentals — `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement`; `key-metrics`, `ratios` (+ TTM); `financial-scores` (Altman Z, Piotroski); `owner-earnings`, `enterprise-values`, `discounted-cash-flow`; `financial-growth` (multi-year per-share revenue / EPS / FCF / book-value CAGRs); `dividends` — the trailing distributions used as the scenario function's twelve-month payout proxy, not a forward estimate (a nonpayer contributes a clean zero leg; a failed pull reads zero too, but with a recorded degraded-input gap — conservative at the entry gate, and the gap feeds the stand-in's flag leg).
-  - Segments — `revenue-product-segmentation`, `revenue-geographic-segmentation` (annual only — trajectory context and the own-history basis; the quarterly acceleration series is research-extracted at Step 5d).
-  - The revision signal — `analyst-estimates` (forward consensus, snapshotted run to run for velocity), `grades` / `grades-historical` / `grades-consensus` (the rating distribution and actions), `price-target-consensus` / `price-target-summary` (street target level and trend), `ratings-snapshot` / `ratings-historical`, `earnings` (next earnings date + actual-vs-estimate history).
+  - Fundamentals — `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement`; `key-metrics`, `ratios` (+ TTM); `financial-scores` (Altman Z, Piotroski); `owner-earnings`, `enterprise-values`, `discounted-cash-flow`; `financial-growth` (multi-year per-share revenue / EPS / FCF / book-value CAGRs); `dividends` — the trailing distributions used as the bands' twelve-month payout proxy, not a forward estimate (a nonpayer contributes a clean zero; a failed pull reads zero with a recorded degraded-input gap).
+  - Segments — `revenue-product-segmentation`, `revenue-geographic-segmentation` (annual only — trajectory context and the engine's segment-acceleration series).
+  - The revision signal — `analyst-estimates` (forward consensus, snapshotted run to run for velocity), `grades` / `grades-historical` / `grades-consensus` (the rating distribution and actions), `price-target-consensus` / `price-target-summary` (street target level and trend), `ratings-snapshot` / `ratings-historical`, `earnings` (the next earnings date — the rotation slice's proximity key, never an engine-horizon input — and the actual-vs-estimate history).
   - Positioning (all symbol-keyed) — `insider-trading/search` + `insider-trading/statistics`, `acquisition-of-beneficial-ownership` (SC 13D / 13G activist stakes), `senate-trades` + `house-trades`.
   - `stock-peers`, `shares-float` (free float / liquidity), optionally `historical-employee-count` + `key-executives`.
-  - `news/stock` — the symbol-scoped headline feed that seeds the Step-5d narrative / sentiment and catalyst topics.
-  - M&A involvement — acquirer or target, matched from the market-wide `mergers-acquisitions-latest` + `sec-filings-8k` (the per-symbol M&A search is off-plan).
+  - `news/stock` — the symbol-scoped headline feed, the candidate's news leads for Step 5d.
+  - M&A involvement — acquirer or target, matched from the market-wide `mergers-acquisitions-latest` + `sec-filings-8k` (the per-symbol M&A search is off-plan); an announced transaction with a dated close is the engine horizon's Short input.
   - `quote` — the live price the engine prices targets and runs the gate against (a job-time input, logged in the audit; never a persisted current-price field).
   - `historical-price-eod/light` (dated) — the deep daily history, through the shared price-bar cache.
   - Off-plan, and where they go instead: earnings-call transcript language (backlog, book-to-bill, guidance, supply discipline) → the Step-5d research lane; press releases → `sec-filings-8k` + the web; 13F institutional flow → SEC EDGAR 13F (coarse, often omitted) and held out of the grade regardless.
@@ -744,45 +877,37 @@ The application assembles the candidate's evidence packet deterministically; the
 - **Data retrieved elsewhere**
   - SEC EDGAR — the submissions feed (10-K / 10-Q / 8-K, item-classified) and XBRL company facts as the authoritative cross-check; for an eligible new listing or separation, the S-1 / Form 10 history. Ticker → CIK resolution is non-blocking here: an unresolved CIK degrades the EDGAR legs to the FMP working feed and reads the filing-kind forensic legs `unknown`.
   - FINRA short interest — looked up in the once-per-run file (level, trend, days-to-cover).
-  - The Schwab option chain, if the name is optionable — per-contract volume, open interest, implied volatility (greeks not parsed) → the options-activity signal computed at 5c; a chain failure is a typed gap, never a failed run.
+  - The Schwab option chain, if the name is optionable — per-contract volume, open interest, implied volatility → the options-activity signal computed at 5c; a chain failure is a typed gap, never a failed run.
   - The Step-2 shared context.
 
 - **Logic**
   - Cross-check the FMP working feed against SEC filings and assemble one evidence packet.
-  - **Limited-history eligibility** — before research, derive a mode from objective identity facts only: `new-listing`, `spin-off-carve-out`, or `new-economic-perimeter`, and only when that event is why comparable public history is short; a missing provider response never creates eligibility, and the model never chooses it. For an eligible candidate the dossier carries the filing identifiers and source plan to recover pre-listing / predecessor evidence (S-1 or Form 10 historicals, carved-out or predecessor segment disclosures, contracts, customer / supplier observations, dated operational / technical milestones) for the Step-5d topic.
-  - **For a carried-forward candidate** (a rotation pick, a budget-winning re-surfacer, or a Deep Audit selection):
-    - Load its prior opportunity record and derive the **`continuity_weight`** from the age of `last_deep_researched_at` — ≤ ~1 week *continued research* (anchor on it), ~1–4 weeks *blended*, > ~4 weeks *fresh look* (test it skeptically). It frames how hard Step 5g leans on the prior thesis / conviction / bear case / milestone plan; it weights interpretation only, never an engine number.
-    - Carry its **own-lifecycle retrospective** — the prior deep pass's both-arm values, the realized move since that pass, this name's matured outcome labels with their `resolution_mode`s, and its leading-metric-continuation state. The price leg is the since-flagged primitive read over a second window (since the prior deep pass rather than since entry) — a segment of the same reconstructed curve, no extra fetch, and no independent price signal; it is cap-only wherever it appears.
-    - A name re-entering **from the archive** is a new lifecycle: it carries no continuity weight and no retrospective.
-  - The aggregate calibration reads (picked-vs-rejected spreads, false-negative flags, archetype resolution-mode distributions) are never a dossier input — they feed the calibration pass only, behind the ≥ 30-unique-issuer bar.
+  - **Limited-history eligibility** — before research, derive a mode from objective identity facts only: `new-listing`, `spin-off-carve-out`, or `new-economic-perimeter`, and only when that event is why comparable public history is short; a missing provider response never creates eligibility, and the model never chooses it. For an eligible candidate the dossier carries the filing identifiers and source plan the reconstruction topic deep-reads (S-1 or Form 10 historicals, carved-out or predecessor segment disclosures, contracts, customer / supplier observations, dated operational / technical milestones).
+  - **For a carried-forward candidate** (a rotation pick, a budget-winning re-surfacer, or a Deep Audit selection): load the prior record deterministically by lifecycle id — the prior pass's date and the price then, its thesis document verbatim, its analysis verbatim, its appendix values (tier, horizon, conviction, the three expected prices with their horizon dates, status, detection mode), its prior archetype, and the lifecycle's accuracy scores from Step 2. A name re-entering from the archive is a new lifecycle and carries none of it.
 
-- **Embedding model — vector continuity retrieval (one call, no reasoning)**
-  - Input text: a query string built deterministically from the candidate — symbol, archetype, sector / industry, and the prior opportunity's thesis themes if carried — byte-capped before the call.
-  - Returns: a vector validated against the shared embedding-response contract; the app runs a brute-force cosine search scoped to the **Trade Opportunities** memory partition, restricted to **record-summary rows** (the `summary` kind — a calibration learning can never match) and **scoped by lifecycle id**, so a fresh re-entry retrieves nothing from a prior lifecycle.
-  - An invalid or failed response skips semantic recall fail-soft (a degraded-input flag); the deterministically loaded prior record is unaffected.
+- **Model**
+  - None. The job makes no embedding call; continuity is the deterministic load above.
 
 - **Output**
-  - The complete candidate dossier — statements, ratios, scores, growth, segments, the revision signal, positioning, float, news seeds, price history, the live quote, the option chain, the SEC cross-check, FINRA short interest, the shared context, any limited-history eligibility + source plan, any carried record + `continuity_weight` + retrospective, and the retrieved prior analysis.
+  - The complete candidate dossier — statements, ratios, scores, growth, segments, the revision signal, positioning, float, news leads, price history, the live quote, the option chain, the SEC cross-check, FINRA short interest, the shared context, any limited-history eligibility + source plan, and on a carry the prior record.
 
 ---
 
-### Step 5c — Calculate the financial picture
+### Step 5c — Calculate the financial picture, and the evidence floor
 
 - **Data retrieved**
-  - Uses the dossier and the shared context.
-  - No model or web research.
+  - Uses the dossier and the shared context. No model or web research.
 
 - **How the step runs**
   - The deterministic engine computes the candidate's quantitative picture **weighted by the Step-5a archetype** — the archetype selects which sub-scores dominate and which valuation lens applies. Everything it produces is the **engine arm**, carried into Step 5g with its methodology exposed (the `TargetMeta` derivation flags, the driver rung taken, the normalization basis, any neutral-midpoint imputation) so the model can dispute a *derivation*, not merely a number.
-  - The risk-tier **inputs** (market cap, volatility, leverage, profitability, drawdown, liquidity, event exposure) are computed here; the engine tier itself is assigned by rule at Step 5h, and the inputs ride into the Step-5g prompt as evidence for the model's own tier.
-  - Limited-history eligibility changes nothing here: the engine uses current structured rows plus any already-persisted app-validated comparable history, flags thin own-history as degraded, and leaves a too-short leading-metric family unmeasurable until Step 5f validates this pass's recovered observations.
+  - The evidence floor runs here too, over the same structured data, before any research is spent.
 
-- **Order of computation** — each read feeding the next where noted:
-  - **Quant composite** (the multi-factor backward anchor) → **value-creation read** → **leading-metric series and its inflection read** → **earnings surprise / SUE** and **positioning** → **price-action confirmer** → **scenario targets** (structured-only, provisional) → the **three derived reads** (narrative-vs-reality, forensic flags + `forensic_event`, implied expectations) → **tradability flag** → for a carried name, the **since-flagged read**.
+- **Order of computation**
+  - Quant composite → value-creation read → leading-metric series and its inflecting read → earnings surprise and positioning → price-action confirmer → scenario bands at three horizons → the three derived reads (narrative-vs-reality, forensic, implied expectations) → risk tier and horizon → tradability flag → for a carried name, the since-flagged read and the realized block → the evidence floor.
 
 #### Engine primitives (used below)
 
-- **`scale(x, lo → hi)`** maps `x` linearly onto 0–100 and clamps it; an inverted band (`lo > hi`) scores lower inputs higher. In this job the bands are **sector-adjusted** — a per-sector `lo → hi` per factor (the band values are not yet drafted).
+- **`scale(x, lo → hi)`** maps `x` linearly onto 0–100 and clamps it; an inverted band (`lo > hi`) scores lower inputs higher. In this job the bands are **sector-adjusted** — a per-sector `lo → hi` per factor.
 - A **ratio** `a ÷ b` is `None` when the denominator is missing or zero.
 - **Winsorizing** clips a factor value to a bounded percentile range of its reference distribution before scoring, so one outlier can't dominate a composite.
 
@@ -805,11 +930,11 @@ Discovery only stratified by coarse fields, so the multi-factor picture is compu
 
 - **Normalization and roll-up**
   - Each factor is scored against its **sector-adjusted absolute band** plus the company's **own-history distribution**, winsorized — honest without any accumulated sample, and the sector adjustment keeps the composite from being a disguised sector bet.
-  - It is deliberately **not** a within-cohort rank: a within-run cohort has no statistical mass (the quotas spread the slate to one-to-three names per bucket), ranking against live peers would multiply the per-symbol budget, and the persisted **factor-distribution store** is a selected convenience sample — so that store is **diagnostic-only, never a score input** (shown in the dossier / audit as context once a bucket holds ≥ 20 unique issuers, drafted).
+  - It is deliberately **not** a within-cohort rank: a within-run cohort has no statistical mass (the quotas spread the slate to one-to-three names per bucket), ranking against live peers would multiply the per-symbol budget, and the persisted **factor-distribution store** is a selected convenience sample — so that store is **diagnostic-only, never a score input** (shown in the dossier / audit as context once a bucket holds ≥ 20 unique issuers, drafted; it graduates into the score only when fed by a representative-universe snapshot).
   - A factor that failed to resolve is **imputed to its band's neutral midpoint** (disclosed), so a missing call can't silently sink a name; the factors integrate at **one final composite score** rather than chained hard cutoffs — value and momentum are negatively correlated, so sequential cutoffs would collapse breadth.
-  - **Archetype weights** — the archetype's dominant axes tilted ~2× over a neutral baseline: AI-infra → momentum / revision; commodity cyclical → valuation (P/B, P/NAV); quality- and secular-compounder → quality / ROIC; disruptor → growth / leading metric; the remaining axes balanced. [note: the exact weight vectors are not yet drafted.]
-  - A composite resting on thin own-history carries a **low-confidence degraded-input flag** — lowers conviction weight, never gates.
-  - Where it lands: the engine arm's **sub-scores** (on the shared 0–100 scale, so the model's own sub-scores at 5g are comparable by construction) and the value lens's read for scoring.
+  - **Archetype weights** — the archetype's dominant axes tilted ~2× over a neutral baseline: AI-infra → momentum / revision; commodity cyclical → valuation (P/B, P/NAV); quality- and secular-compounder → quality / ROIC; disruptor → growth / leading metric; the remaining axes balanced.
+  - A composite resting on thin own-history carries a **low-confidence degraded-input flag** — a data-health note the model reads, never a gate.
+  - Where it lands: the engine arm's **sub-scores** and composite, on the shared 0–100 scale, and the value lens's read for the thesis document.
 
 #### Value-creation read
 
@@ -820,14 +945,14 @@ Whether the business *creates* value rather than just growing.
 - **Reinvestment runway** `g ≈ ROIC × reinvestment rate`.
 - **Moat-source features** — intangibles, switching costs, network effects, cost advantage, efficient scale — weighted by how often each actually sustains a durable advantage.
 - Inputs: the statements, `key-metrics` / `ratios`, `owner-earnings`, `financial-growth` (the multi-year per-share CAGRs → growth trajectory and the runway read).
-- [note: the cost-of-capital and R&D-capitalization conventions are not yet drafted.]
+- Where it lands: the engine arm; the engine horizon rule's Long branch and the gate's **H** (a multi-year reinvestment runway).
 
-#### Leading-metric series and the inflection read
+#### Leading-metric series and the inflecting read
 
-The anchor the whole thesis hangs on — per archetype: revision velocity (AI-infra), segment-revenue acceleration (AI-infra / disruptor / secular compounder), a commodity-price turn (commodity cyclical), margin decoupling — operating income growing faster than revenue (quality compounder), or a disruptor's named operating metric.
+The anchor the whole thesis hangs on — per archetype: revision velocity (AI-infra), segment-revenue acceleration from the annual segment rows (AI-infra / disruptor / secular compounder), a commodity-price turn (commodity cyclical), margin decoupling — operating income growing faster than revenue (quality compounder).
 
-- **The series** — built from the structured feeds where the class is `structured` / `filing`, or from the **stored** research-extracted series where it is `research`: the quarterly segment observations are app-appended per filing from Step 5e's typed returns (FMP's segment endpoints are annual-only), so a **debut's** segment series can read unmeasurable here and become measurable only through the Step-5f recompute once this run's research lands.
-- **"Inflecting" is metric-family-shaped, archetype-mapped, two-phase, noise-floored** — the shape test belongs to the family declared on the metric:
+- **The series** — built from the structured and filing-cadence feeds, dated provider data by construction. A family that lives only in research — product ASPs, channel checks, net-adds — has no engine series: the leading-metric topic's write-up states the dated observations with their sources, and the thesis document judges the inflection in prose.
+- **"Inflecting" is metric-family-shaped, archetype-mapped, two-phase, noise-floored** — the shape test belongs to the family declared on the metric (a renewal rate is a stability-family metric whoever holds it); the archetype maps to the family its tell is expected to live in:
   - *Accelerating* (segment revenue, revision velocity, net-adds) — the rate of change rising.
   - *Turned-and-holding* (commodity prices, ASPs) — a positive move after a declining stretch, or holding above a turn ≤ 4 reporting periods back; never re-demanding re-acceleration.
   - *Stability-under-stress / decoupling* (a renewal rate through a price hike; operating income outgrowing revenue with the gap widening).
@@ -835,414 +960,399 @@ The anchor the whole thesis hangs on — per archetype: revision velocity (AI-in
   - *Deterioration* — the exit shape the continuation state watches for.
 - **Comparability** — changes are seasonally comparable (YoY for quarterly reported series, never QoQ on seasonal data); trend is a robust slope over the available points, never the latest two deltas alone.
 - **Continuation phase** (a continuation-mode candidate, or any re-check of an already-inflected anchor) — inflected within the trailing ~4 reporting periods and not rolled over; steady post-inflection strength passes.
-- **Noise floor and minimum history** — a qualifying move must exceed `0.5 × σ` of the series' trailing comparable changes (up to 8); *accelerating* / *turned-and-holding* need ≥ 5 comparable changes, *stability-under-stress* the full stressor window, *threshold-crossing* the crossing plus one confirming observation; below its family minimum the series is **unmeasurable** → an evidence-floor abstention at 5h unless research supplies further dated third-party observations — never a story-stock rejection.
+- **Noise floor and minimum history** — a qualifying move must exceed `0.5 × σ` of the series' trailing comparable changes (up to 8); *accelerating* / *turned-and-holding* need ≥ 5 comparable changes, *stability-under-stress* the full stressor window, *threshold-crossing* the crossing plus one confirming observation. Below its family minimum the series is **unmeasurable**: where the family is the floor-bearing one the candidate abstains on the evidence floor as missing evidence (the limited-history branch waives the leg).
+- **The not-inflecting read** — a measurable family that fails its shape test. A debut is held out at the floor below as a story stock; a carried name proceeds with the read as an engine annotation, which with `hype` forms the anchorless-`hype` trigger at Step 5h.
 - **Direction** is by declared metric polarity — a narrowing loss counts as improvement.
-- Always dated and third-party-sourced, else the candidate is a story stock.
-- Where it lands: the leading-metric trend and continuation state on the engine arm; the evidence floor (5h); the `business_runway` durability read, which the engine derives from validated runway proxies — penetration + falling unit cost, contracted multi-year backlog coverage, a multi-year forward assumption, a validated multi-year milestone chain — mapped to years at Step 5f (penetration ≲ 20% with unit cost still falling → ≥ ~5 years; contracted backlog coverage → the covered years, ≥ ~3 clears; an assumption or milestone chain → its validated span; none cleared → `unknown`, a degraded input, never a gate). On a debut with no validated research yet, runway reads `unknown` here.
+- Where it lands: the leading-metric series, trend, and continuation state on the engine arm; the evidence floor; the thesis-document prompt.
 
 #### Earnings surprise, positioning, and the price-action confirmer
 
 - **SUE** — each reported surprise standardized against the name's own surprise history (from `earnings`); the beat-and-raise streak confirmed here; post-announcement drift as a continuation tell.
-- **Positioning** — insider net buying (`insider-trading/*`), congressional buys, activist 13D / 13G stakes, short-interest level / trend / days-to-cover (FINRA), CFTC positioning for a commodity cyclical's underlying (Step 2), and the **options-activity signal** from the Step-5b chain — put/call by volume and by open interest, and the IV/skew read (the whole-chain form: mean put IV minus mean call IV, no moneyness banding; the banded form is the calibration slice's) — an activity proxy, **held out of the grade** until calibrated.
-- **Price-action confirmer** — relative strength vs the market (`^GSPC`) and the sector benchmark, and proximity to a multi-year base breakout, from the dated-EOD deep history (reusing the shared engine's momentum / volatility computations). A cross-archetype **confirmer, not a trigger** — it adjusts conviction at 5g, never substitutes for the leading-metric anchor.
+- **Positioning** — insider net buying (`insider-trading/*`), congressional buys, activist 13D / 13G stakes, short-interest level / trend / days-to-cover (FINRA), CFTC positioning for a commodity cyclical's underlying (Step 2), and the **options-activity signal** from the Step-5b chain — put/call by volume and by open interest, and the IV/skew read (mean put IV minus mean call IV over the whole chain) — an activity proxy, **held out of the grade** until calibrated.
+- **Price-action confirmer** — relative strength vs the market (`^GSPC`) and the sector benchmark, and proximity to a multi-year base breakout, from the dated-EOD deep history (reusing the shared engine's momentum / volatility computations). A cross-archetype **confirmer, not a trigger** — it adjusts conviction in the thesis document, never substitutes for the leading-metric anchor.
 
-#### Scenario targets — the v2 rate-anchored function (structured-only set)
+#### Scenario bands — the rate-anchored function at three horizons
 
-Bear / base / bull price targets over the fixed **twelve-month** window, priced from a per-share driver and a rate-anchored multiple. The function is the same one Portfolio runs — restated compactly here; the clamp, repair, and fallback detail is at `portfolio-analysis-logic-flow.md` §Scenario targets — with one Trade Opportunities leg: the **archetype driver override**.
+Bear, base, and bull prices at three months, twelve months, and three years, priced from a per-share driver and a rate-anchored multiple. The function is the one Portfolio runs — restated compactly here; the clamp, repair, and fallback detail is at `portfolio-analysis-logic-flow.md` §Scenario bands — with one Trade Opportunities leg: the **archetype driver override**. Computed from structured data alone; nothing the model returns alters them.
 
 - **Choose the driver** — the archetype names the preferred driver / multiple form, the shared ladder's fallback discipline applying when it isn't computable:
   - Quality- and secular-compounder → consensus forward EPS / P-E.
   - AI-infra and disruptor → forward revenue per share / P-S while pre-profit — the ladder climbs back to EPS once a positive EPS consensus exists.
   - Commodity cyclical → **mid-cycle EPS** = median margin over the trailing cycle window (drafted ~5 years) × forward revenue per share, / P-E — spot earnings mislead at cycle extremes (the archetype's P/B / P/NAV read stays a scoring lens, never a target path).
-  - Every forward per-share conversion reads the ladder's one share basis — the latest reported diluted count; the anchor window's historical revenue-per-share prints take a diluted count from inside their own TTM window, never the latest filing's or today's (`portfolio-analysis.md` §Starting parameters).
+  - Every forward per-share conversion reads the ladder's one share basis — the latest reported diluted count; the anchor window's historical prints take a diluted count from inside their own TTM window.
   - No positive forward-EPS consensus and no computable forward revenue per share → `no-admissible-driver`, an evidence-floor abstention (the gate cannot price a name with no computable target).
 - **Build the three driver cases** — base = the consensus mid, bear / bull = the low / high (a missing spread holds both at the mid, flagged flat), each clamped to `[trailing × 0.75, trailing × 1.35]`.
 - **Calculate the multiple** — per historical quarter (~12): driver yield = `driver ÷ price`, spread = `yield − that quarter's DGS10` (latest on or before); the bear / base / bull spread percentiles (75th / 50th / 25th — a wider spread is a cheaper multiple); re-anchored with today's `DGS10`: `multiple = 1 ÷ (spread percentile + today's DGS10)` (needs ≥ 8 observations; else raw-multiple percentiles; with no history, the current `spot ÷ base driver` multiple carried).
-- **Price and return** — `twelve-month price = driver × multiple` per scenario (crossed scenarios repaired to ascending; a volatility-scaled dispersion floor widens, never narrows, the bear / bull spread); `total return = (price + trailing-TTM dividends per share) ÷ spot − 1` (the payout proxy comes from the 5b-pulled trailing distributions and is not a forward estimate; a nonpayer contributes zero).
-- **Where these land** — the structured-only target set with its `TargetMeta` (anchor form: rate-anchored / current-multiple carry / raw-percentile fallback; driver rung; flat / clamp / dispersion flags) on the engine arm; a **provisional scenario menu** until Step 5f; the entry gate (5h) and the implied-expectations inversion below read it; the anchor-window percentiles and drivers persist as the basis every cheap re-derivation re-anchors against.
+- **Twelve-month band** — price = driver × multiple per scenario (crossed scenarios repaired to ascending; a volatility-scaled dispersion floor widens, never narrows, the bear / bull spread); total return = `(price + trailing-TTM dividends per share) ÷ spot − 1` (the payout proxy comes from the 5b-pulled trailing distributions; a nonpayer contributes zero).
+- **Three-month band** — base = spot × (1 + the twelve-month base price return ÷ 4), so the twelve-month band is computed first; half-band = daily volatility × 2 × √63, clamped [3.5%, 26%], 8.7% when volatility cannot be computed.
+- **Three-year band** (declared extrapolation) — each scenario's twelve-month driver compounded two further years at the growth the two coming fiscal-year rows imply, under the same clamp, times the same scenario multiple; a single forward row holds growth flat, recorded; the dispersion floor scales by √3.
+- **Where these land** — the bands with each horizon's method clause and the `TargetMeta` provenance flags (anchor form: rate-anchored / current-multiple carry / raw-percentile fallback; driver rung; flat / clamp / dispersion flags) on the engine arm → the thesis-document prompt, the card's expand view, and the entry gate (5h); the base value at each horizon → the episode store, as the engine's forecast; the anchor-window percentiles and drivers persist as the basis every cheap re-derivation re-anchors against.
 
-#### The three derived reads selection leans on
+#### The three derived reads the interpretation leans on
 
-- **Narrative-vs-reality ratio** — estimate-revision pace vs multiple change over a trailing 12-month window (or since `became_opportunity_at` when the idea is younger): *justified-expensive* when estimates outrun the multiple; **`hype`** when multiple expansion exceeds **70%** of the price move. For a thinly-covered name whose estimates are absent or stale, the numerator falls back to **operating reality** — the hard operating momentum the company itself reports (segment revenue, backlog / bookings, gross profit, unit economics, cohort retention — the archetype's leading metric) against the move in price and multiple. Where it lands: the engine-arm read the model weighs at 5g; the 5h forensic / risk gate (`hype` caps; anchorless `hype` excludes a debut).
-- **Forensic flags** — computed from the statements and `financial-scores`:
-  - Soft flags (each a 5h **cap** trigger): Altman Z < 1.8; Piotroski ≤ 3; net income > 1.3× operating cash flow; receivables / inventory growth > 1.5× revenue growth.
-  - Also computed as evidence: margin compression while revenue accelerates; the restatement / auditor-change history.
-  - **Forensic event kinds are typed events with named producers, never bare model assertions** (the hard consequences ride the filing kinds alone) — the shared `forensic_event` record `{ event kind — restatement / auditor-change / fraud; issuer; event / filing date; source lineage }` (the built Portfolio producer's form, `portfolio-v44`; its confidence member was dropped 2026-09-17, nothing having read it). The two **filing kinds are engine-detected, model-free**, from the item-classified SEC 8-K submissions already on the surface — a restatement from an Item 4.02 non-reliance filing, an auditor change from an Item 4.01 filing; an unresolved CIK reads these legs `unknown` (a logged degraded input, never a fabricated clear). The **fraud kind is research-fed only** — it enters as a validated Step-5e `forensic_event` claim cited to a primary-source document (regulator / court / the issuer's own filing) — and is **advisory by the 2026-08-24 ruling**: cited attention evidence in scoring, never part of 5h's automatic hard set.
-- **Implied-expectations read** — the v2 scenario math inverted at the live quote under the archetype's driver override: the driver growth the spot implies across the scenario multiples, plus the margin dimension where the driver is revenue-based → a **range** of growth / margin trajectories the price already assumes under stated assumptions, never one solved number (many combinations justify a price). Where it lands: the engine arm's implied-expectations read — the anchor for 5g's priced-in / crowding judgment and the *why is this already priced?* discipline.
+- **Narrative-vs-reality ratio** — estimate-revision pace vs multiple change over a trailing 12-month window, or since `became_opportunity_at` when the idea is younger: *justified-expensive* when estimates outrun the multiple; **`hype`** when multiple expansion exceeds **70%** of the price move. For a thinly-covered name whose estimates are absent or stale, the numerator falls back to **operating reality** — the hard operating momentum the company itself reports (segment revenue, gross profit, the archetype's structured leading metric) against the move in price and multiple. Where it lands: an engine-arm read the thesis document weighs. With a measurable, inflecting family behind it, `hype` is an annotation; **anchorless `hype`** — the read with the archetype's structured family measurable and not inflecting — is a hard trigger on a carried name at Step 5h (a debut with that family read is held out below, before research). Where the archetype's tell lives only in research the engine cannot read anchorlessness, and `hype` is an annotation alone.
+- **Forensic reads** — computed from the statements, `financial-scores`, and the filings:
+  - **Soft flags** — Altman Z < 1.8; Piotroski ≤ 3; net income > 1.3× operating cash flow; receivables / inventory growth > 1.5× revenue growth; margin compression while revenue accelerates. Persisted as engine annotations the thesis document weighs; they clamp nothing.
+  - **Hard forensic state** — a restatement (an Item 4.02 non-reliance filing) or an auditor change (an Item 4.01 filing) in the item-classified SEC 8-K submissions within the drafted 365-day lookback. Engine-detected, model-free. An unresolved CIK reads these legs `unknown` — a logged degraded input, never a fabricated clear and never a silent no-event. A fraud allegation has no filing leg: it reaches the model only through the write-ups and the analysis, as prose it weighs, and never trips the state. Consequence: a hard trigger at Step 5h.
+- **Implied-expectations read** — the scenario math inverted at the live quote under the archetype's driver override: the driver growth the spot implies across the scenario multiples, plus the margin dimension where the driver is revenue-based → a **range** of growth / margin trajectories the price already assumes under stated assumptions, never one solved number (many combinations justify a price). Where it lands: the engine arm — the computed anchor for the thesis document's priced-in / crowding judgment.
 
-#### Tradability flag and since-flagged read
+#### Risk tier and horizon (the engine arm's placement legs, assigned here)
 
-- **Tradability flag** — Amihud-style illiquidity plus days-to-cover, resolved into the entry gate's **banded liquidity haircut**: unflagged 0 / flagged −3 pts / severely flagged −6 pts (the band boundaries from the flag's own inputs — not yet drafted) — so a small illiquid name is discounted, not silently excluded.
-- **Since-flagged read (carried names only)** — the price legs — running return since `became_opportunity_at` (absolute, vs sector, vs market) and maximum drawdown over that window — from the dated-EOD history, the identical primitive Step 7's scorecard uses, so 5g can weigh how the idea has actually done, cap-only. The leading-metric-continuation state is the read's other part and is **not** price-derived — it comes from the metric's own re-check-class path (a `research`-class anchor holds its last read between deep passes).
+- **Risk tier** (rule-derived; no archetype term — the gate's scale and the baseline beside the placement)
+  - **High** if any: market cap < $2B · realized volatility > 40% · debt/equity > 2 · unprofitable · drawdown > 50% · illiquid (thin ADV / high Amihud) · high event exposure.
+  - **Low** if all: market cap > $10B · profitable · debt/equity < 1 · volatility < 25% · liquid.
+  - Otherwise **Medium**.
+  - A leg whose input is missing cannot trigger; a candidate whose tier inputs are wholesale missing reads **Medium with a logged tier-input gap** — never a fabricated High or Low.
+  - The exact predicates for `illiquid` (the band boundaries from the tradability flag's own inputs) and `high event exposure` are **not yet drafted**.
+- **Horizon** (a drafted rule over the archetype and the dated events the feeds carry, no model input, evaluated in order)
+  - **Short** when the name is party to an announced transaction with a dated close inside 3 months — read from the M&A feed and the item-classified 8-K sweep, never from an earnings date, since every name has one.
+  - Else **Long** when the archetype is a compounder (quality or secular) or the value-creation read's reinvestment runway is multi-year (ROIC above its cost of capital with a reinvestment rate that compounds).
+  - Else **Mid**.
+  - The matched branch persists as the horizon's **derived basis** (`transaction-close` / `multi-year-compounding` / `default`) and sets the gate's **H** (Step 5h).
+- Both ride the self-review and thesis-document prompts as computed reads, feed the Step-5h gate's shared legs, and persist beside the model's placement as the baseline. The model's own tier and horizon are separate fields it argues in the thesis document; they place the card and never enter the gate.
+
+#### Tradability flag, and the carried name's reads
+
+- **Tradability flag** — Amihud-style illiquidity plus days-to-cover, resolved into the entry gate's **banded liquidity haircut**: unflagged 0 / flagged −3 pts / severely flagged −6 pts, the band and its points computed from the flag's own inputs — so a small illiquid name is discounted, not silently excluded.
+- **Since-flagged read (carried names only)** — the price legs — running return since `became_opportunity_at` (absolute, vs sector, vs market) and maximum drawdown over that window — reconstructed from the dated-EOD history, from the **first daily close after `became_opportunity_at`** (a consistent evaluation anchor, never the same-day bar the decision could not have traded) to the latest cached close, split-adjusted and price-only (total return supplementary where dividend data exists). The sector leg reads the record's entry-stamped sector identity and its resolved SPDR benchmark, refreshed at each deep pass; a record with no valid mapping carries `sector-unscorable` for that leg while the absolute and market legs compute. The read's other part is the continuation state of the engine's metric family where it is structured or filing class. A brand-new pick carries none on its debut run.
+- **Realized block for the self-review (carried names only)**
+  - The price now and its move since the prior pass, absolute and vs sector / market, with the maximum drawdown since the name became an opportunity.
+  - For each prior expected price: whether its horizon has passed, and if so the close on that date with its accuracy score, else the path so far.
+  - The lifecycle's six accuracy scores, each with the date of the last check that moved it and whether the prior analysis read it.
+  - The checks written since the prior analysis was written, this run's Step-2 checks included, newest by horizon date, up to 12.
+  - The engine's own composite, targets, tier, horizon, narrative-vs-reality and forensic reads then and now, with any hard-forensic or anchorless-`hype` read stated as a fact; the metric family's continuation state where it has one.
+- **Split bridge**
+  - Each deep pass stamps an anchor bar: the newest settled close strictly before the run's session. A later read divides the fresh close at that date by the stored one; the factor snaps to 1.0 inside a 10% deadband.
+  - The prior expected prices, the prior spot, and episode prices convert through the factor, each labeled bridged. A verbatim document (the prior analysis, the prior thesis document) is never rewritten; a split-context line above it states the split's date, ratio, and factor.
+  - An anchor missing from the fresh window excludes the comparison, typed; nothing runs cross-basis.
+
+#### Evidence floor
+
+Runs here, over the same structured data, before any research is spent: every leg is a read over structured data and its absence, so a debut that abstains has cost no model call. Archetype-aware, because an early-stage disruptor legitimately carries thinner financials than a quality compounder.
+
+- **Freshness states** (typed per floor-bearing input: `fresh` / `stale` / `freshness-unscorable`, with named gap reasons)
+  - Quote / price bars — current through the latest completed session (the job-time fetch self-satisfies).
+  - Structured / filing metrics and financial statements — an observation for the latest *expected* reporting period, with a drafted ~45-day filing grace past period end; older than one full period + grace is stale.
+  - `freshness-unscorable` (the source carries no as-of) reads as a degraded input, not an abstention, unless the input is itself floor-bearing. Distinct from source-quality recency, which only weights.
+
+- **Floor-bearing for every candidate**
+  - A current quote and price history.
+  - The engine's leading-metric family measurable and fresh, where the archetype's tell lives in a structured or filing-cadence series; an archetype whose tell lives only in research has no floor leg for it.
+  - Source freshness on the floor-bearing inputs, per the basis above.
+
+- **Statement floor, archetype-substituted**
+  - A proven-economics archetype (quality / secular compounder, commodity cyclical): the financial statements (FMP / SEC) — absent, stale, or carrying conflicting identity ⇒ abstain.
+  - An emerging-economics archetype (early disruptor, pre-profit AI-infra): the structured operating rows the feeds carry — the revenue segments, gross profit, and the revision signal — stand in, sufficient to anchor the engine's targets. The substitution is explicit and logged; it relaxes the *form* of the supporting financials, never the leading-metric requirement. The operating metrics only research carries (backlog / bookings, net-adds, cohort retention) reach the model through the write-ups.
+
+- **Limited-history branch** (an app-eligible `new-listing`, `spin-off-carve-out`, or `new-economic-perimeter` only)
+  - The family test is unmeasurable by construction on a post-event series, so the leading-metric leg is **waived**: the metric's inflection is the thesis document's judgment from the reconstruction write-up, never a story-stock hold-out, and the not-inflecting read does not arise.
+  - The statement leg requires ≥ 1 full reported period since the event (drafted) — the proven-economics statements, or the emerging-economics substitute rows — else the candidate abstains as missing evidence.
+  - What research recovers reaches the model in prose only and never enters the engine's series or substitutes for a statement; limited history never changes archetype, risk tier, required return, or gate math. The thin-own-history degraded flag rides the composite.
+
+- **Enriching inputs (never force abstention)**
+  - Estimates / revisions, positioning, peers, the options signal, analyst opinion, the dividend distributions (a failed retrieval; a confirmed nonpayer's clean zero is no gap). Their absence is recorded as a degraded-input flag the thesis document reads.
+  - One named carve-out: `no-admissible-driver` — no positive forward-EPS consensus and no computable forward revenue per share — abstains, because the entry gate cannot price a name with no computable target.
+
+- **Three outcomes for a debut**
+  - A name missing a floor-bearing input or carrying stale or conflicting data → **`insufficient-evidence`**: an abstention held out of the matrix, with named reasons.
+  - A name whose structured metric family is measurable and **not inflecting** → a **story stock** (`no-inflecting-metric`): the engine's affirmative read, the leading-metric non-negotiable holding before the model is asked.
+  - A name clearing both → research.
+  - Neither hold-out spends a model call, and neither opens an episode. The hold-out is checkpointed as completed; its reasons and freshness states persist on the audit.
+
+- **A carried live opportunity**
+  - Missing or stale evidence → an **inconclusive refresh, never a turn-away**: the name holds its last verdict, conviction, and matrix identity; a typed refresh gap is recorded; no research is spent; the pass stamps no `last_deep_researched_at`, clears no attention warning, and opens no episode — it stays exactly as stale and as flagged as it was, so the rotation slice keeps prioritizing it. Whatever engine-only fields this step could compute refresh under the cheap re-derivation's rules.
+  - A metric family reading not inflecting → not inconclusive: evidence is present, so the deep pass proceeds with the read as an engine annotation — anchorless `hype` a hard trigger at Step 5h, a flat metric without `hype` a read the review and the thesis document must confront.
+
+- **The floor is arm-independent and binds absolutely.** Either-arm admission is scoped to the entry gate alone; a candidate below the floor abstains however conviction-bearing the model's arm would have been. The floor and the hard triggers are reads over *facts and their absence*, not judgments about the future, so there is no second arm for them to have.
 
 - **Model**
   - None.
 
-- **Output — the engine arm, provisional**
-  - The archetype-weighted **sub-scores** and quant composite (with the normalization basis and any neutral-midpoint imputation disclosed), the value-creation read, the leading-metric series / trend / continuation state, SUE, positioning and the options signal, the price-action confirmer.
-  - The **structured-only scenario target set** with its `TargetMeta`, the narrative-vs-reality read, the forensic flags and any filing-kind `forensic_event`, the implied-expectations range, the tradability flag and its haircut band, `business_runway` (or `unknown`), the risk-tier inputs.
-  - For a carried name, the since-flagged read.
-  - The degraded-input flags disclosed so far (thin own-history, `archetype_low_confidence`, imputed factors, vector-recall miss, a failed dividend pull's zero-leg gap) — the engine stand-in's flag leg at 5h.
+- **Output — the engine arm**
+  - The archetype-weighted sub-scores and composite (with the normalization basis and any neutral-midpoint imputation disclosed), the value-creation read, the leading-metric series / trend / continuation state and the family's inflecting read, SUE, positioning and the options signal, the price-action confirmer.
+  - The bands at three horizons with their `TargetMeta`, the narrative-vs-reality read, the forensic annotations and the hard forensic state, the implied-expectations range, the risk tier and the horizon with its derived basis, the tradability flag and its haircut band.
+  - For a carried name, the since-flagged read, the realized block, and the anchor bar.
+  - The floor's freshness states and degraded-input flags; or a typed hold-out record.
   - Nothing the model returns downstream alters any of these values.
 
 ---
 
 ### Step 5d — Research the company
 
-The shared research loop (*The research loop*, above), aimed at one candidate. This is the only stage in the per-candidate loop that itself loops; it builds the three research lenses — and the mandatory bear case — around the engine's numbers, so research fills the gaps the numbers can't rather than substituting a story for them.
+The shared research loop (*The research loop*, above), aimed at one candidate. This is the only stage in the per-candidate loop that itself loops; it builds the three research lenses — and the mandatory bear case — around the fetched values, so research fills the gaps the numbers leave rather than substituting a story for them. The engine's reads are not in the brief; the research meets them at the thesis document.
 
 - **What differs here**
   - Unit: the candidate's agenda below; one isolated conversation per topic.
-  - Budget: a **per-candidate** fetch + wall-clock budget, spent in topic-priority order — **leading metric and bear case first** — fail-soft on exhaustion (the lowest-priority topics drop to a recorded gap).
-  - Search: **SearXNG only** (a name's research should complete on SearXNG alone).
-  - Seeds: the candidate's `news/stock` headlines from the dossier, as leads; the Step-3b hypothesis set as run-level worldview context.
+  - Budget: a **per-candidate** fetch + wall-clock budget, spent in topic-priority order — **leading metric and bear case first**, so the bear case is never the topic the budget drops — fail-soft on exhaustion. Failed-fetch memory spans all candidates of the invocation; each automatic retry spends a separate attempt.
+  - Search: **SearXNG only**.
+  - Leads: the candidate's `news/stock` headlines from the dossier.
   - Terminal consolidation: Step 5e.
 
 - **The agenda (assembled deterministically by the orchestrator)**
-  - **Leading-metric validation** (mandatory anchor) — confirm the engine's leading metric is real, countable, dated, and inflecting from a third-party source; for a research-extracted series (the quarterly segment observations) this topic also deep-reads the name's own 10-Q / press-release segment disclosures and captures each period's dated, cited observation for the typed Step-5e return.
-  - **Limited-history reconstruction** (conditional — only when Step 5b marked the candidate eligible) — read the identified S-1 / Form 10 / carve-out / predecessor disclosures and third-party operating evidence, recover dated observations, and state for each whether it is directly comparable, needs a disclosed recast, or is only a proxy; never treat a customer / supplier proxy as the issuer's revenue or merge unlike economic perimeters.
-  - **Macro / thematic fit** — which theme the name rides and where it sits on the S-curve (against the Step-3b thematic map), pure-play vs enabler at a margin-capturing, capacity-constrained node, bottom-up TAM (units × price) vs top-down, and the economist's front-running indicators the feeds don't carry (capex commentary, book-to-bill, freight, the cycle, PMIs).
-  - **Investor judgment** — the driving narrative and market sentiment (how much of the price is emotion about what might come vs present fundamentals), management quality and capital-allocation behavior (insider buying, buybacks, guidance delivered vs promised, candor in bad quarters), durability of growth, and the pre-consensus tells (thin coverage, low institutional ownership, a variant perception) — seeded by `news/stock`, deep-read on the open web.
-  - **Pattern / case study** — the candidate against the **shipped episode library** (name, period, archetype, the tell's dated metric series, how it resolved), its matching episodes supplied to this topic as **structured retrieval, never model recall** — the recurring early tells (a high-margin segment compounding inside a lower-margin whole, an oligopoly's supply discipline turning, a usage metric inflecting ahead of revenue, new management + a credible guidance step-change, forward customer commitments, replicable unit economics with whitespace) against the red-flag set (a multiple outrunning estimates, peak-cycle margins extrapolated, pull-forward mistaken for trend, a narrative with no metric, a deteriorating metric behind strong share, earnings-quality games). The library ships in three partitions — grounding (what this lens retrieves), development (the only set gate constants are shaped on), and a locked holdout never tuned against.
+  - **Leading-metric validation** (mandatory anchor) — confirm the leading metric is real, countable, dated, and inflecting from a third-party source; for a metric the feeds never carry, this topic deep-reads the name's own 10-Q / press-release disclosures and the write-up states each period's dated, sourced observation, which the thesis document judges.
+  - **Limited-history reconstruction** (conditional — only when Step 5b marked the candidate eligible) — read the identified S-1 / Form 10 / carve-out / predecessor disclosures and third-party operating evidence, recover dated observations, and state for each whether it is directly comparable, requires a disclosed recast, or is only a proxy; never treat a customer / supplier proxy as the issuer's revenue or merge unlike economic perimeters. Nothing it recovers enters the engine's series.
+  - **Macro / thematic fit** — which theme the name rides and where it sits on the S-curve (against the Step-3b hypothesis documents), pure-play vs enabler at a margin-capturing, capacity-constrained node, bottom-up TAM (units × price) vs top-down, and the economist's front-running indicators the feeds don't carry (capex commentary, book-to-bill, freight, the cycle, PMIs).
+  - **Investor judgment** — the driving narrative and market sentiment (how much of the price is emotion about what might come vs present fundamentals), management quality and capital-allocation behavior (insider buying, buybacks, guidance delivered vs promised, candor in bad quarters), durability of growth, and the pre-consensus tells (thin coverage, low institutional ownership, a variant perception).
+  - **Pattern / case study** — the candidate against the shipped **case library** (name, period, archetype, the tell's dated metric series, how it resolved), its matching cases supplied to this topic as **structured retrieval, never model recall** — the recurring early tells (a high-margin segment compounding inside a lower-margin whole, an oligopoly's supply discipline turning, a usage metric inflecting ahead of revenue, new management + a credible guidance step-change, forward customer commitments, replicable unit economics with whitespace) against the red-flag set (a multiple outrunning estimates, peak-cycle margins extrapolated, pull-forward mistaken for trend, a narrative with no metric, a deteriorating metric behind strong share, earnings-quality games). The library ships in three partitions — grounding (what this lens retrieves), development (the only set gate constants are shaped on), and a locked holdout never tuned against.
   - **External corroboration** the feeds can't give — customer / hyperscaler capex, supply discipline (capex cuts, curtailments), transcript backlog / TAM / inflection language, and DRAM / NAND ASP direction.
-  - **The contemporaneous bear case — mandatory** — why the name might fail; the candidate cannot reach scoring without a stated, sourced bear case (the winning traits also rode the famous failures down).
-  - Then the **disconfirming-fetch pass** — one bounded pass after the topics, searching for what would disprove the thesis, from the same budget, outside the depth cap, fail-soft to a gap.
+  - **The contemporaneous bear case — mandatory** — why the name might fail; the winning traits also rode the famous failures down.
+  - Then the **disconfirming pass** — one bounded pass after the topics, searching for what would disprove the write-ups so far, from the same budget, outside the depth cap, fail-soft to a gap.
 
-- **What each topic conversation is given**
-  - The candidate's dossier facts, its archetype, and its computed leading-metric reads (the engine's quant and value-creation numbers ground the research).
-  - That topic's questions only; the relevant seeds; the pattern topic's retrieved episodes.
-  - No other topic's findings.
+#### Call: research gathering — what it sees and returns
 
-- **What each model call returns**
-  - Per gathering turn: `web_search` / `web_fetch` requests; the pass's findings are then authored by a separate synthesis call (fix B). Per topic: its **full findings response**, preserved whole with its evidence-ledger entries (each claim + source URL + retrieval timestamp + any `surfaced_by`), plus any **follow-up proposal** (the orchestrator decides) and any **material forward fact** flagged for the Step-5f refinement. There is no in-loop re-distillation — every worked topic's full response flows intact to Step 5e.
+- **Sees (Part 1, the candidate-constant block first, then the topic)**
+  - The candidate header with the archetype and the analysis date.
+  - FETCHED VALUES — the candidate's fetched data as the providers return it, glossed once and never engine-computed: the profile line (name, exchange, sector, industry); the quarterly statements' headline lines for the latest eight quarters as reported; the annual revenue segments; the forward consensus for the next two fiscal years and the revision snapshot; the last four dividends; the quote with its 52-week range, and the closes on the prior pass's date and three, twelve, and thirty-six months back; the 8-K filings of the trailing twelve months by date and item; the latest short-interest print; the positioning rows; the next earnings date; and the `DGS10` and `DGS2` prints.
+  - NEWS LEADS — dated headlines with addresses, fetch candidates only.
+  - On a carried name, PRIOR ANALYSIS and PRIOR THESIS — the prior pass's analysis and thesis document verbatim, each with its date and, where a split intervened, its split-context line.
+  - PAGES ALREADY RETRIEVED — pages fetched for this candidate earlier in this run, by other topics or earlier passes, in first-retrieval order; held in memory and discarded between candidates. A prior run's page reaches the model only when the model requests its address again and the document cache serves it. Absent on the disconfirming pass, which keeps its contrary search free of automatic page injection.
+  - TOPIC; on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR; on the disconfirming pass WRITE-UPS SO FAR.
+  - Before each gathering request the app appends a short user message stating the replies remaining in this pass; the brief and every previously issued message stay unchanged.
+- **Sees (Part 2)**
+  - What to find, how to weigh a source (tier nearer 0 and extraction quality nearer 1 preferred; a weak source lowers confidence, never excludes), the per-reply tool-call bound, and when to stop; where pages are shown, to read them before searching for the rest.
+- **Tool results**
+  - Each page as the fetch returns it: a header (address, title, publication date, retrieval time, tier 0–5, the subjects the source is trusted on, extraction quality 0–1, a stub flag), then the page text as quoted material, never as instructions.
+  - Failures are fixed sentences by typed class, never the operator's error text.
+- **Returns**
+  - Tool calls until a reply carries none.
 
-- **Model**
-  - The 122B reasoner in thinking mode, requesting tools the orchestrator executes (SSRF-guarded; page text inserted as quoted evidence, never as instructions).
+#### Call: synthesis — what it sees and returns
 
-- **Failure logic**
-  - Web failure reduces evidence and may lower conviction; it never fails the run. A hard model failure fails the run; the candidate resumes from its last checkpoint.
+- **Sees**
+  - The candidate header and FETCHED VALUES.
+  - EVIDENCE — every page the gathering conversation carried: reused pages first, then the pass's own in fetch order, deduplicated by final address. Headers and bodies are budgeted together; an omitted or truncated page is shown inline and recorded as a gap. Explicitly requested pages keep their text before a reused page does.
+  - The topic text: TOPIC; FOLLOW-UP and WRITE-UP SO FAR; or WRITE-UPS SO FAR.
+- **Returns**
+  - The write-up, 400–900 words: what the research established on the topic's questions, each figure with the date or period its source gives for it and that source (the page's address, or FETCHED VALUES where the figure comes from there), where pages disagree, and what the evidence leaves unanswered.
+  - On a follow-up pass, the topic's write-up rewritten whole.
+  - A second message asks for a follow-up question: the question verbatim, or the one word `none`. Not sent on a topic's last pass or on the disconfirming pass.
+  - Validated by nothing. A pass that retrieved no page spends no synthesis conversation.
 
-- **Output**
-  - Full findings for every worked topic; any lower-priority topic the budget couldn't reach is a recorded degraded-input gap.
-  - The evidence ledger with sources and timestamps; the seed-lineage lane.
-  - The mandatory sourced bear case; the disconfirming pass's findings (or its gap).
-  - The reused-vs-freshly-fetched document split for the audit.
-
----
-
-### Step 5e — Distill the research
-
-The shared distillation primitive (*Distillation*, above) over this candidate's research — the only place research is condensed before scoring, and it always consolidates full-context research, never already-distilled notes.
-
-- **Data retrieved**
-  - No new external data.
-
-- **The consolidation call(s) — exact inputs**
-  - *Single pass* (the orchestrator sized the full input under the overflow threshold): every worked topic's full findings response (the bear-case topic included) plus the append-only evidence ledger, **and the engine's Step-5c reads — the quant composite, the value-creation read, the narrative-vs-reality ratio, and the forensic flags — as the two engine lenses the research findings are reconciled against**, so the contradiction check spans all five lenses.
-  - *Hierarchical*: each tier-1 call gets one topic-tree's complete findings + that tree's ledger entries (no engine reads — it sees one tree); the tier-2 reduce gets the tier-1 structured outputs plus those same engine reads, every claim carrying its citations.
-  - The shape and tier count are logged; hierarchical distillation is bounded by the per-candidate sub-distillation cap and the run's wall-clock.
-
-- **Model determines** (non-thinking — consolidation, not new reasoning; no searches; no financial numbers)
-  - Which findings matter per lens — the leading-metric validation, the narrative / sentiment read, the forward-opportunity read, the bear case — each cited.
-  - The **cross-lens contradiction read**: which lenses disagree (a strong thematic story over a failing value-creation, management, or unit-economics read; a composite that likes a name its unit economics don't support), with a **severity** — produced at the consolidating pass that first sees all five lenses (the single pass, or the tier-2 reduce; never tier-1), so it costs no dedicated call.
-  - The thesis's **key falsifiers** — specific monitorable conditions that would break it, each typed by re-check class (`structured` / `filing` / `research`).
-  - Any stale or conflicted source.
-
-- **Claim identity**
-  - Every accepted evidence-ledger claim receives a stable deep-pass **`claim_id`**, persisted with any target-scenario or milestone consumer, which those outputs must reference instead of repeating or silently altering the fact.
-
-- **Typed channels into the engine** (each app-validated at Step 5f before it binds — which is exactly why none is part of the model arm)
-  - **`research_forward_assumption`** — a direct sourced forward fact the feeds lacked: `{ fact type — guidance / contract / filing, numeric value, stated range endpoints, units, the date stated, source URL, the driver affected — EPS / revenue }` (the built Portfolio producer's form, `portfolio-v44`: confidence and `conflict_handling` were dropped 2026-09-17, the engine reading every fact as a supplement fill under its own conflict policy).
-  - **`research_target_scenario`** — a composite bridge when no single fact captures the inference: `{ target driver, fixed target period, bear / base / bull scenario nodes, dependencies, confidence }`, each node `{ evidence claim ids, typed expression }`, each dependency `{ predicate over a validated claim or named engine field, affected scenario ids, on_failure: fallback-to-structured }`. The expression is a closed, non-executable tree whose leaves are validated `claim_id`s or named current engine fields and whose only operations are `add`, `subtract`, `multiply`, `divide`, `min`, `max` plus app-owned unit conversions — units × ASP → revenue, backlog × conversion → revenue, subscribers × ARPU → revenue, revenue × margin ÷ diluted shares → EPS. Arbitrary code, free numeric literals, a model-authored multiple / discount rate / price, or a bridge that does not resolve dimensionally to the archetype's admissible driver are invalid.
-  - **`leading_metric_observation`** — a dated backward observation for a research-extracted series: `{ metric, period, value, units, filing / as-of date, source URL, confidence }`, appended for the Step-5f recompute.
-  - **`limited_history_evidence`** (eligible candidates only) — `{ eligibility reason, metric or milestone, value / state, units, period or as-of date, source URL, source entity, target entity, economic-perimeter mapping, comparability — direct / recast / proxy, mapping rationale, confidence }`. Only `direct`, and `recast` with an explicit reconciliation, may extend the issuer's series or substitute statement history; a `proxy` stays corroboration or milestone evidence and can never be inserted as the issuer's financial print, satisfy the statement floor, or become a target-driver value.
-  - **`runway_evidence`** — `{ proxy kind — penetration-cost-curve / backlog-coverage / forward-assumption / milestone-chain, numeric value(s), units, as-of / period, source URL, confidence }`, mapped to years at Step 5f.
-  - **`milestone_evidence`** — `{ claim_id, kind — operational / financial / catalyst / market-recognition, observed or expected event, explicit date or bounded interval where sourced, measurable completion fact (optional), source URL, confidence }`; Step 5g may combine several into an inferred interval, but the original claim ids and explicit dates stay immutable inputs to 5h.
-  - **`validated_leading_indicator`** — an engine-unscored `research`-class signal: `{ metric, value / level, direction, as-of date, source URL, confidence, confirmed key-driver or milestone reference }`. With the conviction-raise machinery retired this is **evidence, not a permission slip**: it carries the signal into scoring, the thesis drivers, the key falsifiers, and the milestone plan; its source, dating, and third-party independence are still validated (malformed → dropped and logged), but no conviction arithmetic hangs on it.
-  - **`forensic_event`** (the fraud kind) — the Step-5c producer record cited to a primary-source document; a malformed or non-primary-sourced claim is ignored and logged.
-
-- **Output**
-  - One schema-validated **distilled findings object** — the per-lens findings, the typed contradiction read, the key falsifiers, the stale / conflicted sources — plus the typed claims above, each claim carrying its `claim_id` and citations, for Steps 5f and 5g.
+- **Failure and output**
+  - Research is fail-soft; a hard model failure fails the run, and the candidate resumes from its last checkpoint.
+  - Output: one write-up per worked topic plus the disconfirming pass's, flowing whole to consolidation; any lower-priority topic the budget couldn't reach is a recorded gap.
+  - Every page shown enters the candidate's page roster, persisted on the audit record.
 
 ---
 
-### Step 5f — Recalculate using validated research
+### Step 5e — Consolidate the research
 
-The engine applies what research validated, and nothing else. The same refinement contract as Portfolio's Step 6e, extended by the observation-append, the research-target-scenario bridge, and the limited-history mapping legs.
+The write-ups become one analysis, distilled first only when they will not fit (*Consolidation*, above).
 
-- **Data retrieved**
-  - No new data.
+- **Budget check**
+  - The orchestrator sizes the analysis prompt — the write-ups, FETCHED VALUES, and on a carried name the prior analysis — against the call's input budget. Within budget the write-ups go in as written; over it, the shared shapes apply. The prior analysis is never distilled.
+  - This is the only place research is condensed for the candidate, and it condenses write-ups, never already-distilled notes.
 
-- **Retain the counterfactual**
-  - The structured-only bear / base / bull target set from Step 5c is kept immutable as this pass's counterfactual.
+#### Call: the analysis — what it sees and returns
 
-- **Validate the direct forward assumptions** (each `research_forward_assumption`) — **shadow-only, ruled 2026-08-24 suite-wide**
-  - Reject a malformed, unsourced, non-numeric, stale, or dimensionally incompatible claim.
-  - A claim that conflicts with a structured feed resolves under the **app-owned conflict policy** — the model's declaration never selects the rule: `supplement` may only fill a value the feeds don't carry (never displaces a present value); `supersede` is honored only when the engine verifies an as-of date strictly newer than the conflicting observation, a fact type on the primary-source whitelist (issued guidance, a signed contract, a filed figure), and metric, units, and period matching the feed field; otherwise structured wins. Every accepted or rejected rule is recorded.
-  - The accepted claim's fill records as a **shadow would-have outcome on the audit and never enters the applied driver set** — research-informed drivers reach the applied set only through the claim-by-claim-validated target bridge below.
-
-- **Validate and evaluate the target bridge** (a `research_target_scenario`)
-  - Validate every referenced claim id, engine-field leaf, dependency, operation, unit, period, and the target-driver output's dimension; then evaluate each bear / base / bull expression itself.
-  - An invalid scenario leg falls back **independently** to that leg's structured-only driver with the failed condition recorded; an invalid or absent base bridge never floors the candidate by itself, because the structured baseline remains.
-
-- **Recompute**
-  - Apply the unchanged v2 rate-anchored multiple function to the resulting admissible drivers, run the positivity / growth-clamp / monotonicity guards, and record **both target sets** plus the exact evidence-to-driver bridge and delta.
-  - **Which set is authoritative**: the validated research-informed set while its bridge's evidence is inside the ~4-week freshness window — the forward outlook and the Step-5h gate input; without a valid current bridge, the structured-only set.
-  - Validate each `limited_history_evidence` observation — the Step-5b eligibility reason, source and target identities, economic perimeter, period, units, comparability, any recast reconciliation — before it reaches a series; a rejected observation stays in the audit and never enters a series or statement substitute.
-  - Where validated `leading_metric_observation`s or `direct` / reconciled-`recast` limited-history observations were appended, **recompute the leading-metric read over the extended comparable series** — and the reads derived from it, `business_runway` included (each `runway_evidence` proxy mapped to years by the Step-5c duration rules, a validated multi-year milestone span joining them; the strongest cleared proxy sets the runway) — so the 5h gate and floor evaluate the **post-research** series, and a debut whose series was unmeasurable at 5c is admitted or abstained on what research actually supplied.
-  - Operational / technical milestones and customer / supplier proxies stay separately cited corroboration under their own rules — they can validate a threshold crossing or milestone chain, never manufacture a missing comparable financial period.
-  - The backward-looking sub-scores and derived reads are untouched; absent a valid assumption or appended observation, the Step-5c reads and targets stand.
-
-- **Model**
-  - None.
-
-- **Output**
-  - The structured-only target set (counterfactual) and the research-informed target set, with the exact bridge and delta and every accepted / rejected rule or leg.
-  - The leading-metric read, continuation state, and `business_runway` re-derived over the extended series.
-  - The accepted / rejected limited-history mapping record (revalidated exact-equal at 5h).
-  - The final engine-arm reads for Step 5g.
+- **Sees (in page order)**
+  - The candidate header with the archetype and the analysis date.
+  - FETCHED VALUES.
+  - On a carried name, PRIOR ANALYSIS verbatim with its date and any split-context line.
+  - WRITE-UPS — this run's write-ups or their distillate, each under its topic heading, the disconfirming pass's last.
+- **Deliberately absent**
+  - The engine's reads. The analysis adjudicates the research lenses among themselves; the research meets the engine at the thesis document.
+- **Returns**
+  - The analysis, 900–1,800 words: what this run's research established on the candidate — the leading metric's observed path, the thematic fit, the narrative and sentiment, management, the case-library parallels, the corroboration, and the bear case — each dated figure with its source, where the research lenses disagree with each other and where sources disagree, what stays unanswered, and on a carried name what the prior analysis said that this run confirms, revises, or leaves untouched.
+  - A topic with no write-up this run keeps what the prior analysis says about it.
+  - Validated by nothing. The only research artifact the next deep pass reads; the write-ups persist on the audit as written, and no typed research field exists.
 
 ---
 
-### Step 5g — Author the opportunity record
+### Step 5f — Self-review (carried names only)
 
-The opportunity-authoring call, and the stage where the **model arm is written**. One model call (thinking, schema-constrained).
+Before this run's thesis document is written, the reasoner reviews its prior call against what has happened: the prior placement and conviction, the prior expected prices against the realized path, the falsifiers and triggers the prior document named, and the accuracy record. A debut has no prior record and skips the step.
 
-#### Exact inputs
+#### Call: the review — what it sees and returns
 
-- **The engine arm, in full — as evidence, never as values to reproduce**
-  - The archetype-weighted sub-scores and quant composite (with normalization basis and imputations disclosed); the value-creation read.
-  - The structured-only and research-informed scenario targets with their exposed methodology (`TargetMeta`) and the bridge delta.
-  - The narrative-vs-reality read, the forensic flags, the implied-expectations range.
-  - The price-action confirmer; the positioning reads and the options signal.
-  - The risk-tier inputs (market cap, volatility, leverage, profitability, drawdown, liquidity, event exposure) and the engine's `business_runway` read — the measurables behind the engine's placement legs, as evidence for the model's own tier and runway.
-  - Exposing the methodology is deliberate — the model is asked to dispute a *derivation* where it disagrees, not merely to name a different number.
-- **The distilled research** — the per-lens findings including the mandatory bear case, the target-scenario and milestone evidence, the cross-lens contradiction read and key falsifiers, the validated leading indicator.
-- **The candidate's archetype and surfacing signals** (its hypothesis lineage and any `technology_read`).
-- **The house view and the investor profile** (entry framing and conviction emphasis only).
-- **Any prior opportunity record for this name**, framed by `continuity_weight` — continued research to anchor on, blended, or a prior view to test skeptically.
-- **For a carried-forward name**: the own-lifecycle retrospective (the prior pass's both-arm values, this name's matured labels and their `resolution_mode`s, its leading-metric-continuation state) plus the since-flagged read — one price primitive behind both, the retrospective quoting its segment since the prior deep pass, the card since first entry.
-- **The absolute street opinions** (consensus target level, current rating consensus, FMP's ratings snapshot) — evidence to weigh against both arms' reads, not numbers to adopt.
-- **Deliberately excluded**: raw statements, filings, and page text — only computed values and distilled research reach the model; the engine's **mechanical conviction stand-in**, computed only at Step 5h (its gate-distance leg needs the engine horizon derived there from this call's own milestone plan — feeding it back would be a causal loop; ruled 2026-08-19, mirroring Portfolio's 6f holdout of the engine's stand-in picks); and the engine's **rule-derived tier and derived horizon** — both 5h assignments (the horizon cannot exist yet, deriving from this call's own milestone plan; the tier is held out deliberately so the model's placement is authored unanchored from the raw tier inputs above, mirroring the stand-in holdout — the placement ruling, 2026-08-19).
-
-#### Discipline the prompt states (prompt-side, human-auditable — not an app clamp)
-
-- Score the **conjunction** of the lenses, never a single signal — base rates are brutal, and the winner traits recur in losers.
-- Require the **leading-metric anchor plus external validation**; apply the **narrative-vs-reality ratio**.
-- Treat **price action** as a confirmation overlay that adjusts conviction, never a substitute for the anchor.
-- For a carried name, read the **since-flagged performance** cap-only: a gain unmatched by leading-metric progress caps conviction (the asymmetry narrowed); a gain *matched* by it is neutral — never boosted, since the metric is already scored at 5c and crediting the gain too would double-count; a drawdown with the metric intact reads as improved asymmetry, not a reason to abandon.
-- **Resolve the cross-lens contradiction** — a loud lens contradicted by a weak value-creation, management, or unit-economics read is capped, not promoted, never averaged away.
-- Run the archetype's **track** — proven-economics (trailing returns on capital + a margin of safety) or emerging-economics (a forward TAM × penetration × margin model clearing a return hurdle) — both through the same moat / management / price-asymmetry gate, so a strong-numbers name and a revolutionary one are judged on one spine.
-- Place the **horizon** consistently with the milestone plan this same call authors, and the **tier** from the disclosed measurables — placement is authored judgment under the same audit discipline, not a schema the app checks for consistency.
-- Since the two-arm contract the app derives no conviction for this arm, so these levers are **instructed and auditable rather than enforced**; the scoreboard measures a band's accuracy, never why the model chose it.
-
-#### What the model returns — the opportunity record
-
-- **Shared fields it proposes**
-  - The directional thesis; the **detection mode** (early / continuation); the **leading operating metric** and its trend; the typed **catalyst** `{ description, date (optional), payoff_bearing }`.
-  - A proposed **`thesis_milestone_plan`** — an ordered DAG of milestones, each `{ temporary label, kind — operational / financial / catalyst / market-recognition, description, expected window { earliest, latest }, timing basis — explicit-date / inferred-interval, timing derivation, evidence claim ids, prerequisite labels, measurable completion condition (optional), proposed re-check class, payoff_bearing, confidence }`, with one named **payoff milestone**. An inferred interval must cite its claim ids and state the derivation; it cannot return a bare horizon label, or use a bare earnings date as a payoff milestone.
-  - The mandatory bear case, the key falsifiers, the entry consideration, any tripped risk / forensic flags it sees.
-  - For a **carried name only**, a proposed carry-forward **status** (`still-valid` / `invalidated`), every status move attributed to an input that changed; a **debut's record carries no status choice** — the app stamps `new` — the enum origin-constrained by the schema so an incompatible value is structurally impossible (ruled 2026-08-19).
-- **The model arm — validated structurally and on each field's declared domain, never against the engine; no engine-relative bound, band, ceiling, or clamp within each field's typed shape**
-  - A single **conviction** value with its rationale (no triple, no raise field, no app re-derivation).
-  - Its **own sub-scores** on the shared 0–100 scale.
-  - Its **own bear / base / bull bands** over the fixed twelve-month window.
-  - Its **own implied-expectations read**.
-  - Its **own risk tier, horizon, and business-runway read** (the placement ruling, 2026-08-19; the runway a positive year count — fractional allowed — or `unknown`, unbounded above) — the tier × horizon are the card's matrix cell; the engine's derived values persist beside them as the baseline, a mismatch recorded as a divergence; the gate's legs never read them (the required-return scale, haircut, and H stay engine-derived).
-- **For a carried name, a `self_assessment`** — how its prior call resolved against the retrospective it was shown; prose input to the learnings, never the scorekeeper.
-
-#### What the model does not do
-
-- Echo any engine value — the engine's target sets, sub-scores, narrative-vs-reality read, and stand-in conviction are app-stamped onto the record directly.
-- Assign `expected_thesis_realization` or rewrite any engine-arm value — Step 5h still derives the engine's tier, horizon, realization basis, and runway from validated inputs, never thesis prose; the model's own tier / horizon / runway are its arm's authored fields, a second reading beside the engine's, never a replacement of it.
-- Alter the engine arm's multiples, prices, or returns; enforce a gate (5h runs the gate on both arms itself).
-- Raise conviction through a permission slip — the ≤ one-level raise, its `validated_leading_indicator` citation, and the app's re-derived final conviction are **retired**; conviction is the model's own and bidirectional.
-- A **blind-first diagnostic** (engine-blind, or realized-move-blind for carried names) is reserved as a second call that would re-issue this one with an input withheld — diagnostic-only, never admitting, displaying, or scored as a third arm, its execution deliberately unspecified until the job is implemented.
-
-- **Output**
-  - The proposed opportunity record — shared fields, the model arm (placement included), any `self_assessment` — for Step 5h.
+- **Sees (in page order)**
+  - The candidate header with the archetype and the analysis date, and FETCHED VALUES.
+  - PRIOR CALL — the prior pass's date and the price then, its risk tier and horizon, its conviction, its three expected prices each with its horizon date, its status, and its detection mode.
+  - PRIOR THESIS — the prior thesis document verbatim, with any split-context line.
+  - ANALYSIS — this run's analysis (the prior analysis stays out, already folded into it).
+  - REALIZED — the engine's realized block from Step 5c: the price now and its move since the prior pass, absolute and vs sector / market, with the maximum drawdown since the name became an opportunity; for each prior expected price whether its horizon has passed and, if so, the close on that date with its accuracy score, else the path so far; the lifecycle's accuracy scores at each horizon for the model and for the engine, each with the date of the last check that moved it and whether the prior analysis read it; the individual checks written since the prior analysis was written — this run's own checks included — newest by horizon date up to 12, under a heading stating that every line landed after the prior analysis and none was read before, with the total when the cap trimmed some, or one fixed sentence when none landed; the engine metric family's continuation state where it has one; and the engine's own composite, targets, tier, horizon, narrative-vs-reality and forensic reads then and now, with any hard-forensic or anchorless-`hype` read stated as a fact.
+- **Returns**
+  - The review, 400–900 words: each expected price against what happened; each falsifier and trigger the prior thesis document named, tripped or not by the numbers in front of it; whether the thesis survives and whether the placement still fits the payoff timing; where the prior read was right or wrong and why; what to revise; and what should change in how this name is analyzed.
+  - Persisted on the audit record. Feeds the thesis-document call and the thesis document's summary paragraph. Nothing app-side reads it.
 
 ---
 
-### Step 5h — Deterministic final validation
+### Step 5g — Thesis document and typed appendix
 
-An app-layer validator and tier-assigner, not a recorder. No model. Every rule below reads engine values and validated research; the model arm is validated structurally and otherwise left exactly as authored.
+Two messages in one conversation author the model arm. The reasoner interprets the engine's computed picture and this run's research into the candidate's two-arm opportunity record: the **thesis document**, with its risk tier and horizon, its conviction, and its expected price at three months, twelve months, and three years stated in words as part of the argument, then transcribed into the **typed appendix** — with the engine's numbers in the prompt as evidence, never as bounds. There is **no action call**: the job has no position to act on, the investor profile is absent from every prompt, and the archive decision on a carried name is the status the appendix carries.
+
+- **Discipline the task states** (prompt-side and human-auditable, not an app clamp — the app derives no conviction and reads none of the document)
+  - Score the **conjunction** of the lenses, never a single signal — base rates are brutal: most stocks underperform Treasuries over their life, and the winner traits recur in losers.
+  - Require the **leading-metric anchor plus external validation**; apply the **narrative-vs-reality ratio**.
+  - Treat **price action** (relative strength / base breakout) as a confirmation overlay that adjusts conviction, never a substitute for the anchor.
+  - **Resolve or discount a research story the engine's lenses don't support** — a composite that likes a name whose unit economics don't, a thematic narrative over a failing value-creation read — rather than averaging it away.
+  - Run the candidate down the archetype's **track** — proven economics (trailing returns on capital + a margin of safety) or emerging economics (a forward TAM × penetration × margin model clearing a return hurdle) — both through the same moat / management / price-asymmetry judgment.
+  - On a carried name, weigh the **since-flagged performance** cap-only: a gain unmatched by leading-metric progress reads as building multiple-unwind risk and caps conviction; a drawdown with the metric intact reads as improved asymmetry rather than a reason to abandon; a gain matched by metric progress is held neutral, never boosted, since the confirming metric is already in the engine's composite and crediting the gain on top would double-count it.
+  - Read the engine's numbers as evidence with their methodology exposed, author its own arm beside them rather than echoing them back, and say so in the document where it disputes a derivation.
+
+#### Call: the thesis document — what it sees and returns
+
+- **Sees (Part 1, in page order)**
+  - The candidate header with the archetype and the analysis date, and FETCHED VALUES.
+  - COMPUTED — the engine arm in full: its composite and sub-scores (each axis's polarity glossed once, the imputed-score disclosure where it applies, the thin-own-history flag as a data-health note); the value-creation read; its leading-metric series and the family's inflecting read where the family is structured or filing class; its bear / base / bull bands at three months, twelve months, and three years with the `TargetMeta` provenance flags rendered so a low-signal band is weighed, not obeyed; its risk tier and its horizon with the horizon's derived basis; the narrative-vs-reality read; the implied-expectations range beside the bands; the hard-forensic filings read as typed evidence with the rule it matched stated as a fact, and the soft forensic flags as annotations; the price-action confirmer; the positioning and options-activity reads with their stated conventions; the tradability flag and its haircut band; the floor's degraded-input flags as data statements; the Step-2 context loads where they apply — the sector-matched commodity prints, the CBOE backdrop, the COT row for the cyclical sleeve; and on a carried name the since-flagged read.
+  - MARKET ANALYSIS — the house view, rendered as a market-level analysis and never named by product.
+  - HYPOTHESIS — the discovery hypothesis document's section this name expresses, verbatim with its date, or the surfacing signal for a screen-surfaced name.
+  - ANALYSIS — this run's analysis.
+  - On a carried name, REVIEW — this run's review — then PRIOR THESIS verbatim, with any split-context line.
+- **Deliberately absent**
+  - The investor profile. Any accuracy section (the accuracy record rides the review alone). Raw statements, filings, or page text.
+  - The engine's tier and horizon are shown with the rest of its reads: anchoring is the accepted cost, and the divergence is recorded on every pick.
+- **Returns**
+  - The thesis document, 900–1,800 words: the directional thesis, firm and specific, and whether this is an early-detection or a continuation idea; the leading operating metric and its trend; why now; the key drivers; the bear, base, and bull scenarios, each with the conditions that produce it and the model's probability; the bear case; the falsifiers and triggers in words, each stating a concrete measure, level, and period; what the current price already assumes; the risk tier and the horizon, argued from the payoff timing and the measurable risk; the expected share price at each horizon and the conviction, argued in the text; the entry consideration; on a carried name the status — still valid or invalidated — with what changed since the prior document and how the prior read held up, drawing on the review; and the summary paragraph.
+  - Validated by nothing. Persisted on the opportunity record.
+
+#### Call: the typed appendix — what it sees and returns
+
+- The same conversation's second message, thinking off, under a grammar: a transcription, not a judgment.
+- **Sees**
+  - A request for the values as the document states them, closing on a placeholder-only return shape.
+- **Returns**
+  - `risk_tier` (`high` / `medium` / `low`), `horizon` (`short` / `mid` / `long`), `conviction` (`high` / `medium` / `low`), `expected_price_3m`, `expected_price_12m`, `expected_price_3y`, `detection_mode` (`early` / `continuation`), the leading metric's name and `metric_class` (`structured` from the engine's series menu, `filing` from the standardized statement-line menu, else `research`), and on a carried name `status` (`still-valid` / `invalidated`). A debut's grammar carries no status; the app stamps `new`, so an origin-incompatible value is structurally impossible.
+  - The app keeps only the type check: the enums, each price finite and strictly positive, since the accuracy check divides by it. An off-domain object is rejected whole and the message reissued once; a second failure fails the run, the candidate resuming from its last checkpoint.
+  - Nothing else about the model arm is checked: not the document against the appendix, not the prices against the bands, not the tier or horizon against the engine's.
+  - It does not echo any engine value: the engine's targets, sub-scores, tier, horizon, and reads are app-stamped onto the record directly.
+
+- **Output of Step 5g**
+  - The two-arm opportunity record, before the gate: the engine arm app-stamped, the model arm as written and transcribed.
+
+---
+
+### Step 5h — Gate, validate, checkpoint
+
+An app-layer validator, not just a recorder. No model. Every rule below reads engine values; the model arm is checked on type and otherwise left exactly as authored.
 
 - **Data retrieved**
   - No new data.
 
-- **Engine risk tier (rule-derived; no archetype term — the gate's scale and the baseline beside the placement)**
-  - **High** if any: market cap < $2B · realized volatility > 40% · debt/equity > 2 · unprofitable · drawdown > 50% · illiquid (thin ADV / high Amihud) · high event exposure.
-  - **Low** if all: market cap > $10B · profitable · debt/equity < 1 · volatility < 25% · liquid.
-  - Otherwise **Medium**.
-  - **Missing-input rule** (ruled 2026-08-19): a leg whose input is missing simply cannot trigger, and a candidate whose tier inputs are wholesale missing reads **Medium with a logged tier-input gap** — never a fabricated High or Low (Portfolio's stated stance, adopted here).
-  - The exact predicates for `illiquid` and `high event exposure` are **not yet drafted** — the implementation plan's to sweep, alongside the liquidity flag's band constants.
+- **Placement and the baseline pair**
+  - The **cell reads the model arm's tier × horizon** from the appendix, enum-checked at the transcription, never derived and never bounded.
+  - The engine arm's risk tier and horizon, assigned at Step 5c, enter here as the gate's shared legs and persist beside the placement as the baseline. Where the pairs disagree the divergence is recorded — never a validation failure, never a reason to re-run the call — and rides the card's tag. The prior and current archetype labels are recorded the same way.
 
-- **Milestone plan validation → horizon**
-  - Assign stable milestone ids; resolve prerequisite references; reject cycles and backward ordering; verify evidence claim ids and measurable conditions; accept an inferred expected window only when its cited evidence and derivation support both bounds. A failed timing check makes that milestone **undated** — never fabricated, never a reason to reject a floor-clearing candidate.
-  - Every resolution-backed completion condition gets a stable app-assigned **`condition_id`** under the structural-identity rule: across a deep-plan replacement an unchanged machine-evaluable core carries its id and evaluation state through wording / timing / evidence / label revisions; a changed core supersedes the old condition into the audit and starts fresh with a `supersedes` link; a removed condition closes into that record; neither a milestone id nor a model assertion transfers state.
-  - **`expected_thesis_realization` → the engine horizon**, in order: **Short** only when a validated payoff-bearing catalyst date, or the payoff milestone's entire expected window, ends < 3 months out; **Long** when the payoff milestone's entire window begins > 12 months out, or the payoff mechanism is multi-year compounding / runway itself (a compounder archetype, or a cleared runway proxy — any archetype can earn it); else **Mid** — a boundary-straddling interval, an undated recognition thesis, a re-rate expected over the next 1–2 reporting periods. The matched branch persists as the **derived basis** (`dated-catalyst` / `milestone-chain` / `recognition` / `multi-year-compounding`).
-  - The engine's `business_runway` (Steps 5c / 5f) rides the record as a durability read beside the model's own; neither sets the cell.
-  - The model's authored tier / horizon / runway are validated structurally (tier and horizon as enums; runway as a positive year count — fractional allowed — or `unknown`), never against these derivations; where a pair disagrees the divergence is recorded — never a failure, never a re-run. A tier or horizon divergence rides the card's tag; a runway-only divergence stays a recorded read on the expand view and audit, never the tag.
-  - **The model arm's tier × horizon → the matrix cell** (the placement ruling, 2026-08-19); the engine's derived pair persists beside it as the baseline.
+- **The entry-asymmetry gate — recomputed and enforced here, deterministically, once per arm**
+  - For the **engine arm** over its structured twelve-month base target; for the **model arm** over its appendix's twelve-month expected price. Every other leg — the tier, the haircut band, **H** — is engine-derived and shared, so the arms differ only in the price each brings. The model's authored tier and horizon place the card, never the hurdle, so the model cannot lower its own admission bar.
+  - **Base leg** — the post-haircut twelve-month base-case forward return must clear `DGS2 + 8 pts` (Low) / `+ 16 pts` (Medium) / `+ 30 pts` (High), decimal ratios, `DGS2` the run-level print.
+  - **Shape leg** — bear-case downside may not exceed base-case upside; tests the engine arm's bands alone, the model arm stating no bear price.
+  - **Liquidity leg** — the Step-5c banded haircut (0 / −3 / −6 pts) on both arms, the pre-haircut return recorded beside it so the haircut's own counterfactual stays answerable.
+  - **Double-over-horizon leg** (emerging-economics track only) — required twelve-month base-case return ≥ `2^(12 ⁄ H) − 1`, **H** in months from the engine horizon's derived basis: `transaction-close` → months to the close (floor 3); `multi-year-compounding` → min(the value-creation read's runway years, 5) × 12, or 36 where the runway is not computable; `default` → ~6 (drafted). The strictest leg binds.
+  - **Admission is either-arm**: a candidate clearing either arm's gate is admitted, stamped `admitted_by` (`engine-and-model` / `engine-only` / `model-only`), and **both arms' gate legs** — each leg's required value, actual value, and signed distance — persist on the run audit whatever the outcome.
+  - A **debut no arm clears** is held out as a **`gate-reject`**: its thesis document and appendix persist on the audit, Step 7 opens its episode under that class with both arms' prices and adds the name to the watchlist, where the next run's review decides its fate.
+  - A **carried name no arm clears** takes the **upside-exhaustion attention warning** instead — never a 5h archive — so Step 6's every-gate-clearer-appears premise holds for debuts and carries alike.
 
-- **Engine conviction stand-in (computed here, the bearer of every ceiling)**
-  - Flag leg — the count of this candidate's disclosed degraded inputs (thin-own-history composite, `archetype_low_confidence`, neutral-midpoint-imputed factors, `freshness-unscorable` floor inputs, a degraded limited-history recast, a fail-soft vector-recall miss, a failed dividend retrieval's zero-leg gap): **0 → High, 1–2 → Medium, ≥ 3 → Low**.
-  - Distance leg — the entry gate's signed distance-to-threshold on the binding leg, in return points (the base and double-over-horizon legs are returns; the shape leg reads as base upside − bear downside; the liquidity haircut is already inside the distance): **≥ 5 pts → High, 0 to < 5 → Medium, negative → Low**.
-  - Rung = the **min** over the two legs; every matched soft ceiling is then applied to it and persisted as an annotation. It is never shown as the job's conviction.
-
-- **The entry-asymmetry gate — recomputed and enforced here, once per arm**
-  - For the **engine arm** over its authoritative target set (research-informed while current, else structured-only); for the **model arm** over its own authored bands; every other leg engine-derived and shared, so the arms differ only in the targets each brings.
-  - The shared legs deliberately survived the placement ruling: the required-return scale reads the **engine** tier and H the engine realization basis / runway on both arms — placement is the model's, the admission yardstick is not, so the model can never lower its own bar (ruled 2026-08-19).
-  - **Base leg** — the post-haircut twelve-month base-case forward return must clear `DGS2 + 8 pts` (Low) / `+ 16 pts` (Medium) / `+ 30 pts` (High) (decimal ratios; `DGS2` the run-level print).
-  - **Shape leg** — bear-case downside may not exceed base-case upside.
-  - **Liquidity leg** — the Step-5c banded haircut (0 / −3 / −6 pts), the pre-haircut return recorded beside it.
-  - **Double-over-horizon leg** (emerging-economics track only) — required base-case return ≥ `2^(12 ⁄ H) − 1`, **H** in months from the realization's derived basis: `dated-catalyst` → months to the date (floor 3); `milestone-chain` → months to the payoff milestone's **earliest** expected date (floor 3, so a wide interval can't lower the hurdle); `recognition` → ~6; `multi-year-compounding` → `min(business_runway years, 5) × 12`; unknown runway → 36. The strictest leg binds.
-  - **Admission is either-arm**: a candidate clearing either arm's gate is admitted, stamped `admitted_by` (`engine-and-model` / `engine-only` / `model-only`), and **both arms' full gate vectors** (per leg: required value, actual value, signed distance; the binding gate id) persist whatever the outcome.
-  - A **debut no arm clears** → held out as a `gate-reject` shadow episode. A **carried name no arm clears** → the upside-exhaustion attention warning, never a 5h archive.
-
-- **The forensic / risk gate (app-enforced; the grant above never reaches it)**
-  - **Soft triggers** — the four soft forensic flags, a `hype` read *with* a leading-metric anchor, a high-severity unresolved cross-lens contradiction → the engine stand-in's conviction capped at the shared **Medium** ceiling (min over matched rules, order-independent), the rule annotated beside both arms' values; the model's value is never clamped — an exceedance renders beside the annotation.
-  - **Hard triggers** — a restatement or auditor change (the Step-5c filing kinds) or **anchorless `hype`** → a **debut is excluded on both arms**; a **carried name is app-forced to `invalidated`** (the archival path), the model's conflicting status persisting as a typed **status-override divergence** `{ model-proposed status, app-forced status, matched hard trigger, trigger source lineage }`. A validated fraud `forensic_event` is **advisory by the 2026-08-24 ruling** — cited attention evidence in scoring, never the automatic hard set. A high-severity contradiction always caps, never excludes.
-  - The either-arm grant is scoped to the entry gate alone — a `model-only` admission can never carry a name past a hard trigger or the evidence floor.
+- **The hard triggers** (app-enforced, binding absolutely on both arms; the either-arm grant never reaches them)
+  - A **restatement or auditor change** — the item-classified filing kinds from the Step-5c sweep, never a bare model assertion — **excludes a debut outright on both arms** (held out as `excluded`, its episode opened under that class at Step 7) and, on a carried name, **app-forces the status to `invalidated`** — the archival path below — the model's conflicting status persisting as the typed **status-override divergence** `{ model-proposed status, app-forced status, matched hard trigger, filing }`, never the transition's control.
+  - **Anchorless `hype`** — the narrative-vs-reality read at `hype` with the archetype's structured metric family measurable and not inflecting — is the second hard trigger on a **carried** name, forcing `invalidated` the same way; a debut with that family read never reaches this step, held out at Step 5c as a story stock before research.
+  - The soft forensic flags and a `hype` read with an inflecting anchor are annotations the thesis document already weighed; they clamp nothing here.
+  - A model-only admission cannot carry a name past a hard trigger or the floor.
 
 - **Carried name outcomes out of this step**
-  - Effective status `invalidated` (the 5g proposal, or the app-forced override) → held out of the matrix and flagged for archival; Step 7 moves it (the deep pass is the only archival path).
-  - `still-valid` → reconciles into the matrix at Step 7.
-  - An abstaining re-read → the inconclusive-refresh rule under the evidence floor below.
+  - Effective status **`invalidated`** — the appendix's status, or the app-forced override — → held out of the matrix and flagged for archival; Step 7 moves it. This deep pass is the only archival path.
+  - **`still-valid`** → reconciles into the matrix at Step 7.
+  - An inconclusive re-read never reached this step (Step 5c).
 
-- **Limited-history revalidation**
-  - Any limited-history evidence is revalidated here exact-equal against Step 5f's accepted / rejected mapping record before it can support the floor or the leading-metric shape; an unmapped predecessor, undisclosed recast, proxy-as-print, or boundary-crossing observation is rejected and logged, and the candidate stands or abstains under the unchanged floor. A valid path carries a degraded-confidence flag where recast observations materially support it; it never changes archetype, tier, required return, ceiling, or gate math.
+- **The model arm is checked on type alone**
+  - The appendix's enums, its finite positive prices, its origin-constrained status. No engine-relative bound, band, ceiling, or clamp applies to its tier, horizon, conviction, or prices, and the thesis document is persisted exactly as written and validated by nothing.
+  - There are **no numeric echoes to validate**: engine-owned values are app-stamped directly onto the record, and the model returns only its own arm.
 
-- **The evidence floor (archetype-aware; binds both arms absolutely)**
-  - Floor-bearing for every candidate: a current quote and price history; a **validated, inflecting leading metric** (its absence = story stock, however complete the rest); **source freshness** — the leading metric and the bear-case evidence current per the freshness basis below.
-  - The statement floor, archetype-substituted: statements (FMP / SEC) are floor-bearing for a proven-economics archetype (quality / secular compounder, commodity cyclical) — absent, stale, or identity-conflicting ⇒ abstain; for an emerging-economics archetype (early disruptor, pre-profit AI-infra) a defined substitute stands in — hard operating / unit economics (segment revenue, backlog / bookings, net-adds, cohort retention, gross profit) sufficient to underwrite the metric, plus the bear case — explicit and logged, relaxing the *form* of the financials, never the metric.
-  - Enriching inputs (estimates / revisions, positioning, peers, the options signal, analyst opinion, the narrative read) lower conviction when absent, recorded as degraded inputs, never floor the candidate — except the `no-admissible-driver` carve-out, which abstains because the gate cannot price a name with no computable target.
-  - **Freshness states**, per floor-bearing input: `fresh` / `stale` / `freshness-unscorable` (the source carries no as-of), with named gap reasons — quote / bars current through the latest completed session; structured / filing metrics and statements an observation for the latest *expected* period with a drafted ~45-day filing grace; research-derived metric observations and bear-case evidence within the shared ~4-week window. `freshness-unscorable` is a degraded input, not an abstention, unless the input is itself floor-bearing.
-  - A **debut** below the floor abstains `insufficient-evidence` — held out of the matrix, never a low-conviction guess.
-  - A **carried live opportunity** whose deep re-read falls below the floor is an **inconclusive refresh, never a turn-away**: it holds its last verdict, conviction, and matrix identity; the engine-only fields the pass could compute refresh under the cheap-sweep rules; a typed refresh gap is recorded; **no** `last_deep_researched_at` stamp, decay restart, milestone-plan replacement, warning clear, or shadow episode — it stays exactly as stale and as flagged as it was, so the rotation slice keeps prioritizing it.
-
-- **Structural validation of the model arm and the typed fields**
-  - The model arm is validated for types, enums, well-formedness, and each numeric field's declared domain (sub-scores on the shared 0–100 scale, band legs finite and positive — the Portfolio contract's mechanism, `docs/portfolio-analysis.md` §The holding verdict) — no engine-relative bound applies to its sub-scores, bands, implied-expectations read, or conviction; the authored tier and horizon are enum-validated, and the runway read must be a positive year count (fractional allowed) or `unknown` — a shape constraint with no upper bound, enforced by the schema; an inverted band pair persists annotated (the gate and scoreboard read it as `(min, max)`).
-  - There are **no numeric echoes to validate** — engine-owned values are app-stamped onto the record directly.
-  - The key falsifiers, the leading metric, and each machine-checkable milestone condition are **class-validated under the Step-3c resolution contract**: a `structured` condition must resolve to an engine-evaluable condition — a series the engine computes, a comparator, a threshold, and persistence semantics (a materiality margin + a consecutive-observation count: drafted 1 for filing-cadence series, 2 for high-frequency ones); a `filing` condition to a standardized field the filing-cadence feeds carry model-free; anything else is downgraded to `research` and logged, never dropped. Only resolution-backed conditions carry machine evaluation state into Step 7.
-
-- **Held-out candidates → the shadow ledger** (typed decision episodes)
-  - Every turn-away carries the identity fields — ticker, run date, decision class, surfacing tags, feeder / route lineage, archetype, the entry-stamped sector identity (or `sector-unscorable`) — plus the **model's Step-5g record digest** (its conviction, thesis line, and bear case at refusal), so what the model wanted is preserved and the spread stays sliceable by model conviction.
-  - A **`gate-reject`** (no arm cleared the entry gate) additionally carries **both arms' full gate vectors** with per-gate distance-to-threshold — not just the first failing gate, so miss attribution is order-independent.
-  - An **`insufficient-evidence` abstention** carries its named floor-gap reasons and freshness states; any independently computable gate leg is optional, never fabricated.
-  - A **debut's forensic / `hype` exclusion** is a gate-reject-class episode whose recorded failing gate is its tripped trigger.
-  - A debut qualifying for more than one class in the same pass — anchorless `hype` by construction also fails the floor — takes exactly one, by fixed precedence, first match wins: **hard trigger, then evidence floor, then ordinary `gate-reject`** (ruled 2026-08-19); the losing conditions ride the episode's recorded content, never a second episode.
-  - **Not** shadow entries: an `invalidated` carry (it goes to the archive, which already tracks its price — a pick is never a turn-away); a carried name's inconclusive re-read.
-
-- **Checkpoint**
-  - The surviving candidate is checkpointed here; the run can resume from this point.
+- **Persist and checkpoint**
+  - The surviving candidate's record is persisted — the engine arm app-stamped, the model arm as written and transcribed, the admission provenance, the divergences — with its audit record: the write-ups as written, the distillation shape and call count, the analysis, the review, the page roster, the research gaps, the engine's computed reads, the prior and current archetype, the model ids, and the prompt stamp.
+  - The candidate is **checkpointed** so the run can resume here. A gate-reject or an excluded debut checkpoints with its typed hold-out record.
 
 - **Output**
-  - A survivor with its model-placed cell, both arms' tier / horizon / runway with any recorded divergence, the derived realization basis, the engine stand-in with annotations, the admission provenance with both gate vectors, the validated milestone plan and condition ids, the class-validated falsifiers, the freshness states — or a typed held-out record (shadow episode), or a carried name flagged for archival / holding its prior verdict.
+  - A survivor with its model-placed cell, both arms' tier and horizon with any recorded divergence, and the admission provenance with both gate legs; or a typed held-out record (`gate-reject` / `excluded`); or a carried name flagged for archival.
   - The candidate checkpoint.
 
 ---
 
-## Step 6 — Rank and assemble new survivors
+## Step 6 — Order the survivors
 
-Every survivor's **cell is already fixed** — the model arm's authored tier × horizon, enum-validated at Step 5h (the placement ruling, 2026-08-19). This step never chooses *which* opportunities appear or where — only their **order within a cell** and which near-duplicates **collapse** — and completeness is enforced by the app, not the model's good behavior.
+Every survivor's **cell is already fixed** — the model arm's tier × horizon from its appendix, enum-checked at Step 5g — so this step chooses neither *which* opportunities appear nor where; it orders them. Computed-only; no model call.
 
 - **Data retrieved**
   - No external data.
 
-- **Model — per-cell ranking and dedup proposal (one call, thinking)**
-  - Exact inputs: every gated opportunity record from Step 5 with its assigned cell; a compact card for every **still-valid carried opportunity without a fresh Step-5h verdict this run** — the cheap-swept names Step 7 will insert, and the inconclusive deep-read carries holding their prior verdict — each with ticker, thesis summary, leading metric, catalyst, and its standing cell (placement is a frozen model-authored field, so every carried card's cell is current), supplied as **collapse targets only**; the house view and investor profile; the count of candidates competing per cell.
-  - Returns: per cell, a **conviction ranking** of that cell's gated survivors — ordered on the **model arm's** conviction, the value the card headlines — plus any **dedup-collapse proposals**, each naming the merged-away candidate, the peer it collapses into, and a reason (near-identical thesis / shared leading metric / shared catalyst).
-  - The model cannot drop or hide a survivor, cannot move one to another tier or horizon, and can neither rank nor merge the carried cards.
-
-- **App validation — collapse eligibility is typed, never judged**
-  - A proposal is accepted only when the pair is equivalent on **typed identity**: both records in the **same assigned cell** *and* sharing at least one of — a hypothesis-lineage node in the opportunity graph, an identical leading-metric series identity, or the same typed catalyst. The free-text reason is recorded color, never the acceptance basis.
-  - A proposal failing the predicate **defaults to list-both** — fail-open to redundancy, never omission — rejected and logged, every proposal's predicate inputs and validator result persisting with the collapse audit.
-  - **Direction is enforced**: a debut may collapse into a live carry's lifecycle (the carry's record absorbs it), but a **live carry can never be collapsed away** — carries are targets only, since a live pick leaves the matrix solely through deep invalidation; a proposal to collapse a carry is a validation error.
-  - Every predicate-validated acceptance is **final here**: the placement ruling froze placement between deep passes, so a collapse target's cell cannot move before Step 7 — the provisional debut-into-cheap-carry acceptance and its Step-7 final-cell re-check are retired with the re-placement leg (2026-08-19).
-
-- **Completeness validation and assembly (app)**
-  - Assemble the 3×3 survivor matrix from the model-placed cells and the model's ranking, applying each accepted collapse (recorded with its reason, predicate inputs, validator result, and direction, and written to the **shadow ledger** as a `dedup-substitute` episode so the merged-away peer's forward path is still scored).
-  - Every Step-5h survivor must be listed in its cell or recorded as a predicate-validated collapsed peer; a survivor absent from both **fails the run's matrix validation** rather than vanishing.
-  - This covers **this run's survivor set only** — the matrix is final after Step 7 inserts the cheap-swept carries and re-validates over the union.
-  - No per-cell cap: a cell holds as many or as few ideas as cleared the gates; an empty cell is honest, never padded, and a rich cell is never trimmed.
-
-- **Output**
-  - The ranked survivor matrix (this run's set), the validated collapse records, and the completeness check.
-
----
-
-## Step 7 — Refresh existing ideas and finalize the matrix
-
-The continuity step — an app-layer validator with no model: the rotation picks' and re-surfacers' deep passes already ran in Step 5, so this step reconciles their verdicts, **cheap-sweeps every other live opportunity**, finalizes the matrix over the union, scores past decisions, and reconciles the graph and archive. The dividing rule throughout: **only a deep pass can archive**.
-
-- **Data retrieved**
-  - The prior matrix (Step 2) and the run-scoped deep-research set (Step 4).
-  - For each cheap-swept name: FMP `quote` and `analyst-estimates` (the swept-union population with Step 3c; one sweep per distinct symbol); dated-EOD bars through the shared price-bar cache; on the **filing-cadence rider** (a new reported period on the swept `earnings` row) the statement-derived rows — statements, `key-metrics` / `ratios`, `financial-scores`, `financial-growth`; the once-per-run FINRA file where a stored condition is short-interest-fed; current `DGS2` / `DGS10` (Step 2).
-  - For outcome labels: FMP dated-EOD bars through the window end per maturing picked **or shadow** episode (symbol-deduped; requested until the series covers the window end), and the run-level benchmark bars — `^GSPC` plus the SPDR sector ETFs — the market and sector legs.
-  - For the archive: dated-EOD bars per distinct archived symbol (deduped against the swept and label-time populations).
-
-### Reconcile the deep-researched carries
-
-- A carried name that won a deep pass this run (rotation pick or re-surfacer) has its fresh Step-5h verdict: **still-valid** → reconciles into the matrix; **invalidated** (model-judged, or app-forced on a hard trigger — the only path that archives in DTO: a qualitative erosion the cheap read can't see, or an exhausted-upside / continuation-failure finding *confirmed* under fresh research) → moved to the **archive** here; **inconclusive** (the re-read fell below the floor) → reconciles on its prior verdict with its typed refresh gap, treated exactly like a cheap-swept carry, its freshness never advanced so it stays rotation-eligible.
-- Every such ticker is in the deep-research set, so the cheap sweep skips it.
-
-### The cheap re-derivation (every other live opportunity; engine-only, never archives)
-
-- **Re-derive the engine arm's targets** — the v2 multiples re-anchored closed-form on the fresh `DGS10` against the stored anchor-window percentiles and drivers; the last deep pass's persisted `research_target_scenario` (direct assumptions are shadow-only, never applied props) re-evaluated over current engine fields **while fresh** (inside the ~4-week window, the external evidence leaves frozen at their cited vintage) and **decayed to the retained structured-only baseline past it**, so a stale prop cannot keep a target inflated. Decay alone raises no warning — it surfaces only as the quiet *Research stale* badge.
-- **Re-run the full entry-asymmetry gate on both arms** against the live quote — every recomputable leg live: the refreshed engine tier, fresh `DGS2`, the banded liquidity haircut from live tradability inputs, the emerging leg's **H** re-read from the persisted realization basis (a milestone-chain basis remeasuring months to the validated payoff window's earliest date). The model arm needs **no model call**: its bands are frozen numbers from the last deep pass, re-measured against the live price exactly as the engine's — and unlike the research-informed set they **do not decay** (a dated judgment is not a stale prop; its age rides the *Research stale* badge).
-- **Re-derive the engine risk tier** from the refreshed inputs — a gate leg and the card's baseline read (a newly disagreeing pair surfaces through the divergence tag), never the card's cell, which is the model's frozen placement.
-- **Evaluate the stored key falsifiers and machine-checkable milestone conditions by class** — `structured` every run, `filing` when a fresh filing landed, `research` held for a deep pass — under the persistence semantics: a streak advances only on a distinct new observation (a new print or filing), keyed by `condition_id`; a filing-cadence condition confirms on its first qualifying breach (count 1), a high-frequency one logs a quiet first-breach note and confirms on the second (count 2); once a deep pass clears a warning, the acknowledging observation id is stored so the warning re-raises only on a breach confirmed against a *later* observation. Milestones: the plan, its timing, and the horizon stay the last deep pass's; the cheap path updates only resolution-backed evaluation state and months-to-date for the gate.
-- **Refresh the engine-computed fields** — the since-flagged read (below), the leading-metric-continuation state (a `research`-class anchor holds its last read), the narrative-vs-reality ratio, the forensic computations on the rider.
-- **Raise the attention warning — *Consider Deep Audit* — on any of three high-bar triggers**, and otherwise act on nothing:
-  - **Upside exhausted** — **neither arm's** re-derived base case still clears the full entry gate (the engine's, structured-only once any prop decayed; the model's frozen bands re-measured); while either arm clears, the divergence is recorded and no warning fires — mirroring either-arm admission.
-  - **A tripwire** — a stored `structured` / `filing` falsifier confirming a breach, a machine-checkable milestone missing its validated window, a forensic flag newly tripping, a **continuation-failure signal** (estimate revisions rolling over, a beat-and-raise streak breaking, shipments diverging below sell-through), a since-flagged gain diverging hard from leading-metric continuation, the narrative-vs-reality read crossing into `hype`, the margin of safety compressing near the exhaustion line, or a drawdown breach.
-  - **A re-surfacing** — the name re-appeared in discovery without winning a leftover-budget deep pass.
-  - Both readings are fail-soft: a *missing* input holds the opportunity on its last verdict, never an escalation; only an affirmative signal **confirmed under a deep pass** ends an opportunity. The model-authored fields — thesis, conviction, the model arm's sub-scores / bands / implied-expectations read, its tier / horizon / runway (the card's placement), bear case, falsifiers, catalyst, milestone plan, archetype, `technology_read`, entry consideration — stay **frozen** between deep passes.
-
-### Final matrix assembly over the union
-
-- Each still-valid carried opportunity **holds its model-placed cell** — placement is a frozen model-authored field, and only a deep pass re-places (the placement ruling, 2026-08-19; the former engine re-tier re-placement is retired). The refreshed engine tier persists beside the placement as the baseline; a newly disagreeing pair surfaces through the divergence tag, never a moved card.
-- Insert each carry deterministically into the cell's Step-6 ranking by its **frozen model-arm conviction**, ties by ticker — computed-only, no model re-orders anything.
-- **Re-validate completeness over the union**: every Step-5h survivor present in its cell or recorded as a predicate-validated collapsed peer, and every still-valid carry present in its held cell — anything absent fails the run's matrix validation.
-- **What-changed attribution**: each status, conviction, or placement (tier / horizon) move a Step-5g record claims as *external* must resolve to a concrete input-delta entry (this run's metrics / positioning / price vs the prior run's stored values), a source-backed research finding, a logged direct / composite target assumption, or a validated milestone claim; an attribution that resolves to nothing is downgraded to a self-correction (or fails schema), so a no-new-facts swing can't be laundered as "the thesis changed".
-
-### Outcome learning
-
-Each DTO run turns the job's own track record into structured feedback. The unit is the **decision episode** — a picked episode per pick (opened at its `became_opportunity_at` run with its entry calibration snapshot, keyed by lifecycle id), and a shadow episode per turn-away — every label engine-computed, never model-judged: whoever keeps score cannot also be a player.
-
-- **Matured-window labels (1 / 3 / 6 / 12 months, each window evaluated independently)** for every prior pick old enough:
-  - Forward return, absolute and **vs sector and vs market** — split-adjusted, **price-only as the common basis** (total return carried supplementary where dividends exist); entry reference = the **next session's daily close** after the decision (a consistent, conservative anchor — never the same-day bar the decision couldn't have traded); the sector leg from the episode's **entry-stamped sector identity** (sector label + resolved SPDR benchmark symbol, frozen at entry — never a label-time re-classification; no mapping → `sector-unscorable`, the sector legs excluded, counted and logged).
-  - **Maximum drawdown** over the window — the path, not only the endpoint.
-  - **Did the leading metric continue?** — per the anchor's re-check class and lifecycle state: a `structured` anchor re-pulls freely, a `filing` anchor reads its filing feed, a `research` anchor advances only where a deep pass produced a dated observation; persisted / stalled / reversed where a path exists; a window with no legal refresh path (a research anchor with no fresh observation, a pick that departed before the window matured) records `leading-metric-unscorable` — excluded from denominators and rollover attribution, counted and logged.
-  - **`resolution_mode`** — assigned per matured window by an ordered, first-match-wins tree over the episode's own inputs (the entry snapshot: both arms' entry-vintage targets + methodology + parameter version, the admission provenance and gate vectors, the valuation / revision baseline, the falsifier `condition_id`s and entry states, the initial forensic state, the sector stamp — plus the dated events recorded while live; never a pruned audit, never a later run's values):
-    1. **Terminal typing** — an acquisition realizes the label at the final trading price, a bankruptcy scores to zero, an ambiguous delisting is `terminal-unscorable`; a terminal type is assigned **only from an already-recorded corporate-action fact** (the M&A-involvement read, the archive's failing signal, a filing event already in a run record) — a disappearance with no recorded fact resolves conservatively to `terminal-unscorable`, never a guessed class.
-    2. **`forensic-materialization`** — a forensic hard flag newly tripped, or a forensic-class falsifier confirmed, within the window; price direction irrelevant.
-    3. **`leading-metric-rollover`** — the window's continuation state is reversed (a price winner with a reversed anchor lands here deliberately: a lucky win is a gate miss).
-    4. **`multiple-unwind`** — market-relative return ≤ **−10%** (the loser bar) *and* multiple contraction ≥ **60%** of the market-relative down-move with estimate revisions within a **±5%** noise band (the downside mirror of the 70% hype decomposition).
-    5. **`market-beta`** — absolute return ≤ −10% while within **±5 pts** of the sector benchmark's return, with no stored falsifier confirmed in the window (the name fell with its group, thesis intact); `sector-unscorable` leaves this branch unevaluable.
-    6. **`thesis-played-out`** — a dated-EOD daily close reached the **engine arm's entry-vintage base-case target** during the window with the metric persisted — an internal-calibration label, not a matrix status (hitting a target is not an exit).
-    7. **`no-dominant-mode`** — the explicit residual, **guarded on input completeness**: it claims only a window whose still-relevant branches were all evaluable; a window with any still-relevant branch blocked by an unavailable input (a live `leading-metric-unscorable` window blocks 3 and 6; `sector-unscorable` blocks 5; the post-departure window the limiting case) records **`resolution-unscorable`** instead — excluded like its terminal / metric counterparts, counted and logged. The explanation is templated from the matched branch.
-  - Price labels populate only when the refreshed bars **cover the window end**; a failed refresh leaves the label **pending with a price-coverage gap**, bounded by the shared price-coverage grace (drafted ~3 months past the window end), past which it closes as the typed `price-coverage-unscorable` label — the same bound turning a transiently stale series into a genuine disappearance for the terminal contract.
-  - The labels record onto the pick's durable episode (independent of matrix presence, archive retention, and run retention) and **score both arms identically** off the stored entry-vintage bands — the shared interval scorer, the fixed twelve-month bands scoring at the matured **12-month window only**, the 1 / 3 / 6-month labels serving the cohort and resolution reads (ruled 2026-08-19): per-arm target calibration, a head-to-head over the paired population only, and the slice by **admission provenance** — `model-only` admissions measured against the `gate-reject` shadow population they were drawn from and against their own admitting hurdle, `engine-only` as the symmetric read on the model's refusals; each arm's **conviction is recorded unscored** behind the ≥ 30-unique-issuer bar. The single-valued `resolution_mode` keys on the engine arm's entry-vintage target. A debut pick's episode **opens in this pass** with its entry snapshot; each later live pass appends its dated events.
-- **The shadow scorecard** — the same price-derived labels (return vs sector / market, drawdown — never a leading-metric re-pull, so no research or model spend) over the persisted shadow ledger: Step-5h held-outs, Step-6 dedup-collapsed peers, and the graph's retired / still-unpromoted watchlist nodes — never `departed` pick tombstones (their outcomes live on the picked episodes). Each entry anchors on the run that turned it away (a deferral on its first-surfaced date; a retirement on both that date and its retirement date). The labels reduce **per decision class, never pooled** — picks vs **gate rejects** is the headline **picked-vs-rejected spread** (unique-issuer counted; sliceable by feeder, route, archetype, and gate); deferrals, abstentions, dedup substitutes, and retirements read separately — and a **false-negative flag** on any turned-away name whose market-relative return exceeds **+15% at 6 months** or **+25% at 12 months**, tradability-discounted through the haircut band (the severe band exempt entirely). Calibration-only: a flagged false negative tunes the gates, never re-promotes or re-surfaces the name.
-- **The continuous since-flagged read** — refreshed for every carried-forward opportunity (live from its first subsequent run; a debut carries none yet): its price-derived parts — running return since `became_opportunity_at` (absolute, vs sector, vs market) and maximum drawdown — reconstructed from the daily-bar cache from the first close after `became_opportunity_at` to the latest cached close, and its leading-metric-continuation state read from the metric's own re-check-class path (a structured re-pull, never price bars) — one engine primitive with three readers: the discrete horizons feed calibration, the continuous read feeds the matrix card, and (for a carried name re-validated this run) it fed Step 5g as cap-only context. The matured labels attach to it as they elapse.
-- Calibration **proposes, never applies**: no proposal until ≥ 30 unique issuers with matured windows, and then with effect size and an issuer-clustered interval for the user's review; the labels are recorded and audited as the job's honest scorecard meanwhile.
-
-### Graph and archive reconciliation (same pass)
-
-- **Opportunity graph** — this run's picks link to their matrix entry (`picked`); worthy-but-unpicked names are added or refreshed as `watchlist` nodes; nodes whose falsifiers tripped or whose carry horizon elapsed are `retired` (Step 3c); a deeply invalidated pick's node moves to **`departed`** in the same pass as its archival — a terminal tombstone visible in route context as a dead thesis, never a feeder, never re-promotable in place, excluded from shadow scoring; a genuine re-entry opens a new node under a new lifecycle. Departed tombstones prune on the archive's retention.
-- **Archive** — an `invalidated` opportunity is moved to the archive (the most recent **100**, oldest evicted first) as a **frozen verdict snapshot** — thesis, archetype, leading metric, catalyst, final milestone plan, bear case, `became_opportunity_at`, the departure date, the archive trigger (`failed-reevaluation` — the single trigger, always a deep pass) with the specific failing signal that retired it, admission provenance, conviction at exit (the model arm's value with the engine stand-in beside it), the stamped sector identity, and any status-override divergence. Afterward **only the price is tracked** — each run refreshes its since-flagged return (absolute, vs sector / market) and drawdown from the bar cache; no leading-metric continuation, no research, no model call; a still-maturing episode freezes its metric state at the last live refresh. There is no "target met" exit; staleness alone never archives.
-- **Re-entry is a fresh start**: a later run that independently re-discovers an archived ticker removes it from the archive and it enters as a new opportunity with a new `became_opportunity_at`; none of the archived record influences the new one (the old episode keeps maturing under its own lifecycle). In the matrix and the archive a ticker is in exactly one state — live, departed, or neither (a re-entry vacates its archived slot); the graph is lifecycle-scoped, so the old node's `departed` tombstone remains beside the re-entry's new node. The archive never promotes itself.
+- **Logic**
+  - Within a cell the order is deterministic: by **conviction level** (high before medium before low), then by the **model arm's twelve-month upside** — its appendix's twelve-month expected price against the live quote — descending, then by ticker for a stable order.
+  - **Every Step-5h survivor appears in its cell** — a name either arm admitted is listed, and nothing collapses two names into one: names that express the same discovery hypothesis are **linked** through their hypothesis node and shown as such on their cards, never merged, so breadth and auditability survive and completeness holds by construction rather than by validation.
+  - This assembly covers this run's survivor set only; the matrix is final only after Step 7 inserts the still-valid carried opportunities into the same order.
+  - No per-cell cap: the gates set a cell's count, not a quota. A cell may be empty when nothing qualified — honest, not a failure — and the matrix never pads itself; a rich cell is never trimmed.
 
 - **Model**
   - None.
 
 - **Output**
-  - The final matrix over the union (held-cell carries, this run's survivors, the validated collapses), validated complete.
+  - The ordered survivor matrix (this run's set).
+
+---
+
+## Step 7 — Refresh existing ideas, open episodes, finalize the matrix
+
+The continuity step — an app-layer validator with no model: the rotation picks' and re-surfacers' deep passes already ran in Step 5, so this step reconciles their verdicts, **cheap-sweeps every other live opportunity**, finalizes the matrix over the union, opens this run's episodes, and reconciles the graph and archive. The dividing rule throughout: **only a deep pass can archive**.
+
+- **Data retrieved**
+  - The prior matrix (Step 2) and the run-scoped deep-research set (Step 4).
+  - For each cheap-swept name: FMP `quote` and `analyst-estimates` (the swept-union population with Step 3c; one sweep per distinct symbol); dated-EOD bars through the shared price-bar cache; on the **filing-cadence rider** (a new reported period on the swept `earnings` row) the statement-derived rows — statements, `key-metrics` / `ratios`, `financial-scores`, `financial-growth`; the once-per-run FINRA file where the metric family is short-interest-fed; current `DGS2` / `DGS10` (Step 2).
+  - For the archive: dated-EOD bars per distinct archived symbol (deduped against the swept population).
+
+### Reconcile the deep-researched carries
+
+- A carried name that won a deep pass this run (rotation pick or re-surfacer) has its fresh Step-5h verdict: **still-valid** → reconciles into the matrix; **invalidated** (model-judged, or app-forced on a hard trigger — the only path that archives in DTO: a qualitative erosion the cheap read can't see, or an exhausted-upside / continuation-failure finding *confirmed* under fresh research) → moved to the **archive** here; **inconclusive** (the re-read fell below the floor at Step 5c) → reconciles on its prior verdict with its typed refresh gap, treated exactly like a cheap-swept carry, its freshness never advanced so it stays rotation-eligible.
+- Every such ticker is in the deep-research set, so the cheap sweep skips it.
+
+### The cheap re-derivation (every other live opportunity; engine-only, never archives)
+
+- **Re-derive the engine arm's bands** — the multiples re-anchored closed-form on the fresh `DGS10` against the stored anchor-window percentiles and drivers (Step 5c), from structured data alone.
+- **Re-run the full entry gate on both arms** against the live quote — every recomputable leg live: the refreshed engine tier, fresh `DGS2`, the banded liquidity haircut from live tradability inputs, the emerging leg's **H** re-read from the persisted horizon basis (a transaction close's months-to-date remeasured). The model arm needs **no model call**: its twelve-month expected price is a frozen number from the last deep pass, so the engine re-measures the live price against it exactly as it does its own — and it **does not decay**, since a dated judgment is not a stale prop (its age rides the *Research stale* badge).
+- **Re-derive the engine risk tier** from the refreshed inputs — a gate leg and the card's baseline read, never the card's cell, which is the model's frozen placement; a newly disagreeing pair surfaces through the divergence tag.
+- **Refresh the engine-computed fields** — the metric family's continuation state where the family is structured or filing class (a `research`-class anchor has no engine feed and holds its last read), the narrative-vs-reality ratio, the forensic computations on the rider, and the since-flagged read (below).
+- **Raise the attention warning — *Consider Deep Audit* — on any of three high-bar triggers**, and otherwise act on nothing:
+  - **Upside exhausted** — **neither arm's** re-derived base case still clears the full entry gate (the engine's live targets; the model's frozen twelve-month expected price re-measured); while either arm clears, the divergence is recorded and no warning fires — mirroring either-arm admission.
+  - **A tripwire** — a forensic flag newly tripping, a **continuation-failure signal** (estimate revisions rolling over, a beat-and-raise streak breaking, shipments diverging below sell-through), a since-flagged gain diverging hard from the engine family's continuation, the narrative-vs-reality read crossing into `hype`, the margin of safety compressing near the exhaustion line, or a drawdown breach.
+  - **A re-surfacing** — the name re-appeared in discovery without winning a leftover-budget deep pass.
+  - Both readings are fail-soft: a *missing* input holds the opportunity on its last verdict, never an escalation; only an affirmative signal **confirmed under a deep pass** ends an opportunity. Decay alone raises nothing — research staleness is the quiet *Research stale* badge, so the amber warning stays reserved for an actual problem.
+  - The next **floor-clearing** deep pass (a rotation-slice pick, a later re-surface, or an ATO Deep Audit) clears it; an inconclusive below-floor re-read leaves it standing.
+- **The model-authored fields freeze between deep passes** — the thesis document, the placement, the conviction, the expected prices, the detection mode, the leading metric, and the status hold their last deep-pass values.
+
+### Final matrix assembly over the union
+
+- Each still-valid carried opportunity **holds its model-placed cell** — placement is a frozen model-authored field, and only a deep pass re-places. The refreshed engine tier persists beside the placement as the baseline; a newly disagreeing pair surfaces through the divergence tag, never a moved card.
+- Insert each carry deterministically into the cell's Step-6 order — conviction level, then the model's twelve-month upside against the live quote, then ticker — computed-only; no model re-orders anything.
+- Every Step-5h survivor is in its cell and every still-valid carry is in its held cell by construction — there is no model step that could have dropped one.
+
+### Open episodes
+
+Engine-computed over the append-only episode store. No model. The checks on existing episodes ran at Step 2, before discovery, so this run's reviews read them.
+
+- **Open episodes**
+  - For every candidate whose appendix carried prices this run and that has none, or whose latest episode is a month or more old: a pick under `picked` (on its debut and on each later deep pass past that cadence); a debut no arm admitted under `gate-reject`; a debut a hard trigger excluded under `excluded`.
+  - An episode records: the symbol and lifecycle, the decision class, the creation date, that day's spot, the anchor close with its bar date, the model's expected price at three, twelve, and thirty-six months, and the engine's base value at the same horizons — nothing else; the engine's bear and bull edges stay on the run record.
+  - An `insufficient-evidence` or story-stock hold-out has no prices and opens none; a carried name's inconclusive re-read opens none; a watchlist node opens none.
+  - Which episode is a lifecycle's latest is insertion order; the creation date is data, never identity.
+  - An episode is never updated or deleted; the checks are written onto it once each. The store persists independently of run retention, the archive, and matrix presence — a departed lifecycle's episodes keep maturing on the same clock, and a re-entry opens episodes under its new lifecycle while the old ones run to their horizons.
+
+- **Three disciplines**
+  - The engine keeps score and never plays; nothing the model writes alters a check or a score.
+  - The record scores the forecast, not the decision: a pick, a gate reject, and an exclusion score alike, and the decision class is a tag.
+  - Nothing is derived beyond the scores: no cohorts, no spreads, no calibration proposals, no per-decision verdict. The learning rides the review's own answer to what should change, and the engine's drafted constants move only on the user's reading of the record.
+
+### Since-flagged read, graph, and archive (same pass)
+
+- **Since-flagged read** — refreshed for every carried-forward opportunity: its price-derived parts (running return since `became_opportunity_at`, absolute and vs sector / market, and maximum drawdown) from the same daily-bar reconstruction, the engine metric family's continuation state from its structured or filing path — **live from the idea's first subsequent run** (a debut pick has no elapsed window yet), so the matrix display and the self-review of a carried name read the same numbers.
+- **Opportunity graph** — this run's picks link to their matrix entry (`picked`); this run's hypotheses decided `watchlist` (and `promote` without a slot) are added or refreshed as **watchlist** nodes with their document sections and appendix fields; every ordinary `gate-reject` debut — researched, no arm's gate admitting it, no hard trigger and no floor hold-out — is added or refreshed as a watchlist node too, carrying its thesis document as its text and its appendix's leading metric and class, the next run's review deciding whether it stays (its forecast scored separately on its `gate-reject` episode); nodes the watchlist review retired or whose carry horizon elapsed are **retired** (Step 3c); a deeply invalidated pick's node moves to **`departed`** in the same pass as its archival — a terminal tombstone, visible in route context as a dead thesis, never a discovery feeder and never re-promotable in place; a genuine re-entry opens a new node under a new lifecycle. Departed tombstones prune on the archive's retention.
+- **Archive** — an `invalidated` opportunity is moved to the archive (the most recent **100**, oldest evicted first) as a **frozen verdict snapshot**: the thesis document with its bear case, the archetype, the leading metric, `became_opportunity_at`, the departure date, the archive trigger (`failed-reevaluation` — the single trigger, always a deep pass) with the specific failing signal, `admitted_by` alone (both arms' gate legs live on the run audit), conviction at exit (the model arm's value — a record of where it ended, not a live call), the stamped sector identity, and any status-override divergence. Afterward **only the price is tracked** — each run refreshes its since-flagged return (absolute, vs sector / market) and drawdown from the bar cache; no metric continuation, no research, no model call. Its episodes keep maturing in the episode store. There is no "target met" exit; staleness alone never archives.
+- **Re-entry is a fresh start**: a later run that independently re-discovers an archived ticker removes it from the archive and it enters as a new opportunity with a new `became_opportunity_at` and a new lifecycle; none of the archived record influences the new one, and the re-entry carries no since-flagged read at its first interpretation. Re-entry is matched by ticker, so a ticker is in exactly one state — live, departed, or neither; a same-ticker-new-thesis re-entry simply retires the prior tombstone early (the archive holds at most one slot per ticker). The archive is passive: a large archived gain never pulls a name back into analysis.
+
+- **Model**
+  - None.
+
+- **Output**
+  - The final matrix over the union, held-cell carries and this run's survivors.
   - Attention warnings raised, archive moves, the updated opportunity graph and coverage state.
-  - This run's opened picked episodes, newly matured labels (picked and shadow), the since-flagged reads, the scorecard reads, and the what-changed attribution.
+  - This run's opened episodes and the refreshed since-flagged reads.
 
 ---
 
@@ -1254,7 +1364,7 @@ Each DTO run turns the job's own track record into structured feedback. The unit
 
 - **Logic**
   - Flag each matrix opportunity owned / not-owned.
-  - Runs *after* discovery, selection, and continuity, and reads only the holdings list — never the Portfolio Analysis memory partition — so holdings never influence what is found or chosen; the job stays independent of the account.
+  - Runs *after* discovery, selection, and continuity, and reads only the holdings list — never Portfolio Analysis's stores — so holdings never influence what is found or chosen; the job stays independent of the account.
 
 - **Model**
   - None.
@@ -1266,25 +1376,21 @@ Each DTO run turns the job's own track record into structured feedback. The unit
 
 ## Step 9 — Save everything
 
-- **Data stored — the six persisted structures**
-  - **The run record** — the 3×3 matrix (every opportunity's record: thesis, detection mode, archetype, leading metric + its stored series, typed catalyst, validated milestone plan with condition ids and evaluation states, both arms' risk tier / horizon / runway (the model's placing the card; the engine's derived pair + realization basis and runway inputs beside it), both target sets + the bridge tree and delta, both arms' conviction / sub-scores / bands / implied-expectations reads, narrative-vs-reality read, bear case, class-typed falsifiers with evaluation state, hypothesis + seed lineage, any `technology_read`, entry consideration, risk / forensic flags + any `forensic_event`, `admitted_by` + both gate vectors, status, attention-warning state + trigger, `became_opportunity_at`, `last_deep_researched_at`, the stamped sector identity (the live record's copy, refreshed at each deep pass — distinct from the episode's frozen entry stamp), since-flagged read) plus the **run audit record** — sources and retrieval timestamps with their source-quality annotations, the discovery and screening inputs (which screens / routes / themes surfaced each candidate, the coverage-debt snapshot and inserted route, attempted / completed units, every refresh-lane node considered / selected / skipped with its result), the distilled findings, the typed claims and accepted / rejected rules and bridge legs, limited-history mapping decisions, the engine calculations with the target methodology (the job-time `quote`, the anchor-window percentiles and drivers the cheap paths re-anchor against), the engine stand-in's matched ceiling annotations and any hard-trigger record, the recorded divergences (archetype overturn, the tier / horizon / runway divergence, status override), the run-level **band and conviction divergence rates** (band: the model's base differs from the engine's authoritative base by > 10% or the base bands don't overlap; conviction: different rungs; pooled over the last 5 pick-producing DTO runs), any `self_assessment`, the input delta and what-changed attribution, the dedup-collapse decisions (predicate inputs, result, direction), the outcome labels and since-flagged reads, the shadow scorecard, each pass's reused-vs-fresh document split, model ids and quantizations, prompt / schema / parameter versions, and degraded-input flags.
-  - **The opportunity graph** — hypotheses with value-chain traces; watchlist nodes with lineage, seed lineage, score, metric + class, falsifiers, latest gap, `last_successful_research_refresh_at`, refresh-attempt state, status, timestamps; event-impact nodes with `technology_read` + side.
-  - **The discovery-coverage ledger** — per route class and coverage subject: first seen, last attempted, last successfully completed, last route id, completion / gap state, computed debt.
-  - **The archive** — the most recent 100 departed picks as frozen snapshots (Step 7); since-flagged numbers recomputed, never stored.
-  - **The shadow ledger** — typed turn-away episodes (gate-reject / abstention / deferral / dedup-substitute / retired-hypothesis, a capacity eviction a retirement carrying `capacity-evicted`), each with its identity fields, the Step-5g digest on the post-5g classes (a pre-5g deferral or retirement carries none — its model-side context is the watchlist node's persisted score and lineage; ruled 2026-08-19), per-class content, anchor date(s), sector stamp; bounded by its retention cap, matured entries frozen into a compact archive (drafted 5,000 rows).
-  - **The picked-episode store** — one immutable episode per lifecycle: the entry calibration snapshot, the dated live events, the matured labels; independent of matrix presence, archive retention, and run retention; matured episodes frozen under their own cap (drafted 5,000).
-  - Shared stores touched: the price-bar cache, the document research cache, the factor-distribution store (one current observation per issuer per factor), the web-research source state.
+- **Data stored — the five persisted structures**
+  - **The run record** — the 3×3 matrix (every opportunity's record: the lifecycle id, the archetype with its prior label on a carry, the detection mode, the thesis document, the leading metric with its class, both arms' risk tier and horizon — the model's placing the card, the engine's pair with its derived basis beside it — the conviction, the model's three expected prices and the engine's three bands with their `TargetMeta`, the narrative-vs-reality and implied-expectations reads, the composite and sub-scores with their provenance flags, the hypothesis lineage, `admitted_by`, the status, the attention-warning state and trigger, `became_opportunity_at`, `last_deep_researched_at`, the stamped sector identity, the since-flagged read, and the accuracy scores for both arms) plus the **run audit record** — sources and retrieval timestamps; the discovery and screening inputs — the route plan with its coverage-rotation selections and completions, each route's hypothesis document and appendix with the route's write-ups and page roster, the watchlist review and its decisions, and the refresh write-up where the lane ran; and, per candidate, the write-ups as written, the distillation shape and call count, the analysis, the review, the page roster, the research gaps, the engine's computed reads with their provenance flags (the job-time `quote`, the anchor-window percentiles and drivers the cheap paths re-anchor against), the thesis document and the appendix values, the admission provenance with both arms' gate legs, the recorded divergences (the prior and current archetype, the tier / horizon pair) and any status-override divergence, the floor's hold-out reasons and freshness states, the cheap sweep's warnings, each pass's reused-vs-fresh document split, model ids and quantizations, and the prompt stamp.
+  - **The opportunity graph** — hypothesis nodes with their document sections and appendix fields; company nodes with their status, leading metric and class, refresh timestamps, and hypothesis link.
+  - **The discovery-coverage ledger** — per route class and coverage subject: first seen, last attempted, last successfully completed, computed debt.
+  - **The archive** — the most recent 100 departed picks as frozen snapshots (Step 7); since-flagged numbers recomputed at render, never stored.
+  - **The episode store** — append-only, outside run retention: this run's opened episodes, and the checks and unscorable states written at Step 2.
+  - Shared stores touched: the price-bar cache, the document cache, the factor-distribution store (one current observation per issuer per factor, diagnostic-only), the web-research source state.
 
-- **Retention**
-  - The last N Trade Opportunities runs; the archive at 100; `departed` tombstones on the archive's retention; the watchlist under its cap; the shadow ledger and picked matured archives under theirs.
-
-- **Embedding model (DTO and Deep Audit only; a Quick Audit never invokes it)**
-  - Each opportunity's record summary embedded individually — a `summary`-kind row stamped with the pick's lifecycle id (the rows Step 5b's recall reads); a Deep Audit embeds the touched opportunities' summaries only.
-  - **On DTO only**: each outcome label newly matured since the prior DTO pass (an ATO-refreshed label included, so each is written once) and each new shadow false-negative flag — durable `learning`-kind rows (for a false negative: the name, the failing gate, the model's conviction at refusal, the return it posted), consumed only by the calibration pass, never a dossier input.
-  - Vectors land in the Trade Opportunities partition only; a failed or invalid vector costs the memory row, never the persisted run.
+- **Rules**
+  - A hard persistence failure fails the run.
+  - Retention keeps the last N Trade Opportunities runs; the archive at 100; `departed` tombstones on the archive's retention; the watchlist under its cap; the episode store outside every window. The checkpoint trail is cleared by the successful persist.
+  - Nothing is written to vector memory. A carried name's continuity is the deterministic load of its own documents.
 
 - **Output**
-  - A durable run and audit record, the carried stores for the next run's Step 2, and the searchable Trade Opportunities memory.
+  - A durable run and audit record, the carried stores for the next run's Step 2, and the updated episode store.
 
 ---
 
@@ -1294,19 +1400,19 @@ Display is a pure read of the persisted matrix; no model runs.
 
 - **Data retrieved**
   - The persisted run (matrix, archive, badges' inputs).
-  - The per-ticker daily-bar cache — the since-flagged read's **price-derived parts** (return vs sector / market, drawdown) and the % upside to target are **re-derived at render** from the latest cached close (the cache refreshes a symbol lazily, after 8 PM ET and at most once per 24 hours, fail-soft), so the card is current between runs and opening the page costs no fetch **once the day's bar is cached**; the leading-metric-continuation state needs a structured re-pull, so it refreshes only when a job runs; the live `quote` is a job-time input only, never a render dependency.
+  - The per-ticker daily-bar cache — the since-flagged read's **price-derived parts** and the % upside to target are **re-derived at render** from the latest cached close (the cache refreshes a symbol lazily, after 8 PM ET and not within the prior 24 hours, fail-soft), so the card is current between runs and opening the page costs no fetch once the day's bar is cached; the metric family's continuation state and the live-quote gate read refresh only when a job runs; the live `quote` is a job-time input only, never a render dependency.
 
 - **The matrix (default, canonical view)**
-  - Three risk sections × three horizons — every card placed by the **model arm's** authored tier × horizon (the placement ruling, 2026-08-19); each card: archetype, directional thesis, leading metric, catalyst, **the model arm's conviction and forward outlook headlining** (base-case target and bear / bull range over the twelve-month window), narrative-vs-reality read, entry consideration, bear case, status, `became_opportunity_at`, `last_deep_researched_at`, owned / not-owned, and — for a carried idea — the since-flagged performance (return since it became an opportunity, vs sector / market, a compact running curve, maximum drawdown).
-  - **Two arms by progressive disclosure**: a quiet **divergence tag** where the arms materially disagree (conviction rung, band overlap, or a tier / horizon divergence — the engine's derived pair against the model's placement); the paired engine / model view — tier, horizon, and runway included — on card expand; the `admitted_by` tag on both single-arm states — `engine-only` (the headline model target did *not* itself clear the gate; the engine admitted it) and `model-only` (the headline admitted it; the baseline dissented); consensus cards untagged.
+  - Three risk sections × three horizons — every card placed by the **model arm's** tier × horizon; each card: archetype, the thesis document's summary, leading metric, detection mode, conviction, the expected price at twelve months beside the engine's base target, the narrative-vs-reality read, status, `became_opportunity_at`, `last_deep_researched_at`, the hypothesis it expresses (linking the names that share one), owned / not-owned, and — for a carried idea — the since-flagged performance (return since it became an opportunity, vs sector / market, a compact running curve, maximum drawdown).
+  - **Two arms by progressive disclosure**: the model arm headlines — its conviction and its twelve-month expected price are the numbers shown — with a quiet **divergence tag** where the arms materially disagree (conviction level, the twelve-month prices' gap, or a tier / horizon pair); on card expand the paired engine / model view — the three price pairs, the engine's bands and provenance flags, the engine's tier and horizon, and the accuracy scores for both arms; the `admitted_by` tag on both single-arm states — `engine-only` (the headline model price did *not* itself clear the gate; the engine admitted it) and `model-only` (the headline admitted it; the baseline dissented); consensus cards untagged.
   - Lifecycle affordances per card: the selection control (plus select-all / deselect-all), an amber actionable **Consider Deep Audit** badge when the attention warning is set, a green **Deep-researched today** badge when `last_deep_researched_at` is the current local-timezone day, a quiet **Research stale** badge when the last deep pass is older than ~4 weeks (computed at render; never amber).
   - Empty cells shown as empty.
 
 - **List view (toggle)**
-  - All nine cells flattened into one sortable grid, each row keeping its placed (model-arm) risk tier and horizon, selection control, badges, and engine-target / model-target / divergence columns; sort keys: **forward % upside to target** (default, descending — the model arm's target against the cached close; the engine's sortable in its own column) or **realized since-flagged return** (a debut sorts last). Display-only reordering.
+  - All nine cells flattened into one sortable grid, each row keeping its placed (model-arm) risk tier and horizon, selection control, badges, and engine-target / model-target / divergence columns; sort keys: **forward % upside to target** (default, descending — the model arm's twelve-month expected price against the cached close; the engine's sortable in its own column) or **realized since-flagged return** (a debut sorts last). Display-only reordering; keyboard-operable sortable headers and a stable sort.
 
 - **Archived opportunities (separate view)**
-  - Each departed pick's frozen record, departure date, and live since-flagged return — **no forward prediction**; sortable by since-flagged return or drawdown, default departure date descending.
+  - Each departed pick's frozen record, departure date, and live since-flagged return — **no forward prediction**, no expected prices, no accuracy scores; sortable by since-flagged return or drawdown, default departure date descending.
 
 - **Controls**
   - **Discover** (DTO) and a selection-gated **Audit** button forking to Quick Audit / Deep Audit (a large Deep-Audit selection confirms first). While a job runs the run tracker replaces the page; a run is never a report — a cancel or failure removes nothing.
@@ -1324,12 +1430,13 @@ The user-directed maintenance job. No discovery: the user selects one or more **
 
 - **Gate**
   - Presence is uniform — local models configured, Schwab connected (a presence precondition even though Quick Audit's analytical pass reads no Schwab data — its one Schwab touch is the fail-soft, display-only Step-8 cross-reference), FMP / FRED present.
-  - **Deep Audit** clears the full Step-1 gate (daemon reachable + roster pulled — it makes model calls) and triggers the SearXNG pre-run notice when the instance is down (its selected names get thinner evidence; always *not recommended*, since the local suite is SearXNG-only).
+  - **Deep Audit** clears the full Step-1 gate (daemon reachable + the reasoner pulled — it makes model calls) and triggers the SearXNG pre-run notice when the instance is down (its selected names get thinner evidence; always *not recommended*, since the local suite is SearXNG-only).
   - **Quick Audit** is engine-only, so it **skips the daemon-connectivity check** and runs with the daemon configured-but-down; no web research, so no pre-run notice.
 
 - **Load**
-  - Deep Audit: the Step-2 load as in DTO (house view, profile, run-level FRED / FMP-commodity / CFTC / CBOE, the prior matrix and opportunity graph).
-  - Quick Audit: only the subset its engine pass needs — the FRED rate anchors (`DGS2` for the entry threshold, `DGS10` for the v2 re-anchor) under the **quick-path cached-print rule** (a failed FRED retrieval fail-softs to the last cached print with its as-of date, eligible only within the shared rate-cache max age; older, or no cache, types the rate-dependent reads `unknown` rather than computing off a stale anchor), and **conditionally** the once-per-run FINRA consolidated file when a selected name carries a short-interest-fed `structured` condition (a failed file fetch types those conditions `unknown`).
+  - Deep Audit: the Step-2 load as in DTO (house view, run-level FRED / FMP-commodity / CFTC / CBOE, the prior matrix and opportunity graph).
+  - Quick Audit: only the subset its engine pass needs — the FRED rate anchors (`DGS2` for the entry threshold, `DGS10` for the re-anchor) under the **quick-path cached-print rule** (a failed FRED retrieval fail-softs to the last cached print with its as-of date, eligible only within the shared rate-cache max age; older, or no cache, types the rate-dependent reads `unknown` rather than computing off a stale anchor), and **conditionally** the once-per-run FINRA consolidated file when a selected name's engine metric family reads short interest (a failed file fetch types that read `unknown`).
+  - **The accuracy checks run in both modes** over every due episode in the store — not only the selected names — since they are engine-only (Step 2).
   - The selection is the work list; no discovery feeders run.
 
 ## Quick Audit
@@ -1340,24 +1447,23 @@ The user-directed maintenance job. No discovery: the user selects one or more **
   - FMP `quote` and `analyst-estimates`; dated-EOD bars through the shared price-bar cache; on the filing-cadence rider, the statement-derived rows; the conditional FINRA lookup. No Schwab data in the analytical pass (the options signal is held out of the grade and is not an input) — the run's one Schwab touch is the closing Step-8 holdings cross-reference, fail-soft and display-only.
 
 - **Logic — the same cheap re-derivation Step 7 applies to the DTO matrix tail**
-  - Re-derive the engine arm's scenario targets — the v2 multiples re-anchored closed-form on the fresh `DGS10` against the stored anchor-window percentiles and drivers; a still-fresh `research_target_scenario` re-evaluated over current engine fields, a stale one decayed to the structured-only baseline (direct assumptions are shadow-only and never applied).
-  - Re-run the **full entry-asymmetry gate on both arms** — the engine's live targets and the model's frozen, non-decaying bands against the current price; re-derive the engine risk tier (a gate leg and the card's baseline read — never the card's cell, which is the model's frozen placement).
-  - Evaluate the stored `structured` / `filing` key falsifiers and milestone completion conditions under the persistence semantics (a short-interest condition reading the conditional file); refresh the since-flagged read and the leading-metric-continuation state where a structured path exists.
+  - Re-derive the engine arm's bands — the multiples re-anchored closed-form on the fresh `DGS10` against the stored anchor-window percentiles and drivers, from structured data alone.
+  - Re-run the **full entry gate on both arms** — the engine's live targets and the model's frozen twelve-month expected price against the current price; re-derive the engine risk tier (a gate leg and the card's baseline read — never the card's cell, which is the model's frozen placement).
+  - Refresh the metric family's continuation state where a structured or filing path exists, and the since-flagged read.
   - Raise or retain the **attention warning** on an upside-exhaustion (neither arm clears) or tripwire reading — never an archive.
 
 - **Model**
   - None — it cannot fail on research, and it runs while the model server is offline.
 
 - **Cannot**
-  - Rewrite the thesis, conviction, or any model-authored field (they stay frozen).
+  - Rewrite the thesis document, the conviction, the expected prices, or any model-authored field (they stay frozen).
   - Move a card between cells — placement is a model-authored field.
   - Perform new research; stamp `last_deep_researched_at`; clear a warning.
-  - Archive an opportunity.
+  - Archive an opportunity. Open an episode — its model fields are unchanged.
   - It never checkpoints — engine-only and fast, it simply re-runs.
 
 - **Persist and render**
-  - Step 9's deterministic persistence leg only — the embedder is never invoked; the Step-8 holdings cross-reference re-runs over the touched names; the page re-renders.
-  - The engine-computable outcome labels of the touched names refresh and record onto their picked episodes in the same leg — labels are engine-computed, so both audit modes refresh them for the names they touch (`research`-class metric state alone stays frozen until a deep pass); a label matured here embeds durably only at the next DTO pass (Step 9).
+  - Step 9's persistence over the touched records; the Step-8 holdings cross-reference re-runs over the touched names; the page re-renders. The opportunity graph is untouched.
 
 ## Deep Audit
 
@@ -1367,41 +1473,41 @@ The user-directed maintenance job. No discovery: the user selects one or more **
   - Everything a Step-5 candidate gets — the full per-symbol surface and fresh web research (the shared loop, SearXNG only).
 
 - **Logic**
-  - Each selected name runs the Step-5 per-candidate loop as a **carried-forward candidate**: 5a affirm-or-overturn on the prior archetype → 5b dossier with the prior record, its `continuity_weight` (from the age of `last_deep_researched_at`), and the own-lifecycle retrospective → 5c engine → 5d research → 5e distillation → 5f refinement → 5g scoring (with the since-flagged read, cap-only) → 5h validation.
+  - Each selected name runs the Step-5 per-candidate loop as a **carried-forward candidate**: 5a affirm-or-overturn on the prior archetype → 5b dossier with the prior record loaded by lifecycle id → 5c engine and floor → 5d research → 5e consolidation → 5f self-review → 5g interpretation → 5h gate and validate.
   - A **large selection prompts a confirmation first** — the loop runs per name and can be long.
   - Resume holds under the same per-candidate checkpoint contract over its smaller pinned set (the selected names and the run's shared context).
 
 - **Model**
-  - The full archetype, research, distillation, and scoring calls, per selected name; the embedder for the touched summaries at persist.
+  - The full archetype, research, consolidation, review, and interpretation calls, per selected name.
 
-- **Can — contingent on a floor-clearing verdict whose floor-bearing freshness reads were met from currently searched results (the document cache never substitutes for a live search)**
-  - Rewrite the model-authored fields — thesis, the model arm's reads, its tier / horizon / runway (re-placing the card), bear case, falsifiers, catalyst, entry consideration.
-  - Write fresh direct assumptions / `research_target_scenario` and a validated `thesis_milestone_plan` (restarting their freshness window).
+- **Can — contingent on the pass completing past the engine floor**
+  - Rewrite the model-authored fields — the thesis document and appendix, placement included: a freshly written thesis document and appendix re-place the card.
   - Stamp `last_deep_researched_at` (the green *Deep-researched today* badge) and **clear the attention warning**.
   - Judge the name `invalidated` → the **archive** — model-judged, or app-forced on a validated hard trigger with the status-override divergence; the archival write atomically takes the touched picked node to `departed` under the same lifecycle id. It is the **only** ATO path that can archive.
-  - A selected name whose re-read abstains `insufficient-evidence` holds its last verdict under the carried-name rule — no stamp, no decay restart, no warning clear.
+  - Open an episode for a touched name under Step 7's cadence — a pick whose latest episode is a month or more old, or which has none — with the prices its new appendix carries.
+  - A selected name whose re-read falls below the floor at Step 5c holds its last verdict under the carried-name rule, before any research is spent — no stamp, no warning clear, no episode.
 
 - **Does not**
-  - Run discovery, add watchlist nodes, or run the re-check retirements — the touched picked nodes' lifecycle transition is the graph's only mutation.
+  - Run discovery, add watchlist nodes, or run the review's retirements — the touched picked nodes' lifecycle transition is the graph's only mutation.
   - Modify unrelated opportunities.
 
 - **Continuity, persist, and render (Steps 7–10, reduced)**
-  - The audited records reconcile into the matrix under the same what-changed attribution discipline; an `invalidated` result moves to the archive; the labels the pass refreshes record onto the touched names' episodes (the durable `learning`-kind embed of a matured label stays the next DTO pass's side-effect, written once).
-  - The Step-8 holdings cross-reference re-runs over the touched names; the run + audit record persist with the touched summaries embedded; the page re-renders.
+  - The audited records reconcile into the matrix in the deterministic order; an `invalidated` result moves to the archive; the Step-8 holdings cross-reference re-runs over the touched names; the run + audit record persist (Step 9); the page re-renders (Step 10).
 
 ---
 
 # The most important safety rules
 
-- The engine calculates every fact and its arithmetic — prices, statements, positioning, short interest, the options signal, Altman Z, Piotroski, the composite's normalization — once; a second version of a fact is fabrication, not judgment.
-- The model arm never binds or alters an engine value: engine-owned values are app-stamped directly and never echoed through the model; the model's own sub-scores, bands, implied-expectations read, conviction, and tier / horizon / runway are validated structurally and on each field's declared domain, never against the engine, and persisted exactly as authored. Outcome scoring is narrower than persistence: the entry-vintage target bands are the one read graded head-to-head against the engine; conviction, sub-scores, and the other authored reads are recorded unscored until the calibration tier settles a rule.
-- Every ceiling binds the engine arm's conviction stand-in and annotates the model's exceedance; nothing clamps the model's value.
-- Admission is either-arm — scoped to the entry-asymmetry gate alone, stamped `admitted_by`, both gate vectors persisted; the evidence floor, the hard forensic triggers, and anchorless `hype` bind both arms absolutely.
-- Placement is the model's: the card sits at the model arm's authored tier × horizon, frozen between deep passes, with the engine's rule-derived tier and milestone-derived horizon beside it as the disclosed baseline — shown, never the placement (the placement ruling, 2026-08-19). The admission yardstick is not: the gate's required-return scale, haircut, and H read the engine legs on both arms, so the model never sets its own bar.
-- The scoreboard is single-valued: outcome labels, `resolution_mode`, realized return, and drawdown stay engine-computed — whoever keeps score cannot also be a player.
-- A candidate with no inflecting, dated, third-party leading metric is a story stock and never enters the matrix; missing floor-bearing evidence causes abstention, not a guessed verdict.
-- Fast checks may warn; only a deep re-evaluation — confirmed under fresh, currently searched research — may rewrite a model-authored field or remove an opportunity. Missing data never causes removal; staleness alone never archives; there is no "target met" exit.
-- Only a debut can be excluded at the entry gate or the evidence floor; a carried name failing the entry gate takes a warning, an inconclusive re-read holds its last verdict, and it leaves only when a deep pass judges it invalidated — model-judged, or app-forced by a validated hard trigger (the one app-forced removal).
+- The engine computes every fact and its arithmetic — prices, statements, positioning, short interest, the options signal, Altman Z, Piotroski, the composite's normalization — once; a second version of a fact is fabrication, not judgment.
+- Nothing the model writes alters or binds an engine value: engine-owned values are app-stamped directly and never echoed through the model.
+- The model's arm is checked on type alone — the enums, a price finite and positive — never against the engine, never on content; the thesis document is persisted exactly as written and validated by nothing.
+- Admission is either-arm, scoped to the entry gate alone and stamped `admitted_by`; the evidence floor and the hard triggers bind both arms absolutely.
+- Placement is the model's: the card sits at the model arm's tier × horizon, frozen between deep passes, with the engine's rule-derived pair beside it as the disclosed baseline. The admission yardstick is not: the gate's required return, haircut, and H read the engine's legs on both arms, so the model never sets its own bar.
+- Both arms are scored identically by the accuracy checks, and the engine keeps score without playing; the record scores the forecast, never the decision, and nothing is derived beyond the scores.
+- A candidate with no inflecting, dated, third-party leading metric is a story stock and never enters the matrix; missing floor-bearing evidence causes abstention, not a guessed verdict. Both hold-outs happen before any research is spent.
+- Fast checks may warn; only a deep re-evaluation may rewrite a model-authored field or remove an opportunity. Missing data never causes removal; staleness alone never archives; there is no "target met" exit.
+- Only a debut can be held out at the floor, excluded by a hard trigger, or turned away at the entry gate; a carried name failing the gate takes a warning, an inconclusive re-read holds its last verdict, and it leaves only when a deep pass judges it invalidated — model-judged, or app-forced by a hard trigger, the one app-forced removal.
 - Price never raises conviction: the since-flagged read is cap-only, the price-action confirmer adjusts but never substitutes for the anchor, and the archive never promotes itself — re-entry is a fresh start.
-- Every name the funnel affirmatively judges and turns away is still tracked (the shadow ledger; an unworthy deferral carries no state), and what it teaches only ever proposes a calibration change — never applies one.
+- The investor profile reaches no prompt in the job.
 - Holdings never influence what is found or chosen; the owned tag is display-only, and the job never places an order.
+- The job writes nothing to vector memory; a name's memory is its own documents.

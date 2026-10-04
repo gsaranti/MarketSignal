@@ -861,7 +861,7 @@ The reasoner works a deterministic agenda over the web tool, one topic at a time
   - FETCHED VALUES — stock: the profile line; the quarterly statements' headline lines (revenue, operating income, net income, diluted EPS, operating cash flow, capex, cash, total debt, diluted shares) for the latest eight quarters as reported; the forward consensus for the next two fiscal years; the last four dividends; the quote with its 52-week range and the closes on the prior run's date and three, twelve, and thirty-six months back; the trailing year's 8-K filings by date and item; the latest short-interest print. Fund: `etf/info`, the weightings, NAV and price, the profile line. Both: `DGS10` and `DGS2`. Never an engine computation.
   - NEWS LEADS — dated headlines with addresses, fetch candidates only.
   - On a continuity run, PRIOR ANALYSIS and PRIOR THESIS verbatim with their dates and any split-context line.
-  - PAGES ALREADY RETRIEVED — pages fetched for this holding earlier in this run, by other topics or earlier passes, in first-retrieval order; held in memory and discarded between holdings. A prior run's page reaches the model only when the model requests its address again and the document cache serves it.
+  - PAGES ALREADY RETRIEVED — pages fetched for this holding earlier in this run, by other topics or earlier passes, in first-retrieval order; held in memory and discarded between holdings. A prior run's page reaches the model only when the model requests its address again and the document cache serves it. Absent on the disconfirming pass, which keeps its contrary search free of automatic page injection.
   - TOPIC; on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR; on the disconfirming pass WRITE-UPS SO FAR.
 - **Sees (Part 2)**
   - What to find, how to weigh a source (tier nearer 0 and extraction quality nearer 1 preferred; a weak source lowers confidence, never excludes), the per-reply tool-call bound, and when to stop.
@@ -888,7 +888,7 @@ The reasoner works a deterministic agenda over the web tool, one topic at a time
 - **Search**
   - SearXNG only, over its JSON API on loopback. It fans each query to its keyless engines plus Serper, the keyed Google-results engine that fires on every query as the reliable floor.
   - Queries are paced with jitter against upstream rate limits; a repeated query within a run is served from a per-run cache.
-  - A down or misconfigured instance returns empty; the loop proceeds thinner. No Tavily, ever.
+  - A down or misconfigured instance returns a typed search failure — one fixed sentence, never the operator's error text — distinct from an empty search's `No results.`, so unavailable research never reads as absent results; either way the loop proceeds thinner. No Tavily, ever.
 
 - **Fetch and extraction**
   - A plain HTTP GET with browser-like headers and a timeout, then a Rust readability extraction to the article body. SEC hosts get the app's declared identity.
