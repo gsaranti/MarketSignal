@@ -174,7 +174,7 @@ build status lives in `BUILD.md`.*
 - Distillation issue guard (prompt sizing at issue — the §The local-model adapter seam statement is canonical) — local-models.md §The local-model adapter seam; web-research.md §The research loop and context management; configuration.md §Research Context Management; portfolio-workflow.md §Step 6d
 - Schema-constrained output — local-models.md §Schema-constrained output
 - Context-memory discipline — local-models.md §Context-memory discipline
-- Per-job isolated vector memory — local-models.md §Run history and continuity; storage.md §Local Vector Memory
+- Local-job run history and continuity — local-models.md §Run history and continuity; storage.md §Local Vector Memory
 - Web research tool — web-research.md
 - SearXNG search backend — web-research.md §Search backend: SearXNG; data-sources.md §SearXNG (local web search)
 - Fetch and extraction — web-research.md §Fetch and extraction
@@ -201,7 +201,6 @@ build status lives in `BUILD.md`.*
 - Portfolio run gate — portfolio-workflow.md §Step 1; local-models.md §Serving runtime
 - Portfolio local-model call contracts (the Local-model call headings under each step) — portfolio-workflow.md §Step 6c, §Step 6d, §Step 6e, §Step 6f
 - Research write-ups and the analysis (Portfolio) — portfolio-workflow.md §Step 6c, §Step 6d; portfolio-analysis.md §The per-holding pipeline, §Starting parameters; web-research.md §The research loop and context management; local-models.md §Context-memory discipline
-- Page roster — portfolio-workflow.md §Step 6c, §Step 6g, §Step 7; portfolio-analysis.md §Storage and display; storage.md §Local Analysis Suite Storage
 - Self-review — portfolio-workflow.md §Step 6e; portfolio-analysis.md §The holding verdict, §Outcome learning, §Starting parameters
 - Thesis document — portfolio-analysis.md §The holding verdict, §Storage and display; portfolio-workflow.md §Step 6f; storage.md §Local Analysis Suite Storage; interface.md §Persistent Warning Area (the holding card)
 - Typed appendix — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6f; local-models.md §The local-model adapter seam
@@ -255,67 +254,67 @@ build status lives in `BUILD.md`.*
 - Trade Opportunities job identity and run modes — trade-opportunities.md §The two jobs; trade-opportunities-workflow.md (intro); scheduling.md §Job Status Visibility; storage.md §Local Analysis Suite Storage; configuration.md §Local Analysis Suite Configuration; interface.md §Main Layout
 - Trade Opportunities — what it hunts — trade-opportunities.md §What the job hunts
 - Trade Opportunities research method — trade-opportunities.md §The research method
+- Trade Opportunities local-model call contracts (the Local-model call headings under each step) — trade-opportunities-workflow.md §Step 3b, §Step 3c, §Step 5, §Step 5a, §Step 5d, §Step 5e, §Step 5f, §Step 5g
 - Opportunity schema — trade-opportunities.md §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
 - Two-arm contract — TO form (the boundary statement is single-homed) — trade-opportunities.md §The opportunity, §Starting parameters; local-models.md §Context-memory discipline; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
-- Either-arm admission — trade-opportunities.md §The opportunity, §Evidence floor, §Outcome learning, §Starting parameters; trade-opportunities-workflow.md §Step 5h, §Step 7
+- Thesis document and typed appendix (Trade Opportunities) — trade-opportunities-workflow.md §Step 5g; trade-opportunities.md §The opportunity, §Storage and display; storage.md §Local Analysis Suite Storage
+- Either-arm admission — trade-opportunities.md §The opportunity, §The pipeline, §Evidence floor, §Storage and display, §Starting parameters; trade-opportunities-workflow.md §Step 5h, §Step 7
 - Model-authored matrix placement (the §The opportunity space statement is canonical) — trade-opportunities.md §The opportunity space, §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h, §Step 7; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
-- Blind-first diagnostic reservation — trade-opportunities.md §The opportunity, §Failure posture; trade-opportunities-workflow.md §Step 5g
+- Arm divergences — the recorded pairs and the card's divergence tag — trade-opportunities.md §The opportunity, §Storage and display; trade-opportunities-workflow.md §Step 5h, §Step 7, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Persistent Warning Area
 - Opportunity archetype lens — trade-opportunities.md §Archetype
 - Archetype stickiness on carried-forward names — trade-opportunities.md §Archetype; trade-opportunities-workflow.md §Step 5a
-- Archetype classification prefetch + low-confidence branch — trade-opportunities-workflow.md §Step 5a, §Step 5b; data-sources.md §Trade Opportunities — endpoint surface
+- Archetype classification — the prefetch and the confirmation call — trade-opportunities-workflow.md §Step 5a; data-sources.md §Trade Opportunities — endpoint surface
 - Research-driven candidate discovery — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 3
 - Post-earnings surprise screen — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 3a; data-sources.md §Trade Opportunities — endpoint surface
 - Model-led hypothesis research lane — trade-opportunities-workflow.md §Step 3b
 - Discovery route-topic proposal (the one model-proposed agenda) — trade-opportunities-workflow.md §Step 3b; web-research.md §The research loop and context management
+- Hypothesis document and appendix (card formation) — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §The pipeline, §Discovery memory, §Starting parameters; storage.md §Local Analysis Suite Storage
 - Discovery coverage rotation / ledger — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §Starting parameters; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
 - Discovery memory / opportunity graph — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3c, §Step 7, §ATO: the audit flow
+- Watchlist review — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Discovery memory, §Starting parameters, §Storage and display
 - Research-watchlist refresh lane — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Starting parameters; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
-- Watchlist cap eviction — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Starting parameters, §Discovery memory, §Outcome learning; configuration.md §Local Analysis Suite Configuration
-- Discovery diversity guardrails + research budget — trade-opportunities-workflow.md §Step 4, §Step 6; trade-opportunities.md §The pipeline, §The opportunity space; configuration.md §Local Analysis Suite Configuration
+- Leading-metric re-check class (the canonical vocabulary, owned by §Step 3c) — trade-opportunities-workflow.md §Step 3b, §Step 3c; trade-opportunities.md §The opportunity, §Discovery memory, §Starting parameters; storage.md §Local Analysis Suite Storage
+- Watchlist cap eviction — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Starting parameters, §Discovery memory; configuration.md §Local Analysis Suite Configuration
+- Discovery diversity guardrails + research budget — trade-opportunities-workflow.md §Step 4; trade-opportunities.md §The pipeline, §Starting parameters; configuration.md §Local Analysis Suite Configuration
 - Narrative-vs-reality ratio + forensic risk gate + base-rate conjunction discipline — trade-opportunities.md §The pipeline, §The two non-negotiables; trade-opportunities-workflow.md §Step 5c
 - Leading-metric inflection gate — trade-opportunities.md §The two non-negotiables, §Starting parameters
-- Limited-history support — trade-opportunities.md §Evidence floor, §Starting parameters; trade-opportunities-workflow.md §Step 5b, §Step 5e, §Step 5f, §Step 5h; data-sources.md §SEC EDGAR, §Trade Opportunities — endpoint surface; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
-- Historical episode library — trade-opportunities.md §The lenses, §Starting parameters; trade-opportunities-workflow.md §Step 5d
-- Event-impact / value-chain repricing lens — trade-opportunities.md §The event-impact / value-chain repricing lens; trade-opportunities-workflow.md §Step 3b; storage.md §Local Analysis Suite Storage
+- Story-stock and insufficient-evidence hold-outs (the debut floor outcomes) — trade-opportunities.md §Evidence floor, §What the job hunts, §Starting parameters; trade-opportunities-workflow.md §Step 5c, §Step 5h
+- Inconclusive refresh (a carried name below the floor) — trade-opportunities.md §Evidence floor, §The opportunity, §Outcome learning, §Failure posture; trade-opportunities-workflow.md §Step 5c, §Step 7
+- Limited-history support — trade-opportunities.md §Evidence floor, §Starting parameters; trade-opportunities-workflow.md §Step 5b, §Step 5c, §Step 5d; data-sources.md §Trade Opportunities — endpoint surface; configuration.md §Local Analysis Suite Configuration
+- Historical case library — trade-opportunities.md §The lenses, §Starting parameters; trade-opportunities-workflow.md §Step 5d
+- Event-impact / value-chain repricing lens — trade-opportunities.md §The event-impact / value-chain repricing lens; trade-opportunities-workflow.md §Step 3b
 - Implied-expectations read — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 5c, §Step 5g
-- Cross-lens contradiction / falsification check — trade-opportunities.md §Reconciling the lenses; trade-opportunities-workflow.md §Step 5e, §Step 5g, §Step 5h
-- Conviction-cap ceiling & precedence — trade-opportunities.md §Starting parameters, §Reconciling the lenses; trade-opportunities-workflow.md §Step 5g, §Step 5h; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6g; storage.md §Local Analysis Suite Storage
-- Engine-arm conviction stand-in (the Step-5h computation is canonical; never a Step-5g input) — trade-opportunities.md §Starting parameters, §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
-- Key-falsifier / milestone re-check classes (the canonical vocabulary, owned by §Step 3c) — trade-opportunities.md §The opportunity, §Reconciling the lenses; trade-opportunities-workflow.md §Step 3c, §Step 5e, §Step 5h, §Step 7, §ATO: the audit flow; storage.md §Local Analysis Suite Storage
-- Thesis milestone plan + engine-horizon derivation — trade-opportunities.md §The opportunity, §Starting parameters; trade-opportunities-workflow.md §Step 5e, §Step 5g, §Step 5h, §Step 7; storage.md §Local Analysis Suite Storage
-- Matrix final assembly over the union — trade-opportunities-workflow.md §Step 6, §Step 7; trade-opportunities.md §The opportunity; storage.md §Local Analysis Suite Storage
+- Research write-ups and the analysis (Trade Opportunities) — trade-opportunities-workflow.md §Step 5d, §Step 5e; trade-opportunities.md §The pipeline, §Starting parameters; web-research.md §The research loop and context management
+- Self-review (Trade Opportunities) — trade-opportunities-workflow.md §Step 5f; trade-opportunities.md §The pipeline, §The opportunity, §Outcome learning
+- Cross-lens contradiction / falsification check — trade-opportunities.md §Reconciling the lenses; trade-opportunities-workflow.md §Step 5e, §Step 5g
+- Engine horizon rule and its derived basis — trade-opportunities.md §The opportunity space, §Starting parameters; trade-opportunities-workflow.md §Step 5c, §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
+- Since-flagged read — trade-opportunities.md §The opportunity, §Outcome learning, §Archived opportunities, §Storage and display; trade-opportunities-workflow.md §Step 5c, §Step 7, §Step 10; storage.md §Local Analysis Suite Storage (price-bar cache)
+- Matrix final assembly over the union — trade-opportunities-workflow.md §Step 6, §Step 7; trade-opportunities.md §The pipeline, §The opportunity space
 - Opportunity re-evaluation lifecycle — trade-opportunities-workflow.md §Step 7, §ATO: the audit flow; trade-opportunities.md §The two jobs, §The opportunity, §Archived opportunities, §Starting parameters; storage.md §Local Analysis Suite Storage; interface.md; local-models.md §Serving runtime
 - Opportunity carry-forward status vocabulary — trade-opportunities.md §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 7
 - DTO deep-budget rotation — trade-opportunities.md §The two jobs, §Archived opportunities; trade-opportunities-workflow.md §Step 4, §Step 7; configuration.md §Local Analysis Suite Configuration
-- Carried-name hard-trigger forced archival — trade-opportunities.md §Starting parameters, §Archived opportunities; trade-opportunities-workflow.md §Step 5h; storage.md §Local Analysis Suite Storage
+- Carried-name hard-trigger forced archival — trade-opportunities.md §Starting parameters, §The opportunity; trade-opportunities-workflow.md §Step 5h, §Step 7; storage.md §Local Analysis Suite Storage
 - Archived opportunities — trade-opportunities.md §Archived opportunities; trade-opportunities-workflow.md §Step 7, §Step 9, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
-- Trade Opportunities outcome learning / calibration — trade-opportunities.md §Outcome learning, §Storage and display; trade-opportunities-workflow.md §Step 5c, §Step 5g, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; data-sources.md §Trade Opportunities — endpoint surface
-- Shadow outcome ledger / picked-vs-rejected calibration — trade-opportunities.md §Outcome learning, §Starting parameters; trade-opportunities-workflow.md §Step 3c, §Step 5h, §Step 6, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; configuration.md §Local Analysis Suite Configuration
-- Run-level arm divergence rates (the §Starting parameters row is canonical) — trade-opportunities.md §Starting parameters, §The opportunity; storage.md §Local Analysis Suite Storage
-- Turn-away decision-class precedence (the §Step 5h statement is canonical) — trade-opportunities-workflow.md §Step 5h; trade-opportunities.md §Outcome learning
-- Shadow-episode Step-5g record digest — trade-opportunities.md §Outcome learning; trade-opportunities-workflow.md §Step 5h; storage.md §Local Analysis Suite Storage
-- Outcome measurement contract — trade-opportunities.md §Outcome learning; storage.md §Local Analysis Suite Storage
-- Picked decision episodes / lifecycle id — trade-opportunities.md §Outcome learning, §Starting parameters; storage.md §Local Analysis Suite Storage; trade-opportunities-workflow.md §Step 5b, §Step 7; configuration.md §Local Analysis Suite Configuration; data-portability.md §Build-order placement
+- Continuity and isolation (Trade Opportunities) — trade-opportunities.md §Continuity and isolation; local-models.md §Run history and continuity
+- Trade Opportunities outcome learning — trade-opportunities.md §Outcome learning, §Storage and display; trade-opportunities-workflow.md §Step 2, §Step 5f, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; data-sources.md §Trade Opportunities — endpoint surface
+- Episode store (Trade Opportunities) — the decision class and the lifecycle id — trade-opportunities.md §Outcome learning, §The opportunity, §Archived opportunities; trade-opportunities-workflow.md §Step 2, §Step 5b, §Step 7; storage.md §Local Analysis Suite Storage; data-portability.md §Build-order placement
+- Accuracy checks and accuracy scores (Trade Opportunities) — trade-opportunities.md §Outcome learning, §The opportunity, §Storage and display; trade-opportunities-workflow.md §Step 2, §Step 5f, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; data-sources.md §Trade Opportunities — endpoint surface
 - Trade Opportunities endpoint surface — data-sources.md §Trade Opportunities — endpoint surface, §FMP — current paid-plan tier audit; storage.md §Local Analysis Suite Storage (price-bar cache)
 - Trade Opportunities signal inputs — trade-opportunities.md §Signal inputs; data-sources.md §Local analysis suite — shared sourcing, §Trade Opportunities — endpoint surface
-- TO research-target scenario bridge — trade-opportunities.md §The opportunity, §Starting parameters; trade-opportunities-workflow.md §Step 5e, §Step 5f, §Step 5g, §Step 5h, §Step 7, §ATO: the audit flow; storage.md §Local Analysis Suite Storage
 - Entry asymmetry threshold — trade-opportunities.md §Starting parameters, §The opportunity; trade-opportunities-workflow.md §Step 5h, §Step 2
 - TO research cache — trade-opportunities.md §Failure posture, §Starting parameters; trade-opportunities-workflow.md §Step 3c, §Step 5, §ATO; storage.md §Local Analysis Suite Storage (web-research document cache)
-- Post-research target refinement — shadow mode — trade-opportunities-workflow.md §Step 5f
-- Target-band interval scorer — trade-opportunities.md §Outcome learning; trade-opportunities-workflow.md §Step 7; local-models.md §Context-memory discipline
-- Re-check class resolution contract — trade-opportunities-workflow.md §Step 3c, §Step 5h
-- Seed lineage — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 3b; configuration.md §Research Context Management; storage.md §Local Analysis Suite Storage; trade-opportunities.md §The opportunity, §Signal inputs, §Discovery memory
 - Trade Opportunities discovery-breadth settings — configuration.md §Trade Opportunities — Discovery Breadth
 - Trade Opportunities persisted structures — storage.md §Local Analysis Suite Storage; trade-opportunities-workflow.md §Step 9
 
 ### Shared across both jobs
 - Deterministic financial-analysis engine — local-models.md §Context-memory discipline; portfolio-analysis.md
-- Evidence floor (each job defines its own) — portfolio-analysis.md §Evidence floor; trade-opportunities.md §Evidence floor; trade-opportunities-workflow.md §Step 5h, §Step 7
-- Evidence-floor freshness basis — trade-opportunities.md §Starting parameters, §Evidence floor; trade-opportunities-workflow.md §Step 5h; web-research.md §Source quality and evidence weighting; portfolio-analysis.md §Evidence floor
+- Evidence floor (each job defines its own) — portfolio-analysis.md §Evidence floor; trade-opportunities.md §Evidence floor; trade-opportunities-workflow.md §Step 5c, §Step 7
+- Evidence-floor freshness basis — trade-opportunities.md §Starting parameters, §Evidence floor; trade-opportunities-workflow.md §Step 5c; web-research.md §Source quality and evidence weighting; portfolio-analysis.md §Evidence floor
 - Deterministic risk-tier assignment — the engine arm's rule (the TO form is canonical) — trade-opportunities.md §The opportunity space, §Starting parameters; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6b
 - Scenario-target function — portfolio-analysis.md §Starting parameters, §Evidence floor; trade-opportunities.md §Starting parameters, §Evidence floor; portfolio-workflow.md §Step 6b; trade-opportunities-workflow.md §Step 5c; data-sources.md (both `analyst-estimates` rows, both `dividends` rows)
+- Split-adjustment bridge (the §Starting parameters entry is canonical) — portfolio-analysis.md §Starting parameters, §Outcome learning; portfolio-workflow.md §Step 5, §Step 6b; trade-opportunities.md §Outcome learning; trade-opportunities-workflow.md §Step 2, §Step 7
 - Rate-anchor failure rule — portfolio-analysis.md §Failure posture, §Starting parameters, §The quick check; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §ATO: the audit flow; data-sources.md §Portfolio Analysis — endpoint surface (FRED), §Trade Opportunities — endpoint surface (FRED)
-- Factor normalization basis — trade-opportunities-workflow.md §Step 5c; trade-opportunities.md §Starting parameters, §The lenses; storage.md §Local Analysis Suite Storage
+- Factor normalization basis — trade-opportunities-workflow.md §Step 5c; trade-opportunities.md §Starting parameters, §The lenses
 - ET session dating — data-sources.md (intro session-dating rule); portfolio-analysis.md §The quick check, §Triggering, §Outcome learning; portfolio-workflow.md §The quick check
 - Run data-health roll-up — portfolio-analysis.md §Portfolio roll-up, §Starting parameters, §Failure posture; interface.md §Main Layout
 - Per-item checkpoint/resume + research caching, both jobs — portfolio-analysis.md §Failure posture (the Portfolio contract is canonical), §Starting parameters; portfolio-workflow.md §Step 2, §Step 6, §Step 6g; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §Step 5; run-tracking.md §Cancellation; storage.md §Local Analysis Suite Storage; data-portability.md §What moves, and what deliberately does not
@@ -323,9 +322,10 @@ build status lives in `BUILD.md`.*
 - Research loop & context management — web-research.md §The research loop and context management
 - Write-up synthesis prompt shape (the §The research loop statement is canonical) — web-research.md §The research loop and context management; portfolio-workflow.md §Step 6c; local-models.md §Schema-constrained output
 - Research agenda — portfolio-analysis.md; trade-opportunities.md
-- Hierarchical distillation — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 5e; portfolio-workflow.md §Step 6d; configuration.md §Research Context Management
+- Research leads — web-research.md §The research loop and context management; portfolio-workflow.md §Step 6a, §Step 6c; trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §Signal inputs
+- Distillation shapes — web-research.md §The research loop and context management; portfolio-workflow.md §Step 6d; trade-opportunities-workflow.md §Step 3b, §Step 5e; configuration.md §Research Context Management
+- Page roster — portfolio-workflow.md §Step 6c, §Step 6g, §Step 7; portfolio-analysis.md §Storage and display; trade-opportunities-workflow.md §Step 3b, §Step 5d, §Step 5h, §Step 9; trade-opportunities.md §Storage and display; storage.md §Local Analysis Suite Storage
 - Disconfirming-fetch pass (each job's placement is canonical in its own workflow) — portfolio-workflow.md §Step 6c; trade-opportunities-workflow.md §Step 5d; web-research.md §Source quality and evidence weighting
-- Heavy-route sub-distillation — trade-opportunities-workflow.md §Step 3b, §Step 4; configuration.md §Research Context Management
 - Web-research document cache — storage.md §Local Analysis Suite Storage; web-research.md §The research loop and context management; data-portability.md §What moves, and what deliberately does not
 - Failed-fetch memory and bounded retry — web-research.md §Failed fetch memory and bounded retry; portfolio-workflow.md §Step 6a, §Step 6c
 - Portfolio earnings-release recovery (EDGAR) — web-research.md §Portfolio earnings-release recovery; data-sources.md §SEC EDGAR
