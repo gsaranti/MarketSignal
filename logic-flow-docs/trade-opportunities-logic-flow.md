@@ -213,7 +213,7 @@
   - A re-entry from the archive is a new lifecycle; nothing from the old one carries.
 
 - **Divergence tag**
-  - The quiet card badge raised when the arms materially disagree: conviction level, the twelve-month prices' gap, or a tier / horizon pair.
+  - The quiet card badge raised when the arms materially disagree: the twelve-month prices' gap, or a tier / horizon pair.
 
 - **Status-override divergence**
   - The record kept when a hard trigger forces a carried name to `invalidated` against the model's proposed status: the proposed status, the forced status, the matched trigger, the filing.
@@ -1404,7 +1404,7 @@ Display is a pure read of the persisted matrix; no model runs.
 
 - **The matrix (default, canonical view)**
   - Three risk sections × three horizons — every card placed by the **model arm's** tier × horizon; each card: archetype, the thesis document's summary, leading metric, detection mode, conviction, the expected price at twelve months beside the engine's base target, the narrative-vs-reality read, status, `became_opportunity_at`, `last_deep_researched_at`, the hypothesis it expresses (linking the names that share one), owned / not-owned, and — for a carried idea — the since-flagged performance (return since it became an opportunity, vs sector / market, a compact running curve, maximum drawdown).
-  - **Two arms by progressive disclosure**: the model arm headlines — its conviction and its twelve-month expected price are the numbers shown — with a quiet **divergence tag** where the arms materially disagree (conviction level, the twelve-month prices' gap, or a tier / horizon pair); on card expand the paired engine / model view — the three price pairs, the engine's bands and provenance flags, the engine's tier and horizon, and the accuracy scores for both arms; the `admitted_by` tag on both single-arm states — `engine-only` (the headline model price did *not* itself clear the gate; the engine admitted it) and `model-only` (the headline admitted it; the baseline dissented); consensus cards untagged.
+  - **Two arms by progressive disclosure**: the model arm headlines — its conviction and its twelve-month expected price are the numbers shown — with a quiet **divergence tag** where the arms materially disagree (the twelve-month prices' gap, or a tier / horizon pair); on card expand the paired engine / model view — the three price pairs, the engine's bands and provenance flags, the engine's tier and horizon, and the accuracy scores for both arms; the `admitted_by` tag on both single-arm states — `engine-only` (the headline model price did *not* itself clear the gate; the engine admitted it) and `model-only` (the headline admitted it; the baseline dissented); consensus cards untagged.
   - Lifecycle affordances per card: the selection control (plus select-all / deselect-all), an amber actionable **Consider Deep Audit** badge when the attention warning is set, a green **Deep-researched today** badge when `last_deep_researched_at` is the current local-timezone day, a quiet **Research stale** badge when the last deep pass is older than ~4 weeks (computed at render; never amber).
   - Empty cells shown as empty.
 

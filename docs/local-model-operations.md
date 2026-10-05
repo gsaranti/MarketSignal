@@ -202,10 +202,10 @@ The serving path is now **pinned by observation** — the pre-flight resolved wh
 If a future GGUF path won't load, fallbacks are a llama.cpp-compatible build, a **standalone MLX server** (e.g. `mlx-lm` / LM Studio — at the cost of Ollama's native `format` endpoint), or the mlx-community 122B conversions noted above.
 The adapter seam ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)) isolates endpoint + model id, so a serving-path change is configuration not code — **but a non-Ollama server would change the `format` mechanism**, so this is the risk to retire first.
 
-## The resident embedder
+## No resident embedder
 
-`Qwen3-Embedding-4B` stays resident alongside the reasoner for the suite's vector memory, consuming a few GB of the 128 GB budget — account for it when choosing the reasoner's quant and context size (see the memory split above).
-It implements the existing `Embedder` trait, so nothing else changes.
+The roster carries no embedder: neither local job writes or reads vector memory ([local-models.md §The model roster and per-task routing](local-models.md#the-model-roster-and-per-task-routing)), so the memory budget is the reasoner's weights and KV cache alone, and the embedder's few GB in the fit figures above are headroom.
+A pulled `Qwen3-Embedding-4B` is simply unused.
 
 ## M5 pre-flight checklist
 

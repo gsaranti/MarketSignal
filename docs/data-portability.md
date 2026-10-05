@@ -28,12 +28,12 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 |---|---|
 | `reports` | The report records — id, regime metadata, summary JSON, the pointer to the Markdown body. |
 | `baseline_snapshots` | Past market-scan states (retention 14). **Irreproducible** — they capture a market moment; they anchor the cadence-honest change view on the next report. |
-| `vector_memory` | Report summaries, Trade Opportunities' per-record continuity summaries, **and durable learnings** — the long-term semantic memory (Portfolio Analysis writes no rows — [storage.md §Local Vector Memory](storage.md#local-vector-memory)). Durable learnings are the point: they survive report deletion and are the accumulated edge. |
+| `vector_memory` | Report summaries **and durable learnings** — the long-term semantic memory; neither local job writes a row ([storage.md §Local Vector Memory](storage.md#local-vector-memory)). Durable learnings are the point: they survive report deletion and are the accumulated edge. |
 | `portfolio_runs` | Local-suite run history (retention 30): each run's two-arm verdicts with their thesis documents, actions, roll-up and audit record — the research documents and the page roster included ([storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage)). Nascent today, but durable once the suite runs live. |
 | `holdings_pulls` | The single latest view-only holdings snapshot. |
 | `portfolio_quick_checks` | The quick check's between-run state — attention flags, unexamined evidence events, the rate-print cache. Durable analytical state: flags do not regenerate on the next sweep. |
 | `portfolio_outcome_episodes` | The episode store — the accuracy pass's price records with their checks and unscorable states ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)); append-only state that outlives the 30-run retention, since an aged-out run cannot regenerate its episodes. |
-| `price_bars` | The shared price-bar cache — public price data: Trade Opportunities' render-time read and both outcome passes' refresh target, carried so an imported store keeps its series and their as-of dates; a Portfolio check still waits for a successful refresh ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)). |
+| `price_bars` | The shared price-bar cache — public price data: Trade Opportunities' render-time read and both jobs' accuracy checks' refresh target, carried so an imported store keeps its series and their as-of dates; a check still waits for a successful refresh ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)). |
 | `web_documents` | The shared web-research document cache (joined in format v4; requested/final URL split in format v5), including each normalized requested-URL key and its separate post-redirect final URL so imported repeat fetches preserve both cache hits and provenance. |
 | `web_source_state` | The shared web-research extraction telemetry (joined in format v4; the failed / denied fetch-attempt counters joined in format v6) — learned full/thin counts, the failed and denied attempt counts, extraction profile, and render-first state. |
 
@@ -67,7 +67,7 @@ A single **`.zip`**, structured and self-describing:
 ```text
 market-signal-export-YYYY-MM-DD.zip
   manifest.json              format version · app version · created-at (UTC) ·
-                             per-table row counts · per-namespace embedder id ·
+                             per-table row counts · the report's embedder id ·
                              file inventory + checksums · encrypted flag
   db/
     reports.ndjson
@@ -172,17 +172,11 @@ The archive is designed with stable primary keys so merge is a clean later addit
 ### Vector memory is embedder-bound
 
 Each `vector_memory` row stores its **source `content` alongside the embedding**, and the store carries no embedder-identity column — dimensionality is implicit in the vector, and search skips rows whose dimension does not match the query.
-This has one consequence for import:
-
-- **Report-namespace vectors** embed with OpenAI `text-embedding-3-large` — a fixed internal model, non-configurable and identical on every machine because it is a cloud API.
-  These are the migration payload, and they import and work unchanged.
-- **Local-suite namespaces** (`portfolio`, `opportunities`) embed with the local model.
-  The manifest records the **per-namespace embedder id** for exactly this comparison, but the import-side check is **designed, not built** — it lands with the M5-deferred re-embed machinery: compare **model identity, never dimension** (two different models can share a dimension, so a dimension match proves nothing), and queue mismatched rows for **re-embedding from their retained `content`**.
-  As-built, import inserts local-namespace vectors without reading the manifest's embedder ids, and only the search-time dimension skip guards a mismatch — bounded today because the local namespaces are empty in every current scenario (the migration note below) — while the retained `content` always survives, so the designed mismatch path stays a re-embed, never data loss ([storage.md §Local Vector Memory](storage.md#local-vector-memory)).
+Every row is the report's, embedded with OpenAI `text-embedding-3-large` — a fixed internal model, non-configurable and identical on every machine because it is a cloud API — so the payload imports and works unchanged, and the manifest's embedder id records that model for the archive.
+Neither local job writes a row ([storage.md §Local Vector Memory](storage.md#local-vector-memory)), so no local embedder and no embedder-mismatch case exists; the retained `content` still means a future embedder change degrades to a re-embed, never data loss.
 
 **This does not affect the M5 hardware migration.**
-Two independent reasons: the report-namespace vectors that make up the payload use the fixed cloud embedder above, so they cannot diverge; and the local-suite namespaces are *empty* on any machine that has not run the suite live — the local models are hardware-gated, so an old Mac accumulates no local vectors to carry, and the new machine builds its local vector memory fresh the first time the suite runs there (correct and unavoidable regardless of export/import).
-The embedder-mismatch case is scoped strictly to a **later** scenario: exporting from a machine that *has* run the suite live, into one configured with a **different local embedder model** — the "change the local embedding model" case — and even then it degrades to a re-embed, never data loss.
+The report-namespace vectors that make up the payload use the fixed cloud embedder above, so they cannot diverge, and the local suite carries no vectors to move.
 
 ## Verification
 
@@ -197,6 +191,6 @@ The Settings surface follows the existing Settings patterns and the design packa
 
 This is **independent of the local suite** — it moves whatever the store holds, so it works today against the cloud report corpus.
 It landed (PR #53) **before** the M5 transition, so the accumulated report history and learnings survive the move.
-Local-suite coverage is a **format-extension rule, not an automatic property**: every new durable local-suite store — the [storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage) set (the Portfolio episode store; the opportunity matrix / run, opportunity graph, discovery-coverage ledger, departed archive, shadow ledger and its matured archive, and the picked-episode store and its matured archive) — **joins the archive as part of the slice that lands it**: a new required manifest entry and a format-version bump, with regenerable caches staying excluded under the what-moves rule above.
-The one exception to that cache exclusion: the shared **price-bar cache rides with the episode stores** (the table above), because Trade Opportunities' imported pending labels mature from it under its coverage rule — the cache is regenerable in principle but load-bearing for those episodes; Portfolio's checks wait for a refresh regardless.
+Local-suite coverage is a **format-extension rule, not an automatic property**: every new durable local-suite store — the [storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage) set (the Portfolio episode store; the opportunity matrix / run, opportunity graph, discovery-coverage ledger, departed archive, and Trade Opportunities' episode store) — **joins the archive as part of the slice that lands it**: a new required manifest entry and a format-version bump, with regenerable caches staying excluded under the what-moves rule above.
+The one exception to that cache exclusion: the shared **price-bar cache rides with the episode stores** (the table above), because both jobs' accuracy checks read their closes from it — regenerable in principle, but carrying it keeps an imported store's series and as-of dates, so a pending horizon needs only a refresh, never a cold rebuild.
 The import's closed-set validation is versioned to match (§Import flow), so an archive is always complete *for its own format version*.

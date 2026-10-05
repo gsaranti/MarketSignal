@@ -85,7 +85,7 @@ The application displays:
 - skipped job events
 
 The "last X" stamps are **scoped per section by `job_type`**: the footer under each surface reports that section's own job — the report job on the report view (and the inbox / archive / settings views, mirroring the shared-history sidebar's mapping), the Portfolio Analysis job on the Portfolio view, and the one `trade_opportunities` job on the Trade Opportunities view — so a portfolio run's finish never stamps LAST RUN under report chrome.
-On the Trade Opportunities view **every run of either trigger stamps, labeled with its mode** (`discover` / `audit-quick` / `audit-deep`), so a Quick Audit reads as the latest run without masquerading as discovery freshness (ruled 2026-08-19).
+On the Trade Opportunities view **every run of either trigger stamps, labeled with its mode** (`discover` / `audit-quick` / `audit-deep`), so a Quick Audit reads as the latest run without masquerading as discovery freshness.
 All four stamps scope together (the whole facts block is the section readout); the running-job state stays global, since the single run slot is shared across workflows.
 Every section's stamps ride one `job_status` payload, so a view switch never waits on a re-fetch.
 The failed-jobs warning stays **unscoped** — a failure of any job type surfaces there regardless of the active section.

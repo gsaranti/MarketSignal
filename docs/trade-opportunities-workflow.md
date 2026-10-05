@@ -177,7 +177,7 @@ Search is **keyless SearXNG only** — **no Tavily and no GDELT for discovery**:
 The **FMP structured news feeds** (`news/general-latest`, `news/stock-latest`, on the paid key — `news/press-releases-latest` is off-plan, [data-sources.md §FMP — current paid-plan tier audit](data-sources.md#fmp--current-paid-plan-tier-audit)) plus the free-tier **FMP Articles** feed (the shared FMP key) and the macro-release calendar (Step 2) ride each route's gathering brief as **leads** — ticker-tagged, dated headlines with their addresses, what to pursue and never evidence a write-up may rest on ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)); the web tool deep-reads what they point at, and provenance rides the page roster.
 
 **The hypothesis-document prompt is sized, and the route's write-ups are distilled only when it is over budget.**
-The orchestrator sizes the card-formation prompt — the route's write-ups, the house view, the graph context — against the call's input budget ([configuration.md §Research Context Management](configuration.md#research-context-management-hierarchical-distillation)).
+The orchestrator sizes the card-formation prompt — the route's write-ups, the house view, the graph context — against the call's input budget ([configuration.md §Research Context Management](configuration.md#research-context-management)).
 Within budget, the write-ups go in as written.
 Over it, the merged write-ups are distilled into one shorter document; where the merged write-ups themselves exceed one distillation call's budget, each write-up is distilled first and the merge of those outputs is distilled again — the two shapes chosen deterministically from size, never by the model, logged to the audit record with the call count, the shared primitive at [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-consolidation).
 The write-ups persist on the audit as written, never as distilled.
@@ -483,7 +483,7 @@ Every page shown to the model enters the candidate's **page roster** — address
 
 **Type:** Computed (the budget check) + Local-model call(s): the distillation of the write-ups where the analysis prompt is over budget (122B non-thinking; the optional 35B fast tier if resident), then the **analysis** (122B thinking).
 
-The orchestrator first sizes the analysis prompt — the write-ups, FETCHED VALUES and, on a carried name, the prior analysis — against the call's input budget ([configuration.md §Research Context Management](configuration.md#research-context-management-hierarchical-distillation)).
+The orchestrator first sizes the analysis prompt — the write-ups, FETCHED VALUES and, on a carried name, the prior analysis — against the call's input budget ([configuration.md §Research Context Management](configuration.md#research-context-management)).
 Within budget, the write-ups go in as written.
 Over it, the merged write-ups are distilled into one shorter document; where the merged write-ups themselves exceed one distillation call's budget, each write-up is distilled first and the merge of those outputs is distilled again.
 The prior analysis is never distilled.

@@ -58,13 +58,13 @@ No model and no external API (credential and daemon *presence/reachability* are 
 
 The job will not start unless four preconditions hold:
 - the **single global run slot** is free (no report or other local job is running — see [scheduling.md §Concurrent Job Protection](scheduling.md#concurrent-job-protection));
-- the **local-model daemon is reachable and the configured roster is present** (the 122B reasoner; the embedder is Trade Opportunities' requirement, Portfolio making no embedding call) — health-checked at the Ollama endpoint ([local-models.md §Serving runtime](local-models.md#serving-runtime));
+- the **local-model daemon is reachable and the configured roster is present** (the 122B reasoner — neither local job makes an embedding call) — health-checked at the Ollama endpoint ([local-models.md §Serving runtime](local-models.md#serving-runtime));
 - a **connected Schwab account** with a valid (≤7-day) refresh token ([schwab-integration.md §A connected Schwab account is required](schwab-integration.md#a-connected-schwab-account-is-required));
 - the **shared FMP and FRED credentials are present** ([configuration.md §External Data Provider Credentials](configuration.md#external-data-provider-credentials)) — the per-holding fundamentals surface (FMP) and the run-level rate anchors (FRED `DGS10` / `DGS2`) are load-bearing engine inputs, so a missing key blocks at the gate rather than failing hours into a run; the check is presence-only (no live probe), surfaced through the **existing missing-provider-credentials warning category** — no new category — while **Tavily deliberately does not gate** the local suite — its web tool is SearXNG-only ([web-research.md §Tavily fallback](web-research.md#tavily-fallback)).
   (As-built with the fund slice: the shipped gate (`check_local_configuration`) carries the FMP / FRED presence check through the shared missing-provider-credentials category.)
 
 This gate is **independent of the cloud-report gate** — a machine with no OpenAI/Anthropic keys can still run the local suite.
-Missing **configuration** (the Ollama endpoint or a roster id this job requires unset — the reasoner, the embedder being Trade Opportunities' requirement — Schwab not connected / refresh token lapsed, or the FMP / FRED credential missing) is a presence check that locks the affected job's Run button and shows a persistent warning *before* this step is reached — **local models not configured**, **Schwab connection**, and the shared **missing provider credentials**, one per category, no duplicates (see [interface.md §Connection status](interface.md#connection-status-local-suite)).
+Missing **configuration** (the Ollama endpoint or the reasoner id unset, Schwab not connected / refresh token lapsed, or the FMP / FRED credential missing) is a presence check that locks the affected job's Run button and shows a persistent warning *before* this step is reached — **local models not configured**, **Schwab connection**, and the shared **missing provider credentials**, one per category, no duplicates (see [interface.md §Connection status](interface.md#connection-status-local-suite)).
 A live **local-model connectivity** failure caught here at the run-gate (daemon unreachable, a rostered model not pulled) blocks the attempt **inline**, not as a persistent warning; Schwab *API* reachability is **not** tested at this step — there is no external API call here, so a Schwab outage surfaces at the Step-2 holdings fetch, not the run-gate.
 As-built the daemon health-check runs **before the slot is claimed** (a local-only call), and every external fetch — the SEC ticker map the CIK resolver loads included — happens **inside** the slot (ruled 2026-08-18).
 Manual-import holdings do **not** satisfy the Schwab gate.
@@ -261,7 +261,7 @@ Every page shown to the model enters the holding's **page roster** — address, 
 
 **Type:** Computed (the budget check) + Local-model call(s): the distillation of the write-ups where the analysis prompt is over budget (122B non-thinking; the optional 35B fast tier if resident), then the **analysis** (122B thinking).
 
-The orchestrator first sizes the analysis prompt — the write-ups, FETCHED VALUES and, on a continuity run, the prior analysis — against the call's input budget ([configuration.md §Research Context Management](configuration.md#research-context-management-hierarchical-distillation)).
+The orchestrator first sizes the analysis prompt — the write-ups, FETCHED VALUES and, on a continuity run, the prior analysis — against the call's input budget ([configuration.md §Research Context Management](configuration.md#research-context-management)).
 Within budget, the write-ups go in as written.
 Over it, the merged write-ups are distilled into one shorter document; where the merged write-ups themselves exceed one distillation call's budget, each write-up is distilled first and the merge of those outputs is distilled again.
 The prior analysis is never distilled.
