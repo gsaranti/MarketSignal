@@ -258,6 +258,7 @@ build status lives in `BUILD.md`.*
 - Opportunity schema — trade-opportunities.md §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
 - Two-arm contract — TO form (the boundary statement is single-homed) — trade-opportunities.md §The opportunity, §Starting parameters; local-models.md §Context-memory discipline; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
 - Thesis document and typed appendix (Trade Opportunities) — trade-opportunities-workflow.md §Step 5g; trade-opportunities.md §The opportunity, §Storage and display; storage.md §Local Analysis Suite Storage
+- Failed-document reissue (a null tier, horizon or carried-name status in the appendix) — trade-opportunities.md §The opportunity; trade-opportunities-workflow.md §Step 5h; local-models.md §The local-model adapter seam
 - Either-arm admission — trade-opportunities.md §The opportunity, §The pipeline, §Evidence floor, §Storage and display, §Starting parameters; trade-opportunities-workflow.md §Step 5h, §Step 7
 - Model-authored matrix placement (the §The opportunity space statement is canonical) — trade-opportunities.md §The opportunity space, §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h, §Step 7; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Arm divergences — the recorded pairs and the card's divergence tag — trade-opportunities.md §The opportunity, §Storage and display; trade-opportunities-workflow.md §Step 5h, §Step 7, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Persistent Warning Area
@@ -331,6 +332,7 @@ build status lives in `BUILD.md`.*
 - Failed-fetch memory and bounded retry — web-research.md §Failed fetch memory and bounded retry; portfolio-workflow.md §Step 6a, §Step 6c
 - Portfolio earnings-release recovery (EDGAR) — web-research.md §Portfolio earnings-release recovery; data-sources.md §SEC EDGAR
 - Local-suite failure posture (model layer and web tool) — local-models.md §Failure posture; web-research.md §Failure posture
+- Typed-appendix null presence rule, both jobs (the §The holding verdict statement is canonical) — portfolio-analysis.md §The holding verdict, §Outcome learning; portfolio-workflow.md §Step 6f, §Step 7; trade-opportunities.md §The opportunity, §Outcome learning; trade-opportunities-workflow.md §Step 5g, §Step 5h, §Step 6, §Step 7; local-models.md §The local-model adapter seam; storage.md §Local Analysis Suite Storage
 - SEC EDGAR primary source — data-sources.md §SEC EDGAR
 - SEC EDGAR role for Trade Opportunities — data-sources.md §SEC EDGAR
 - FMP paid-tier suite signals — data-sources.md §Local analysis suite — shared sourcing, §FMP — current paid-plan tier audit
