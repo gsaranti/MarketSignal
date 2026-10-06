@@ -123,6 +123,7 @@
 - **Typed appendix**
   - The thesis document's stated values transcribed into a typed object: risk tier, horizon, conviction, the expected price at each horizon, the detection mode, the leading metric with its class, and on a carried name the status.
   - Type-checked only.
+  - Any field null where the document states no value; a null is acted on by presence, never read as content.
 
 - **Conviction**
   - The model's confidence in its own thesis: high, medium, or low.
@@ -196,7 +197,7 @@
   - Every page shown to the model for a route or a candidate: address, title, publication date, retrieval time, and source tier. Never page text. The durable provenance on the audit record.
 
 - **Episode**
-  - A price record opened for a candidate whose appendix carried prices: the symbol and lifecycle, the decision class, the creation date, that day's spot, an anchor close, the model's three expected prices, and the engine's three base values.
+  - A price record opened for a candidate whose appendix carried prices: the symbol and lifecycle, the decision class, the creation date, that day's spot, an anchor close, the model's three expected prices (null where the appendix stated none), and the engine's three base values.
   - Append-only. Never updated or deleted.
 
 - **Decision class**
@@ -524,6 +525,7 @@ Engine-computed over the append-only episode store. No model. They run in Discov
   - Bridge the episode's prices across any split since creation using its anchor close.
   - Per-check score = 100 × (1 − |expected − actual| ÷ actual), floored at 0, for the model's price and the engine's base value alike.
   - Write onto the episode: horizon, check date, the close, both expected values, both scores.
+  - A horizon whose model price is null scores the engine leg alone; the model's accuracy score at that horizon counts no such check.
 
 - **Pending versus unscorable**
   - A failed refresh leaves the horizon pending; it is due again next run. Never a run failure.
@@ -1214,12 +1216,13 @@ Two messages in one conversation author the model arm. The reasoner interprets t
 
 - The same conversation's second message, thinking off, under a grammar: a transcription, not a judgment.
 - **Sees**
-  - A request for the values as the document states them, closing on a placeholder-only return shape.
+  - A request for the values as the document states them — null where it states none — closing on a placeholder-only return shape.
 - **Returns**
-  - `risk_tier` (`high` / `medium` / `low`), `horizon` (`short` / `mid` / `long`), `conviction` (`high` / `medium` / `low`), `expected_price_3m`, `expected_price_12m`, `expected_price_3y`, `detection_mode` (`early` / `continuation`), the leading metric's name and `metric_class` (`structured` from the engine's series menu, `filing` from the standardized statement-line menu, else `research`), and on a carried name `status` (`still-valid` / `invalidated`). A debut's grammar carries no status; the app stamps `new`, so an origin-incompatible value is structurally impossible.
-  - The app keeps only the type check: the enums, each price finite and strictly positive, since the accuracy check divides by it. An off-domain object is rejected whole and the message reissued once; a second failure fails the run, the candidate resuming from its last checkpoint.
+  - `risk_tier` (`high` / `medium` / `low`), `horizon` (`short` / `mid` / `long`), `conviction` (`high` / `medium` / `low`), `expected_price_3m`, `expected_price_12m`, `expected_price_3y`, `detection_mode` (`early` / `continuation`), the leading metric's name and `metric_class` (`structured` from the engine's series menu, `filing` from the standardized statement-line menu, else `research`), and on a carried name `status` (`still-valid` / `invalidated`), every field nullable. A debut's grammar carries no status; the app stamps `new`, so an origin-incompatible value is structurally impossible.
+  - The app keeps only the type check: a present enum in its domain, a present price finite and strictly positive, since the accuracy check divides by it, null accepted on every field. An off-domain object is rejected whole and the message reissued once; a second failure fails the run, the candidate resuming from its last checkpoint.
   - Nothing else about the model arm is checked: not the document against the appendix, not the prices against the bands, not the tier or horizon against the engine's.
   - It does not echo any engine value: the engine's targets, sub-scores, tier, horizon, and reads are app-stamped onto the record directly.
+  - A null is acted on by presence alone: a null tier, horizon, or carried-name status reissues the thesis-document message once as a failed document (Step 5h); a null twelve-month price leaves the model arm no gate leg (Step 5h); a null conviction orders after low (Step 6); a null price opens no model leg at that horizon (Step 7); a null detection mode or metric shows as none.
 
 - **Output of Step 5g**
   - The two-arm opportunity record, before the gate: the engine arm app-stamped, the model arm as written and transcribed.
@@ -1238,13 +1241,13 @@ An app-layer validator, not just a recorder. No model. Every rule below reads en
   - The engine arm's risk tier and horizon, assigned at Step 5c, enter here as the gate's shared legs and persist beside the placement as the baseline. Where the pairs disagree the divergence is recorded — never a validation failure, never a reason to re-run the call — and rides the card's tag. The prior and current archetype labels are recorded the same way.
 
 - **The entry-asymmetry gate — recomputed and enforced here, deterministically, once per arm**
-  - For the **engine arm** over its structured twelve-month base target; for the **model arm** over its appendix's twelve-month expected price. Every other leg — the tier, the haircut band, **H** — is engine-derived and shared, so the arms differ only in the price each brings. The model's authored tier and horizon place the card, never the hurdle, so the model cannot lower its own admission bar.
+  - For the **engine arm** over its structured twelve-month base target; for the **model arm** over its appendix's twelve-month expected price — a null leaving it no leg: it cannot admit, `admitted_by` can read only `engine-only`, and the audit records the model leg absent. Every other leg — the tier, the haircut band, **H** — is engine-derived and shared, so the arms differ only in the price each brings. The model's authored tier and horizon place the card, never the hurdle, so the model cannot lower its own admission bar.
   - **Base leg** — the post-haircut twelve-month base-case forward return must clear `DGS2 + 8 pts` (Low) / `+ 16 pts` (Medium) / `+ 30 pts` (High), decimal ratios, `DGS2` the run-level print.
   - **Shape leg** — bear-case downside may not exceed base-case upside; tests the engine arm's bands alone, the model arm stating no bear price.
   - **Liquidity leg** — the Step-5c banded haircut (0 / −3 / −6 pts) on both arms, the pre-haircut return recorded beside it so the haircut's own counterfactual stays answerable.
   - **Double-over-horizon leg** (emerging-economics track only) — required twelve-month base-case return ≥ `2^(12 ⁄ H) − 1`, **H** in months from the engine horizon's derived basis: `transaction-close` → months to the close (floor 3); `multi-year-compounding` → min(the value-creation read's runway years, 5) × 12, or 36 where the runway is not computable; `default` → ~6 (drafted). The strictest leg binds.
   - **Admission is either-arm**: a candidate clearing either arm's gate is admitted, stamped `admitted_by` (`engine-and-model` / `engine-only` / `model-only`), and **both arms' gate legs** — each leg's required value, actual value, and signed distance — persist on the run audit whatever the outcome.
-  - A **debut no arm clears** is held out as a **`gate-reject`**: its thesis document and appendix persist on the audit, Step 7 opens its episode under that class with both arms' prices and adds the name to the watchlist, where the next run's review decides its fate.
+  - A **debut no arm clears** is held out as a **`gate-reject`**: its thesis document and appendix persist on the audit, Step 7 opens its episode under that class with both arms' prices and, where its appendix named a leading metric with its class, adds the name to the watchlist, where the next run's review decides its fate.
   - A **carried name no arm clears** takes the **upside-exhaustion attention warning** instead — never a 5h archive — so Step 6's every-gate-clearer-appears premise holds for debuts and carries alike.
 
 - **The hard triggers** (app-enforced, binding absolutely on both arms; the either-arm grant never reaches them)
@@ -1259,7 +1262,9 @@ An app-layer validator, not just a recorder. No model. Every rule below reads en
   - An inconclusive re-read never reached this step (Step 5c).
 
 - **The model arm is checked on type alone**
-  - The appendix's enums, its finite positive prices, its origin-constrained status. No engine-relative bound, band, ceiling, or clamp applies to its tier, horizon, conviction, or prices, and the thesis document is persisted exactly as written and validated by nothing.
+  - The appendix's present enums, its present finite positive prices, its origin-constrained status, null accepted on every field. No engine-relative bound, band, ceiling, or clamp applies to its tier, horizon, conviction, or prices, and the thesis document is persisted exactly as written and validated by nothing.
+  - A null tier, horizon, or — on a carried name — status is a failed document, never a turn-away: the thesis-document message reissues once, the task naming the missing item in its own words; a second null fails the candidate under the shared second-failure rule, the checkpoint carrying a resume.
+  - The reissue is the orchestrator's — a new thesis-document message followed by its own appendix message — never a retry of either call: each issued call keeps the adapter's own single re-attempt for its transient classes and nests nothing, so a deep pass issues at most two thesis-document messages and two appendix messages before the terminal failure.
   - There are **no numeric echoes to validate**: engine-owned values are app-stamped directly onto the record, and the model returns only its own arm.
 
 - **Persist and checkpoint**
@@ -1280,7 +1285,7 @@ Every survivor's **cell is already fixed** — the model arm's tier × horizon f
   - No external data.
 
 - **Logic**
-  - Within a cell the order is deterministic: by **conviction level** (high before medium before low), then by the **model arm's twelve-month upside** — its appendix's twelve-month expected price against the live quote — descending, then by ticker for a stable order.
+  - Within a cell the order is deterministic: by **conviction level** (high before medium before low, a null after low), then by the **model arm's twelve-month upside** — its appendix's twelve-month expected price against the live quote — descending, a null price after every present one, then by ticker for a stable order; a carried name inserted at Step 7 takes the same order.
   - **Every Step-5h survivor appears in its cell** — a name either arm admitted is listed, and nothing collapses two names into one: names that express the same discovery hypothesis are **linked** through their hypothesis node and shown as such on their cards, never merged, so breadth and auditability survive and completeness holds by construction rather than by validation.
   - This assembly covers this run's survivor set only; the matrix is final only after Step 7 inserts the still-valid carried opportunities into the same order.
   - No per-cell cap: the gates set a cell's count, not a quota. A cell may be empty when nothing qualified — honest, not a failure — and the matrix never pads itself; a rich cell is never trimmed.
@@ -1310,7 +1315,7 @@ The continuity step — an app-layer validator with no model: the rotation picks
 ### The cheap re-derivation (every other live opportunity; engine-only, never archives)
 
 - **Re-derive the engine arm's bands** — the multiples re-anchored closed-form on the fresh `DGS10` against the stored anchor-window percentiles and drivers (Step 5c), from structured data alone.
-- **Re-run the full entry gate on both arms** against the live quote — every recomputable leg live: the refreshed engine tier, fresh `DGS2`, the banded liquidity haircut from live tradability inputs, the emerging leg's **H** re-read from the persisted horizon basis (a transaction close's months-to-date remeasured). The model arm needs **no model call**: its twelve-month expected price is a frozen number from the last deep pass, so the engine re-measures the live price against it exactly as it does its own — and it **does not decay**, since a dated judgment is not a stale prop (its age rides the *Research stale* badge).
+- **Re-run the full entry gate on both arms** against the live quote — every recomputable leg live: the refreshed engine tier, fresh `DGS2`, the banded liquidity haircut from live tradability inputs, the emerging leg's **H** re-read from the persisted horizon basis (a transaction close's months-to-date remeasured). The model arm needs **no model call**: its twelve-month expected price is a frozen number from the last deep pass, so the engine re-measures the live price against it exactly as it does its own, a null frozen price reading upside exhaustion on the engine arm alone — and it **does not decay**, since a dated judgment is not a stale prop (its age rides the *Research stale* badge).
 - **Re-derive the engine risk tier** from the refreshed inputs — a gate leg and the card's baseline read, never the card's cell, which is the model's frozen placement; a newly disagreeing pair surfaces through the divergence tag.
 - **Refresh the engine-computed fields** — the metric family's continuation state where the family is structured or filing class (a `research`-class anchor has no engine feed and holds its last read), the narrative-vs-reality ratio, the forensic computations on the rider, and the since-flagged read (below).
 - **Raise the attention warning — *Consider Deep Audit* — on any of three high-bar triggers**, and otherwise act on nothing:
@@ -1333,8 +1338,8 @@ Engine-computed over the append-only episode store. No model. The checks on exis
 
 - **Open episodes**
   - For every candidate whose appendix carried prices this run and that has none, or whose latest episode is a month or more old: a pick under `picked` (on its debut and on each later deep pass past that cadence); a debut no arm admitted under `gate-reject`; a debut a hard trigger excluded under `excluded`.
-  - An episode records: the symbol and lifecycle, the decision class, the creation date, that day's spot, the anchor close with its bar date, the model's expected price at three, twelve, and thirty-six months, and the engine's base value at the same horizons — nothing else; the engine's bear and bull edges stay on the run record.
-  - An `insufficient-evidence` or story-stock hold-out has no prices and opens none; a carried name's inconclusive re-read opens none; a watchlist node opens none.
+  - An episode records: the symbol and lifecycle, the decision class, the creation date, that day's spot, the anchor close with its bar date, the model's expected price at three, twelve, and thirty-six months — a horizon the appendix left null recorded null — and the engine's base value at the same horizons — nothing else; the engine's bear and bull edges stay on the run record.
+  - An `insufficient-evidence` or story-stock hold-out has no prices and opens none, and so does an appendix with every price null; a carried name's inconclusive re-read opens none; a watchlist node opens none.
   - Which episode is a lifecycle's latest is insertion order; the creation date is data, never identity.
   - An episode is never updated or deleted; the checks are written onto it once each. The store persists independently of run retention, the archive, and matrix presence — a departed lifecycle's episodes keep maturing on the same clock, and a re-entry opens episodes under its new lifecycle while the old ones run to their horizons.
 
@@ -1346,7 +1351,7 @@ Engine-computed over the append-only episode store. No model. The checks on exis
 ### Since-flagged read, graph, and archive (same pass)
 
 - **Since-flagged read** — refreshed for every carried-forward opportunity: its price-derived parts (running return since `became_opportunity_at`, absolute and vs sector / market, and maximum drawdown) from the same daily-bar reconstruction, the engine metric family's continuation state from its structured or filing path — **live from the idea's first subsequent run** (a debut pick has no elapsed window yet), so the matrix display and the self-review of a carried name read the same numbers.
-- **Opportunity graph** — this run's picks link to their matrix entry (`picked`); this run's hypotheses decided `watchlist` (and `promote` without a slot) are added or refreshed as **watchlist** nodes with their document sections and appendix fields; every ordinary `gate-reject` debut — researched, no arm's gate admitting it, no hard trigger and no floor hold-out — is added or refreshed as a watchlist node too, carrying its thesis document as its text and its appendix's leading metric and class, the next run's review deciding whether it stays (its forecast scored separately on its `gate-reject` episode); nodes the watchlist review retired or whose carry horizon elapsed are **retired** (Step 3c); a deeply invalidated pick's node moves to **`departed`** in the same pass as its archival — a terminal tombstone, visible in route context as a dead thesis, never a discovery feeder and never re-promotable in place; a genuine re-entry opens a new node under a new lifecycle. Departed tombstones prune on the archive's retention.
+- **Opportunity graph** — this run's picks link to their matrix entry (`picked`); this run's hypotheses decided `watchlist` (and `promote` without a slot) are added or refreshed as **watchlist** nodes with their document sections and appendix fields; every ordinary `gate-reject` debut — researched, no arm's gate admitting it, no hard trigger and no floor hold-out, its appendix naming a leading metric with its class — is added or refreshed as a watchlist node too, carrying its thesis document as its text and its appendix's leading metric and class, the next run's review deciding whether it stays (its forecast scored separately on its `gate-reject` episode); nodes the watchlist review retired or whose carry horizon elapsed are **retired** (Step 3c); a deeply invalidated pick's node moves to **`departed`** in the same pass as its archival — a terminal tombstone, visible in route context as a dead thesis, never a discovery feeder and never re-promotable in place; a genuine re-entry opens a new node under a new lifecycle. Departed tombstones prune on the archive's retention.
 - **Archive** — an `invalidated` opportunity is moved to the archive (the most recent **100**, oldest evicted first) as a **frozen verdict snapshot**: the thesis document with its bear case, the archetype, the leading metric, `became_opportunity_at`, the departure date, the archive trigger (`failed-reevaluation` — the single trigger, always a deep pass) with the specific failing signal, `admitted_by` alone (both arms' gate legs live on the run audit), conviction at exit (the model arm's value — a record of where it ended, not a live call), the stamped sector identity, any status-override divergence, and any standing narrative divergence. Afterward **only the price is tracked** — each run refreshes its since-flagged return (absolute, vs sector / market) and drawdown from the bar cache; no metric continuation, no research, no model call. Its episodes keep maturing in the episode store. There is no "target met" exit; staleness alone never archives.
 - **Re-entry is a fresh start**: a later run that independently re-discovers an archived ticker removes it from the archive and it enters as a new opportunity with a new `became_opportunity_at` and a new lifecycle; none of the archived record influences the new one, and the re-entry carries no since-flagged read at its first interpretation. Re-entry is matched by ticker, so a ticker is in exactly one state — live, departed, or neither; a same-ticker-new-thesis re-entry simply retires the prior tombstone early (the archive holds at most one slot per ticker). The archive is passive: a large archived gain never pulls a name back into analysis.
 
@@ -1413,7 +1418,7 @@ Display is a pure read of the persisted matrix; no model runs.
   - Empty cells shown as empty.
 
 - **List view (toggle)**
-  - All nine cells flattened into one sortable grid, each row keeping its placed (model-arm) risk tier and horizon, selection control, badges, and engine-target / model-target / divergence columns; sort keys: **forward % upside to target** (default, descending — the model arm's twelve-month expected price against the cached close; the engine's sortable in its own column) or **realized since-flagged return** (a debut sorts last). Display-only reordering; keyboard-operable sortable headers and a stable sort.
+  - All nine cells flattened into one sortable grid, each row keeping its placed (model-arm) risk tier and horizon, selection control, badges, and engine-target / model-target / divergence columns; sort keys: **forward % upside to target** (default, descending — the model arm's twelve-month expected price against the cached close, a null price sorting last; the engine's sortable in its own column) or **realized since-flagged return** (a debut sorts last). Display-only reordering; keyboard-operable sortable headers and a stable sort.
 
 - **Archived opportunities (separate view)**
   - Each departed pick's frozen record, departure date, and live since-flagged return — **no forward prediction**, no expected prices, no accuracy scores; sortable by since-flagged return or drawdown, default departure date descending.

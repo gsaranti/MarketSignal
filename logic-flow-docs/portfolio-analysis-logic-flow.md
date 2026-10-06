@@ -98,6 +98,7 @@
 - **Typed appendix**
   - The thesis document's stated values transcribed into a typed object: conviction and the expected price at each horizon.
   - Type-checked only.
+  - Any field null where the document states no value; a null is acted on by presence, never read as content.
 
 - **Conviction**
   - The model's confidence in its own thesis: high, medium, or low.
@@ -105,7 +106,7 @@
 
 - **Expected price**
   - The model's single-point expected share price at three months, twelve months, and three years.
-  - Finite and strictly positive, or the appendix is rejected.
+  - Finite and strictly positive where stated, or the appendix is rejected; null where the document states none, that horizon then scoring the engine leg alone.
 
 - **Write-up**
   - The prose a research pass produces on one topic.
@@ -401,6 +402,7 @@ Engine-computed over the append-only episode store. No model. Opening new episod
   - Bridge the episode's prices across any split since creation using its anchor close.
   - Per-check score = 100 × (1 − |expected − actual| ÷ actual), floored at 0, for the model's price and the engine's base value alike.
   - Write onto the episode: horizon, check date, the close, both expected values, both scores.
+  - A horizon whose model price is null scores the engine leg alone; the model's accuracy score at that horizon counts no such check.
 
 - **Pending versus unscorable**
   - A failed refresh leaves the horizon pending; it is due again next run. Never a run failure.
@@ -1001,11 +1003,12 @@ Three model calls. The first two share one conversation and author the intrinsic
 
 - The same conversation's second message, thinking off, under a grammar: a transcription, not a judgment.
 - **Sees**
-  - A request for the conviction and the expected price at each horizon as the document states them, closing on a placeholder-only return shape.
+  - A request for the conviction and the expected price at each horizon as the document states them — null where it states none — closing on a placeholder-only return shape.
 - **Returns**
-  - `conviction` (high, medium, low), `expected_price_3m`, `expected_price_12m`, `expected_price_3y`.
-  - The app checks type only: each price finite and strictly positive. An off-domain object is rejected whole and the message reissued once; a second failure isolates the holding.
+  - `conviction` (high, medium, low), `expected_price_3m`, `expected_price_12m`, `expected_price_3y`, each nullable.
+  - The app checks type only: each present price finite and strictly positive, a present conviction in its enum, null accepted everywhere. An off-domain object is rejected whole and the message reissued once; a second failure isolates the holding.
   - Nothing else about the model arm is checked: not the document against the appendix, not the prices against the bands.
+  - A null is acted on by presence: a null price opens no model leg at that horizon (Step 7), a null conviction renders as none, and an appendix with every field null opens no episode.
   - Not asked on a role-risk-only holding.
 
 #### Call: the action decision — what it sees and returns
@@ -1073,8 +1076,8 @@ Every action is final by now; this step decides none. It builds the book-level s
 Engine-computed over the append-only episode store. No model. The checks on existing episodes ran at Step 5.
 
 - **Open episodes**
-  - For every priced holding analyzed this run with no episode, or whose latest episode is a month or more old.
-  - An episode records: symbol, creation date, that day's spot, the anchor close with its bar date, the model's expected price at three, twelve, and thirty-six months, and the engine's base value at the same horizons.
+  - For every priced holding analyzed this run whose appendix stated at least one price, with no episode or whose latest episode is a month or more old.
+  - An episode records: symbol, creation date, that day's spot, the anchor close with its bar date, the model's expected price at three, twelve, and thirty-six months — a horizon the appendix left null recorded null — and the engine's base value at the same horizons.
   - Role-risk-only holdings and abstentions open none. A holding re-priced between the monthly points is not recorded, so the scored forecast is the monthly snapshot.
   - An episode is never updated or deleted; the checks are written onto it once each. The store is the log.
 
