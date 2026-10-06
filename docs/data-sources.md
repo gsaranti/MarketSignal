@@ -234,7 +234,7 @@ Because COT already carries its own native week-over-week change and follows a f
 ### Tavily
 Docs - https://docs.tavily.com/welcome
 
-**Used by:** Report (**primary** news / research sweep) · local suite (web-loop **fallback** only — never a discovery dependency; [web-research.md](web-research.md)).
+**Used by:** Report (**primary** news / research sweep) — the local suite never uses it ([web-research.md §Tavily fallback](web-research.md#tavily-fallback)).
 
 Tavily provides AI-oriented web search and research retrieval.
 
@@ -686,10 +686,10 @@ Rate prints normalize to **decimal ratios** at the adapter seam before any engin
 | --- | --- | --- | --- |
 | `DGS10` | 10-Year Treasury Yield | run-level print + one full/deep-run history request | risk-free rate → the v2 scenario-target function's spread-anchored multiples ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)); **the full/deep path additionally loads the anchor-window history** — one date-ranged `/series/observations` request per run covering the trailing ~12-quarter window plus alignment slack, retained as dated observations for the v2 percentiles' latest-published-on-or-before-the-anchor-date join (the suite's one FRED history request; the pairing convention lives with the function) — while the engine-only quick paths fetch only the current print: the quick check re-anchors the stored multiples on the fresh print ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) |
 | `DGS2` | 2-Year Treasury Yield | run-level | risk-free rate (short end) → the capital-efficiency hurdle anchor; also refreshed by the quick check ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) |
-
-A run-level rate retrieval (`DGS10` / `DGS2`) still failing after the shared bounded retries **hard-fails the run before any per-holding work** — the suite's canonical rate-anchor rule, homed at [portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture); the engine-only quick paths fail-soft to the cached print under the drafted max age instead.
 | `DCOILWTICO` | WTI Crude Oil | run-level | commodity context for oil / gas-linked holdings; a coal or uranium industry overrides the broad Energy sector |
 | `DHHNGSP` | Henry Hub Natural Gas | run-level | commodity context for oil / gas-linked holdings; a coal or uranium industry overrides the broad Energy sector |
+
+A run-level rate retrieval (`DGS10` / `DGS2`) still failing after the shared bounded retries **hard-fails the run before any per-holding work** — the suite's canonical rate-anchor rule, homed at [portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture); the engine-only quick paths fail-soft to the cached print under the drafted max age instead.
 
 Materials-linked holdings reuse the suite's broader FRED commodity set (monthly IMF copper, aluminum, nickel, and iron ore — series IDs catalogued under [§Trade Opportunities — endpoint surface](#trade-opportunities--endpoint-surface) below, the suite's commodity feed); uranium is selected by uranium industry regardless of the broad FMP sector, coal receives no proxy because no coal series is on-plan, and gold is FMP `GCUSD` selected only for a gold / precious-metals industry.
 Gold-linkage keys on the holding's FMP **industry** label (gold / precious metals), never the whole Basic Materials sector — a steel or chemicals holding carries no gold context.
@@ -836,7 +836,7 @@ Rate prints reach the engine in the suite's shared **decimal-ratio** representat
 | `PURANUSDM` | Global price of Uranium (monthly, IMF) | run-level | uranium-price turn — nuclear / utility cyclical sleeve |
 
 Daily-cadence metals come from FMP's commodity series as the higher-frequency complement to the monthly IMF series — copper `HGUSD` plus **gold `GCUSD` / silver `SIUSD`**, this job's canonical gold / silver price context (the identity table in [§Financial Modeling Prep](#financial-modeling-prep); the silver / copper endpoint shapes are verified at build time).
-The report's and Portfolio's run-level FMP `GCUSD` / `SIUSD` quote rows are unchanged — a deliberate per-job split: those jobs need a point-in-time level, while this job's cyclical sleeve needs a daily *series* for the turn read (and a price context matching its run-level gold CFTC positioning row below).
+The report's run-level FMP `GCUSD` / `SIUSD` quote rows and Portfolio's `GCUSD` quote row are unchanged — a deliberate per-job split: those jobs need a point-in-time level, while this job's cyclical sleeve needs a daily *series* for the turn read (and a price context matching its run-level gold CFTC positioning row below).
 The five monthly IMF series above are the **suite-shared commodity feed**, not a Trade-Opportunities exclusive: Portfolio Analysis's materials-linked holdings read the four general-metals rows and its uranium-industry holdings read the uranium row from the same run-level pull ([§Portfolio Analysis — endpoint surface](#portfolio-analysis--endpoint-surface)).
 
 **CFTC** — Socrata, base `https://publicreporting.cftc.gov/resource/<dataset>.json`.
