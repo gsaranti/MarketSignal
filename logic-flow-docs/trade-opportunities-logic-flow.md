@@ -1252,9 +1252,11 @@ An app-layer validator, not just a recorder. No model. Every rule below reads en
 
 - **The hard triggers** (app-enforced, binding absolutely on both arms; the either-arm grant never reaches them)
   - A **restatement or auditor change** — the item-classified filing kinds from the Step-5c sweep, never a bare model assertion — **excludes a debut outright on both arms** (held out as `excluded`, its episode opened under that class at Step 7) and, on a carried name, **app-forces the status to `invalidated`** — the archival path below — the model's conflicting status persisting as the typed **status-override divergence** `{ model-proposed status, app-forced status, matched hard trigger, filing }`, never the transition's control.
+  - A model-only admission cannot carry a name past a hard trigger or the floor.
+
+- **Annotations that clamp nothing here**
   - **Anchorless `hype`** — the narrative-vs-reality read at `hype` with the archetype's structured metric family measurable and not inflecting — is an annotation on a **carried** name, never a trigger: the review and the thesis document confront it and the model's status stands. A `still-valid` status held against it persists as the typed **narrative divergence** `{ engine read, model status }` on the record and the audit and raises the card's divergence tag (Step 10); a debut with that family read never reaches this step, held out at Step 5c as a story stock before research.
   - The soft forensic flags and a `hype` read, anchored or anchorless, are annotations the thesis document already weighed; they clamp nothing here.
-  - A model-only admission cannot carry a name past a hard trigger or the floor.
 
 - **Carried name outcomes out of this step**
   - Effective status **`invalidated`** — the appendix's status, or the app-forced override — → held out of the matrix and flagged for archival; Step 7 moves it. This deep pass is the only archival path.
