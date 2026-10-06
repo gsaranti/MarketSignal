@@ -191,12 +191,16 @@ Runs **once per run, before any route executes**, as its own isolated conversati
 
 **Prompt — input.**
 One message in two parts: the Step-2 house view, rendered as a market-level analysis; the carried-forward **opportunity graph** — each live hypothesis's document section with its decision, and the watchlist review's decisions from this run (promote / keep / retire) — the departed tombstones included as dead theses; the **route menu with each route's source-strategy rubric**; the app-computed route-class / subject coverage ages and any app-inserted overdue route; and the run's route cap and discovery-budget posture.
+A graph-fed block — this one, and PRIOR HYPOTHESES in the route briefs below — renders only when the graph holds a node; a first run, with nothing persisted, renders none, and no heading stands over absent content.
+A first run's empty ledger reads every route class and coverage subject as due, so the coverage block renders every unit due and the tie-break alone chooses the inserted route.
 Then the task: the route list to return and its shape.
+The task states the hunt's end: routes whose topics carry the chain from the world-change to the operators that capture the margin and the leading metrics that would prove it.
 
 **Returns.**
 A **priority-ordered route list** under the configured route cap — each selected route with its source strategy, selection rationale, `selection_origin` (`outside-view` / `coverage-rotation` / `model`), and any coverage-unit ids it is expected to work.
 Each route also carries its **topic list** — the focused questions the route is worked as, each topic its own isolated conversation in the research loop — proposed by this call: the one place in the suite where the reasoner proposes an agenda's topics rather than the orchestrator assembling them from a documented list ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
 The app checks the list on type — route ids from the menu, the cap, the origin enum, non-empty topic strings — and enforces two clauses that are never model discretion: the **mandatory outside-view challenge route is always present and marked graph-blind** (the app inserts it if the model omitted it), and the **coverage-rotation route** is app-owned — the model may refine its questions and source plan, but cannot remove it, substitute a less-overdue unit, or claim its debt cleared; only the orchestrator's completed-route record updates the ledger.
+An inserted outside-view route carries its framing question as its single topic, the menu's outside-view source-strategy rubric, an app-fixed selection rationale and the `outside-view` origin.
 The validated list is the run's route agenda; routes then execute per the calls below.
 
 #### Local-model call — Route research (per topic) (Qwen3.5-122B, thinking)
@@ -210,9 +214,12 @@ This lane is where the model **reasons its way to names** — forming a hypothes
 **Prompt — input (gathering).**
 One message in two parts on the shared frame.
 Part 1 leads with the route-constant block, so consecutive topic conversations on one route share it: the route header with the run date; MARKET ANALYSIS — the house view, rendered as a market-level analysis; PRIOR HYPOTHESES — the carried-forward graph's live hypothesis sections and watchlist names relevant to the route, so the model extends or retires existing theses rather than re-deriving blind (**withheld on the mandatory outside-view route, which runs graph-blind**); the **route's source-strategy rubric**; NEWS LEADS — the structured news and macro-release headlines relevant to the route, with their addresses; and PAGES ALREADY RETRIEVED, the bounded route-scoped reuse block.
+PRIOR HYPOTHESES is absent on a first run, when the graph holds no section.
 The topic's own text follows: TOPIC, the topic's questions; on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR; on the disconfirming pass WRITE-UPS SO FAR, the route's write-ups.
 Before each gathering request the app appends a short user message stating the replies remaining in this pass; the brief and every previously issued message stay unchanged.
 Part 2: what to find, how to weigh a source, the per-reply tool-call bound, and when to stop.
+On a root pass, what to find names the operators that capture the margin and the leading metrics that would prove it beside the world-change the topic asks about, so the hunt's end is stated where the topic is first worked.
+A follow-up pass and the disconfirming pass keep the shared loop's openings — the follow-up question alone, or evidence against the route's write-ups — and name that end only as what the question serves ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
 Topics never share a context, and no other topic's write-up is fed in — routes never share one either.
 
 **Prompt — input (synthesis).**
@@ -234,7 +241,7 @@ The resident 122B reasoner in thinking mode writes the **hypothesis document** w
 It runs **once per route, after the route's topic conversations and its disconfirming pass complete** — the first model consolidation of the route's research, and the call that authors the route's hypotheses; the adversarial passes (movement 3 above) are the document's own discipline, not fetch passes.
 
 **Prompt — input.**
-Part 1, in page order: the route header; MARKET ANALYSIS; PRIOR HYPOTHESES (withheld from the graph-blind outside-view route); the route's source-strategy rubric; then WRITE-UPS — the route's write-ups, or their distillate, each under its topic's heading, the disconfirming pass's last.
+Part 1, in page order: the route header; MARKET ANALYSIS; PRIOR HYPOTHESES (withheld from the graph-blind outside-view route, absent on a first run); the route's source-strategy rubric; then WRITE-UPS — the route's write-ups, or their distillate, each under its topic's heading, the disconfirming pass's last.
 Part 2 asks for the document: for each hypothesis the world-change, the mechanism, the economic value-chain trace, the leading metric that would prove it with the kind of series it is, the likely public-company expressions, the bear case, the key falsifiers, the adversarial passes' answers, and the decision with its reasons — promote, watchlist, or none — in the model's priority order; for an event-impact route the sized technology read per affected name and its side; within the hypothesis document's length band ([trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)).
 The second message asks for the appendix as the document states it, closing on a placeholder-only return shape.
 
@@ -266,6 +273,8 @@ The class is a **type, not a claim**: the appendix names a `structured` metric f
 The step runs in three movements.
 First the **engine refreshes** every `structured`- and `filing`-class node's print at its class's cadence (a short-interest metric reads the run's **once-per-run FINRA consolidated file** as a local lookup — one fetch per run, shared with discovery — [data-sources.md §Trade Opportunities — endpoint surface](data-sources.md#trade-opportunities--endpoint-surface)) and collects any **evidence event** tied to a watchlist name — a new item-classified 8-K or a material filing from the shared sweep, the quick check's primitive ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)); a failed refresh types that print `unknown`, never a fabricated value.
 Then the **watchlist review** — one thinking conversation over every live node — judges each on its hypothesis text, its latest refresh write-up where the lane has produced one, its refreshed prints and its events, and returns a prose review and, by a non-thinking transcription, a typed decision per node: **promote** (the node enters Step 4 as a priority feeder, so a maturing thesis is never missed for want of a fresh trigger), **keep** (carried forward; its refresh timestamp advances only on a successful evidence refresh — a served `structured` / `filing` print this run, or a refresh write-up from the lane — never on the review alone, the review's own date recorded separately), or **retire** (removed from active monitoring, kept in history).
+With no live node the review and its transcription are skipped, no call over nothing.
+The run's audit then carries no review, and the refresh lane has nothing to select.
 The engine applies only the deterministic rules around the review: a node whose **carry horizon** has elapsed — a configurable cap counted in the leading metric's **own reporting periods**, not runs, cadence-independent by construction since run frequency is user-chosen — retires regardless, and the retention cap below binds at add time; so the watchlist self-prunes and cannot grow unbounded.
 Last, the **research-watchlist refresh lane** selects at most the configured small number of `research`-class nodes (drafted **one per DTO run**) for a narrow current-search pass, after the Step-3b routes, from the discovery budget they leave.
 Selection is deterministic and priority-ordered: a newly detected filing or material event tied to the node first, then the oldest successful research refresh, then ticker.
@@ -278,6 +287,7 @@ It is a discovery refresh, **not a deep re-evaluation**: it never stamps `last_d
 **Model.**
 The resident 122B reasoner in thinking mode writes the review with no grammar and no tools; a second message in the same conversation, thinking off and schema-constrained, transcribes the decisions.
 Runs **once per DTO run, before route planning**, over every live watchlist node.
+Skipped when no node is live.
 
 **Prompt — input.**
 Part 1, in page order: the run date; MARKET ANALYSIS — the house view; then, per node, its header (symbol, first-surfaced date, last refresh), HYPOTHESIS — the document section the node expresses, verbatim with its date, THEN AND NOW — the node's `structured` / `filing` prints at admission and as refreshed this run, glossed once, with any print the refresh could not serve stated as unknown, EVENTS — the evidence events tied to the name since its last refresh, if any, and OBSERVATION — the node's latest refresh write-up where the lane has produced one, verbatim with its vintage.

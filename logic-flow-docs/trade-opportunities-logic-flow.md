@@ -593,18 +593,18 @@ The job's edge: a research-active feeder that forms investable **hypotheses** an
 - **Call: route planning** (thinking, grammar, no web tool — once per run, before any route executes; planning spends none of the discovery budget)
   - **Sees (Part 1)**
     - MARKET ANALYSIS — the house view.
-    - The carried-forward opportunity graph — each live hypothesis's document section with its decision, and the watchlist review's decisions from this run (promote / keep / retire); the departed tombstones included as dead theses.
+    - The carried-forward opportunity graph — each live hypothesis's document section with its decision, and the watchlist review's decisions from this run (promote / keep / retire); the departed tombstones included as dead theses. Rendered only when the graph holds a node; a first run renders no graph block, and no heading stands over absent content.
     - The route menu with each route's source-strategy rubric — *policy / regulatory* → legislation, agency notices, procurement databases; *supply chain* → trade journals, filings, customer / supplier commentary; *technical bottleneck* → standards bodies, engineering blogs, patent / product docs, trade publications; *procurement / grant / capex*; *customer capex*; *industry history*; *failure analogue*; *event-impact / value-chain repricing* → the announcing company's primary materials (spec sheets, reference designs, keynote / launch docs), standards bodies, teardown / engineering analysis, the affected names' segment disclosures.
-    - The app-computed coverage ages per route class and per coverage subject, and any app-inserted overdue route.
+    - The app-computed coverage ages per route class and per coverage subject, and any app-inserted overdue route. On a first run the empty ledger reads every unit due and the tie-break alone chooses the inserted route.
     - The run's route cap and discovery-budget posture.
   - **Sees (Part 2)**
-    - The route list to return and its shape, closing on a placeholder-only return shape.
+    - The route list to return and its shape, and the hunt's end the routes serve — topics that carry the chain from the world-change to the operators that capture the margin and the leading metrics that would prove it — closing on a placeholder-only return shape.
   - **Returns**
     - A priority-ordered route list under the route cap — each route with its source strategy, selection rationale, `selection_origin` (`outside-view` / `coverage-rotation` / `model`), any coverage-unit ids it is expected to work, and its **topic list** — the focused questions the route is worked as, each topic one isolated conversation. The one place in the suite where the reasoner proposes an agenda's topics.
     - The app checks the list on type — route ids from the menu, the cap, the origin enum, non-empty topic strings — and nothing else.
 
 - **App-enforced clauses (never model discretion)**
-  - The **outside-view route** is always present and marked graph-blind — inserted if the model omitted it: "assume the carried-forward graph is stale: what world-change are we missing?"
+  - The **outside-view route** is always present and marked graph-blind — inserted if the model omitted it: "assume the carried-forward graph is stale: what world-change are we missing?" An inserted route carries that question as its single topic, the menu's outside-view rubric, an app-fixed rationale, and the `outside-view` origin.
   - The **coverage-rotation route** is app-owned: the model may refine its questions and source plan but cannot remove it, substitute a less-overdue unit, or claim its debt cleared; only the orchestrator's completed-route record updates the ledger.
   - The **event-impact route** may be chosen speculatively — its materiality gate is research-derived and unknowable at planning time, so it is checked at card formation (below). A scheduled route whose research surfaces no qualifying event emits nothing and stays dormant.
 
@@ -627,14 +627,14 @@ The job's edge: a research-active feeder that forms investable **hypotheses** an
   - **Sees (Part 1, the route-constant block first, then the topic)**
     - The route header with the run date.
     - MARKET ANALYSIS — the house view, rendered as a market-level analysis.
-    - PRIOR HYPOTHESES — the carried-forward graph's live hypothesis sections and watchlist names relevant to the route, so the model extends or retires existing theses rather than re-deriving blind. Withheld on the outside-view route.
+    - PRIOR HYPOTHESES — the carried-forward graph's live hypothesis sections and watchlist names relevant to the route, so the model extends or retires existing theses rather than re-deriving blind. Withheld on the outside-view route. Absent on a first run, when the graph holds no section.
     - The route's source-strategy rubric.
     - NEWS LEADS — the structured news and macro-release headlines relevant to the route, with their addresses. Fetch candidates only.
     - PAGES ALREADY RETRIEVED — the bounded route-scoped reuse block; absent on the disconfirming pass.
     - TOPIC, the topic's questions; on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR; on the disconfirming pass WRITE-UPS SO FAR, the route's write-ups.
     - Before each gathering request the app appends a short user message stating the replies remaining in this pass; the brief and every previously issued message stay unchanged.
   - **Sees (Part 2)**
-    - What to find, how to weigh a source, the per-reply tool-call bound, and when to stop.
+    - What to find — on a root pass the operators that capture the margin and the leading metrics that would prove it, beside the world-change the topic asks about; a follow-up pass its question alone and the disconfirming pass evidence against the write-ups, each naming that end only as what its question serves — how to weigh a source, the per-reply tool-call bound, and when to stop.
   - **Returns**
     - Tool calls until a reply carries none, or a bound.
 
@@ -658,7 +658,7 @@ One conversation per route, after the route's topic conversations and its discon
 
 - **Call: the hypothesis document** (thinking, no grammar)
   - **Sees (Part 1, in page order)**
-    - The route header; MARKET ANALYSIS; PRIOR HYPOTHESES (withheld from the outside-view route); the route's source-strategy rubric.
+    - The route header; MARKET ANALYSIS; PRIOR HYPOTHESES (withheld from the outside-view route, absent on a first run); the route's source-strategy rubric.
     - WRITE-UPS — the route's write-ups, or their distillate, each under its topic's heading, the disconfirming pass's last.
   - **Sees (Part 2)**
     - The document to write: for each hypothesis the world-change, the mechanism, the economic value-chain trace (margin capture, bargaining power, capacity constraint, pricing power versus mere exposure — past the crowded pure-plays to the picks-and-shovels enablers at the constrained, margin-capturing nodes, often mid or small cap), the leading metric that would prove it with the kind of series it is, the likely public-company expressions, the bear case, the key falsifiers, the adversarial passes' answers — *why is this already priced? · why might the obvious beneficiary be the wrong expression? · who actually captures the margin instead?* — and the decision with its reasons — promote, watchlist, or none — in the model's priority order. The dimensions the task names are magnitude, durability, time horizon, leading-metric observability, crowding, and margin-capture clarity.
@@ -712,6 +712,7 @@ Discovery is stateful: every worthy-but-unpicked name from prior runs is a watch
   - A node whose **carry horizon** has elapsed — a configurable cap counted in the leading metric's own reporting periods (drafted ~4), never runs — retires regardless of the review.
 
 - **Movement 2 — Call: the watchlist review** (thinking, no tools, no grammar; then a non-thinking transcription — once per DTO run, before route planning, over every live node)
+  - Skipped when no node is live: no call over nothing, no review on the audit, and the refresh lane has nothing to select.
   - **Sees (Part 1, in page order)**
     - The run date; MARKET ANALYSIS — the house view.
     - Per node: its header (symbol, first-surfaced date, last refresh); HYPOTHESIS — the document section the node expresses, verbatim with its date; THEN AND NOW — the node's `structured` / `filing` prints at admission and as refreshed this run, glossed once, with any print the refresh could not serve stated as unknown; EVENTS — the evidence events tied to the name since its last refresh, if any; OBSERVATION — the node's latest refresh write-up where the lane has produced one, verbatim with its vintage.
