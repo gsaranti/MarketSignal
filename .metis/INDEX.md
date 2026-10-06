@@ -231,7 +231,7 @@ build status lives in `BUILD.md`.*
 - Run audit record provenance (source labels, model ids) — storage.md §Local Analysis Suite Storage; portfolio-workflow.md §Step 7
 - Holdings normalization / book-level netting — schwab-integration.md §What is pulled, §Manual import (supplement); portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
 - Holdings change tracking — portfolio-analysis.md §Holdings change tracking; portfolio-workflow.md §Step 4
-- Net-short equity handling — portfolio-analysis.md §Asset eligibility, §Triggering, §Holdings change tracking, §Outcome learning
+- Net-short equity handling — portfolio-analysis.md §Asset eligibility, §Triggering, §Holdings change tracking
 - Not-rated positions in roll-up — portfolio-analysis.md §Asset eligibility, §Portfolio roll-up; schwab-integration.md §What is pulled
 - Fund path — portfolio-analysis.md §Asset eligibility
 - Fund strategy classification & routing — portfolio-analysis.md §Asset eligibility; portfolio-workflow.md §Step 3, §Step 6b
