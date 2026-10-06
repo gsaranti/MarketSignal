@@ -261,6 +261,7 @@ build status lives in `BUILD.md`.*
 - Either-arm admission — trade-opportunities.md §The opportunity, §The pipeline, §Evidence floor, §Storage and display, §Starting parameters; trade-opportunities-workflow.md §Step 5h, §Step 7
 - Model-authored matrix placement (the §The opportunity space statement is canonical) — trade-opportunities.md §The opportunity space, §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h, §Step 7; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Arm divergences — the recorded pairs and the card's divergence tag — trade-opportunities.md §The opportunity, §Storage and display; trade-opportunities-workflow.md §Step 5h, §Step 7, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Persistent Warning Area
+- Narrative divergence (the §Starting parameters statement is canonical; distinct from the status override) — trade-opportunities.md §Starting parameters, §The opportunity, §Evidence floor, §Storage and display; trade-opportunities-workflow.md §Step 5c, §Step 5h, §Step 7, §Step 9, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Persistent Warning Area
 - Opportunity archetype lens — trade-opportunities.md §Archetype
 - Archetype stickiness on carried-forward names — trade-opportunities.md §Archetype; trade-opportunities-workflow.md §Step 5a
 - Archetype classification — the prefetch and the confirmation call — trade-opportunities-workflow.md §Step 5a; data-sources.md §Trade Opportunities — endpoint surface
