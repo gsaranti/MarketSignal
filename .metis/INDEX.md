@@ -246,6 +246,7 @@ build status lives in `BUILD.md`.*
 - New-money admission test — portfolio-analysis.md §Starting parameters
 - Portfolio per-holding/per-fund endpoint surface — data-sources.md §Portfolio Analysis — endpoint surface
 - Investor profile default preset — configuration.md §Investor Profile; interface.md §Main Layout (Settings tree)
+- Investor profile reach (the action call alone; no Trade Opportunities prompt) — portfolio-analysis.md §Intrinsic verdict, §Portfolio action; portfolio-workflow.md §Step 5, §Step 6f; trade-opportunities-workflow.md §Step 2; configuration.md §Investor Profile
 - Per-holding failure isolation (failed card, carried prior, all-failed run) — portfolio-analysis.md §Failure posture; portfolio-workflow.md §Step 6; interface.md §Main Layout
 
 ### Trade Opportunities
@@ -266,15 +267,18 @@ build status lives in `BUILD.md`.*
 - Opportunity archetype lens — trade-opportunities.md §Archetype
 - Archetype stickiness on carried-forward names — trade-opportunities.md §Archetype; trade-opportunities-workflow.md §Step 5a
 - Archetype classification — the prefetch and the confirmation call — trade-opportunities-workflow.md §Step 5a; data-sources.md §Trade Opportunities — endpoint surface
+- Archetype economics track (the §Evidence floor statement is canonical) — trade-opportunities.md §Evidence floor, §Balancing the revolutionary against the proven, §Starting parameters, §The opportunity; trade-opportunities-workflow.md §Step 5c, §Step 5g, §Step 5h, §Step 7; storage.md §Local Analysis Suite Storage
 - Research-driven candidate discovery — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 3
 - Post-earnings surprise screen — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 3a; data-sources.md §Trade Opportunities — endpoint surface
 - Model-led hypothesis research lane — trade-opportunities-workflow.md §Step 3b
 - Discovery route-topic proposal (the one model-proposed agenda) — trade-opportunities-workflow.md §Step 3b; web-research.md §The research loop and context management
 - Hypothesis document and appendix (hypothesis formation) — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §The pipeline, §Discovery memory, §Starting parameters; storage.md §Local Analysis Suite Storage
 - Hypothesis supersession and the metric-named date (the §Discovery memory statement is canonical) — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3b, §Step 3c; storage.md §Local Analysis Suite Storage
+- Hypothesis-node liveness and retirement (the §Discovery memory statement is canonical) — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3b, §Step 3c, §Step 7; storage.md §Local Analysis Suite Storage
 - Discovery coverage rotation / ledger — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §Starting parameters; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
 - Discovery memory / opportunity graph — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3c, §Step 7, §ATO: the audit flow
 - Watchlist review — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Discovery memory, §Starting parameters, §Storage and display
+- Watchlist admission print (the §Discovery memory statement is canonical) — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3c; storage.md §Local Analysis Suite Storage
 - Research-watchlist refresh lane — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Starting parameters; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
 - Leading-metric re-check class (the canonical vocabulary, owned by §Step 3c) — trade-opportunities-workflow.md §Step 3b, §Step 3c; trade-opportunities.md §The opportunity, §Discovery memory, §Starting parameters; storage.md §Local Analysis Suite Storage
 - Watchlist cap eviction — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Starting parameters, §Discovery memory; configuration.md §Local Analysis Suite Configuration
@@ -301,6 +305,7 @@ build status lives in `BUILD.md`.*
 - Continuity and isolation (Trade Opportunities) — trade-opportunities.md §Continuity and isolation; local-models.md §Run history and continuity
 - Trade Opportunities outcome learning — trade-opportunities.md §Outcome learning, §Storage and display; trade-opportunities-workflow.md §Step 2, §Step 5f, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; data-sources.md §Trade Opportunities — endpoint surface
 - Episode store (Trade Opportunities) — the decision class and the lifecycle id — trade-opportunities.md §Outcome learning, §The opportunity, §Archived opportunities; trade-opportunities-workflow.md §Step 2, §Step 5b, §Step 7; storage.md §Local Analysis Suite Storage; data-portability.md §Build-order placement
+- Lifecycle id — assignment, continuation and closure (the §Outcome learning statement is canonical) — trade-opportunities.md §Outcome learning, §The opportunity, §Discovery memory, §Archived opportunities; trade-opportunities-workflow.md §Step 5, §Step 5h, §Step 7; storage.md §Local Analysis Suite Storage
 - Accuracy checks and accuracy scores (Trade Opportunities) — trade-opportunities.md §Outcome learning, §The opportunity, §Storage and display; trade-opportunities-workflow.md §Step 2, §Step 5f, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; data-sources.md §Trade Opportunities — endpoint surface
 - Trade Opportunities endpoint surface — data-sources.md §Trade Opportunities — endpoint surface, §FMP — current paid-plan tier audit; storage.md §Local Analysis Suite Storage (price-bar cache)
 - Trade Opportunities signal inputs — trade-opportunities.md §Signal inputs; data-sources.md §Local analysis suite — shared sourcing, §Trade Opportunities — endpoint surface
