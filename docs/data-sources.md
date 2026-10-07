@@ -5,7 +5,7 @@ Credential configuration for these providers is covered in [configuration.md](co
 
 The document is in **two parts**.
 [The data sources](#the-data-sources) catalogs every provider — what it is, why the app depends on it, and (for FMP) its plan-tier audit.
-[Endpoints by job](#endpoints-by-job) then lists, per job — **Market Signal Report**, **Portfolio Analysis**, **Trade Opportunities** — exactly which endpoints of each source that job calls, including the report's planned paid-FMP additions.
+[Endpoints by job](#endpoints-by-job) then lists, per job — **Market Signal Report**, **Portfolio Analysis**, **Trade Opportunities** — exactly which endpoints of each source that job calls, including the report's paid-FMP enrichment.
 The matrix in [Reading this document](#reading-this-document) is the at-a-glance index across both.
 
 ## Reading this document
@@ -103,10 +103,10 @@ Responsibilities:
 - sector valuation (per-sector aggregate P/E, by exchange — NASDAQ + NYSE)
 - finer industry rotation (per-industry average move + aggregate P/E, by exchange)
 - market risk premium (US equity-risk-premium)
-- historical sector / industry P/E *and* performance (paid tier; trailing-window P/E percentile + cumulative-return trend vs own history — planned report enrichment, see [Endpoints by job](#endpoints-by-job))
-- IPO calendar + M&A deal flow (paid tier; issuance / deal-making froth as a risk-appetite read — planned report enrichment, see [Endpoints by job](#endpoints-by-job))
+- historical sector / industry P/E *and* performance (paid tier; trailing-window P/E percentile + cumulative-return trend vs own history — report enrichment, see [Endpoints by job](#endpoints-by-job))
+- IPO calendar + M&A deal flow (paid tier; issuance / deal-making froth as a risk-appetite read — report enrichment, see [Endpoints by job](#endpoints-by-job))
 - FMP Articles — in-house, ticker-tagged market commentary (free tier; feeds the Step-7 news funnel — see [FMP Articles](#fmp-articles) below)
-- economic calendar — analyst consensus + realized surprise + Fed/FOMC event dates (paid tier; planned report enrichment, see [Endpoints by job](#endpoints-by-job))
+- economic calendar — analyst consensus + realized surprise + Fed/FOMC event dates (paid tier; report enrichment, see [Endpoints by job](#endpoints-by-job))
 - stock / general news feeds (premium tier only; the one free news surface is [FMP Articles](#fmp-articles))
 
 The suite's benchmark, sector, and commodity identities are named once, here, as FMP symbols.
@@ -405,15 +405,15 @@ How tiers and evidence-kinds translate into ranking and conviction — and the l
 
 ## Endpoints by job
 
-This part lists, per job, which endpoints of each source the job calls — the **Market Signal Report** first (including its **planned** paid-FMP additions, flagged *not yet wired*), then the two local jobs (under a shared sourcing note).
+This part lists, per job, which endpoints of each source the job calls — the **Market Signal Report** first (including its paid-FMP enrichment), then the two local jobs (under a shared sourcing note).
 Plan-tier status for the FMP paths is in [FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit); **cardinality** (how a call scales per run) is tagged in the local-job tables.
 
 ### Market Signal Report — endpoint surface
 
-The report's deterministic Step-3 baseline scan ([report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data)), by source — FMP, FRED, BLS, CFTC, and the news funnel; the paid-tier FMP additions are the **planned report enrichment** at the end of this section.
+The report's deterministic Step-3 baseline scan ([report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data)), by source — FMP, FRED, BLS, CFTC, and the news funnel; the paid-tier FMP additions are the **report enrichment** at the end of this section.
 
 **FMP — endpoints used by the report** — all on the `https://financialmodelingprep.com/stable` base.
-The free-tier paths are wired today; the paid-tier paths are the **planned report enrichment** specified below (not yet wired).
+The free-tier paths serve the baseline scan; the paid-tier paths are the **report enrichment** specified below.
 
 | Endpoint path | Tier | Report use |
 | --- | --- | --- |
@@ -445,10 +445,10 @@ It supplies the free **valuation + finer-rotation** snapshots: per-**sector P/E*
 The mover lists carry no sector, no instrument type, and no index membership on the free tier, so the agent infers a mover's sector from its ticker (and treats any fund row that slips the name filter as a flow signal, not a company), and the earnings calendar is filtered by revenue magnitude rather than index membership.
 The sector / industry snapshots and the market-risk-premium are all on FMP's free tier (verified live); the per-sector and per-industry snapshots are date-keyed (the adapter walks back to the most recent trading day with data, like sector performance), and the industry valuation is a join of the industry-performance and industry-P/E snapshots by industry name.
 **These valuation snapshots are exchange-specific** (verified live: a no-`exchange` call defaults to NASDAQ only; NYSE and AMEX are also free), so the adapter pins and gathers **both NASDAQ (growth / tech-tilted) and NYSE (broader / value)** for each, tags every row with its exchange, applies the industry cap per exchange, and joins performance to P/E within a single exchange — the model reads these cross-sectionally (rich vs cheap, and growth-board vs value-board) rather than as a whole-market multiple.
-(On the paid tier this point-in-time read gains a trailing-window time dimension — current multiple *and* current return vs each group's own history — see **Planned report enrichment** below.)
+(On the paid tier this point-in-time read gains a trailing-window time dimension — current multiple *and* current return vs each group's own history — see **Report enrichment** below.)
 The scan's dollar-index, oil, natural-gas, and Treasury-yield series come from FRED (below).
 (Gold is on FMP's free tier via `GCUSD`; FRED's former free gold benchmark series were discontinued, so gold stays on FMP.)
-The **economic-release calendar**'s release schedule comes from FRED's free release-dates endpoint (below) rather than FMP, whose `economic-calendar` is premium-gated (verified live: HTTP 402 on the free tier); on the paid tier that endpoint becomes available to *layer analyst consensus, realized surprise, and Fed/FOMC dates onto* FRED's schedule (see **Planned report enrichment** below).
+The **economic-release calendar**'s release schedule comes from FRED's free release-dates endpoint (below) rather than FMP, whose `economic-calendar` is premium-gated (verified live: HTTP 402 on the free tier); on the paid tier that endpoint becomes available to *layer analyst consensus, realized surprise, and Fed/FOMC dates onto* FRED's schedule (see **Report enrichment** below).
 FMP's third-party **news feeds** (`news/general-latest`, `news/stock-latest`, symbol-scoped `news/stock`, `news/press-releases-latest`) are all premium too (verified live: HTTP 402 on the free tier); the one news surface on the free tier is **FMP Articles** (`fmp-articles`, verified live: HTTP 200 with `page`/`limit` paging honored) — FMP's in-house, ticker-tagged market commentary — which feeds the Step-7 news funnel as a best-effort supplementary source (see [FMP Articles](#fmp-articles)).
 
 **FRED — endpoints + series.**
@@ -500,9 +500,9 @@ It also supplies the risk- and cycle-oriented series that anchor the report's ri
 It additionally supplies two **forward-looking expectation gauges** in the macro-levels group — the Atlanta Fed **GDPNow** current-quarter real-GDP nowcast (an annualized growth rate, a forward complement to the actual GDP print) and the Cleveland Fed **1-year expected-inflation** series (a model-based read alongside the market-implied breakevens).
 It also supplies the Step-3 **economic-release calendar** — the recent and upcoming US release schedule (CPI, PCE, jobs, GDP, …) via FRED's free release-dates API — since FMP's economic-calendar endpoint is premium-gated.
 (Like the earnings calendar, the recent-releases lookback is sized to the report cadence — a monthly run keeps the whole interval's releases — while the upcoming-schedule window stays fixed.)
-(FRED has no scheduled-date series for FOMC meetings, so the FRED calendar excludes them — the planned FMP enrichment supplies Fed / FOMC event dates; the Fed-funds target-range series continues to carry the policy *stance*.)
+(FRED has no scheduled-date series for FOMC meetings, so the FRED calendar excludes them — the FMP enrichment supplies Fed / FOMC event dates; the Fed-funds target-range series continues to carry the policy *stance*.)
 FRED provides release dates (and the underlying series values, gathered separately) but not analyst-consensus estimates, so the FRED-sourced calendar carries release names and dates only.
-Consensus and realized surprise are a **planned paid-tier enrichment** layered on from FMP (see **Planned report enrichment** below); where FMP carries no estimate for a release, the structured calendar fields stay at names + dates only (the fail-soft rule single-homed there — never a fabricated consensus), and any sense of what was "expected" lives only in the agents' qualitative research-phase narrative, as it does today.
+Consensus and realized surprise are a **paid-tier enrichment** layered on from FMP (see **Report enrichment** below); where FMP carries no estimate for a release, the structured calendar fields stay at names + dates only (the fail-soft rule single-homed there — never a fabricated consensus), and any sense of what was "expected" lives only in the agents' qualitative research-phase narrative, as it does today.
 
 **BLS — endpoints + series.**
 Base `https://api.bls.gov/publicAPI/v2`, single endpoint `/timeseries/data/` (series IDs posted in the request body; the `series_id` doubles as the quote symbol):
@@ -525,9 +525,9 @@ The report reads both CFTC datasets' curated bellwether contracts at run level �
 | [FMP Articles](#fmp-articles) · `/fmp-articles` | free supplementary ticker-tagged commentary, deduped into the funnel |
 | [GDELT](#gdelt) · `/doc` | geopolitical / event sweep (single combined query, cadence-sized `timespan`) |
 
-#### Planned report enrichment (paid FMP tier)
+#### Report enrichment (paid FMP tier)
 
-**Used by:** Market Signal Report only — planned, paid-tier, not yet wired.
+**Used by:** Market Signal Report only — paid tier.
 
 Upgrading the shared FMP credential to the paid tier (the one paid dependency the local analysis suite already requires — see [Local analysis suite — shared sourcing](#local-analysis-suite--shared-sourcing) below) unlocks three report-side baseline enrichments.
 Each is an **opt-in addition to the existing scan, not a replacement**: the report's current data-source logic is unchanged, each enrichment soft-degrades to today's behavior on any failure, and all are paid-gated, so they were live-verified together with the suite's paid-key checkpoint (**run 2026-07-16** with the upgraded key) — for the calendar enrichment that checkpoint **verified the release→event map's drafted FMP event strings against live calendar responses** (the May–July 2026 windows; the row set below carries the verified strings).
@@ -587,7 +587,7 @@ That read is the recent-window IPO count and the recent-window M&A deal count, *
 This is the way CFTC positioning carries its own week-over-week change while staying out of the level-delta engine: the model is handed only the current packet plus the computed change view, never prior raw packets, so the trend can't come from the delta engine and must be self-contained.
 The read also carries the **upcoming-scheduled IPO count**, a standalone forward-looking datum with **no trend pair** — a prior "upcoming" window isn't reconstructable from the current feed, since postponed or since-priced offerings vanish from the schedule, so a pair here couldn't be self-contained.
 It carries a bounded list of the largest / most notable names (and aggregate proceeds / deal value where the feed carries it) for color.
-Like the earnings and economic-release calendars, the recent window is sized to the report cadence (a monthly run sees the month's froth, not a week's), clamped to **7–31 days** (the earnings calendar's own floor / cap convention; a first run with no cadence anchor defaults to the floor); windows are **half-open** on the feeds' calendar dates in the user's local timezone (the report's date convention) — the recent window ending at the report date (exclusive), the **prior window the contiguous equal-length window immediately before it** — while the upcoming-IPO window is fixed at **14 days** forward (the earnings calendar's forward-window convention).
+Like the earnings and economic-release calendars, the recent window is sized to the report cadence (a monthly run sees the month's froth, not a week's), clamped to **7–31 days** (the earnings calendar's own floor / cap convention; a first run with no cadence anchor defaults to the floor); windows are **half-open** on the feeds' calendar dates on the ET session (the earnings calendar's date convention) — the recent window ending at the report date (exclusive), the **prior window the contiguous equal-length window immediately before it** — while the upcoming-IPO window is fixed at **14 days** forward (the earnings calendar's forward-window convention).
 The date-ranged `ipos-calendar` covers the recent and prior windows in one bounded call; `mergers-acquisitions-latest` is paged, not date-ranged, so the adapter walks pages back toward the prior-window boundary under a **drafted page budget of ≤ 10 pages at `limit=100`** (comfortably ≥ two months of deals), the **notable-name list capped at 5 per feed** (drafted).
 Coverage resolves to one of **three completion states**: pages reached the prior boundary → both counts; pages covered only the recent boundary → the recent count with the prior count **absent** (the trend degrades to the recent count alone — never a fabricated prior); pages failed to cover even the recent window → **no M&A count and a typed partial-data gap**, so a partial count can never serialize as complete.
 The model reads the pace *and its trend* as a risk-appetite / late-cycle tell — a surge or accelerating pace feeding the risk-on / late-cycle read, a freeze the risk-off / stress read.
@@ -620,7 +620,7 @@ All sit behind the same data-source seam and fail-soft posture as the report's a
 
 **Both local jobs run on FMP's paid tier** — Trade Opportunities most heavily (it also screens the universe), Portfolio Analysis across a per-holding subset.
 The application uses **one shared FMP credential for everything — the report and both local jobs — now upgraded to the paid tier** (the suite's one paid dependency, so the user manages a single key).
-The report's data-source *logic* is unchanged (its existing calls behave identically on the paid key), and the former free-tier gates simply no longer bind — so the newly-unlocked endpoints are available to enrich the report packet as a separate, opt-in enhancement (see [Planned report enrichment](#planned-report-enrichment-paid-fmp-tier) above).
+The report's data-source *logic* is unchanged (its existing calls behave identically on the paid key), and the former free-tier gates simply no longer bind — so the newly-unlocked endpoints are available to enrich the report packet as a separate, opt-in enhancement (see [Report enrichment](#report-enrichment-paid-fmp-tier) above).
 The paid tier is the broad working & discovery feed: financial statements / ratios / revenue **segments** (product + geographic) / owner earnings / DCF (earnings-call **transcripts are off-plan** → web-research loop); the **revision signal** (analyst estimates snapshotted for velocity, the `grades-historical` rating-distribution time series, price-target trend, upgrades / downgrades, earnings surprises); **`financial-scores` — Altman Z + Piotroski** for the forensic gate; **positioning** (insider buys / sells + statistics, **SC 13D/13G activist**, and **Senate / House congressional trading** — all symbol-keyed; **13F institutional is off-plan** → SEC EDGAR or omit); and the **screener / peers / industry-classification** discovery layer (the `*-bulk` universe-scoring endpoints are **off-plan**, so the screener stratifies the universe and the multi-factor scoring moves per-candidate — see [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit)).
 The paid tier additionally unlocks FMP's **structured news** — the market-wide `news/general-latest` / `news/stock-latest` feeds and the symbol-scoped Search Stock News (`news/stock`; the press-release feeds are off-plan) — a ticker-tagged, dated surfacing layer for Trade Opportunities' theme discovery and per-candidate sentiment/catalyst reads that *complements* (never replaces) the keyless web-research loop.
 The **per-symbol** signals here — fundamentals, the revision signal, `financial-scores`, and positioning — are shared by **Portfolio Analysis** (grading held positions) and **Trade Opportunities** (validating candidates); peers serve Trade Opportunities alone, **with one positioning carve-out: the SC 13D/13G activist filings are Trade-Opportunities-only** (a per-candidate accumulation catalyst — Portfolio's endpoint table and its Step-6b positioning layer deliberately exclude them); the **screener / industry-classification** discovery layer is **Trade Opportunities only**, since Portfolio Analysis grades a known holdings list and never screens the universe.
@@ -641,7 +641,7 @@ All FMP paths are on the `https://financialmodelingprep.com/stable` base and run
 
 **FMP** — the per-holding / per-fund endpoint surface for Portfolio Analysis on the current plan.
 *Plan-tier status — and the off-plan endpoints these official paths replaced, with their fallbacks — is recorded once in [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit).
-Equity grading is fully covered; the fund path degrades, since constituent look-through is off-plan (SEC N-PORT optional, else dropped).*
+Equity grading is fully covered; the fund path degrades, since constituent look-through is off-plan — SEC N-PORT reconstruction is adopted on the precondition at [portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility).*
 *`earnings` is pulled by the full-run per-holding pass for the surprise history and by the **quick check** as its per-sweep call; the symbol-scoped `news/stock` is the full-run pass's per-stock **news-leads** pull (the Step-6a leads leg), and the quick check makes no news call.*
 
 | Endpoint path | Cardinality | Portfolio Analysis use |
@@ -654,8 +654,9 @@ Equity grading is fully covered; the fund path degrades, since constituent look-
 | `enterprise-values` | per-holding | enterprise value for EV multiples |
 | `analyst-estimates` | per-holding | forward revenue / EPS consensus → the quick check's **revision preflight**, the **v2 target ladder's driver source**, and the **narrative-vs-reality revision-pace leg** (raw EPS rows matched to the prior run by fiscal-period end under the prior weights — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)) (the valuation read remains NTM — the two nearest forward annual rows time-weighted by twelve-month overlap, mid / low / high per leg, EPS else forward revenue per share) |
 | `price-target-consensus`, `price-target-summary` | per-holding | street price-target level + trend — *evidence, not an engine input* |
-| `grades`, `grades-historical`, `grades-consensus` | per-holding | `grades-historical` distribution → engine **rating-drift** read; rating actions + current consensus ride as *evidence* |
+| `grades`, `grades-historical`, `grades-consensus` | per-holding | the rating-drift series, rating actions and current consensus ride as *evidence* |
 | `ratings-snapshot`, `ratings-historical` | per-holding | FMP's own composite rating — opinion cross-check only |
+| `splits` | per-holding | the split's date and ratio for the split bridge and the split-context line above a prior document ([portfolio-workflow.md §Step 6b](portfolio-workflow.md#step-6b-deterministic-financial-analysis)) |
 | `dividends` | per-holding | yield, frequency, schedule — income / total-return grading (the hurdle's payout leg); re-pulled by the quick check on a fresh filing |
 | `earnings` | per-holding (full run + quick check) | next earnings date + EPS / revenue estimate (catalyst) and the actual-vs-estimate surprise history — read into the dossier by the full-run pass as evidence, re-pulled by the quick check for the new-earnings-actual leg |
 | `insider-trading/search`, `insider-trading/statistics` | per-holding | insider buys / sells + aggregate statistics |
@@ -710,7 +711,7 @@ A fund whose underlying isn't among these contracts fail-softs to no positioning
 | SEC EDGAR · submissions (10-K / 10-Q / 8-K) | per-holding (CIK-gated) | filings — the quick check's material-filing sweep (form type + date) and the full-run pass's **item-classified 8-K sweep** feeding the hard-forensic filing kinds (Item 4.01 / 4.02 from the submissions feed's filer-declared `items` column — the producer contract at [trade-opportunities-workflow.md §Step 5c](trade-opportunities-workflow.md#step-5c-deterministic-analysis-archetype-weighted-engine)); rides the Portfolio-slice `company_tickers.json` resolver, an unresolved CIK degrading to a typed unknown ([§SEC EDGAR](#sec-edgar)) |
 | SEC EDGAR · company-facts (XBRL) | per-holding (CIK-gated) | normalized statement data the engine computes over; same resolver dependency ([§SEC EDGAR](#sec-edgar)) |
 | SEC EDGAR · 13F filings | run-level (optional) | coarse institutional-ownership backdrop — EDGAR 13F is filer-keyed (not symbol-keyed), so a per-name read is approximate and **often omitted**; held out of the grade until calibrated |
-| SEC EDGAR · N-PORT filings | per-fund (optional enrichment) | fund constituent holdings for concentration / single-name look-through (heavy, ~60-day lag); without it, ETFs retain the on-plan `etf/info` + sector / country exposure path, while mutual funds retain whatever information / allocation surface resolves and route to `role_risk_only` when the weighting set cannot support exposure pricing ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
+| SEC EDGAR · N-PORT filings | per-fund — adopted on the precondition at [portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility) | fund constituent holdings for concentration / single-name look-through (heavy, ~60-day lag); without it, ETFs retain the on-plan `etf/info` + sector / country exposure path, while mutual funds retain whatever information / allocation surface resolves and route to `role_risk_only` when the weighting set cannot support exposure pricing ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
 | FINRA · consolidated short-interest file | per-holding lookup (file fetched once / run) — stocks only (the adapter applies FINRA's uppercase, separator-free reporting key so account class-share spelling such as `BRK/B` resolves to `BRKB`; a symbol absent after that normalization carries no read — a market fact, not a gap) | short-interest level / trend / days-to-cover → risk / squeeze context (positioning evidence in the thesis-document message, the latest print also riding the fetched values, held out of every sub-score); the quick check makes no FINRA call |
 | CBOE · daily put/call statistics | run-level | venue-level options-sentiment backdrop (broad-market context, not a per-name signal) |
 | Web tool — keyless SearXNG | per-holding (research lane) | management commentary from earnings-call transcripts (IR / aggregator sites) + the per-holding research lane for signals with no structured feed — the pre-profit topic's production / delivery / bookings / backlog / reservation / guidance / unit-economics reads included, reported as dated, sourced prose in the write-ups, never as typed observations; a down SearXNG fail-softs to thinner research ([web-research.md](web-research.md), [portfolio-workflow.md §Step 6](portfolio-workflow.md#step-6-per-holding-analysis-loop)) |

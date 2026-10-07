@@ -153,7 +153,7 @@ It fires on every query as the floor while the keyless engines remain enabled as
 The key never enters the repo: `settings.yml` carries only a `${SERPER_API_KEY}` placeholder, and the real key is rendered from an out-of-repo secrets file into a gitignored runtime settings file at bring-up through a gitignored compose override, so the tracked template holds no secret.
 
 The app **health-checks** the running instance — the same health-check *mechanism* it uses for the model daemon (see [local-models.md §Serving runtime](local-models.md#serving-runtime)), but **never on the execution gate**: an unreachable SearXNG degrades the run (the local suite is SearXNG-only, so research thins toward blind and Trade Opportunities discovery yields fewer candidates — [§Tavily fallback](#tavily-fallback)), it does not block it.
-The check drives a **connection-status indicator in Settings** ([interface.md §Connection status](interface.md#connection-status-local-suite)) that deep-links to the setup when SearXNG is down or misconfigured; the install pointer recommends **OrbStack** on Apple Silicon over Docker Desktop (lighter, no commercial-licensing question).
+The check drives a **connection-status indicator in Settings** ([interface.md §Connection status](interface.md#connection-status-local-suite)) that names the setup as the fix when SearXNG is down or misconfigured; the install pointer recommends **OrbStack** on Apple Silicon over Docker Desktop (lighter, no commercial-licensing question).
 
 **Alternatives weighed (app-bundled SearXNG; Brave's API).**
 Both were considered and parked, and the reasons are load-bearing.
@@ -211,8 +211,8 @@ Failed live discovery attempts retain normal source-failure telemetry.
 Submissions metadata and completed resolution outcomes are reused only within the holding, and issuer/release deduplication prevents repeated denied URLs from launching the same resolution again.
 The original IR denial and its cooldown are retained; recovery diagnostics distinguish that failed address from the actual SEC source.
 
-A recovered exhibit passes through ordinary quoted-page rendering, page/body limits, holding-scoped reuse and shown-source citation admission in the same pass.
-Its document cache key and citation are the SEC address, never the denied IR URL or a fabricated redirect alias.
+A recovered exhibit passes through ordinary quoted-page rendering, page/body limits, holding-scoped reuse and shown-source rendering in the same pass.
+Its document cache key and shown source are the SEC address, never the denied IR URL or a fabricated redirect alias.
 Publication provenance comes only from a recognizable dateline in the release's own text and otherwise remains unknown; filing/event dates and the failed URL's search metadata are not copied into that field.
 The retrieval timestamp is the exhibit's original retrieval time, including document-cache service.
 The renderer's wording and persisted shapes are unchanged by this route.
@@ -246,7 +246,7 @@ Progress details distinguish document-cache service, remembered URL failures, ho
 Failure details include the context and underlying error source chain, retained when a remembered URL failure or host cooldown is reported, so a transport failure names the available cause rather than only the outer fetching context.
 Cause text is diagnostic; classification and retry eligibility still use typed evidence, never guesses from that text.
 Only actual admitted attempts contribute source telemetry, each once; a memory hit or suppressed destination adds no failed/denied sample, and a recovered retry adds the successful extraction sample beside the original failure.
-An unavailable page still contributes the existing research-degradation gap and cannot become citation evidence.
+An unavailable page still contributes the existing research-degradation gap and cannot become evidence.
 Exhaustion still ends further tool execution, even when a later request might otherwise have been served without spending an attempt.
 
 ## Tavily fallback

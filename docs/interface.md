@@ -54,6 +54,8 @@ Market Signal
     ├── Connected sources (optional paywalled-subscription logins + per-source health)
     ├── Investor profile (read-only preset — risk tolerance, horizon, objective, tax, cash)
     ├── Charles Schwab connection
+    ├── Data (export / import of the durable corpus)
+    ├── Document truncations (research-document truncation telemetry)
     └── Trade Opportunities discovery breadth (candidate research budget)
 ```
 
@@ -73,7 +75,7 @@ The operational behavior of each panel is defined in the relevant concern files:
 ### The shared-history sidebar and the Portfolio runs history
 
 The sidebar is **one shared-history component whose list content swaps per feature** (the design package's shared-history pattern): the Portfolio view swaps in the retained **Portfolio runs** (last 30, newest first — each readable row a full-book label with its holdings count, local timestamp, and graded count — the priced holdings, rendered as `graded N`), while every other view keeps the recent-reports list.
-The Trade Opportunities view, when that feature ships, swaps in its own retained runs the same way — one `trade_opportunities` pool, each row labeled with its mode (`discover` / `audit-quick` / `audit-deep`).
+The Trade Opportunities view swaps in its own retained runs the same way — one `trade_opportunities` pool, each row labeled with its mode (`discover` / `audit-quick` / `audit-deep`).
 A row whose persisted blob no longer decodes lists from its column identity with a quiet **unreadable** tag, shows no counts, and presents unavailable rather than opening — it ages out of retention like any other row.
 The bottom nav leads with a **"Latest Market Report"** entry: because the history list swaps per feature, the Portfolio view has no report rows, and this entry is the durable path back to the report view from any surface.
 
@@ -142,18 +144,18 @@ Operational triggers for each category live in their canonical homes:
 ## Connection status (local suite)
 
 Both local-suite backends the user self-hosts — the **Ollama daemon** and the **SearXNG instance** — expose a live connection indicator in their Settings section, built on the existing **`ConnectionTestRow`** pattern (a per-dependency "Test connection" control backed by the `test_connection` command, already used for the OpenAI/Anthropic/FMP/FRED/Tavily credentials).
-Each indicator reflects the **last connectivity check** — a manual *Test Connection* or the connectivity check run when a **job is launched** — Ollama's run-gate check, SearXNG's pre-run probe ([§Pre-run web-research notice](#pre-run-web-research-notice-local-suite)), *not* at app startup (a run that uses neither the model nor web research — ATO's **Quick Audit**, Portfolio's **Quick check** — triggers neither check, so it updates neither indicator); with no startup probe, the indicator reads **untested** until the user tests or runs.
+Each indicator reflects the **last connectivity check that reports to it** — for Ollama a manual *Test Connection* alone, for SearXNG a manual test or the pre-run probe run when a web-research **job is launched** ([§Pre-run web-research notice](#pre-run-web-research-notice-local-suite)) — *not* at app startup (a run that uses neither the model nor web research — ATO's **Quick Audit**, Portfolio's **Quick check** — triggers no probe, so it updates neither indicator); with no startup probe, an indicator reads **untested** until a check reports to it.
 The two are surfaced **asymmetrically**, mirroring their roles in the execution gate ([portfolio-workflow.md §Step 1](portfolio-workflow.md#step-1-job-start-and-gate)):
 
 - **Ollama — gate-bearing, in two layers.**
   What *gates proactively* is **presence of the config values** (the Ollama endpoint + the reasoner id, which both jobs need; the fast tier is optional): if a job's required value is unset its **Run button is locked** and the persistent **local models not configured** warning shows — like the cloud model selectors / data-source tokens, cleared the instant the fields are filled.
   **Connectivity** (daemon actually reachable + rostered models actually pulled) is *not* probed at startup or on a timer — only at the **run-gate** (Step 1) and via a **manual *Test Connection***.
   A run-gate connectivity failure is an **inline block at the moment of clicking Run** (ephemeral, never a persistent warning), pointing to Settings → *Test Connection* — except the engine-only paths — ATO's **Quick Audit** and Portfolio's **Quick check** — make no model call, so they skip this daemon-connectivity check and run even with the daemon configured-but-down ([trade-opportunities.md §Failure posture](trade-opportunities.md#failure-posture), [portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)).
-  The Settings indicator then reports **endpoint reachability *and* per-roster-model presence** ("daemon up but the model isn't pulled" is a distinct state) and carries the matching **guided-setup** action — *Install Ollama* (deep-link / Homebrew) when unreachable, *Pull `<model>`* (with `pull` progress on the Run Tracker) when a model is missing (see [local-models.md §Serving runtime](local-models.md#serving-runtime)).
+  The Settings indicator, on a manual test, reports **endpoint reachability *and* per-roster-model presence** ("daemon up but the model isn't pulled" is a distinct state) and names the fix — install Ollama, or pull the missing model — for the user to run (see [local-models.md §Serving runtime](local-models.md#serving-runtime)).
   Only the local-suite jobs are affected — the Market Signal Report runs on the cloud agents and a separate gate ([configuration.md §Local Analysis Suite Configuration](configuration.md#local-analysis-suite-configuration)).
   Because connectivity is never probed at startup, a config-set-but-daemon-down state shows no signal on re-open until the user clicks Run or tests — the deliberate, cloud-report-consistent trade for dropping the startup probe.
 - **SearXNG — degradation, never blocking.**
-  The status distinguishes **connected / running-but-misconfigured / unreachable** — a reachable instance that returns HTTP 403 (JSON output not enabled) is a *misconfiguration* with a different fix (re-run the shipped `docker compose up -d`) than a server that isn't running, so the row says which and deep-links to the docker-compose / OrbStack setup ([web-research.md §Search backend](web-research.md#search-backend-searxng)).
+  The status distinguishes **connected / unreachable / not configured**, the detail text naming a misconfiguration — a reachable instance that returns HTTP 403 (JSON output not enabled) has a different fix (re-run the shipped `docker compose up -d`) than a server that isn't running, so the detail says which and names the docker-compose / OrbStack setup as the fix ([web-research.md §Search backend](web-research.md#search-backend-searxng)).
   A down SearXNG is rendered as an **informational** state with its consequence spelled out — *the local suite is SearXNG-only, so a degraded run researches blind (thinner evidence, lower conviction), and Trade Opportunities discovery returns fewer candidates* — and is **never** a blocking Warning-Area category, because the suite's research half is fail-soft ([web-research.md §Tavily fallback](web-research.md#tavily-fallback)).
   Search requests and their outcomes — including the failed/empty searches a down SearXNG produces — are visible at runtime as request rows in the Run Tracker.
 
@@ -178,5 +180,5 @@ The local suite is **SearXNG-only** ([web-research.md §Tavily fallback](web-res
 
 Two points hold across the web-research cases.
 First, discovery and validation are both SearXNG-only, so the degradation depends only on whether SearXNG can serve, never on a Tavily credential.
-Second, to avoid nagging on a persistently-down SearXNG, the modal offers **"don't ask again this session"** plus a Settings toggle to suppress it permanently, for the technical user who runs degraded knowingly.
+Second, a Discover launch also carries the overdue research backlog — its count and oldest research age ([trade-opportunities-workflow.md §Step 4](trade-opportunities-workflow.md#step-4-candidate-consolidation)) — as an informational line in the same pre-run modal, shown on a healthy SearXNG too.
 The modal reuses the project's confirm-dialog pattern under the frontend-craft dialog requirements (focus trap, Escape-to-cancel, focus restored on close).
