@@ -7,7 +7,7 @@ They are not pipeline stages, and not every lens applies to every report.
 ## How Skills Are Used
 
 The skills form a shared analytical library.
-**As built, both the main agent and the three Bull / Bear / Balanced analysts consume them**: the analysts apply the relevant lenses when forming their independent reviews (Steps 12–15), and the main agent applies them again during synthesis (Step 16; see [agents.md](agents.md)), folding the relevant lenses' conclusions into the Market Signal Thesis.
+**Both the main agent and the three Bull / Bear / Balanced analysts consume them**: the analysts apply the relevant lenses when forming their independent reviews (Steps 12–15), and the main agent applies them again during synthesis (Step 16; see [agents.md](agents.md)), folding the relevant lenses' conclusions into the Market Signal Thesis.
 
 The **whole library is supplied in full every report**:
 - Each consumer — the main agent and each analyst — receives every skill, each skill's method body and the structured verdict it should yield, in one pass with no separate selection step.
@@ -26,13 +26,13 @@ The authoritative catalog — every skill's exact method body and verdict shape 
 
 Recorded for continuity; the catalog of skills below is unchanged.
 
-- **Consumers** — the original design (the three analyst agents — Bull / Bear / Balanced — *and* the main agent) is now **fully as-built**: the main-agent consumer shipped first, and the analyst follow-on has since landed.
+- **Consumers** — the three analyst agents (Bull / Bear / Balanced) *and* the main agent.
   Each analyst receives the full library inline and self-selects the lenses its posture and the report warrant, forcing-function-only like the main agent (no parsed or persisted channel).
   The analyst verdict is folded into its review's key points, risks, and opportunities rather than thesis prose.
 - **Delivery** — originally **progressive disclosure** (each agent sees only frontmatter, then requests the relevant subset via a selection call).
   Removed: the bodies are small (~150 tokens each, ~2.4k for all 16), and the phase-1 selection call re-sent the entire packet to the model just to save the frontmatter catalog — a round-trip and a fail-soft code path for negative net benefit.
   All 16 now ship inline; the model self-selects which lenses to apply.
-- **Output** — originally a per-skill **output schema** the application layer supplied and consumed; as built, the verdict is **prose-level only** (a forcing function folded into the thesis), with no parsed schema and no persistence.
+- **Output** — the verdict is **prose-level only** (a forcing function folded into the thesis), with no parsed schema and no persistence.
 
 ## Market Regime Analysis
 Determines the current market regime and the dominant forces driving market behavior.

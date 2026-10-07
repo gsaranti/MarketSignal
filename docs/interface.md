@@ -142,7 +142,6 @@ Operational triggers for each category live in their canonical homes:
 ## Connection status (local suite)
 
 Both local-suite backends the user self-hosts — the **Ollama daemon** and the **SearXNG instance** — expose a live connection indicator in their Settings section, built on the existing **`ConnectionTestRow`** pattern (a per-dependency "Test connection" control backed by the `test_connection` command, already used for the OpenAI/Anthropic/FMP/FRED/Tavily credentials).
-Both halves are built — the SearXNG indicator, probe, and manual test landed with the research-loop slice.
 Each indicator reflects the **last connectivity check** — a manual *Test Connection* or the connectivity check run when a **job is launched** — Ollama's run-gate check, SearXNG's pre-run probe ([§Pre-run web-research notice](#pre-run-web-research-notice-local-suite)), *not* at app startup (a run that uses neither the model nor web research — ATO's **Quick Audit**, Portfolio's **Quick check** — triggers neither check, so it updates neither indicator); with no startup probe, the indicator reads **untested** until the user tests or runs.
 The two are surfaced **asymmetrically**, mirroring their roles in the execution gate ([portfolio-workflow.md §Step 1](portfolio-workflow.md#step-1-job-start-and-gate)):
 

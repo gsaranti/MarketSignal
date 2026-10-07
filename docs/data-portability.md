@@ -1,6 +1,6 @@
 # Data Portability — Export & Import
 
-*This spec is as-built: the archive serializer/loader is `src-tauri/src/portability.rs`, the commands are `export_data` / `import_data_inspect` / `import_data`, and the Settings surface is the **Data** section plus the design package's confirmation dialog.*
+*The archive serializer/loader is `src-tauri/src/portability.rs`, the commands are `export_data` / `import_data_inspect` / `import_data`, and the Settings surface is the **Data** section plus the design package's confirmation dialog.*
 
 Whole-corpus **backup and restore**: bundle a machine's accumulated analytical history into a single archive and load it on another machine.
 The motivating case is a hardware migration — moving everything this build has learned from an old Mac to a new one — but the same archive doubles as an offline backup.
@@ -106,7 +106,7 @@ A structured archive is also human-inspectable (open the zip, read your reports 
 The archive contents are non-secret by the exclusion rules above, but they are still the user's **entire market-analysis history** — and, once the local suite runs live, portfolio holdings and verdicts derived from a Schwab account.
 That is sensitive personal financial data in the clear.
 
-Export therefore offers **optional passphrase encryption** (as built: AES-256-GCM over an Argon2id-derived key, wrapping the whole container).
+Export therefore offers **optional passphrase encryption** (AES-256-GCM over an Argon2id-derived key, wrapping the whole container).
 Unchecked, the export is a plain `.zip` with a UI warning to keep the file private and move it over a trusted channel.
 Checked, the whole archive is encrypted; import detects an encrypted container and prompts for the passphrase.
 There is **no recovery path** — a lost passphrase means an unrecoverable archive, stated plainly at export time.
