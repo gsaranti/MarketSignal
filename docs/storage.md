@@ -39,7 +39,7 @@ Stores:
 - warning states
 - per-report baseline snapshots (for cross-report change detection)
 
-HTML is deliberately not among the stores (amended 2026-06-12 from the original spec, which kept a stored HTML copy alongside each report): the HTML view is a presentation artifact rendered on demand in the webview from the canonical Markdown, and PDF export prints that same rendered view, so a stored copy would have no reader.
+HTML is deliberately not among the stores: the HTML view is a presentation artifact rendered on demand in the webview from the canonical Markdown, and PDF export prints that same rendered view, so a stored copy would have no reader.
 See [report-structure.md §Presentation Format](report-structure.md#presentation-format-html).
 
 Each report stores:
@@ -137,7 +137,7 @@ Stores:
 
 The vector store acts as long-term semantic memory for the main agent.
 
-The store is implemented inside the application's SQLite database (a `vector_memory` table holding each item's embedding as bytes) with exact cosine search in Rust — a deliberate engine choice over the originally specified LanceDB (amended 2026-06-11).
+The store is implemented inside the application's SQLite database (a `vector_memory` table holding each item's embedding as bytes) with exact cosine search in Rust — a deliberate engine choice over a dedicated vector database such as LanceDB.
 At this corpus's scale — at most 30 retained report summaries plus durable learnings — an unindexed vector database performs the same exhaustive scan, with a materially heavier dependency footprint.
 Everything else in this section is engine-agnostic and unchanged; the store sits behind a single module so the engine could be swapped if the corpus ever outgrows exact search.
 

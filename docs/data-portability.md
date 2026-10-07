@@ -1,7 +1,6 @@
 # Data Portability — Export & Import
 
-*Status: **built** (PR #53).
-This spec is as-built: the archive serializer/loader is `src-tauri/src/portability.rs`, the commands are `export_data` / `import_data_inspect` / `import_data`, and the Settings surface is the **Data** section plus the design package's confirmation dialog.*
+*This spec is as-built: the archive serializer/loader is `src-tauri/src/portability.rs`, the commands are `export_data` / `import_data_inspect` / `import_data`, and the Settings surface is the **Data** section plus the design package's confirmation dialog.*
 
 Whole-corpus **backup and restore**: bundle a machine's accumulated analytical history into a single archive and load it on another machine.
 The motivating case is a hardware migration — moving everything this build has learned from an old Mac to a new one — but the same archive doubles as an offline backup.
@@ -54,7 +53,7 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | Schwab app secret + OAuth tokens | macOS Keychain | Never portable; the token lifecycle is a weekly re-login on any machine ([schwab-integration.md](schwab-integration.md)). |
 | Light/Dark preference | webview `localStorage` | Pure presentation, no backend consumer. |
 | `job_runs` | SQLite | Machine-local operational history — run outcomes, not analytical product. |
-| `portfolio_checkpoints`, `portfolio_checkpoint_holdings` | SQLite | An interrupted run's checkpoint trail (ruled 2026-08-21) — transient operational state that expires at the resume window and is discarded by any new run ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)). |
+| `portfolio_checkpoints`, `portfolio_checkpoint_holdings` | SQLite | An interrupted run's checkpoint trail — transient operational state that expires at the resume window and is discarded by any new run ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)). |
 | `research_parse_failures`, `document_truncations`, `document_parse_runs` | SQLite | Regenerable per-report telemetry, not primary data. |
 | HTML | (nothing — rendered on demand) | Never stored anywhere ([storage.md §SQLite](storage.md#sqlite)). |
 
@@ -136,7 +135,7 @@ The **Import** action in the same Settings section:
 2. If the container is encrypted, it decrypts with the Data section's shared passphrase field; absent or wrong, import stops with a typed error asking for it (no dedicated prompt dialog — retrying reopens the picker).
 3. Read and validate the manifest: reject a format version newer than this build understands; verify every entry's size + checksum, and never consume bytes the manifest doesn't list.
    Every table entry **the archive's own format version requires** (five in format v1 — the shipped build's format; the current set otherwise) must be **present and manifest-listed** — a truncated archive is refused, never imported as a sparse store, while a v1 archive imports complete under its own five-entry set (backward compatibility by version, never sparse tolerance).
-   The pre-release v2 through v10 shapes, which no shipped build wrote, are refused outright (ruled 2026-08-29 — no local-suite data compat pre-release; [verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md](verification/2026-08-29-fresh-start-2-local-suite-compat-removal.md)).
+   The pre-release v2 through v10 shapes, which no shipped build wrote, are refused outright (no local-suite data compat pre-release).
    All row-level validation — NDJSON parse, embedding decode, the schema's uniqueness/cardinality — also runs here, **before any destructive step**, so a bad archive can only abort while the store is untouched.
    Reading the archive is itself bounded: entries unpack under a total-size ceiling (4 GiB — generous by orders of magnitude over a real corpus), and `manifest.json` — which is read before that ceiling can apply — carries its own smaller bound (16 MiB), so a crafted zip can't demand unbounded memory through either read.
 4. Determine whether the target store is **empty** (no reports, no learnings, no portfolio runs):

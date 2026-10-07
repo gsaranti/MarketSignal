@@ -24,7 +24,7 @@ The Markdown→HTML conversion uses **markdown-it** as the renderer.
 The *visual* presentation-layer choices — chart styling, colour, geometry, and motion — are MVP-internal details owned by the design system and the renderer and are not specified here.
 The Markdown **authoring conventions** the report format relies on — notably the embedded-`chart` block below — are part of the format and are recorded here.
 
-HTML is rendered on demand in the application webview and is never persisted — Markdown is the only stored report format (amended 2026-06-12; see [storage.md §SQLite](storage.md#sqlite)).
+HTML is rendered on demand in the application webview and is never persisted — Markdown is the only stored report format (see [storage.md §SQLite](storage.md#sqlite)).
 
 Agents never ingest or reason over HTML reports.
 

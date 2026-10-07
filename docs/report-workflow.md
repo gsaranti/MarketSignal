@@ -610,7 +610,7 @@ Both legs are best-effort: a failed embedding or store write costs the memory ro
 No model call.
 
 After the Markdown report is saved, the application updates the Latest Report View and Recent Reports Sidebar.
-The presentation layer renders the HTML version from Markdown on demand whenever a report is displayed or exported; HTML is never persisted (amended 2026-06-12; see [storage.md §SQLite](storage.md#sqlite)).
+The presentation layer renders the HTML version from Markdown on demand whenever a report is displayed or exported; HTML is never persisted (see [storage.md §SQLite](storage.md#sqlite)).
 
 The HTML version is used for:
 - in-app rendering
