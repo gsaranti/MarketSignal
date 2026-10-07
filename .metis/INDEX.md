@@ -91,7 +91,7 @@ the ones a session still needs.*
 - Endpoints by job — data-sources.md §Endpoints by job
 - Market Signal Report endpoint surface — data-sources.md §Market Signal Report — endpoint surface
 - Gated-adapter retry/backoff — data-sources.md (intro retry paragraph)
-- Planned report enrichment — data-sources.md §Planned report enrichment; report-workflow.md §Step 3, §Step 16
+- Report enrichment (paid FMP tier) — data-sources.md §Report enrichment; report-workflow.md §Step 3, §Step 16
 
 ## Research documents
 - /research-inbox and /research-archive — research-documents.md; interface.md (Research Documents)
@@ -179,7 +179,7 @@ build status lives in `BUILD.md`.*
 - SearXNG search backend — web-research.md §Search backend: SearXNG; data-sources.md §SearXNG (local web search)
 - Fetch and extraction — web-research.md §Fetch and extraction
 - SSRF protection and the fetch URL policy — web-research.md §Safety and provenance
-- Pre-run web-research notice — interface.md §Pre-run web-research notice; web-research.md §Tavily fallback
+- Pre-run web-research notice — interface.md §Pre-run web-research notice; web-research.md §Tavily fallback; trade-opportunities-workflow.md §Step 4
 - Local-suite connection indicators (Ollama / SearXNG) — interface.md §Connection status
 - Source registry & evidence tiers — data-sources.md §Source registry and evidence tiers; web-research.md §Source quality and evidence weighting; configuration.md §Web Research
 - Source quality & evidence weighting — web-research.md §Source quality and evidence weighting
@@ -264,6 +264,7 @@ build status lives in `BUILD.md`.*
 - Model-authored matrix placement (the §The opportunity space statement is canonical) — trade-opportunities.md §The opportunity space, §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h, §Step 7; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Arm divergences — the recorded pairs and the card's divergence tag — trade-opportunities.md §The opportunity, §Storage and display; trade-opportunities-workflow.md §Step 5h, §Step 7, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Persistent Warning Area
 - Narrative divergence (the §Starting parameters statement is canonical; distinct from the status override) — trade-opportunities.md §Starting parameters, §The opportunity, §Evidence floor, §Storage and display; trade-opportunities-workflow.md §Step 5c, §Step 5h, §Step 7, §Step 9, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Persistent Warning Area
+- Analyst-estimate print history — storage.md §Local Analysis Suite Storage; trade-opportunities.md §Signal inputs, §Starting parameters
 - Opportunity archetype lens — trade-opportunities.md §Archetype
 - Archetype stickiness on carried-forward names — trade-opportunities.md §Archetype; trade-opportunities-workflow.md §Step 5a
 - Archetype classification — the prefetch and the confirmation call — trade-opportunities-workflow.md §Step 5a; data-sources.md §Trade Opportunities — endpoint surface
