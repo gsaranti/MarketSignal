@@ -315,6 +315,7 @@ The reason is the division the whole contract rests on — the floor and the har
 
 The floor's abstention semantics are **debut semantics**.
 For a **carried live opportunity** whose deep re-evaluation falls below the floor (a missing quote, stale statements, a provider gap — missing or stale evidence, never the affirmative flat-metric read above), the abstention is an **inconclusive refresh, never a turn-away**: the name **holds its last verdict, conviction, and matrix identity** (the fail-soft last-verdict rule — [§Failure posture](#failure-posture)), a **typed refresh gap** is recorded in the run audit, no research is spent and no episode opens, and the incomplete pass **does not stamp `last_deep_researched_at` or clear an attention warning** — the name stays exactly as stale and as flagged as it was, so the rotation slice keeps prioritizing it.
+The slot it could not use passes to the next live name in order, so an inconclusive name never blocks another name's service ([trade-opportunities-workflow.md §Step 4](trade-opportunities-workflow.md#step-4-candidate-consolidation)).
 Whatever engine-only fields the pass *could* compute refresh under the cheap re-derivation's rules ([§The opportunity](#the-opportunity)); only a floor-clearing deep pass rewrites the model-authored fields or archives ([trade-opportunities-workflow.md §Step 5h](trade-opportunities-workflow.md#step-5h-deterministic-risk-tier-gate-validation--checkpoint), [§Step 7](trade-opportunities-workflow.md#step-7-continuity-check--carry-forward)).
 
 ## The opportunity
