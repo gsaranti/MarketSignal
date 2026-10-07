@@ -1,7 +1,7 @@
 # Charles Schwab Integration
 
 The local suite sources the user's holdings — and equity option chains — from their Charles Schwab brokerage account via the **Schwab Trader API**.
-**A connected Schwab account is required to run either local job** (see [§A connected Schwab account is required](#a-connected-schwab-account-is-required)); manual import is a supplement, not a substitute.
+**A connected Schwab account is required to run either local job** (see [§A connected Schwab account is required](#a-connected-schwab-account-is-required)).
 Data is fetched **only on explicit user action** — the app never polls or auto-refreshes.
 
 ## Fetched on demand, never automatically
@@ -40,10 +40,10 @@ The payload carries **no bond analytics and no held-contract greeks** — a limi
 **Holdings normalization (book-level netting).**
 Before book-level netting, each account reconciles explicit `CASH_EQUIVALENT` / `CURRENCY` position rows against `cashBalance` and `liquidationValue`: a cash row is folded into the cash bucket once, whether `cashBalance` already includes it or reports it separately, while the raw row remains in `source_rows` for audit.
 If an account carries a non-zero cash row but no liquidation value, or the three values cannot reconcile within currency rounding, the holdings pull fails as ambiguous instead of guessing and inflating the denominator.
-Multiple granted accounts — and manual supplements (below) — can each carry a row for the same security, so snapshot assembly **consolidates same-symbol rows into one book-level position** before anything downstream reads them: the uppercased symbol is the suite's sole position identity, signed quantities, market values, and **signed cost-basis totals** each **sum across rows** (never a share-weighted average price — summed signed totals keep dollar gain additive, Σ market value − Σ cost basis equalling the book's aggregate unrealized P/L, and stay well-defined even at zero net quantity, where a per-unit average is undefined), and the position's long/short classification comes from the **netted** quantity — a long in one account and a short in another read as their true net side, never as two positions.
+Multiple granted accounts can each carry a row for the same security, so snapshot assembly **consolidates same-symbol rows into one book-level position** before anything downstream reads them: the uppercased symbol is the suite's sole position identity, signed quantities, market values, and **signed cost-basis totals** each **sum across rows** (never a share-weighted average price — summed signed totals keep dollar gain additive, Σ market value − Σ cost basis equalling the book's aggregate unrealized P/L, and stay well-defined even at zero net quantity, where a per-unit average is undefined), and the position's long/short classification comes from the **netted** quantity — a long in one account and a short in another read as their true net side, never as two positions.
 A netted position whose summed quantity, cost basis, or market value does not finish as a finite number fails the pull naming the symbol, before any per-holding work is spent.
 The book's own sums — reconciled cash across accounts and the sum of reported account liquidation values (with a safe positions-plus-cash fallback only when no explicit cash row makes that fallback ambiguous) — fail the pull the same way.
-Instrument-identity fields (asset type, description) come from the Schwab rows; a manual row supplies them only for a symbol Schwab doesn't report, and a manual row whose identity fields conflict with a Schwab-reported instrument surfaces as an import warning rather than merging silently.
+Instrument-identity fields (asset type, description) come from the Schwab rows.
 Per-source rows are retained on the snapshot for display and audit, but every downstream contract — the deterministic diff, the per-holding loop, the thesis document, the roll-up — consumes **only the normalized book-level rows** ([portfolio-analysis.md §Holdings change tracking](portfolio-analysis.md#holdings-change-tracking)).
 The netting step runs at snapshot assembly — `Holdings::normalized()`, invoked on every run snapshot and on the standalone pull (alongside the full ticker→CIK resolver, [data-sources.md §SEC EDGAR](data-sources.md#sec-edgar)).
 
@@ -53,9 +53,9 @@ This is a rough **activity proxy, not positioning truth** — volume and open in
 "Deterministic" means a canonical, documented method whose exact parameters are fixed in code.
 The method is the **whole-chain read** — put/call by volume and by open interest over every contract returned, and skew as the chain-wide mean put IV minus mean call IV — with no liquidity floor or zero-bid exclusion, and no delta / moneyness banding.
 Per-contract **delta** is parsed from the chain rows (the −999 sentinel and out-of-range values read as no value), but the activity signal never consumes it — its one consumer is the same-underlying option overlay's targeted per-strike fetch ([portfolio-workflow.md §Step 6a](portfolio-workflow.md)).
-The richer canonical form (expiration window, delta / moneyness bands, a liquidity floor, zero-bid exclusion; IV-skew as a matched-tenor 25-delta risk reversal) is the **designed target, owned by the calibration slice** that would promote the signal into grade consumption — until then the whole-chain read serves as rendered context only.
+The richer canonical form (expiration window, delta / moneyness bands, a liquidity floor, zero-bid exclusion; IV-skew as a matched-tenor 25-delta risk reversal) is adopted when calibration against live runs promotes the signal into grade consumption; until then the whole-chain read serves as rendered context only.
 Chain timing follows **each job's own shape**: **Portfolio Analysis** fetches a chain **per holding at its Step-6 dossier assembly, fresh within the run** ([portfolio-workflow.md §Step 2](portfolio-workflow.md#step-2-load-holdings), where the chain contract is homed — so a selective run's carried tail spends no chain call), and **Trade Opportunities** fetches a chain **per surviving candidate at dossier assembly** ([trade-opportunities-workflow.md §Step 5b](trade-opportunities-workflow.md#step-5b-dossier-assembly) — candidates don't exist until discovery has run).
-Every chain response carries an as-of / market-state timestamp on the wire (as-built the app retains no timestamp field); the **shared freshness bound** that would reject a stale chain (mirroring the report's COT freshness guard) is designed with the canonical method above — as-built no staleness rejection runs — and the request is bounded by expiration and strike range to cap volume.
+The request is bounded by expiration and strike range to cap volume.
 Schwab serves no options history; persisted snapshots (for trend) follow the suite's run retention ([storage.md](storage.md)).
 
 ## Fundamentals stay with FMP
@@ -64,24 +64,15 @@ Schwab's fundamentals are thin summary ratios with an undocumented, unstable sha
 So **Schwab is the source of truth for holdings and option chains, not fundamentals**; the deeper company financials a holding's analysis needs come from **FMP and SEC EDGAR** ([data-sources.md](data-sources.md)).
 Schwab says *what you own, at what cost, and how active its options market is*; FMP and SEC say *how the company is doing*.
 
-## Manual import (supplement)
-
-**Designed, not built** — no manual-import surface exists yet; as-built every holding arrives from the Schwab pull, and the contracts below bind the slice when it lands.
-Holdings can also be entered **manually — by pasting or importing a CSV** of symbols, quantities, and cost bases (account-currency **totals**, matching the derived Schwab field — [§What is pulled](#what-is-pulled)), populating the same internal holdings model behind one trait.
-Because a connected Schwab account is **required** to run either job (below), manual import is a **supplement, not a substitute**: it adds positions Schwab doesn't report (for example, holdings at another brokerage) so the portfolio view can be complete.
-A manual row for a symbol a granted account already reports **merges into the same book-level netted row** ([§What is pulled](#what-is-pulled)), tagged by source — the legitimate case is the same security genuinely held at another brokerage; because re-entering a position Schwab already reports would double-count it, the import surface shows the overlap (symbol plus both quantities) so a duplicate entry is caught by the user, not silently summed.
-It does not bypass the Schwab-connection gate, and manually-added equities still draw their options-activity signal from Schwab chains where the symbol is listed.
-
 ## A connected Schwab account is required
 
 A valid Schwab connection is a hard precondition for **both** local jobs — Portfolio Analysis and Trade Opportunities.
 Both gate on it: Portfolio Analysis because holdings come from Schwab, and Trade Opportunities because its per-candidate options-activity signal does.
 If Schwab is not connected — never linked, or the 7-day refresh token has lapsed — both jobs are **blocked** with a re-authentication prompt, not run in a degraded mode (see [portfolio-analysis.md](portfolio-analysis.md), [trade-opportunities.md](trade-opportunities.md), [interface.md](interface.md)).
-Manual-import holdings do not satisfy this gate.
 
 ## Failure posture
 
 A failed or unauthorized pull leaves the last good holdings intact — it never clears or corrupts stored positions.
 A stock's per-symbol options signal degrades to **one typed options-signal gap** on a per-symbol fetch failure or a malformed response — top-level shape drift and a non-numeric per-contract strike / volume / open-interest alike, so a fabricated 0.0 level never enters the signal as data — never a whole-job failure: the signal is enriching everywhere it is consumed.
-A genuinely un-optioned name (an empty chain or a 404) carries **no signal and no gap** — a market fact, not a degradation, kept out of the degraded-input reads — and a stale chain past the shared freshness bound joins the gap conditions when the designed bound above lands.
+A genuinely un-optioned name (an empty chain or a 404) carries **no signal and no gap** — a market fact, not a degradation, kept out of the degraded-input reads.
 The **positions pull** takes the opposite posture exactly where the book is the job's subject: a failed pull **fails a Portfolio Analysis run** (holdings are its floor-bearing input — there is nothing to analyze without them), while Trade Opportunities touches holdings only in its display-only Step-8 owned/not-owned cross-reference, which is **fail-soft** ([trade-opportunities-workflow.md §Step 8](trade-opportunities-workflow.md#step-8-holdings-cross-reference)).

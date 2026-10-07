@@ -1,7 +1,6 @@
 # Trade Opportunities: logic flow
 
-> This describes the designed job behavior.  
-> Trade Opportunities is not yet built — every step below is designed and none is as-built, so the doc carries no built-vs-designed markers.
+> This describes the designed job behavior.
 
 `Gate → Load context and score due forecasts → Discover names: screens, the watchlist review, routes, the refresh lane → Narrow the slate → Validate each name: archetype → engine and floor → research → analysis → review the prior call → thesis → gate → Order the survivors → Refresh the rest and open episodes → Mark owned → Save → Display`
 

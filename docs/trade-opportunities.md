@@ -524,7 +524,7 @@ The **episode store** ([§Outcome learning](#outcome-learning-calibration)) sits
 
 ## Starting parameters (calibratable)
 
-Trade Opportunities is not yet built; the deterministic rules and thresholds below are the **starting calibration surface** the shared engine and the discovery funnel will run on — codeable now, **shape-tested immediately against the case library**.
+The deterministic rules and thresholds below are the **starting calibration surface** the shared engine and the discovery funnel will run on — codeable now, **shape-tested immediately against the case library**.
 The pattern-lens's shipped, versioned set of dated historical metric series ([§The lenses](#the-lenses)) doubles as a regression harness: each drafted gate runs over the library's cases as a **functional test of its shape** (a turn rule that rejects the canonical turn of its own archetype is broken).
 That runs under the discipline that guards against hindsight-fitting — **constants are shaped only against the development partition, the locked holdout (ordinary failures, near misses, base-rate names) is never tuned against, and library performance is never cited as evidence the gates *work***.
 The constants then move only on the user's reading of the accuracy record ([§Outcome learning](#outcome-learning-calibration)) — no realized outcome proposes or applies a change.

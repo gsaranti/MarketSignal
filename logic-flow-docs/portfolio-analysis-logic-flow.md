@@ -188,7 +188,7 @@
   - Sector benchmark price histories (the SPDR sector ETFs) for the technology-event pre-flag.
   - The gold quote for gold-linked holdings.
   - Fund information, sector and country weightings, and the sector P/E snapshot and history.
-  - Designed, not yet pulled: ratios and key metrics, financial scores, DCF, street targets and ratings, insider and congressional trades, peers, float, revenue segments, M&A feed.
+  - Ratios and key metrics, financial scores, DCF, street targets and ratings, insider and congressional trades, peers, float, revenue segments, and the M&A feed.
 
 - **SEC EDGAR**
   - XBRL company facts: the annual fallback behind FMP's statements.
@@ -235,7 +235,7 @@
   - The Ollama endpoint and the reasoner model id are configured. Neither local job makes an embedding call; the roster carries no embedder.
   - Schwab is connected and its seven-day refresh token is still valid.
   - FMP and FRED credentials exist.
-  - Each failure has its own warning category: local models not configured, Schwab connection, missing provider credentials. Manual-import holdings never satisfy the Schwab gate.
+  - Each failure has its own warning category: local models not configured, Schwab connection, missing provider credentials.
 
 - **Run-time checks**
   - No other job holds the single global run slot.
@@ -261,10 +261,6 @@
   - Symbol, description, asset type, signed quantity, per-unit average price, market value.
   - Per-account cash balance and liquidation value.
   - Option chains are not fetched here; each holding fetches its own at Step 6a.
-
-- **Manual data (designed, not built)**
-  - Optional imported holdings supplement the Schwab pull.
-  - Never replaces the Schwab connection requirement.
 
 - **Normalization logic**
   - Derive each row's cost basis as a signed total: average price × signed quantity. No option-contract or bond-par multiplier is applied, so the card withholds cost-derived figures for those two classes.
@@ -516,7 +512,7 @@ The app assembles the evidence packet the engine computes over. For a stock the 
   - Symbol-scoped news headlines as research leads (history ≤ 1 year).
 
 - **Stock data from elsewhere**
-  - SEC XBRL company facts, merged fill-only behind FMP's statements (SEC fills absent lines; a value cross-check is designed).
+  - SEC XBRL company facts, merged fill-only behind FMP's statements (SEC fills absent lines).
   - The item-classified 8-K sweep: Item 4.01 auditor change and Item 4.02 restatement. An unresolved CIK or failed fetch types it `unknown`, never clear.
   - The FINRA short-interest lookup off the run-level file. A symbol absent from the file carries no read, a market fact.
 
@@ -724,7 +720,7 @@ Bear, base, and bull prices at three months, twelve months, and three years. A t
 
 - **Positioning context**
   - The Schwab options signal, the FINRA short-interest read, and for a commodity or macro fund the CFTC underlying positioning.
-  - Designed, with their data legs: insider and congressional activity, rating drift, earnings surprises, and the soft forensic flags (Altman Z < 1.8, Piotroski ≤ 3, net income > 1.3× operating cash flow, receivables or inventory growth > 1.5× revenue growth).
+  - Insider and congressional activity, rating drift, and earnings surprises ride the dossier as evidence; the soft forensic flags (Altman Z < 1.8, Piotroski ≤ 3, net income > 1.3× operating cash flow, receivables or inventory growth > 1.5× revenue growth) are computed from financial scores and the statements.
 
 #### The equity-fund path
 
@@ -801,7 +797,7 @@ Gates fire inline as the values above are computed; the first failure short-circ
   - Web coverage never enters the floor.
 
 - **Output**
-  - The engine arm: sub-scores and letter, the three bands with method and provenance, tier, hurdle read, hard forensic state, the feasible set and the engine's rung.
+  - The engine arm: sub-scores and letter, the three bands with method and provenance, tier, hurdle read, hard forensic state with the soft forensic flags, the feasible set and the engine's rung.
   - The evidence the prompts render: computed metrics, momentum, the overlay, the narrative read, implied expectations, positioning, the pre-flag, the fund readout.
   - The realized data for the review, the band-relation stamp and anchor bar for later passes, and the quick-check basis.
 
@@ -860,7 +856,7 @@ The reasoner works a deterministic agenda over the web tool, one topic at a time
 
 - **Sees (Part 1, the holding-constant block first, then the topic)**
   - The holding header with the analysis date.
-  - FETCHED VALUES — stock: the profile line; the quarterly statements' headline lines (revenue, operating income, net income, diluted EPS, operating cash flow, capex, cash, total debt, diluted shares) for the latest eight quarters as reported; the forward consensus for the next two fiscal years; the last four dividends; the quote with its 52-week range and the closes on the prior run's date and three, twelve, and thirty-six months back; the trailing year's 8-K filings by date and item; the latest short-interest print. Fund: `etf/info`, the weightings, NAV and price, the profile line. Both: `DGS10` and `DGS2`. Never an engine computation.
+  - FETCHED VALUES — stock: the profile line; the quarterly statements' headline lines (revenue, operating income, net income, diluted EPS, operating cash flow, capex, cash, total debt, diluted shares) for the latest eight quarters as reported; the forward consensus for the next two fiscal years; the last four dividends; the quote with its 52-week range and the closes on the prior run's date and three, twelve, and thirty-six months back; the trailing year's 8-K filings by date and item; the latest short-interest print; the street price-target consensus with its trend, the analyst buy / hold / sell consensus with the rating actions, and FMP's ratings snapshot; the latest insider and congressional trades; the earnings-surprise history; the key-metrics and ratios headline lines, owner earnings, enterprise value and the DCF value; the peer set and the float; any M&A match; and the revenue segments by product and geography (counts and windows drafted at plan time). Fund: `etf/info`, the weightings, NAV and price, the profile line. Both: `DGS10` and `DGS2`. Never an engine computation.
   - NEWS LEADS — dated headlines with addresses, fetch candidates only.
   - On a continuity run, PRIOR ANALYSIS and PRIOR THESIS verbatim with their dates and any split-context line.
   - PAGES ALREADY RETRIEVED — pages fetched for this holding earlier in this run, by other topics or earlier passes, in first-retrieval order; held in memory and discarded between holdings. A prior run's page reaches the model only when the model requests its address again and the document cache serves it. Absent on the disconfirming pass, which keeps its contrary search free of automatic page injection.
@@ -987,7 +983,7 @@ Three model calls. The first two share one conversation and author the intrinsic
 
 - **Sees (Part 1, in page order)**
   - The holding header with the analysis date and FETCHED VALUES.
-  - COMPUTED — the engine's metrics and the statement basis in use; the grade and sub-scores with each axis's polarity and any imputed-score disclosure; the bear, base, and bull bands at the three horizons with the twelve-month method and the provenance flags, so a low-signal band is weighed, not obeyed; the risk tier; the hurdle read; the hard forensic read with the rule it matched stated as fact; the narrative-versus-reality read; the implied-expectations range beside the bands; the short-interest read; the options signal with its signed skew; the option overlay; the overlay's financing, economics, and dilution legs where the stock carries it; and the Step 5 context where it applies (commodity prints, the CBOE backdrop, a fund's positioning row, a fired pre-flag).
+  - COMPUTED — the engine's metrics and the statement basis in use; the grade and sub-scores with each axis's polarity and any imputed-score disclosure; the bear, base, and bull bands at the three horizons with the twelve-month method and the provenance flags, so a low-signal band is weighed, not obeyed; the risk tier; the hurdle read; the hard forensic read with the rule it matched stated as fact; the soft forensic flags as typed evidence; the narrative-versus-reality read; the implied-expectations range beside the bands; the short-interest read; the options signal with its signed skew; the option overlay; the overlay's financing, economics, and dilution legs where the stock carries it; and the Step 5 context where it applies (commodity prints, the CBOE backdrop, a fund's positioning row, a fired pre-flag).
   - MARKET ANALYSIS — the house view, never named by product.
   - ANALYSIS — this run's analysis.
   - On a continuity run, REVIEW then PRIOR THESIS verbatim with any split-context line.

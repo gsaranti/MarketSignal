@@ -22,7 +22,7 @@
 - [export.md](export.md) — Markdown and PDF export options, naming conventions, and behavior.
 - [local-models.md](local-models.md) — The local analysis suite's model substrate: local serving, the model roster and per-task routing, schema-constrained output, the context-memory discipline, and isolated per-job run memory.
 - [web-research.md](web-research.md) — The local suite's web tool: the SearXNG-only search / fetch / extract loop.
-- [schwab-integration.md](schwab-integration.md) — Portfolio holdings ingestion from Charles Schwab (OAuth, token lifecycle, positions) plus the manual-import fallback.
+- [schwab-integration.md](schwab-integration.md) — Portfolio holdings ingestion from Charles Schwab (OAuth, token lifecycle, positions).
 - [portfolio-analysis.md](portfolio-analysis.md) — The local Portfolio Analysis job: the per-holding pipeline, the two-arm verdict (the engine's grade and bands beside the model's thesis document, conviction and expected prices), the action, outcome learning, and the portfolio roll-up.
 - [portfolio-workflow.md](portfolio-workflow.md) — The Portfolio Analysis job's end-to-end control flow: Type-tagged steps from the gate through the per-holding loop to the roll-up, with each local-model-call contract.
 - [trade-opportunities.md](trade-opportunities.md) — The local Trade Opportunities job: the risk × horizon opportunity matrix and its continuity.
