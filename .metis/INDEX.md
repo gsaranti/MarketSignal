@@ -270,7 +270,7 @@ build status lives in `BUILD.md`.*
 - Post-earnings surprise screen — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 3a; data-sources.md §Trade Opportunities — endpoint surface
 - Model-led hypothesis research lane — trade-opportunities-workflow.md §Step 3b
 - Discovery route-topic proposal (the one model-proposed agenda) — trade-opportunities-workflow.md §Step 3b; web-research.md §The research loop and context management
-- Hypothesis document and appendix (card formation) — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §The pipeline, §Discovery memory, §Starting parameters; storage.md §Local Analysis Suite Storage
+- Hypothesis document and appendix (hypothesis formation) — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §The pipeline, §Discovery memory, §Starting parameters; storage.md §Local Analysis Suite Storage
 - Discovery coverage rotation / ledger — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §Starting parameters; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
 - Discovery memory / opportunity graph — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3c, §Step 7, §ATO: the audit flow
 - Watchlist review — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Discovery memory, §Starting parameters, §Storage and display

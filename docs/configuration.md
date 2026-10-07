@@ -209,6 +209,6 @@ The choice is the **orchestrator's, made deterministically** from the prompt's f
 One knob (a generous, conservative default) applies here and bounds that choice.
 
 - **Distillation overflow threshold** — the fraction of a call's input budget above which the orchestrator takes the next smaller shape: of the analysis call's budget, to distill the write-ups before the analysis; of a distillation call's budget, to distill each write-up first (leaving headroom for the output and, on the analysis call, the thinking trace).
-  It binds at Portfolio's Step 6d; Trade Opportunities applies it to its Step-5e consolidation and to each route's card formation at Step 3b, under the same two shapes ([trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research)).
+  It binds at Portfolio's Step 6d; Trade Opportunities applies it to its Step-5e consolidation and to each route's hypothesis formation at Step 3b, under the same two shapes ([trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research)).
   The same budget bounds each distillation call at issue: the adapter measures the rendered prompt against it before any request exists ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
   A merge distillation that outgrows the widest issuable budget once rendered takes the per-write-up shape instead ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).

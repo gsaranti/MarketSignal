@@ -318,7 +318,7 @@ Four stages reach the open web, and all of them run the same bounded loop Portfo
 
 ### What differs per stage
 
-- **Step 3b — discovery.** The unit of work is a route, worked as its topic list: `route ⊃ topic ⊃ pass ⊃ fetch`. One per-run discovery fetch and wall-clock ceiling is shared across every route, spent in route-priority order. The leads are the FMP news feeds and the macro-release calendar. After a route's topics, one disconfirming pass runs for the route. The route's write-ups flow to its card-formation conversation.
+- **Step 3b — discovery.** The unit of work is a route, worked as its topic list: `route ⊃ topic ⊃ pass ⊃ fetch`. One per-run discovery fetch and wall-clock ceiling is shared across every route, spent in route-priority order. The leads are the FMP news feeds and the macro-release calendar. After a route's topics, one disconfirming pass runs for the route. The route's write-ups flow to its hypothesis-formation conversation.
 - **Step 3c — the refresh lane.** One selected watchlist node, one isolated bounded conversation, spent from the same discovery ceiling after the routes. It is given the node's hypothesis section and its named metric and falsifiers as the questions, and returns a refresh write-up and a typed decision.
 - **Step 5d — per-candidate (and Deep Audit).** The unit is the candidate's agenda. A per-candidate fetch and wall-clock budget, spent in topic-priority order, the leading metric and the bear case first. The leads are the candidate's `news/stock` headlines. After the topics, one disconfirming pass runs for the candidate. The write-ups flow to Step 5e.
 - **No cross-run findings seed.** The cross-run cache is document-level only. A carried name's prior analysis and prior thesis document ride the prompts verbatim, dated; no distilled object from a prior run seeds a loop.
@@ -493,7 +493,7 @@ Loaded once per run and shared across every candidate; nothing here is re-reques
   - The house view's `market_cycle` × `risk_posture` is the job's macro / regime backbone — reused, never recomputed; the forward thematic map that completes the worldview is built at Step 3b.
 
 - **What each context input feeds (later steps, not here)**
-  - House view → rendered as a market-level analysis, never named by product, in the Step 3b planning, route, and card-formation prompts, the Step 3c review and refresh prompts, and the Step 5g thesis-document prompt. It steers where the job hunts; it is never a number the engine consumes.
+  - House view → rendered as a market-level analysis, never named by product, in the Step 3b planning, route, and hypothesis-formation prompts, the Step 3c review and refresh prompts, and the Step 5g thesis-document prompt. It steers where the job hunts; it is never a number the engine consumes.
   - `DGS10` and its history → the scenario multiples at Step 5c and every cheap re-derivation (Step 7, Quick Audit).
   - `DGS2` → the entry gate at Step 5h and every cheap re-derivation.
   - Commodity series (FRED + FMP) → the Step 3a commodity-turn feeder and per-candidate context for a commodity cyclical (Step 5c); Step 2 is the sole commodity owner — nothing re-fetches them.
@@ -606,7 +606,7 @@ The job's edge: a research-active feeder that forms investable **hypotheses** an
 - **App-enforced clauses (never model discretion)**
   - The **outside-view route** is always present and marked graph-blind — inserted if the model omitted it: "assume the carried-forward graph is stale: what world-change are we missing?" An inserted route carries that question as its single topic, the menu's outside-view rubric, an app-fixed rationale, and the `outside-view` origin.
   - The **coverage-rotation route** is app-owned: the model may refine its questions and source plan but cannot remove it, substitute a less-overdue unit, or claim its debt cleared; only the orchestrator's completed-route record updates the ledger.
-  - The **event-impact route** may be chosen speculatively — its materiality gate is research-derived and unknowable at planning time, so it is checked at card formation (below). A scheduled route whose research surfaces no qualifying event emits nothing and stays dormant.
+  - The **event-impact route** may be chosen speculatively — its materiality gate is research-derived and unknowable at planning time, so it is checked at hypothesis formation (below). A scheduled route whose research surfaces no qualifying event emits nothing and stays dormant.
 
 - **Coverage rotation — how the inserted route is chosen**
   - Age is tracked separately for each canonical route class and each coverage subject (the stable broad-industry taxonomy plus currently active house-view themes), in calendar time against the ~4-week window — never run count.
@@ -646,15 +646,15 @@ The job's edge: a research-active feeder that forms investable **hypotheses** an
   - **Returns**
     - The pass's write-up, 400–900 words: what the research established on the topic's questions, each figure with the date or period its source gives for it and that source, where pages disagree, and what the evidence leaves unanswered. On a follow-up pass the write-up rewritten whole.
     - A second message asks for a follow-up question: the question verbatim, or the one word `none`. Not sent on the topic's last pass or on the disconfirming pass.
-    - Validated by nothing. A topic ends with one write-up; the route ends with one per worked topic plus the disconfirming pass's, flowing whole to card formation.
+    - Validated by nothing. A topic ends with one write-up; the route ends with one per worked topic plus the disconfirming pass's, flowing whole to hypothesis formation.
     - Every page shown enters the route's page roster, persisted on the audit record.
 
-#### Movement 3 — Card formation: the hypothesis document and its appendix
+#### Movement 3 — Hypothesis formation: the hypothesis document and its appendix
 
 One conversation per route, after the route's topic conversations and its disconfirming pass complete: the first model consolidation of the route's research, and the call that authors the route's hypotheses. The adversarial passes are the document's own discipline, not fetch passes.
 
 - **Budget check**
-  - The orchestrator sizes the card-formation prompt — the route's write-ups, the house view, the graph context — against the call's input budget. Over it, the write-ups are distilled under the shared shapes (*Consolidation*, above); the write-ups persist on the audit as written.
+  - The orchestrator sizes the hypothesis-formation prompt — the route's write-ups, the house view, the graph context — against the call's input budget. Over it, the write-ups are distilled under the shared shapes (*Consolidation*, above); the write-ups persist on the audit as written.
 
 - **Call: the hypothesis document** (thinking, no grammar)
   - **Sees (Part 1, in page order)**
@@ -763,7 +763,7 @@ Discovery is stateful: every worthy-but-unpicked name from prior runs is a watch
   - Tag each surviving name with **every** signal that surfaced it — which screen, which hypothesis, the positioning flag, whether it is a maturing watchlist name — plus its cap band and sector / industry.
   - Reconcile against the live matrix: a name **already live** is a **re-surfacer** (reconciled against its record, never re-discovered blind); a name matching a **departed (archived)** ticker is a fresh **debut** — nothing from the archive carries.
   - Assign a **provisional archetype** deterministically from sector / industry + the surfacing tags — used only for the archetype quota below; Step 5a's confirmed archetype is authoritative from 5c on.
-  - This is the cross-feeder reduce and it is deliberately computed: distinct hypotheses are never collapsed by a model, which would destroy auditable breadth and could silently drop a name. The only model-side consolidation in discovery is within a route's own card formation.
+  - This is the cross-feeder reduce and it is deliberately computed: distinct hypotheses are never collapsed by a model, which would destroy auditable breadth and could silently drop a name. The only model-side consolidation in discovery is within a route's own hypothesis formation.
 
 - **The deep-research budget (a Settings knob — how many names get the expensive Step-5 loop this run)**
   - Spent in three slices, in this order:
