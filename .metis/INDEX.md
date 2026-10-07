@@ -192,7 +192,6 @@ build status lives in `BUILD.md`.*
 - Schwab token lifecycle — schwab-integration.md §Token lifecycle
 - Schwab fundamentals boundary — schwab-integration.md §Fundamentals stay with FMP
 - Schwab failure posture — schwab-integration.md §Failure posture
-- Manual holdings import — schwab-integration.md §Manual import (supplement)
 - Options-activity signal — schwab-integration.md; data-sources.md §CBOE; portfolio-analysis.md
 
 ### Portfolio Analysis
@@ -225,11 +224,12 @@ build status lives in `BUILD.md`.*
 - Portfolio pre-profit execution / financing overlay — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g; data-sources.md §Portfolio Analysis — endpoint surface; storage.md §Local Analysis Suite Storage
 - Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 5, §Step 6e, §Step 7; storage.md §Local Analysis Suite Storage
 - Portfolio hard-forensic outcome — portfolio-analysis.md §Portfolio action, §Starting parameters; portfolio-workflow.md §Step 6g; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
+- Soft forensic flags (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline, §The holding verdict; portfolio-workflow.md §Step 6b, §Step 6f; trade-opportunities.md §The two non-negotiables, §Starting parameters; trade-opportunities-workflow.md §Step 5c; data-sources.md §Portfolio Analysis — endpoint surface
 - Narrative-vs-reality read — Portfolio form (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6b, §Step 6f, §Step 6g; trade-opportunities.md §The two non-negotiables; storage.md §Local Analysis Suite Storage
 - Implied-expectations read — Portfolio form — portfolio-analysis.md §Starting parameters, §The per-holding pipeline, §Intrinsic verdict; portfolio-workflow.md §Step 6b, §Step 6f; storage.md §Local Analysis Suite Storage
 - Same-underlying option overlay (the data-sources chains row is canonical for the standalone-option stance) — portfolio-analysis.md §The per-holding pipeline, §Asset eligibility; portfolio-workflow.md §Step 6a, §Step 6f; data-sources.md §Portfolio Analysis — endpoint surface; schwab-integration.md §What is pulled
 - Run audit record provenance (source labels, model ids) — storage.md §Local Analysis Suite Storage; portfolio-workflow.md §Step 7
-- Holdings normalization / book-level netting — schwab-integration.md §What is pulled, §Manual import (supplement); portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
+- Holdings normalization / book-level netting — schwab-integration.md §What is pulled; portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
 - Holdings change tracking — portfolio-analysis.md §Holdings change tracking; portfolio-workflow.md §Step 4
 - Net-short equity handling — portfolio-analysis.md §Asset eligibility, §Triggering, §Holdings change tracking
 - Not-rated positions in roll-up — portfolio-analysis.md §Asset eligibility, §Portfolio roll-up; schwab-integration.md §What is pulled
@@ -286,7 +286,7 @@ build status lives in `BUILD.md`.*
 - Narrative-vs-reality ratio + forensic risk gate + base-rate conjunction discipline — trade-opportunities.md §The pipeline, §The two non-negotiables; trade-opportunities-workflow.md §Step 5c
 - Leading-metric inflection gate — trade-opportunities.md §The two non-negotiables, §Starting parameters
 - Story-stock and insufficient-evidence hold-outs (the debut floor outcomes) — trade-opportunities.md §Evidence floor, §What the job hunts, §Starting parameters; trade-opportunities-workflow.md §Step 5c, §Step 5h
-- Inconclusive refresh (a carried name below the floor) — trade-opportunities.md §Evidence floor, §The opportunity, §Outcome learning, §Failure posture; trade-opportunities-workflow.md §Step 5c, §Step 7
+- Inconclusive refresh (a carried name below the floor) — trade-opportunities.md §Evidence floor, §The opportunity, §Outcome learning, §Failure posture; trade-opportunities-workflow.md §Step 4, §Step 5c, §Step 7
 - Limited-history support — trade-opportunities.md §Evidence floor, §Starting parameters; trade-opportunities-workflow.md §Step 5b, §Step 5c, §Step 5d; data-sources.md §Trade Opportunities — endpoint surface; configuration.md §Local Analysis Suite Configuration
 - Historical case library — trade-opportunities.md §The lenses, §Starting parameters; trade-opportunities-workflow.md §Step 5d
 - Event-impact / value-chain repricing lens — trade-opportunities.md §The event-impact / value-chain repricing lens; trade-opportunities-workflow.md §Step 3b
