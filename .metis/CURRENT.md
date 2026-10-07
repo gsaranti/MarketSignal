@@ -2,22 +2,25 @@
 
 ## Active task
 
-Engine arm at three horizons — the first *To build* item, not started.
+Engine arm at three horizons — task 1 of 3 done and review-approved; task 2 next.
 
 ## What happened
 
-The BUILD.md coverage audit ran before development restarted: the five report items against the docs and code, the Portfolio six against the docs and code for the refactor and its pre-refactor leftovers, the five Trade Opportunities items against the docs alone.
-Four read-only agents walked the legs; every finding was verified against its cited sentence and code line, and every ruling went through the selector.
-BUILD.md gained three items — `Keychain fail-soft on the local-config report` after the Portfolio six, `The shared engine's factor machinery` before the TO spine, `The fetch layer's render tier and Connected Sources` last — and clauses, assumptions and citations on fifteen items (`a78ac7a`); the sweep keeps the engine-only overlay record, and the case-library asset ships with the TO spine.
-The docs took the audit's rulings (`4383433`): guided setup, the run-gate feeding the Ollama indicator, the SearXNG deep links and the notice suppression controls dropped; the N-PORT deferral named once at §Asset eligibility; grades-historical rides the dossier; the estimate consensus persists as dated prints with the anchor print at the twelve-month window's start; the `Planned report enrichment` heading became `Report enrichment (paid FMP tier)` and every status word left the report-side docs.
-INDEX followed (`52a1f15`). Three Codex rounds closed.
+The plan split the engine-arm item into three tasks, and task 1 landed (`9205e05`).
+The engine arm carries bands at three months, twelve months and three years in both forms (`targets-v7`), its own action rung with the hard-forensic exit branch, and the band-relation stamp re-homed from the ledger; the stand-in arm, the conviction ceilings and the narrative cap are gone (`pre-profit-v5`).
+Episode opening and the scoreboard are suspended from the run-finish path, and the realized then-versus-now carrier (`engine::realized_engine_data`) feeds the delta rows while it waits for the self-review's renderer.
+Prompts moved to `portfolio-v68` (three computed legs, the rung on the action packet's SCORES line); the trail to `checkpoint-v17`, the archive to format 13.
+The Metis reviewer's first round caught a real regression — the quick check's band leg bridging a fresh-basis band after an unresolvable pass — fixed by gating the leg on the certified basis; the second round approved with nits.
+Codex's two P2s were taken (the three-year floor clause, the rung line); its call to reconcile the docs' "pick withheld" wording was a misreading.
 
 ## Current state
 
-Code unchanged since `a9f5037`; nothing of either design is implemented.
-Backlog: 19 items to build, none built — the Portfolio six, the Keychain fail-soft, the five report items, the shared engine's factor machinery, the five Trade Opportunities items, the fetch layer.
-A BUILD item is clauses, citations and named assumptions, never a restatement of the docs; a doc sentence settles a rule once and the item points at it.
-Attempt 9 waits behind the whole Portfolio backlog and a dev-store re-wipe; the user names its session.
+Item progress: task 1 done.
+Task 2 is the four soft forensic flags (a `financial-scores` adapter call, receivables and inventory lines on the balance-sheet rows, the flags typed on the audit beside the hard state, a missing input reading unevaluable, never clear) and the statement-only severe rule (economics plus constrained runway or material dilution; the execution leg types `unscorable` and enters no conjunction; the stamp to `pre-profit-v6`).
+Its flags to rule at plan time: sever only the overlay's consumption of the execution observations, leaving the distillation channel to item 3, or cut the channel now (files 11–13 would regenerate); the net-income-versus-operating-cash-flow basis (TTM recommended, written into the docs).
+Task 3 is the quick check on the two monitors alone: the ledger-condition sweep and `condition_states`, the NewsSeed leg and its frontend labels, and the `overlay_condition_states` call sites go; `quick-check-v5`.
+Rendering of the soft flags, the carrier's REALIZED block and the card's three-band engine line belong to items 2, 5 and 6.
+Known residue: the harness's continuity dossier carries no target stamp, so the examples show no boundary line; the fixtures' three-year bands are flat-growth copies; `OutcomeSources.price` is threaded but unread until item 4.
 
 ## Open questions
 
@@ -25,7 +28,6 @@ Attempt 9 waits behind the whole Portfolio backlog and a dev-store re-wipe; the 
 
 ## Where to start
 
-Run `/metis-session-start`, then `/metis-plan-task "Engine arm at three horizons"`.
-The item now carries the fund form of the bands, the statement-only severe rule with the execution leg unscorable and the overlay version moved, the sub-score inputs staying the clamped maps until the factor machinery lands, and the assumption that episode opening and the scoreboard are suspended until outcome learning.
-Carry any mid-plan ruling into the prompt contracts and endpoint cardinalities in the same commit.
+Amend the engine-arm item's clause in `BUILD.md` from "its model-condition sweep and its FINRA and news legs gone" to "its model-condition sweep and its news leg gone" (ruled 2026-10-07; the quick check has no FINRA leg, and the full run's FINRA fetch stays).
+Then `/metis-session-start`, then `/metis-plan-task "Engine arm at three horizons — task 2: the soft forensic flags and the statement-only severe rule"`.
 Never propose the run.
