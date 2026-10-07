@@ -6,16 +6,17 @@ Engine arm at three horizons — the first *To build* item, not started.
 
 ## What happened
 
-Codex's independent re-sweep found the one contradiction left in the docs: a persistently inconclusive carried name could hold the rotation slice's slot every run and starve the overdue backlog; the slice is now spent on floor-clearing passes, an inconclusive refresh releasing its slot to the next live name in order (`cdb2b1e`).
-Three docs passes then made the corpus describe what is built and nothing else: every ruling date, review provenance and `Since <stamp>` history stripped (`bc97d3b`, blame-ignored via `672dde8`); the status-only as-built words (`cc189f6`); the designed-versus-built gap markers ruled one by one (`84a4b61`) — manual holdings import, the issuer-holdings adapter, the SEC conflicting-value cross-check, the chain freshness bound, the breadth-flip sub-leg and the not-rated constant dropped; the two floor arms and the options canonical form stated as deferrals naming their precondition; the soft forensic flags adopted into the engine arm; every Portfolio endpoint-table row adopted as design and rendered into FETCHED VALUES, except FMP's DCF value and peer set, which left the Portfolio surface (`e32b441`), the ratios line a short fixed set.
-BUILD.md gained the five Trade Opportunities items and three clauses, INDEX the soft-forensic row (`f905132`).
-The code inventory found no Trade Opportunities code at all — the job was never started, the only reserved artifact is the `opportunities` vector namespace — so the TO items build the job from nothing and the prior handoff's "TO removal sweep" was a misreading, now a clause on the Portfolio removal sweep.
+The BUILD.md coverage audit ran before development restarted: the five report items against the docs and code, the Portfolio six against the docs and code for the refactor and its pre-refactor leftovers, the five Trade Opportunities items against the docs alone.
+Four read-only agents walked the legs; every finding was verified against its cited sentence and code line, and every ruling went through the selector.
+BUILD.md gained three items — `Keychain fail-soft on the local-config report` after the Portfolio six, `The shared engine's factor machinery` before the TO spine, `The fetch layer's render tier and Connected Sources` last — and clauses, assumptions and citations on fifteen items (`a78ac7a`); the sweep keeps the engine-only overlay record, and the case-library asset ships with the TO spine.
+The docs took the audit's rulings (`4383433`): guided setup, the run-gate feeding the Ollama indicator, the SearXNG deep links and the notice suppression controls dropped; the N-PORT deferral named once at §Asset eligibility; grades-historical rides the dossier; the estimate consensus persists as dated prints with the anchor print at the twelve-month window's start; the `Planned report enrichment` heading became `Report enrichment (paid FMP tier)` and every status word left the report-side docs.
+INDEX followed (`52a1f15`). Three Codex rounds closed.
 
 ## Current state
 
 Code unchanged since `a9f5037`; nothing of either design is implemented.
-Backlog: 16 items to build, none built — the Portfolio six, the five report-side items, then the five Trade Opportunities items in dependency order (spine, engine arm and gate → discovery and the graph → the verdict → carry-forward, archive and outcome learning → the page and the audit flow).
-The docs are the spec with no status words: a deferral names its precondition, an adopted design is plain, the omission of a row is the statement; a new docs edit must not reintroduce dates, provenance or built/designed markers, and never describes what is deliberately not pulled.
+Backlog: 19 items to build, none built — the Portfolio six, the Keychain fail-soft, the five report items, the shared engine's factor machinery, the five Trade Opportunities items, the fetch layer.
+A BUILD item is clauses, citations and named assumptions, never a restatement of the docs; a doc sentence settles a rule once and the item points at it.
 Attempt 9 waits behind the whole Portfolio backlog and a dev-store re-wipe; the user names its session.
 
 ## Open questions
@@ -25,6 +26,6 @@ Attempt 9 waits behind the whole Portfolio backlog and a dev-store re-wipe; the 
 ## Where to start
 
 Run `/metis-session-start`, then `/metis-plan-task "Engine arm at three horizons"`.
-The item now carries the four soft forensic flags beside the hard-forensic state; the plan must cover them with the three bands, the rung rule and the quick check's two monitors.
-When a design ruling lands mid-plan, carry it into the prompt contracts (FETCHED VALUES, COMPUTED) and the endpoint cardinalities in the same commit — the Codex rounds this session caught that gap six times.
+The item now carries the fund form of the bands, the statement-only severe rule with the execution leg unscorable and the overlay version moved, the sub-score inputs staying the clamped maps until the factor machinery lands, and the assumption that episode opening and the scoreboard are suspended until outcome learning.
+Carry any mid-plan ruling into the prompt contracts and endpoint cardinalities in the same commit.
 Never propose the run.
