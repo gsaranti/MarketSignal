@@ -145,8 +145,8 @@ fn draft_of(f: &Fixture) -> LedgerDraft {
 
 /// The holding's ledger as the action packet reads it: the persisted prose
 /// with no conditions or drivers (the packet renders neither), the original
-/// thesis standing in for the current one, the scenario targets and the band
-/// relation absent — the fields the packet does not read.
+/// thesis standing in for the current one, the scenario targets absent — the
+/// fields the packet does not read.
 fn ledger_of(f: &Fixture) -> ThesisLedger {
     ThesisLedger {
         branch: LedgerBranch::Priced,
@@ -167,7 +167,6 @@ fn ledger_of(f: &Fixture) -> ThesisLedger {
         what_must_improve: f.ledger_prose.what_must_improve.clone(),
         what_must_not_break: f.ledger_prose.what_must_not_break.clone(),
         conditions: vec![],
-        authored_band_relation: None,
     }
 }
 
@@ -1154,7 +1153,8 @@ fn fixed_evidence_live() {
                 &f.engine_output,
                 d.options_signal.clone(),
                 interp,
-                graded.engine_view.clone(),
+                graded.engine_rung,
+                graded.authored_band_relation,
             );
             decide(&d, &assembled, &fresh_ledger, "fresh-interpretation verdict");
         }
@@ -1438,7 +1438,8 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
             assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "{}: Part 1 lacks {section}\n{part1}", f.symbol);
         }
         assert!(part1.contains(&format!("Grade {}", graded.grade.as_str())));
-        assert!(part1.contains("prorated to one month"));
+        assert!(part1.contains("prorated to three months"));
+        assert!(part1.contains("- computed three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
         assert!(part2.contains("Name the returns you weighed by their values; do not describe them by their relation to another figure."));
         // The thesis and the three scenario rows, as persisted.
         assert!(part1.contains(&format!("\nTHESIS (analyst)\n{}\n", f.ledger_prose.current_thesis)), "{}", f.symbol);

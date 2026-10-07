@@ -4,12 +4,10 @@ import { etDayDiff } from "../etDate";
 import { localDate, localDateTime } from "../format";
 import type {
   FlagTrigger,
-  GradedVerdict,
   HoldingFailure,
   HoldingQuickState,
   HoldingsPull,
   HoldingVerdict,
-  HorizonOutlook,
   PortfolioConviction,
   PortfolioRun,
   Position,
@@ -804,79 +802,7 @@ const MODEL_LETTER_TITLE =
   "The model's letter, derived from its own quality/valuation/risk through the " +
   "shared cutoffs";
 
-const ENGINE_HORIZONS = { short: "1 mo", mid: "6 mo", long: "12 mo" };
 const MODEL_HORIZONS = { short: "1 mo", mid: "1 yr", long: "3–5 yr" };
-
-// Compare only the horizons both arms actually forecast.
-function outlookDiverges(d: GradedVerdict): boolean {
-  return d.horizon_outlook.short !== d.engine_view.outlook.short ||
-    d.horizon_outlook.mid !== d.engine_view.outlook.long;
-}
-
-// Column A renders the engine stand-in's conviction/outlook.
-function armAConviction(d: GradedVerdict): PortfolioConviction {
-  return d.engine_view.conviction;
-}
-function armAOutlook(d: GradedVerdict): HorizonOutlook {
-  return d.engine_view.outlook;
-}
-
-// The matured scoreboard lines for one symbol, from the run's outcome records —
-// engine-computed, quiet-note register on the card foot.
-function maturedLinesFor(symbol: string): string[] {
-  const matured = props.run?.outcome.matured ?? [];
-  return matured
-    .filter((m) => m.symbol.toUpperCase() === symbol.toUpperCase())
-    .map((m) => {
-      const detail =
-        m.total_return !== null
-          ? `total return ${fmtPct(m.total_return)}`
-          : m.price_return !== null
-            ? `price-only ${fmtPct(m.price_return)}`
-            : m.outcome;
-      return `${m.window_months}-mo window ${m.outcome} (${detail})`;
-    });
-}
-
-// The roll-up's model-vs-engine scoreboard lines: the PAIRED head-to-head per
-// window (both arms scored over the identical episode set — the backend's
-// same-events contract) plus the outlook direction hit-rates. Empty until v7
-// episodes mature.
-const scoreboardLines = computed<string[]>(() => {
-  const reads = props.run?.outcome.reads;
-  if (!reads) return [];
-  const lines: string[] = [];
-  for (const h of reads.head_to_head) {
-    if (
-      h.scored > 0 &&
-      h.model_mean_interval_score !== null &&
-      h.engine_mean_interval_score !== null
-    ) {
-      lines.push(
-        `${h.window_months}-mo interval score (paired, ${h.scored}): ` +
-          `model ${h.model_mean_interval_score.toFixed(3)} ` +
-          `vs engine ${h.engine_mean_interval_score.toFixed(3)} — lower is better`
-      );
-    }
-  }
-  for (const window of [1, 6, 12]) {
-    const arm = (name: string) =>
-      reads.outlook_direction.find(
-        (r) => r.arm === name && r.window_months === window && r.scored > 0
-      );
-    const engine = arm("engine");
-    const model = arm("model");
-    const arms = [
-      model ? `model ${model.hits}/${model.scored}` : null,
-      engine ? `engine ${engine.hits}/${engine.scored}` : null,
-    ].filter((value) => value !== null);
-    if (arms.length) lines.push(`${window}-mo direction: ${arms.join(" vs ")}`);
-  }
-  if (reads.outlook_direction.some((r) => r.scored > 0)) {
-    lines.push("Model direction scores cover 1 month and 1 year; the 3–5-year outlook has no matching outcome window.");
-  }
-  return lines;
-});
 
 function gradeClass(grade: string): string {
   return grade.toLowerCase();
@@ -1949,42 +1875,23 @@ const keyFigures = computed(() => {
                     </div>
                     <p class="hc-setup-note">{{ SETUP_NOTE }}</p>
                     <dl class="hc-kv">
-                      <dt>Conviction</dt>
-                      <dd>
-                        <span
-                          class="conviction"
-                          role="img"
-                          :aria-label="`Conviction: ${armAConviction(v.disposition)}`"
-                        >
-                          <i
-                            v-for="i in 3"
-                            :key="i"
-                            :class="{
-                              on: i <= CONVICTION_LEVEL[armAConviction(v.disposition)],
-                            }"
-                          />
-                        </span>
-                        <span class="hc-conviction-word">{{
-                          armAConviction(v.disposition)
-                        }}</span>
-                      </dd>
-                      <template v-if="v.disposition.price_targets.one_month">
-                        <dt>1-mo target</dt>
+                      <template v-if="v.disposition.price_targets.three_month">
+                        <dt>3-mo target</dt>
                         <dd>
                           <span class="ana-num"
                             >{{
                               moneyExact.format(
-                                v.disposition.price_targets.one_month.base
+                                v.disposition.price_targets.three_month.base
                               )
                             }}
                             <span class="hc-band"
                               >({{
                                 moneyExact.format(
-                                  v.disposition.price_targets.one_month.bear
+                                  v.disposition.price_targets.three_month.bear
                                 )
                               }}–{{
                                 moneyExact.format(
-                                  v.disposition.price_targets.one_month.bull
+                                  v.disposition.price_targets.three_month.bull
                                 )
                               }})</span
                             ></span
@@ -2014,22 +1921,9 @@ const keyFigures = computed(() => {
                           >
                         </dd>
                       </template>
-                      <dt>Outlook</dt>
-                      <dd class="hc-outlook">
-                        <span
-                          v-for="(read, horizon) in armAOutlook(v.disposition)"
-                          :key="horizon"
-                          class="hc-horizon"
-                        >
-                          <span class="hc-horizon-label">{{ ENGINE_HORIZONS[horizon] }}</span>
-                          <span class="dir" :class="HORIZON_DIR[read]">{{
-                            read
-                          }}</span>
-                        </span>
-                      </dd>
                       <dt>Action</dt>
                       <dd>
-                        {{ ACTION_LABELS[v.disposition.engine_view!.action] }}
+                        {{ ACTION_LABELS[v.disposition.engine_rung] }}
                       </dd>
                     </dl>
                     <!-- Target methodology: engine-computed figures, exposed
@@ -2049,13 +1943,13 @@ const keyFigures = computed(() => {
                       v-if="openMethodology.has(v.symbol)"
                       class="hc-methodology"
                     >
-                      <!-- Both horizons expose their methodology, one-month
-                           first to match the target order above. -->
+                      <!-- Both displayed horizons expose their methodology,
+                           three-month first to match the target order above. -->
                       <p
-                        v-if="v.disposition.price_targets.one_month"
+                        v-if="v.disposition.price_targets.three_month"
                         class="hc-prose"
                       >
-                        {{ v.disposition.price_targets.one_month.methodology }}
+                        {{ v.disposition.price_targets.three_month.methodology }}
                       </p>
                       <p
                         v-if="v.disposition.price_targets.twelve_month"
@@ -2067,8 +1961,8 @@ const keyFigures = computed(() => {
                   </div>
 
                   <!-- The model arm: the model's own numbers, authored
-                       unrestricted and persisted exactly as returned — scored
-                       against the engine baseline by the outcome scoreboard. -->
+                       unrestricted and persisted exactly as returned, beside
+                       the engine's computed reads. -->
                   <div class="hc-col">
                     <span class="hc-kicker hc-armhead"
                       >Model view
@@ -2117,14 +2011,6 @@ const keyFigures = computed(() => {
                         <span class="hc-conviction-word">{{
                           v.disposition.conviction
                         }}</span>
-                        <span
-                          v-if="
-                            v.disposition.conviction !==
-                            v.disposition.engine_view!.conviction
-                          "
-                          class="ana-tag"
-                          >≠ engine</span
-                        >
                       </dd>
                       <template
                         v-for="(band, window) in {
@@ -2165,20 +2051,12 @@ const keyFigures = computed(() => {
                             read
                           }}</span>
                         </span>
-                        <span
-                          v-if="outlookDiverges(v.disposition)"
-                          class="ana-tag"
-                          >≠ engine</span
-                        >
                       </dd>
                       <dt>Action</dt>
                       <dd>
                         {{ ACTION_LABELS[v.disposition.action] }}
                         <span
-                          v-if="
-                            v.disposition.action !==
-                            v.disposition.engine_view!.action
-                          "
+                          v-if="v.disposition.action !== v.disposition.engine_rung"
                           class="ana-tag"
                           >≠ engine</span
                         >
@@ -2333,9 +2211,8 @@ const keyFigures = computed(() => {
                   <p class="hc-prose">{{ v.disposition.financial_summary }}</p>
                 </div>
 
-                <!-- The model's retrospective self-assessment (v7): prose input
-                     to the learnings; the scored comparison is the deterministic
-                     scoreboard's, never this paragraph's. -->
+                <!-- The model's retrospective self-assessment (v7): prose;
+                     nothing app-side scores it. -->
                 <div
                   v-if="v.disposition.model_view?.self_assessment"
                   class="hc-summary"
@@ -2351,12 +2228,6 @@ const keyFigures = computed(() => {
                   <div class="hc-foot-main">
                     <span class="hc-kicker">What changed · since last run</span>
                     <p class="hc-changed">{{ v.disposition.what_changed }}</p>
-                    <p
-                      v-if="maturedLinesFor(v.symbol).length"
-                      class="hc-changed hc-scoreboard-line"
-                    >
-                      Scored: {{ maturedLinesFor(v.symbol).join("; ") }}
-                    </p>
                   </div>
                   <span class="ana-tag" :title="'Position vs. prior run'"
                     >Position: {{ CHANGE_LABELS[v.position_change] }}</span
@@ -2442,14 +2313,6 @@ const keyFigures = computed(() => {
                 >
                 {{ run.roll_up.data_health.summary }}
               </p>
-            </div>
-            <!-- The model-vs-engine scoreboard (v7): deterministic, engine-scored
-                 reads over matured windows — empty until v7 episodes mature. -->
-            <div v-if="scoreboardLines.length" class="rollup-scoreboard">
-              <span class="hc-kicker">Model vs engine · scored</span>
-              <ul class="rollup-annotation-list">
-                <li v-for="(line, i) in scoreboardLines" :key="i">{{ line }}</li>
-              </ul>
             </div>
             <div v-if="run.roll_up.exited.length > 0" class="rollup-exited">
               <span class="hc-kicker">Positions closed since last run</span>
@@ -3419,33 +3282,6 @@ const keyFigures = computed(() => {
 
 .rollup-datahealth .hc-kicker {
   margin-bottom: var(--s-2);
-}
-
-/* The model-vs-engine scoreboard (v7): a quiet list register in the roll-up's
-   section rhythm — recorded findings, never alarm states. */
-.rollup-scoreboard {
-  padding: var(--s-4) var(--s-5);
-  border-top: 1px solid var(--hairline-soft);
-}
-
-.rollup-scoreboard .hc-kicker {
-  margin-bottom: var(--s-2);
-}
-
-.rollup-annotation-list {
-  margin: 0;
-  padding-left: var(--s-5);
-  color: var(--ink-2);
-  font-size: var(--t-caption);
-}
-
-.rollup-annotation-list li {
-  margin: 0 0 var(--s-1);
-  overflow-wrap: anywhere;
-}
-
-.hc-scoreboard-line {
-  color: var(--ink-3);
 }
 
 .dh-line {

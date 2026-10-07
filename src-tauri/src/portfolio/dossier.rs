@@ -374,10 +374,6 @@ pub struct HoldingDossier {
     /// revision comparator ([`crate::portfolio::engine::narrative_vs_reality`]).
     /// Empty on a debut or a basis that carried none.
     pub prior_consensus_eps_periods: Vec<crate::portfolio::engine::ConsensusEpsPeriod>,
-    /// The prior run's matured outcome-window lines for this symbol (deterministic,
-    /// engine-computed) — the scored ground the retrospective reads against, where
-    /// any windows have matured. Empty on a debut or before any window matures.
-    pub prior_matured_notes: Vec<String>,
     /// The prior run's stored engine metrics (from the audit row) — the
     /// metric-level input delta's prior side ([`crate::portfolio::engine::metric_delta`]).
     /// `None` on a debut or a prior run without an audit row.
@@ -476,8 +472,8 @@ pub struct HoldingDossier {
 /// this job's own memory partition, or the typed fail-soft gap. A failure skips
 /// recall for this holding only — the deterministically loaded prior verdict and
 /// ledger are unaffected. The gap is recorded on the audit's degraded inputs at
-/// the interpretation paths (never fed to the engine stand-in's degradation
-/// count, matching the narrative / pre-flag gap treatment).
+/// the interpretation paths (never fed to the engine, matching the narrative /
+/// pre-flag gap treatment).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SemanticRecall {
     pub hits: Vec<String>,
@@ -510,8 +506,6 @@ pub struct PriorHolding {
     /// The prior run's raw fiscal-period consensus EPS rows (the same stored
     /// basis) — the narrative-vs-reality read's constant-period comparator.
     pub consensus_eps_periods: Vec<crate::portfolio::engine::ConsensusEpsPeriod>,
-    /// The prior run's matured outcome-window lines for this symbol.
-    pub matured_notes: Vec<String>,
     /// The prior run's stored engine metrics (its audit row's `metrics`) — the
     /// metric-level input delta's prior side. `None` without an audit row.
     pub metrics: Option<crate::portfolio::engine::ComputedMetrics>,
@@ -820,7 +814,6 @@ pub fn assemble(
         prior_vintage,
         prior_spot,
         prior_consensus_eps_periods,
-        prior_matured_notes,
         prior_metrics,
         prior_authoring_close,
     ) = match prior {
@@ -832,7 +825,6 @@ pub fn assemble(
             Some(p.vintage),
             p.spot,
             p.consensus_eps_periods,
-            p.matured_notes,
             p.metrics,
             p.authoring_close,
         ),
@@ -843,7 +835,6 @@ pub fn assemble(
             None,
             None,
             None,
-            Vec::new(),
             Vec::new(),
             None,
             None,
@@ -1017,7 +1008,6 @@ pub fn assemble(
         prior_vintage,
         prior_spot,
         prior_consensus_eps_periods,
-        prior_matured_notes,
         prior_metrics,
         prior_grade_parameter_version,
         prior_target_parameter_version,
@@ -1237,22 +1227,6 @@ pub fn prior_verdict_for(
         }
         None => (None, None, None, None, Vec::new(), None, None),
     };
-    // The prior run's matured outcome lines for this symbol — the deterministic
-    // scored ground the retrospective block renders (empty until windows mature).
-    let matured_notes = run
-        .outcome
-        .matured
-        .iter()
-        .filter(|m| m.symbol.eq_ignore_ascii_case(symbol))
-        .map(|m| {
-            let detail = match (m.total_return, m.price_return) {
-                (Some(tr), _) => format!("total return {:+.1}%", tr * 100.0),
-                (None, Some(pr)) => format!("price-only return {:+.1}%", pr * 100.0),
-                _ => m.outcome.clone(),
-            };
-            format!("{}-month window {}: {}", m.window_months, m.outcome, detail)
-        })
-        .collect();
     Some(PriorHolding {
         verdict,
         grade_parameter_version,
@@ -1261,7 +1235,6 @@ pub fn prior_verdict_for(
         vintage,
         spot,
         consensus_eps_periods,
-        matured_notes,
         metrics,
         authoring_close,
     })
@@ -2410,7 +2383,6 @@ Sources and footnotes.
             },
             audit: vec![],
             rate_prints: Default::default(),
-            outcome: Default::default(),
             failed_holdings: Vec::new(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
@@ -2491,7 +2463,6 @@ Sources and footnotes.
                 option_overlay: None,
             }],
             rate_prints: Default::default(),
-            outcome: Default::default(),
             failed_holdings: Vec::new(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
@@ -2548,7 +2519,6 @@ Sources and footnotes.
             },
             audit: vec![],
             rate_prints: Default::default(),
-            outcome: Default::default(),
             failed_holdings: Vec::new(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();

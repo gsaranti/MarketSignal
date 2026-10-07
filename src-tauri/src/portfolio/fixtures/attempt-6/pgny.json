@@ -109,17 +109,23 @@
    "long": "neutral"
   },
   "price_targets": {
-   "one_month": {
-    "base": 28.405952705037112,
-    "bear": 24.145059799281544,
-    "bull": 32.66684561079268,
-    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   "three_month": {
+    "base": 29.765358115111333,
+    "bear": 22.026365005182384,
+    "bull": 37.50435122504028,
+    "methodology": "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month price-return leg prorated (dividends excluded); bull/bear ± 26.0% = 2σ of daily realized volatility √t-scaled to 63 sessions, clamped [3.5%, 26%] [targets-v7]"
    },
    "twelve_month": {
     "base": 35.51143246044532,
     "bear": 28.409145968356256,
     "bull": 42.613718952534384,
     "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   },
+   "three_year": {
+    "base": 35.51143246044532,
+    "bear": 28.409145968356256,
+    "bull": 42.613718952534384,
+    "methodology": "Three-year (rolling) scenarios = the twelve-month consensus forward EPS low/mid/high compounded two further years at flat growth (a single forward row, or no definable growth) × the same scenario multiples — a declared extrapolation assuming today's rate and spread regime holds [targets-v7]"
    }
   },
   "model_target_rationale": "My twelve-month base target ($30) is below the engine's base ($35.51). While PGNY has a strong moat (Smart Cycles), the current macro regime (rising rates to ~5%, oil shock, inflation stickiness) creates high risk of multiple compression for growth stocks trading at 27x earnings with only 5% top-line growth. The engine's valuation score (88) assumes multiples hold or expand; I assign a lower valuation score (35) reflecting the higher cost of capital and potential P/E contraction in this environment. My bear case ($21) accounts for deeper compression if guidance is missed, while my bull case ($42) requires rates to stabilize and earnings re-acceleration.",
@@ -157,15 +163,8 @@
    },
    "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
   },
-  "engine_view": {
-   "outlook": {
-    "short": "bullish",
-    "mid": "bullish",
-    "long": "bullish"
-   },
-   "conviction": "low",
-   "action": "hold"
-  }
+  "engine_rung": "hold",
+  "authored_band_relation": null
  },
  "engine_output": {
   "sub_scores": {
@@ -190,17 +189,23 @@
    "composite_coverage": null
   },
   "price_targets": {
-   "one_month": {
-    "base": 28.405952705037112,
-    "bear": 24.145059799281544,
-    "bull": 32.66684561079268,
-    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   "three_month": {
+    "base": 29.765358115111333,
+    "bear": 22.026365005182384,
+    "bull": 37.50435122504028,
+    "methodology": "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month price-return leg prorated (dividends excluded); bull/bear ± 26.0% = 2σ of daily realized volatility √t-scaled to 63 sessions, clamped [3.5%, 26%] [targets-v7]"
    },
    "twelve_month": {
     "base": 35.51143246044532,
     "bear": 28.409145968356256,
     "bull": 42.613718952534384,
     "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   },
+   "three_year": {
+    "base": 35.51143246044532,
+    "bear": 28.409145968356256,
+    "bull": 42.613718952534384,
+    "methodology": "Three-year (rolling) scenarios = the twelve-month consensus forward EPS low/mid/high compounded two further years at flat growth (a single forward row, or no definable growth) × the same scenario multiples — a declared extrapolation assuming today's rate and spread regime holds [targets-v7]"
    }
   },
   "risk_tier": "high",
@@ -227,7 +232,10 @@
    "dispersion_floor_applied": true,
    "anchor_bounded": 0,
    "clamp_released": false,
-   "parameter_version": "targets-v6"
+   "parameter_version": "targets-v7",
+   "three_year_growth": null,
+   "three_year_flat_growth": true,
+   "three_year_floor_applied": false
   },
   "low_confidence_grade": false,
   "fund_class_label": null,

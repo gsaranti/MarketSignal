@@ -41,19 +41,25 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     conviction: "medium",
     horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
     price_targets: {
-      // Both horizons carry a methodology; the null one-month fixture had
+      // Every horizon carries a methodology; a null near-horizon fixture had
       // hidden the reveal's omission of it (large-scale review, Codex I10).
-      one_month: {
+      three_month: {
         base: 205,
         bear: 195,
         bull: 215,
-        methodology: "v5 one-month 2σ band",
+        methodology: "v7 three-month 2σ band",
       },
       twelve_month: {
         base: 210,
         bear: 180,
         bull: 240,
         methodology: "v2 spread-anchored multiples",
+      },
+      three_year: {
+        base: 230,
+        bear: 170,
+        bull: 290,
+        methodology: "v7 three-year extrapolation",
       },
     },
     model_target_rationale: "base case tracks revenue drift",
@@ -70,10 +76,9 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     fund_class_label: null,
     financial_summary: "Solid margins.",
     what_changed: "First analyzed run.",
-    // Every persisted verdict carries both arms (portfolio-v7). The base
-    // fixture's engine arm mirrors its top-level model reads, so no "≠ engine"
-    // divergence tag or retrospective shows unless a test overrides the arms
-    // (e.g. twoArmGraded).
+    // Every persisted verdict carries both arms. The base fixture's engine rung
+    // mirrors its top-level action, so no "≠ engine" divergence tag or
+    // retrospective shows unless a test overrides the arms (e.g. twoArmGraded).
     model_view: {
       sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
       letter: "B",
@@ -83,11 +88,8 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
       },
       self_assessment: "",
     },
-    engine_view: {
-      outlook: { short: "neutral", mid: "bullish", long: "bullish" },
-      conviction: "medium",
-      action: "hold",
-    },
+    engine_rung: "hold",
+    authored_band_relation: null,
     ...over,
   };
 }
@@ -213,15 +215,6 @@ const run: PortfolioRun = {
     },
   },
   audit: [],
-  outcome: {
-    matured: [],
-    reads: {
-      target_calibration: [],
-      model_target_calibration: [],
-      head_to_head: [],
-      outlook_direction: [],
-    },
-  },
   failed_holdings: [],
   // The persist-seam marker the backend ships (always concrete on the wire).
 };
@@ -611,17 +604,17 @@ describe("PortfolioView verdict cards", () => {
     const reveal = wrapper.findAll(".holding-card .hc-reveal")[0];
     expect(reveal.attributes("aria-expanded")).toBe("false");
     expect(wrapper.text()).not.toContain("v2 spread-anchored multiples");
-    expect(wrapper.text()).not.toContain("v5 one-month 2σ band");
+    expect(wrapper.text()).not.toContain("v7 three-month 2σ band");
     await reveal.trigger("click");
     expect(reveal.attributes("aria-expanded")).toBe("true");
-    // Both horizons' methodology, one-month first (Codex I10). The model's
-    // target rationale is the model arm's since portfolio-v38 and no longer
-    // rides the engine's reveal.
+    // Both displayed horizons' methodology, three-month first (Codex I10).
+    // The model's target rationale is the model arm's since portfolio-v38 and
+    // no longer rides the engine's reveal.
     const prose = wrapper
       .findAll(".holding-card .hc-methodology .hc-prose")
       .map((p) => p.text());
-    expect(prose).toHaveLength(2); // one-month, twelve-month
-    expect(prose[0]).toBe("v5 one-month 2σ band");
+    expect(prose).toHaveLength(2); // three-month, twelve-month
+    expect(prose[0]).toBe("v7 three-month 2σ band");
     expect(prose[1]).toBe("v2 spread-anchored multiples");
     expect(prose).not.toContain("base case tracks revenue drift");
   });
@@ -654,7 +647,7 @@ describe("PortfolioView verdict cards", () => {
     expect(wrapper.text()).not.toContain("Target rationale");
   });
 
-  test("the methodology reveal omits a one-month paragraph the engine never authored", async () => {
+  test("the methodology reveal omits a three-month paragraph the engine never authored", async () => {
     const noOneMonth: PortfolioRun = {
       ...run,
       verdicts: [
@@ -662,13 +655,14 @@ describe("PortfolioView verdict cards", () => {
           status: "priced",
           ...graded({
             price_targets: {
-              one_month: null,
+              three_month: null,
               twelve_month: {
                 base: 210,
                 bear: 180,
                 bull: 240,
                 methodology: "v2 spread-anchored multiples",
               },
+              three_year: null,
             },
           }),
         }),
@@ -1654,11 +1648,8 @@ function twoArmGraded(over: Partial<GradedVerdict> = {}): GradedVerdict {
       },
       self_assessment: "First read for this holding — no prior call to assess.",
     },
-    engine_view: {
-      outlook: { short: "bearish", mid: "neutral", long: "bearish" },
-      conviction: "low",
-      action: "hold",
-    },
+    engine_rung: "hold",
+    authored_band_relation: null,
     ...over,
   });
 }
@@ -1687,39 +1678,24 @@ describe("PortfolioView two-arm verdict", () => {
     // (the same `gradeClass()` binding as the engine chip).
     expect(card.find(".hc-model-letter").text()).toBe("C");
     expect(card.find(".hc-model-letter").classes()).toContain("c");
-    // The engine column carries the stand-in action (rung-only).
+    // The engine column carries the engine's own rung (a computed read) and
+    // no outlook — the engine authors none.
     const engineCol = card.find(".hc-col-intrinsic");
     expect(engineCol.text()).toContain("Hold");
-    expect(engineCol.findAll(".hc-horizon-label").map((x) => x.text())).toEqual(["1 mo", "6 mo", "12 mo"]);
-    expect(card.findAll(".hc-horizon-label").slice(3).map((x) => x.text())).toEqual(["1 mo", "1 yr", "3–5 yr"]);
+    expect(engineCol.findAll(".hc-horizon-label").length).toBe(0);
+    expect(card.findAll(".hc-horizon-label").map((x) => x.text())).toEqual(["1 mo", "1 yr", "3–5 yr"]);
     // Model values render as authored beside the engine's.
     expect(card.text()).toContain("$280.00");
-    // Divergent conviction, outlook, and action each carry the quiet ≠ engine
-    // tag (the fixture's model outlook differs from the engine stand-in's).
+    // Only the model's action diverging from the engine's rung carries the
+    // quiet ≠ engine tag: the engine authors no conviction and no outlook.
     const tags = card.findAll(".ana-tag").map((t) => t.text());
-    expect(tags.filter((t) => t === "≠ engine").length).toBe(3);
+    expect(tags.filter((t) => t === "≠ engine").length).toBe(1);
     // The action strip is full-width beneath the arms.
     expect(card.find(".hc-actionrow .hc-action-word").exists()).toBe(true);
     expect(
       card.find(".hc-summary + .hc-summary .hc-prose").text()
     ).toContain("First read for this holding");
   });
-
-  test("a model outlook matching the stand-in on every horizon drops its tag", () => {
-    const aligned = twoArmGraded();
-    aligned.horizon_outlook = { short: aligned.engine_view!.outlook.short, mid: aligned.engine_view!.outlook.long, long: "bullish" };
-    const wrapper = mountView({
-      run: {
-        ...run,
-        verdicts: [verdict("AAPL", { status: "priced", ...aligned })],
-      },
-    });
-    // Conviction and action still diverge in the fixture — the outlook row's
-    // tag is the one that disappears when every horizon matches.
-    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
-    expect(tags.filter((t) => t === "≠ engine").length).toBe(2);
-  });
-
 
   test("an inverted model band renders as authored with the annotation tag", () => {
     const inverted = twoArmGraded();
@@ -1740,110 +1716,6 @@ describe("PortfolioView two-arm verdict", () => {
     expect(wrapper.text()).toContain("($300.00–$200.00)");
   });
 
-  test("the roll-up renders the model-vs-engine scoreboard", () => {
-    const wrapper = mountView({
-      run: {
-        ...run,
-        roll_up: {
-          ...run.roll_up,
-        },
-        outcome: {
-          matured: [
-            {
-              symbol: "AAPL",
-              episode_id: "ep-1",
-              window_months: 1,
-              outcome: "scored",
-              total_return: 0.042,
-              price_return: 0.04,
-            },
-          ],
-          reads: {
-            target_calibration: [
-              {
-                window_months: 12,
-                parameter_version: "targets-v3",
-                scored: 2,
-                coverage_rate: 1,
-                nominal_coverage: 0.8,
-                mean_interval_score: 0.41,
-                mean_base_signed_error: 0.02,
-              },
-            ],
-            model_target_calibration: [
-              {
-                window_months: 12,
-                parameter_version: "targets-v3",
-                scored: 2,
-                coverage_rate: 1,
-                nominal_coverage: 0.8,
-                mean_interval_score: 0.35,
-                mean_base_signed_error: -0.01,
-              },
-            ],
-            head_to_head: [
-              {
-                window_months: 12,
-                scored: 2,
-                engine_mean_interval_score: 0.41,
-                model_mean_interval_score: 0.35,
-                engine_coverage_rate: 1,
-                model_coverage_rate: 1,
-              },
-            ],
-            outlook_direction: [
-              { arm: "engine", window_months: 12, scored: 2, hits: 0, neutral: 0 },
-              { arm: "model", window_months: 12, scored: 2, hits: 2, neutral: 0 },
-            ],
-          },
-        },
-      },
-    });
-    const scoreboard = wrapper.find(".rollup-scoreboard");
-    expect(scoreboard.exists()).toBe(true);
-    expect(scoreboard.text()).toContain(
-      "12-mo interval score (paired, 2): model 0.350 vs engine 0.410"
-    );
-    expect(scoreboard.text()).toContain("12-mo direction: model 2/2 vs engine 0/2");
-    // The card foot carries the symbol's matured scored line.
-    expect(wrapper.find(".hc-scoreboard-line").text()).toContain(
-      "1-mo window scored (total return 4.2%)"
-    );
-  });
-
-  test("matured returns that round to zero never render signed zero", () => {
-    const wrapper = mountView({
-      run: {
-        ...run,
-        outcome: {
-          ...run.outcome,
-          matured: [
-            {
-              symbol: "AAPL",
-              episode_id: "ep-total",
-              window_months: 1,
-              outcome: "scored",
-              total_return: -0.0004,
-              price_return: -0.0003,
-            },
-            {
-              symbol: "AAPL",
-              episode_id: "ep-price",
-              window_months: 3,
-              outcome: "scored",
-              total_return: null,
-              price_return: -0.0004,
-            },
-          ],
-        },
-      },
-    });
-
-    const line = wrapper.find(".hc-scoreboard-line").text();
-    expect(line).toContain("total return 0.0%");
-    expect(line).toContain("price-only 0.0%");
-    expect(line).not.toContain("-0.0%");
-  });
 });
 
 // The 2026-08-16 badge ruling: a selective run analyzes strictly the selection.

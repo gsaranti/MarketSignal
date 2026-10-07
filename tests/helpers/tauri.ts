@@ -115,13 +115,14 @@ export const samplePortfolioRun: PortfolioRun = {
         conviction: "medium",
         horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
         price_targets: {
-          one_month: null,
+          three_month: null,
           twelve_month: {
             base: 210,
             bear: 180,
             bull: 240,
             methodology: "drift off revenue growth",
           },
+          three_year: null,
         },
         model_target_rationale: "base case tracks revenue drift",
         options_signal: {
@@ -146,11 +147,8 @@ export const samplePortfolioRun: PortfolioRun = {
           },
           self_assessment: "",
         },
-        engine_view: {
-          outlook: { short: "neutral", mid: "bullish", long: "bullish" },
-          conviction: "medium",
-          action: "hold",
-        },
+        engine_rung: "hold",
+        authored_band_relation: null,
       },
     },
   ],
@@ -188,15 +186,6 @@ export const samplePortfolioRun: PortfolioRun = {
     overview: "One graded holding.",
   },
   audit: [],
-  outcome: {
-    matured: [],
-    reads: {
-      target_calibration: [],
-      model_target_calibration: [],
-      head_to_head: [],
-      outlook_direction: [],
-    },
-  },
   failed_holdings: [],
 };
 

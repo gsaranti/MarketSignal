@@ -1,6 +1,6 @@
 # Action — priced holding, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v68`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The action call is the investor profile's one entry point: the finished verdict, the holding's own evidence, the engine's supported set and the profile decide the rung and one rationale — never a comparison with other holdings.
@@ -18,7 +18,7 @@ This packet renders no article or research text, so it carries no stub.
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 6136 chars — the messages and tools as serialized |
+| Prompt material | 6481 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ will return action and rationale, as one JSON object. Part 1 of the message give
 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (5733 chars)
+## User message (6077 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -44,7 +44,8 @@ SCORES
 Four scores from 0 to 100, higher is better on every axis: quality; valuation, where higher means
 more attractive; momentum; risk, where higher means more resilient. The grade is a letter derived
 from the quality, valuation and risk scores.
-- computed: quality 10, valuation 33, momentum 45, risk 64. Grade F. Risk tier: high.
+- computed: quality 10, valuation 33, momentum 45, risk 64. Grade F. Risk tier: high. Computed
+action: trim.
 - analyst: quality 8, valuation 18, momentum 35, risk 72. Grade F.
 
 PRICE TARGETS (USD, with the move each implies from the current price)
@@ -52,9 +53,13 @@ PRICE TARGETS (USD, with the move each implies from the current price)
 consensus forward EPS (low / mid / high) × P/E multiples at the 75th / 50th / 25th percentile of
 their spread to the 10-year Treasury over the last 12 quarterly observations. Notes: the driver
 blends two consensus rows.
-- computed one-month: bear 289.39 (-19.4%) / base 340.46 (-5.2%) / bull 391.53 (+9.1%). Method: base
-= the twelve-month base price return prorated to one month; bear and bull = ±15.0% (two standard
-deviations of daily volatility over 21 sessions, capped at 15%).
+- computed three-month: bear 229.41 (-36.1%) / base 310.01 (-13.6%) / bull 390.61 (+8.8%). Method:
+base = the twelve-month base price return prorated to three months; bear and bull = ±26.0% (two
+standard deviations of daily volatility over 63 sessions, capped at 26%).
+- computed three-year: bear 62.04 (-82.7%) / base 163.12 (-54.6%) / bull 911.74 (+154.0%). Method:
+the twelve-month drivers held at flat growth for two further years (a single forward consensus row,
+or no definable growth) at the same multiples — an extrapolation that assumes today's rate and
+spread regime holds.
 - analyst twelve-month: bear 92.00 (-74.4%) / base 145.00 (-59.6%) / bull 398.00 (+10.9%).
 - analyst one-month: bear 247.80 (-31.0%) / base 298.50 (-16.8%) / bull 356.10 (-0.8%).
 

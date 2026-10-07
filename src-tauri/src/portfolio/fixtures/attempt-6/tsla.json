@@ -135,17 +135,23 @@
    "long": "neutral"
   },
   "price_targets": {
-   "one_month": {
-    "base": 340.458457070837,
-    "bear": 289.38968851021144,
-    "bull": 391.52722563146256,
-    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   "three_month": {
+    "base": 310.007871212511,
+    "bear": 229.40582469725814,
+    "bull": 390.6099177277639,
+    "methodology": "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month price-return leg prorated (dividends excluded); bull/bear ± 26.0% = 2σ of daily realized volatility √t-scaled to 63 sessions, clamped [3.5%, 26%] [targets-v7]"
    },
    "twelve_month": {
     "base": 163.12148485004408,
     "bear": 62.043446280585925,
     "bull": 911.737378406473,
     "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high, growth clamp released on corroborated consensus (trough signature) × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map; degenerate-denominator raw fallback on some scenario(s)) [targets-v6]"
+   },
+   "three_year": {
+    "base": 163.12148485004408,
+    "bear": 62.043446280585925,
+    "bull": 911.737378406473,
+    "methodology": "Three-year (rolling) scenarios = the twelve-month consensus forward EPS low/mid/high compounded two further years at flat growth (a single forward row, or no definable growth) × the same scenario multiples — a declared extrapolation assuming today's rate and spread regime holds [targets-v7]"
    }
   },
   "model_target_rationale": "My base twelve-month target of $145 derives from a conservative auto peer multiple (P/S: ~6x on normalized revenue) plus Energy/storage optionality at ~30% discount to standalone value. I reject the engine's base case ($163) because it assumes Robotaxi commercialization without material regulatory headwinds—a scenario unsupported by current NHTSA investigation status and FSD safety record deterioration (236 crashes in July CY25, four fatalities). My bear target ($92) applies a distress multiple to core auto earnings excluding credits. Bull case ($398) requires successful Robotaxi launch with approved commercial operations by Q1-CY27; this is possible but not probable given regulatory and technical execution risks.",
@@ -183,15 +189,8 @@
    },
    "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
   },
-  "engine_view": {
-   "outlook": {
-    "short": "bullish",
-    "mid": "bearish",
-    "long": "bearish"
-   },
-   "conviction": "medium",
-   "action": "trim"
-  }
+  "engine_rung": "trim",
+  "authored_band_relation": null
  },
  "engine_output": {
   "sub_scores": {
@@ -216,17 +215,23 @@
    "composite_coverage": null
   },
   "price_targets": {
-   "one_month": {
-    "base": 340.458457070837,
-    "bear": 289.38968851021144,
-    "bull": 391.52722563146256,
-    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   "three_month": {
+    "base": 310.007871212511,
+    "bear": 229.40582469725814,
+    "bull": 390.6099177277639,
+    "methodology": "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month price-return leg prorated (dividends excluded); bull/bear ± 26.0% = 2σ of daily realized volatility √t-scaled to 63 sessions, clamped [3.5%, 26%] [targets-v7]"
    },
    "twelve_month": {
     "base": 163.12148485004408,
     "bear": 62.043446280585925,
     "bull": 911.737378406473,
     "methodology": "Twelve-month (rolling) scenarios = consensus forward EPS low/mid/high, growth clamp released on corroborated consensus (trough signature) × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map; degenerate-denominator raw fallback on some scenario(s)) [targets-v6]"
+   },
+   "three_year": {
+    "base": 163.12148485004408,
+    "bear": 62.043446280585925,
+    "bull": 911.737378406473,
+    "methodology": "Three-year (rolling) scenarios = the twelve-month consensus forward EPS low/mid/high compounded two further years at flat growth (a single forward row, or no definable growth) × the same scenario multiples — a declared extrapolation assuming today's rate and spread regime holds [targets-v7]"
    }
   },
   "risk_tier": "high",
@@ -253,7 +258,10 @@
    "dispersion_floor_applied": false,
    "anchor_bounded": 0,
    "clamp_released": true,
-   "parameter_version": "targets-v6"
+   "parameter_version": "targets-v7",
+   "three_year_growth": null,
+   "three_year_flat_growth": true,
+   "three_year_floor_applied": false
   },
   "low_confidence_grade": false,
   "fund_class_label": null,

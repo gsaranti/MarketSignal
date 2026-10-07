@@ -1,6 +1,6 @@
 # Interpretation — priced fund, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v68`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, on a continuity run over the prior read of 2026-09-02; the fixture carries no fund context, so the fund-specific sections do not render.
 The interpretation is a thinking call under the schema grammar: Part 1 the computed evidence, the options read, the research summary and the market analysis; Part 2 the read to return.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 13028 chars — the messages and tools as serialized |
+| Prompt material | 13273 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,7 +31,7 @@ object. Part 1 of the message gives the inputs. Part 2 defines those outputs and
 return.
 ~~~~
 
-## User message (12205 chars)
+## User message (12450 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -60,10 +60,13 @@ more attractive; momentum; risk, where higher means more resilient.
 quality 50, valuation 83, momentum 94, risk 67. One score is imputed. Risk tier: low.
 
 COMPUTED PRICE TARGETS (USD)
+- three-month: bear 105.63 / base 142.74 / bull 179.85.
 - twelve-month: bear 124.03 / base 138.38 / bull 152.74. Method: fund exposure composite × composite
 P/E multiples at the 75th / 50th / 25th percentile of their spread to the 10-year Treasury over the
 last 12 quarterly observations
-- one-month: bear 121.76 / base 143.25 / bull 164.73.
+- three-year: bear 124.03 / base 138.38 / bull 152.74. Method: the twelve-month mix re-rating held
+unchanged for three years (the fund's flat driver carries no growth to compound) — an extrapolation
+that assumes today's rate and spread regime holds
 - Notes: the driver is held flat across scenarios; the band was widened to the volatility dispersion
 floor.
 
@@ -90,16 +93,15 @@ A market-level analysis dated 2026-09-16, followed by the stance of the 3 most r
 - 2026-08-25: thesis mixed, risk posture mixed
 
 PRIOR ANALYSIS (prior read 2026-09-02T14:00:00Z)
-- prior computed read: grade C (q 50 / v 83 / r 67; momentum 94); 1-mo base 143.25 [121.76–164.73],
-12-mo base 138.38 [124.03–152.74]; conviction low, outlook s/m/l bearish/bullish/bullish, action
-trim
+- prior computed read: grade C (q 50 / v 83 / r 67; momentum 94); 3-mo base 142.74 [105.63–179.85],
+12-mo base 138.38 [124.03–152.74], 3-yr base 138.38 [124.03–152.74]; risk tier low, capital
+efficiency fails, computed action trim
 - your prior read: letter D (q 58 / v 48 / m 78 / r 52); 1-mo base 142.00 [130.00–158.00], 12-mo
 base 139.00 [122.00–168.00]; conviction Medium, outlook s/m/l neutral/bearish/neutral, action trim
 (model-chosen)
 - price now 144.19: +3.1% realized since the prior read (anchor close 139.86; authoring spot 139.86
 on its own basis); distance to the prior computed 12-mo base +4.2%; distance to your prior 12-mo
 base +3.7% (split-adjusted)
-- matured scored windows: none yet
 
 CHANGES SINCE THE PRIOR ANALYSIS (each with an id)
 [D1] spot: 139.86 -> 144.19

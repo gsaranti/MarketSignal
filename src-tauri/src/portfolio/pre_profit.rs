@@ -8,7 +8,7 @@
 //! The overlay is **conviction / risk / action context only** — never another grade
 //! component, and never a license for the model to calculate a number: the engine
 //! computes attainment, states, and rule consequences; the rule consequences bind
-//! the engine arm (its stand-ins observe the matched ceiling), the model
+//! the engine arm (its own rung and feasible set observe them), the model
 //! interpreting the evidence unrestricted, departures annotated.
 //!
 //! **Producer status (as-built): active** — the research-loop slice connected the
@@ -22,7 +22,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::portfolio::engine::CompanyFinancials;
-use crate::portfolio::Conviction;
 
 // ---- Calibration surface (NOT pinned — shadow-tune against live runs;
 //      `docs/portfolio-analysis.md` §Starting parameters, all drafted) ----------
@@ -74,7 +73,12 @@ const ECONOMICS_MARGIN_DROP_PP: f64 = 0.05;
 /// reporting span is part of the comparison identity, so a full-year or
 /// half-year bound can never attain against a quarter ending on the same day,
 /// nor can unlike spans discharge one another's backfill depth.
-pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v4";
+/// `pre-profit-v5`: the conviction ceilings are gone — the engine authors no
+/// conviction, so a repeated execution miss alone matches no rule and severe
+/// deterioration binds the add-family bar and the exit-family-only rule
+/// alone; a v4 record's `conviction_ceiling` field does not exist on this
+/// shape.
+pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v5";
 
 /// The cap on a row's quoted source excerpt (drafted): the excerpt is a
 /// locator — the page's own sentence that states the value — never a page,
@@ -564,30 +568,19 @@ pub struct ExecutionRead {
     pub material_single_miss: bool,
 }
 
-/// Which conviction ceiling an overlay rule matched — the strictest binds the
-/// engine arm's stand-in as a plain min (the raise machinery is retired with
-/// `portfolio-v7` — `docs/portfolio-workflow.md` §Step 6g).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConvictionCeiling {
-    Medium,
-    Low,
-}
-
 /// The overlay's deterministic rule consequences — separately attributed from the
-/// forensic rules (`docs/portfolio-workflow.md` §Step 6g): repeated execution miss
-/// → Medium ceiling; constrained runway → add-family bar; severe deterioration →
-/// Low ceiling + add-family bar + an exit-family-only action rule. Since
-/// `portfolio-v7` all of these bind the **engine arm** (its stand-in conviction
-/// and action observe them); the model's conviction and lean are unrestricted,
-/// with departures recorded as annotations.
+/// forensic rules (`docs/portfolio-analysis.md` §Starting parameters): constrained
+/// runway → the add-family bar; severe deterioration → the add-family bar and the
+/// exit-family-only action rule. Each binds the **engine arm** (its own action
+/// rung and feasible set observe them); the model's conviction and rung are
+/// unrestricted, with departures recorded as annotations. The engine caps no
+/// conviction: it authors none.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OverlayConsequences {
-    pub conviction_ceiling: Option<ConvictionCeiling>,
     pub bar_add_family: bool,
-    /// Severe deterioration's exit-family-only rule ({trim, sell all}) — since
-    /// `portfolio-v7` it binds the engine arm's lean/action stand-ins and renders
-    /// as an engine rule; the model's lean is unrestricted, departures annotated.
+    /// Severe deterioration's exit-family-only rule ({trim, sell all}) — it
+    /// binds the engine arm's own rung and feasible set and renders as an engine
+    /// rule; the model's rung is unrestricted, departures annotated.
     pub exit_family_only: bool,
     /// The engine-matched rules, recorded so a clamped value is reconstructable
     /// (the audit's matched-cap-rule leg).
@@ -693,7 +686,7 @@ pub fn compute_overlay_with_sources(
             material_dilution,
         );
     let consequences = if eligible {
-        derive_consequences(&execution, financing_state, severe)
+        derive_consequences(financing_state, severe)
     } else {
         OverlayConsequences::default()
     };
@@ -2087,64 +2080,25 @@ fn severe_deterioration(
 }
 
 /// The deterministic rule consequences (`docs/portfolio-analysis.md` §Starting
-/// parameters). The strictest matched ceiling binds.
-fn derive_consequences(
-    execution: &ExecutionRead,
-    financing: FinancingState,
-    severe: bool,
-) -> OverlayConsequences {
+/// parameters) — the constrained-runway add-family bar and the
+/// severe-deterioration exit restriction, each binding the engine's own rung.
+fn derive_consequences(financing: FinancingState, severe: bool) -> OverlayConsequences {
     let mut c = OverlayConsequences::default();
-    if execution.repeated_miss {
-        c.conviction_ceiling = Some(ConvictionCeiling::Medium);
-        c.matched_rules
-            .push("repeated-execution-miss → conviction ceiling Medium".to_string());
-    }
     if financing == FinancingState::Constrained {
         c.bar_add_family = true;
         c.matched_rules
             .push("constrained-runway → add family barred".to_string());
     }
     if severe {
-        c.conviction_ceiling = Some(ConvictionCeiling::Low);
         c.bar_add_family = true;
         c.exit_family_only = true;
         c.matched_rules.push(
-            "severe-deterioration → engine-arm rules: conviction ceiling Low, \
-             add family barred, exit family only {trim, sell all}"
+            "severe-deterioration → engine-arm rules: add family barred, exit family \
+             only {trim, sell all}"
                 .to_string(),
         );
     }
     c
-}
-
-/// Clamp a conviction to an engine-matched ceiling — a plain `min(value,
-/// ceiling)`; Portfolio's raise machinery is retired, so there is no raise leg.
-/// Returns the clamped value and whether the clamp actually lowered it.
-/// **Re-scoped with `portfolio-v7`** (the two-arm unrestriction): the matched
-/// ceiling never clamps the model's value anymore — its one production caller is
-/// [`crate::portfolio::engine::engine_view`], where it binds the **engine
-/// stand-in arm's** conviction (the engine obeys its own rules; the model's
-/// exceedance persists as an annotation — `docs/portfolio-analysis.md` §The
-/// holding verdict).
-pub fn clamp_conviction(
-    conviction: Conviction,
-    ceiling: Option<ConvictionCeiling>,
-) -> (Conviction, bool) {
-    let rank = |c: Conviction| match c {
-        Conviction::Low => 0u8,
-        Conviction::Medium => 1,
-        Conviction::High => 2,
-    };
-    let cap = match ceiling {
-        None => return (conviction, false),
-        Some(ConvictionCeiling::Medium) => Conviction::Medium,
-        Some(ConvictionCeiling::Low) => Conviction::Low,
-    };
-    if rank(conviction) > rank(cap) {
-        (cap, true)
-    } else {
-        (conviction, false)
-    }
 }
 
 #[cfg(test)]
@@ -2373,7 +2327,6 @@ mod tests {
         let overlay = compute_overlay(&fin, None, vec![]);
         assert_eq!(overlay.financing_state, FinancingState::Constrained);
         assert!(overlay.consequences.bar_add_family);
-        assert!(overlay.consequences.conviction_ceiling.is_none());
 
         // Positive FCF → not burning, no runway.
         for row in &mut fin.quarterly_cash_flow {
@@ -2428,10 +2381,6 @@ mod tests {
         assert_eq!(overlay.economics_deterioration, Some(true));
         // Economics + dilution = two legs incl. an economics leg → severe.
         assert!(overlay.severe_deterioration);
-        assert_eq!(
-            overlay.consequences.conviction_ceiling,
-            Some(ConvictionCeiling::Low)
-        );
         assert!(overlay.consequences.bar_add_family);
         assert!(overlay.consequences.exit_family_only);
     }
@@ -3772,12 +3721,13 @@ mod tests {
     }
 
     #[test]
-    fn the_overlay_stamp_is_pre_profit_v4() {
-        // Span-aware comparison changes what a persisted execution read means,
-        // so the stamp moves and the resume gate refuses a v3 trail.
-        assert_eq!(PRE_PROFIT_PARAMETER_VERSION, "pre-profit-v4");
+    fn the_overlay_stamp_is_pre_profit_v5() {
+        // The conviction ceilings' retirement changes what a persisted overlay
+        // record's consequences mean, so the stamp moves and the resume gate
+        // refuses a v4 trail (v4: span-aware comparison, refusing v3).
+        assert_eq!(PRE_PROFIT_PARAMETER_VERSION, "pre-profit-v5");
         let overlay = compute_overlay(&burning_stock(), None, vec![]);
-        assert_eq!(overlay.parameter_version, "pre-profit-v4");
+        assert_eq!(overlay.parameter_version, "pre-profit-v5");
     }
 
     #[test]
@@ -3792,7 +3742,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_miss_caps_medium_and_severe_needs_a_second_leg() {
+    fn repeated_miss_binds_nothing_alone_and_severe_needs_a_second_leg() {
         let mut fin = burning_stock();
         // Healthy margins and shares; adequate runway → repeated miss alone.
         let history = guided_history(&[
@@ -3805,23 +3755,18 @@ mod tests {
         };
         let overlay = compute_overlay(&fin, Some(&prior), vec![]);
         assert!(overlay.execution.repeated_miss);
-        assert_eq!(
-            overlay.consequences.conviction_ceiling,
-            Some(ConvictionCeiling::Medium)
-        );
+        // A repeated miss alone binds nothing: the engine caps no conviction.
+        assert!(overlay.consequences.matched_rules.is_empty());
         assert!(!overlay.consequences.bar_add_family);
         assert!(!overlay.severe_deterioration);
 
         // Add constrained runway → second leg beside the execution leg → severe,
-        // and the Low ceiling displaces Medium (strictest binds).
+        // and the exit-family rule binds the engine's own rung.
         fin.cash_and_equivalents = Some(50.0e6);
         fin.short_term_investments = None;
         let overlay = compute_overlay(&fin, Some(&prior), vec![]);
         assert!(overlay.severe_deterioration);
-        assert_eq!(
-            overlay.consequences.conviction_ceiling,
-            Some(ConvictionCeiling::Low)
-        );
+        assert!(overlay.consequences.bar_add_family);
         assert!(overlay.consequences.exit_family_only);
     }
 
@@ -3978,25 +3923,6 @@ mod tests {
     }
 
     // ---- Clamp + schema labels ----
-
-    #[test]
-    fn conviction_clamps_to_the_matched_ceiling() {
-        use crate::portfolio::Conviction::*;
-        assert_eq!(clamp_conviction(High, None), (High, false));
-        assert_eq!(
-            clamp_conviction(High, Some(ConvictionCeiling::Medium)),
-            (Medium, true)
-        );
-        assert_eq!(
-            clamp_conviction(Medium, Some(ConvictionCeiling::Medium)),
-            (Medium, false)
-        );
-        assert_eq!(
-            clamp_conviction(Medium, Some(ConvictionCeiling::Low)),
-            (Low, true)
-        );
-        assert_eq!(clamp_conviction(Low, Some(ConvictionCeiling::Low)), (Low, false));
-    }
 
     // ---- Canonicalization + boundaries ----
 

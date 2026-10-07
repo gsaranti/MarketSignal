@@ -112,17 +112,23 @@
    "long": "neutral"
   },
   "price_targets": {
-   "one_month": {
-    "base": 143.24773978683098,
-    "bear": 121.76057881880632,
-    "bull": 164.7349007548556,
-    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   "three_month": {
+    "base": 142.73821936049293,
+    "bear": 105.62628232676477,
+    "bull": 179.8501563942211,
+    "methodology": "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month price-return leg prorated (dividends excluded); bull/bear ± 26.0% = 2σ of daily realized volatility √t-scaled to 63 sessions, clamped [3.5%, 26%] [targets-v7]"
    },
    "twelve_month": {
     "base": 138.38287744197177,
     "bear": 124.02965597530088,
     "bull": 152.73609890864265,
     "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   },
+   "three_year": {
+    "base": 138.38287744197177,
+    "bear": 124.02965597530088,
+    "bull": 152.73609890864265,
+    "methodology": "Three-year (rolling) scenarios = the twelve-month mix re-rating held unchanged (flat driver, no growth leg to compound; recorded flat-growth) — a declared extrapolation assuming today's rate and spread regime holds [targets-v7]"
    }
   },
   "model_target_rationale": "Twelve-month base target of $139 (slight downside from current $143.69) reflects my view that while momentum factors have worked recently, the market signal house thesis indicates controlled derate risk with elevated multiples facing compression under Fed tightening + energy shock conditions. The engine's 12M targets ($124/138/$152) are largely consistent but I've narrowed bear-bull dispersion slightly to account for SPMO's low beta characteristic versus broad market (expense ratio only 0.13% limits drag, creating a floor under severe cases). My bull case assumes momentum factor continuation into AI leadership year-end with potential net-short squeeze convexity as noted in the house view; my bear reflects valuation reset scenario if HY spreads breach 3.0% and rotation to defensives accelerates.",
@@ -160,15 +166,8 @@
    },
    "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
   },
-  "engine_view": {
-   "outlook": {
-    "short": "bearish",
-    "mid": "bullish",
-    "long": "bullish"
-   },
-   "conviction": "low",
-   "action": "trim"
-  }
+  "engine_rung": "trim",
+  "authored_band_relation": null
  },
  "engine_output": {
   "sub_scores": {
@@ -193,17 +192,23 @@
    "composite_coverage": 1.0
   },
   "price_targets": {
-   "one_month": {
-    "base": 143.24773978683098,
-    "bear": 121.76057881880632,
-    "bull": 164.7349007548556,
-    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 15.0% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   "three_month": {
+    "base": 142.73821936049293,
+    "bear": 105.62628232676477,
+    "bull": 179.8501563942211,
+    "methodology": "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month price-return leg prorated (dividends excluded); bull/bear ± 26.0% = 2σ of daily realized volatility √t-scaled to 63 sessions, clamped [3.5%, 26%] [targets-v7]"
    },
    "twelve_month": {
     "base": 138.38287744197177,
     "bear": 124.02965597530088,
     "bull": 152.73609890864265,
     "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   },
+   "three_year": {
+    "base": 138.38287744197177,
+    "bear": 124.02965597530088,
+    "bull": 152.73609890864265,
+    "methodology": "Three-year (rolling) scenarios = the twelve-month mix re-rating held unchanged (flat driver, no growth leg to compound; recorded flat-growth) — a declared extrapolation assuming today's rate and spread regime holds [targets-v7]"
    }
   },
   "risk_tier": "low",
@@ -230,7 +235,10 @@
    "dispersion_floor_applied": true,
    "anchor_bounded": 0,
    "clamp_released": false,
-   "parameter_version": "targets-v6"
+   "parameter_version": "targets-v7",
+   "three_year_growth": null,
+   "three_year_flat_growth": true,
+   "three_year_floor_applied": false
   },
   "low_confidence_grade": true,
   "fund_class_label": "US equity fund",

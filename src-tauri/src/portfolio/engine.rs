@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::portfolio::{
-    Action, Conviction, EngineView, Grade, HorizonOutlook, HorizonRead, OptionsSignal,
+    Action, Grade, OptionsSignal,
     PriceTarget, PriceTargets, SubScores,
 };
 use crate::schwab::{OptionChain, OptionKind};
@@ -200,16 +200,26 @@ pub(crate) fn grade_parameter_change(
         })
 }
 
-/// Fallback one-month scenario half-band (fraction of the base target) when
-/// realized volatility can't be computed. The twelve-month band needs no fallback
-/// under v2 — its bear/bull ARE the scenario prices.
-const ONE_MONTH_FALLBACK_BAND: f64 = 0.05;
+/// Fallback three-month scenario half-band (fraction of the base target) when
+/// realized volatility can't be computed — the retired one-month leg's 5%
+/// scaled by √3 (targets-v7). The twelve-month band needs no fallback under v2
+/// — its bear/bull ARE the scenario prices.
+const THREE_MONTH_FALLBACK_BAND: f64 = 0.087;
 
-/// Trading sessions the one-month band covers — the √t horizon the daily
-/// realized volatility is scaled to (targets-v5; the same 21-session window the
-/// one-month outlook reads). The suite's convention: the dispersion floor
+/// Trading sessions the three-month band covers — the √t horizon the daily
+/// realized volatility is scaled to (targets-v7: the near-horizon leg moved
+/// from 21 to 63 sessions). The suite's convention: the dispersion floor
 /// annualizes by √252, the technology-event pre-flag scales by √sessions.
-const ONE_MONTH_SESSIONS: f64 = 21.0;
+const THREE_MONTH_SESSIONS: f64 = 63.0;
+
+/// The three-month half-band's clamp — the retired one-month leg's [2%, 15%]
+/// scaled by √3 (`docs/portfolio-analysis.md` §Starting parameters).
+const THREE_MONTH_BAND_CLAMP: (f64, f64) = (0.035, 0.26);
+
+/// The three-year leg compounds each scenario's twelve-month driver this many
+/// further years (`docs/portfolio-analysis.md` §Starting parameters — the
+/// declared extrapolation).
+const THREE_YEAR_EXTRA_YEARS: i32 = 2;
 
 // -- v2 rate-anchored scenario-target function (`docs/portfolio-analysis.md`
 //    §Starting parameters — the settled shape; every rate/return is a decimal ratio).
@@ -298,9 +308,18 @@ const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
 /// an in-window diluted count — cut the same session without its own stamp, so
 /// v5 names both. v6: the fund form requires both exchange legs for its
 /// sector-P/E snapshot and history; a partial board response is a gap, never a
-/// target input. The stamp moves whenever a stored target's basis changes, by
-/// correction as much as by calibration.
-pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v6";
+/// target input. v7: the near-horizon leg is the **three-month** band — base =
+/// spot × (1 + PR_base ⁄ 4), the half-band √t-scaled to 63 sessions under the
+/// [3.5%, 26%] clamp with the 8.7% fallback (each the one-month leg's constant
+/// scaled by √3) — and the **three-year** leg is new: on the stock form each
+/// scenario's twelve-month driver compounded two further years at the clamped
+/// annual growth the two coming fiscal-year rows imply, times the same scenario
+/// multiple, the dispersion floor's half-spread scaled by √3; on the fund form
+/// the twelve-month scenario prices held unchanged, recorded flat-growth
+/// (`docs/portfolio-analysis.md` §Starting parameters). The stamp moves
+/// whenever a stored target's basis changes, by correction as much as by
+/// calibration.
+pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v7";
 
 /// The horizons a scenario-target parameter boundary can have moved on one
 /// branch — the meaning a target-stamp mismatch carries to its consumers (the
@@ -310,35 +329,50 @@ pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v6";
 /// mirrored onto the target axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TargetHorizons {
-    pub one_month: bool,
+    pub three_month: bool,
     pub twelve_month: bool,
+    pub three_year: bool,
 }
 
 impl TargetHorizons {
-    pub(crate) const NONE: Self = Self { one_month: false, twelve_month: false };
-    pub(crate) const ONE_MONTH: Self = Self { one_month: true, twelve_month: false };
-    pub(crate) const BOTH: Self = Self { one_month: true, twelve_month: true };
+    pub(crate) const NONE: Self = Self::of(false, false, false);
+    pub(crate) const THREE_MONTH: Self = Self::of(true, false, false);
+    #[cfg(test)]
+    pub(crate) const TWELVE_MONTH: Self = Self::of(false, true, false);
+    #[cfg(test)]
+    pub(crate) const THREE_YEAR: Self = Self::of(false, false, true);
+    #[cfg(test)]
+    pub(crate) const ALL: Self = Self::of(true, true, true);
+
+    pub(crate) const fn of(three_month: bool, twelve_month: bool, three_year: bool) -> Self {
+        Self { three_month, twelve_month, three_year }
+    }
 
     fn union(self, other: Self) -> Self {
         Self {
-            one_month: self.one_month || other.one_month,
+            three_month: self.three_month || other.three_month,
             twelve_month: self.twelve_month || other.twelve_month,
+            three_year: self.three_year || other.three_year,
         }
     }
 
     fn is_empty(self) -> bool {
-        !self.one_month && !self.twelve_month
+        !self.three_month && !self.twelve_month && !self.three_year
     }
 
     /// The prompt's name for the moved targets — one vocabulary for the delta
-    /// row and the NOTE. Never rendered empty: [`target_parameter_change`]
-    /// returns `None` where no horizon moved.
+    /// row and the NOTE, the horizons in window order. Never rendered empty:
+    /// [`target_parameter_change`] returns `None` where no horizon moved.
     pub(crate) fn label(self) -> &'static str {
-        match (self.one_month, self.twelve_month) {
-            (true, true) => "one-month and twelve-month targets",
-            (true, false) => "one-month target",
-            (false, true) => "twelve-month target",
-            (false, false) => "no target",
+        match (self.three_month, self.twelve_month, self.three_year) {
+            (false, false, false) => "no target",
+            (true, false, false) => "three-month target",
+            (false, true, false) => "twelve-month target",
+            (false, false, true) => "three-year target",
+            (true, true, false) => "three-month and twelve-month targets",
+            (true, false, true) => "three-month and three-year targets",
+            (false, true, true) => "twelve-month and three-year targets",
+            (true, true, true) => "three-month, twelve-month and three-year targets",
         }
     }
 }
@@ -347,21 +381,38 @@ impl TargetHorizons {
 /// bump can have moved on the stock and the fund branch. The boundary a prior
 /// sits across is the union of the rows after its version, read on the
 /// holding's branch — so every bump appends a row here (a test pins the last
-/// row to the current stamp). A single anchor row today: the store is wiped
-/// before the first run under `targets-v5` (ruled 2026-08-29), so no prior
-/// stamped earlier can exist and `targets-v4` reads as unrecognized. The v6
-/// row makes a v5 fund prior attributable across the exchange-basis boundary;
-/// only the rows after a stamp count.
+/// row to the current stamp). The store is wiped before the first run under
+/// `targets-v5` (ruled 2026-08-29), so no prior stamped earlier can exist and
+/// `targets-v4` reads as unrecognized. The v6 row makes a v5 fund prior
+/// attributable across the exchange-basis boundary; only the rows after a
+/// stamp count. The rows before v7 name the near-horizon leg under its current
+/// field: the one-month leg of their day became the three-month leg at v7.
 const SCENARIO_TARGET_PARAMETER_HISTORY: &[(&str, TargetHorizons, TargetHorizons)] = &[
-    // v5: the one-month band √t-scaled (`build_price_targets`, both forms) and the
-    // anchor share-count basis — the stock consensus ladder's revenue-per-share
-    // rung, so the twelve-month scenario prices and, through `PR_base`, the
-    // one-month base. The fund form has no consensus ladder.
-    ("targets-v5", TargetHorizons::BOTH, TargetHorizons::ONE_MONTH),
+    // v5: the near-horizon band √t-scaled (`build_price_targets`, both forms)
+    // and the anchor share-count basis — the stock consensus ladder's
+    // revenue-per-share rung, so the twelve-month scenario prices and, through
+    // `PR_base`, the near-horizon base. The fund form has no consensus ladder.
+    (
+        "targets-v5",
+        TargetHorizons::of(true, true, false),
+        TargetHorizons::THREE_MONTH,
+    ),
     // v6: the complete-exchange admission rule can change the fund's
-    // twelve-month scenarios and the one-month base derived from them. Stocks
-    // never read the sector-P/E source.
-    ("targets-v6", TargetHorizons::NONE, TargetHorizons::BOTH),
+    // twelve-month scenarios and the near-horizon base derived from them.
+    // Stocks never read the sector-P/E source.
+    (
+        "targets-v6",
+        TargetHorizons::NONE,
+        TargetHorizons::of(true, true, false),
+    ),
+    // v7: the near-horizon leg moved from one month to three months (its
+    // window, clamp and fallback) and the three-year leg is new, on both
+    // forms; the twelve-month scenarios are untouched.
+    (
+        "targets-v7",
+        TargetHorizons::of(true, false, true),
+        TargetHorizons::of(true, false, true),
+    ),
 ];
 
 /// The horizons a prior record's target stamp sits across on `branch` — the
@@ -594,6 +645,22 @@ pub struct ConsensusEstimate {
     /// match these rows by `period_end` instead of comparing two rolling blends.
     #[serde(default)]
     pub eps_periods: Vec<ConsensusEpsPeriod>,
+    /// The two coming fiscal-year rows' raw EPS mids — the three-year leg's
+    /// growth read on the EPS rung ([`ConsensusGrowthRows`]).
+    pub eps_growth_rows: ConsensusGrowthRows,
+    /// The same rows' raw revenue mids — the growth read on the revenue rung.
+    pub revenue_growth_rows: ConsensusGrowthRows,
+}
+
+/// The two coming fiscal-year rows' raw mids on one rung, near then far — the
+/// three-year leg's growth read, `far ÷ near − 1` under the driver growth clamp
+/// (`docs/portfolio-analysis.md` §Starting parameters). `far` is `None` on a
+/// single forward row or where the far row lacks the field; the rows are read
+/// whenever both exist, whatever the NTM blend's weights.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsensusGrowthRows {
+    pub near: Option<f64>,
+    pub far: Option<f64>,
 }
 
 /// The normalized financial inputs the engine reasons over, assembled by the dossier
@@ -783,15 +850,13 @@ pub struct MetricChange {
     pub new: Option<f64>,
 }
 
-/// The engine-computed metric delta: every [`ComputedMetrics`] field whose stored
-/// prior value differs from this run's. Resolution is **exact `old ≠ new`**
-/// (ruled 2026-08-21 — no materiality margin): persisted numerics round-trip
-/// bit-exact (`docs/storage.md` — the `float_roundtrip` guarantee), so equality
-/// is a real no-change and any difference is a concrete delta entry. A metric
-/// absent on both sides is no entry. The positioning leg of the designed delta
-/// stays excluded — its data legs are unbuilt.
-pub fn metric_delta(prior: &ComputedMetrics, current: &ComputedMetrics) -> Vec<MetricChange> {
-    let pairs: [(&'static str, Option<f64>, Option<f64>); 12] = [
+/// Every stored [`ComputedMetrics`] field, the prior audit's value beside this
+/// run's — the then-and-now pairs the realized data and the metric delta read.
+pub fn metric_pairs(
+    prior: &ComputedMetrics,
+    current: &ComputedMetrics,
+) -> [(&'static str, Option<f64>, Option<f64>); 12] {
+    [
         ("net margin", prior.net_margin, current.net_margin),
         ("gross margin", prior.gross_margin, current.gross_margin),
         ("revenue growth", prior.revenue_growth, current.revenue_growth),
@@ -804,12 +869,179 @@ pub fn metric_delta(prior: &ComputedMetrics, current: &ComputedMetrics) -> Vec<M
         ("expense ratio", prior.expense_ratio, current.expense_ratio),
         ("NAV premium", prior.nav_premium, current.nav_premium),
         ("composite coverage", prior.composite_coverage, current.composite_coverage),
-    ];
-    pairs
+    ]
+}
+
+/// The engine-computed metric delta: every [`ComputedMetrics`] field whose stored
+/// prior value differs from this run's. Resolution is **exact `old ≠ new`**
+/// (ruled 2026-08-21 — no materiality margin): persisted numerics round-trip
+/// bit-exact (`docs/storage.md` — the `float_roundtrip` guarantee), so equality
+/// is a real no-change and any difference is a concrete delta entry. A metric
+/// absent on both sides is no entry. The positioning leg of the designed delta
+/// stays excluded — its data legs are unbuilt.
+pub fn metric_delta(prior: &ComputedMetrics, current: &ComputedMetrics) -> Vec<MetricChange> {
+    metric_pairs(prior, current)
         .into_iter()
         .filter(|(_, old, new)| old != new)
         .map(|(name, old, new)| MetricChange { name, old, new })
         .collect()
+}
+
+/// One stored engine value then and now — the prior run's beside this run's.
+/// Resolution is exact `then != now` (the metric delta's rule); the renderer
+/// owes the pair enough shared precision that a real move never reads as
+/// equality (`docs/portfolio-workflow.md` §Step 6b).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThenNow<T> {
+    pub then: T,
+    pub now: T,
+}
+
+impl<T: PartialEq> ThenNow<T> {
+    pub fn new(then: T, now: T) -> Self {
+        Self { then, now }
+    }
+
+    /// Exact inequality — no materiality margin.
+    pub fn moved(&self) -> bool {
+        self.then != self.now
+    }
+}
+
+/// A band's three prices on one basis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BandPrices {
+    pub bear: f64,
+    pub base: f64,
+    pub bull: f64,
+}
+
+/// The three bands then and now, the prior side converted onto today's basis
+/// through the split bridge; a side is `None` where that run had no band, and
+/// the prior side is `None` wherever the bridge was unresolvable or the prior
+/// basis uncertified (the caller passes no factor), so nothing compares
+/// cross-basis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RealizedBands {
+    pub three_month: ThenNow<Option<BandPrices>>,
+    pub twelve_month: ThenNow<Option<BandPrices>>,
+    pub three_year: ThenNow<Option<BandPrices>>,
+}
+
+impl RealizedBands {
+    /// The three horizons in window order, each with its prompt name.
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &ThenNow<Option<BandPrices>>)> {
+        [
+            ("three-month", &self.three_month),
+            ("twelve-month", &self.twelve_month),
+            ("three-year", &self.three_year),
+        ]
+        .into_iter()
+    }
+}
+
+/// The prior run's stored engine read, as the realized data compares against
+/// it: the priced verdict's engine arm, the audit's metrics, and the two
+/// parameter stamps on the prior's own branch.
+pub struct PriorEngineRead<'a> {
+    pub verdict: &'a crate::portfolio::GradedVerdict,
+    pub metrics: Option<&'a ComputedMetrics>,
+    pub grade_parameter_version: Option<&'a str>,
+    pub target_parameter_version: Option<&'a str>,
+    pub(crate) branch: GradeBranch,
+}
+
+/// The realized engine data a continuity run computes for the self-review
+/// (`docs/portfolio-workflow.md` §Step 6b): the price now and its move since
+/// the prior read; the prior run's every stored metric, sub-score, grade, band,
+/// tier and hurdle-state value beside this run's, resolved at exact `then !=
+/// now`; and the grade- and scenario-target parameter boundaries named for what
+/// they changed on the prior's branch, absent where they changed nothing. The
+/// accuracy record rides beside it when outcome learning lands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RealizedEngineData {
+    /// The price now; `None` where the run served no usable spot.
+    pub price_now: Option<f64>,
+    /// Spot now over the prior vintage's anchor-session close, less one — the
+    /// move on one basis; `None` where no anchor bar resolved (excluded, never
+    /// guessed).
+    pub move_since_prior: Option<f64>,
+    /// Every stored metric, either side `None` where that run could not compute it.
+    pub metrics: Vec<(&'static str, ThenNow<Option<f64>>)>,
+    /// quality / valuation / momentum / risk.
+    pub sub_scores: [(&'static str, ThenNow<f64>); 4],
+    pub grade: ThenNow<Grade>,
+    /// The three bands then and now ([`RealizedBands`]).
+    pub bands: RealizedBands,
+    pub tier: ThenNow<crate::portfolio::RiskTier>,
+    pub hurdle: ThenNow<crate::portfolio::HurdleState>,
+    pub(crate) grade_boundary: Option<GradeParameterChange>,
+    pub(crate) target_boundary: Option<TargetHorizons>,
+}
+
+/// Compute the realized engine data over a priced prior and this run's engine
+/// output — pure; `price_bridge` is the certified split-bridge factor the prior
+/// bands convert through (`None` withholds the prior band side), and
+/// `move_since_prior` the caller's anchor-close read.
+pub fn realized_engine_data(
+    prior: &PriorEngineRead<'_>,
+    current: &EngineOutput,
+    price_now: Option<f64>,
+    move_since_prior: Option<f64>,
+    price_bridge: Option<f64>,
+) -> RealizedEngineData {
+    let g = prior.verdict;
+    let metrics = prior
+        .metrics
+        .map(|m| {
+            metric_pairs(m, &current.metrics)
+                .into_iter()
+                .map(|(name, then, now)| (name, ThenNow::new(then, now)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let scaled = |t: &crate::portfolio::PriceTarget, f: f64| BandPrices {
+        bear: t.bear * f,
+        base: t.base * f,
+        bull: t.bull * f,
+    };
+    let band = |then: Option<&crate::portfolio::PriceTarget>,
+                now: Option<&crate::portfolio::PriceTarget>| {
+        ThenNow::new(
+            then.zip(price_bridge).map(|(t, f)| scaled(t, f)),
+            now.map(|t| scaled(t, 1.0)),
+        )
+    };
+    RealizedEngineData {
+        price_now,
+        move_since_prior,
+        metrics,
+        sub_scores: [
+            ("quality", ThenNow::new(g.sub_scores.quality, current.sub_scores.quality)),
+            ("valuation", ThenNow::new(g.sub_scores.valuation, current.sub_scores.valuation)),
+            ("momentum", ThenNow::new(g.sub_scores.momentum, current.sub_scores.momentum)),
+            ("risk", ThenNow::new(g.sub_scores.risk, current.sub_scores.risk)),
+        ],
+        grade: ThenNow::new(g.grade, current.grade),
+        bands: RealizedBands {
+            three_month: band(
+                g.price_targets.three_month.as_ref(),
+                current.price_targets.three_month.as_ref(),
+            ),
+            twelve_month: band(
+                g.price_targets.twelve_month.as_ref(),
+                current.price_targets.twelve_month.as_ref(),
+            ),
+            three_year: band(
+                g.price_targets.three_year.as_ref(),
+                current.price_targets.three_year.as_ref(),
+            ),
+        },
+        tier: ThenNow::new(g.risk_tier, current.risk_tier),
+        hurdle: ThenNow::new(g.dead_money, current.hurdle.state),
+        grade_boundary: grade_parameter_change(prior.grade_parameter_version, prior.branch),
+        target_boundary: target_parameter_change(prior.target_parameter_version, prior.branch),
+    }
 }
 
 /// The three-state hurdle read plus the scenario total returns it tested
@@ -872,6 +1104,16 @@ pub struct TargetMeta {
     /// (targets-v4) true when the trough release priced the unclamped consensus
     /// (corroborated rows + current multiple above the anchor window's rich end).
     pub clamp_released: bool,
+    /// (targets-v7) the clamped annual growth the three-year leg compounded —
+    /// the two coming fiscal-year rows' implied growth on the selected rung;
+    /// `None` where the leg held growth flat.
+    pub three_year_growth: Option<f64>,
+    /// (targets-v7) true where the three-year leg held growth flat: a single
+    /// forward row, no definable growth, or the fund form's flat driver.
+    pub three_year_flat_growth: bool,
+    /// (targets-v7) true when the three-year band was widened to its
+    /// dispersion-floor half-spread (the twelve-month floor's × √3).
+    pub three_year_floor_applied: bool,
     pub parameter_version: String,
 }
 
@@ -1739,7 +1981,7 @@ pub fn evaluate_ledger_conditions_gated(
 /// quote never reaches this gate: the floor's [`usable_price`] test stops it
 /// first, under its own reason.)
 pub fn price_targets_finite(targets: &crate::portfolio::PriceTargets) -> bool {
-    [&targets.one_month, &targets.twelve_month]
+    [&targets.three_month, &targets.twelve_month, &targets.three_year]
         .into_iter()
         .flatten()
         .all(|t| t.base.is_finite() && t.bear.is_finite() && t.bull.is_finite())
@@ -1747,7 +1989,7 @@ pub fn price_targets_finite(targets: &crate::portfolio::PriceTargets) -> bool {
 
 /// The evidence floor's usability test for a price or NAV: finite and strictly
 /// positive, else `None`. Presence is never the floor's test — a zero print
-/// divides the scenario returns and the one-month builder into infinities, and
+/// divides the scenario returns and the three-month builder into infinities, and
 /// a negative one prices finite but financially meaningless targets — so the
 /// stock and fund floors read through this, as does the FMP quote parser at the
 /// one seam every quote consumer rides (`docs/portfolio-analysis.md` §Evidence
@@ -2098,6 +2340,11 @@ pub struct ScenarioSet {
     /// The direct raw-multiple percentiles `[bear (P25), base (P50), bull (P75)]` —
     /// present whenever any driver-admissible quarter existed.
     pub raw_percentiles: Option<[f64; 3]>,
+    /// The scenario multiples `[M_bear, M_base, M_bull]` the prices were built
+    /// from — before the monotonicity repair and the dispersion floor — so the
+    /// three-year leg compounds against the same multiples the twelve-month
+    /// leg priced with ([`build_price_targets`]).
+    pub multiples: [f64; 3],
 }
 
 /// What the v2 wrapper resolved to: a computed bundle, or the named
@@ -2393,6 +2640,7 @@ fn scenarios_from_surfaces(
         dispersion_floor_applied,
         spread_percentiles: spread_ps,
         raw_percentiles: raw_ps,
+        multiples,
     }
 }
 
@@ -2828,6 +3076,9 @@ pub fn refine_targets_with_assumption(
         // A research supplement is a sourced point, not a provider fiscal-row
         // snapshot, so it cannot become a constant-period revision comparator.
         eps_periods: Vec::new(),
+        // Nor a second fiscal-year row: the three-year leg holds growth flat.
+        eps_growth_rows: ConsensusGrowthRows::default(),
+        revenue_growth_rows: ConsensusGrowthRows::default(),
     });
     match input.metric {
         AssumptionMetric::ForwardEps => {
@@ -3179,13 +3430,27 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
     None
 }
 
+/// The clamped annual growth two consensus rows imply — `far ÷ near − 1` under
+/// the v1 sanity bound — or `None` where either row is absent or its mid is not
+/// a finite positive value: growth is undefinable there, so the three-year leg
+/// holds flat, recorded (`docs/portfolio-analysis.md` §Starting parameters).
+fn consensus_growth(rows: ConsensusGrowthRows) -> Option<f64> {
+    match (rows.near, rows.far) {
+        (Some(n), Some(f)) if n.is_finite() && f.is_finite() && n > 0.0 && f > 0.0 => {
+            Some((f / n - 1.0).clamp(DRIVER_GROWTH_MIN, DRIVER_GROWTH_MAX))
+        }
+        _ => None,
+    }
+}
+
 /// The v2 rate-anchored scenario-target function for a **priced stock**
 /// (`docs/portfolio-analysis.md` §Starting parameters): driver ladder → dated anchor
 /// join → spread-percentile multiples (inverse map, guarded) → scenario prices and
 /// total returns. The twelve-month target's bear/bull **are** the scenario prices;
-/// the one-month leg keeps the v1 mechanics (base = spot × (1 + PR_base ⁄ 12), the
-/// price-return leg, dividends excluded; volatility-scaled bands with the fixed
-/// fallbacks).
+/// the three-month leg is the near-horizon form (base = spot × (1 + PR_base ⁄ 4),
+/// the price-return leg, dividends excluded; the volatility-scaled band with its
+/// fixed fallback); the three-year leg is the declared extrapolation
+/// ([`ThreeYearLeg::Extrapolated`]).
 pub fn scenario_targets_v2(
     spot: f64,
     fin: &CompanyFinancials,
@@ -3278,7 +3543,17 @@ pub fn scenario_targets_v2(
             .unwrap_or_default(),
     };
 
-    let targets = build_price_targets(
+    // The three-year leg's growth: the annual growth the two coming fiscal-year
+    // rows imply on the selected rung — one value from the rows' mids, applied
+    // to every scenario's driver (ruled 2026-10-07) — under the same sanity
+    // clamp; a single forward row, or a row with no positive finite mid, holds
+    // growth flat (recorded).
+    let three_year_growth = fin
+        .consensus
+        .as_ref()
+        .map(|c| if read.use_eps { c.eps_growth_rows } else { c.revenue_growth_rows })
+        .and_then(consensus_growth);
+    let built = build_price_targets(
         spot,
         &scenario,
         m,
@@ -3286,7 +3561,9 @@ pub fn scenario_targets_v2(
         read.flat_driver,
         anchor_bounded,
         clamp_released,
+        ThreeYearLeg::Extrapolated { drivers, growth: three_year_growth },
     );
+    let targets = built.targets;
     let meta = TargetMeta {
         driver_rung: read.rung.to_string(),
         rate_anchored: scenario.rate_anchored,
@@ -3309,6 +3586,9 @@ pub fn scenario_targets_v2(
         dispersion_floor_applied: scenario.dispersion_floor_applied,
         anchor_bounded,
         clamp_released,
+        three_year_growth,
+        three_year_flat_growth: three_year_growth.is_none(),
+        three_year_floor_applied: built.three_year_floor_applied,
         parameter_version: SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
     };
     let implied = implied_expectations(
@@ -3328,10 +3608,37 @@ pub fn scenario_targets_v2(
     }))
 }
 
+/// The three-year leg's inputs (`docs/portfolio-analysis.md` §Starting
+/// parameters), per form.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ThreeYearLeg {
+    /// The stock form's declared extrapolation: each scenario's twelve-month
+    /// driver (the consensus low / mid / high priced, released or clamped)
+    /// compounded two further years at `growth` — the clamped annual growth
+    /// the two coming fiscal-year rows imply; `None` holds growth flat,
+    /// recorded — times the same scenario multiple, under the dispersion
+    /// floor's half-spread scaled by √3.
+    Extrapolated { drivers: [f64; 3], growth: Option<f64> },
+    /// The fund form: the twelve-month scenario prices held unchanged, recorded
+    /// flat-growth — the flat driver has no growth leg to compound.
+    HeldFlat,
+}
+
+/// [`build_price_targets`]'s output: the persisted targets plus the three-year
+/// leg's own floor record, which the twelve-month `ScenarioSet` cannot carry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltTargets {
+    pub targets: PriceTargets,
+    /// True when the three-year band was widened to its √3-scaled floor.
+    pub three_year_floor_applied: bool,
+}
+
 /// Render a [`ScenarioSet`] into the persisted [`PriceTargets`]: the twelve-month
-/// target carries the scenario prices; the one-month leg keeps the v1 mechanics.
-/// Shared by the stock and fund forms — the fund form passes the v4 stock-only
-/// provenance (`anchor_bounded`, `clamp_released`) as `0` / `false`.
+/// target carries the scenario prices; the three-month leg is the near-horizon
+/// form; the three-year leg follows `three_year`. Shared by the stock and fund
+/// forms — the fund form passes the v4 stock-only provenance (`anchor_bounded`,
+/// `clamp_released`) as `0` / `false` and [`ThreeYearLeg::HeldFlat`].
+#[allow(clippy::too_many_arguments)] // each is one leg of the recorded derivation
 pub fn build_price_targets(
     spot: f64,
     scenario: &ScenarioSet,
@@ -3340,16 +3647,20 @@ pub fn build_price_targets(
     flat_driver: bool,
     anchor_bounded: usize,
     clamp_released: bool,
-) -> PriceTargets {
+    three_year: ThreeYearLeg,
+) -> BuiltTargets {
     let pr_base = scenario.base / spot - 1.0;
-    let om_base = spot * (1.0 + pr_base / 12.0);
-    // 2σ of daily realized volatility, √t-scaled to the month (targets-v5 —
-    // unscaled, the band covered ~0.44σ of the month), under the unchanged
-    // [2%, 15%] clamp (`docs/portfolio-analysis.md` §Starting parameters).
-    let om_band = m
+    let tm_base = spot * (1.0 + pr_base / 4.0);
+    // 2σ of daily realized volatility, √t-scaled to the quarter (targets-v7 —
+    // the one-month leg's √21 and [2%, 15%] clamp, each scaled by √3), under
+    // the [3.5%, 26%] clamp (`docs/portfolio-analysis.md` §Starting parameters).
+    let tm_band = m
         .return_volatility
-        .map(|v| (v * 2.0 * ONE_MONTH_SESSIONS.sqrt()).clamp(0.02, 0.15))
-        .unwrap_or(ONE_MONTH_FALLBACK_BAND);
+        .map(|v| {
+            (v * 2.0 * THREE_MONTH_SESSIONS.sqrt())
+                .clamp(THREE_MONTH_BAND_CLAMP.0, THREE_MONTH_BAND_CLAMP.1)
+        })
+        .unwrap_or(THREE_MONTH_FALLBACK_BAND);
 
     let anchor_note = if scenario.current_multiple_carry {
         "no anchor history — current multiple carried".to_string()
@@ -3397,29 +3708,109 @@ pub fn build_price_targets(
         String::new()
     };
 
-    PriceTargets {
-        one_month: Some(PriceTarget {
-            base: om_base,
-            bear: om_base * (1.0 - om_band),
-            bull: om_base * (1.0 + om_band),
-            methodology: format!(
-                "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month \
-                 price-return leg prorated (v1 mechanics, dividends excluded); bull/bear \
-                 ± {:.1}% = 2σ of daily realized volatility √t-scaled to 21 sessions, \
-                 clamped [2%, 15%] [{}]",
-                om_band * 100.0,
-                SCENARIO_TARGET_PARAMETER_VERSION
-            ),
-        }),
-        twelve_month: Some(PriceTarget {
-            base: scenario.base,
-            bear: scenario.bear,
-            bull: scenario.bull,
-            methodology: format!(
-                "Twelve-month (rolling) scenarios = {driver_note} × {anchor_note}{bound_note}{floor_note} [{}]",
-                SCENARIO_TARGET_PARAMETER_VERSION
-            ),
-        }),
+    // The three-year leg (`docs/portfolio-analysis.md` §Starting parameters).
+    let (three_year_target, three_year_floor_applied) = match three_year {
+        ThreeYearLeg::Extrapolated { drivers, growth } => {
+            let factor = (1.0 + growth.unwrap_or(0.0)).powi(THREE_YEAR_EXTRA_YEARS);
+            let mut prices = [
+                drivers[0] * factor * scenario.multiples[0],
+                drivers[1] * factor * scenario.multiples[1],
+                drivers[2] * factor * scenario.multiples[2],
+            ];
+            // The same defensive repair the twelve-month leg takes — scenario
+            // identity comes from the mapping, never from the sort.
+            if !(prices[0] <= prices[1] && prices[1] <= prices[2]) {
+                prices.sort_by(f64::total_cmp);
+            }
+            // The dispersion floor's half-spread scaled by √3 — widen, never
+            // narrow — so a flat surface three years out never reads as a point.
+            let floor = dispersion_floor(m.return_volatility) * 3f64.sqrt();
+            let mut applied = false;
+            if prices[1].is_finite() && prices[1] > 0.0 {
+                let min_bear = prices[1] * (1.0 - floor);
+                let min_bull = prices[1] * (1.0 + floor);
+                if prices[0] > min_bear {
+                    prices[0] = min_bear;
+                    applied = true;
+                }
+                if prices[2] < min_bull {
+                    prices[2] = min_bull;
+                    applied = true;
+                }
+            }
+            let growth_note = match growth {
+                Some(g) => format!(
+                    "{:+.1}% a year (the two coming fiscal-year rows' implied growth, clamped \
+                     [−25%, +35%])",
+                    g * 100.0
+                ),
+                None => "flat growth (a single forward row, or no definable growth)".to_string(),
+            };
+            let floor_note = if applied {
+                "; band widened to the volatility-scaled dispersion floor × √3"
+            } else {
+                ""
+            };
+            (
+                PriceTarget {
+                    base: prices[1],
+                    bear: prices[0],
+                    bull: prices[2],
+                    methodology: format!(
+                        "Three-year (rolling) scenarios = the twelve-month {driver_note} \
+                         compounded two further years at {growth_note} × the same scenario \
+                         multiples — a declared extrapolation assuming today's rate and \
+                         spread regime holds{floor_note} [{}]",
+                        SCENARIO_TARGET_PARAMETER_VERSION
+                    ),
+                },
+                applied,
+            )
+        }
+        ThreeYearLeg::HeldFlat => (
+            PriceTarget {
+                base: scenario.base,
+                bear: scenario.bear,
+                bull: scenario.bull,
+                methodology: format!(
+                    "Three-year (rolling) scenarios = the twelve-month mix re-rating held \
+                     unchanged (flat driver, no growth leg to compound; recorded flat-growth) \
+                     — a declared extrapolation assuming today's rate and spread regime \
+                     holds [{}]",
+                    SCENARIO_TARGET_PARAMETER_VERSION
+                ),
+            },
+            false,
+        ),
+    };
+
+    BuiltTargets {
+        targets: PriceTargets {
+            three_month: Some(PriceTarget {
+                base: tm_base,
+                bear: tm_base * (1.0 - tm_band),
+                bull: tm_base * (1.0 + tm_band),
+                methodology: format!(
+                    "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month \
+                     price-return leg prorated (dividends excluded); bull/bear ± {:.1}% = 2σ \
+                     of daily realized volatility √t-scaled to 63 sessions, clamped \
+                     [3.5%, 26%] [{}]",
+                    tm_band * 100.0,
+                    SCENARIO_TARGET_PARAMETER_VERSION
+                ),
+            }),
+            twelve_month: Some(PriceTarget {
+                base: scenario.base,
+                bear: scenario.bear,
+                bull: scenario.bull,
+                methodology: format!(
+                    "Twelve-month (rolling) scenarios = {driver_note} × {anchor_note}{bound_note}{floor_note} [{}]",
+                    SCENARIO_TARGET_PARAMETER_VERSION
+                ),
+            }),
+            three_year: Some(three_year_target),
+        },
+        three_year_floor_applied,
     }
 }
 
@@ -3581,8 +3972,8 @@ pub fn hurdle_read(
 /// `{trim, sell all}`. Since `portfolio-v9` the set carries **no book-level
 /// term** — the retired concentration-headroom gate was whole-book context,
 /// which is the future portfolio planner's domain. Rendered into the action
-/// call's prompt as the ENGINE SET — the engine arm's own action stand-in walks
-/// its rung into it, while an outside-the-set model choice persists with an
+/// call's prompt as the ENGINE SET — the engine arm's own rung walks into it,
+/// while an outside-the-set model choice persists with an
 /// annotation on the audit, never a schema bar. Every grade test reads the
 /// momentum-free letter.
 pub fn feasible_actions(
@@ -3612,104 +4003,18 @@ pub fn feasible_actions(
     set
 }
 
-// ---- The engine stand-in arm (the two-arm baseline) ---------------------------
-//
-// Mechanical counterparts for the three verdict fields only the model used to
-// author — outlook, conviction, action — so every model-authored field has a
-// deterministic, disclosed baseline the scoreboard can score it against
-// (`docs/portfolio-analysis.md` §The holding verdict, the two-arm contract).
-// All three are calibratable constants in the module's spirit: simple, bounded,
-// legible — a glorified calculator, never judgment.
-
-/// The stand-in outlook's session windows (trading days) and per-window flat
-/// thresholds: a trailing return inside ±threshold reads neutral, outside reads
-/// bullish/bearish by sign. ~1 / 6 / 12 months of sessions.
-const OUTLOOK_WINDOWS: [(usize, f64); 3] = [(21, 0.02), (126, 0.05), (252, 0.08)];
-
-/// The degradation count at or above which the stand-in conviction reads Low
-/// (0 → High, 1–2 → Medium, ≥3 → Low).
-const CONVICTION_LOW_AT: usize = 3;
-
-/// The mechanical short / mid / long outlook: the trailing return over each of
-/// [`OUTLOOK_WINDOWS`]'s session counts, read against its flat threshold. A window
-/// the dated series cannot cover reads **neutral** — the rule's null, never a
-/// fabricated direction (the series is the deep dated-closes leg the v2 anchor
-/// join already fetches, so this adds no retrieval).
-pub fn engine_outlook(daily_closes: &[DatedValue]) -> HorizonOutlook {
-    let read = |sessions: usize, flat: f64| -> HorizonRead {
-        if daily_closes.len() < sessions + 1 {
-            return HorizonRead::Neutral;
-        }
-        let last = daily_closes[daily_closes.len() - 1].value;
-        let first = daily_closes[daily_closes.len() - 1 - sessions].value;
-        if first <= 0.0 || last <= 0.0 {
-            return HorizonRead::Neutral;
-        }
-        let r = last / first - 1.0;
-        if r > flat {
-            HorizonRead::Bullish
-        } else if r < -flat {
-            HorizonRead::Bearish
-        } else {
-            HorizonRead::Neutral
-        }
-    };
-    HorizonOutlook {
-        short: read(OUTLOOK_WINDOWS[0].0, OUTLOOK_WINDOWS[0].1),
-        mid: read(OUTLOOK_WINDOWS[1].0, OUTLOOK_WINDOWS[1].1),
-        long: read(OUTLOOK_WINDOWS[2].0, OUTLOOK_WINDOWS[2].1),
-    }
-}
-
-/// The mechanical conviction: a disclosed degradation count over the analysis's
-/// own data-quality flags — completeness as confidence, never judgment. Counted:
-/// an imputed letter axis, a non-rate-anchored target surface, a current-multiple
-/// carry, a flat or clamp-flattened driver, a dispersion-floor widening, any
-/// tier-input gap, an unscorable hurdle, and any dossier input gap. 0 → High,
-/// 1–2 → Medium, ≥[`CONVICTION_LOW_AT`] → Low.
-pub fn engine_conviction(out: &EngineOutput, input_gaps: &[String]) -> Conviction {
-    use crate::portfolio::HurdleState;
-    let mut count = 0usize;
-    if out.low_confidence_grade {
-        count += 1;
-    }
-    if !out.target_meta.rate_anchored {
-        count += 1;
-    }
-    if out.target_meta.current_multiple_carry {
-        count += 1;
-    }
-    if out.target_meta.flat_driver || out.target_meta.clamp_flattened {
-        count += 1;
-    }
-    if out.target_meta.dispersion_floor_applied {
-        count += 1;
-    }
-    if !out.tier_gaps.is_empty() {
-        count += 1;
-    }
-    if out.hurdle.state == HurdleState::Unscorable {
-        count += 1;
-    }
-    if !input_gaps.is_empty() {
-        count += 1;
-    }
-    if count == 0 {
-        Conviction::High
-    } else if count < CONVICTION_LOW_AT {
-        Conviction::Medium
-    } else {
-        Conviction::Low
-    }
-}
-
-/// The mechanical action rung: grade × hurdle × admission over the engine's own
-/// feasible machinery, tiebreak toward hold. F-grade or dead money leans exit
-/// (sell-all only when both agree); an A/B grade whose base case clears the hurdle
-/// and admits new money leans add (`Add` is the rule's top rung — the most
-/// aggressive rung stays a judgment call no formula fakes); everything else holds.
-/// The chosen rung is then walked toward hold until it sits inside
-/// [`feasible_actions`] — the engine arm always obeys its own bars.
+/// The engine arm's own action rung — the drafted rule over its reads, read in
+/// order (`docs/portfolio-analysis.md` §Starting parameters): a tripped
+/// hard-forensic state reads the exit family (sell all when the holding is also
+/// dead money or F-graded, else trim); otherwise F-grade or dead money leans
+/// exit (sell-all only when both agree); an A/B grade whose base case clears the
+/// hurdle and admits new money leans add (`Add` is the rule's top rung — the
+/// most aggressive rung stays a judgment call no formula fakes); everything
+/// else holds. The chosen rung is then walked toward hold, and past it toward
+/// trim where hold is barred, until it sits inside [`feasible_actions`] — so the
+/// constrained-runway add-family bar and the severe-deterioration exit
+/// restriction bind it by construction. It reaches the action call as a
+/// computed read beside the model's verdict, never as a recommendation.
 pub fn engine_action(
     grade: Grade,
     hurdle: &HurdleRead,
@@ -3718,7 +4023,17 @@ pub fn engine_action(
 ) -> Action {
     use crate::portfolio::HurdleState;
     let dead_money = hurdle.state == HurdleState::Fails;
-    let rule = if grade == Grade::F && dead_money {
+    // A tripped hard-forensic state reads the exit family first: sell all when
+    // the holding is also dead money or F-graded, else trim — the trip is the
+    // engine's reading, never a bar on the model's (`docs/portfolio-analysis.md`
+    // §Starting parameters, the engine action rung).
+    let rule = if hard_forensic {
+        if grade == Grade::F || dead_money {
+            Action::SellAll
+        } else {
+            Action::Trim
+        }
+    } else if grade == Grade::F && dead_money {
         Action::SellAll
     } else if grade == Grade::F || dead_money {
         Action::Trim
@@ -3747,62 +4062,10 @@ pub fn engine_action(
         .unwrap_or(Action::Trim)
 }
 
-/// Assemble the full engine stand-in arm for a priced holding — outlook off the
-/// dated closes, conviction off the degradation flags, and the action rung, all
-/// from per-holding inputs alone (`portfolio-v9`: no position/book context —
-/// sizing is retired with the construction stage). Runs at the pipeline merge,
-/// not inside [`analyze`]. `input_gaps` is the dossier's **assembled**
-/// degraded-input list (financials gaps plus fund-metadata gaps, the
-/// DGS10-history gap, and the listing-guard unverified note), so the conviction
-/// read counts *any* dossier gap (`docs/portfolio-analysis.md` §Starting
-/// parameters) — tier gaps stay out of it, since they carry their own counter.
-pub fn engine_view(
-    out: &EngineOutput,
-    fin: &CompanyFinancials,
-    input_gaps: &[String],
-    overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
-    hard_forensic: bool,
-    narrative_hype: bool,
-) -> EngineView {
-    let action = engine_action(out.grade, &out.hurdle, overlay_rules, hard_forensic);
-    // The engine arm observes its own cap rules: a matched pre-profit conviction
-    // ceiling binds the stand-in conviction exactly as the feasible-set bars bind
-    // the stand-in action (`docs/portfolio-analysis.md` §The holding verdict —
-    // caps bind the engine arm, annotate the model's). A tripped hard forensic
-    // trigger is the strict Low ceiling, dominating any soft Medium ceiling
-    // (hard > soft — `docs/portfolio-analysis.md` §Starting parameters). The
-    // soft ceilings merge strictest-binds: a matched overlay Low outranks the
-    // narrative read's Medium ([`NarrativeRead`] — conviction only, never an
-    // action-set bar).
-    use crate::portfolio::pre_profit::ConvictionCeiling;
-    let ceiling = if hard_forensic {
-        Some(ConvictionCeiling::Low)
-    } else {
-        let overlay = overlay_rules.and_then(|r| r.conviction_ceiling);
-        let narrative = narrative_hype.then_some(ConvictionCeiling::Medium);
-        match (overlay, narrative) {
-            (Some(ConvictionCeiling::Low), _) => Some(ConvictionCeiling::Low),
-            (Some(ConvictionCeiling::Medium), _) | (None, Some(_)) => {
-                Some(ConvictionCeiling::Medium)
-            }
-            (None, None) => None,
-        }
-    };
-    let (conviction, _) = crate::portfolio::pre_profit::clamp_conviction(
-        engine_conviction(out, input_gaps),
-        ceiling,
-    );
-    EngineView {
-        outlook: engine_outlook(&fin.daily_closes),
-        conviction,
-        action,
-    }
-}
-
 // ---- Narrative-vs-reality (the conviction-layer red-flag ratio) ---------------
 
 /// The hype threshold: multiple expansion outrunning revisions by more than this
-/// ratio trips the soft cap (drafted, calibratable — `docs/portfolio-analysis.md`
+/// ratio reads as hype (drafted, calibratable — `docs/portfolio-analysis.md`
 /// §Starting parameters).
 pub const NARRATIVE_HYPE_RATIO: f64 = 1.5;
 
@@ -3866,16 +4129,10 @@ pub struct NarrativeRead {
     pub classification: NarrativeClass,
     /// Elapsed days between the prior read's session and this run's.
     pub elapsed_days: i64,
-    /// The matched soft rule, recorded when the cap fired (engine conviction
-    /// ceiling Medium) — the audit's matched-cap-rule leg.
+    /// The matched narrative rule, recorded when the hype read fired — the
+    /// audit's matched-rule leg: evidence the model weighs, never a cap on
+    /// either arm (`docs/portfolio-analysis.md` §Starting parameters).
     pub matched_rule: Option<String>,
-}
-
-impl NarrativeRead {
-    /// Whether the soft cap fired (the engine arm's Medium ceiling).
-    pub fn hype_capped(&self) -> bool {
-        self.matched_rule.is_some()
-    }
 }
 
 /// TTM revenue summed over quarters `[start, start+4)` — `None` unless the
@@ -4059,8 +4316,7 @@ pub fn narrative_vs_reality(
     let ratio = raw_ratio.filter(|r| r.is_finite());
     let matched_rule = (classification == NarrativeClass::Hype).then(|| {
         format!(
-            "narrative-vs-reality hype: {} outran {} >{NARRATIVE_HYPE_RATIO}× (no \
-             leading-metric anchor) — engine conviction capped Medium",
+            "narrative-vs-reality hype: {} outran {} >{NARRATIVE_HYPE_RATIO}×",
             match form {
                 NarrativeForm::RevisionBased => "forward-multiple expansion",
                 NarrativeForm::OperatingReality => "the annualized price move",
@@ -4398,10 +4654,19 @@ mod tests {
                 assert_eq!(out.target_meta.anchor_observations, ANCHOR_WINDOW_QUARTERS);
                 assert_eq!(out.target_meta.driver_rung, "consensus forward EPS");
                 assert!(!out.target_meta.flat_driver, "published low/high spread");
-                // The one-month leg keeps the v1 mechanics off the price-return leg.
-                let om = out.price_targets.one_month.as_ref().unwrap();
+                // The three-month leg is the near-horizon form off the price-return leg.
+                let tm3 = out.price_targets.three_month.as_ref().unwrap();
                 let pr_base = tm.base / 195.0 - 1.0;
-                assert!((om.base - 195.0 * (1.0 + pr_base / 12.0)).abs() < 1e-9);
+                assert!((tm3.base - 195.0 * (1.0 + pr_base / 4.0)).abs() < 1e-9);
+                // The three-year leg: the fixture carries no second fiscal-year
+                // row, so growth holds flat (recorded) and the band is the
+                // twelve-month surface under its own √3 floor.
+                let ty = out.price_targets.three_year.as_ref().unwrap();
+                assert!(ty.bear <= ty.base && ty.base <= ty.bull);
+                assert!(out.target_meta.three_year_flat_growth);
+                assert_eq!(out.target_meta.three_year_growth, None);
+                assert!(ty.methodology.contains("flat growth"), "{}", ty.methodology);
+                assert!(ty.methodology.contains(SCENARIO_TARGET_PARAMETER_VERSION));
                 // The hurdle read is computed off the scenario TRs with the tier premium.
                 assert_ne!(out.hurdle.state, crate::portfolio::HurdleState::Unscorable);
                 assert!(out.hurdle.hurdle_rate.unwrap() > 0.04);
@@ -4994,8 +5259,8 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("overflowed"), "{err}");
         // Both legs finite but their quotient not (Codex I16, round 1): a
-        // barely-positive revision beside a huge expansion is hype — the cap
-        // fires — with the ratio persisted absent, never the justified branch.
+        // barely-positive revision beside a huge expansion is hype — the rule
+        // records — with the ratio persisted absent, never the justified branch.
         fin.consensus.as_mut().unwrap().eps_mid = Some(1.0 + f64::EPSILON);
         fin.consensus.as_mut().unwrap().eps_periods[0].eps_mid = Some(1.0 + f64::EPSILON);
         let read = narrative_vs_reality(
@@ -5008,7 +5273,7 @@ mod tests {
         .unwrap();
         assert!(read.expansion.is_finite() && read.reality > 0.0, "{read:?}");
         assert_eq!(read.classification, NarrativeClass::Hype, "{read:?}");
-        assert!(read.hype_capped(), "{read:?}");
+        assert!(read.matched_rule.is_some(), "{read:?}");
         assert_eq!(read.ratio, None, "{read:?}");
         // The pre-flag: an infinite σ is unevaluable, and so is a subnormal
         // anchor close overflowing the sector-relative move.
@@ -5629,35 +5894,155 @@ mod tests {
     }
 
     #[test]
-    fn one_month_band_scales_daily_volatility_to_the_month() {
-        // targets-v5: the one-month half-band is daily σ × 2 × √21 — the suite's
-        // √t convention (`dispersion_floor`, `tech_event_pre_flag`) — under the
-        // unchanged [2%, 15%] clamp. Unscaled, a 1%-daily name printed a 2% band
-        // covering ~0.44σ of the month (ruled 2026-08-27).
+    fn three_month_band_scales_daily_volatility_to_the_quarter() {
+        // targets-v7: the three-month half-band is daily σ × 2 × √63 — the
+        // suite's √t convention (`dispersion_floor`, `tech_event_pre_flag`) —
+        // under the [3.5%, 26%] clamp, each the retired one-month leg's
+        // constant scaled by √3 (`docs/portfolio-analysis.md` §Starting
+        // parameters); the base is the twelve-month price return prorated to a
+        // quarter.
         let scenario = spread_anchored_scenarios(100.0, [6.0, 6.5, 7.0], &[], 0.045, 2.0, 0.0);
         let band = |vol: Option<f64>| {
             let m = ComputedMetrics {
                 return_volatility: vol,
                 ..Default::default()
             };
-            let t = build_price_targets(100.0, &scenario, &m, "r", false, 0, false);
-            let om = t.one_month.unwrap();
-            (om.bull / om.base - 1.0, om.methodology)
+            let t = build_price_targets(
+                100.0, &scenario, &m, "r", false, 0, false, ThreeYearLeg::HeldFlat,
+            )
+            .targets;
+            let tm = t.three_month.unwrap();
+            let pr_base = scenario.base / 100.0 - 1.0;
+            assert!((tm.base - 100.0 * (1.0 + pr_base / 4.0)).abs() < 1e-9, "{}", tm.base);
+            (tm.bull / tm.base - 1.0, tm.methodology)
         };
-        // 1% daily σ → 2 × 0.01 × √21 ≈ 9.17%, not 2%.
+        // 1% daily σ → 2 × 0.01 × √63 ≈ 15.9%.
         let (b, method) = band(Some(0.01));
-        assert!((b - 0.02 * 21f64.sqrt()).abs() < 1e-9, "{b}");
-        assert!(method.contains("21 sessions"), "{method}");
+        assert!((b - 0.02 * 63f64.sqrt()).abs() < 1e-9, "{b}");
+        assert!(method.contains("63 sessions"), "{method}");
+        assert!(method.contains("PR_base/4"), "{method}");
         assert!(
             method.contains(SCENARIO_TARGET_PARAMETER_VERSION),
             "{method}"
         );
-        // The clamp still binds at both ends: 0.2% daily → the 2% floor,
-        // 2% daily → the 15% cap.
-        assert!((band(Some(0.002)).0 - 0.02).abs() < 1e-9);
-        assert!((band(Some(0.02)).0 - 0.15).abs() < 1e-9);
-        // No volatility read → the fixed fallback.
-        assert!((band(None).0 - ONE_MONTH_FALLBACK_BAND).abs() < 1e-9);
+        // The clamp binds at both ends: 0.2% daily → the 3.5% floor, 2% daily
+        // → the 26% cap.
+        assert!((band(Some(0.002)).0 - 0.035).abs() < 1e-9);
+        assert!((band(Some(0.02)).0 - 0.26).abs() < 1e-9);
+        // No volatility read → the fixed 8.7% fallback.
+        assert!((band(None).0 - THREE_MONTH_FALLBACK_BAND).abs() < 1e-9);
+    }
+
+    #[test]
+    fn three_year_leg_compounds_the_drivers_at_the_rows_growth_under_the_same_multiples() {
+        // The stock form's declared extrapolation: each scenario's twelve-month
+        // driver × (1 + g)² × the same scenario multiple, then the dispersion
+        // floor's half-spread × √3 (`docs/portfolio-analysis.md` §Starting
+        // parameters). With no anchors the carry multiple is spot ÷ base
+        // driver, so the twelve-month prices are the drivers × that multiple.
+        let drivers = [6.0, 6.5, 7.0];
+        let scenario = spread_anchored_scenarios(100.0, drivers, &[], 0.045, 2.0, 0.0);
+        let m = ComputedMetrics { return_volatility: Some(0.01), ..Default::default() };
+        let built = build_price_targets(
+            100.0,
+            &scenario,
+            &m,
+            "consensus forward EPS",
+            false,
+            0,
+            false,
+            ThreeYearLeg::Extrapolated { drivers, growth: Some(0.10) },
+        );
+        let ty = built.targets.three_year.unwrap();
+        let factor = 1.1f64.powi(2);
+        // The base compounds exactly; the edges sit at the compounded drivers ×
+        // multiples unless the √3 floor widened them (never narrowed).
+        assert!((ty.base - drivers[1] * factor * scenario.multiples[1]).abs() < 1e-9, "{}", ty.base);
+        let floor = dispersion_floor(Some(0.01)) * 3f64.sqrt();
+        assert!(ty.bear <= drivers[0] * factor * scenario.multiples[0] + 1e-9);
+        assert!(ty.bull >= drivers[2] * factor * scenario.multiples[2] - 1e-9);
+        assert!(ty.bear <= ty.base * (1.0 - floor) + 1e-9, "{} vs {}", ty.bear, ty.base);
+        assert!(ty.bull >= ty.base * (1.0 + floor) - 1e-9, "{} vs {}", ty.bull, ty.base);
+        assert_eq!(
+            built.three_year_floor_applied,
+            ty.bear < drivers[0] * factor * scenario.multiples[0]
+                || ty.bull > drivers[2] * factor * scenario.multiples[2]
+        );
+        assert!(ty.methodology.contains("+10.0% a year"), "{}", ty.methodology);
+        assert!(ty.methodology.contains("compounded two further years"), "{}", ty.methodology);
+        assert!(ty.methodology.contains("declared extrapolation"), "{}", ty.methodology);
+
+        // The same multiples as the twelve-month leg: at zero growth and no
+        // floor the three-year base equals the twelve-month base.
+        let m0 = ComputedMetrics::default();
+        let flat = build_price_targets(
+            100.0,
+            &scenario,
+            &m0,
+            "consensus forward EPS",
+            false,
+            0,
+            false,
+            ThreeYearLeg::Extrapolated { drivers, growth: None },
+        )
+        .targets;
+        let ty0 = flat.three_year.unwrap();
+        assert!((ty0.base - scenario.base).abs() < 1e-9);
+        assert!(ty0.methodology.contains("flat growth"), "{}", ty0.methodology);
+        // Growth holds flat on a single row or an undefinable pair; a wide pair
+        // is clamped to the v1 sanity bound.
+        assert_eq!(consensus_growth(ConsensusGrowthRows { near: Some(6.5), far: None }), None);
+        assert_eq!(consensus_growth(ConsensusGrowthRows { near: Some(-1.0), far: Some(2.0) }), None);
+        assert_eq!(consensus_growth(ConsensusGrowthRows { near: Some(0.0), far: Some(2.0) }), None);
+        let g = consensus_growth(ConsensusGrowthRows { near: Some(6.5), far: Some(7.15) }).unwrap();
+        assert!((g - 0.10).abs() < 1e-9, "{g}");
+        assert_eq!(
+            consensus_growth(ConsensusGrowthRows { near: Some(1.0), far: Some(3.0) }),
+            Some(DRIVER_GROWTH_MAX)
+        );
+        assert_eq!(
+            consensus_growth(ConsensusGrowthRows { near: Some(4.0), far: Some(1.0) }),
+            Some(DRIVER_GROWTH_MIN)
+        );
+    }
+
+    #[test]
+    fn three_year_growth_rides_the_selected_rung_through_analyze() {
+        // The EPS rung reads the EPS rows; the growth and its record land on the
+        // target meta; a fixture with no far row records flat growth.
+        let mut fin = strong();
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_growth_rows = ConsensusGrowthRows { near: Some(6.5), far: Some(7.8) };
+        c.revenue_growth_rows = ConsensusGrowthRows { near: Some(430.0e9), far: Some(400.0e9) };
+        let out = match analyze(&fin, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let g = out.target_meta.three_year_growth.unwrap();
+        assert!((g - 0.2).abs() < 1e-9, "{g}");
+        assert!(!out.target_meta.three_year_flat_growth);
+        let tm = out.price_targets.twelve_month.as_ref().unwrap();
+        let ty = out.price_targets.three_year.as_ref().unwrap();
+        assert!(ty.base > tm.base, "growth compounds the base: {} vs {}", ty.base, tm.base);
+        assert!(ty.methodology.contains("+20.0% a year"), "{}", ty.methodology);
+    }
+
+    #[test]
+    fn fund_form_three_year_leg_holds_the_twelve_month_mix_rerating() {
+        // The fund form: the three-year band is the twelve-month band unchanged,
+        // recorded flat-growth, and never floored again.
+        let scenario = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &[], 0.045, 1.0, 0.05);
+        let m = ComputedMetrics { return_volatility: Some(0.01), ..Default::default() };
+        let built = build_price_targets(
+            100.0, &scenario, &m, "fund exposure composite", true, 0, false, ThreeYearLeg::HeldFlat,
+        );
+        let t = built.targets;
+        let (tm, ty) = (t.twelve_month.unwrap(), t.three_year.unwrap());
+        assert_eq!((ty.bear, ty.base, ty.bull), (tm.bear, tm.base, tm.bull));
+        assert!(!built.three_year_floor_applied);
+        assert!(ty.methodology.contains("held unchanged"), "{}", ty.methodology);
+        assert!(ty.methodology.contains("flat-growth"), "{}", ty.methodology);
+        assert!(ty.methodology.contains(SCENARIO_TARGET_PARAMETER_VERSION));
     }
 
     #[test]
@@ -5778,15 +6163,12 @@ mod tests {
     #[test]
     fn target_parameter_change_reads_the_history_per_branch() {
         use GradeBranch::{Fund, Stock};
-        const BOTH: TargetHorizons = TargetHorizons::BOTH;
         const NONE: TargetHorizons = TargetHorizons::NONE;
-        const ONE_MONTH: TargetHorizons = TargetHorizons::ONE_MONTH;
-        // No production row moves a twelve-month leg alone yet; the shape is
-        // spelled out here so the union rule is pinned before one does.
-        const TWELVE_MONTH: TargetHorizons = TargetHorizons {
-            one_month: false,
-            twelve_month: true,
-        };
+        const THREE_MONTH: TargetHorizons = TargetHorizons::THREE_MONTH;
+        const TWELVE_MONTH: TargetHorizons = TargetHorizons::TWELVE_MONTH;
+        const THREE_YEAR: TargetHorizons = TargetHorizons::THREE_YEAR;
+        const NEAR_AND_TWELVE: TargetHorizons = TargetHorizons::of(true, true, false);
+        const NEAR_AND_FAR: TargetHorizons = TargetHorizons::of(true, false, true);
         assert_eq!(
             SCENARIO_TARGET_PARAMETER_HISTORY.last().map(|(v, _, _)| *v),
             Some(SCENARIO_TARGET_PARAMETER_VERSION),
@@ -5805,55 +6187,75 @@ mod tests {
             assert_eq!(target_parameter_change(Some("targets-v9.9"), branch), None);
             assert_eq!(target_parameter_change(Some(""), branch), None);
             assert_eq!(target_parameter_change(None, branch), None);
+            // The v7 row: the near-horizon leg re-defined and the three-year
+            // leg new, on both branches — a v6 prior reads exactly that.
+            assert_eq!(
+                target_parameter_change(Some("targets-v6"), branch),
+                Some(NEAR_AND_FAR),
+                "{branch:?}"
+            );
         }
-        assert_eq!(target_parameter_change(Some("targets-v5"), Stock), None);
+        // A v5 stock prior crosses v6 (nothing) and v7 (near + far); a v5 fund
+        // prior crosses v6 (near + twelve) and v7 (near + far): every horizon.
+        assert_eq!(target_parameter_change(Some("targets-v5"), Stock), Some(NEAR_AND_FAR));
         assert_eq!(
             target_parameter_change(Some("targets-v5"), Fund),
-            Some(BOTH)
+            Some(TargetHorizons::ALL)
         );
 
         // The union rule over an explicit history: v6 moved the fund twelve-month
-        // leg alone, v7 the stock one-month leg alone.
+        // leg alone, v7 the stock three-month leg alone.
         let history: &[(&str, TargetHorizons, TargetHorizons)] = &[
-            ("targets-v5", BOTH, ONE_MONTH),
+            ("targets-v5", NEAR_AND_TWELVE, THREE_MONTH),
             ("targets-v6", NONE, TWELVE_MONTH),
-            ("targets-v7", ONE_MONTH, NONE),
+            ("targets-v7", THREE_MONTH, NONE),
         ];
         let change =
             |prior, branch| target_parameter_change_in(history, "targets-v7", prior, branch);
         assert_eq!(change(Some("targets-v7"), Stock), None, "current stamp");
         assert_eq!(change(Some("targets-v7"), Fund), None, "current stamp");
-        assert_eq!(change(Some("targets-v6"), Stock), Some(ONE_MONTH));
+        assert_eq!(change(Some("targets-v6"), Stock), Some(THREE_MONTH));
         assert_eq!(change(Some("targets-v6"), Fund), None, "v7 never touched funds");
         assert_eq!(
             change(Some("targets-v5"), Stock),
-            Some(ONE_MONTH),
+            Some(THREE_MONTH),
             "v6 never touched stocks; the v5 row's own horizons are not read"
         );
         assert_eq!(change(Some("targets-v5"), Fund), Some(TWELVE_MONTH));
         assert_eq!(change(Some("targets-v4"), Stock), None, "unrecognized");
         assert_eq!(change(None, Fund), None);
 
-        // Two rows touching different horizons union to both.
+        // Rows touching different horizons union across them.
         let both: &[(&str, TargetHorizons, TargetHorizons)] = &[
             ("targets-v5", NONE, NONE),
-            ("targets-v6", ONE_MONTH, NONE),
-            ("targets-v7", TWELVE_MONTH, NONE),
+            ("targets-v6", THREE_MONTH, NONE),
+            ("targets-v7", TWELVE_MONTH, THREE_YEAR),
         ];
         assert_eq!(
             target_parameter_change_in(both, "targets-v7", Some("targets-v5"), Stock),
-            Some(BOTH)
+            Some(NEAR_AND_TWELVE)
         );
         assert_eq!(
             target_parameter_change_in(both, "targets-v7", Some("targets-v5"), Fund),
-            None,
-            "a branch the rows never touched"
+            Some(THREE_YEAR),
+            "the one row that touched the fund branch"
+        );
+        assert_eq!(
+            target_parameter_change_in(both, "targets-v7", Some("targets-v6"), Fund),
+            Some(THREE_YEAR)
         );
 
-        // The prompt vocabulary.
-        assert_eq!(ONE_MONTH.label(), "one-month target");
+        // The prompt vocabulary, in window order.
+        assert_eq!(THREE_MONTH.label(), "three-month target");
         assert_eq!(TWELVE_MONTH.label(), "twelve-month target");
-        assert_eq!(BOTH.label(), "one-month and twelve-month targets");
+        assert_eq!(THREE_YEAR.label(), "three-year target");
+        assert_eq!(NEAR_AND_TWELVE.label(), "three-month and twelve-month targets");
+        assert_eq!(NEAR_AND_FAR.label(), "three-month and three-year targets");
+        assert_eq!(
+            TargetHorizons::ALL.label(),
+            "three-month, twelve-month and three-year targets"
+        );
+        assert_eq!(NONE.label(), "no target");
     }
 
     #[test]
@@ -6035,6 +6437,7 @@ mod tests {
             degenerate_scenarios: 0, monotonicity_repaired: false,
             current_multiple_carry: false, dispersion_floor_applied: false,
             spread_percentiles: None, raw_percentiles: None,
+            multiples: [0.0; 3],
         };
         // Hurdle = dgs2 0.04 + medium 0.05 = 0.09.
         let clears = hurdle_read(&scenario(0.10, 0.15, 0.20), 0.04, RiskTier::Medium);
@@ -6055,102 +6458,7 @@ mod tests {
         assert!(admit.admits_new_money);
     }
 
-    // ---- The engine stand-in arm --------------------------------------------------
-
-    #[test]
-    fn engine_outlook_reads_windowed_trailing_returns_per_threshold() {
-        let closes = |last: f64| -> Vec<DatedValue> {
-            let mut vals: Vec<DatedValue> = (0..300)
-                .map(|i| DatedValue { date: format!("d{i}"), value: 100.0 })
-                .collect();
-            vals.last_mut().unwrap().value = last;
-            vals
-        };
-        // +10% clears every window's flat threshold.
-        let up = engine_outlook(&closes(110.0));
-        assert_eq!(
-            (up.short, up.mid, up.long),
-            (HorizonRead::Bullish, HorizonRead::Bullish, HorizonRead::Bullish)
-        );
-        // −10% likewise bearish everywhere.
-        let down = engine_outlook(&closes(90.0));
-        assert_eq!(
-            (down.short, down.mid, down.long),
-            (HorizonRead::Bearish, HorizonRead::Bearish, HorizonRead::Bearish)
-        );
-        // +3% clears only the short window's 2% threshold — mid (5%) and long (8%)
-        // read neutral.
-        let mild = engine_outlook(&closes(103.0));
-        assert_eq!(
-            (mild.short, mild.mid, mild.long),
-            (HorizonRead::Bullish, HorizonRead::Neutral, HorizonRead::Neutral)
-        );
-        // A series too short for any window reads neutral — the rule's null, never
-        // a fabricated direction.
-        let thin = engine_outlook(&closes(120.0)[..10]);
-        assert_eq!(
-            (thin.short, thin.mid, thin.long),
-            (HorizonRead::Neutral, HorizonRead::Neutral, HorizonRead::Neutral)
-        );
-    }
-
-    #[test]
-    fn engine_conviction_maps_the_degradation_count() {
-        let out = match analyze(&strong(), &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        // Force a clean read: no degradation → High.
-        let mut clean = (*out).clone();
-        clean.low_confidence_grade = false;
-        clean.target_meta = TargetMeta { rate_anchored: true, ..Default::default() };
-        clean.tier_gaps.clear();
-        clean.hurdle.state = crate::portfolio::HurdleState::Clears;
-        assert_eq!(engine_conviction(&clean, &[]), Conviction::High);
-        // One flag → Medium.
-        let mut one = clean.clone();
-        one.low_confidence_grade = true;
-        assert_eq!(engine_conviction(&one, &[]), Conviction::Medium);
-        // Three flags → Low.
-        let mut three = clean.clone();
-        three.low_confidence_grade = true;
-        three.target_meta.current_multiple_carry = true;
-        assert_eq!(
-            engine_conviction(&three, &["no dividends history".to_string()]),
-            Conviction::Low
-        );
-    }
-
-    #[test]
-    fn engine_view_conviction_counts_the_assembled_dossier_gaps() {
-        // The gap leg reads the caller's ASSEMBLED degraded-input list — fund
-        // metadata gaps, the DGS10-history gap, and the listing-guard
-        // unverified note ride beside the financials manifest
-        // (`docs/portfolio-analysis.md` §Starting parameters: "any dossier
-        // gap") — so a holding whose only degradation is a non-financials gap
-        // still counts it, and the financials manifest is no longer consulted
-        // directly.
-        let out = match analyze(&strong(), &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let mut clean = (*out).clone();
-        clean.low_confidence_grade = false;
-        clean.target_meta = TargetMeta { rate_anchored: true, ..Default::default() };
-        clean.tier_gaps.clear();
-        clean.hurdle.state = crate::portfolio::HurdleState::Clears;
-        let fin = strong();
-        let view = engine_view(&clean, &fin, &[], None, false, false);
-        assert_eq!(view.conviction, Conviction::High, "no assembled gap → High");
-        let degraded =
-            ["listing-resolution guard unverified — FMP profile unavailable".to_string()];
-        let view = engine_view(&clean, &fin, &degraded, None, false, false);
-        assert_eq!(
-            view.conviction,
-            Conviction::Medium,
-            "a non-financials dossier gap counts against the stand-in read"
-        );
-    }
+    // ---- The engine action rung --------------------------------------------------
 
     #[test]
     fn engine_action_applies_the_rung_rule_and_walks_toward_hold() {
@@ -6181,13 +6489,37 @@ mod tests {
         );
         // Severe deterioration (exit family only): hold is off the set → trim.
         let severe = crate::portfolio::pre_profit::OverlayConsequences {
-            conviction_ceiling: None,
             bar_add_family: true,
             exit_family_only: true,
             matched_rules: vec!["severe".into()],
         };
         assert_eq!(
             engine_action(Grade::B, &hurdle(HurdleState::Clears, true), Some(&severe), false),
+            Action::Trim
+        );
+        // A tripped hard-forensic state reads the exit family first: trim at
+        // any grade or hurdle state that would otherwise add or hold …
+        assert_eq!(
+            engine_action(Grade::A, &hurdle(HurdleState::Clears, true), None, true),
+            Action::Trim
+        );
+        assert_eq!(
+            engine_action(Grade::C, &hurdle(HurdleState::Indeterminate, false), None, true),
+            Action::Trim
+        );
+        // … and sell all when the holding is also dead money or F-graded.
+        assert_eq!(
+            engine_action(Grade::B, &hurdle(HurdleState::Fails, false), None, true),
+            Action::SellAll
+        );
+        assert_eq!(
+            engine_action(Grade::F, &hurdle(HurdleState::Clears, true), None, true),
+            Action::SellAll
+        );
+        // The walk past hold: severe deterioration beside a trip still reads
+        // the exit family, inside the narrowed set.
+        assert_eq!(
+            engine_action(Grade::A, &hurdle(HurdleState::Clears, true), Some(&severe), true),
             Action::Trim
         );
     }
@@ -6289,7 +6621,6 @@ mod tests {
                 cond("c-price", LedgerSeries::Price),
                 cond("c-margin", LedgerSeries::NetMargin),
             ],
-            authored_band_relation: None,
         };
         let fin = strong();
         let m = compute_metrics(&fin);
@@ -6358,7 +6689,7 @@ mod tests {
     }
 
     #[test]
-    fn hard_forensic_bars_the_add_family_and_hard_caps_the_stand_in_conviction() {
+    fn hard_forensic_bars_the_add_family_and_reads_the_exit_family() {
         let read = |state, admits| HurdleRead {
             state,
             hurdle_rate: Some(0.09),
@@ -6366,32 +6697,26 @@ mod tests {
             admits_new_money: admits,
         };
         // A tripped hard trigger strips the add family from an otherwise-clean
-        // A-grade at any hurdle state; hold survives (the strongest disposition
-        // an owned name admits keeps hold available —
+        // A-grade at any hurdle state; hold survives in the set (the strongest
+        // disposition an owned name admits keeps hold available —
         // `docs/portfolio-analysis.md` §Starting parameters).
         let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), None, true);
         assert_eq!(set, vec![Action::SellAll, Action::Trim, Action::Hold]);
-        // The stand-in action obeys the bar: the A-grade add walks to hold.
+        // The engine's own rung reads the exit family: trim for the clean
+        // A-grade, sell all once the holding is also dead money.
         assert_eq!(
             engine_action(Grade::A, &read(HurdleState::Clears, true), None, true),
-            Action::Hold
+            Action::Trim
         );
-        // The engine arm's conviction is hard-capped at Low — strictly dominating
-        // the soft Medium ceiling — while a clean view stays unclamped.
-        let out = match analyze(&strong(), &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let mut clean = (*out).clone();
-        clean.low_confidence_grade = false;
-        clean.target_meta = TargetMeta { rate_anchored: true, ..Default::default() };
-        clean.tier_gaps.clear();
-        clean.hurdle.state = crate::portfolio::HurdleState::Clears;
-        let fin = strong();
-        let view = engine_view(&clean, &fin, &[], None, true, false);
-        assert_eq!(view.conviction, Conviction::Low);
-        let view = engine_view(&clean, &fin, &[], None, false, false);
-        assert_eq!(view.conviction, Conviction::High);
+        assert_eq!(
+            engine_action(Grade::A, &read(HurdleState::Fails, false), None, true),
+            Action::SellAll
+        );
+        // No trip: the same A-grade adds.
+        assert_eq!(
+            engine_action(Grade::A, &read(HurdleState::Clears, true), None, false),
+            Action::Add
+        );
     }
 
     #[test]
@@ -6982,7 +7307,6 @@ mod tests {
             what_must_improve: String::new(),
             what_must_not_break: String::new(),
             conditions,
-            authored_band_relation: None,
         }
     }
 
@@ -8241,29 +8565,6 @@ mod tests {
         assert!((n.reality - 0.1).abs() < 1e-9, "{n:?}");
     }
 
-    #[test]
-    fn narrative_hype_caps_the_engine_arm_at_medium_and_low_still_dominates() {
-        let out = match analyze(&strong(), &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let mut clean = (*out).clone();
-        clean.low_confidence_grade = false;
-        clean.target_meta = TargetMeta { rate_anchored: true, ..Default::default() };
-        clean.tier_gaps.clear();
-        clean.hurdle.state = crate::portfolio::HurdleState::Clears;
-        let fin = strong();
-        // The soft cap is a plain min on the engine arm's mechanical conviction.
-        let view = engine_view(&clean, &fin, &[], None, false, true);
-        assert_eq!(view.conviction, Conviction::Medium, "hype soft cap → Medium");
-        // A matched overlay Low outranks the narrative Medium (strictest binds).
-        let overlay = crate::portfolio::pre_profit::OverlayConsequences {
-            conviction_ceiling: Some(crate::portfolio::pre_profit::ConvictionCeiling::Low),
-            ..Default::default()
-        };
-        let view = engine_view(&clean, &fin, &[], Some(&overlay), false, true);
-        assert_eq!(view.conviction, Conviction::Low);
-    }
     #[test]
     fn unit_issue_cannot_be_rescued_by_otherwise_complete_financials() {
         let mut fin = strong();

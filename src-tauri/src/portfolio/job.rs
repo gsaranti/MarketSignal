@@ -2346,30 +2346,8 @@ fn run_analysis(
         }
     }
 
-    // The episode store loads once; the outcome pass below consumes it.
-    let (mut episodes, unreadable_active_symbols) = match store::load_episodes(conn) {
-        Ok(load) => {
-            // A skipped *active* row (unreadable JSON, readable SQL columns)
-            // re-seeds its symbol through the plan's recovery seam; the row
-            // itself is never deleted.
-            let lost =
-                crate::portfolio::outcome::lost_active_symbols(&load.skipped, &load.episodes);
-            (load.episodes, lost)
-        }
-        Err(e) => {
-            // Store-level failure only — a single bad row is skipped and logged
-            // inside the loader, never an error here. Proceeding with an empty
-            // set re-debuts the whole book (the never-seeded-symbol rule); this
-            // log line is what makes that state diagnosable rather than silent.
-            eprintln!(
-                "outcome learning: episode store unreadable ({e}) — proceeding with an empty set"
-            );
-            (Vec::new(), std::collections::HashSet::new())
-        }
-    };
-
-    // ---- Roll-up + outcome pass (the loop's actions are final since
-    // `portfolio-v9` — no construction stage exists to reconcile them) ----------
+    // ---- Roll-up (the loop's actions are final since `portfolio-v9` — no
+    // construction stage exists to reconcile them) --------------------------------
     if ctx.is_cancelled() {
         anyhow::bail!("run cancelled");
     }
@@ -2401,57 +2379,9 @@ fn run_analysis(
         model_retries,
         failed_holdings.len(),
     );
-    // The deterministic outcome half: tag active episodes' net alignment from this
-    // run's diff, refresh label-time price series through the shared bar cache and
-    // record any newly due window labels (fail-soft — a failed retrieval leaves a
-    // label pending, never a run failure), then append-or-extend this run's
-    // decision episodes and derive the scorecard reads, all landing on the run
-    // blob's outcome records.
-    ctx.step_started("outcome", "Outcome learning");
-    // `run_id` was minted at run start (or reopened by a resume) so the
-    // checkpoint trail could key on it.
-    // The run's ET session date, the same string the per-holding ledger
-    // evaluation stamped — `mature_labels` takes it beside the ET `today` below,
-    // and a UTC prefix here would disagree with that `today` on an evening run.
-    let run_date: String = run_session_date.clone();
-    let (alignment_tags, align_changed) = crate::portfolio::outcome::tag_alignment(
-        &mut episodes,
-        prior_run_id.as_deref(),
-        &holdings,
-        &holdings_diff,
-    );
-    let mut series_ctx =
-        crate::portfolio::outcome::SeriesCtx::new(conn, outcome_sources.map(|s| s.price));
-    let label_summary =
-        crate::portfolio::outcome::mature_labels(&mut episodes, &mut series_ctx, today, &run_date);
-    drop(series_ctx);
-    let plan = crate::portfolio::outcome::plan_episodes(
-        &crate::portfolio::outcome::PlanInput {
-            run_id: &run_id,
-            created_at: &created_at,
-            verdicts: &verdicts,
-            audits: &audits,
-            prior_verdicts: prior_run.as_ref().map(|r| r.verdicts.as_slice()),
-            sector_by_symbol: &sector_by_symbol,
-            dgs2: Some(rates.dgs2),
-            unreadable_active_symbols,
-            carried_symbols: &carried_symbols,
-        },
-        &mut episodes,
-    );
-    let reads = crate::portfolio::outcome::derive_reads(&episodes);
-    let outcome_records = crate::portfolio::outcome::OutcomeRecords {
-        opened: plan.opened,
-        extended: plan.extended,
-        alignment_tags,
-        matured: label_summary.matured,
-        pending_coverage: label_summary.pending_coverage,
-        reads,
-    };
-    let mut changed_episodes = align_changed;
-    changed_episodes.extend(label_summary.changed);
-    changed_episodes.extend(plan.changed);
-    ctx.step_finished("outcome", "ok", None);
+    // Episode opening and the scoreboard are suspended until outcome learning
+    // reshapes the store to the price record (`docs/portfolio-analysis.md`
+    // §Outcome learning); the run persists no outcome records.
 
     let run = PortfolioRun {
         run_id,
@@ -2469,55 +2399,16 @@ fn run_analysis(
             dgs10_as_of: rates.dgs10_date.clone(),
             fetched_at: created_at.clone(),
         },
-        outcome: outcome_records,
         failed_holdings,
     };
 
     ctx.step_started("persist", "Persist run");
-    // One transaction: the run row and the episode mutations it claims land (and
-    // prune) together, so a failed write can never leave the episode store
-    // claiming a run that was never persisted.
+    // One transaction: the run row and the retention prune land together.
     let tx = conn.unchecked_transaction()?;
     store::insert_run(&tx, &run)?;
-    for ep in episodes
-        .iter()
-        .filter(|e| changed_episodes.contains(&e.episode_id))
-    {
-        store::save_episode(&tx, ep)?;
-    }
     store::prune_runs(&tx, crate::portfolio::PORTFOLIO_RUN_RETENTION)?;
-    store::prune_matured_episodes(&tx, crate::portfolio::outcome::MATURED_ARCHIVE_CAP)?;
     tx.commit()?;
 
-    // Matured reads embed as durable learnings in the Portfolio memory partition —
-    // best-effort: a failed or invalid embedding costs the memory row (logged),
-    // never the persisted run (`docs/portfolio-analysis.md` §Outcome learning).
-    if let Some(sources) = outcome_sources {
-        let records = &run.outcome;
-        if let Some(embedder) = sources.embedder {
-            if let Some(text) = crate::portfolio::outcome::matured_learning_text(records, &run_date)
-            {
-                match embedder.embed(&text) {
-                    Ok(vector) => {
-                        if let Err(e) = crate::vector_memory::insert_memory(
-                            conn,
-                            crate::vector_memory::MemoryKind::Learning,
-                            crate::vector_memory::MemoryNamespace::Portfolio,
-                            None,
-                            &text,
-                            &vector,
-                            &created_at,
-                        ) {
-                            eprintln!("outcome learning: durable-learning insert failed: {e}");
-                        }
-                    }
-                    Err(e) => eprintln!(
-                        "outcome learning: matured-read embedding failed (learning row skipped): {e}"
-                    ),
-                }
-            }
-        }
-    }
     // Per-holding verdict summaries embed as continuity `summary` rows in the
     // Portfolio partition (`docs/portfolio-workflow.md` §Step 7's run-result
     // embeddings) — fresh-vintage analyzed verdicts only (a carried verdict's
@@ -6516,140 +6407,6 @@ mod tests {
         fn embed(&self, _text: &str) -> Result<Vec<f32>> {
             Ok(vec![0.1, 0.2, 0.3, 0.4])
         }
-    }
-
-    #[test]
-    fn outcome_episodes_open_then_extend_across_runs() {
-        let (_dir, paths) = paths();
-        // Run 1: both stocks debut an episode; nothing is due to mature.
-        let first = full_run(&paths, two_stocks());
-        let records = &first.outcome;
-        assert_eq!(records.opened.len(), 2);
-        assert!(records
-            .opened
-            .iter()
-            .all(|o| o.reasons == vec![crate::portfolio::outcome::OpenReason::Debut]));
-        assert!(records.matured.is_empty(), "fresh anchors: nothing due");
-        assert!(!records.reads.eligibility.eligible, "far below the 30-holding bar");
-        {
-            let conn = storage::open(&paths.db_path).unwrap();
-            let episodes = store::load_episodes(&conn).unwrap().episodes;
-            assert_eq!(episodes.len(), 2);
-            assert!(episodes
-                .iter()
-                .all(|e| e.state == crate::portfolio::outcome::EpisodeState::Active
-                    && e.vintage_fresh));
-        }
-
-        // Run 2, same book and deterministic stub verdicts: the recommendation
-        // state is unchanged, so both episodes extend (no new anchor) and this
-        // run's diff tags them.
-        let second = full_run(&paths, two_stocks());
-        let records = &second.outcome;
-        assert!(records.opened.is_empty(), "a re-affirmation never mints an episode");
-        assert_eq!(records.extended.len(), 2);
-        assert_eq!(records.alignment_tags.len(), 2);
-        let conn = storage::open(&paths.db_path).unwrap();
-        let episodes = store::load_episodes(&conn).unwrap().episodes;
-        assert_eq!(episodes.len(), 2);
-        assert!(episodes.iter().all(|e| e.observations.len() == 1
-            && e.observations[0].kind
-                == crate::portfolio::outcome::ObservationKind::Reaffirmed));
-        assert!(episodes.iter().all(|e| e.alignment.is_some()));
-    }
-
-    #[test]
-    fn a_backdated_episode_matures_in_run_and_embeds_a_learning() {
-        let (_dir, paths) = paths();
-        // Seed an old active episode for a symbol not in the book — an exited
-        // name's labels must still mature (the pass is independent of the
-        // holdings work-list).
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
-        let anchor = chrono::NaiveDate::parse_from_str(&anchor_at[..10], "%Y-%m-%d").unwrap();
-        {
-            let conn = storage::open(&paths.db_path).unwrap();
-            storage::init_schema(&conn).unwrap();
-            let episode = crate::portfolio::outcome::DecisionEpisode {
-                episode_id: "ep-gone".into(),
-                symbol: "GONE".into(),
-                anchor_run_id: "run-old".into(),
-                anchor_at: anchor_at.clone(),
-                intrinsic_vintage: anchor_at.clone(),
-                vintage_fresh: true,
-                action_source: Default::default(),
-                position_change: crate::portfolio::PositionChange::New,
-                sector: crate::portfolio::outcome::SectorIdentity::resolve(Some("Technology")),
-                opened: vec![crate::portfolio::outcome::OpenReason::Debut],
-                body: crate::portfolio::outcome::EpisodeBody::RoleRiskOnly(
-                    crate::portfolio::outcome::RoleRiskEpisode {
-                        action: crate::portfolio::Action::Hold,
-                        degraded_inputs: vec![],
-                    },
-                ),
-                observations: vec![],
-                alignment: None,
-                falsifier_events: vec![],
-                labels: crate::portfolio::outcome::pending_labels(anchor),
-                state: crate::portfolio::outcome::EpisodeState::Active,
-                self_correction_count: 0,
-            };
-            store::save_episode(&conn, &episode).unwrap();
-        }
-        let prices = SyntheticOutcomePrices;
-        let embedder = FixedEmbedder;
-        let sources = crate::portfolio::outcome::OutcomeSources {
-            price: &prices,
-            embedder: Some(&embedder),
-        };
-        let outcome = run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &StubAnalyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            Some(&sources),
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap();
-        let run = match outcome {
-            PortfolioJobOutcome::Successful(run) => *run,
-            other => panic!("expected success, got {other:?}"),
-        };
-        let records = &run.outcome;
-        assert_eq!(
-            records
-                .matured
-                .iter()
-                .filter(|m| m.symbol == "GONE" && m.outcome == "scored")
-                .count(),
-            4,
-            "all four backdated windows scored: {:?}",
-            records.matured
-        );
-        let conn = storage::open(&paths.db_path).unwrap();
-        let episodes = store::load_episodes(&conn).unwrap().episodes;
-        let gone = episodes.iter().find(|e| e.symbol == "GONE").unwrap();
-        assert_eq!(gone.state, crate::portfolio::outcome::EpisodeState::Matured);
-        // The fetched series landed in the shared bar cache.
-        assert!(!store::load_price_bars(&conn, "GONE").unwrap().is_empty());
-        assert!(!store::load_price_bars(&conn, crate::portfolio::outcome::MARKET_BENCHMARK)
-            .unwrap()
-            .is_empty());
-        // The matured reads embedded as one durable learning in the Portfolio
-        // namespace.
-        let learnings: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM vector_memory
-                 WHERE namespace = 'portfolio' AND kind = 'learning'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(learnings, 1);
     }
 
     fn verdict<'a>(run: &'a PortfolioRun, symbol: &str) -> &'a HoldingVerdict {

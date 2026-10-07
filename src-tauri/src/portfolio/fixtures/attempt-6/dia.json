@@ -107,17 +107,23 @@
    "long": "neutral"
   },
   "price_targets": {
-   "one_month": {
-    "base": 520.8433158853557,
-    "bear": 481.6241044225376,
-    "bull": 560.0625273481737,
-    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 7.5% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   "three_month": {
+    "base": 522.514947656067,
+    "bear": 454.36726244079165,
+    "bull": 590.6626328713422,
+    "methodology": "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month price-return leg prorated (dividends excluded); bull/bear ± 13.0% = 2σ of daily realized volatility √t-scaled to 63 sessions, clamped [3.5%, 26%] [targets-v7]"
    },
    "twelve_month": {
     "base": 516.5897906242677,
     "bear": 478.5739523917931,
     "bull": 554.6056288567423,
     "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   },
+   "three_year": {
+    "base": 516.5897906242677,
+    "bear": 478.5739523917931,
+    "bull": 554.6056288567423,
+    "methodology": "Three-year (rolling) scenarios = the twelve-month mix re-rating held unchanged (flat driver, no growth leg to compound; recorded flat-growth) — a declared extrapolation assuming today's rate and spread regime holds [targets-v7]"
    }
   },
   "model_target_rationale": "Engine's twelve-month base target of $516.59 reflects spread-anchored P/E multiples held flat across scenarios at current discount rate levels (~4.85% 10Y). I adopt slightly higher ($535) anticipating mean reversion as Fed guidance clarifies in H2, with bull case ($590) assuming one-and-done pause plus credit stability allowing multiple expansion toward historical Dow averages. Bear case ($470) assumes funding event triggers (HY OAS >3%, WTI sustained $105+) compressing multiples to 6-8x P/E floor from current ~21x. One-month volatility band widened per realized daily vol of 0.82% annualized (~$8 at spot), clamped to ±7.5% as engine methodology specifies.",
@@ -155,15 +161,8 @@
    },
    "self_assessment": "[self-assessment removed from the fixture: it referenced the account's position]"
   },
-  "engine_view": {
-   "outlook": {
-    "short": "bearish",
-    "mid": "bullish",
-    "long": "bullish"
-   },
-   "conviction": "low",
-   "action": "hold"
-  }
+  "engine_rung": "hold",
+  "authored_band_relation": null
  },
  "engine_output": {
   "sub_scores": {
@@ -188,17 +187,23 @@
    "composite_coverage": 0.9999
   },
   "price_targets": {
-   "one_month": {
-    "base": 520.8433158853557,
-    "bear": 481.6241044225376,
-    "bull": 560.0625273481737,
-    "methodology": "One-month (rolling) base = spot × (1 + PR_base/12), the twelve-month price-return leg prorated (v1 mechanics, dividends excluded); bull/bear ± 7.5% = 2σ of daily realized volatility √t-scaled to 21 sessions, clamped [2%, 15%] [targets-v6]"
+   "three_month": {
+    "base": 522.514947656067,
+    "bear": 454.36726244079165,
+    "bull": 590.6626328713422,
+    "methodology": "Three-month (rolling) base = spot × (1 + PR_base/4), the twelve-month price-return leg prorated (dividends excluded); bull/bear ± 13.0% = 2σ of daily realized volatility √t-scaled to 63 sessions, clamped [3.5%, 26%] [targets-v7]"
    },
    "twelve_month": {
     "base": 516.5897906242677,
     "bear": 478.5739523917931,
     "bull": 554.6056288567423,
     "methodology": "Twelve-month (rolling) scenarios = fund exposure composite, held flat across scenarios × DGS10 spread-anchored P75/P50/P25 multiples over 12 quarterly anchors (inverse map); band widened to the volatility-scaled dispersion floor [targets-v6]"
+   },
+   "three_year": {
+    "base": 516.5897906242677,
+    "bear": 478.5739523917931,
+    "bull": 554.6056288567423,
+    "methodology": "Three-year (rolling) scenarios = the twelve-month mix re-rating held unchanged (flat driver, no growth leg to compound; recorded flat-growth) — a declared extrapolation assuming today's rate and spread regime holds [targets-v7]"
    }
   },
   "risk_tier": "low",
@@ -225,7 +230,10 @@
    "dispersion_floor_applied": true,
    "anchor_bounded": 0,
    "clamp_released": false,
-   "parameter_version": "targets-v6"
+   "parameter_version": "targets-v7",
+   "three_year_growth": null,
+   "three_year_flat_growth": true,
+   "three_year_floor_applied": false
   },
   "low_confidence_grade": true,
   "fund_class_label": "US equity fund",

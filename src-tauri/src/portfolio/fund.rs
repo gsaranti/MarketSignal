@@ -998,7 +998,12 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         // the composite path has neither.
         0,
         false,
-    );
+        // The flat driver has no growth leg to compound: the three-year band
+        // carries the twelve-month mix re-rating unchanged, recorded flat-growth
+        // (`docs/portfolio-analysis.md` §Starting parameters).
+        engine::ThreeYearLeg::HeldFlat,
+    )
+    .targets;
     // The engine's output gate (`engine::price_targets_finite`): a non-finite
     // composite prices every scenario non-finite — the fund exits as
     // insufficient evidence, never a `null` target the store cannot read back.
@@ -1027,6 +1032,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         dispersion_floor_applied: scenario.dispersion_floor_applied,
         anchor_bounded: 0,
         clamp_released: false,
+        three_year_growth: None,
+        three_year_flat_growth: true,
+        three_year_floor_applied: false,
         parameter_version: engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
     };
 

@@ -1,6 +1,6 @@
 # Interpretation — stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v68`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The interpretation is a thinking call under the schema grammar: Part 1 the computed evidence, the options read, the research summary and the market analysis; Part 2 the read to return.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8983 chars — the messages and tools as serialized |
+| Prompt material | 9263 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ model_sub_scores, model_price_targets and self_assessment, as one JSON object. P
 gives the inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (8249 chars)
+## User message (8528 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -72,10 +72,13 @@ more attractive; momentum; risk, where higher means more resilient.
 quality 10, valuation 33, momentum 45, risk 64. Risk tier: high.
 
 COMPUTED PRICE TARGETS (USD)
+- three-month: bear 229.41 / base 310.01 / bull 390.61.
 - twelve-month: bear 62.04 / base 163.12 / bull 911.74. Method: consensus forward EPS (low / mid /
 high) × P/E multiples at the 75th / 50th / 25th percentile of their spread to the 10-year Treasury
 over the last 12 quarterly observations
-- one-month: bear 289.39 / base 340.46 / bull 391.53.
+- three-year: bear 62.04 / base 163.12 / bull 911.74. Method: the twelve-month drivers held at flat
+growth for two further years (a single forward consensus row, or no definable growth) at the same
+multiples — an extrapolation that assumes today's rate and spread regime holds
 - Notes: the driver blends two consensus rows.
 - What the current price implies, at each scenario's multiple: EPS growth versus the trailing print
 of +11.2% at the bull multiple, +325.8% at the base multiple, +634.8% at the bear multiple.

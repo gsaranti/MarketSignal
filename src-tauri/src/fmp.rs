@@ -6415,6 +6415,13 @@ fn consensus_from_value(
     if let Some((far_date, far)) = far_row.filter(|_| blended) {
         eps_periods.push(eps_period(far_date, far, 1.0 - near_weight));
     }
+    // The three-year leg's growth rows: the near and far rows' raw mids on each
+    // rung, read whenever both rows exist — the growth is the rows' own, not
+    // the NTM blend's (`docs/portfolio-analysis.md` §Starting parameters).
+    let growth_rows = |stable: &str, legacy: &str| crate::portfolio::engine::ConsensusGrowthRows {
+        near: field(near, stable, legacy).filter(|v| v.is_finite()),
+        far: far.and_then(|r| field(r, stable, legacy)).filter(|v| v.is_finite()),
+    };
 
     Some(crate::portfolio::engine::ConsensusEstimate {
         period_end: date_of(near),
@@ -6429,6 +6436,8 @@ fn consensus_from_value(
         eps_mid_rows: rows_carrying("epsAvg", "estimatedEpsAvg"),
         revenue_mid_rows: rows_carrying("revenueAvg", "estimatedRevenueAvg"),
         eps_periods,
+        eps_growth_rows: growth_rows("epsAvg", "estimatedEpsAvg"),
+        revenue_growth_rows: growth_rows("revenueAvg", "estimatedRevenueAvg"),
     })
 }
 

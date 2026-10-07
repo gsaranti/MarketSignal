@@ -1,6 +1,6 @@
 # Interpretation — stock, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v62`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v68`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior read of 2026-09-02.
 The interpretation is a thinking call under the schema grammar: Part 1 the computed evidence, the options read, the research summary and the market analysis; Part 2 the read to return.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 15331 chars — the messages and tools as serialized |
+| Prompt material | 15609 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,7 +31,7 @@ object. Part 1 of the message gives the inputs. Part 2 defines those outputs and
 return.
 ~~~~
 
-## User message (14499 chars)
+## User message (14777 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -74,10 +74,13 @@ more attractive; momentum; risk, where higher means more resilient.
 quality 10, valuation 33, momentum 45, risk 64. Risk tier: high.
 
 COMPUTED PRICE TARGETS (USD)
+- three-month: bear 229.41 / base 310.01 / bull 390.61.
 - twelve-month: bear 62.04 / base 163.12 / bull 911.74. Method: consensus forward EPS (low / mid /
 high) × P/E multiples at the 75th / 50th / 25th percentile of their spread to the 10-year Treasury
 over the last 12 quarterly observations
-- one-month: bear 289.39 / base 340.46 / bull 391.53.
+- three-year: bear 62.04 / base 163.12 / bull 911.74. Method: the twelve-month drivers held at flat
+growth for two further years (a single forward consensus row, or no definable growth) at the same
+multiples — an extrapolation that assumes today's rate and spread regime holds
 - Notes: the driver blends two consensus rows.
 - What the current price implies, at each scenario's multiple: EPS growth versus the trailing print
 of +11.2% at the bull multiple, +325.8% at the base multiple, +634.8% at the bear multiple.
@@ -106,16 +109,15 @@ A market-level analysis dated 2026-09-16, followed by the stance of the 3 most r
 - 2026-08-25: thesis mixed, risk posture mixed
 
 PRIOR ANALYSIS (prior read 2026-09-02T14:00:00Z)
-- prior computed read: grade F (q 10 / v 33 / r 64; momentum 45); 1-mo base 340.46 [289.39–391.53],
-12-mo base 163.12 [62.04–911.74]; conviction medium, outlook s/m/l bullish/bearish/bearish, action
-trim
+- prior computed read: grade F (q 10 / v 33 / r 64; momentum 45); 3-mo base 310.01 [229.41–390.61],
+12-mo base 163.12 [62.04–911.74], 3-yr base 163.12 [62.04–911.74]; risk tier high, capital
+efficiency indeterminate, computed action trim
 - your prior read: letter F (q 8 / v 18 / m 35 / r 72); 1-mo base 298.50 [247.80–356.10], 12-mo base
 145.00 [92.00–398.00]; conviction Low, outlook s/m/l bearish/bearish/neutral, action trim
 (model-chosen)
 - price now 358.97: +3.1% realized since the prior read (anchor close 348.20; authoring spot 348.20
 on its own basis); distance to the prior computed 12-mo base +120.1%; distance to your prior 12-mo
 base +147.6% (split-adjusted)
-- matured scored windows: none yet
 
 CHANGES SINCE THE PRIOR ANALYSIS (each with an id)
 [D1] spot: 348.20 -> 358.97

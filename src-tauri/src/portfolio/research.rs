@@ -5241,7 +5241,6 @@ mod tests {
                     eval_state: None
                 })
                 .collect(),
-            authored_band_relation: None
         }
     }
 

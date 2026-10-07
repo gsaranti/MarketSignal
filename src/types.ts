@@ -434,12 +434,13 @@ export interface PriceTarget {
   methodology: string;
 }
 
-// Rolling one-month / twelve-month windows from the run date (the settled rename
-// of end-of-month / end-of-year — docs/portfolio-analysis.md §Starting parameters).
-// The backend always emits both fields.
+// The engine's bands at three months, twelve months and three years — rolling
+// windows from the run date (docs/portfolio-analysis.md §Starting parameters).
+// The backend always emits all three fields, each null where underivable.
 export interface PriceTargets {
-  one_month: PriceTarget | null;
+  three_month: PriceTarget | null;
   twelve_month: PriceTarget | null;
+  three_year: PriceTarget | null;
 }
 
 // The deterministic per-branch risk tier and the three-state capital-efficiency
@@ -482,14 +483,10 @@ export interface ModelView {
   self_assessment: string;
 }
 
-// The engine's mechanical stand-in arm — deterministic outlook / conviction /
-// action baselines so every model-authored field has a scored engine counterpart.
-// Present on every persisted verdict (both arms ride every v9 record).
-export interface EngineView {
-  outlook: HorizonOutlook;
-  conviction: PortfolioConviction;
-  action: PortfolioAction;
-}
+// Spot's relationship to the engine's twelve-month band at authoring — stamped
+// on the engine arm so the quick check's band monitor fires on a change in the
+// relationship, never on the standing state.
+export type BandRelation = "inside" | "below-band" | "above-band";
 
 export interface GradedVerdict {
   grade: PortfolioGrade;
@@ -518,9 +515,13 @@ export interface GradedVerdict {
   // The what-changed audit (authored at interpretation; the retired action half
   // no longer exists).
   what_changed: string;
-  // The two arms (portfolio-v7) — always present on every persisted verdict.
+  // The model arm — always present on every persisted verdict.
   model_view: ModelView;
-  engine_view: EngineView;
+  // The engine's own action rung — a computed read beside the model's action,
+  // never a recommendation (docs/portfolio-analysis.md §Starting parameters).
+  engine_rung: PortfolioAction;
+  // The authoring-time band relation; null where no band or spot existed.
+  authored_band_relation: BandRelation | null;
 }
 
 // One exposure weight (a sector or country label and its fraction of the fund).
@@ -736,63 +737,6 @@ export interface PortfolioRollUp {
   overview: string;
 }
 
-// One arm's band-calibration read (window × target-parameter version) — the
-// deterministic scoreboard's unit (docs/portfolio-analysis.md §Outcome learning).
-export interface TargetCalibrationRead {
-  window_months: number;
-  parameter_version: string | null;
-  scored: number;
-  coverage_rate: number | null;
-  nominal_coverage: number;
-  mean_interval_score: number | null;
-  mean_base_signed_error: number | null;
-}
-
-// One arm's outlook direction hit-rate at its mapped window (short→1, mid→6,
-// long→12 months); neutral reads count beside the hit-rate, never inside it.
-export interface OutlookDirectionRead {
-  arm: "engine" | "model";
-  window_months: number;
-  scored: number;
-  hits: number;
-  neutral: number;
-}
-
-// The paired model-vs-engine head-to-head: both arms scored over the identical
-// episode set (episodes where both bands exist), so the comparison is
-// same-events by construction — the only read the arms are compared on.
-export interface HeadToHeadRead {
-  window_months: number;
-  scored: number;
-  engine_mean_interval_score: number | null;
-  model_mean_interval_score: number | null;
-  engine_coverage_rate: number | null;
-  model_coverage_rate: number | null;
-}
-
-// One matured outcome-window line (per symbol) from the run's label pass.
-export interface MaturedNote {
-  symbol: string;
-  episode_id: string;
-  window_months: number;
-  outcome: string;
-  total_return: number | null;
-  price_return: number | null;
-}
-
-// The subset of the run's outcome-learning records the page renders: the
-// model-vs-engine scoreboard reads and the matured lines; the fuller record
-// (cohorts, lead times, eligibility) stays backend-only.
-export interface OutcomeRecordsView {
-  matured: MaturedNote[];
-  reads: {
-    target_calibration: TargetCalibrationRead[];
-    model_target_calibration: TargetCalibrationRead[];
-    head_to_head: HeadToHeadRead[];
-    outlook_direction: OutlookDirectionRead[];
-  };
-}
-
 export interface PortfolioRun {
   run_id: string;
   created_at: string;
@@ -802,8 +746,6 @@ export interface PortfolioRun {
   // The per-holding audit records (sources, metrics, model ids…) — persisted
   // for traceability; not rendered by the Portfolio page in this slice.
   audit: unknown[];
-  // This run's outcome-learning records (scoreboard subset).
-  outcome: OutcomeRecordsView;
   // Per-holding analysis failures the run isolated rather than aborting on
   // (docs/portfolio-analysis.md §Failure posture). A symbol here renders a failed
   // card — its prior verdict carried into `verdicts` when `carried_prior` (the

@@ -909,11 +909,11 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     let priced = matches!(inp.verdict.disposition, VerdictDisposition::Priced(_));
     let basis = inp.audit.and_then(|a| a.quick_basis.as_ref());
     // The withheld-comparator signature: a priced pass that could not verify
-    // its price basis carries its anchor but withholds the quick basis (and
-    // stamps the monitor target-less). Its band, multiple, and revision legs
-    // don't exist to check — the families read `unknown`, never a silent
-    // `fresh_clear` vouch through legs the basis withheld. (An abstained row
-    // lacks the anchor too, so it never matches.)
+    // its price basis carries its anchor but withholds the quick basis. Its
+    // band, multiple, and revision legs don't exist to check — the families
+    // read `unknown`, never a silent `fresh_clear` vouch through legs the
+    // basis withheld; the band leg below skips on the same signature. (An
+    // abstained row lacks the anchor too, so it never matches.)
     let comparators_withheld = priced
         && inp
             .audit
@@ -1862,51 +1862,52 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         }
     }
 
-    // -- Scenario-band read (priced only; the stored monitor band, frozen) -----
+    // -- Scenario-band read (priced only; the stored twelve-month band, frozen) --
     if priced {
-        if let (Some((price, _)), Some(ledger), Some(f)) =
-            (inp.price, &inp.verdict.thesis_ledger, bridge.filter(|f| *f > 0.0))
+        let graded = match &inp.verdict.disposition {
+            crate::portfolio::VerdictDisposition::Priced(g) => Some(g),
+            _ => None,
+        };
+        if let (Some((price, _)), Some(g), Some(f), true) =
+            (inp.price, graded, bridge.filter(|f| *f > 0.0), basis.is_some())
         {
-            // The frozen band converts onto the fresh basis (`target × f`), so
+            // The frozen band — the last full pass's stored twelve-month band on
+            // the engine arm — converts onto the fresh basis (`target × f`), so
             // the compared — and rendered — pair share one basis; an
-            // unresolvable bridge skips the read (fail closed).
-            let target = |kind: ScenarioKind| {
-                ledger
-                    .monitor
-                    .iter()
-                    .find(|m| m.scenario == kind)
-                    .and_then(|m| m.engine_target)
-                    .map(|t| t * f)
-            };
-            if let (Some(bear), Some(bull)) = (target(ScenarioKind::Bear), target(ScenarioKind::Bull))
-            {
+            // unresolvable bridge skips the read (fail closed). The read runs
+            // only where that pass CERTIFIED its basis (the quick basis
+            // persisted): an unresolvable pass stamps its band on the fresh
+            // basis beneath a carried anchor, and bridging that band the moment
+            // the anchor resolves would double-convert it — absent beats wrong.
+            let band = g.price_targets.twelve_month.as_ref().map(|t| (t.bear * f, t.bull * f));
+            if let Some((bear, bull)) = band {
                 let (lo, hi) = (bear.min(bull), bear.max(bull));
                 // The flag fires on a *change* in spot's relationship to the frozen
                 // band, never on the standing state: a band authored with spot
-                // already outside was an examined observation (the model wrote the
-                // ledger seeing it), so re-raising it every sweep — and force-
+                // already outside was an examined observation (the model wrote its
+                // document seeing it), so re-raising it every sweep — and force-
                 // including the holding on every selective run — is noise. A
-                // ledger authored with no spot to relate reads as authored-inside.
+                // verdict authored with no spot to relate reads as authored-inside.
                 let current = crate::portfolio::BandRelation::of(*price, bear, bull);
-                let authored = ledger
+                let authored = g
                     .authored_band_relation
                     .unwrap_or(crate::portfolio::BandRelation::Inside);
                 if current != authored {
                     let detail = match (authored, current) {
                         (crate::portfolio::BandRelation::Inside, _) => format!(
-                            "price {price:.2} outside the ledger's bear–bull band \
-                             [{lo:.2}, {hi:.2}] — the scenario read is stale in a way \
+                            "price {price:.2} outside the computed twelve-month bear–bull \
+                             band [{lo:.2}, {hi:.2}] — the scenario read is stale in a way \
                              worth a fresh look"
                         ),
                         (_, crate::portfolio::BandRelation::Inside) => format!(
-                            "price {price:.2} re-entered the ledger's bear–bull band \
-                             [{lo:.2}, {hi:.2}] it was authored outside — the scenario \
+                            "price {price:.2} re-entered the computed twelve-month bear–bull \
+                             band [{lo:.2}, {hi:.2}] it was authored outside — the scenario \
                              read is stale in a way worth a fresh look"
                         ),
                         _ => format!(
-                            "price {price:.2} crossed to the other side of the ledger's \
-                             bear–bull band [{lo:.2}, {hi:.2}] — the scenario read is \
-                             stale in a way worth a fresh look"
+                            "price {price:.2} crossed to the other side of the computed \
+                             twelve-month bear–bull band [{lo:.2}, {hi:.2}] — the scenario \
+                             read is stale in a way worth a fresh look"
                         ),
                     };
                     flags.push(AttentionFlag {
@@ -2107,7 +2108,6 @@ mod tests {
             what_must_improve: String::new(),
             what_must_not_break: String::new(),
             conditions,
-            authored_band_relation: None,
         }
     }
 
@@ -2130,15 +2130,8 @@ mod tests {
                     },
                     self_assessment: String::new(),
                 },
-                engine_view: crate::portfolio::EngineView {
-                    outlook: HorizonOutlook {
-                        short: HorizonRead::Neutral,
-                        mid: HorizonRead::Bullish,
-                        long: HorizonRead::Bullish,
-                    },
-                    conviction: crate::portfolio::Conviction::Medium,
-                    action: crate::portfolio::Action::Hold,
-                },
+                engine_rung: crate::portfolio::Action::Hold,
+                authored_band_relation: None,
                 conviction: crate::portfolio::Conviction::Medium,
                 horizon_outlook: HorizonOutlook {
                     short: HorizonRead::Neutral,
@@ -2146,13 +2139,14 @@ mod tests {
                     long: HorizonRead::Bullish,
                 },
                 price_targets: PriceTargets {
-                    one_month: None,
+                    three_month: None,
                     twelve_month: Some(PriceTarget {
                         base: 210.0,
                         bear: 150.0,
                         bull: 260.0,
                         methodology: "fixture".into(),
                     }),
+                    three_year: None,
                 },
                 model_target_rationale: "fixture".into(),
                 options_signal: OptionsSignal {
@@ -2261,7 +2255,6 @@ mod tests {
                 dgs10_as_of: Some("2026-07-18".into()),
                 fetched_at: "2026-07-20T00:00:00Z".into(),
             },
-            outcome: Default::default(),
             failed_holdings: Vec::new(),
         }
     }
@@ -2384,7 +2377,6 @@ mod tests {
                 audit_for("CARRD", Some(basis())),
             ],
             rate_prints: Default::default(),
-            outcome: Default::default(),
             failed_holdings: Vec::new(),
         };
         store::insert_run(&conn, &run).unwrap();
@@ -2594,8 +2586,8 @@ mod tests {
         // badging the holding on every selective run — sweep after sweep.
         let insert = |conn: &rusqlite::Connection, authored| {
             let mut verdict = priced_verdict("AAPL", vec![]);
-            if let Some(l) = verdict.thesis_ledger.as_mut() {
-                l.authored_band_relation = Some(authored);
+            if let crate::portfolio::VerdictDisposition::Priced(g) = &mut verdict.disposition {
+                g.authored_band_relation = Some(authored);
             }
             store::insert_run(conn, &sample_run(verdict, audit_for("AAPL", Some(basis())))).unwrap();
         };
@@ -2798,20 +2790,28 @@ mod tests {
     #[test]
     fn a_withheld_comparator_row_reads_unknown_not_fresh_clear() {
         // The full-pass-output → quick-check seam: an unresolvable full pass
-        // carries its anchor, withholds the quick basis, and stamps the monitor
-        // target-less. The next sweep must read the affected families `unknown`
-        // — never a silent `fresh_clear` vouch through legs that don't exist —
-        // while the carried-verbatim price core still evaluates correctly
-        // through the carried anchor.
+        // carries its anchor, withholds the quick basis, and stamps its band on
+        // the engine arm on the FRESH basis. The next sweep must read the
+        // affected families `unknown` — never a silent `fresh_clear` vouch
+        // through legs that don't exist — and must not bridge that fresh-basis
+        // band once the anchor resolves (a double conversion would read spot
+        // outside a mis-scaled band and flag), while the carried-verbatim price
+        // core still evaluates correctly through the carried anchor.
         let conn = mem();
         let mut verdict = priced_verdict(
             "AAPL",
             vec![price_condition("c-px", ConditionRole::Falsifier, 180.0)],
         );
-        if let Some(l) = verdict.thesis_ledger.as_mut() {
-            for m in &mut l.monitor {
-                m.engine_target = None;
-            }
+        if let crate::portfolio::VerdictDisposition::Priced(g) = &mut verdict.disposition {
+            // The old-basis band [150, 260] as the unresolvable pass stamped it
+            // on the fresh (÷4) basis: bridged again by the sweep's 0.25 it
+            // would read [9.4, 16.3] against a price of 48.
+            g.price_targets.twelve_month = Some(PriceTarget {
+                base: 52.5,
+                bear: 37.5,
+                bull: 65.0,
+                methodology: "fixture".into(),
+            });
         }
         let mut audit = audit_for("AAPL", None);
         audit.authoring_close =
@@ -2820,7 +2820,7 @@ mod tests {
 
         let s = run_quick_check(&split_stub(48.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
         let h = &s.holdings[0];
-        assert!(h.flag.is_none(), "no false flag: {:?}", h.flag);
+        assert!(h.flag.is_none(), "no false flag — the band leg skips: {:?}", h.flag);
         // The old-basis core converts through the carried anchor (180 × 0.25 =
         // 45; 48 is clean) — evaluable, not excluded.
         assert!(

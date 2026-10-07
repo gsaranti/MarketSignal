@@ -553,15 +553,17 @@ pub struct PriceTarget {
     pub methodology: String,
 }
 
-/// One-month and twelve-month scenario targets — **rolling windows from the run
-/// date**, not calendar ends (outside January, calendar year-end is not twelve
-/// months away, and calibration scores these against the 1- and 12-month labels —
-/// `docs/portfolio-analysis.md` §Starting parameters). Each `None` when the inputs to
-/// derive it were missing.
+/// The engine's bear / base / bull bands at three months, twelve months and
+/// three years — **rolling windows from the run date**, not calendar ends
+/// (outside January, calendar year-end is not twelve months away, and the
+/// accuracy pass scores each band at its own horizon date —
+/// `docs/portfolio-analysis.md` §Starting parameters). Each `None` when the
+/// inputs to derive it were missing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PriceTargets {
-    pub one_month: Option<PriceTarget>,
+    pub three_month: Option<PriceTarget>,
     pub twelve_month: Option<PriceTarget>,
+    pub three_year: Option<PriceTarget>,
 }
 
 /// One model-authored scenario target band — the model arm's counterpart of the
@@ -689,29 +691,21 @@ pub struct GradedVerdict {
     /// and loud-skips as unreadable rather than rendering a partial verdict (the
     /// frontend types both arms as present — `src/types.ts`).
     pub model_view: ModelView,
-    /// The engine's mechanical stand-in arm ([`EngineView`]) — deterministic
-    /// outlook / conviction / action baselines beside the model's, so every
-    /// model-authored field has a scored engine counterpart. Required on every
-    /// persisted verdict, same contract as [`model_view`](Self::model_view).
-    pub engine_view: EngineView,
-}
-
-/// The engine's mechanical stand-in arm of the two-arm verdict
-/// (`docs/portfolio-analysis.md` §The holding verdict): deterministic, disclosed
-/// formulas producing baseline counterparts for the three fields only the model
-/// used to author — outlook, conviction, and the action rung. Computed by
-/// [`engine::engine_view`] from data already on the dossier; no model input.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EngineView {
-    /// Trailing-return outlook over ~21 / 126 / 252 sessions with per-window flat
-    /// thresholds — a mechanical short / mid / long read.
-    pub outlook: HorizonOutlook,
-    /// A disclosed degradation count mapped to High / Medium / Low — data
-    /// completeness as confidence, never judgment.
-    pub conviction: Conviction,
-    /// The formalized rung rule over the existing feasible-set machinery
-    /// (grade × hurdle × admission, tiebreak toward hold).
-    pub action: Action,
+    /// The engine's own action rung — the drafted rule over its reads
+    /// ([`engine::engine_action`]: the hard-forensic exit branch, dead money
+    /// and the letter, the add admission, walked into the engine's own
+    /// feasible set), app-stamped on the engine arm and shown to the action
+    /// call as a computed read, never a recommendation
+    /// (`docs/portfolio-analysis.md` §Starting parameters). The engine authors
+    /// no conviction and no outlook.
+    pub engine_rung: Action,
+    /// Spot's relationship to the engine's twelve-month band at authoring —
+    /// app-stamped on the engine arm at the checkpoint, so the quick check's
+    /// band monitor fires on a *change* in the relationship, never on the
+    /// standing state ([`BandRelation`]); `None` where no band or spot existed,
+    /// or where an unresolvable split bridge withheld the stamp
+    /// (`docs/portfolio-analysis.md` §The quick check).
+    pub authored_band_relation: Option<BandRelation>,
 }
 
 /// One exposure weight (a sector or country label and its fraction of the fund).
@@ -1183,11 +1177,12 @@ pub struct MonitorScenario {
     pub engine_target: Option<f64>,
 }
 
-/// Spot's relationship to the monitor's bear–bull band. Stamped onto the ledger at
-/// authoring (beside the engine targets) so the quick check's `PriceOutsideBand`
-/// flag fires on a *change* in the relationship, never on the standing state — a
-/// band authored with spot already outside was an examined observation (the model
-/// wrote the ledger seeing it), not news worth re-raising every sweep.
+/// Spot's relationship to the engine's twelve-month bear–bull band. Stamped onto
+/// the engine arm at the checkpoint ([`GradedVerdict::authored_band_relation`])
+/// so the quick check's `PriceOutsideBand` flag fires on a *change* in the
+/// relationship, never on the standing state — a band authored with spot
+/// already outside was an examined observation (the model wrote its document
+/// seeing it), not news worth re-raising every sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BandRelation {
@@ -1246,10 +1241,6 @@ pub struct ThesisLedger {
     pub what_must_not_break: String,
     /// Key falsifiers and action triggers.
     pub conditions: Vec<LedgerCondition>,
-    /// Spot's relationship to the monitor band at authoring — app-stamped beside
-    /// the engine targets; `None` wherever no band exists (`role_risk_only`,
-    /// missing spot).
-    pub authored_band_relation: Option<BandRelation>,
 }
 
 /// One engine-detected condition crossing (`docs/portfolio-analysis.md` §The
@@ -1903,7 +1894,7 @@ pub struct HoldingAudit {
 /// schema bars or clamps), the prior run's both-arm values plus realized-since
 /// render into the prompt (the retrospective — deliberately reversing the v4
 /// anchoring guard), and the engine gains its mechanical stand-in arm
-/// ([`EngineView`]) so every model field has a scored baseline counterpart.
+/// (`EngineView`, since retired) so every model field has a scored baseline counterpart.
 /// Model-arm values never alter or bind the engine baseline
 /// (`docs/portfolio-analysis.md` §The holding verdict).
 ///
@@ -2589,7 +2580,21 @@ pub struct HoldingAudit {
 /// fetches several pages, so CLAIM RULES is pointed at on every distillation
 /// call where before it sat on this one unreferenced. File 15 regenerated. The
 /// checkpoint trail is unchanged.
-pub const PROMPT_VERSION: &str = "portfolio-v67";
+/// `portfolio-v68` (the engine arm at three horizons, 2026-10-07): the engine
+/// arm's bands are three-month / twelve-month / three-year, so COMPUTED PRICE
+/// TARGETS prints the three legs — the three-month line without a method as
+/// the one-month line was, the three-year line with its extrapolation clause —
+/// and the action packet's computed legs likewise; the engine stand-in arm is
+/// gone, so PRIOR ANALYSIS's prior computed read names the three bands, the
+/// risk tier, the capital-efficiency state and the engine's own action rung in
+/// place of the stand-in's conviction, outlook and action, and the matured
+/// scored-window lines leave it with the suspended scoreboard; the hard
+/// forensic rule sentence reads the exit family, no conviction cap; the
+/// pre-profit section loses its conviction-ceiling line; the action packet's
+/// computed SCORES line carries the engine's own rung as a computed read; the
+/// three-year method clause names its floor widening. The persisted verdict
+/// moves the trail to `checkpoint-v17` and the archive to format 13.
+pub const PROMPT_VERSION: &str = "portfolio-v68";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2607,11 +2612,6 @@ pub struct PortfolioRun {
     /// paths' fail-soft reads (`docs/portfolio-analysis.md` §The quick check;
     /// §Starting parameters, rate-cache max age).
     pub rate_prints: RatePrints,
-    /// This run's outcome-learning records — appended / extended episodes, this run's
-    /// alignment tags, newly matured window labels, and the derived scorecard reads
-    /// (`docs/portfolio-analysis.md` §Outcome learning; `docs/portfolio-workflow.md`
-    /// §Step 7a, §Step 8).
-    pub outcome: outcome::OutcomeRecords,
     /// Per-holding analysis failures the run **isolated** rather than aborting on
     /// (`docs/portfolio-analysis.md` §Failure posture): the model/grade half
     /// hard-fails **per holding**, and the run records the failure here and moves
@@ -4075,7 +4075,6 @@ mod tests {
                     authored_equity_source: None,
                 }),
             }],
-            authored_band_relation: None,
         };
         let verdict = HoldingVerdict {
             symbol: "AAPL".into(),

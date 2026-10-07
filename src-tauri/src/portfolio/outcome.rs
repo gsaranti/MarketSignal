@@ -292,13 +292,11 @@ pub struct CalibrationSnapshot {
     /// The model arm's own sub-scores at open (recorded for later predictor-quality
     /// reads; no scored read yet).
     pub model_sub_scores: SubScores,
-    /// Both arms' horizon outlooks at open — the direction hit-rate read scores
-    /// each against the realized sign at its mapped window.
+    /// The model's horizon outlook at open — the direction hit-rate read scores
+    /// it against the realized sign at its mapped window. (The engine authors
+    /// no outlook; this record is suspended until outcome learning reshapes the
+    /// store to the price record.)
     pub model_outlook: crate::portfolio::HorizonOutlook,
-    pub engine_outlook: crate::portfolio::HorizonOutlook,
-    /// The engine stand-in arm's conviction and action rung at open.
-    pub engine_conviction: Conviction,
-    pub engine_action: Action,
 }
 
 /// The priced branch's episode body.
@@ -1938,9 +1936,6 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                                 model_price_targets: g.model_view.price_targets.clone(),
                                 model_sub_scores: g.model_view.sub_scores,
                                 model_outlook: g.horizon_outlook,
-                                engine_outlook: g.engine_view.outlook,
-                                engine_conviction: g.engine_view.conviction,
-                                engine_action: g.engine_view.action,
                             },
                         }))
                     }
@@ -2373,8 +2368,11 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
             reads
         };
     let engine_band = |p: &PricedEpisode, months: u32| -> Option<(f64, f64, f64)> {
+        // The one-month band no longer exists (the engine's near-horizon leg is
+        // three months); every other window keeps its twelve-month pairing as
+        // before. Suspended until outcome learning reshapes the record.
         let band = match months {
-            1 => p.snapshot.price_targets.one_month.as_ref(),
+            1 => None,
             _ => p.snapshot.price_targets.twelve_month.as_ref(),
         }?;
         Some((band.bear, band.base, band.bull))
@@ -2451,17 +2449,11 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
         });
     }
 
-    // The model authors 1-month / 1-year / 3–5-year reads; the engine
-    // stand-in authors 1 / 6 / 12 months. No outcome window exists for the
-    // model's long outlook, so it is excluded rather than shortened.
+    // The model authors 1-month / 1-year / 3–5-year reads; no outcome window
+    // exists for its long outlook, so it is excluded rather than shortened. The
+    // engine authors no outlook.
     let mut outlook_direction = Vec::new();
-    for (arm, months, horizon) in [
-        ("engine", 1u32, 0),
-        ("engine", 6, 1),
-        ("engine", 12, 2),
-        ("model", 1, 0),
-        ("model", 12, 1),
-    ] {
+    for (arm, months, horizon) in [("model", 1u32, 0), ("model", 12, 1)] {
         let (mut scored, mut hits, mut neutral) = (0usize, 0usize, 0usize);
         for ep in episodes {
             if !ep.vintage_fresh {
@@ -2470,11 +2462,7 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
             let EpisodeBody::Priced(p) = &ep.body else {
                 continue;
             };
-            let outlook = if arm == "engine" {
-                p.snapshot.engine_outlook
-            } else {
-                p.snapshot.model_outlook
-            };
+            let outlook = p.snapshot.model_outlook;
             let Some(label) = scored_for(ep, months) else {
                 continue;
             };
@@ -2672,15 +2660,8 @@ mod tests {
                 },
                 self_assessment: String::new(),
             },
-            engine_view: crate::portfolio::EngineView {
-                outlook: HorizonOutlook {
-                    short: HorizonRead::Neutral,
-                    mid: HorizonRead::Bullish,
-                    long: HorizonRead::Bullish,
-                },
-                conviction: Conviction::Medium,
-                action,
-            },
+            engine_rung: action,
+            authored_band_relation: None,
             conviction: Conviction::Medium,
             horizon_outlook: HorizonOutlook {
                 short: HorizonRead::Neutral,
@@ -2688,7 +2669,7 @@ mod tests {
                 long: HorizonRead::Bullish,
             },
             price_targets: PriceTargets {
-                one_month: Some(PriceTarget {
+                three_month: Some(PriceTarget {
                     base: 102.0,
                     bear: 95.0,
                     bull: 108.0,
@@ -2700,6 +2681,7 @@ mod tests {
                     bull: 150.0,
                     methodology: "test".into(),
                 }),
+                three_year: None,
             },
             model_target_rationale: "test".into(),
             options_signal: OptionsSignal {
@@ -2727,7 +2709,6 @@ mod tests {
             what_must_improve: String::new(),
             what_must_not_break: String::new(),
             conditions: vec![],
-            authored_band_relation: None,
         }
     }
 
@@ -3919,7 +3900,7 @@ mod tests {
                     conviction: Conviction::Medium,
                     risk_tier: RiskTier::Medium,
                     price_targets: PriceTargets {
-                        one_month: Some(crate::portfolio::PriceTarget {
+                        three_month: Some(crate::portfolio::PriceTarget {
                             base: 105.0,
                             bear: 95.0,
                             bull: 115.0,
@@ -3931,6 +3912,7 @@ mod tests {
                             bull: 160.0,
                             methodology: "test".into(),
                         }),
+                        three_year: None,
                     },
                     dead_money: HurdleState::Indeterminate,
                     hurdle: None,
@@ -3966,13 +3948,6 @@ mod tests {
                         mid: crate::portfolio::HorizonRead::Bullish,
                         long: crate::portfolio::HorizonRead::Bullish,
                     },
-                    engine_outlook: crate::portfolio::HorizonOutlook {
-                        short: crate::portfolio::HorizonRead::Bearish,
-                        mid: crate::portfolio::HorizonRead::Neutral,
-                        long: crate::portfolio::HorizonRead::Bearish,
-                    },
-                    engine_conviction: Conviction::Medium,
-                    engine_action: Action::Hold,
                 },
             })),
             observations: vec![],
@@ -5095,10 +5070,9 @@ mod tests {
             paired.engine_mean_interval_score, paired.model_mean_interval_score,
             "the pair scores both arms on the same events"
         );
-        // Direction reads: engine 1/6/12 months, model 1/12 months; the
-        // fixture's model is bullish everywhere and the engine bearish/neutral,
-        // so on the synthetic series exactly one directional arm can be hitting.
-        assert_eq!(reads.outlook_direction.len(), 5);
+        // Direction reads: the model's 1/12 months alone — the engine authors
+        // no outlook.
+        assert_eq!(reads.outlook_direction.len(), 2);
         let read = |arm: &str, months: u32| {
             reads
                 .outlook_direction
@@ -5107,12 +5081,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(read("model", 12).scored, 2);
-        assert_eq!(read("engine", 6).neutral, 2, "neutral counts beside the hit-rate");
-        assert_eq!(
-            read("model", 12).hits + read("engine", 12).hits,
-            2,
-            "opposite directional calls: exactly one arm hits per episode"
-        );
+        assert!(reads.outlook_direction.iter().all(|r| r.arm == "model"));
         assert!(!reads.eligibility.eligible, "2 of 30: below the bar");
         assert!(reads.eligibility.note.contains("below the proposal eligibility bar"));
     }

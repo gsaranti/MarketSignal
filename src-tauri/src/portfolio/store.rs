@@ -239,7 +239,13 @@ pub struct CheckpointHeader {
 /// `checkpoint-v16` (`portfolio-v65`): the persisted leading indicator loses
 /// the model-authored driver name (`confirms_driver`); the app resolves the
 /// name from `confirms_driver_id`.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v16";
+/// `checkpoint-v17` (`portfolio-v68`): the priced verdict's engine arm carries
+/// bands at three months, twelve months and three years, its own action rung
+/// and the authoring-time band relation, and no stand-in view; the ledger
+/// loses the band relation; the overlay's consequences lose the conviction
+/// ceiling; the run record carries no outcome records — no v16 row can resume
+/// this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v17";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1384,7 +1390,6 @@ mod tests {
                 option_overlay: None,
             }],
             rate_prints: Default::default(),
-            outcome: Default::default(),
             failed_holdings: Vec::new(),
         }
     }
