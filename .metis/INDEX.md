@@ -271,6 +271,7 @@ build status lives in `BUILD.md`.*
 - Model-led hypothesis research lane — trade-opportunities-workflow.md §Step 3b
 - Discovery route-topic proposal (the one model-proposed agenda) — trade-opportunities-workflow.md §Step 3b; web-research.md §The research loop and context management
 - Hypothesis document and appendix (hypothesis formation) — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §The pipeline, §Discovery memory, §Starting parameters; storage.md §Local Analysis Suite Storage
+- Hypothesis supersession and the metric-named date (the §Discovery memory statement is canonical) — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3b, §Step 3c; storage.md §Local Analysis Suite Storage
 - Discovery coverage rotation / ledger — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §Starting parameters; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
 - Discovery memory / opportunity graph — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3c, §Step 7, §ATO: the audit flow
 - Watchlist review — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Discovery memory, §Starting parameters, §Storage and display
