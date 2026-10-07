@@ -72,10 +72,10 @@
   - The ledger records, per class and subject, first seen, last attempted, last successfully completed, and the computed debt. A completed route pays debt even when it finds nothing; a failed route does not.
 
 - **Opportunity graph**
-  - The job's discovery memory: hypothesis nodes with their document sections and appendix fields, and company nodes with a status, a leading metric, refresh timestamps, and a hypothesis link.
+  - The job's discovery memory: hypothesis nodes with their document sections, their appendix fields and the sections they superseded as dated history, and company nodes with a status, a leading metric, refresh timestamps, and a hypothesis link.
 
 - **Watchlist node**
-  - A worthy-but-unpicked name remembered in the graph: its hypothesis section, its leading metric with its class, its status, and its refresh timestamps.
+  - A worthy-but-unpicked name remembered in the graph: its hypothesis section, its leading metric with its class, its metric-named date, its status, and its refresh timestamps.
   - Re-read every later run by the watchlist review.
 
 - **Watchlist review**
@@ -627,7 +627,7 @@ The job's edge: a research-active feeder that forms investable **hypotheses** an
   - **Sees (Part 1, the route-constant block first, then the topic)**
     - The route header with the run date.
     - MARKET ANALYSIS — the house view, rendered as a market-level analysis.
-    - PRIOR HYPOTHESES — the carried-forward graph's live hypothesis sections and watchlist names relevant to the route, so the model extends or retires existing theses rather than re-deriving blind. Withheld on the outside-view route. Absent on a first run, when the graph holds no section.
+    - PRIOR HYPOTHESES — the carried-forward graph's live hypothesis sections, each under a header carrying its id and date, and watchlist names relevant to the route, so the model extends or retires existing theses rather than re-deriving blind. Withheld on the outside-view route. Absent on a first run, when the graph holds no section.
     - The route's source-strategy rubric.
     - NEWS LEADS — the structured news and macro-release headlines relevant to the route, with their addresses. Fetch candidates only.
     - PAGES ALREADY RETRIEVED — the bounded route-scoped reuse block; absent on the disconfirming pass.
@@ -661,7 +661,7 @@ One conversation per route, after the route's topic conversations and its discon
     - The route header; MARKET ANALYSIS; PRIOR HYPOTHESES (withheld from the outside-view route, absent on a first run); the route's source-strategy rubric.
     - WRITE-UPS — the route's write-ups, or their distillate, each under its topic's heading, the disconfirming pass's last.
   - **Sees (Part 2)**
-    - The document to write: for each hypothesis the world-change, the mechanism, the economic value-chain trace (margin capture, bargaining power, capacity constraint, pricing power versus mere exposure — past the crowded pure-plays to the picks-and-shovels enablers at the constrained, margin-capturing nodes, often mid or small cap), the leading metric that would prove it with the kind of series it is, the likely public-company expressions, the bear case, the key falsifiers, the adversarial passes' answers — *why is this already priced? · why might the obvious beneficiary be the wrong expression? · who actually captures the margin instead?* — and the decision with its reasons — promote, watchlist, or none — in the model's priority order. The dimensions the task names are magnitude, durability, time horizon, leading-metric observability, crowding, and margin-capture clarity.
+    - The document to write: for each hypothesis the world-change, the mechanism, the economic value-chain trace (margin capture, bargaining power, capacity constraint, pricing power versus mere exposure — past the crowded pure-plays to the picks-and-shovels enablers at the constrained, margin-capturing nodes, often mid or small cap), the leading metric that would prove it with the kind of series it is, the likely public-company expressions, the bear case, the key falsifiers, the adversarial passes' answers — *why is this already priced? · why might the obvious beneficiary be the wrong expression? · who actually captures the margin instead?* — and the decision with its reasons — promote, watchlist, or none — in the model's priority order. The dimensions the task names are magnitude, durability, time horizon, leading-metric observability, crowding, and margin-capture clarity. For each hypothesis, whether it is a prior section shown updated, naming that section, or a new one.
     - For an event-impact route: the document is two-sided — beneficiaries, feared losers (the names that sold off, with the actually-exposed revenue / profit pool sized), and latent names (chain nodes that did not move but should be affected) — with each affected name's technology read sized in prose: the technical claim, the deployment timeline, substitute / complement / mix-shift, the affected workload, the exposed pool, the adoption constraints, the switching costs, the margin-capturing node, the source confidence, and the leading metric to monitor; and for a feared-loser name the symmetric pass — *is the impairment real or panic, and what is the actually-exposed pool?*
     - Within the hypothesis document's length band, drafted at plan time.
   - **Returns**
@@ -671,12 +671,13 @@ One conversation per route, after the route's topic conversations and its discon
   - **Sees**
     - A request for the appendix as the document states it, closing on a placeholder-only return shape.
   - **Returns**
-    - Per hypothesis: the title, the decision (`promote` / `watchlist` / `none`) in document order, the candidate symbols, the leading metric by name and its re-check class — chosen from the engine's series menu (`structured`), the standardized statement-line menu (`filing`), or free text (`research`) — and, for an event-impact hypothesis, each name's side (`beneficiary` / `feared-loser` / `latent`) and the announcement and corroborating condition.
-    - The app keeps only the type check: the enums; each symbol resolving against FMP's industry classification (exists, US-listed, clears the tradability gate) before it can earn enrichment budget; and the presence of the gate fields on an event-impact entry — an entry that leaves them blank is dropped and logged. The materiality gate is checked on presence, never read. An off-domain value re-issues the message once.
+    - Per hypothesis: the title, the decision (`promote` / `watchlist` / `none`) in document order, the candidate symbols, `supersedes` — the id of the prior section the hypothesis updates, or null — the leading metric by name and its re-check class — chosen from the engine's series menu (`structured`), the standardized statement-line menu (`filing`), or free text (`research`) — and, for an event-impact hypothesis, each name's side (`beneficiary` / `feared-loser` / `latent`) and the announcement and corroborating condition.
+    - The app keeps only the type check: the enums; a `supersedes` id among the ids the route's PRIOR HYPOTHESES block showed, so the outside-view route can return only null; each symbol resolving against FMP's industry classification (exists, US-listed, clears the tradability gate) before it can earn enrichment budget; and the presence of the gate fields on an event-impact entry — an entry that leaves them blank is dropped and logged. The materiality gate is checked on presence, never read. An off-domain value re-issues the message once.
 
 - **Promotion (app)**
   - A promoted hypothesis's candidate names — each with its hypothesis link and surfacing rationale — flow into Step 4 alongside the screens and the watchlist, in the model's priority order.
   - Every hypothesis is written to the opportunity graph with its document section and appendix fields. A hypothesis decided `watchlist`, or `promote` without a validation slot, becomes a watchlist node (Step 3c).
+  - A hypothesis that supersedes a prior section replaces that node's section and typed fields, the old section kept as dated history and the node's first-surfaced date standing; its watchlist companies re-link and take the new metric and class, the supersession advancing their refresh timestamps; a metric changed by name sends the old metric's print and write-up to history with the superseded section, the new metric taking its admission print as a new node's does and resetting the metric-named date the carry horizon counts from. Two in one run superseding the same node apply in route-priority order, so the node ends on the last.
   - The hypothesis documents are retained as run-level worldview context for the per-candidate thesis document (Step 5g), which carries the section a name expresses.
   - The model proposes hypotheses and names; it neither fetches per-symbol data nor scores them here.
 
@@ -709,7 +710,7 @@ Discovery is stateful: every worthy-but-unpicked name from prior runs is a watch
 - **Movement 1 — the engine refresh (no model)**
   - Every `structured`- and `filing`-class node's print is refreshed at its class's cadence; a failed refresh types that print `unknown`, never a fabricated value.
   - Evidence events are collected per name.
-  - A node whose **carry horizon** has elapsed — a configurable cap counted in the leading metric's own reporting periods (drafted ~4), never runs — retires regardless of the review.
+  - A node whose **carry horizon** has elapsed — a configurable cap counted in the leading metric's own reporting periods (drafted ~4) from the node's metric-named date, never runs — retires regardless of the review.
 
 - **Movement 2 — Call: the watchlist review** (thinking, no tools, no grammar; then a non-thinking transcription — once per DTO run, before route planning, over every live node)
   - Skipped when no node is live: no call over nothing, no review on the audit, and the refresh lane has nothing to select.
@@ -723,7 +724,7 @@ Discovery is stateful: every worthy-but-unpicked name from prior runs is a watch
     - A second message, thinking off, under a grammar, asks for the decisions as the review states them, closing on a placeholder-only return shape: per node id one of `promote` / `keep` / `retire`. The app checks the ids and the enum and nothing else.
   - **What the decisions do**
     - **Promote** — the node enters Step 4 as a priority feeder (flagged *maturing watchlist*), so a maturing thesis is never missed for want of a fresh trigger. Promotion buys only normal Step-4 candidacy; every Step-5 floor, gate, and trigger still binds.
-    - **Keep** — carried forward. Its refresh timestamp advances only on a successful evidence refresh — a served `structured` / `filing` print this run, or a refresh write-up from the lane — never on the review alone; the review's own date is recorded separately.
+    - **Keep** — carried forward. Its refresh timestamp advances only on a successful evidence refresh — a served `structured` / `filing` print this run, or a refresh write-up from the lane, or a supersession of its hypothesis at Step 3b — never on the review alone; the review's own date is recorded separately.
     - **Retire** — removed from active monitoring, kept in history, with the review as its reason.
 
 - **Movement 3 — the research-watchlist refresh lane (`research`-class nodes only; after the Step-3b routes, from the discovery budget they leave)**
@@ -1096,7 +1097,7 @@ The shared research loop (*The research loop*, above), aimed at one candidate. T
   - Terminal consolidation: Step 5e.
 
 - **The agenda (assembled deterministically by the orchestrator)**
-  - **Leading-metric validation** (mandatory anchor) — confirm the leading metric is real, countable, dated, and inflecting from a third-party source; for a metric the feeds never carry, this topic deep-reads the name's own 10-Q / press-release disclosures and the write-up states each period's dated, sourced observation, which the thesis document judges.
+  - **Leading-metric validation** (mandatory anchor) — confirm the leading metric is real, countable, dated, and inflecting from a third-party source — the metric the name arrived with: the hypothesis's named metric for a hypothesis-sourced name, the watchlist node's for a name promoted from the watchlist, the prior thesis document's for a carried name, the archetype's metric family for a screen-surfaced debut; for a metric the feeds never carry, this topic deep-reads the name's own 10-Q / press-release disclosures and the write-up states each period's dated, sourced observation, which the thesis document judges.
   - **Limited-history reconstruction** (conditional — only when Step 5b marked the candidate eligible) — read the identified S-1 / Form 10 / carve-out / predecessor disclosures and third-party operating evidence, recover dated observations, and state for each whether it is directly comparable, requires a disclosed recast, or is only a proxy; never treat a customer / supplier proxy as the issuer's revenue or merge unlike economic perimeters. Nothing it recovers enters the engine's series.
   - **Macro / thematic fit** — which theme the name rides and where it sits on the S-curve (against the Step-3b hypothesis documents), pure-play vs enabler at a margin-capturing, capacity-constrained node, bottom-up TAM (units × price) vs top-down, and the economist's front-running indicators the feeds don't carry (capex commentary, book-to-bill, freight, the cycle, PMIs).
   - **Investor judgment** — the driving narrative and market sentiment (how much of the price is emotion about what might come vs present fundamentals), management quality and capital-allocation behavior (insider buying, buybacks, guidance delivered vs promised, candor in bad quarters), durability of growth, and the pre-consensus tells (thin coverage, low institutional ownership, a variant perception).
@@ -1110,6 +1111,7 @@ The shared research loop (*The research loop*, above), aimed at one candidate. T
 - **Sees (Part 1, the candidate-constant block first, then the topic)**
   - The candidate header with the archetype and the analysis date.
   - FETCHED VALUES — the candidate's fetched data as the providers return it, glossed once and never engine-computed: the profile line (name, exchange, sector, industry); the quarterly statements' headline lines for the latest eight quarters as reported; the annual revenue segments; the forward consensus for the next two fiscal years and the revision snapshot; the last four dividends; the quote with its 52-week range, and the closes on the prior pass's date and three, twelve, and thirty-six months back; the 8-K filings of the trailing twelve months by date and item; the latest short-interest print; the positioning rows; the next earnings date; and the `DGS10` and `DGS2` prints.
+  - HYPOTHESIS — the discovery hypothesis document's section this name expresses, verbatim with its date; for a gate-rejected debut promoted from the watchlist, the node's own text, its prior thesis document; or the surfacing signal for a screen-surfaced name.
   - NEWS LEADS — dated headlines with addresses, fetch candidates only.
   - On a carried name, PRIOR ANALYSIS and PRIOR THESIS — the prior pass's analysis and thesis document verbatim, each with its date and, where a split intervened, its split-context line.
   - PAGES ALREADY RETRIEVED — pages fetched for this candidate earlier in this run, by other topics or earlier passes, in first-retrieval order; held in memory and discarded between candidates. A prior run's page reaches the model only when the model requests its address again and the document cache serves it. Absent on the disconfirming pass, which keeps its contrary search free of automatic page injection.
@@ -1203,7 +1205,7 @@ Two messages in one conversation author the model arm. The reasoner interprets t
   - The candidate header with the archetype and the analysis date, and FETCHED VALUES.
   - COMPUTED — the engine arm in full: its composite and sub-scores (each axis's polarity glossed once, the imputed-score disclosure where it applies, the thin-own-history flag as a data-health note); the value-creation read; its leading-metric series and the family's inflecting read where the family is structured or filing class; its bear / base / bull bands at three months, twelve months, and three years with the `TargetMeta` provenance flags rendered so a low-signal band is weighed, not obeyed; its risk tier and its horizon with the horizon's derived basis; the narrative-vs-reality read; the implied-expectations range beside the bands; the hard-forensic filings read as typed evidence with the rule it matched stated as a fact, and the soft forensic flags as annotations; the price-action confirmer; the positioning and options-activity reads with their stated conventions; the tradability flag and its haircut band; the floor's degraded-input flags as data statements; the Step-2 context loads where they apply — the sector-matched commodity prints, the CBOE backdrop, the COT row for the cyclical sleeve; and on a carried name the since-flagged read.
   - MARKET ANALYSIS — the house view, rendered as a market-level analysis and never named by product.
-  - HYPOTHESIS — the discovery hypothesis document's section this name expresses, verbatim with its date, or the surfacing signal for a screen-surfaced name.
+  - HYPOTHESIS — the discovery hypothesis document's section this name expresses, verbatim with its date; for a gate-rejected debut promoted from the watchlist, the node's own text, its prior thesis document; or the surfacing signal for a screen-surfaced name.
   - ANALYSIS — this run's analysis.
   - On a carried name, REVIEW — this run's review — then PRIOR THESIS verbatim, with any split-context line.
 - **Deliberately absent**
