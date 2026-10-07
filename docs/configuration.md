@@ -137,9 +137,10 @@ Manual import (designed, not built — [schwab-integration.md §Manual import](s
 
 ### Investor Profile
 
-Both local jobs are personalized by an **investor profile**: risk tolerance, time horizon, objective, tax sensitivity, and cash posture.
-It shapes Portfolio Analysis's action ladder — **never the intrinsic verdict**: the engine's grade and bands, and the model's thesis document, conviction and expected prices are **profile-independent**, reached identically for any investor, the profile entering at the per-holding action call only ([portfolio-analysis.md §Intrinsic verdict](portfolio-analysis.md#intrinsic-verdict)) — and Trade Opportunities' entry framing and conviction emphasis (see [trade-opportunities.md](trade-opportunities.md)).
-The profile never changes *which* holdings grade well or *which* opportunities qualify — those are engine and research outputs — only how the prescription is framed for this investor.
+Portfolio Analysis is personalized by an **investor profile**: risk tolerance, time horizon, objective, tax sensitivity, and cash posture.
+It shapes Portfolio Analysis's action ladder — **never the intrinsic verdict**: the engine's grade and bands, and the model's thesis document, conviction and expected prices are **profile-independent**, reached identically for any investor, the profile entering at the per-holding action call only ([portfolio-analysis.md §Intrinsic verdict](portfolio-analysis.md#intrinsic-verdict)).
+It reaches no Trade Opportunities prompt: the opportunity record is a profile-independent read ([trade-opportunities-workflow.md §Step 2](trade-opportunities-workflow.md#step-2-load-shared-context)).
+The profile never changes *which* holdings grade well — those are engine and research outputs — only how the prescription is framed for this investor.
 
 **For now the profile is a fixed default preset, not user-configured** (a configurable profile is deferred).
 Settings surfaces the preset **read-only** — its values are shown so the investor posture shaping every action is visible, but not yet editable.
@@ -150,10 +151,10 @@ The default posture:
 - **objective — maximize profit.**
   Total return is the goal; no income or capital-preservation mandate is imposed.
 - **risk tolerance — medium-to-high.**
-  Higher-risk cells and archetypes (disruptors, commodity cyclicals, smaller caps) are in scope, gated by the engine's forensic/risk discipline rather than by a conservative cap.
+  Higher-risk holdings — smaller caps, loss-makers, cyclicals — are in scope for the add family, gated by the engine's forensic / risk discipline rather than by a conservative cap.
   The preset is represented as the **aggressive** rung of the three-step tolerance scale and renders as "aggressive (medium-to-high)" in the action call's prompt and the read-only Settings block — one shared framing.
 - **cash — always available.**
-  Buying power is treated as **unconstrained**: the user may hold cash in accounts the app can't see, so *add aggressively* and full-size entries are **never** gated on observed Schwab cash.
+  Buying power is treated as **unconstrained**: the user may hold cash in accounts the app can't see, so *add aggressively* is **never** gated on observed Schwab cash.
   (The engine's forensic and risk discipline still applies; only the cash constraint is lifted — whole-book concentration belongs to the future portfolio planner.)
 - **tax sensitivity — no precise modeling.**
   No tax-lot, holding-period, account-type, or marginal-rate calculation is applied to actions — the job never computes a tax harvest.

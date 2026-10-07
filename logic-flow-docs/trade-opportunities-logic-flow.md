@@ -863,7 +863,7 @@ The lens that decides which signals matter for this candidate.
   - The composite's **signal weighting** and the **valuation lens** for 5c–5g: a commodity cyclical is judged on P/B, P/NAV, and mid-cycle EPS with trailing P/E suppressed; an AI-infra name on segment-revenue acceleration and forward P/E against its revision rate; a secular compounder on PEG and revisions-vs-multiple; a disruptor on its leading operating metric rather than EPS; a quality compounder on operating-income decoupling with valuation as a risk gate, not an entry.
   - The **target driver override** on the shared scenario-target function (Step 5c).
   - The **engine horizon rule's Long branch** — a compounder archetype earns Long (Step 5c).
-  - The archetype's **track** at the thesis document — proven economics or emerging economics (Step 5g).
+  - The archetype's **track** at the thesis document — proven economics or emerging economics under the pre-profit qualifier (Step 5c, Step 5g).
   - The **engine risk tier takes no archetype input** — any archetype–tier correlation is emergent through the rule's measurable legs.
 
 - **Output**
@@ -1013,8 +1013,8 @@ Bear, base, and bull prices at three months, twelve months, and three years, pri
 #### Risk tier and horizon (the engine arm's placement legs, assigned here)
 
 - **Risk tier** (rule-derived; no archetype term — the gate's scale and the baseline beside the placement)
-  - **High** if any: market cap < $2B · realized volatility > 40% · debt/equity > 2 · unprofitable · drawdown > 50% · illiquid (thin ADV / high Amihud) · high event exposure.
-  - **Low** if all: market cap > $10B · profitable · debt/equity < 1 · volatility < 25% · liquid.
+  - **High** if any: market cap < $2B · realized volatility > 40% · debt/equity > 2 · negative equity · unprofitable · drawdown > 50% · illiquid (thin ADV / high Amihud) · high event exposure.
+  - **Low** if all: market cap > $10B · profitable · debt/equity in [0, 1) · volatility < 25% · liquid.
   - Otherwise **Medium**.
   - A leg whose input is missing cannot trigger; a candidate whose tier inputs are wholesale missing reads **Medium with a logged tier-input gap** — never a fabricated High or Low.
   - The exact predicates for `illiquid` (the band boundaries from the tradability flag's own inputs) and `high event exposure` are **not yet drafted**.
@@ -1055,8 +1055,9 @@ Runs here, over the same structured data, before any research is spent: every le
   - Source freshness on the floor-bearing inputs, per the basis above.
 
 - **Statement floor, archetype-substituted**
-  - A proven-economics archetype (quality / secular compounder, commodity cyclical): the financial statements (FMP / SEC) — absent, stale, or carrying conflicting identity ⇒ abstain.
-  - An emerging-economics archetype (early disruptor, pre-profit AI-infra): the structured operating rows the feeds carry — the revenue segments, gross profit, and the revision signal — stand in, sufficient to anchor the engine's targets. The substitution is explicit and logged; it relaxes the *form* of the supporting financials, never the leading-metric requirement. The operating metrics only research carries (backlog / bookings, net-adds, cohort retention) reach the model through the write-ups.
+  - The track is the archetype's with a pre-profit qualifier: quality compounder, secular compounder, and commodity cyclical run proven economics; disruptor and AI-infra run emerging economics while TTM operating income on the statement basis is non-positive, and proven economics once it is positive — a trailing read, never a forecast. An unreadable operating income reads emerging on a debut alone; a carried name holds the track its record carries and proceeds under that track's floor. Derived here, persisted on the record, and read as persisted by the cheap re-derivation; the double-over gate leg reads the same track.
+  - A proven-economics archetype: the financial statements (FMP / SEC) — absent, stale, or carrying conflicting identity ⇒ abstain.
+  - An emerging-economics archetype: the structured operating rows the feeds carry — the revenue segments, gross profit, and the revision signal — stand in, sufficient to anchor the engine's targets. The substitution is explicit and logged; it relaxes the *form* of the supporting financials, never the leading-metric requirement. The operating metrics only research carries (backlog / bookings, net-adds, cohort retention) reach the model through the write-ups.
 
 - **Limited-history branch** (an app-eligible `new-listing`, `spin-off-carve-out`, or `new-economic-perimeter` only)
   - The family test is unmeasurable by construction on a post-event series, so the leading-metric leg is **waived**: the metric's inflection is the thesis document's judgment from the reconstruction write-up, never a story-stock hold-out, and the not-inflecting read does not arise.
@@ -1228,7 +1229,7 @@ Two messages in one conversation author the model arm. The reasoner interprets t
   - A request for the values as the document states them — null where it states none — closing on a placeholder-only return shape.
 - **Returns**
   - `risk_tier` (`high` / `medium` / `low`), `horizon` (`short` / `mid` / `long`), `conviction` (`high` / `medium` / `low`), `expected_price_3m`, `expected_price_12m`, `expected_price_3y`, `detection_mode` (`early` / `continuation`), the leading metric's name and `metric_class` (`structured` from the engine's series menu, `filing` from the standardized statement-line menu, else `research`), and on a carried name `status` (`still-valid` / `invalidated`), every field nullable. A debut's grammar carries no status; the app stamps `new`, so an origin-incompatible value is structurally impossible.
-  - The app keeps only the type check: a present enum in its domain, a present price finite and strictly positive, since the accuracy check divides by it, null accepted on every field. An off-domain object is rejected whole and the message reissued once; a second failure fails the run, the candidate resuming from its last checkpoint.
+  - The app keeps only the type check: a present enum in its domain, a present price finite and strictly positive, a value a share price can take, null accepted on every field. An off-domain object is rejected whole and the message reissued once; a second failure fails the run, the candidate resuming from its last checkpoint.
   - Nothing else about the model arm is checked: not the document against the appendix, not the prices against the bands, not the tier or horizon against the engine's.
   - It does not echo any engine value: the engine's targets, sub-scores, tier, horizon, and reads are app-stamped onto the record directly.
   - A null is acted on by presence alone: a null tier, horizon, or carried-name status reissues the thesis-document message once as a failed document (Step 5h); a null twelve-month price leaves the model arm no gate leg (Step 5h); a null conviction orders after low (Step 6); a null price opens no model leg at that horizon (Step 7); a null detection mode or metric shows as none.
@@ -1326,7 +1327,7 @@ The continuity step — an app-layer validator with no model: the rotation picks
 ### The cheap re-derivation (every other live opportunity; engine-only, never archives)
 
 - **Re-derive the engine arm's bands** — the multiples re-anchored closed-form on the fresh `DGS10` against the stored anchor-window percentiles and drivers (Step 5c), from structured data alone.
-- **Re-run the full entry gate on both arms** against the live quote — every recomputable leg live: the refreshed engine tier, fresh `DGS2`, the banded liquidity haircut from live tradability inputs, the emerging leg's **H** re-read from the persisted horizon basis (a transaction close's months-to-date remeasured). The model arm needs **no model call**: its twelve-month expected price is a frozen number from the last deep pass, so the engine re-measures the live price against it exactly as it does its own, a null frozen price reading upside exhaustion on the engine arm alone — and it **does not decay**, since a dated judgment is not a stale prop (its age rides the *Research stale* badge).
+- **Re-run the full entry gate on both arms** against the live quote — every recomputable leg live: the refreshed engine tier, fresh `DGS2`, the banded liquidity haircut from live tradability inputs, the emerging leg's **H** re-read from the persisted horizon basis (a transaction close's months-to-date remeasured) and its track read as persisted from the last deep pass. The model arm needs **no model call**: its twelve-month expected price is a frozen number from the last deep pass, so the engine re-measures the live price against it exactly as it does its own, a null frozen price reading upside exhaustion on the engine arm alone — and it **does not decay**, since a dated judgment is not a stale prop (its age rides the *Research stale* badge).
 - **Re-derive the engine risk tier** from the refreshed inputs — a gate leg and the card's baseline read, never the card's cell, which is the model's frozen placement; a newly disagreeing pair surfaces through the divergence tag.
 - **Refresh the engine-computed fields** — the metric family's continuation state where the family is structured or filing class (a `research`-class anchor has no engine feed and holds its last read), the narrative-vs-reality ratio, the forensic computations on the rider, and the since-flagged read (below).
 - **Raise the attention warning — *Consider Deep Audit* — on any of three high-bar triggers**, and otherwise act on nothing:

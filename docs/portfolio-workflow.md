@@ -358,7 +358,7 @@ It states that a field is `null` where the document states no value.
 
 **Returns.**
 One JSON object under the grammar: `conviction` (`high` / `medium` / `low`) and `expected_price_3m`, `expected_price_12m`, `expected_price_3y`, each field nullable.
-The app keeps only the type check — each present price finite and strictly positive, since the accuracy check divides by it, a present conviction in its enum, `null` accepted on every field — the domain canonical at [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict); an off-domain value re-issues the message once under the adapter's bounded retry ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
+The app keeps only the type check — each present price finite and strictly positive, a value a share price can take, a present conviction in its enum, `null` accepted on every field — the domain canonical at [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict); an off-domain value re-issues the message once under the adapter's bounded retry ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
 A null is acted on by presence alone: a null price opens no model leg at that horizon and a null conviction renders as none ([§Step 7](#step-7-open-episodes-then-persist-run-and-audit)).
 Not asked for on a `role_risk_only` holding.
 

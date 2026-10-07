@@ -125,7 +125,7 @@ On the default roster (a blank fast tier) the two rungs are one budget, and only
 The suite's typed outputs — the thesis document's appendix of conviction and the three expected prices, and the action call's rung and rationale — are **schema-validated JSON objects**, produced with grammar-constrained decoding (Ollama's native `format` schema).
 The research documents — the write-ups, the analysis, the review and the thesis document — are prose and carry no grammar.
 The grammar is the generation constraint, not the application's only validator: a served call can still return an empty or otherwise non-decodable body, so the app parses every typed response and classifies a structural violation at the stage boundary as the bounded-retry `SchemaParse` class.
-The appendix keeps only the type check — each expected price finite and strictly positive, since the accuracy check divides by it — and the action call's rung must be one of its five values with a nonblank rationale.
+The appendix keeps only the type check — each expected price finite and strictly positive, a value a share price can take — and the action call's rung must be one of its five values with a nonblank rationale.
 For a financial pipeline whose persisted records and outcome scoring depend on well-formed prices and actions, deterministic structure is load-bearing wherever structure is asked for — a free-form-JSON parse-and-pray path is not acceptable here.
 
 ## Prompt posture

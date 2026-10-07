@@ -174,8 +174,8 @@ The local suite is **SearXNG-only** ([web-research.md §Tavily fallback](web-res
 | Job | SearXNG down (SearXNG-only — no fallback) |
 |---|---|
 | **Portfolio Analysis** | Web research runs **blind** — the search returns empty/failed and the loop fail-softs to a thinner packet; the analysis leans on FMP / SEC + the deterministic engine. Flagged **not recommended**. |
-| **Trade Opportunities — Discover (DTO)** | **Model-led discovery can't run** *and* per-candidate validation has no fallback → expect a **sparse matrix with insufficient-evidence abstentions**. Flagged **not recommended** — a stronger confirm (the run is proceed-able but the modal advises against it). |
-| **Trade Opportunities — Audit (Deep Audit)** | No discovery lane — only per-candidate **validation** on the user-selected names, which runs **blind** → the selected names get **thinner evidence** (lower-conviction or `insufficient-evidence` re-reads), but no discovery / matrix-breadth effect. Flagged **not recommended**. *(ATO Quick Audit does no web research, so it never reaches this modal.)* |
+| **Trade Opportunities — Discover (DTO)** | **Model-led discovery can't run** *and* per-candidate validation has no fallback → expect a **sparse matrix**: fewer candidates found, and thinner evidence behind the names that are validated (the evidence floor reads structured data alone, so a blind run never abstains on it). Flagged **not recommended** — a stronger confirm (the run is proceed-able but the modal advises against it). |
+| **Trade Opportunities — Audit (Deep Audit)** | No discovery lane — only per-candidate **validation** on the user-selected names, which runs **blind** → the selected names get **thinner evidence** (lower-conviction re-reads — the evidence floor reads structured data alone, so a blind run never abstains on it), but no discovery / matrix-breadth effect. Flagged **not recommended**. *(ATO Quick Audit does no web research, so it never reaches this modal.)* |
 
 Two points hold across the web-research cases.
 First, discovery and validation are both SearXNG-only, so the degradation depends only on whether SearXNG can serve, never on a Tavily credential.

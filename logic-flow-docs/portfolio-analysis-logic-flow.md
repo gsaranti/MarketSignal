@@ -232,7 +232,7 @@
   - No investment data yet.
 
 - **Presence checks** (lock the Run button and raise a persistent warning until fixed)
-  - The Ollama endpoint and the reasoner model id are configured. The embedder is Trade Opportunities' requirement; this job makes no embedding call.
+  - The Ollama endpoint and the reasoner model id are configured. Neither local job makes an embedding call; the roster carries no embedder.
   - Schwab is connected and its seven-day refresh token is still valid.
   - FMP and FRED credentials exist.
   - Each failure has its own warning category: local models not configured, Schwab connection, missing provider credentials. Manual-import holdings never satisfy the Schwab gate.
