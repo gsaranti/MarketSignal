@@ -6,18 +6,18 @@ Engine arm at three horizons — the first *To build* item, not started.
 
 ## What happened
 
-The user's read of `logic-flow-docs/trade-opportunities-logic-flow.md` is complete.
-Three docs rounds landed from it, each Codex-approved and pushed.
-Anchorless `hype` on a carried name is an annotation, never a hard trigger; the model's `still-valid` held against it is the fourth recorded divergence, the narrative divergence — a dated deep-pass snapshot on the record, the audit and the archive row, raising the card's tag; the filing trigger and the debut story-stock hold-out stay (`0d223d3`).
-Every typed-appendix field is nullable in both jobs, null where the document states no value and acted on by presence per field: a null price is recorded and its check scores the engine leg alone; a null twelve-month price leaves the model arm no gate leg; a null tier, horizon or carried-name status is a failed document, the thesis-document message reissued once as a new call under the adapter's once-per-call rule, a second null the shared failure (`7a9e540`).
-The 5h annotations moved out from under the hard-triggers heading (`8d7b843`).
-INDEX gained three rows for these concepts.
-Four TO gaps the read surfaced joined the docs-nits batch, now thirteen.
+The thirteen-item docs-nits batch closed in two commits: batch A, the Portfolio and shared docs (`749754e`), and batch B, the four Trade Opportunities gaps (`a740b4e`).
+One A ruling bears on implementation: the disconfirming pass carries no PAGES ALREADY RETRIEVED block, which the built reuse code already honors.
+Codex caught one real regression in A — the side-reversal badge is live in §Triggering, Step 6, the code and the card — restored, with the rule-demoted-hold badge added beside it.
+B's rulings: graph-fed prompt blocks render only when the graph holds a node, a zero-node watchlist review is skipped with nothing persisted, an inserted outside-view route carries its framing question as its single topic, and the hunt's end is stated in the planning task and the root-pass gathering brief while follow-up and disconfirming passes keep the shared loop's scopes.
+INDEX lost the dead §Outcome learning citation on the net-short row (`9f8bda0`).
+"Card formation" became "hypothesis formation" across the TO docs and the INDEX row (`db9c3e2`), a label only.
 
 ## Current state
 
 Code unchanged since `a9f5037`; nothing of either design is implemented.
-Queued, in order: the docs nits as one batch — thirteen items, listed in auto-memory `logic-flow-rewrite-and-docs-nits.md` (seven from the Portfolio logic-flow read, the three "outcome labels" lines in `docs/portfolio-analysis.md`, four TO gaps: the first-run empty graph in the planning prompt, the zero-node watchlist review, the inserted outside-view route's topic, and the 3b planning and gathering tasks stating that the hunt ends in operators); TO items into `BUILD.md` behind the report items, the removal-sweep item naming both empty vector partitions and the embedder roster field; then planning.
+The user's plan, in order: a big sweep of all the docs, on instructions the user will give next session; then the TO items into `BUILD.md` behind the report items, the removal-sweep item naming both empty vector partitions and the embedder roster field; then planning the engine arm.
+Inputs waiting for the sweep: Step 5d never says whose metric its leading-metric validation topic validates, and its candidate-constant block carries no HYPOTHESIS section; whether a route re-covering an existing hypothesis rewrites that node's metric and class or writes a new section beside it is unspecified; two history clauses remain, configuration.md's "per the 2026-08-05 B7 ruling" and interface.md's "(ruled 2026-08-16, verification/…)".
 Attempt 9 waits behind the whole Portfolio backlog and a dev-store re-wipe; the user names its session.
 
 ## Open questions
@@ -27,6 +27,6 @@ Attempt 9 waits behind the whole Portfolio backlog and a dev-store re-wipe; the 
 ## Where to start
 
 Run `/metis-session-start`.
-Propose the thirteen docs nits as one batch under the usual cadence — propose, go ahead, selector rulings, write, diff review, Codex, commit on the user's word — a design doc or workflow change first, the logic flow and the shared-docs legs following.
+Wait for the user's instructions for the docs sweep; do not start or shape it unprompted.
 Then TO items into `BUILD.md`; then `/metis-plan-task "Engine arm at three horizons"`.
 Never propose the run.
