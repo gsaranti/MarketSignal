@@ -592,7 +592,42 @@ impl QuarterlyCashFlowRow {
     }
 }
 
-/// The forward consensus the v2 driver ladder reads (`analyst-estimates`) — the
+/// One quarterly balance-sheet print (newest first in
+/// [`CompanyFinancials::quarterly_balance_sheet`]). The newest row supplies the
+/// leverage leg, the P/B denominator and the pre-profit runway's liquid-resource
+/// lines (copied onto the financials' flat fields at the pull); the rows behind it
+/// carry the soft forensic flags' year-over-year receivables and inventory
+/// comparator (`docs/portfolio-analysis.md` §Starting parameters). Fetched only
+/// for stocks; the fund surface never pulls statements.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuarterlyBalanceSheetRow {
+    /// Period end, ISO date.
+    pub period_end: String,
+    /// The statement feed's filing date — the canonicalization tie-break when one
+    /// period arrives twice (a restatement): the latest filing wins, never wire
+    /// order.
+    pub filing_date: Option<String>,
+    pub total_debt: Option<f64>,
+    /// Stockholders' (parent-only) equity first, `totalEquity` as the fallback.
+    pub total_equity: Option<f64>,
+    pub cash_and_equivalents: Option<f64>,
+    pub short_term_investments: Option<f64>,
+    /// Net receivables — the working-capital-build flag's first line.
+    pub net_receivables: Option<f64>,
+    /// Inventory — the working-capital-build flag's second line.
+    pub inventory: Option<f64>,
+}
+
+/// The provider's Altman Z and Piotroski F scores (`financial-scores`) — the soft
+/// forensic flags' score inputs, an enriching surface whose absence is a recorded
+/// gap and never a floor (`docs/portfolio-analysis.md` §Evidence floor, §Starting
+/// parameters).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct FinancialScores {
+    pub altman_z: Option<f64>,
+    pub piotroski: Option<f64>,
+}
+
 /// One raw fiscal-period EPS observation behind a rolling consensus read.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConsensusEpsPeriod {
@@ -708,6 +743,13 @@ pub struct CompanyFinancials {
     /// short-term investments`).
     pub cash_and_equivalents: Option<f64>,
     pub short_term_investments: Option<f64>,
+    /// Trailing quarterly balance-sheet prints, newest first — the soft forensic
+    /// flags' year-over-year receivables and inventory comparator; the flat
+    /// lines above are the newest row's ([`QuarterlyBalanceSheetRow`]).
+    pub quarterly_balance_sheet: Vec<QuarterlyBalanceSheetRow>,
+    /// The provider's Altman Z and Piotroski F scores — the soft forensic flags'
+    /// score inputs ([`FinancialScores`]); `None` where the call gapped.
+    pub financial_scores: Option<FinancialScores>,
     /// The forward consensus (nearest coming fiscal year) — the v2 driver ladder.
     pub consensus: Option<ConsensusEstimate>,
     /// Trailing-twelve-month dividends per share — the backward-looking payout
@@ -782,6 +824,12 @@ pub fn canonicalize_statements(fin: &mut CompanyFinancials) {
             .then_with(|| b.filing_date.cmp(&a.filing_date))
     });
     fin.quarterly_cash_flow.dedup_by(|a, b| a.period_end == b.period_end);
+    fin.quarterly_balance_sheet.sort_by(|a, b| {
+        b.period_end
+            .cmp(&a.period_end)
+            .then_with(|| b.filing_date.cmp(&a.filing_date))
+    });
+    fin.quarterly_balance_sheet.dedup_by(|a, b| a.period_end == b.period_end);
 }
 
 /// Whether a run of newest-first quarterly period-ends is **consecutive
@@ -4611,6 +4659,8 @@ mod tests {
             quarterly_cash_flow: vec![],
             cash_and_equivalents: None,
             short_term_investments: None,
+            quarterly_balance_sheet: vec![],
+            financial_scores: None,
             consensus: Some(ConsensusEstimate {
                 period_end: "2027-06-30".into(),
                 eps_low: Some(6.0),

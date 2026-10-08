@@ -1,23 +1,24 @@
 //! The **pre-profit execution / financing overlay** (`docs/portfolio-analysis.md`
-//! §Starting parameters; `docs/portfolio-workflow.md` §Step 6b, §Step 6e). A priced
-//! stock that is not yet operating-profitable — or has no positive forward-EPS
-//! consensus while burning cash — carries a deterministic execution / financing
-//! read: statement-derived runway, margin progression, capital intensity, and
-//! dilution first, then app-validated operating observations research adds.
+//! §Starting parameters; `docs/portfolio-workflow.md` §Step 6b). A priced stock
+//! that is not yet operating-profitable — or has no positive forward-EPS consensus
+//! while burning cash — carries a deterministic financing read from its
+//! statements: runway, margin progression, capital intensity, and dilution.
 //!
 //! The overlay is **conviction / risk / action context only** — never another grade
 //! component, and never a license for the model to calculate a number: the engine
-//! computes attainment, states, and rule consequences; the rule consequences bind
-//! the engine arm (its own rung and feasible set observe them), the model
-//! interpreting the evidence unrestricted, departures annotated.
+//! computes the statement legs, their states, and the rule consequences; the rule
+//! consequences bind the engine arm (its own rung and feasible set observe them),
+//! the model interpreting the evidence unrestricted, departures annotated.
 //!
-//! **Producer status (as-built): active** — the research-loop slice connected the
-//! producer after discharging both recorded obligations: the holding-identity
-//! cross-check and source-text corroboration run per row over the loop's
-//! fetched-page lineage ([`validate_against_source`]), and reported periods
-//! normalize to an ISO end plus an explicit span before the dedup key is taken
-//! ([`normalize_period`]). Distillation emits typed observation rows for an
-//! overlay-eligible stock; an unevidenced call still rejects every candidate.
+//! The **execution read** — the issuer's guidance against its delivered results —
+//! has **no deterministic producer**: the research reports the issuer's operating
+//! observations as dated, sourced prose, the engine computes no attainment from
+//! them, and the execution leg types `unscorable` and enters no conjunction.
+//! Severe deterioration reads from the statement legs alone. The typed
+//! observation rows distillation still emits for an overlay-eligible stock are
+//! validated ([`validate_against_source`], [`normalize_period`]) and carried on
+//! the record as history only — no read derives from them — until the research
+//! chain and the removal sweep retire the channel.
 
 use serde::{Deserialize, Serialize};
 
@@ -32,22 +33,11 @@ use crate::portfolio::engine::CompanyFinancials;
 const RUNWAY_ADEQUATE_MONTHS: f64 = 24.0;
 const RUNWAY_WATCH_MONTHS: f64 = 12.0;
 
-/// A comparable actual is an execution miss only at or beyond this shortfall of the
-/// guidance lower bound — `(bound − actual) ÷ bound ≥ 0.05`; smaller is in-line
-/// noise, not a miss.
-const EXECUTION_MISS_RATIO: f64 = 0.05;
-/// A material single miss: the latest comparable actual at least this far below.
-const MATERIAL_MISS_RATIO: f64 = 0.20;
-
-/// Repeated miss looks at each metric identity's latest four comparable periods…
-const MISS_WINDOW_PERIODS: usize = 4;
 /// The backfill obligation's floor: a previously used guidance metric with fewer
-/// comparable stored periods than this binds a bounded backfill — the miss
-/// window's own depth, since the backfill exists to fill it
+/// comparable stored periods than this binds a bounded backfill — four, the
+/// depth of the comparable-period history the obligation fills
 /// (`docs/portfolio-analysis.md` §Starting parameters).
-const BACKFILL_MIN_COMPARABLE_PERIODS: usize = MISS_WINDOW_PERIODS;
-/// …and needs misses in at least this many distinct periods for that same metric.
-const REPEATED_MISS_PERIODS: usize = 2;
+const BACKFILL_MIN_COMPARABLE_PERIODS: usize = 4;
 
 /// Material dilution: split-adjusted diluted shares up at least 15% year over year.
 const MATERIAL_DILUTION_YOY: f64 = 0.15;
@@ -77,8 +67,12 @@ const ECONOMICS_MARGIN_DROP_PP: f64 = 0.05;
 /// conviction, so a repeated execution miss alone matches no rule and severe
 /// deterioration binds the add-family bar and the exit-family-only rule
 /// alone; a v4 record's `conviction_ceiling` field does not exist on this
-/// shape.
-pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v5";
+/// shape. `pre-profit-v6`: the execution leg types `unscorable` — no producer
+/// derives an attainment read from the observation history — and severe
+/// deterioration reads from the statement legs alone (economics deterioration
+/// plus constrained runway or material dilution), so a v5 record's execution
+/// read and its severe state do not mean what a v6 record's mean.
+pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v6";
 
 /// The cap on a row's quoted source excerpt (drafted): the excerpt is a
 /// locator — the page's own sentence that states the value — never a page,
@@ -531,41 +525,16 @@ pub enum FinancingState {
     Unscorable,
 }
 
-/// One execution miss — a comparable actual at least 5% below its guidance lower
-/// bound, keyed by metric identity and period.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExecutionMiss {
-    pub metric_kind: MetricKind,
-    pub units: String,
-    pub issuer_scope: String,
-    pub period: String,
-    pub period_span: PeriodSpan,
-    /// `(bound − actual) ÷ bound`.
-    pub miss_ratio: f64,
-    /// The ISO date the binding guidance was published — the vintage the
-    /// bound was read from under the guidance vintage policy
-    /// (`docs/portfolio-analysis.md` §Starting parameters), so an audit can
-    /// see which revision a miss was measured against.
-    pub bound_published_at: String,
-    /// The ISO date the selected actual was published.
-    pub actual_published_at: String,
-}
-
-/// The engine's guidance-attainment read over the validated observation history.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ExecutionRead {
-    /// Periods (across identities) where an actual and a finite positive
-    /// higher-is-better guidance bound were comparable under the guidance
-    /// vintage policy (an ex-ante bound, no same-vintage conflict on either
-    /// side).
-    pub comparable_periods: usize,
-    pub misses: Vec<ExecutionMiss>,
-    /// Misses in ≥ 2 distinct periods for one metric identity among its latest four
-    /// comparable periods — metrics never combine, and two missed metrics in one
-    /// period never count as two periods.
-    pub repeated_miss: bool,
-    /// The latest comparable actual for some identity at least 20% below its bound.
-    pub material_single_miss: bool,
+/// The overlay's execution leg — the issuer's guidance against its delivered
+/// results. It has **no deterministic producer** (`docs/portfolio-analysis.md`
+/// §Starting parameters): the research reports the issuer's operating
+/// observations as prose, the engine computes no attainment, so the leg carries
+/// its one state and enters no conjunction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum ExecutionLeg {
+    #[default]
+    Unscorable,
 }
 
 /// The overlay's deterministic rule consequences — separately attributed from the
@@ -598,14 +567,16 @@ pub struct PreProfitOverlay {
     pub eligibility: PreProfitEligibility,
     pub statement_inputs: StatementInputs,
     pub financing_state: FinancingState,
-    pub execution: ExecutionRead,
+    /// The execution leg, `unscorable` on every record — it has no producer.
+    pub execution: ExecutionLeg,
     /// `None` = the margin legs were unscorable.
     pub economics_deterioration: Option<bool>,
     /// `None` = the dilution leg was unscorable.
     pub material_dilution: Option<bool>,
-    /// ≥ 2 independent legs among {repeated-or-material miss, constrained runway,
-    /// economics deterioration, material dilution}, at least one an execution-miss
-    /// or economics leg — financing plus dilution alone cannot manufacture it.
+    /// Economics deterioration plus at least one of constrained runway and
+    /// material dilution — statement legs alone; financing plus dilution without
+    /// the economics leg cannot manufacture it, and the execution leg enters no
+    /// conjunction.
     pub severe_deterioration: bool,
     /// The period-end-and-span-keyed validated observation history.
     pub observations: Vec<PreProfitObservation>,
@@ -625,8 +596,8 @@ impl PreProfitOverlay {
 // ---- Computation -----------------------------------------------------------------
 
 /// Compute the overlay for a priced stock: the statement leg, eligibility, the
-/// observation validation / merge, and — when eligible — the derived states and
-/// rule consequences. This unevidenced form rejects every candidate row (the
+/// observation validation / merge (history only — no read derives from it), and
+/// — when eligible — the derived statement states and rule consequences. This unevidenced form rejects every candidate row (the
 /// Step-6b pass runs it over the carried history alone; live research rows
 /// enter through [`compute_overlay_with_sources`]). `prior` carries the
 /// previous run's overlay so the period-end-and-span-keyed history accumulates
@@ -667,24 +638,18 @@ pub fn compute_overlay_with_sources(
         .unwrap_or_default();
 
     let eligible = matches!(eligibility, PreProfitEligibility::Eligible { .. });
-    let (financing_state, execution, economics_deterioration, material_dilution) = if eligible {
+    let (financing_state, economics_deterioration, material_dilution) = if eligible {
         (
             financing_state(&inputs),
-            execution_read(&observations),
             economics_deterioration(&inputs),
             material_dilution(&inputs),
         )
     } else {
-        (FinancingState::Unscorable, ExecutionRead::default(), None, None)
+        (FinancingState::Unscorable, None, None)
     };
 
     let severe = eligible
-        && severe_deterioration(
-            &execution,
-            financing_state,
-            economics_deterioration,
-            material_dilution,
-        );
+        && severe_deterioration(financing_state, economics_deterioration, material_dilution);
     let consequences = if eligible {
         derive_consequences(financing_state, severe)
     } else {
@@ -695,7 +660,7 @@ pub fn compute_overlay_with_sources(
         eligibility,
         statement_inputs: inputs,
         financing_state,
-        execution,
+        execution: ExecutionLeg::Unscorable,
         economics_deterioration,
         material_dilution,
         severe_deterioration: severe,
@@ -1850,233 +1815,16 @@ fn published_date(published_at: &str) -> Option<chrono::NaiveDate> {
         .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
 }
 
-/// A guidance row as the pairing reads it.
-#[derive(Clone, Copy)]
-struct GuidanceRow {
-    value: f64,
-    range_low: bool,
-    published: chrono::NaiveDate,
-    confidence: f64,
-}
-
-/// An actual as the pairing reads it.
-#[derive(Clone, Copy)]
-struct ActualRow {
-    value: f64,
-    published: chrono::NaiveDate,
-    confidence: f64,
-}
-
-/// The binding guidance for one identity + period under the **guidance
-/// vintage policy** (`docs/portfolio-analysis.md` §Starting parameters): only
-/// an ex-ante row is admissible — published on or before the period end and
-/// strictly before the period's earliest actual, so a results release can
-/// never supply its own bound and a post-period preview never binds — and
-/// among those the **latest revision** binds, a range low over point guidance
-/// at the same date, then the higher confidence. A residual tie between
-/// different values is a conflict and yields nothing: the period is not
-/// comparable rather than bound by persistence order.
-fn select_bound(
-    period_end: chrono::NaiveDate,
-    earliest_actual: chrono::NaiveDate,
-    rows: &[GuidanceRow],
-) -> Option<GuidanceRow> {
-    let mut admissible: Vec<&GuidanceRow> = rows
-        .iter()
-        .filter(|g| g.published <= period_end && g.published < earliest_actual)
-        .collect();
-    admissible.sort_by(|a, b| {
-        b.published
-            .cmp(&a.published)
-            .then_with(|| b.range_low.cmp(&a.range_low))
-            .then_with(|| b.confidence.total_cmp(&a.confidence))
-    });
-    let first = *admissible.first()?;
-    let conflict = admissible
-        .iter()
-        .skip(1)
-        .take_while(|g| {
-            g.published == first.published
-                && g.range_low == first.range_low
-                && g.confidence.total_cmp(&first.confidence).is_eq()
-        })
-        .any(|g| g.value != first.value);
-    (!conflict).then_some(*first)
-}
-
-/// The actual for one identity + period: the highest confidence, then the
-/// latest publication (a restatement over the release it restates); a
-/// residual tie between different values is a conflict and yields nothing.
-fn select_actual(rows: &[ActualRow]) -> Option<ActualRow> {
-    let mut ordered: Vec<&ActualRow> = rows.iter().collect();
-    ordered.sort_by(|a, b| {
-        b.confidence
-            .total_cmp(&a.confidence)
-            .then_with(|| b.published.cmp(&a.published))
-    });
-    let first = *ordered.first()?;
-    let conflict = ordered
-        .iter()
-        .skip(1)
-        .take_while(|a| {
-            a.confidence.total_cmp(&first.confidence).is_eq() && a.published == first.published
-        })
-        .any(|a| a.value != first.value);
-    (!conflict).then_some(*first)
-}
-
-/// The guidance-attainment read: pair actuals against guidance lower bounds per
-/// metric-and-span identity and period end under the guidance vintage policy
-/// ([`select_bound`], [`select_actual`]), compute miss ratios, and derive the
-/// repeated / material states over each identity's latest four comparable
-/// periods.
-pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
-    use std::collections::BTreeMap;
-
-    // identity (including span) → period end → every candidate row:
-    // deterministic iteration via BTreeMap, the selection per period a pure
-    // function of the candidates.
-    // Only higher-is-better rows enter (the rule's polarity guard); the bound
-    // is the stated low for a range, the stated value for point guidance.
-    type Key = ObservationIdentity;
-    let mut bounds: BTreeMap<Key, BTreeMap<String, Vec<GuidanceRow>>> = BTreeMap::new();
-    let mut actuals: BTreeMap<Key, BTreeMap<String, Vec<ActualRow>>> = BTreeMap::new();
-
-    for o in observations {
-        if o.polarity != ObservationPolarity::HigherIsBetter
-            || o.period_span == PeriodSpan::Unknown
-        {
-            continue;
-        }
-        // An undatable row cannot take a vintage, so it never pairs.
-        let Some(published) = published_date(&o.published_at) else {
-            continue;
-        };
-        let key = o.identity();
-        let period = o.period.trim().to_string();
-        match o.observation_role {
-            ObservationRole::GuidanceLow | ObservationRole::PointGuidance => {
-                bounds
-                    .entry(key)
-                    .or_default()
-                    .entry(period)
-                    .or_default()
-                    .push(GuidanceRow {
-                        value: o.numeric_value,
-                        range_low: o.observation_role == ObservationRole::GuidanceLow,
-                        published,
-                        confidence: o.confidence,
-                    });
-            }
-            ObservationRole::Actual => {
-                actuals
-                    .entry(key)
-                    .or_default()
-                    .entry(period)
-                    .or_default()
-                    .push(ActualRow {
-                        value: o.numeric_value,
-                        published,
-                        confidence: o.confidence,
-                    });
-            }
-            ObservationRole::GuidanceHigh | ObservationRole::ContextualLevel => {}
-        }
-    }
-
-    let mut read = ExecutionRead::default();
-    for (key, period_bounds) in &bounds {
-        let Some(period_actuals) = actuals.get(key) else {
-            continue;
-        };
-        // Comparable periods for this identity, newest first — the miss window.
-        let mut comparable: Vec<(&String, GuidanceRow, ActualRow)> = period_bounds
-            .iter()
-            .filter_map(|(period, guidance)| {
-                let reports = period_actuals.get(period)?;
-                // The period end anchors the ex-ante leg; a period that never
-                // normalized (impossible past validation) fails closed here.
-                let period_end = chrono::NaiveDate::parse_from_str(period, "%Y-%m-%d").ok()?;
-                // Ex ante is measured against the FIRST time the actual became
-                // public, not the actual selected — a restatement's later date
-                // must not readmit a release's restated guidance.
-                let earliest_actual = reports.iter().map(|a| a.published).min()?;
-                let actual = select_actual(reports)?;
-                let bound = select_bound(period_end, earliest_actual, guidance)?;
-                (bound.value.is_finite() && bound.value > 0.0).then_some((period, bound, actual))
-            })
-            .collect();
-        comparable.sort_by(|a, b| b.0.cmp(a.0));
-        // Counted before the window truncation: the field's contract is
-        // "periods (across identities) where an actual and a bound were
-        // comparable" — the miss window bounds which periods can *miss*, not
-        // how many were comparable.
-        read.comparable_periods += comparable.len();
-        comparable.truncate(MISS_WINDOW_PERIODS);
-
-        let mut missed_periods = 0usize;
-        for (i, (period, bound, actual)) in comparable.iter().enumerate() {
-            let miss_ratio = (bound.value - actual.value) / bound.value;
-            // Finite legs, unbounded difference and quotient: an overflowed
-            // ratio is no miss — it would persist as `null` on a required
-            // float (Codex I16). The period stays counted as comparable.
-            if !miss_ratio.is_finite() {
-                continue;
-            }
-            if at_least(miss_ratio, EXECUTION_MISS_RATIO) {
-                missed_periods += 1;
-                read.misses.push(ExecutionMiss {
-                    metric_kind: identity_kind(&key.0),
-                    units: key.1.clone(),
-                    issuer_scope: key.2.clone(),
-                    period: (*period).clone(),
-                    period_span: key.3,
-                    miss_ratio,
-                    bound_published_at: bound.published.format("%Y-%m-%d").to_string(),
-                    actual_published_at: actual.published.format("%Y-%m-%d").to_string(),
-                });
-                if i == 0 && at_least(miss_ratio, MATERIAL_MISS_RATIO) {
-                    read.material_single_miss = true;
-                }
-            }
-        }
-        if missed_periods >= REPEATED_MISS_PERIODS {
-            read.repeated_miss = true;
-        }
-    }
-    read
-}
-
-/// Recover the typed kind from an identity key's kebab label (identity keys carry
-/// the kebab string for deterministic BTreeMap ordering).
-fn identity_kind(label: &str) -> MetricKind {
-    match label {
-        "production" => MetricKind::Production,
-        "deliveries" => MetricKind::Deliveries,
-        "bookings" => MetricKind::Bookings,
-        "backlog" => MetricKind::Backlog,
-        "reservations" => MetricKind::Reservations,
-        _ => MetricKind::UnitEconomics,
-    }
-}
-
-/// The conjunctive severe state: ≥ 2 independent legs with at least one
-/// execution-miss or economics leg (financing + dilution alone never suffices).
+/// Severe deterioration, statement legs alone: economics deterioration plus at
+/// least one of constrained runway and material dilution. Financing plus dilution
+/// without the economics leg cannot manufacture it, and the execution leg —
+/// unscorable, having no producer — enters no conjunction.
 fn severe_deterioration(
-    execution: &ExecutionRead,
     financing: FinancingState,
     economics: Option<bool>,
     dilution: Option<bool>,
 ) -> bool {
-    let execution_leg = execution.repeated_miss || execution.material_single_miss;
-    let runway_leg = financing == FinancingState::Constrained;
-    let economics_leg = economics == Some(true);
-    let dilution_leg = dilution == Some(true);
-    let legs = [execution_leg, runway_leg, economics_leg, dilution_leg]
-        .iter()
-        .filter(|l| **l)
-        .count();
-    legs >= 2 && (execution_leg || economics_leg)
+    economics == Some(true) && (financing == FinancingState::Constrained || dilution == Some(true))
 }
 
 /// The deterministic rule consequences (`docs/portfolio-analysis.md` §Starting
@@ -2208,12 +1956,6 @@ mod tests {
 
     /// The candidate re-dated — the vintage tests' one knob.
     fn dated(mut o: ObservationCandidate, published_at: &str) -> ObservationCandidate {
-        o.published_at = published_at.into();
-        o
-    }
-
-    /// An admitted row re-dated — the same knob on a history row.
-    fn redated(mut o: PreProfitObservation, published_at: &str) -> PreProfitObservation {
         o.published_at = published_at.into();
         o
     }
@@ -2379,7 +2121,7 @@ mod tests {
         let overlay = compute_overlay(&fin, None, vec![]);
         assert_eq!(overlay.material_dilution, Some(true));
         assert_eq!(overlay.economics_deterioration, Some(true));
-        // Economics + dilution = two legs incl. an economics leg → severe.
+        // Economics + dilution → severe, statement legs alone.
         assert!(overlay.severe_deterioration);
         assert!(overlay.consequences.bar_add_family);
         assert!(overlay.consequences.exit_family_only);
@@ -2399,6 +2141,79 @@ mod tests {
         // The constrained-runway bar still stands on its own.
         assert!(overlay.consequences.bar_add_family);
         assert!(!overlay.consequences.exit_family_only);
+    }
+
+    /// The economics leg alone: the latest two quarters' margin non-positive and
+    /// 30pp below the preceding two, with healthy runway and shares.
+    fn economics_deteriorated() -> CompanyFinancials {
+        let mut fin = burning_stock();
+        fin.quarterly_income[0].gross_profit = Some(-10.0e6);
+        fin.quarterly_income[1].gross_profit = Some(-10.0e6);
+        fin.quarterly_income[2].gross_profit = Some(20.0e6);
+        fin.quarterly_income[3].gross_profit = Some(20.0e6);
+        fin
+    }
+
+    #[test]
+    fn economics_deterioration_alone_is_not_severe() {
+        let overlay = compute_overlay(&economics_deteriorated(), None, vec![]);
+        assert_eq!(overlay.economics_deterioration, Some(true));
+        assert_eq!(overlay.financing_state, FinancingState::Adequate);
+        assert_eq!(overlay.material_dilution, Some(false));
+        assert!(!overlay.severe_deterioration);
+        assert!(overlay.consequences.matched_rules.is_empty());
+    }
+
+    #[test]
+    fn economics_plus_constrained_runway_is_severe_and_binds_the_exit_family() {
+        let mut fin = economics_deteriorated();
+        fin.cash_and_equivalents = Some(50.0e6); // constrained runway
+        fin.short_term_investments = None;
+        let overlay = compute_overlay(&fin, None, vec![]);
+        assert_eq!(overlay.financing_state, FinancingState::Constrained);
+        assert!(overlay.severe_deterioration);
+        assert!(overlay.consequences.bar_add_family);
+        assert!(overlay.consequences.exit_family_only);
+        assert_eq!(overlay.consequences.matched_rules.len(), 2, "{:?}", overlay.consequences.matched_rules);
+    }
+
+    #[test]
+    fn the_execution_leg_is_unscorable_and_enters_no_conjunction() {
+        // A history that once read as a repeated guidance miss, beside
+        // constrained runway: two legs under the retired rule, none under the
+        // statement-only rule — the leg has no producer and the record says so.
+        let mut fin = burning_stock();
+        fin.cash_and_equivalents = Some(50.0e6);
+        fin.short_term_investments = None;
+        let prior = PreProfitOverlay {
+            observations: vec![
+                admitted(observation(MetricKind::Deliveries, ObservationRole::GuidanceLow, 100.0, "2026-Q2")),
+                admitted(observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q2")),
+                admitted(observation(MetricKind::Deliveries, ObservationRole::GuidanceLow, 100.0, "2026-Q1")),
+                admitted(observation(MetricKind::Deliveries, ObservationRole::Actual, 92.0, "2026-Q1")),
+            ],
+            ..compute_overlay(&fin, None, vec![])
+        };
+        let overlay = compute_overlay(&fin, Some(&prior), vec![]);
+        assert_eq!(overlay.execution, ExecutionLeg::Unscorable);
+        assert_eq!(overlay.observations.len(), 4, "the history still carries");
+        assert_eq!(overlay.financing_state, FinancingState::Constrained);
+        assert!(!overlay.severe_deterioration);
+        assert!(overlay.consequences.bar_add_family, "the runway bar stands alone");
+        assert!(!overlay.consequences.exit_family_only);
+        // The leg's one state is what persists.
+        let json = serde_json::to_value(&overlay).unwrap();
+        assert_eq!(json["execution"], serde_json::json!({ "state": "unscorable" }));
+    }
+
+    #[test]
+    fn the_overlay_stamp_is_pre_profit_v6() {
+        // The statement-only severe rule and the unscorable execution leg change
+        // what a persisted record's severe state means, so the stamp moves and
+        // the resume gate refuses a v5 trail.
+        assert_eq!(PRE_PROFIT_PARAMETER_VERSION, "pre-profit-v6");
+        let overlay = compute_overlay(&burning_stock(), None, vec![]);
+        assert_eq!(overlay.parameter_version, "pre-profit-v6");
     }
 
     #[test]
@@ -2549,8 +2364,7 @@ mod tests {
             );
             assert!(refined.rejected.is_empty(), "{:?}", refined.rejected);
             assert_eq!(refined.observations.len(), 3);
-            assert_eq!(refined.execution.comparable_periods, 1);
-            assert!(refined.execution.misses.is_empty(), "{:?}", refined.execution.misses);
+            assert_eq!(refined.execution, ExecutionLeg::Unscorable);
         }
         // The exact fact re-offered — the same page, date, and value — is
         // still the duplicate the key exists to stop.
@@ -2595,8 +2409,6 @@ mod tests {
         );
         assert!(refined.rejected.is_empty(), "{:?}", refined.rejected);
         assert_eq!(refined.observations.len(), 3);
-        assert_eq!(refined.execution.comparable_periods, 0);
-        assert!(refined.execution.misses.is_empty());
     }
 
     #[test]
@@ -3383,393 +3195,6 @@ mod tests {
         assert!(validate_period_span_label("FY2026", PeriodSpan::Unknown).is_err());
     }
 
-    #[test]
-    fn unlike_period_spans_never_pair_even_when_the_end_date_matches() {
-        let annual_guide = PreProfitObservation {
-            period_span: PeriodSpan::FullYear,
-            ..admitted(observation(
-                MetricKind::Deliveries,
-                ObservationRole::GuidanceLow,
-                500_000.0,
-                "2026-Q4",
-            ))
-        };
-        let q4_actual = admitted(observation(
-            MetricKind::Deliveries,
-            ObservationRole::Actual,
-            140_000.0,
-            "2026-Q4",
-        ));
-        let read = execution_read(&[annual_guide.clone(), q4_actual.clone()]);
-        assert_eq!(read.comparable_periods, 0);
-        assert!(read.misses.is_empty());
-
-        let half_guide = PreProfitObservation {
-            period_span: PeriodSpan::HalfYear,
-            ..annual_guide.clone()
-        };
-        assert_eq!(
-            execution_read(&[half_guide, q4_actual.clone()]).comparable_periods,
-            0
-        );
-
-        let annual_actual = PreProfitObservation {
-            period_span: PeriodSpan::FullYear,
-            ..q4_actual.clone()
-        };
-        let read = execution_read(&[annual_guide.clone(), annual_actual]);
-        assert_eq!(read.comparable_periods, 1);
-        assert_eq!(read.misses.len(), 1);
-        assert_eq!(read.misses[0].period_span, PeriodSpan::FullYear);
-
-        let unknown_actual = PreProfitObservation {
-            period_span: PeriodSpan::Unknown,
-            ..q4_actual
-        };
-        assert_eq!(
-            execution_read(&[annual_guide, unknown_actual]).comparable_periods,
-            0,
-            "an unknown span stays audit context rather than pairing"
-        );
-    }
-
-    /// Guidance/actual pairs across four periods for one identity.
-    fn guided_history(pairs: &[(&str, f64, f64)]) -> Vec<PreProfitObservation> {
-        pairs
-            .iter()
-            .flat_map(|(period, bound, actual)| {
-                vec![
-                    admitted(observation(MetricKind::Deliveries, ObservationRole::GuidanceLow, *bound, period)),
-                    admitted(observation(MetricKind::Deliveries, ObservationRole::Actual, *actual, period)),
-                ]
-            })
-            .collect()
-    }
-
-    #[test]
-    fn an_overflowing_miss_ratio_is_no_miss_and_the_period_stays_comparable() {
-        // Codex I16 (ruled 2026-08-29): finite legs, unbounded quotient — a
-        // vanishing bound beside a large negative actual overflows the ratio,
-        // which would have persisted as `null` on the miss's required float.
-        let history = guided_history(&[("2026-Q2", 1e-300, -1e10)]);
-        let read = execution_read(&history);
-        assert_eq!(read.comparable_periods, 1);
-        assert!(read.misses.is_empty(), "{:?}", read.misses);
-        assert!(!read.material_single_miss);
-        assert!(!read.repeated_miss);
-    }
-
-    #[test]
-    fn miss_rules_five_percent_and_material_twenty() {
-        // Latest period 25% below bound → miss AND material single miss; a 4%
-        // shortfall is in-line noise.
-        let history = guided_history(&[
-            ("2026-Q2", 100.0, 75.0),
-            ("2026-Q1", 100.0, 96.0),
-        ]);
-        let read = execution_read(&history);
-        assert_eq!(read.comparable_periods, 2);
-        assert_eq!(read.misses.len(), 1);
-        assert!((read.misses[0].miss_ratio - 0.25).abs() < 1e-12);
-        assert!(read.material_single_miss);
-        assert!(!read.repeated_miss);
-        // The miss records the vintages it was read from (Codex I4): the
-        // fixture's guidance sits sixty days before the 2026-06-30 period end,
-        // its actual thirty days after.
-        assert_eq!(read.misses[0].period, "2026-06-30");
-        assert_eq!(read.misses[0].bound_published_at, "2026-05-01");
-        assert_eq!(read.misses[0].actual_published_at, "2026-07-30");
-    }
-
-    #[test]
-    fn repeated_miss_needs_two_distinct_periods_same_metric() {
-        let history = guided_history(&[
-            ("2026-Q2", 100.0, 90.0),
-            ("2026-Q1", 100.0, 92.0),
-            ("2025-Q4", 100.0, 99.0),
-        ]);
-        let read = execution_read(&history);
-        assert!(read.repeated_miss);
-        assert!(!read.material_single_miss);
-    }
-
-    #[test]
-    fn two_metrics_missing_in_one_period_never_count_twice() {
-        let mut history = guided_history(&[("2026-Q2", 100.0, 90.0)]);
-        history.extend(vec![
-            admitted(observation(MetricKind::Bookings, ObservationRole::GuidanceLow, 200.0, "2026-Q2")),
-            admitted(observation(MetricKind::Bookings, ObservationRole::Actual, 180.0, "2026-Q2")),
-        ]);
-        let read = execution_read(&history);
-        assert_eq!(read.misses.len(), 2);
-        assert!(!read.repeated_miss, "two metrics in one period are never repeated");
-    }
-
-    #[test]
-    fn miss_window_is_latest_four_comparable_periods() {
-        // Two old misses outside the latest-four window; the window's periods are
-        // all in-line → no repeated miss.
-        let history = guided_history(&[
-            ("2026-Q2", 100.0, 100.0),
-            ("2026-Q1", 100.0, 100.0),
-            ("2025-Q4", 100.0, 100.0),
-            ("2025-Q3", 100.0, 100.0),
-            ("2025-Q2", 100.0, 80.0),
-            ("2025-Q1", 100.0, 80.0),
-        ]);
-        let read = execution_read(&history);
-        assert!(!read.repeated_miss);
-        assert!(read.misses.is_empty());
-        // The field's contract counts every comparable period across identities;
-        // only the MISS rule is window-scoped (a pre-fix truncate capped this
-        // at 4, understating the persisted/prompted count).
-        assert_eq!(read.comparable_periods, 6);
-    }
-
-    #[test]
-    fn point_guidance_is_the_bound_and_range_low_wins() {
-        let mut history = vec![
-            admitted(observation(MetricKind::Deliveries, ObservationRole::PointGuidance, 100.0, "2026-Q2")),
-            admitted(observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q2")),
-        ];
-        let read = execution_read(&history);
-        assert_eq!(read.misses.len(), 1, "point guidance supplies the bound");
-
-        // A stated range low (95) displaces the point bound (100): 90 vs 95 → ~5.3%.
-        history.push(admitted(observation(
-            MetricKind::Deliveries,
-            ObservationRole::GuidanceLow,
-            95.0,
-            "2026-Q2",
-        )));
-        let read = execution_read(&history);
-        assert_eq!(read.misses.len(), 1);
-        assert!((read.misses[0].miss_ratio - (5.0 / 95.0)).abs() < 1e-12);
-    }
-
-    // ---- Guidance vintage (Codex I4) ----
-
-    /// A deliveries row for the 2026-06-30 period, re-dated — the vintage
-    /// tests' one fixture.
-    fn q2(role: ObservationRole, value: f64, published_at: &str) -> PreProfitObservation {
-        admitted(dated(
-            observation(MetricKind::Deliveries, role, value, "2026-06-30"),
-            published_at,
-        ))
-    }
-
-    #[test]
-    fn a_results_release_never_supplies_its_own_guidance() {
-        // The finding's case: a results release restating the period's
-        // guidance beside the actual is dated the same day, so the guidance is
-        // retrospective and the pair never forms — one page can never supply
-        // both sides of its own attainment test.
-        let history = vec![
-            q2(ObservationRole::PointGuidance, 100.0, "2026-07-25"),
-            q2(ObservationRole::Actual, 80.0, "2026-07-25"),
-        ];
-        let read = execution_read(&history);
-        assert_eq!(read.comparable_periods, 0);
-        assert!(read.misses.is_empty());
-        assert!(!read.material_single_miss);
-    }
-
-    #[test]
-    fn the_latest_ex_ante_revision_binds_in_either_order() {
-        // Original guidance 100 in January, revised to 90 in May, actual 88 in
-        // July: the standing guidance at results time binds, so the 2.2%
-        // shortfall is in-line; under the original it would be a 12% miss.
-        let original = q2(ObservationRole::PointGuidance, 100.0, "2026-01-15");
-        let revised = q2(ObservationRole::PointGuidance, 90.0, "2026-05-10");
-        let actual = q2(ObservationRole::Actual, 88.0, "2026-07-25");
-        for history in [
-            vec![original.clone(), revised.clone(), actual.clone()],
-            vec![actual.clone(), revised.clone(), original.clone()],
-        ] {
-            let read = execution_read(&history);
-            assert_eq!(read.comparable_periods, 1);
-            assert!(read.misses.is_empty(), "{:?}", read.misses);
-        }
-        // Without the revision the original binds and the period misses.
-        let read = execution_read(&[original, actual]);
-        assert_eq!(read.misses.len(), 1);
-        assert!((read.misses[0].miss_ratio - 0.12).abs() < 1e-12);
-        assert_eq!(read.misses[0].bound_published_at, "2026-01-15");
-        assert_eq!(read.misses[0].actual_published_at, "2026-07-25");
-    }
-
-    #[test]
-    fn guidance_after_the_period_end_is_a_preview_not_a_promise() {
-        // A post-period pre-announcement typed as guidance never binds; a row
-        // dated on the period end itself is still ex ante.
-        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
-        let preview = q2(ObservationRole::PointGuidance, 100.0, "2026-07-03");
-        let read = execution_read(&[preview, actual.clone()]);
-        assert_eq!(read.comparable_periods, 0);
-        let on_the_end = q2(ObservationRole::PointGuidance, 100.0, "2026-06-30");
-        let read = execution_read(&[on_the_end, actual]);
-        assert_eq!(read.comparable_periods, 1);
-        assert_eq!(read.misses.len(), 1);
-    }
-
-    #[test]
-    fn guidance_dated_on_the_first_actual_is_retrospective_even_under_a_restatement() {
-        // The press release (low confidence) and a later 10-Q restatement
-        // (high confidence, the one selected): guidance dated on the press
-        // release is retrospective against the period's EARLIEST actual, not
-        // the actual selected.
-        let release = PreProfitObservation {
-            confidence: 0.6,
-            ..q2(ObservationRole::Actual, 90.0, "2026-07-25")
-        };
-        let restated = q2(ObservationRole::Actual, 91.0, "2026-08-10");
-        let retrospective = q2(ObservationRole::PointGuidance, 100.0, "2026-07-25");
-        let read = execution_read(&[release.clone(), restated.clone(), retrospective]);
-        assert_eq!(read.comparable_periods, 0);
-        // Ex-ante guidance pairs with the selected (restated) actual.
-        let ex_ante = q2(ObservationRole::PointGuidance, 100.0, "2026-06-01");
-        let read = execution_read(&[release, restated, ex_ante]);
-        assert_eq!(read.comparable_periods, 1);
-        assert_eq!(read.misses.len(), 1);
-        assert!((read.misses[0].miss_ratio - 0.09).abs() < 1e-12);
-        assert_eq!(read.misses[0].bound_published_at, "2026-06-01");
-        assert_eq!(read.misses[0].actual_published_at, "2026-08-10");
-    }
-
-    #[test]
-    fn vintage_beats_role_and_range_low_wins_only_at_the_same_date() {
-        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
-        let range_low = q2(ObservationRole::GuidanceLow, 95.0, "2026-05-01");
-        let point = q2(ObservationRole::PointGuidance, 100.0, "2026-05-01");
-        let read = execution_read(&[point.clone(), range_low.clone(), actual.clone()]);
-        assert!(
-            (read.misses[0].miss_ratio - (5.0 / 95.0)).abs() < 1e-12,
-            "range low over point at one date"
-        );
-        // A later point guidance displaces the earlier range low.
-        let later_point = q2(ObservationRole::PointGuidance, 98.0, "2026-06-01");
-        let read = execution_read(&[point, range_low, later_point, actual]);
-        assert!(
-            (read.misses[0].miss_ratio - (8.0 / 98.0)).abs() < 1e-12,
-            "{:?}",
-            read.misses
-        );
-        assert_eq!(read.misses[0].bound_published_at, "2026-06-01");
-    }
-
-    #[test]
-    fn a_same_vintage_conflict_makes_the_period_not_comparable_on_either_side() {
-        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
-        let guide = |value: f64, confidence: f64| PreProfitObservation {
-            confidence,
-            ..q2(ObservationRole::PointGuidance, value, "2026-05-01")
-        };
-        // Same date, role, and confidence with different values: a conflict.
-        let read = execution_read(&[guide(100.0, 0.9), guide(110.0, 0.9), actual.clone()]);
-        assert_eq!(read.comparable_periods, 0);
-        // The same value twice (two sources) is no conflict.
-        let read = execution_read(&[guide(100.0, 0.9), guide(100.0, 0.9), actual.clone()]);
-        assert_eq!(read.comparable_periods, 1);
-        // Confidence breaks the tie before it becomes a conflict.
-        let read = execution_read(&[guide(100.0, 0.9), guide(110.0, 0.8), actual.clone()]);
-        assert_eq!(read.comparable_periods, 1);
-        assert!((read.misses[0].miss_ratio - 0.10).abs() < 1e-12);
-        // The actual side under the same rule.
-        let guidance = guide(100.0, 0.9);
-        let report = |value: f64| q2(ObservationRole::Actual, value, "2026-07-25");
-        let read = execution_read(&[guidance.clone(), report(90.0), report(95.0)]);
-        assert_eq!(read.comparable_periods, 0);
-        let read = execution_read(&[guidance, report(90.0), report(90.0)]);
-        assert_eq!(read.comparable_periods, 1);
-    }
-
-    #[test]
-    fn publication_dates_compare_as_dates_never_as_strings() {
-        // A timestamp form on the period end is still on the period end; two
-        // actuals on one day in two forms tie on the date (and conflict on
-        // value) rather than the longer string winning.
-        let guidance = q2(ObservationRole::PointGuidance, 100.0, "2026-06-30T23:00:00Z");
-        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
-        let read = execution_read(&[guidance.clone(), actual.clone()]);
-        assert_eq!(read.comparable_periods, 1);
-        assert_eq!(read.misses[0].bound_published_at, "2026-06-30");
-        let timestamped = q2(ObservationRole::Actual, 95.0, "2026-07-25T09:00:00Z");
-        let read = execution_read(&[guidance, actual, timestamped]);
-        assert_eq!(
-            read.comparable_periods,
-            0,
-            "a same-day value conflict, never a string order"
-        );
-    }
-
-    #[test]
-    fn an_undatable_row_or_period_never_pairs_and_never_panics() {
-        let actual = q2(ObservationRole::Actual, 90.0, "2026-07-25");
-        let guidance = q2(ObservationRole::PointGuidance, 100.0, "2026-05-01");
-        let read = execution_read(&[redated(guidance.clone(), "recently"), actual.clone()]);
-        assert_eq!(read.comparable_periods, 0);
-        let read = execution_read(&[guidance.clone(), redated(actual.clone(), "recently")]);
-        assert_eq!(read.comparable_periods, 0);
-        // A period that never normalized (impossible past validation) cannot
-        // anchor the period-end leg, so the pair fails closed.
-        let prose = |mut o: PreProfitObservation| {
-            o.period = "thirteen weeks ended".into();
-            o
-        };
-        let read = execution_read(&[prose(guidance), prose(actual)]);
-        assert_eq!(read.comparable_periods, 0);
-    }
-
-    #[test]
-    fn the_overlay_stamp_is_pre_profit_v5() {
-        // The conviction ceilings' retirement changes what a persisted overlay
-        // record's consequences mean, so the stamp moves and the resume gate
-        // refuses a v4 trail (v4: span-aware comparison, refusing v3).
-        assert_eq!(PRE_PROFIT_PARAMETER_VERSION, "pre-profit-v5");
-        let overlay = compute_overlay(&burning_stock(), None, vec![]);
-        assert_eq!(overlay.parameter_version, "pre-profit-v5");
-    }
-
-    #[test]
-    fn lower_is_better_rows_never_enter_the_miss_rule() {
-        let mut o = admitted(observation(MetricKind::UnitEconomics, ObservationRole::GuidanceLow, 100.0, "2026-Q2"));
-        o.polarity = ObservationPolarity::LowerIsBetter;
-        let mut a = admitted(observation(MetricKind::UnitEconomics, ObservationRole::Actual, 150.0, "2026-Q2"));
-        a.polarity = ObservationPolarity::LowerIsBetter;
-        let read = execution_read(&[o, a]);
-        assert_eq!(read.comparable_periods, 0);
-        assert!(read.misses.is_empty());
-    }
-
-    #[test]
-    fn repeated_miss_binds_nothing_alone_and_severe_needs_a_second_leg() {
-        let mut fin = burning_stock();
-        // Healthy margins and shares; adequate runway → repeated miss alone.
-        let history = guided_history(&[
-            ("2026-Q2", 100.0, 90.0),
-            ("2026-Q1", 100.0, 92.0),
-        ]);
-        let prior = PreProfitOverlay {
-            observations: history,
-            ..compute_overlay(&fin, None, vec![])
-        };
-        let overlay = compute_overlay(&fin, Some(&prior), vec![]);
-        assert!(overlay.execution.repeated_miss);
-        // A repeated miss alone binds nothing: the engine caps no conviction.
-        assert!(overlay.consequences.matched_rules.is_empty());
-        assert!(!overlay.consequences.bar_add_family);
-        assert!(!overlay.severe_deterioration);
-
-        // Add constrained runway → second leg beside the execution leg → severe,
-        // and the exit-family rule binds the engine's own rung.
-        fin.cash_and_equivalents = Some(50.0e6);
-        fin.short_term_investments = None;
-        let overlay = compute_overlay(&fin, Some(&prior), vec![]);
-        assert!(overlay.severe_deterioration);
-        assert!(overlay.consequences.bar_add_family);
-        assert!(overlay.consequences.exit_family_only);
-    }
-
     // ---- History carry ----
 
     #[test]
@@ -3839,6 +3264,20 @@ mod tests {
         let second = compute_overlay(&fin, Some(&first), vec![]);
         assert_eq!(second.eligibility, PreProfitEligibility::NotEligible);
         assert_eq!(second.observations.len(), 1);
+    }
+
+    /// Guidance/actual pairs across periods for one identity — the stored
+    /// history the backfill obligation counts.
+    fn guided_history(pairs: &[(&str, f64, f64)]) -> Vec<PreProfitObservation> {
+        pairs
+            .iter()
+            .flat_map(|(period, bound, actual)| {
+                vec![
+                    admitted(observation(MetricKind::Deliveries, ObservationRole::GuidanceLow, *bound, period)),
+                    admitted(observation(MetricKind::Deliveries, ObservationRole::Actual, *actual, period)),
+                ]
+            })
+            .collect()
     }
 
     #[test]
@@ -4003,12 +3442,6 @@ mod tests {
             (overlay.statement_inputs.diluted_share_change_yoy.unwrap() - 0.15).abs() < 1e-9
         );
         assert_eq!(overlay.material_dilution, Some(true));
-
-        // A miss exactly at the 20% material boundary: (9 − 7.2) ÷ 9 rounds just
-        // below 0.20 — still material.
-        let history = guided_history(&[("2026-Q2", 9.0, 7.2)]);
-        let read = execution_read(&history);
-        assert!(read.material_single_miss, "{:?}", read.misses);
     }
 
     // ---- Serde stability ----

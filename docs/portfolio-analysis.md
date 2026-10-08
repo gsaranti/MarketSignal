@@ -517,6 +517,11 @@ They are recorded here so the spec matches the engine, not to pin them.
   A restatement or auditor change surfacing **between runs** arrives as a material filing through the evidence-event list below (a quiet badge) — the quick check never rewrites verdicts, so the outcome lands at the next full or selective pass.
   A **fraud allegation has no filing leg**: it reaches the model only through the research write-ups and the analysis, as prose it weighs, and never trips the state — a stated boundary, never a silent clear.
   The **soft forensic flags** — **Altman Z < 1.8**, **Piotroski ≤ 3**, **net income > 1.3× operating cash flow**, **receivables / inventory growth > 1.5× revenue growth** (year-over-year on the latest quarter, a drafted basis) — are computed from `financial-scores` and the statements and render as evidence the same way.
+  The net-income test reads both lines on the **TTM basis**: four contiguous quarterly prints per statement, the income and cash-flow windows aligned on one newest period end.
+  Against zero or negative operating cash flow, net income fires when it exceeds the cash flow at all, since 1.3× a negative cash flow sits below it.
+  The working-capital test compares each line's year-over-year growth with revenue growth; against zero or negative revenue growth a line fires on any growth at all, since 1.5× a negative growth sits below it.
+  A line that was zero a year ago contributes no leg, and the flag reads on the other line.
+  A missing input types the flag **unevaluable**, naming the input, never clear.
   These move the model's read of conviction and risk, **never the letter grade**.
 - **Implied-expectations read.**
   The engine inverts its scenario math at the live price into the growth / margin trajectory the price *already assumes* — under the v2 function, the driver growth the spot implies at each scenario multiple `M_bear … M_bull`, a closed-form **range under stated assumptions** rather than one solved number (the margin dimension read where the ladder's driver is revenue-based; the shared primitive Trade Opportunities computes at Step 5c — [trade-opportunities-workflow.md §Step 5c](trade-opportunities-workflow.md#step-5c-deterministic-analysis-archetype-weighted-engine)) — computed per holding and fed to the thesis-document message beside the bands.

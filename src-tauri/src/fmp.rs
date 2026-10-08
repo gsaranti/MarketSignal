@@ -1783,12 +1783,14 @@ impl FmpDataSource {
     /// The full **stock** per-symbol surface: the quote + EOD core plus the v2
     /// target surface — quarterly income prints (the anchor window's trailing
     /// driver source and the TTM statement basis), quarterly cash-flow prints (the
-    /// pre-profit overlay's burn / runway / capex legs), the latest balance sheet
-    /// (the leverage leg, the P/B denominator, and the runway's liquid-resource
-    /// lines), the forward consensus (the driver ladder), and the trailing
-    /// dividends (the total-return leg). Each fail-soft with a tagged gap; a
-    /// missing consensus later abstains the holding under the named
-    /// `no-admissible-driver` floor reason rather than failing here.
+    /// pre-profit overlay's burn / runway / capex legs), the quarterly balance
+    /// sheets (the newest for the leverage leg, the P/B denominator and the
+    /// runway's liquid-resource lines; the year-ago row for the soft forensic
+    /// flags' receivables and inventory comparator), the Altman Z and Piotroski
+    /// scores (the flags' score inputs), the forward consensus (the driver
+    /// ladder), and the trailing dividends (the total-return leg). Each fail-soft
+    /// with a tagged gap; a missing consensus later abstains the holding under
+    /// the named `no-admissible-driver` floor reason rather than failing here.
     pub fn fetch_company_financials(
         &self,
         symbol: &str,
@@ -1798,11 +1800,14 @@ impl FmpDataSource {
             self.fetch_quarterly_income(symbol, &mut fin.gaps, &mut fin.unit_issues);
         fin.quarterly_cash_flow =
             self.fetch_quarterly_cash_flow(symbol, &mut fin.gaps, &mut fin.unit_issues);
-        let balance = self.fetch_balance_sheet(symbol, &mut fin.gaps, &mut fin.unit_issues);
+        fin.quarterly_balance_sheet =
+            self.fetch_balance_sheet(symbol, &mut fin.gaps, &mut fin.unit_issues);
+        let balance = BalanceSheetLines::from_newest(&fin.quarterly_balance_sheet);
         fin.total_debt = balance.total_debt;
         fin.total_equity = balance.total_equity;
         fin.cash_and_equivalents = balance.cash_and_equivalents;
         fin.short_term_investments = balance.short_term_investments;
+        fin.financial_scores = self.fetch_financial_scores(symbol, &mut fin.gaps);
         fin.consensus = self.fetch_analyst_estimates(symbol, &mut fin.gaps);
         fin.ttm_dividends_per_share = self.fetch_ttm_dividends(symbol, &mut fin.gaps);
         fin
@@ -2532,7 +2537,9 @@ mod tests {
         let server = MockHttp::serve(vec![
             // 1) fetch_quarterly_income: valid JSON, wrong shape.
             Canned::Reply { status: 200, headers: vec![], body: r#"{"unexpected":"shape"}"# },
-            // 2) fetch_balance_sheet: a parsed row with no usable lines.
+            // 2) fetch_balance_sheet: a served row with no reportedCurrency — the
+            //    unit gate rejects the surface before any row is read (empty with
+            //    the currency cause on the row).
             Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
             // 3-6) fetch_fund_data: fieldless info, drifted profile, drifted
             // sectors, empty countries.
@@ -2556,8 +2563,9 @@ mod tests {
             gaps.iter().any(|g| g.contains("were malformed")),
             "the gap names the drift, not emptiness: {gaps:?}"
         );
-        let lines = source.fetch_balance_sheet("AAPL", &mut gaps, &mut vec![]);
-        assert_eq!(lines, BalanceSheetLines::default());
+        assert!(source
+            .fetch_balance_sheet("AAPL", &mut gaps, &mut vec![])
+            .is_empty());
         let fund = source.fetch_fund_data("SPY");
         assert!(
             fund.gaps.iter().any(|g| g.contains("were malformed")),
@@ -2604,7 +2612,11 @@ mod tests {
             income.2.as_deref().is_some_and(|d| d.contains("non-array")),
             "the cause reaches the row: {income:?}"
         );
-        expect_status("company-balance", "empty");
+        let balance = expect_status("company-balance", "empty");
+        assert!(
+            balance.2.as_deref().is_some_and(|d| d.contains("not verified USD")),
+            "the cause reaches the row: {balance:?}"
+        );
         expect_status("fund-info", "empty");
         expect_status("fund-profile", "malformed");
         let sectors = expect_status("fund-sectors", "malformed");
@@ -3058,7 +3070,12 @@ mod tests {
                 status: 200,
                 headers: vec![],
                 body: r#"[{"reportedCurrency":"USD","date":"2026-03-31","totalDebt":110.0e9,"totalStockholdersEquity":62.0e9,"totalEquity":63.0e9,
-                           "cashAndCashEquivalents":30.0e9,"shortTermInvestments":32.0e9}]"#,
+                           "cashAndCashEquivalents":30.0e9,"shortTermInvestments":32.0e9,"netReceivables":60.0e9,"inventory":7.0e9}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","altmanZScore":9.32,"piotroskiScore":8}]"#,
             },
             Canned::Reply {
                 status: 200,
@@ -3097,6 +3114,15 @@ mod tests {
         assert_eq!(fin.total_equity, Some(62.0e9));
         assert_eq!(fin.cash_and_equivalents, Some(30.0e9));
         assert_eq!(fin.short_term_investments, Some(32.0e9));
+        // The rows ride beside the flat lines (the soft forensic flags' comparator),
+        // and the scores parse into their pair.
+        assert_eq!(fin.quarterly_balance_sheet.len(), 1);
+        assert_eq!(fin.quarterly_balance_sheet[0].net_receivables, Some(60.0e9));
+        assert_eq!(fin.quarterly_balance_sheet[0].inventory, Some(7.0e9));
+        assert_eq!(
+            fin.financial_scores,
+            Some(crate::portfolio::engine::FinancialScores { altman_z: Some(9.32), piotroski: Some(8.0) })
+        );
         assert_eq!(fin.consensus.as_ref().unwrap().eps_mid, Some(6.5));
         assert_eq!(fin.ttm_dividends_per_share, Some(0.26));
         assert!(fin.gaps.is_empty(), "a clean pull records no gap: {:?}", fin.gaps);
@@ -3108,6 +3134,7 @@ mod tests {
                 "/income-statement",
                 "/cash-flow-statement",
                 "/balance-sheet-statement",
+                "/financial-scores",
                 "/analyst-estimates",
                 "/dividends"
             ]
@@ -3260,9 +3287,10 @@ mod tests {
         let fin = test_source(&server.base_url).fetch_company_financials("AAPL");
         assert!(fin.current_price.is_none());
         assert!(fin.price_history.is_empty());
-        // Seven endpoints, seven tagged gaps — the v2-surface calls and the
-        // pre-profit cash-flow leg degrade the same way the quote and EOD do.
-        assert_eq!(fin.gaps.len(), 7, "seven failed pulls, seven gaps: {:?}", fin.gaps);
+        // Eight endpoints, eight tagged gaps — the v2-surface calls, the
+        // pre-profit cash-flow leg and the financial-scores leg degrade the same
+        // way the quote and EOD do.
+        assert_eq!(fin.gaps.len(), 8, "eight failed pulls, eight gaps: {:?}", fin.gaps);
     }
 
     #[test]
@@ -4075,7 +4103,11 @@ mod tests {
             let mut gaps = vec![];
             fin.quarterly_income =
                 src.fetch_quarterly_income(&v.symbol, &mut gaps, &mut fin.unit_issues);
-            let balance = src.fetch_balance_sheet(&v.symbol, &mut gaps, &mut fin.unit_issues);
+            let balance = BalanceSheetLines::from_newest(&src.fetch_balance_sheet(
+                &v.symbol,
+                &mut gaps,
+                &mut fin.unit_issues,
+            ));
             fin.total_debt = balance.total_debt;
             fin.total_equity = balance.total_equity;
             calls += 3;
@@ -4869,6 +4901,9 @@ const FMP_BALANCE_SHEET_PATH: &str = "/balance-sheet-statement";
 /// capex source (`docs/portfolio-analysis.md` §Starting parameters); stock surface
 /// only, like the other statements.
 const FMP_CASH_FLOW_PATH: &str = "/cash-flow-statement";
+/// Altman Z + Piotroski (`financial-scores`) — the soft forensic flags' score
+/// inputs (`docs/portfolio-analysis.md` §Starting parameters); stock surface only.
+const FMP_FINANCIAL_SCORES_PATH: &str = "/financial-scores";
 const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
 /// Estimates page size — must exceed the served forward-year count (~5–6 today)
 /// with margin, since the endpoint pages farthest-future-first and a too-small
@@ -4921,6 +4956,12 @@ const INCOME_QUARTERS_LIMIT: &str = "16";
 /// Quarters of cash-flow history requested — the pre-profit TTM window (4) plus a
 /// year of slack so a missing newest print doesn't strand the sum.
 const CASH_FLOW_QUARTERS_LIMIT: &str = "8";
+
+/// Quarters of balance-sheet history requested — the newest print (the leverage
+/// leg, the P/B denominator and the runway's liquid-resource lines) plus the four
+/// behind it, so the soft forensic flags' year-over-year receivables and
+/// inventory comparator sits at index 4 under the contiguity gate.
+const BALANCE_SHEET_QUARTERS_LIMIT: &str = "5";
 
 /// The tracker-row status a suite fetch's *parse* earned. HTTP-level gaps
 /// never reach this enum — they keep the `GapReason` kebab vocabulary on the
@@ -5129,54 +5170,101 @@ impl FmpDataSource {
     /// (`totalDebt` / equity) and the P/B denominator, FMP-first with the SEC annual
     /// equity as fallback (`docs/portfolio-analysis.md` §Starting parameters — the
     /// grade-band slice's F5 closure; before it, `total_debt` had no source at all and
-    /// the risk read rested on volatility alone). Fail-soft: a gap leaves both `None`
+    /// the risk read rested on volatility alone). The rows behind the newest one
+    /// carry the soft forensic flags' year-over-year receivables and inventory
+    /// comparator; the newest row's lines are read off the rows by
+    /// [`BalanceSheetLines::from_newest`]. Fail-soft: a gap leaves the list empty
     /// with a tagged reason.
     pub fn fetch_balance_sheet(
         &self,
         symbol: &str,
         gaps: &mut Vec<String>,
         unit_issues: &mut Vec<crate::portfolio::engine::StatementUnitIssue>,
-    ) -> BalanceSheetLines {
+    ) -> Vec<crate::portfolio::engine::QuarterlyBalanceSheetRow> {
         match self.suite_get_shaped(
             "company-balance",
             symbol,
             "Balance sheet",
             FMP_BALANCE_SHEET_PATH,
-            &[("symbol", symbol), ("period", "quarter"), ("limit", "1")],
+            &[
+                ("symbol", symbol),
+                ("period", "quarter"),
+                ("limit", BALANCE_SHEET_QUARTERS_LIMIT),
+            ],
+            // Both drift checks (non-array body; served array with no readable
+            // row) — see fetch_quarterly_income.
             |value| {
+                let Some(body) = value.as_array() else {
+                    gaps.push("FMP balance sheet was empty or malformed".to_string());
+                    return Shaped::malformed(vec![])
+                        .with_detail("body was not the expected array shape — malformed or drifted response");
+                };
                 if let Some(issue) = statement_unit_issue(value, "balance sheet") {
                     let detail = issue.to_string();
                     gaps.push(detail.clone());
                     unit_issues.push(issue);
-                    return Shaped::empty(BalanceSheetLines::default()).with_detail(detail);
+                    return Shaped::empty(vec![]).with_detail(detail);
                 }
-                match balance_sheet_from_value(value) {
-                    // A parsed row whose four lines are all absent (`[{}]`) is no
-                    // usable data — the row must not read ok on parse alone.
-                    Some(lines) if lines != BalanceSheetLines::default() => Shaped::ok(lines),
-                    Some(lines) => {
+                match quarterly_balance_sheet_from_value(value) {
+                    rows if !rows.is_empty() => Shaped::ok(rows),
+                    rows if body.is_empty() => {
                         gaps.push("FMP balance sheet was empty or malformed".to_string());
-                        Shaped::empty(lines)
+                        Shaped::empty(rows)
                     }
-                    None => {
+                    rows => {
                         gaps.push("FMP balance sheet was empty or malformed".to_string());
-                        // The parser folds both causes into `None`; the row splits
-                        // them honestly — a served-but-empty array is `empty`, an
-                        // unreadable body `malformed` with its cause.
-                        if value.as_array().is_some_and(|a| a.is_empty()) {
-                            Shaped::empty(BalanceSheetLines::default())
-                        } else {
-                            Shaped::malformed(BalanceSheetLines::default())
-                                .with_detail("body was not the expected array shape — malformed or drifted response")
-                        }
+                        Shaped::malformed(rows)
+                            .with_detail("no served row was readable — malformed or drifted response")
                     }
                 }
             },
         ) {
-            Ok(lines) => lines,
+            Ok(rows) => rows,
             Err(reason) => {
                 gaps.push(format!("FMP balance sheet unavailable ({})", reason.as_str()));
-                BalanceSheetLines::default()
+                vec![]
+            }
+        }
+    }
+
+    /// Altman Z + Piotroski (`financial-scores`) — the soft forensic flags' score
+    /// inputs (`docs/portfolio-analysis.md` §Starting parameters). Fail-soft to
+    /// `None` with a tagged gap; a served row carrying neither score is no usable
+    /// data, so the flags read unevaluable rather than clear.
+    pub fn fetch_financial_scores(
+        &self,
+        symbol: &str,
+        gaps: &mut Vec<String>,
+    ) -> Option<crate::portfolio::engine::FinancialScores> {
+        use crate::portfolio::engine::FinancialScores;
+        match self.suite_get_shaped(
+            "company-scores",
+            symbol,
+            "Financial scores",
+            FMP_FINANCIAL_SCORES_PATH,
+            &[("symbol", symbol)],
+            |value| match financial_scores_from_value(value) {
+                Some(scores) if scores != FinancialScores::default() => Shaped::ok(Some(scores)),
+                Some(_) => {
+                    gaps.push("FMP financial scores were empty or malformed".to_string());
+                    Shaped::empty(None)
+                }
+                None => {
+                    gaps.push("FMP financial scores were empty or malformed".to_string());
+                    if value.as_array().is_some_and(|a| a.is_empty()) {
+                        Shaped::empty(None)
+                    } else {
+                        Shaped::malformed(None).with_detail(
+                            "body was not the expected array shape — malformed or drifted response",
+                        )
+                    }
+                }
+            },
+        ) {
+            Ok(scores) => scores,
+            Err(reason) => {
+                gaps.push(format!("FMP financial scores unavailable ({})", reason.as_str()));
+                None
             }
         }
     }
@@ -6038,15 +6126,44 @@ impl FmpDataSource {
     }
 }
 
-/// The balance-sheet lines the per-holding pull consumes (`fetch_balance_sheet`):
-/// the leverage / P/B legs plus the pre-profit runway numerator's liquid-resource
-/// lines (`docs/portfolio-analysis.md` §Starting parameters).
+/// The balance-sheet lines the single-row consumers read off the newest quarterly
+/// print ([`BalanceSheetLines::from_newest`]): the leverage / P/B legs plus the
+/// pre-profit runway numerator's liquid-resource lines (`docs/portfolio-analysis.md`
+/// §Starting parameters). The rows themselves ride
+/// `CompanyFinancials::quarterly_balance_sheet` for the soft forensic flags'
+/// year-over-year comparator.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BalanceSheetLines {
     pub total_debt: Option<f64>,
     pub total_equity: Option<f64>,
     pub cash_and_equivalents: Option<f64>,
     pub short_term_investments: Option<f64>,
+}
+
+impl BalanceSheetLines {
+    /// The lines off the newest row by period end — the latest filing winning a
+    /// duplicated period, and an equal-date conflict keeping the FIRST-served
+    /// row — exactly the row `engine::canonicalize_statements` retains (its
+    /// stable descending sort plus first-wins dedup), so the flat lines and the
+    /// retained row can never come from different prints. Every line `None` on
+    /// an empty list.
+    pub fn from_newest(rows: &[crate::portfolio::engine::QuarterlyBalanceSheetRow]) -> Self {
+        // `min_by` under the canonicalization's descending comparator returns
+        // the first of equal rows, where `max_by` would return the last.
+        rows.iter()
+            .min_by(|a, b| {
+                b.period_end
+                    .cmp(&a.period_end)
+                    .then_with(|| b.filing_date.cmp(&a.filing_date))
+            })
+            .map(|r| Self {
+                total_debt: r.total_debt,
+                total_equity: r.total_equity,
+                cash_and_equivalents: r.cash_and_equivalents,
+                short_term_investments: r.short_term_investments,
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// One per-symbol earnings row (`fetch_symbol_earnings`) — the announcement date and
@@ -6163,27 +6280,69 @@ fn statement_unit_issue(
     })
 }
 
-/// Shape an FMP `/balance-sheet-statement` array body into [`BalanceSheetLines`] from
-/// its newest row. `None` only when the body is not the expected non-empty array;
-/// individual missing lines stay `None`. Equity prefers `totalStockholdersEquity`
-/// (the parent-only line P/B conventionally reads) over `totalEquity` (which folds in
-/// minority interest). Pure, so the contract is unit-testable offline.
-fn balance_sheet_from_value(value: &Value) -> Option<BalanceSheetLines> {
+/// Shape quarterly `/balance-sheet-statement` rows (newest first). A row without a
+/// datable period date is unreadable and skipped, and the period and filing
+/// dates are stored as their CANONICAL fixed-width ISO render
+/// ([`canonical_date`]) — the statement family's rule, so the newest-first sort
+/// and the restatement tie-break (`engine::canonicalize_statements`) stay
+/// lexicographic. Individual missing lines stay `None`. Equity prefers
+/// `totalStockholdersEquity` (the parent-only line P/B conventionally reads) over
+/// `totalEquity` (which folds in minority interest). Pure, so the contract is
+/// unit-testable offline.
+fn quarterly_balance_sheet_from_value(
+    value: &Value,
+) -> Vec<crate::portfolio::engine::QuarterlyBalanceSheetRow> {
+    let Some(rows) = value.as_array() else {
+        return vec![];
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let period_end = row
+                .get("date")
+                .and_then(Value::as_str)
+                .and_then(canonical_date)?;
+            Some(crate::portfolio::engine::QuarterlyBalanceSheetRow {
+                period_end,
+                // Datable-string-first per key — see quarterly_cash_flow_from_value.
+                filing_date: row
+                    .get("filingDate")
+                    .and_then(Value::as_str)
+                    .and_then(canonical_date)
+                    .or_else(|| {
+                        row.get("fillingDate")
+                            .and_then(Value::as_str)
+                            .and_then(canonical_date)
+                    }),
+                total_debt: row.get("totalDebt").and_then(Value::as_f64),
+                // Numeric-first per key: a present-but-null preferred line must
+                // still fall through to the alternate, so the fallback runs after
+                // `as_f64`.
+                total_equity: row
+                    .get("totalStockholdersEquity")
+                    .and_then(Value::as_f64)
+                    .or_else(|| row.get("totalEquity").and_then(Value::as_f64)),
+                cash_and_equivalents: row
+                    .get("cashAndCashEquivalents")
+                    .and_then(Value::as_f64),
+                short_term_investments: row
+                    .get("shortTermInvestments")
+                    .and_then(Value::as_f64),
+                net_receivables: row.get("netReceivables").and_then(Value::as_f64),
+                inventory: row.get("inventory").and_then(Value::as_f64),
+            })
+        })
+        .collect()
+}
+
+/// Shape an FMP `/financial-scores` array body into [`FinancialScores`] from its
+/// first row. `None` only when the body is not the expected non-empty array; a
+/// missing or non-numeric score stays `None`. Pure, so the contract is
+/// unit-testable offline.
+fn financial_scores_from_value(value: &Value) -> Option<crate::portfolio::engine::FinancialScores> {
     let first = value.as_array()?.first()?;
-    Some(BalanceSheetLines {
-        total_debt: first.get("totalDebt").and_then(Value::as_f64),
-        // Numeric-first per key: a present-but-null preferred line must still
-        // fall through to the alternate, so the fallback runs after `as_f64`.
-        total_equity: first
-            .get("totalStockholdersEquity")
-            .and_then(Value::as_f64)
-            .or_else(|| first.get("totalEquity").and_then(Value::as_f64)),
-        cash_and_equivalents: first
-            .get("cashAndCashEquivalents")
-            .and_then(Value::as_f64),
-        short_term_investments: first
-            .get("shortTermInvestments")
-            .and_then(Value::as_f64),
+    Some(crate::portfolio::engine::FinancialScores {
+        altman_z: first.get("altmanZScore").and_then(Value::as_f64),
+        piotroski: first.get("piotroskiScore").and_then(Value::as_f64),
     })
 }
 
@@ -6918,9 +7077,97 @@ mod suite_tests {
             r#"[{"date":"2026-03-31","totalDebt":null,"totalStockholdersEquity":null,"totalEquity":63.0e9}]"#,
         )
         .unwrap();
-        let lines = balance_sheet_from_value(&value).unwrap();
+        let lines = BalanceSheetLines::from_newest(&quarterly_balance_sheet_from_value(&value));
         assert_eq!(lines.total_equity, Some(63.0e9));
         assert_eq!(lines.total_debt, None);
+    }
+
+    #[test]
+    fn balance_sheet_rows_keep_every_dated_print_and_the_newest_feeds_the_lines() {
+        let value: Value = serde_json::from_str(
+            r#"[
+            {"date":"2026-03-31","filingDate":"2026-05-01","totalDebt":110.0e9,"totalStockholdersEquity":62.0e9,
+             "cashAndCashEquivalents":30.0e9,"shortTermInvestments":32.0e9,"netReceivables":60.0e9,"inventory":7.0e9},
+            {"date":"2025-03-31","totalDebt":100.0e9,"totalEquity":58.0e9,"cashAndCashEquivalents":28.0e9,
+             "netReceivables":50.0e9,"inventory":6.0e9},
+            {"noDate":true}
+        ]"#,
+        )
+        .unwrap();
+        let rows = quarterly_balance_sheet_from_value(&value);
+        assert_eq!(rows.len(), 2, "the dateless row is unreadable and dropped");
+        assert_eq!(rows[0].period_end, "2026-03-31");
+        assert_eq!(rows[0].filing_date.as_deref(), Some("2026-05-01"));
+        assert_eq!(rows[0].net_receivables, Some(60.0e9));
+        assert_eq!(rows[0].inventory, Some(7.0e9));
+        assert_eq!(rows[1].total_equity, Some(58.0e9), "totalEquity is the fallback");
+        // The lines come off the newest row by period end, whichever order the
+        // wire served.
+        let mut reversed = rows.clone();
+        reversed.reverse();
+        let lines = BalanceSheetLines::from_newest(&reversed);
+        assert_eq!(lines.total_debt, Some(110.0e9));
+        assert_eq!(lines.short_term_investments, Some(32.0e9));
+        assert_eq!(BalanceSheetLines::from_newest(&[]), BalanceSheetLines::default());
+    }
+
+    #[test]
+    fn an_equal_date_duplicate_feeds_the_lines_from_the_row_canonicalization_keeps() {
+        // Two prints for one period with the same filing date and conflicting
+        // values: canonicalization keeps the first served; the flat lines must
+        // come from that same row, never the other.
+        let value: Value = serde_json::from_str(
+            r#"[
+            {"date":"2026-03-31","filingDate":"2026-05-01","totalDebt":1.0e9,"cashAndCashEquivalents":5.0e9},
+            {"date":"2026-03-31","filingDate":"2026-05-01","totalDebt":2.0e9,"cashAndCashEquivalents":6.0e9},
+            {"date":"2025-12-31","filingDate":"2026-02-01","totalDebt":3.0e9,"cashAndCashEquivalents":7.0e9}
+        ]"#,
+        )
+        .unwrap();
+        let rows = quarterly_balance_sheet_from_value(&value);
+        let lines = BalanceSheetLines::from_newest(&rows);
+        let mut fin = crate::portfolio::engine::CompanyFinancials {
+            quarterly_balance_sheet: rows,
+            ..Default::default()
+        };
+        crate::portfolio::engine::canonicalize_statements(&mut fin);
+        assert_eq!(fin.quarterly_balance_sheet.len(), 2);
+        let kept = &fin.quarterly_balance_sheet[0];
+        assert_eq!(kept.total_debt, Some(1.0e9), "first served wins the tie");
+        assert_eq!(lines.total_debt, kept.total_debt);
+        assert_eq!(lines.cash_and_equivalents, kept.cash_and_equivalents);
+    }
+
+    #[test]
+    fn financial_scores_round_trip_and_degrade_to_gaps() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","altmanZScore":9.32,"piotroskiScore":8}]"#,
+            },
+            Canned::Reply { status: 200, headers: vec![], body: r#"[{"symbol":"AAPL"}]"# },
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"unexpected":true}"# },
+            Canned::Reply { status: 402, headers: vec![], body: "Payment Required" },
+        ]);
+        let src = source(&server.base_url);
+        let mut gaps = vec![];
+        let scores = src.fetch_financial_scores("AAPL", &mut gaps).expect("scores");
+        assert_eq!(scores.altman_z, Some(9.32));
+        assert_eq!(scores.piotroski, Some(8.0));
+        assert!(gaps.is_empty(), "{gaps:?}");
+        // A row carrying neither score is no usable data — a gap, never a clear.
+        let mut gaps = vec![];
+        assert!(src.fetch_financial_scores("AAPL", &mut gaps).is_none());
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        // A malformed body and the premium gate degrade the same way.
+        let mut gaps = vec![];
+        assert!(src.fetch_financial_scores("AAPL", &mut gaps).is_none());
+        assert!(gaps[0].contains("empty or malformed"), "{gaps:?}");
+        let mut gaps = vec![];
+        assert!(src.fetch_financial_scores("AAPL", &mut gaps).is_none());
+        assert!(gaps[0].contains("unavailable"), "{gaps:?}");
+        assert_eq!(server.request_paths(), vec!["/financial-scores"; 4]);
     }
 
     #[test]
@@ -6932,13 +7179,11 @@ mod suite_tests {
         ]);
         let src = source(&server.base_url);
         let mut gaps = vec![];
-        let lines = src.fetch_balance_sheet("AAPL", &mut gaps, &mut vec![]);
-        assert_eq!(lines, BalanceSheetLines::default());
+        assert!(src.fetch_balance_sheet("AAPL", &mut gaps, &mut vec![]).is_empty());
         assert_eq!(gaps.len(), 1, "{gaps:?}");
         // Premium gate (402) → the same fail-soft shape with the gated reason.
         let mut gaps = vec![];
-        let lines = src.fetch_balance_sheet("AAPL", &mut gaps, &mut vec![]);
-        assert_eq!(lines, BalanceSheetLines::default());
+        assert!(src.fetch_balance_sheet("AAPL", &mut gaps, &mut vec![]).is_empty());
         assert!(gaps[0].contains("unavailable"), "{gaps:?}");
     }
 
@@ -7998,10 +8243,9 @@ mod suite_tests {
             assert!(src
                 .fetch_quarterly_cash_flow("UNITTEST", &mut gaps, &mut issues)
                 .is_empty());
-            assert_eq!(
-                src.fetch_balance_sheet("UNITTEST", &mut gaps, &mut issues),
-                BalanceSheetLines::default()
-            );
+            assert!(src
+                .fetch_balance_sheet("UNITTEST", &mut gaps, &mut issues)
+                .is_empty());
             assert_eq!(issues.len(), 2);
         }
     }

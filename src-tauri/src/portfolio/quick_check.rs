@@ -292,9 +292,11 @@ impl QuickCheckDataSource for LiveQuickCheckData {
         fin.quarterly_income =
             self.fmp
                 .fetch_quarterly_income(symbol, &mut fin.gaps, &mut fin.unit_issues);
-        let balance = self
-            .fmp
-            .fetch_balance_sheet(symbol, &mut fin.gaps, &mut fin.unit_issues);
+        let balance = crate::fmp::BalanceSheetLines::from_newest(&self.fmp.fetch_balance_sheet(
+            symbol,
+            &mut fin.gaps,
+            &mut fin.unit_issues,
+        ));
         fin.total_debt = balance.total_debt;
         fin.total_equity = balance.total_equity;
         fin.ttm_dividends_per_share = self.fmp.fetch_ttm_dividends(symbol, &mut fin.gaps);
@@ -2215,6 +2217,7 @@ mod tests {
             pre_profit: None,
             hurdle: None,
             forensic: None,
+            soft_forensic: None,
             tech_event_pre_flag: None,
             short_interest: None,
             implied_expectations: None,

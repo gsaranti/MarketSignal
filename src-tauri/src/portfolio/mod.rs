@@ -35,6 +35,7 @@ pub mod pipeline;
 pub mod pre_profit;
 pub mod quick_check;
 pub mod research;
+pub mod soft_forensic;
 pub mod store;
 
 use serde::{Deserialize, Serialize};
@@ -1815,6 +1816,14 @@ pub struct HoldingAudit {
     /// priced stock whose gather ran the item-classified 8-K sweep (state `Unknown`
     /// where it couldn't); `None` on funds, skipped retrievals.
     pub forensic: Option<ForensicRead>,
+    /// The four soft forensic flags ([`soft_forensic::SoftForensicFlags`]) beside
+    /// the hard state — Altman Z, Piotroski, net income against operating cash
+    /// flow, and the working-capital build — computed from `financial-scores`
+    /// and the statements wherever the overlay record is computed (every
+    /// priced-stock path, the engine-floor and guard exits included), each flag
+    /// typed unevaluable on a missing input and never clear. `None` on funds and
+    /// `role_risk_only` holdings.
+    pub soft_forensic: Option<soft_forensic::SoftForensicFlags>,
     /// The input delta's technology-event pre-flag record
     /// ([`engine::TechEventPreFlag`]) — present where the flag was evaluable (a
     /// carried stock with a benchmark series and a volatility read); an unevaluable
@@ -2594,7 +2603,14 @@ pub struct HoldingAudit {
 /// computed SCORES line carries the engine's own rung as a computed read; the
 /// three-year method clause names its floor widening. The persisted verdict
 /// moves the trail to `checkpoint-v17` and the archive to format 13.
-pub const PROMPT_VERSION: &str = "portfolio-v68";
+/// `portfolio-v69` (the engine arm, task 2 — the soft forensic flags and the
+/// statement-only severe rule): the overlay's execution leg has no producer, so
+/// the PRE-PROFIT EXECUTION AND FINANCING section loses its guidance-attainment
+/// line and its severe-deterioration line drops the "(conjunctive)" label; the
+/// soft flags are computed and persisted beside the hard-forensic record and
+/// render on no prompt yet. The persisted audit moves the trail to
+/// `checkpoint-v18` and the archive to format 14.
+pub const PROMPT_VERSION: &str = "portfolio-v69";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

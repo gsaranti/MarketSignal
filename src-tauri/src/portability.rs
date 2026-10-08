@@ -80,7 +80,10 @@ use crate::storage;
 /// v13: the priced verdict inside `portfolio_runs.run_json` carries the engine
 /// arm's three bands, its own rung and the band relation and no stand-in view,
 /// and the run carries no outcome records (checkpoint-v17).
-pub const FORMAT_VERSION: u32 = 13;
+/// v14: the audit inside `portfolio_runs.run_json` carries the soft forensic
+/// flags beside the hard-forensic record, and the overlay's execution leg is a
+/// typed `unscorable` (checkpoint-v18).
+pub const FORMAT_VERSION: u32 = 14;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.

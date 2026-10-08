@@ -750,7 +750,7 @@ pub fn analyze_holding(
     } else {
         dossier.prior_authoring_close.clone()
     };
-    let audit = |metrics, target_meta, ledger_audit, pre_profit| HoldingAudit {
+    let audit = |metrics, target_meta, ledger_audit, pre_profit, soft_forensic| HoldingAudit {
         symbol: symbol.clone(),
         metrics,
         sources: audit_sources(),
@@ -777,6 +777,9 @@ pub fn analyze_holding(
                 matched_rule: None,
                 state,
             }),
+        // The soft flags ride wherever the overlay record does — every
+        // priced-stock path, the floor and guard exits included.
+        soft_forensic,
         // The pre-flag is evaluated on the priced path only (it reads the
         // engine's volatility); an early exit records none.
         tech_event_pre_flag: None,
@@ -794,7 +797,7 @@ pub fn analyze_holding(
         // records none.
         research: None,
     };
-    let abstain = |reason: String, metrics, meta, pre_profit| {
+    let abstain = |reason: String, metrics, meta, pre_profit, soft_forensic| {
         let verdict = HoldingVerdict {
             symbol: symbol.clone(),
             asset_class,
@@ -810,9 +813,10 @@ pub fn analyze_holding(
             side_reversed: false,
         };
         // An abstaining stock still records its overlay (fresh statement leg +
-        // carried observation history) — engine-only state, no model dependency, so
-        // the history survives an abstention like the standing ledger does.
-        Ok((verdict, audit(metrics, meta, None, pre_profit)))
+        // carried observation history) and its soft forensic flags — engine-only
+        // state, no model dependency, so the history survives an abstention like
+        // the standing ledger does.
+        Ok((verdict, audit(metrics, meta, None, pre_profit, soft_forensic)))
     };
 
     // Eligibility: a non-equity class is never given a fabricated grade.
@@ -829,7 +833,7 @@ pub fn analyze_holding(
             action_source: ActionSource::ModelChosen,
             side_reversed: false,
         };
-        return Ok((verdict, audit(Default::default(), None, None, None)));
+        return Ok((verdict, audit(Default::default(), None, None, None, None)));
     }
 
     // Eligibility: a net-short position is a direction the prescriptive layer doesn't
@@ -860,7 +864,7 @@ pub fn analyze_holding(
             action_source: ActionSource::ModelChosen,
             side_reversed: false,
         };
-        return Ok((verdict, audit(Default::default(), None, None, None)));
+        return Ok((verdict, audit(Default::default(), None, None, None, None)));
     }
 
     // Eligibility: the loop-time listing-resolution guard, stocks only
@@ -897,7 +901,7 @@ pub fn analyze_holding(
                 action_source: ActionSource::ModelChosen,
                 side_reversed: false,
             };
-            return Ok((verdict, audit(Default::default(), None, None, None)));
+            return Ok((verdict, audit(Default::default(), None, None, None, None)));
         }
         if let Some(crate::portfolio::listing::ListingResolution::Conflict { fmp_name }) =
             &dossier.listing
@@ -913,6 +917,7 @@ pub fn analyze_holding(
                 dossier.prior_pre_profit.as_ref(),
                 Vec::new(),
             );
+            let soft_forensic = crate::portfolio::soft_forensic::compute(&dossier.financials);
             return abstain(
                 format!(
                     "conflicting identity — FMP resolves this symbol to \"{fmp_name}\", \
@@ -922,6 +927,7 @@ pub fn analyze_holding(
                 Default::default(),
                 None,
                 Some(pre_profit),
+                Some(soft_forensic),
             );
         }
     }
@@ -930,6 +936,9 @@ pub fn analyze_holding(
     // reduced fund computation (strategy-routed at loop time) for a fund
     // (`docs/portfolio-workflow.md` §Step 6b).
     let mut pre_profit_overlay: Option<PreProfitOverlay> = None;
+    // The soft forensic flags, computed beside the overlay on the stock path
+    // (`docs/portfolio-workflow.md` §Step 6b) and persisted wherever it is.
+    let mut soft_forensic_flags: Option<crate::portfolio::soft_forensic::SoftForensicFlags> = None;
     // No longer `mut`: the Step-6e assumption recompute runs in shadow mode
     // (ruled 2026-08-24), so nothing rewrites the engine output after 6b.
     let engine_output = if matches!(
@@ -942,6 +951,7 @@ pub fn analyze_holding(
                  input is missing"
                     .to_string(),
                 Default::default(),
+                None,
                 None,
                 None,
             );
@@ -957,7 +967,7 @@ pub fn analyze_holding(
         match fund::analyze_fund(&inputs) {
             FundEngineVerdict::Priced(out) => out,
             FundEngineVerdict::InsufficientEvidence(reason) => {
-                return abstain(reason, Default::default(), None, None);
+                return abstain(reason, Default::default(), None, None, None);
             }
             FundEngineVerdict::RoleRiskOnly(readout) => {
                 // Evaluate the prior fund ledger's quantitative conditions against
@@ -1085,7 +1095,7 @@ pub fn analyze_holding(
                 // same expense-ratio + price-derived legs the ledger evaluation above
                 // read (plus the CEF-only closed-end read), never the empty default
                 // (M3 of the 2026-08-18 audit).
-                let mut audit_record = audit(fund_metrics, None, Some(ledger_audit), None);
+                let mut audit_record = audit(fund_metrics, None, Some(ledger_audit), None, None);
                 audit_record.what_changed_audit = what_changed_audit;
                 audit_record.research = Some(rr_research_record);
                 audit_record
@@ -1120,10 +1130,17 @@ pub fn analyze_holding(
             dossier.prior_pre_profit.as_ref(),
             Vec::new(),
         ));
+        soft_forensic_flags = Some(crate::portfolio::soft_forensic::compute(&dossier.financials));
         match engine::analyze(&dossier.financials, rates) {
             EngineVerdict::Analyzed(out) => out,
             EngineVerdict::InsufficientEvidence(reason) => {
-                return abstain(reason, Default::default(), None, pre_profit_overlay);
+                return abstain(
+                    reason,
+                    Default::default(),
+                    None,
+                    pre_profit_overlay,
+                    soft_forensic_flags,
+                );
             }
         }
     };
@@ -1585,6 +1602,7 @@ pub fn analyze_holding(
         authoring_close: authoring_close.clone(),
         fund_exposure: fund_exposure.clone(),
         pre_profit: pre_profit_overlay,
+        soft_forensic: soft_forensic_flags,
         // The full hurdle read persists so a decision episode's calibration
         // snapshot can freeze the hurdle inputs (`docs/portfolio-analysis.md`
         // §Outcome learning).
@@ -5225,20 +5243,11 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
             .map(|c| format!("{:.1}%", c * 100.0))
             .unwrap_or_else(|| "(gap)".to_string()),
     ));
-    if o.execution.comparable_periods == 0 {
-        p.push_str("- guidance attainment: no validated guidance/actual observation pairs yet\n");
-    } else {
-        p.push_str(&format!(
-            "- guidance attainment: {} comparable period(s), {} miss(es); repeated miss: {}; \
-             material single miss: {}\n",
-            o.execution.comparable_periods,
-            o.execution.misses.len(),
-            if o.execution.repeated_miss { "YES" } else { "no" },
-            if o.execution.material_single_miss { "YES" } else { "no" },
-        ));
-    }
+    // The execution leg has no producer and renders nothing: the financing,
+    // economics and dilution legs are the overlay's rendered evidence
+    // (`docs/portfolio-workflow.md` §Step 6f).
     p.push_str(&format!(
-        "- severe deterioration (conjunctive): {}\n",
+        "- severe deterioration: {}\n",
         if o.severe_deterioration { "YES" } else { "no" }
     ));
     // The consequence lines state the computed rule's effect; the action packet
@@ -10013,10 +10022,13 @@ pub(crate) mod tests {
         // The engine arm at three horizons (2026-10-07) prints the three bands
         // and the engine's own rung in place of the stand-in: v68, the trail
         // to checkpoint-v17.
-        assert_eq!(PROMPT_VERSION, "portfolio-v68");
+        // Its task 2 (2026-10-07) drops the overlay's guidance-attainment line
+        // — the execution leg has no producer — and persists the soft forensic
+        // flags on the audit: v69, the trail to checkpoint-v18.
+        assert_eq!(PROMPT_VERSION, "portfolio-v69");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v17"
+            "checkpoint-v18"
         );
     }
 
@@ -14525,9 +14537,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// A prior overlay whose history carries guidance misses in two distinct
-    /// periods for one metric — the repeated-miss shape.
-    fn prior_overlay_with_repeated_miss() -> crate::portfolio::pre_profit::PreProfitOverlay {
+    /// A prior overlay whose history carries guidance/actual pairs in two
+    /// distinct periods for one metric — carried history, no read derives
+    /// from it.
+    fn prior_overlay_with_guidance_history() -> crate::portfolio::pre_profit::PreProfitOverlay {
         let mut prior =
             crate::portfolio::pre_profit::compute_overlay(&pre_profit_financials(), None, vec![]);
         prior.observations = vec![
@@ -14556,8 +14569,15 @@ pub(crate) mod tests {
             overlay.eligibility,
             crate::portfolio::pre_profit::PreProfitEligibility::Unscorable { .. }
         ));
+        // The soft forensic flags ride beside it — typed, every missing input
+        // unevaluable (the fixture carries no scores and no balance rows).
+        let flags = audit.soft_forensic.expect("every stock records its soft flags");
+        assert!(matches!(
+            flags.altman_z.state,
+            crate::portfolio::soft_forensic::SoftFlagState::Unevaluable { .. }
+        ));
 
-        // A priced fund records none — the overlay is stock surface.
+        // A priced fund records none — the overlay and the flags are stock surface.
         let (_, audit) = analyze_holding(
             &StubAnalyst,
             &fund_dossier(us_equity_fund()),
@@ -14566,20 +14586,22 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(audit.pre_profit.is_none());
+        assert!(audit.soft_forensic.is_none());
     }
 
     #[test]
     fn eligible_overlay_renders_its_states_and_persists() {
         let mut d = dossier(AssetClass::Stock, pre_profit_financials());
-        d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
+        d.prior_pre_profit = Some(prior_overlay_with_guidance_history());
         let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
 
         let overlay = audit.pre_profit.expect("overlay rides the audit");
         assert!(overlay.is_eligible());
-        assert!(overlay.execution.repeated_miss);
-        // A repeated miss alone binds nothing: the engine caps no conviction,
-        // and the model's High persists as authored.
+        assert_eq!(overlay.execution, crate::portfolio::pre_profit::ExecutionLeg::Unscorable);
+        // The carried history binds nothing: the execution leg has no producer,
+        // the engine caps no conviction, and the model's High persists as
+        // authored.
         assert!(overlay.consequences.matched_rules.is_empty());
         let VerdictDisposition::Priced(g) = verdict.disposition else {
             panic!("expected a priced verdict");
@@ -14650,10 +14672,11 @@ pub(crate) mod tests {
 
     #[test]
     fn severe_overlay_binds_the_engine_arm_never_the_model() {
-        // Repeated miss + constrained runway (tiny cash against the burn) → the
-        // severe conjunction. Under v7 a defiant model lean and conviction persist
-        // exactly as authored — no bail, no clamp — while the consequences bind
-        // the ENGINE arm's action and stay recorded for the annotation render.
+        // Economics deterioration + constrained runway (tiny cash against the
+        // burn) → the severe conjunction, statement legs alone. A defiant model
+        // lean and conviction persist exactly as authored — no bail, no clamp —
+        // while the consequences bind the ENGINE arm's action and stay recorded
+        // for the annotation render.
         struct DefiantAnalyst;
         impl HoldingAnalyst for DefiantAnalyst {
             fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
@@ -14683,11 +14706,18 @@ pub(crate) mod tests {
         let mut fin = pre_profit_financials();
         fin.cash_and_equivalents = Some(1.0e9);
         fin.short_term_investments = None;
+        // The economics leg from the statements: the latest two quarters' gross
+        // margin non-positive and 30pp below the preceding two.
+        for (i, row) in fin.quarterly_income.iter_mut().take(4).enumerate() {
+            let revenue = row.revenue.expect("the fixture carries revenue");
+            row.gross_profit = Some(if i < 2 { -0.1 * revenue } else { 0.2 * revenue });
+        }
         let mut d = dossier(AssetClass::Stock, fin);
-        d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
+        d.prior_pre_profit = Some(prior_overlay_with_guidance_history());
         let (verdict, audit) =
             analyze_holding(&DefiantAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let overlay = audit.pre_profit.expect("overlay rides the audit");
+        assert_eq!(overlay.economics_deterioration, Some(true));
         assert!(overlay.severe_deterioration);
         assert!(overlay.consequences.exit_family_only);
         let VerdictDisposition::Priced(g) = verdict.disposition else {
@@ -14750,7 +14780,8 @@ pub(crate) mod tests {
         // The overlay's facts render on the action packet; its consequence
         // lines do not — SUPPORTED ACTIONS carries the narrowed set (ruled
         // 2026-09-17, F1).
-        assert!(action.contains("- severe deterioration (conjunctive): YES\n"), "{action}");
+        assert!(action.contains("- severe deterioration: YES\n"), "{action}");
+        assert!(!action.contains("guidance attainment"), "the execution leg renders nothing: {action}");
         assert!(!action.contains("conviction capped"), "{action}");
         assert!(!action.contains("computed action set"), "{action}");
         assert!(
@@ -14785,7 +14816,7 @@ pub(crate) mod tests {
         let mut fin = pre_profit_financials();
         fin.consensus = None;
         let mut d = dossier(AssetClass::Stock, fin);
-        d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
+        d.prior_pre_profit = Some(prior_overlay_with_guidance_history());
         let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         assert!(matches!(
@@ -14795,6 +14826,7 @@ pub(crate) mod tests {
         let overlay = audit.pre_profit.expect("overlay survives an abstention");
         assert!(overlay.is_eligible());
         assert_eq!(overlay.observations.len(), 4, "history carried");
+        assert!(audit.soft_forensic.is_some(), "the soft flags persist with the abstention");
     }
 
     #[test]
@@ -14813,7 +14845,7 @@ pub(crate) mod tests {
         d.listing = Some(ListingResolution::Conflict {
             fmp_name: "Wrong Issuer Inc.".into(),
         });
-        d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
+        d.prior_pre_profit = Some(prior_overlay_with_guidance_history());
         let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-05").unwrap();
         assert!(matches!(
@@ -14827,6 +14859,20 @@ pub(crate) mod tests {
             overlay.eligibility
         );
         assert_eq!(overlay.observations.len(), 4, "history carried, not reset");
+        // The flags take the same posture: recorded, every input missing,
+        // nothing inferred clear.
+        let flags = audit.soft_forensic.expect("the flags survive the guard exit");
+        for state in [
+            &flags.altman_z.state,
+            &flags.piotroski.state,
+            &flags.net_income_vs_operating_cash_flow.state,
+            &flags.working_capital_build.state,
+        ] {
+            assert!(
+                matches!(state, crate::portfolio::soft_forensic::SoftFlagState::Unevaluable { .. }),
+                "{state:?}"
+            );
+        }
     }
 
 

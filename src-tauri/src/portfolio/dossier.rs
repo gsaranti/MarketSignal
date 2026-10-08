@@ -2456,6 +2456,7 @@ Sources and footnotes.
                 pre_profit: None,
                 hurdle: None,
                 forensic: None,
+                soft_forensic: None,
                 tech_event_pre_flag: None,
                 short_interest: None,
                 implied_expectations: None,

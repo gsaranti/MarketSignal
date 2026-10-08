@@ -245,7 +245,11 @@ pub struct CheckpointHeader {
 /// loses the band relation; the overlay's consequences lose the conviction
 /// ceiling; the run record carries no outcome records — no v16 row can resume
 /// this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v17";
+/// `checkpoint-v18` (`portfolio-v69`, `pre-profit-v6`): the audit carries the
+/// soft forensic flags beside the hard-forensic record, and the overlay's
+/// execution leg is a typed `unscorable` in place of the attainment read — no
+/// v17 row can resume this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v18";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1383,6 +1387,7 @@ mod tests {
                 pre_profit: None,
                 hurdle: None,
                 forensic: None,
+                soft_forensic: None,
                 tech_event_pre_flag: None,
                 short_interest: None,
                 implied_expectations: None,
