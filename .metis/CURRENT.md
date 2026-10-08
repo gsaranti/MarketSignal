@@ -2,23 +2,24 @@
 
 ## Active task
 
-Engine arm at three horizons — tasks 1 and 2 of 3 done and review-approved; task 3 next.
+The holding verdict: thesis document, typed appendix and action call — next up; nothing started.
 
 ## What happened
 
-Task 2 landed (`89ead1e`): the four soft forensic flags — Altman Z, Piotroski, TTM net income against TTM operating cash flow, receivables or inventory growth against revenue growth — computed in the new `soft_forensic` module from a `financial-scores` call and five quarterly balance-sheet rows, each a three-state read that is never clear on a gap, persisted as `HoldingAudit.soft_forensic` wherever the overlay record persists.
-The overlay's execution leg is a typed `unscorable` with no producer, severe deterioration reads from the statement legs alone (economics plus constrained runway or material dilution), and the attainment read is gone; the observation rows, their validation, the history and the backfill obligation stay as the bridge to items 3 and 6.
-Stamps: `pre-profit-v6`, `portfolio-v69` (the overlay prompt section loses its attainment line; no example file regenerated), `checkpoint-v18`, archive format 14.
-Two inverted-multiple rulings went into §Starting parameters: against non-positive revenue growth a line fires on any growth, and against non-positive operating cash flow net income fires on any excess.
-The Metis reviewer approved with nits, all taken; Codex's two P2s taken (the equal-date tie-break in `BalanceSheetLines::from_newest`, the dollar-magnitude boundary slack), each pinned by a test.
-INDEX row 227 gained `storage.md`.
+Task 3 landed (`e934b20`) and closed the engine-arm item: the quick check sweeps the two engine monitors alone — the ledger-condition evaluation, `condition_states`, `overlay_condition_states` and its call sites, the stored-multiple rescale and the news-seed leg are gone.
+Eligibility is the prior-vintage rule (priced, role / risk, and an insufficient-evidence exit carrying `analyzed_at`), one chained abstention wider than the ledger clause, ruled kept after the reviewer surfaced it.
+The bridge-excluded market downgrade runs for every priced verdict with a stored twelve-month band.
+Stamps: `quick-check-v5`, `checkpoint-v19`, archive format 15; prompts stay at `portfolio-v69`.
+Docs: the two split-bridge conversion lists lose the retired rescale (Codex's one P3).
+The Metis reviewer approved with nits, taken; Codex approved.
+"Engine arm at three horizons" moved to Built — the first Built item.
 
 ## Current state
 
-Item progress: tasks 1 and 2 done.
-Task 3 is the quick check on the two monitors alone: the ledger-condition sweep and `condition_states`, the NewsSeed leg and its frontend labels, and the `overlay_condition_states` call sites go; `quick-check-v5`.
-Rendering of the soft flags, the carrier's REALIZED block and the card's three-band engine line belong to items 2, 5 and 6.
-Known residue: the fixed-evidence holdings carry no balance rows or scores, so the harness's flags read unevaluable on every holding — item 2's renderer wants a fixture with rows to show a fired flag; the harness's continuity dossier carries no target stamp, so the examples show no boundary line; the fixtures' three-year bands are flat-growth copies; `OutcomeSources.price` is threaded but unread until item 4; the store round-trip covers `soft_forensic` at `None` only, populated flags round-tripping in the module's own test.
+Nothing in flight.
+The holding verdict is next: the thesis document and typed appendix (every field nullable, acted on by presence), the separate action call, the verdict / checkpoint / archive / card reshape, and the ledger with its conditions leaving the schema — which also deletes the quick check's "neither monitor" pin and `priced_verdict`'s fixture ledger.
+Known residue carried from the engine arm: the fixed-evidence holdings carry no balance rows or scores (the harness's soft flags read unevaluable); the harness's continuity dossier carries no target stamp (no boundary line in the examples); the fixtures' three-year bands are flat-growth copies; `OutcomeSources.price` is threaded but unread until outcome learning; the store round-trip covers `soft_forensic` at `None` only; the `quick-news` request label on `fetch_symbol_news_since` outlives its quick-check caller until the research chain retires the seed store.
+Every stamp bump also touches the prompt-version test in `pipeline.rs`, which pins `CHECKPOINT_FORMAT_VERSION`.
 
 ## Open questions
 
@@ -26,5 +27,5 @@ Known residue: the fixed-evidence holdings carry no balance rows or scores, so t
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task "Engine arm at three horizons — task 3: the quick check on the two monitors alone"`.
+`/metis-session-start`, then `/metis-plan-task "The holding verdict: thesis document, typed appendix and action call"` — the first plan decides the item's task split.
 Never propose the run.
