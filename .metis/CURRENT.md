@@ -2,29 +2,36 @@
 
 ## Active task
 
-The research chain: write-ups and the analysis — next up; nothing started.
+The research chain: write-ups and the analysis — task 1 of 3 landed; task 2 (consolidation) is next.
 
 ## What happened
 
-Task 3 of the holding verdict landed (`c6ab15f`, pushed): the card took §Storage and display's text-first shape — one shared analyzed-verdict template; the document column on a twelve-line clamp; the typed strip (the action with its rationale, the conviction, the three expected prices, a null as none); the compact engine line (the grade with its marker, the tier, the three bands with a dash for a never-authored one, the hurdle with dead money in `--accent-text`); the engine's further reads behind the Engine detail reveal; the `role_risk_only` strip; the abstained card's retained prior document; a container query on the card, which stacks the body below 720px of card width (the card runs 572–980px in-app, so a viewport query never fires).
-The Metis reviewer approved with four nits, taken; Codex's three findings and one regression, all CSS (the viewport query, two specificity losses, the stacked document's border), taken, then approved.
-Stamps unchanged: portfolio-v71 / checkpoint-v20 / archive 16.
-Ruled: the per-item dev-run checks wait until every Portfolio item is built, so the item moved to Built on its review approval.
+Task 1 of the research chain landed (`6ad3234`, pushed): the loop writes prose.
+Each pass's synthesis is a fresh thinking conversation with no tools and no grammar that returns the topic's write-up, then by a second message in the same conversation the follow-up question or `none`; the disconfirming pass writes its own.
+The gathering brief is the typed holding-constant block — HOLDING, FETCHED VALUES to the byte with the thesis message (now every statement headline the dossier holds over eight quarters), NEWS LEADS, PRIOR THESIS on a continuity run, PAGES ALREADY RETRIEVED — and a typed page roster persists on the audit.
+The claims layer, the findings grammar, the seed store and its table, the distillation reduce grammar with its typed channels, and the pipeline's Step-6e lines went.
+Consolidation is bridged: the write-ups render under their titles as the ANALYSIS the thesis document reads, with no model call and no budget check.
+The adapter's distillation seam (`distill_route`, `distill_request`, `distill_prose_call`, `DistillPrompt`) parks under `allow(dead_code)` for task 2; `engine::refine_targets_with_assumption` and pre_profit's evidenced overlay path park for the removal sweep with markers.
+Stamps portfolio-v72 / checkpoint-v21 / archive 17; examples 01–10 regenerated, 11 is the follow-up ask, 12–17 held vacant for task 2's two shapes, 24 carries the bridge.
+The Metis reviewer rejected once (two statement columns omitted; the carried-set count pin missing), both fixed, then approved with nits; five of six taken, the seed-to-lead rename left to the sweep.
+Ruled via the selector: the item is three tasks; the `none` reading is trimmed, case-insensitive, quotes and a trailing period stripped; the balance-sheet pull widened 5 → 8 quarters; for task 3 — rating actions latest 10 within 12 months, insider latest 10 within 6 months plus the statistics line, congressional latest 10 Senate and House merged within 12 months, surprise history 8 quarters, the ratio set eight TTM lines (P/E, EV/EBITDA, EV/sales, P/B, FCF yield, ROIC, ROE, net debt/EBITDA), segments for the latest two fiscal years, a fund every sector weighting and its ten largest countries.
 
 ## Current state
 
-Nothing in flight.
-The holding verdict is Built; its done clause's dev run (a stock, a fund and a `role_risk_only` holding displayed) joins a batch of run tests after the four remaining Portfolio items — the research chain, outcome learning, the self-review, the removal sweep — still ahead of the big run, which is the user's call.
-Deferred by ruling to named items: the paid-up-versus-averaged-down read beside the position tag (the removal sweep); the accuracy-score rows and the expected prices' horizon dates on the strip (outcome learning).
-Residue carried (do not re-raise): FETCHED VALUES renders the Portfolio dossier's subset until the research chain; outcome's model calibration, head-to-head and outlook reads are empty until outcome learning; distill's leading-indicator machinery is unreachable until the research chain; `GradeBranch` and `TargetHorizons::label` sit under `allow(dead_code)` for the self-review; the summary embedding byte-caps until the removal sweep; the harness fixtures carry no balance rows, scores or target stamp and their three-year bands are flat-growth copies; `OutcomeSources.price` is unread until outcome learning; the `quick-news` request label outlives its caller until the research chain.
+The item stays under To build; ledger: task 1 done and review-approved, task 2 next, task 3 after.
+Task 2, consolidation: the budget check over `distill::input_budget_chars`, the two distillation shapes (prose, non-thinking, no grammar) through the parked seam, the analysis call, PRIOR ANALYSIS loaded by identity onto the gathering brief and the analysis message, the thesis document reading the analysis, examples 12–17 returning as the two shapes, and the thesis examples' ANALYSIS stub text rewritten.
+Task 3: the nineteen adapter pulls of the endpoint table's per-holding surface with their fail-soft legs, the FETCHED VALUES rows under the counts above, the run-level M&A match, the short-interest print and the 8-K rows into FETCHED VALUES; its plan's flag is whether the example fixtures gain stub rows for the new data.
+The dev-run batch (every Portfolio item's dev run, the holding verdict's among them) waits behind outcome learning, the self-review and the removal sweep, ahead of the big run, which is the user's call.
+Residue carried (do not re-raise): outcome's model calibration, head-to-head and outlook reads are empty until outcome learning; `GradeBranch` and `TargetHorizons::label` sit under `allow(dead_code)` for the self-review; the summary embedding byte-caps until the removal sweep; the harness fixtures carry no quarterly, balance, score or target-stamp rows; `OutcomeSources.price` is unread until outcome learning; `ResearchSeed` / `news_seeds` name the leads until the sweep; the roster holds every page served as a tool result, the docs' "every page shown to the model".
 Every stamp bump touches `prompt_version_is_stamped_for_the_model_arm_domain_gate` in `pipeline.rs`.
-Card work can be rendered offscreen without the app: a scratchpad Vite harness mounting the real component plus a WKWebView snapshot binary, the in-app card width emulated as viewport = card + 48 (card = min(980, window − 328)); the recipe is in session memory, not the repo.
+The offscreen card-render recipe (a scratchpad Vite harness plus a WKWebView snapshot binary) lives in session memory, not the repo.
 
 ## Open questions
 
-None.
+- The docs' FETCHED VALUES row "the 8-K filings of the trailing twelve months by date and item" has no dossier source — the sweep keeps only item-classified events — so task 3 needs a new pull or a docs ruling on what the row shows.
+- A fired retry on the follow-up ask is labelled `… synthesis follow-up`, a leg the docs do not name; whether the docs name it or the label folds into the synthesis stage.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` for the research chain — the first plan decides its task split; the item's doc links (§Step 6c, §Step 6d, §The per-holding pipeline, §The research loop and context management) first, every flag and assumption through the selector, FETCHED VALUES counts and windows settled at plan time.
+`/metis-session-start`, then `/metis-plan-task` for the research chain's task 2 (consolidation): read §Step 6d, §The research loop and context management and §The local-model adapter seam first; the parked seam in `pipeline.rs` and the bridge in `distill.rs` are the surfaces; every flag and assumption through the selector.
 Never propose the run.
