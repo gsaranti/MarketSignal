@@ -1,11 +1,12 @@
 # Action — priced holding, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v71`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior document of 2026-09-02.
 The action call is the investor profile's one entry point: the finished verdict, the holding's own evidence, the engine's supported set and the profile decide the rung and one rationale — never a comparison with other holdings.
-On a continuity run the prior rung joins the packet as PRIOR ACTION, glossed as chosen in the prior analysis or set by rule after it, and the task holds the action firm unless the inputs materially changed.
-The verdict shown is attempt 6's persisted read as the prior and as this run's — the fixture carries one verdict.
+On a continuity run the prior rung joins the packet as PRIOR ACTION with its rationale, glossed as chosen in the prior analysis or set by rule after it, and the task holds the action firm unless the inputs materially changed.
+The verdict shown is attempt 6's persisted read as the prior and as this run's — the fixture carries one verdict; PRIOR ACTION's rationale is the fixture's labelled placeholder, since attempt 6's sentence referenced the position's gain or loss.
+POSITION reads the position as unchanged at the synthetic ten units; the two variants below show the lines a position increased since the last pull and a rule-demoted prior change.
 This packet renders no article or research text, so it carries no stub.
 
 ## Request
@@ -19,7 +20,7 @@ This packet renders no article or research text, so it carries no stub.
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 6791 chars — the messages and tools as serialized |
+| Prompt material | 7497 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +30,7 @@ will return action and rationale, as one JSON object. Part 1 of the message give
 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (6392 chars)
+## User message (7088 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -38,37 +39,20 @@ TSLA (name unavailable).
 Price: $358.97 per share.
 Date: 2026-09-16.
 
-Two reads of this holding appear below: a computed read, derived from its financial data by fixed
-formulas, and an analyst's read of the same data and research.
+POSITION
+The holding as the account carries it: the shares held, the total cost basis, the market value, the
+unrealized gain or loss (the market value less the cost basis, and as a share of a positive cost
+basis; not available where no basis is reported) and the change in the shares held since the last
+pull — new where the last pull had none, else increased, decreased or unchanged, with the shares
+held then and now.
+Shares held: 10. Cost basis: $2,871.76. Market value: $3,589.70. Unrealized gain: $717.94 (+25.0% of
+the cost basis). Change since the last pull: unchanged at 10.
 
-SCORES (computed)
-Four scores from 0 to 100, higher is better on every axis: quality; valuation, where higher means
-more attractive; momentum; risk, where higher means more resilient. The grade is a letter derived
-from the quality, valuation and risk scores.
-quality 10, valuation 33, momentum 45, risk 64. Grade F. Risk tier: high. Computed action: trim.
-
-PRICE TARGETS (computed; USD, with the move each implies from the current price)
-- twelve-month: bear 62.04 (-82.7%) / base 163.12 (-54.6%) / bull 911.74 (+154.0%). Method:
-consensus forward EPS (low / mid / high) × P/E multiples at the 75th / 50th / 25th percentile of
-their spread to the 10-year Treasury over the last 12 quarterly observations. Notes: the driver
-blends two consensus rows.
-- three-month: bear 229.41 (-36.1%) / base 310.01 (-13.6%) / bull 390.61 (+8.8%). Method: base = the
-twelve-month base price return prorated to three months; bear and bull = ±26.0% (two standard
-deviations of daily volatility over 63 sessions, capped at 26%).
-- three-year: bear 62.04 (-82.7%) / base 163.12 (-54.6%) / bull 911.74 (+154.0%). Method: the
-twelve-month drivers held at flat growth for two further years (a single forward consensus row, or
-no definable growth) at the same multiples — an extrapolation that assumes today's rate and spread
-regime holds.
-
-CAPITAL EFFICIENCY
-The computed twelve-month total return in each scenario (the move from the current price to the
-scenario price, plus forward income per share, as a fraction of the current price) and the hurdle
-rate it is measured against.
-bear -82.6% / base -54.3% / bull +155.7%; hurdle 12.7%.
-
-VERDICT (analyst)
-Conviction: low. Expected share price (USD, with the move each implies from the current price):
-three-month none, twelve-month 145.00 (-59.6%), three-year none.
+VERDICT
+An analyst's read of the holding's data and research: the conviction, the expected share price at
+each horizon (USD, with the move each implies from the current price) and the thesis document.
+Conviction: low. Expected share price: three-month none, twelve-month 145.00 (-59.6%), three-year
+none.
 Thesis document:
 Thesis: Investment thesis rests on Robotaxi monetization within 12-24 months justifying premium
 multiple, with safety scandal resolution and margin stabilization as near-term catalysts; core EV
@@ -106,12 +90,45 @@ four fatalities). My bear target ($92) applies a distress multiple to core auto 
 credits. Bull case ($398) requires successful Robotaxi launch with approved commercial operations by
 Q1-CY27; this is possible but not probable given regulatory and technical execution risks.
 
+COMPUTED
+The computed reads follow under their labels, up to PRIOR ACTION; each is derived from the holding's
+data by fixed formulas.
+
+COMPUTED ACTION
+The rung a fixed rule gives from the computed reads: trim.
+
+GRADE
+A letter from A to F, derived from the computed quality, valuation and risk scores.
+F.
+
+PRICE BANDS (USD, with the move each implies from the current price; the analyst's expected price
+from VERDICT beside each)
+- three-month: bear 229.41 (-36.1%) / base 310.01 (-13.6%) / bull 390.61 (+8.8%); analyst none.
+Method: base = the twelve-month base price return prorated to three months; bear and bull = ±26.0%
+(two standard deviations of daily volatility over 63 sessions, capped at 26%).
+- twelve-month: bear 62.04 (-82.7%) / base 163.12 (-54.6%) / bull 911.74 (+154.0%); analyst 145.00
+(-59.6%). Method: consensus forward EPS (low / mid / high) × P/E multiples at the 75th / 50th / 25th
+percentile of their spread to the 10-year Treasury over the last 12 quarterly observations. Notes:
+the driver blends two consensus rows.
+- three-year: bear 62.04 (-82.7%) / base 163.12 (-54.6%) / bull 911.74 (+154.0%); analyst none.
+Method: the twelve-month drivers held at flat growth for two further years (a single forward
+consensus row, or no definable growth) at the same multiples — an extrapolation that assumes today's
+rate and spread regime holds.
+
+CAPITAL EFFICIENCY
+The computed twelve-month total return in each scenario (the move from the current price to the
+scenario price, plus forward income per share, as a fraction of the current price) and the hurdle
+rate it is measured against.
+bear -82.6% / base -54.3% / bull +155.7%; hurdle 12.7%.
+
 PRIOR ACTION
 trim, chosen in the prior analysis.
+Rationale: [rationale removed from the fixture: the run's sentence referenced whether the position
+was up or down]
 
-SUPPORTED ACTIONS (computed)
-The rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is
-outside that read.
+SUPPORTED ACTIONS
+The rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A
+rung not listed is outside that rule.
 
 INVESTOR PROFILE
 - objective: maximize profit (total return; no income or capital-preservation mandate)
@@ -125,11 +142,11 @@ with no code fence and no surrounding text.
 
 1. action — one rung for this holding, from these inputs alone: "sell-all", "trim", "hold", "add" or
 "add-aggressively". The rung alone: no share count, dollar amount or portfolio weight. Decide it
-from VERDICT, SCORES and PRICE TARGETS first, refined by CAPITAL EFFICIENCY, PRIOR ACTION, SUPPORTED
-ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits add-aggressively where the other
-inputs support it. Where even the bull case in CAPITAL EFFICIENCY misses the hurdle and the forward
-read is poor, lean toward realizing some or all of the position. Move from PRIOR ACTION only where
-the inputs have materially changed since the prior analysis.
+from VERDICT and COMPUTED first, refined by POSITION, PRIOR ACTION, SUPPORTED ACTIONS and INVESTOR
+PROFILE. An aggressive risk tolerance admits add-aggressively where the other inputs support it.
+Where even the bull case under CAPITAL EFFICIENCY misses the hurdle and the forward read is poor,
+lean toward realizing some or all of the position. Move from PRIOR ACTION only where the inputs have
+materially changed since the prior analysis.
 
 2. rationale — one sentence giving the single investment reason for the rung. Name the returns you
 weighed by their values; do not describe them by their relation to another figure.
@@ -163,4 +180,25 @@ RETURN SHAPE (every value is a placeholder)
   ],
   "type": "object"
 }
+~~~~
+
+## Variant — position increased since the last pull
+
+The lines that differ from the user message above when the last pull held eight units: the change line alone.
+
+~~~~text
+- Shares held: 10. Cost basis: $2,871.76. Market value: $3,589.70. Unrealized gain: $717.94 (+25.0% of the cost basis). Change since the last pull: unchanged at 10.
++ Shares held: 10. Cost basis: $2,871.76. Market value: $3,589.70. Unrealized gain: $717.94 (+25.0% of the cost basis). Change since the last pull: increased, from 8 to 10.
+~~~~
+
+## Variant — rule-demoted prior
+
+The lines that differ from the user message above when the prior action was set by rule after the prior analysis: PRIOR ACTION carries the rung and its gloss with no rationale, and the task's firmness clause goes.
+
+~~~~text
+- trim, chosen in the prior analysis.
+- Rationale: [rationale removed from the fixture: the run's sentence referenced whether the position was up or down]
+- 1. action — one rung for this holding, from these inputs alone: "sell-all", "trim", "hold", "add" or "add-aggressively". The rung alone: no share count, dollar amount or portfolio weight. Decide it from VERDICT and COMPUTED first, refined by POSITION, PRIOR ACTION, SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits add-aggressively where the other inputs support it. Where even the bull case under CAPITAL EFFICIENCY misses the hurdle and the forward read is poor, lean toward realizing some or all of the position. Move from PRIOR ACTION only where the inputs have materially changed since the prior analysis.
++ hold, set by rule after the prior analysis, not chosen in it.
++ 1. action — one rung for this holding, from these inputs alone: "sell-all", "trim", "hold", "add" or "add-aggressively". The rung alone: no share count, dollar amount or portfolio weight. Decide it from VERDICT and COMPUTED first, refined by POSITION, PRIOR ACTION, SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits add-aggressively where the other inputs support it. Where even the bull case under CAPITAL EFFICIENCY misses the hurdle and the forward read is poor, lean toward realizing some or all of the position.
 ~~~~

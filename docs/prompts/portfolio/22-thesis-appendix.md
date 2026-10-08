@@ -1,6 +1,6 @@
 # Thesis appendix — the conversation's second message
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v71`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The appendix is the thesis conversation's second message: the same system and user messages, the document the model returned as the assistant turn, then the transcription ask under the nullable grammar with thinking off.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":1024,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7094 chars — the messages and tools as serialized |
+| Prompt material | 7089 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ of the message gives the inputs. Part 2 says what the document covers, in order,
 it.
 ~~~~
 
-## User message (5245 chars)
+## User message (5240 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -47,7 +47,7 @@ Daily closes: 1 sessions from 2026-09-14 to 2026-09-14, 52-week low 358.97 on 20
 Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
 
 COMPUTED
-The computed reads follow under their labels, through to MARKET ANALYSIS; each is derived from the
+The computed reads follow under their labels, up to MARKET ANALYSIS; each is derived from the
 fetched data by fixed formulas.
 
 METRICS

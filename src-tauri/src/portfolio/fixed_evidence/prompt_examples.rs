@@ -704,8 +704,9 @@ fn examples() -> Vec<Example> {
             holding: tsla_holding,
             sentences: lines(&[
                 action_common,
-                "VERDICT carries the appendix's conviction and expected prices, each with the move it implies from the current price, then the thesis document verbatim.",
-                "The packet carries no account economics: the two variants below show which lines a tax-exempt profile and a tripled cost basis change.",
+                "POSITION is the one packet that sees the position's economics — the synthetic ten units, their cost basis and market value, the unrealized gain and the change since the last pull, new on a first analysis.",
+                "VERDICT carries the appendix's conviction and expected prices, each with the move it implies from the current price, then the thesis document verbatim; COMPUTED follows as one heading whose sub-blocks carry the rule's rung, the grade, the bands with the analyst's price beside each, and the capital-efficiency numbers.",
+                "The two variants below show that a tax-exempt profile changes no line and a tripled cost basis changes POSITION's lines alone.",
             ]),
             stage: "action TSLA".into(),
             request: base,
@@ -717,7 +718,7 @@ fn examples() -> Vec<Example> {
                 },
                 Variant {
                     heading: "Variant — cost basis tripled",
-                    sentences: lines(&["The lines that differ from the user message above when the position's cost basis is three times higher."]),
+                    sentences: lines(&["The lines that differ from the user message above when the position's cost basis is three times higher: the gain becomes a loss, under POSITION alone."]),
                     diff: diff_lines(&base_user, &make(&costly)),
                 },
             ],
@@ -728,12 +729,42 @@ fn examples() -> Vec<Example> {
         let d = continuity_dossier(&tsla);
         let graded = graded_of(&tsla);
         let engine_set = engine::feasible_actions(tsla.engine_output.grade, &tsla.engine_output.hurdle, None, false);
-        let input = ActionInput {
-            dossier: &d,
-            subject: ActionSubject::Priced { graded, engine: &tsla.engine_output, pre_profit: None },
-            engine_set: &engine_set,
-            profile: &d.profile,
+        let make = |d: &HoldingDossier| -> String {
+            action_user_prompt(&ActionInput {
+                dossier: d,
+                subject: ActionSubject::Priced { graded, engine: &tsla.engine_output, pre_profit: None },
+                engine_set: &engine_set,
+                profile: &d.profile,
+            })
         };
+        let base = pipeline::action_request(
+            REASONER,
+            &ActionInput {
+                dossier: &d,
+                subject: ActionSubject::Priced { graded, engine: &tsla.engine_output, pre_profit: None },
+                engine_set: &engine_set,
+                profile: &d.profile,
+            },
+        );
+        let base_user = base.messages[1].content.clone();
+        // The position increased since the last pull: eight units then, the
+        // synthetic ten now.
+        let mut increased = continuity_dossier(&tsla);
+        increased.position_delta = PositionDelta {
+            change: PositionChange::Increased,
+            prior_quantity: Some(8.0),
+            prior_cost_basis: Some(tsla.synthetic_position.cost_basis * 0.8),
+        };
+        // A rule-demoted prior: the hold the over-age rule leaves on an
+        // add-family prior, stamped set by rule, carrying no rationale.
+        let mut demoted = continuity_dossier(&tsla);
+        {
+            let prior = demoted.prior_verdict.as_mut().expect("the continuity prior");
+            prior.action_source = ActionSource::RuleDemoted;
+            if let VerdictDisposition::Priced(g) = &mut prior.disposition {
+                g.action = Action::Hold;
+            }
+        }
         out.push(Example {
             file: "26-action-priced-continuity",
             title: "Action — priced holding, continuity run",
@@ -741,12 +772,24 @@ fn examples() -> Vec<Example> {
             holding: "TSLA, on a continuity run over the prior document of 2026-09-02",
             sentences: lines(&[
                 action_common,
-                "On a continuity run the prior rung joins the packet as PRIOR ACTION, glossed as chosen in the prior analysis or set by rule after it, and the task holds the action firm unless the inputs materially changed.",
-                "The verdict shown is attempt 6's persisted read as the prior and as this run's — the fixture carries one verdict.",
+                "On a continuity run the prior rung joins the packet as PRIOR ACTION with its rationale, glossed as chosen in the prior analysis or set by rule after it, and the task holds the action firm unless the inputs materially changed.",
+                "The verdict shown is attempt 6's persisted read as the prior and as this run's — the fixture carries one verdict; PRIOR ACTION's rationale is the fixture's labelled placeholder, since attempt 6's sentence referenced the position's gain or loss.",
+                "POSITION reads the position as unchanged at the synthetic ten units; the two variants below show the lines a position increased since the last pull and a rule-demoted prior change.",
             ]),
             stage: "action TSLA".into(),
-            request: pipeline::action_request(REASONER, &input),
-            variants: vec![],
+            request: base,
+            variants: vec![
+                Variant {
+                    heading: "Variant — position increased since the last pull",
+                    sentences: lines(&["The lines that differ from the user message above when the last pull held eight units: the change line alone."]),
+                    diff: diff_lines(&base_user, &make(&increased)),
+                },
+                Variant {
+                    heading: "Variant — rule-demoted prior",
+                    sentences: lines(&["The lines that differ from the user message above when the prior action was set by rule after the prior analysis: PRIOR ACTION carries the rung and its gloss with no rationale, and the task's firmness clause goes."]),
+                    diff: diff_lines(&base_user, &make(&demoted)),
+                },
+            ],
             extras: vec![],
         });
     }
@@ -765,7 +808,8 @@ fn examples() -> Vec<Example> {
             holding: bnd_holding,
             sentences: lines(&[
                 action_common,
-                "On the role/risk branch the readout's computed sections and the thesis document stand in for the graded verdict — VERDICT carries the document alone — and the engine set is the reduced ladder (sell-all, trim, hold).",
+                "On the role/risk branch the readout's computed sections stay top-level under no COMPUTED heading and the thesis document stands in for the graded verdict — VERDICT carries the document alone — and the engine set is the reduced ladder (sell-all, trim, hold).",
+                "POSITION renders the synthetic fund's ten units the same way as a stock's.",
                 "The document is the offline stub's on the synthetic fund, assembled into the verdict by the pipeline's own seam.",
             ]),
             stage: "action BND".into(),

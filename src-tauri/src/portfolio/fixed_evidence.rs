@@ -373,7 +373,8 @@ fn reconstructed_interpretation_uses_the_persisted_options_evidence() {
 }
 
 #[test]
-fn attempt_6_action_packets_carry_no_account_economics_and_are_tax_invariant() {
+fn attempt_6_action_packets_carry_the_position_and_are_tax_invariant() {
+    use super::pipeline::tests::without_position;
     for f in fixtures() {
         let VerdictDisposition::Priced(graded) = &f.disposition else {
             panic!("{}: every attempt-6 holding priced", f.symbol)
@@ -390,20 +391,33 @@ fn attempt_6_action_packets_carry_no_account_economics_and_are_tax_invariant() {
         let taxable = render(&dossier_of(&f, true));
         let exempt = render(&dossier_of(&f, false));
         assert_eq!(taxable, exempt, "{}: the tax posture must not change the packet", f.symbol);
+        // The position's economics render once, under POSITION (`portfolio-v71`,
+        // ruled 2026-10-08): the synthetic ten units and the synthetic P/L's
+        // sign; a repriced position changes POSITION's lines and nothing else.
+        assert_eq!(taxable.matches("\nPOSITION\n").count(), 1, "{}: {taxable}", f.symbol);
+        assert!(taxable.contains("\nShares held: 10. Cost basis: $"), "{}: {taxable}", f.symbol);
+        let p = &f.synthetic_position;
+        let pl_word = if p.market_value > p.cost_basis { "Unrealized gain: $" } else { "Unrealized loss: $" };
+        assert_eq!(taxable.matches(pl_word).count(), 1, "{}: {taxable}", f.symbol);
         let mut repriced = dossier_of(&f, true);
         repriced.position.cost_basis *= 3.0;
         repriced.position.quantity *= 2.0;
         repriced.position.market_value *= 2.0;
-        assert_eq!(taxable, render(&repriced), "{}: account economics must not change the packet", f.symbol);
-        // Case-insensitive on the whole packet: the app-rendered lines never carry
-        // these, and the fixture's model-authored prose is scrubbed of them.
-        let lower = taxable.to_lowercase();
+        let repriced = render(&repriced);
+        assert_ne!(taxable, repriced, "{}", f.symbol);
+        assert_eq!(without_position(&taxable), without_position(&repriced), "{}: account economics leaked past POSITION", f.symbol);
+        // Case-insensitive outside POSITION: the app-rendered lines never carry
+        // these, and the fixture's model-authored prose is scrubbed of them; the
+        // tax row renders nowhere.
+        let outside = without_position(&taxable).to_lowercase();
         for absent in ACCOUNT_ECONOMICS_PHRASES.iter().copied().chain(["- tax", "quantity:"]) {
-            assert!(!lower.contains(absent), "{}: {absent} leaked: {taxable}", f.symbol);
+            assert!(!outside.contains(absent), "{}: {absent} leaked: {taxable}", f.symbol);
         }
-        // The set once as one data line, the polarity gloss once (`portfolio-v41`).
-        assert_eq!(taxable.matches("\nSUPPORTED ACTIONS (computed)\n").count(), 1, "{}", f.symbol);
-        assert_eq!(taxable.matches("higher is better on every axis").count(), 1, "{}", f.symbol);
+        assert!(!taxable.to_lowercase().contains("- tax"), "{}: {taxable}", f.symbol);
+        // The set once as one data line (`portfolio-v41`); the sub-scores'
+        // polarity gloss stays on the thesis message (ruled 2026-10-08).
+        assert_eq!(taxable.matches("\nSUPPORTED ACTIONS\n").count(), 1, "{}", f.symbol);
+        assert_eq!(taxable.matches("higher is better on every axis").count(), 0, "{}", f.symbol);
         // The app-appended caveat for the rung the run chose, on the synthetic P/L.
         let d = dossier_of(&f, true);
         let caveat = tax_caveat(&d.profile, &d.position, graded.action);
@@ -1020,32 +1034,48 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
             .split_once("\n======== PART 2: TASK ========\n")
             .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{user}", f.symbol));
         assert!(part1.starts_with(&format!("======== PART 1: INPUTS ========\nHOLDING\n{} (", f.symbol)), "{}: {part1}", f.symbol);
+        // The sections in the docs' order (`portfolio-v71`): POSITION, VERDICT,
+        // one COMPUTED heading with its labelled sub-blocks, SUPPORTED ACTIONS
+        // and the profile, each once.
+        let mut last = 0;
         for section in [
-            "SCORES (computed)\n", "PRICE TARGETS (computed; USD, with the move each implies from the current price)\n",
-            "CAPITAL EFFICIENCY\n", "VERDICT (analyst)\n",
-            "SUPPORTED ACTIONS (computed)\n", "INVESTOR PROFILE\n",
+            "POSITION\n", "VERDICT\n", "COMPUTED\n", "COMPUTED ACTION\n", "GRADE\n",
+            "PRICE BANDS (USD, with the move each implies from the current price; the analyst's expected price from VERDICT beside each)\n",
+            "CAPITAL EFFICIENCY\n", "SUPPORTED ACTIONS\n", "INVESTOR PROFILE\n",
         ] {
-            assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "{}: Part 1 lacks {section}\n{part1}", f.symbol);
+            let key = format!("\n{section}");
+            assert_eq!(part1.matches(&key).count(), 1, "{}: Part 1 lacks {section}\n{part1}", f.symbol);
+            let at = part1.find(&key).unwrap();
+            assert!(at > last, "{}: {section} out of order\n{part1}", f.symbol);
+            last = at;
         }
-        assert!(part1.contains(&format!("Grade {}", graded.grade.as_str())));
+        assert!(part1.contains(&format!("valuation and risk scores.\n{}", graded.grade.as_str())), "{}: {part1}", f.symbol);
         assert!(part1.contains("prorated to three months"));
         assert!(part1.contains("- three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
         assert!(part2.contains("Name the returns you weighed by their values; do not describe them by their relation to another figure."));
-        // VERDICT: the appendix's conviction and prices — the fixture's one
-        // expected price at twelve months, none at the other horizons — then
-        // the thesis document verbatim.
+        // VERDICT: the gloss, then the appendix's conviction and prices — the
+        // fixture's one expected price at twelve months, none at the other
+        // horizons — then the thesis document verbatim; the same price rides
+        // the twelve-month band line and none the other two (ruled 2026-10-08).
         let a = &graded.appendix;
+        let move_12 = (a.expected_price_12m.unwrap() / f.spot - 1.0) * 100.0;
         assert!(
             part1.contains(&format!(
-                "\nVERDICT (analyst)\nConviction: {}. Expected share price (USD, with the move each implies from the current price): three-month none, twelve-month {:.2} ({:+.1}%), three-year none.\nThesis document:\n{}",
+                "\nVERDICT\nAn analyst's read of the holding's data and research: the conviction, the expected share price at each horizon (USD, with the move each implies from the current price) and the thesis document.\nConviction: {}. Expected share price: three-month none, twelve-month {:.2} ({:+.1}%), three-year none.\nThesis document:\n{}",
                 a.conviction.unwrap().as_str(),
                 a.expected_price_12m.unwrap(),
-                (a.expected_price_12m.unwrap() / f.spot - 1.0) * 100.0,
+                move_12,
                 graded.thesis_document
             )),
             "{}: {part1}",
             f.symbol
         );
+        assert!(
+            part1.contains(&format!("; analyst {:.2} ({:+.1}%). Method: ", a.expected_price_12m.unwrap(), move_12)),
+            "{}: {part1}",
+            f.symbol
+        );
+        assert_eq!(part1.matches("; analyst none. Method: ").count(), 2, "{}: {part1}", f.symbol);
         // The hurdle as numbers: the three tested returns and the rate, no state word.
         let h = &f.engine_output.hurdle;
         assert!(part1.contains(&format!(
@@ -1063,6 +1093,7 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
             "indeterminate", "dead money", "PRIOR ACTION", "Move from PRIOR ACTION", "Keep the action firm",
             "TARGET RATIONALE", "CONVICTION AND OUTLOOK", "FINANCIAL SUMMARY", "THESIS (analyst)",
             "SCENARIOS (analyst)", "PRIOR ANALYSIS", "CHANGES SINCE",
+            "(computed)", "(analyst)", "Two reads of this holding", "higher is better on every axis",
         ] {
             assert!(!user.contains(absent), "{}: `{absent}`\n{user}", f.symbol);
         }
@@ -1217,15 +1248,27 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
         .split_once("\n======== PART 2: TASK ========\n")
         .unwrap_or_else(|| panic!("no Part 2 marker\n{user}"));
     assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\nBND ("), "{part1}");
+    // The branch's own sections stay top-level, POSITION first after the
+    // header, no COMPUTED heading (`portfolio-v71`, ruled 2026-10-08).
+    let mut last = 0;
     for section in [
-        "CLASS (computed)\n", "EXPOSURE TILT (computed)\n", "RISK PROFILE (computed)\n",
-        "EVIDENCE GAPS (computed)\n", "VERDICT (analyst)\n",
-        "SUPPORTED ACTIONS (computed)\n", "INVESTOR PROFILE\n",
+        "POSITION\n", "CLASS\n", "EXPOSURE TILT\n", "RISK PROFILE\n",
+        "EVIDENCE GAPS\n", "VERDICT\n",
+        "SUPPORTED ACTIONS\n", "INVESTOR PROFILE\n",
     ] {
-        assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "Part 1 lacks {section}\n{part1}");
+        let key = format!("\n{section}");
+        assert_eq!(part1.matches(&key).count(), 1, "Part 1 lacks {section}\n{part1}");
+        let at = part1.find(&key).unwrap();
+        assert!(at > last, "{section} out of order\n{part1}");
+        last = at;
     }
-    assert!(part1.contains("\nEVIDENCE GAPS (computed)\nno duration, credit or yield-curve data for this fund\n"), "{part1}");
-    assert!(part1.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is outside that read.\n"), "{part1}");
+    assert!(!part1.contains("\nCOMPUTED\n"), "{part1}");
+    assert!(part1.contains("\nEVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{part1}");
+    assert!(part1.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"), "{part1}");
+    assert!(
+        part2.contains("Decide it from CLASS, VERDICT, EXPOSURE TILT and RISK PROFILE first, refined by EVIDENCE GAPS, POSITION, SUPPORTED ACTIONS and INVESTOR PROFILE."),
+        "{part2}"
+    );
     assert!(!part1.contains("Return "), "Part 1 instructs\n{part1}");
     assert!(!part2.contains("Name the returns you weighed"));
     for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "RETURN SHAPE (every value is a placeholder)"] {
@@ -1234,7 +1277,7 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
     assert!(!user.contains("CAPITAL EFFICIENCY") && !user.contains("PRICE TARGETS"), "{user}");
     // The role/risk VERDICT carries the document alone — no conviction, no
     // expected price line.
-    assert!(part1.contains("\nVERDICT (analyst)\nThesis document:\nRole: "), "{part1}");
+    assert!(part1.contains("\nVERDICT\nAn analyst's read of the holding's data and research: the thesis document.\nThesis document:\nRole: "), "{part1}");
     assert!(!part1.contains("Conviction:") && !part1.contains("Expected share price"), "{part1}");
     let mut blank = rr.clone();
     blank.thesis_document.clear();

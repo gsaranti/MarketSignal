@@ -2180,7 +2180,20 @@ pub struct HoldingAudit {
 /// what-changed audit, the retrospective and the input delta leave every
 /// prompt. The persisted verdict moves the trail to `checkpoint-v20` and the
 /// archive to format 16.
-pub const PROMPT_VERSION: &str = "portfolio-v70";
+/// `portfolio-v71` (the holding verdict, task 2 — the action call): the action
+/// packet takes the docs' shape — HOLDING; POSITION (the shares held, the cost
+/// basis, the market value, the unrealized gain or loss and the change since
+/// the last pull — the one packet that sees the position's economics); on a
+/// priced holding VERDICT then one COMPUTED heading with labelled sub-blocks
+/// (COMPUTED ACTION, GRADE without the sub-scores or the tier, PRICE BANDS
+/// with the analyst's expected price beside each horizon, CAPITAL EFFICIENCY,
+/// the forensic, overlay, option-overlay and commodity sections where they
+/// render); on a continuity run PRIOR ACTION with the prior rationale less
+/// the caveat, a rule-demoted prior carrying none; the two-reads preamble and
+/// the provenance suffixes gone; Part 2 weighs VERDICT and COMPUTED first,
+/// POSITION among the refining inputs. No persisted shape moves: the trail
+/// stays at `checkpoint-v20` and the archive at format 16.
+pub const PROMPT_VERSION: &str = "portfolio-v71";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2238,6 +2251,19 @@ pub(crate) fn carried_action(verdict: &HoldingVerdict) -> Option<Action> {
     match &verdict.disposition {
         VerdictDisposition::Priced(g) => Some(g.action),
         VerdictDisposition::RoleRiskOnly(r) => Some(r.action),
+        _ => None,
+    }
+}
+
+/// The persisted rationale beside [`carried_action`] — the model's sentence
+/// with the app's caveat where one rode — on the two branches that carry an
+/// action; `None` on an abstained or not-rated verdict. The action packet's
+/// PRIOR ACTION renders it through `pipeline::investment_sentence`, so the
+/// caveat never reaches the decision.
+pub(crate) fn carried_rationale(verdict: &HoldingVerdict) -> Option<&str> {
+    match &verdict.disposition {
+        VerdictDisposition::Priced(g) => Some(g.action_rationale.as_str()),
+        VerdictDisposition::RoleRiskOnly(r) => Some(r.action_rationale.as_str()),
         _ => None,
     }
 }

@@ -1,6 +1,6 @@
 # Thesis document — stock, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v71`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior document of 2026-09-02.
 The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8541 chars — the messages and tools as serialized |
+| Prompt material | 8536 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ of the message gives the inputs. Part 2 says what the document covers, in order,
 it.
 ~~~~
 
-## User message (8175 chars)
+## User message (8170 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -47,7 +47,7 @@ Daily closes: 2 sessions from 2026-09-02 to 2026-09-14, 52-week low 348.20 on 20
 Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
 
 COMPUTED
-The computed reads follow under their labels, through to MARKET ANALYSIS; each is derived from the
+The computed reads follow under their labels, up to MARKET ANALYSIS; each is derived from the
 fetched data by fixed formulas.
 
 METRICS

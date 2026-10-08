@@ -34,8 +34,8 @@ use crate::portfolio::pre_profit::{self, PreProfitOverlay};
 use crate::portfolio::soft_forensic::{LineLeg, SoftFlagState, SoftForensicFlags};
 use crate::portfolio::{
     appendix_schema, Action, ActionSource, Conviction, ExposureWeight, GradedVerdict,
-    HoldingAudit, HoldingVerdict, PricedModelArm, RoleRiskVerdict, ThesisAppendix,
-    VerdictDisposition, PROMPT_VERSION,
+    HoldingAudit, HoldingVerdict, PositionChange, PricedModelArm, RoleRiskVerdict,
+    ThesisAppendix, VerdictDisposition, PROMPT_VERSION,
 };
 
 use crate::portfolio::distill::{self, DistillInputs, DistilledResearch, ResearchAuditRecord};
@@ -169,13 +169,21 @@ realizing it may carry a tax benefit; account type, tax lots, holding periods an
 unmodeled.";
 
 /// The caveat for this rung, profile and position — `None` where nothing is
-/// realized (hold, the add family), under a tax-exempt profile, or at break-even.
+/// realized (hold, the add family), under a tax-exempt profile, at break-even,
+/// or with no reported cost basis: an exactly-zero basis is an unreported one
+/// on the wire (the adapter maps a missing `averagePrice` to zero), so its
+/// gain is undefined rather than the whole market value
+/// (`docs/portfolio-analysis.md` §Storage and display); a negative netted
+/// basis keeps its dollar gain and so its caveat.
 pub fn tax_caveat(
     profile: &crate::portfolio::InvestorProfile,
     position: &crate::schwab::Position,
     action: Action,
 ) -> Option<&'static str> {
     if !profile.tax_sensitive || !matches!(action, Action::Trim | Action::SellAll) {
+        return None;
+    }
+    if position.cost_basis == 0.0 {
         return None;
     }
     let pl = position.market_value - position.cost_basis;
@@ -2023,7 +2031,7 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
 
     // COMPUTED — one heading, labelled sub-blocks, running to MARKET ANALYSIS.
     p.push_str(
-        "\nCOMPUTED\nThe computed reads follow under their labels, through to MARKET \
+        "\nCOMPUTED\nThe computed reads follow under their labels, up to MARKET \
          ANALYSIS; each is derived from the fetched data by fixed formulas.\n",
     );
 
@@ -2890,42 +2898,53 @@ pub fn action_system_prompt() -> String {
     )
 }
 
-/// The one sentence Part 1 opens with on both branches: what the two labels
-/// mean, once (ruled 2026-09-17: "computed" and "analyst"; the packet does not
-/// say the analyst's read came from the same model).
-const TWO_READS: &str = "Two reads of this holding appear below: a computed read, derived from \
-its financial data by fixed formulas, and an analyst's read of the same data and research.\n";
-
-/// The gloss beside a computed grade resting on an imputed sub-score.
-const LOW_CONFIDENCE_GLOSS: &str = " (low-confidence: one score is imputed)";
-
-/// The action message (`portfolio-v41`): Part 1 the inputs, each section
-/// explained once and then its values with no instruction in it; Part 2 the
-/// task in output order and the placeholder-only shape. No arm, baseline,
+/// The action message (`portfolio-v71`): Part 1 the inputs, each section
+/// explained once and then its values with no instruction in it, in the docs'
+/// order — HOLDING; POSITION, the one model-facing packet that sees the
+/// position's economics; on a priced holding VERDICT, then COMPUTED as one
+/// heading with labelled sub-blocks (the rung a fixed rule gives, the grade,
+/// the price bands with the analyst's expected price beside each, the
+/// capital-efficiency numbers, then the forensic filings, the overlay's
+/// financing legs, the option overlay and the commodity prints where they
+/// render); on a `role_risk_only` holding the branch's own sections then
+/// VERDICT; on a continuity run PRIOR ACTION with its rationale; SUPPORTED
+/// ACTIONS as one data line; the investor profile less its tax row. Part 2
+/// the task in output order and the placeholder-only shape. No arm, baseline,
 /// stage, seam, validator behaviour, stamp or product name. Tunnel vision is
 /// enforced by input isolation: no whole-book field exists here
-/// (`docs/portfolio-analysis.md` §Portfolio action). The packet renders VERDICT
-/// — the conviction, the three expected prices and the thesis document
-/// verbatim — in place of the retired analyst sections; its full reshape
-/// (POSITION, the COMPUTED regrouping, the task's clauses) is the next task.
+/// (`docs/portfolio-analysis.md` §Portfolio action; `docs/portfolio-workflow.md`
+/// §Step 6f).
 pub fn action_user_prompt(input: &ActionInput) -> String {
     let d = input.dossier;
     let mut p = String::from("======== PART 1: INPUTS ========\n");
     p.push_str(&holding_header(d));
-    p.push_str(&format!("\n{TWO_READS}"));
+    p.push_str(&position_section(d));
+    let prior_action = prior_action_section(d);
     match &input.subject {
         ActionSubject::Priced { graded, engine, pre_profit } => {
-            p.push_str(&scores_section(graded));
-            p.push_str(&price_targets_section(d, graded, engine));
-            p.push_str(&capital_efficiency_section(&engine.hurdle));
             p.push_str(&verdict_section(d, Some(&graded.appendix), &graded.thesis_document));
-            p.push_str(&prior_action_section(d));
+            // COMPUTED — one heading, labelled sub-blocks, running to the next
+            // top-level section, which is PRIOR ACTION only on a continuity run.
+            p.push_str(&format!(
+                "\nCOMPUTED\nThe computed reads follow under their labels, up to {}; \
+                 each is derived from the holding's data by fixed formulas.\n",
+                if prior_action.is_empty() { "SUPPORTED ACTIONS" } else { "PRIOR ACTION" }
+            ));
+            p.push_str(&engine_rung_section(graded));
+            p.push_str(&grade_section(graded));
+            p.push_str(&price_bands_section(d, graded, engine));
+            p.push_str(&capital_efficiency_section(&engine.hurdle));
+            p.push_str(&forensic_prompt_section(d, PromptStage::Action));
             if let Some(overlay) = pre_profit {
                 p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Action));
             }
+            p.push_str(&option_overlay_prompt_section(d));
+            p.push_str(&commodity_prompt_section(d));
         }
         ActionSubject::RoleRisk { verdict } => {
-            p.push_str(&format!("\nCLASS (computed)\n{}\n", verdict.class_label));
+            // The branch's computed surface stays as top-level sections — the
+            // thesis message's role/risk form (ruled 2026-10-08).
+            p.push_str(&format!("\nCLASS\n{}\n", verdict.class_label));
             if !verdict.exposure_tilt.is_empty() {
                 let tilt: Vec<String> = verdict
                     .exposure_tilt
@@ -2933,10 +2952,10 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                     .take(5)
                     .map(|w| format!("{} {:.0}%", w.label, w.weight * 100.0))
                     .collect();
-                p.push_str(&format!("\nEXPOSURE TILT (computed)\n{}\n", tilt.join(", ")));
+                p.push_str(&format!("\nEXPOSURE TILT\n{}\n", tilt.join(", ")));
             }
             p.push_str(&format!(
-                "\nRISK PROFILE (computed)\nExpense drag: {} of assets per year. \
+                "\nRISK PROFILE\nExpense drag: {} of assets per year. \
                  Observable risk: {} (annualized realized volatility). Structural flag \
                  (leveraged / inverse or option-overlay path dependency): {}.\n",
                 fmt_expense_ratio(verdict.expense_drag),
@@ -2952,28 +2971,26 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 }
             }
             if !verdict.evidence_gaps.is_empty() {
-                p.push_str(&format!(
-                    "\nEVIDENCE GAPS (computed)\n{}\n",
-                    verdict.evidence_gaps.join("; ")
-                ));
+                p.push_str(&format!("\nEVIDENCE GAPS\n{}\n", verdict.evidence_gaps.join("; ")));
             }
             p.push_str(&verdict_section(d, None, &verdict.thesis_document));
-            p.push_str(&prior_action_section(d));
+            p.push_str(&forensic_prompt_section(d, PromptStage::Action));
+            p.push_str(&option_overlay_prompt_section(d));
+            p.push_str(&commodity_prompt_section(d));
         }
     }
-    p.push_str(&forensic_prompt_section(d, PromptStage::Action));
-    p.push_str(&commodity_prompt_section(d));
-    p.push_str(&option_overlay_prompt_section(d));
-    // The computed per-holding set as one data line (fix list 3.9, ruled
-    // 2026-09-17: no permission sentence — the return shape's enum shows the
-    // ladder). An outside-the-set rung persists as authored with the departure
-    // on the audit (`outside_set_annotation`), never a bar. Since
-    // `portfolio-v49` (ruled 2026-09-27) the line says the list is complete
-    // and that an unlisted rung is outside the read.
+    p.push_str(&prior_action);
+    // The per-holding set as one data line (fix list 3.9, ruled 2026-09-17: no
+    // permission sentence — the return shape's enum shows the ladder). An
+    // outside-the-set rung persists as authored with the departure on the audit
+    // (`outside_set_annotation`), never a bar. Since `portfolio-v49` (ruled
+    // 2026-09-27) the line says the list is complete and that an unlisted rung
+    // is outside the read; since `portfolio-v71` the rule is named on the line
+    // itself, the two-reads preamble that glossed "computed" having gone.
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&format!(
-        "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: {}. \
-         A rung not listed is outside that read.\n",
+        "\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed \
+         in full: {}. A rung not listed is outside that rule.\n",
         set.join(", ")
     ));
     // The cash row is deliberately not rendered: available capital is
@@ -2990,109 +3007,249 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     p
 }
 
-/// SCORES: the polarity gloss once, the grade's derivation once, then the
-/// computed row with the engine's own rung as a computed read.
-fn scores_section(graded: &GradedVerdict) -> String {
-    let e = &graded.sub_scores;
+/// POSITION — the holding as the account carries it
+/// (`docs/portfolio-analysis.md` §Portfolio action): the shares held, the
+/// total cost basis, the market value, the unrealized gain or loss as dollars
+/// and as a share of the cost basis, and the change in the shares held since
+/// the last pull — the quantity move with the shares then and now, never the
+/// paid-up / averaged-down read, which stays on the app's surfaces
+/// (`docs/portfolio-analysis.md` §Holdings change tracking). The basis follows
+/// the card's contract (`docs/portfolio-analysis.md` §Storage and display): an
+/// exactly-zero basis is indistinguishable on the wire from an unreported one
+/// (the adapter maps a missing `averagePrice` to zero), so it renders as not
+/// reported with no gain or loss; a negative netted basis keeps its dollar
+/// gain or loss and renders no percentage. The one model-facing packet that
+/// sees the position's economics; the thesis message renders none of it.
+fn position_section(d: &HoldingDossier) -> String {
+    let pos = &d.position;
+    let (basis, pl_line) = if pos.cost_basis == 0.0 {
+        (
+            "not reported".to_string(),
+            "Unrealized gain or loss: not available without a reported cost basis.".to_string(),
+        )
+    } else {
+        let pl = pos.market_value - pos.cost_basis;
+        let share = if pos.cost_basis > 0.0 && pl.is_finite() {
+            format!(" ({:+.1}% of the cost basis)", pl / pos.cost_basis * 100.0)
+        } else {
+            String::new()
+        };
+        let line = if pl > 0.0 {
+            format!("Unrealized gain: {}{share}.", fmt_usd(pl))
+        } else if pl < 0.0 {
+            format!("Unrealized loss: {}{share}.", fmt_usd(-pl))
+        } else {
+            "Unrealized gain or loss: none.".to_string()
+        };
+        (fmt_usd(pos.cost_basis), line)
+    };
+    let delta = &d.position_delta;
+    let change = match (delta.change, delta.prior_quantity) {
+        (PositionChange::New, _) => "new".to_string(),
+        (PositionChange::Unchanged, _) => format!("unchanged at {}", fmt_shares(pos.quantity)),
+        (PositionChange::Increased, Some(prior)) => {
+            format!("increased, from {} to {}", fmt_shares(prior), fmt_shares(pos.quantity))
+        }
+        (PositionChange::Decreased, Some(prior)) => {
+            format!("decreased, from {} to {}", fmt_shares(prior), fmt_shares(pos.quantity))
+        }
+        (PositionChange::Increased, None) => "increased".to_string(),
+        (PositionChange::Decreased, None) => "decreased".to_string(),
+    };
     format!(
-        "\nSCORES (computed)\nFour scores from 0 to 100, higher is better on every axis: quality; \
-         valuation, where higher means more attractive; momentum; risk, where higher means \
-         more resilient. The grade is a letter derived from the quality, valuation and risk \
-         scores.\n\
-         quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}{}. \
-         Risk tier: {}. Computed action: {}.\n",
-        e.quality,
-        e.valuation,
-        e.momentum,
-        e.risk,
-        graded.grade.as_str(),
-        if graded.low_confidence_grade { LOW_CONFIDENCE_GLOSS } else { "" },
-        graded.risk_tier.as_str(),
-        graded.engine_rung.as_kebab(),
+        "\nPOSITION\nThe holding as the account carries it: the shares held, the total cost \
+         basis, the market value, the unrealized gain or loss (the market value less the cost \
+         basis, and as a share of a positive cost basis; not available where no basis is \
+         reported) and the change in the shares held since the last pull — new where the last \
+         pull had none, else increased, decreased or unchanged, with the shares held then and \
+         now.\n\
+         Shares held: {}. Cost basis: {basis}. Market value: {}. {pl_line} Change since the \
+         last pull: {change}.\n",
+        fmt_shares(pos.quantity),
+        fmt_usd(pos.market_value),
     )
 }
 
-/// PRICE TARGETS: the computed bands as prices with the move each implies from
-/// the current price and the method clauses the thesis message renders. A
-/// band the scenario function could not derive prints "(gap)". With no usable
-/// current price the prices render without moves (unreachable on a priced
-/// holding — the quote floor — so the guard stays defensive).
-fn price_targets_section(
+/// A share count for the POSITION lines: whole where it is whole, else to four
+/// places with the trailing zeros dropped; a negative quantity reads as short.
+fn fmt_shares(q: f64) -> String {
+    let n = q.abs();
+    let digits = if (n - n.round()).abs() < 1e-9 {
+        format!("{n:.0}")
+    } else {
+        format!("{n:.4}").trim_end_matches('0').trim_end_matches('.').to_string()
+    };
+    if q < 0.0 {
+        format!("{digits} short")
+    } else {
+        digits
+    }
+}
+
+/// A dollar amount for the POSITION lines: two places and thousands separators,
+/// a negative total signed; a non-finite value prints as a gap.
+fn fmt_usd(v: f64) -> String {
+    if !v.is_finite() {
+        return "(gap)".to_string();
+    }
+    let s = format!("{:.2}", v.abs());
+    let (int, frac) = s.split_once('.').unwrap_or((&s, "00"));
+    let mut grouped = String::with_capacity(int.len() + int.len() / 3);
+    for (i, c) in int.chars().enumerate() {
+        if i > 0 && (int.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    format!("{}${grouped}.{frac}", if v < 0.0 { "-" } else { "" })
+}
+
+/// The current price where one is usable — finite and positive — for the
+/// implied-move legs; `None` otherwise (unreachable on a priced holding, the
+/// quote floor, so the guard stays defensive).
+fn usable_spot(d: &HoldingDossier) -> Option<f64> {
+    d.financials.current_price.filter(|s| s.is_finite() && *s > 0.0)
+}
+
+/// A price as the action packet prints one: two places, with the move it
+/// implies from the current price where one is usable.
+fn fmt_price_move(spot: Option<f64>, v: f64) -> String {
+    match spot {
+        Some(s) => format!("{v:.2} ({:+.1}%)", (v / s - 1.0) * 100.0),
+        None => format!("{v:.2}"),
+    }
+}
+
+/// The engine's own rung as its own read under COMPUTED: the rung a fixed rule
+/// gives from the computed reads, a data line and never a recommendation
+/// (`docs/portfolio-analysis.md` §Portfolio action). Labelled COMPUTED ACTION
+/// rather than ACTION so the sub-block never reads as the output item.
+fn engine_rung_section(graded: &GradedVerdict) -> String {
+    format!(
+        "\nCOMPUTED ACTION\nThe rung a fixed rule gives from the computed reads: {}.\n",
+        graded.engine_rung.as_kebab()
+    )
+}
+
+/// GRADE under COMPUTED: the letter with its derivation glossed once and the
+/// imputed-score disclosure where it applies. The sub-scores and the risk tier
+/// render on the thesis message alone (ruled 2026-10-08: the docs name the
+/// grade for this packet).
+fn grade_section(graded: &GradedVerdict) -> String {
+    format!(
+        "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and risk \
+         scores.\n{}{}.\n",
+        graded.grade.as_str(),
+        if graded.low_confidence_grade {
+            "; one of those scores is imputed, so the letter is low-confidence"
+        } else {
+            ""
+        },
+    )
+}
+
+/// PRICE BANDS under COMPUTED: the three computed legs as prices with the move
+/// each implies from the current price, the analyst's expected price from
+/// VERDICT beside each horizon (ruled 2026-10-08), and the method clauses the
+/// thesis message renders. A band the scenario function could not derive
+/// prints "(gap)"; a horizon the document stated no price for prints "none".
+/// With no usable current price the prices render without moves (unreachable
+/// on a priced holding — the quote floor — so the guard stays defensive).
+fn price_bands_section(
     d: &HoldingDossier,
     graded: &GradedVerdict,
     engine: &EngineOutput,
 ) -> String {
-    let spot = d.financials.current_price.filter(|s| s.is_finite() && *s > 0.0);
-    let mv = |v: f64| spot.map(|s| (v / s - 1.0) * 100.0);
-    let leg = |v: f64| match mv(v) {
-        Some(m) => format!("{v:.2} ({m:+.1}%)"),
-        None => format!("{v:.2}"),
+    let spot = usable_spot(d);
+    let leg = |v: f64| fmt_price_move(spot, v);
+    let analyst = |v: Option<f64>| match v {
+        Some(v) => leg(v),
+        None => "none".to_string(),
     };
+    let a = &graded.appendix;
     let mut p = String::from(
-        "\nPRICE TARGETS (computed; USD, with the move each implies from the current price)\n",
+        "\nPRICE BANDS (USD, with the move each implies from the current price; the analyst's \
+         expected price from VERDICT beside each)\n",
     );
-    match &graded.price_targets.twelve_month {
+    match &graded.price_targets.three_month {
         Some(t) => p.push_str(&format!(
-            "- twelve-month: bear {} / base {} / bull {}. Method: {}.{}\n",
+            "- three-month: bear {} / base {} / bull {}; analyst {}. Method: {}.\n",
             leg(t.bear),
             leg(t.base),
             leg(t.bull),
+            analyst(a.expected_price_3m),
+            three_month_method(t),
+        )),
+        None => p.push_str(&format!(
+            "- three-month: (gap); analyst {}.\n",
+            analyst(a.expected_price_3m)
+        )),
+    }
+    match &graded.price_targets.twelve_month {
+        Some(t) => p.push_str(&format!(
+            "- twelve-month: bear {} / base {} / bull {}; analyst {}. Method: {}.{}\n",
+            leg(t.bear),
+            leg(t.base),
+            leg(t.bull),
+            analyst(a.expected_price_12m),
             twelve_month_method(&engine.target_meta),
             target_notes_line(&engine.target_meta)
                 .map(|n| format!(" Notes: {n}"))
                 .unwrap_or_default(),
         )),
-        None => p.push_str("- twelve-month: (gap)\n"),
-    }
-    match &graded.price_targets.three_month {
-        Some(t) => p.push_str(&format!(
-            "- three-month: bear {} / base {} / bull {}. Method: {}.\n",
-            leg(t.bear),
-            leg(t.base),
-            leg(t.bull),
-            three_month_method(t),
+        None => p.push_str(&format!(
+            "- twelve-month: (gap); analyst {}.\n",
+            analyst(a.expected_price_12m)
         )),
-        None => p.push_str("- three-month: (gap)\n"),
     }
     match &graded.price_targets.three_year {
         Some(t) => p.push_str(&format!(
-            "- three-year: bear {} / base {} / bull {}. Method: {}.\n",
+            "- three-year: bear {} / base {} / bull {}; analyst {}. Method: {}.\n",
             leg(t.bear),
             leg(t.base),
             leg(t.bull),
+            analyst(a.expected_price_3y),
             three_year_method(&engine.target_meta),
         )),
-        None => p.push_str("- three-year: (gap)\n"),
+        None => p.push_str(&format!(
+            "- three-year: (gap); analyst {}.\n",
+            analyst(a.expected_price_3y)
+        )),
     }
     p
 }
 
-/// VERDICT: the analyst's read — on a priced holding the conviction and the
-/// three expected prices with the move each implies, a null field as "none",
-/// then the thesis document verbatim; on the role/risk branch the document
-/// alone (`docs/portfolio-analysis.md` §Portfolio action).
+/// VERDICT: an analyst's read of the holding — on a priced holding the
+/// conviction and the expected share price at each horizon with the move each
+/// implies, a null field as "none", then the thesis document verbatim; on the
+/// role/risk branch the document alone. The gloss carries the provenance the
+/// two-reads preamble once did, and the packet does not say the read came
+/// from the same model (`docs/portfolio-analysis.md` §Portfolio action).
 fn verdict_section(d: &HoldingDossier, appendix: Option<&ThesisAppendix>, document: &str) -> String {
-    let mut p = String::from("\nVERDICT (analyst)\n");
+    let mut p = String::from("\nVERDICT\n");
     if let Some(a) = appendix {
-        let spot = d.financials.current_price.filter(|s| s.is_finite() && *s > 0.0);
+        let spot = usable_spot(d);
         let price = |v: Option<f64>| match v {
             None => "none".to_string(),
-            Some(v) => match spot {
-                Some(s) => format!("{v:.2} ({:+.1}%)", (v / s - 1.0) * 100.0),
-                None => format!("{v:.2}"),
-            },
+            Some(v) => fmt_price_move(spot, v),
         };
         let prices: Vec<String> = a
             .expected_prices()
             .iter()
             .map(|(label, v)| format!("{label} {}", price(*v)))
             .collect();
+        p.push_str(
+            "An analyst's read of the holding's data and research: the conviction, the expected \
+             share price at each horizon (USD, with the move each implies from the current \
+             price) and the thesis document.\n",
+        );
         p.push_str(&format!(
-            "Conviction: {}. Expected share price (USD, with the move each implies from the \
-             current price): {}.\n",
+            "Conviction: {}. Expected share price: {}.\n",
             a.conviction.map(Conviction::as_str).unwrap_or("none"),
             prices.join(", ")
         ));
+    } else {
+        p.push_str("An analyst's read of the holding's data and research: the thesis document.\n");
     }
     p.push_str("Thesis document:\n");
     p.push_str(document);
@@ -3123,10 +3280,13 @@ fn capital_efficiency_section(h: &engine::HurdleRead) -> String {
     }
 }
 
-/// PRIOR ACTION, rendered only with a prior verdict that carries an action:
-/// the rung, glossed as chosen in the prior analysis or set by rule after it
-/// (`docs/portfolio-analysis.md` §Portfolio action). An abstained or not-rated
-/// prior renders nothing.
+/// PRIOR ACTION, rendered only with a prior verdict that carries an action: a
+/// model-chosen rung glossed as chosen in the prior analysis, with its
+/// rationale less the app's caveat sentence (`investment_sentence`); a
+/// rule-demoted rung glossed as set by rule after the prior analysis, with no
+/// rationale, since that rationale argued the rung the rule replaced
+/// (`docs/portfolio-analysis.md` §Portfolio action; ruled 2026-10-08). An
+/// abstained or not-rated prior renders nothing.
 fn prior_action_section(d: &HoldingDossier) -> String {
     let Some(prior) = d.prior_verdict.as_ref() else {
         return String::new();
@@ -3134,21 +3294,32 @@ fn prior_action_section(d: &HoldingDossier) -> String {
     let Some(action) = crate::portfolio::carried_action(prior) else {
         return String::new();
     };
-    format!(
-        "\nPRIOR ACTION\n{}, {}.\n",
-        action.as_kebab(),
-        match prior.action_source {
-            ActionSource::ModelChosen => "chosen in the prior analysis",
-            ActionSource::RuleDemoted => "set by rule after the prior analysis, not chosen in it",
+    match prior.action_source {
+        ActionSource::ModelChosen => {
+            let mut p = format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", action.as_kebab());
+            let rationale = crate::portfolio::carried_rationale(prior)
+                .map(investment_sentence)
+                .unwrap_or("")
+                .trim();
+            if !rationale.is_empty() {
+                p.push_str(&format!("Rationale: {rationale}\n"));
+            }
+            p
         }
-    )
+        ActionSource::RuleDemoted => format!(
+            "\nPRIOR ACTION\n{}, set by rule after the prior analysis, not chosen in it.\n",
+            action.as_kebab()
+        ),
+    }
 }
 
 /// Part 2 of the action message: the two items in output order, each naming
-/// the Part 1 sections it draws on — the weighing order as a task clause, the
-/// profile tie-break, on a priced holding the sunk-cost rule as one clause on
-/// every packet (`docs/portfolio-analysis.md` §Portfolio action), with a
-/// chosen prior the firmness clause — and the placeholder-only shape.
+/// the Part 1 sections it draws on — the weighing order as a task clause with
+/// POSITION in the refining list (ruled 2026-10-08), the profile tie-break, on
+/// a priced holding the sunk-cost rule as one clause on every packet naming
+/// its sub-block under COMPUTED (`docs/portfolio-analysis.md` §Portfolio
+/// action), with a chosen prior the firmness clause — and the
+/// placeholder-only shape.
 fn action_task_section(input: &ActionInput) -> String {
     let prior = input.dossier.prior_verdict.as_ref();
     let prior_chosen = prior.is_some_and(|v| {
@@ -3165,10 +3336,7 @@ fn action_task_section(input: &ActionInput) -> String {
          dollar amount or portfolio weight. ",
     );
     let (first, mut refining): (Vec<&str>, Vec<&str>) = match &input.subject {
-        ActionSubject::Priced { .. } => (
-            vec!["VERDICT", "SCORES", "PRICE TARGETS"],
-            vec!["CAPITAL EFFICIENCY"],
-        ),
+        ActionSubject::Priced { .. } => (vec!["VERDICT", "COMPUTED"], vec!["POSITION"]),
         ActionSubject::RoleRisk { verdict } => {
             let mut first = vec!["CLASS", "VERDICT"];
             if !verdict.exposure_tilt.is_empty() {
@@ -3182,6 +3350,7 @@ fn action_task_section(input: &ActionInput) -> String {
             if !verdict.evidence_gaps.is_empty() {
                 refining.push("EVIDENCE GAPS");
             }
+            refining.push("POSITION");
             (first, refining)
         }
     };
@@ -3204,8 +3373,8 @@ fn action_task_section(input: &ActionInput) -> String {
     ));
     match &input.subject {
         ActionSubject::Priced { .. } => p.push_str(
-            " Where even the bull case in CAPITAL EFFICIENCY misses the hurdle and the forward \
-             read is poor, lean toward realizing some or all of the position.",
+            " Where even the bull case under CAPITAL EFFICIENCY misses the hurdle and the \
+             forward read is poor, lean toward realizing some or all of the position.",
         ),
         ActionSubject::RoleRisk { .. } => p.push_str(
             " An add-side rung needs support from the vehicle's own attributes, stated in the \
@@ -4405,6 +4574,15 @@ pub(crate) mod tests {
             market_value: 19_500.0,
             current_price: Some(195.0),
         }
+    }
+
+    /// An action packet with its POSITION block cut out — the gloss and the
+    /// values up to the blank line before the next section — so a test can
+    /// pin that a repriced position changes nothing else.
+    pub(crate) fn without_position(packet: &str) -> String {
+        let start = packet.find("\nPOSITION\n").expect("a POSITION block");
+        let end = start + 1 + packet[start + 1..].find("\n\n").expect("the block's end");
+        format!("{}{}", &packet[..start], &packet[end..])
     }
 
     /// The shared rate anchors as a static reference — a struct literal's
@@ -6026,7 +6204,7 @@ pub(crate) mod tests {
         // (ruled 2026-09-17, F1).
         assert!(!action.contains("By rule:"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is outside that read.\n"),
+            action.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"),
             "{action}"
         );
         assert!(!action.contains("HARD TRIGGER TRIPPED"), "{action}");
@@ -6104,28 +6282,70 @@ pub(crate) mod tests {
         );
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").unwrap();
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
-        for section in [
-            "SCORES (computed)\n",
-            "PRICE TARGETS (computed; USD, with the move each implies from the current price)\n",
+        // The sections in the docs' order (`docs/portfolio-workflow.md` §Step 6f),
+        // each once: POSITION, VERDICT, then one COMPUTED heading with its
+        // labelled sub-blocks, SUPPORTED ACTIONS and the profile.
+        let sections = [
+            "POSITION\n",
+            "VERDICT\n",
+            "COMPUTED\n",
+            "COMPUTED ACTION\n",
+            "GRADE\n",
+            "PRICE BANDS (USD, with the move each implies from the current price; the analyst's \
+             expected price from VERDICT beside each)\n",
             "CAPITAL EFFICIENCY\n",
-            "VERDICT (analyst)\n",
-            "SUPPORTED ACTIONS (computed)\n",
+            "SUPPORTED ACTIONS\n",
             "INVESTOR PROFILE\n",
-        ] {
-            assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "{section}: {part1}");
+        ];
+        let mut last = 0;
+        for section in sections {
+            let key = format!("\n{section}");
+            assert_eq!(part1.matches(&key).count(), 1, "{section}: {part1}");
+            let at = part1.find(&key).unwrap();
+            assert!(at > last, "{section} out of order: {part1}");
+            last = at;
         }
+        // POSITION: the test position's economics and the debut's change tag.
+        assert!(
+            part1.contains(
+                "\nPOSITION\nThe holding as the account carries it: the shares held, the total \
+                 cost basis, the market value, the unrealized gain or loss (the market value \
+                 less the cost basis, and as a share of a positive cost basis; not available \
+                 where no basis is reported) and the change in the shares held since the last \
+                 pull — new where the last pull had none, else increased, decreased or \
+                 unchanged, with the shares held then and now.\n\
+                 Shares held: 100. Cost basis: $14,000.00. Market value: $19,500.00. Unrealized \
+                 gain: $5,500.00 (+39.3% of the cost basis). Change since the last pull: new.\n"
+            ),
+            "{part1}"
+        );
+        // The COMPUTED heading names the section it runs to — SUPPORTED ACTIONS
+        // on a debut, which carries no PRIOR ACTION.
+        assert!(
+            part1.contains(
+                "\nCOMPUTED\nThe computed reads follow under their labels, up to SUPPORTED \
+                 ACTIONS; each is derived from the holding's data by fixed formulas.\n"
+            ),
+            "{part1}"
+        );
+        assert!(
+            part1.contains(&format!(
+                "\nCOMPUTED ACTION\nThe rung a fixed rule gives from the computed reads: {}.\n",
+                graded.engine_rung.as_kebab()
+            )),
+            "{part1}"
+        );
         // Part 1 instructs nothing; Part 2 carries the two items and the shape.
         assert!(!part1.contains("Return "), "{part1}");
         assert!(
             part2.contains(
                 "\n1. action — one rung for this holding, from these inputs alone: \"sell-all\", \
                  \"trim\", \"hold\", \"add\" or \"add-aggressively\". The rung alone: no share count, \
-                 dollar amount or portfolio weight. Decide it from VERDICT, SCORES and PRICE \
-                 TARGETS first, refined by CAPITAL EFFICIENCY, SUPPORTED ACTIONS and INVESTOR \
-                 PROFILE. An aggressive risk tolerance admits \
-                 add-aggressively where the other inputs support it. Where even the bull case in \
-                 CAPITAL EFFICIENCY misses the hurdle and the forward read is poor, lean toward \
-                 realizing some or all of the position.\n"
+                 dollar amount or portfolio weight. Decide it from VERDICT and COMPUTED first, \
+                 refined by POSITION, SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive \
+                 risk tolerance admits add-aggressively where the other inputs support it. \
+                 Where even the bull case under CAPITAL EFFICIENCY misses the hurdle and the \
+                 forward read is poor, lean toward realizing some or all of the position.\n"
             ),
             "{part2}"
         );
@@ -6144,28 +6364,32 @@ pub(crate) mod tests {
             crate::portfolio::action_return_shape(),
             "{\"action\":\"<sell-all|trim|hold|add|add-aggressively>\",\"rationale\":\"\"}"
         );
-        // Both reads' bands reach the rung with the move each implies, both
-        // horizons (Codex I5): the stub authors its twelve-month base at 1.05×
-        // the computed base, so the two base moves differ on the page.
+        // The computed bands reach the rung with the move each implies, the
+        // analyst's expected price beside each horizon (ruled 2026-10-08): the
+        // stub authors its twelve-month base at 1.05× the computed base, so the
+        // two moves differ on the line.
         let spot = d.financials.current_price.unwrap();
         let leg = |v: f64| format!("{v:.2} ({:+.1}%)", (v / spot - 1.0) * 100.0);
         let engine_12 = graded.price_targets.twelve_month.as_ref().unwrap();
-        assert!(
-            user.contains(&format!(
-                "- twelve-month: bear {} / base {} / bull {}. Method: ",
-                leg(engine_12.bear), leg(engine_12.base), leg(engine_12.bull)
-            )),
-            "{user}"
-        );
-        // The analyst's read is the VERDICT section: the appendix's conviction
-        // and expected prices with the move each implies, a null as none, then
-        // the thesis document verbatim.
         let model_12 = graded.appendix.expected_price_12m.unwrap();
         assert!(
             user.contains(&format!(
-                "\nVERDICT (analyst)\nConviction: {}. Expected share price (USD, with the move each \
-                 implies from the current price): three-month {}, twelve-month {}, three-year {}.\n\
-                 Thesis document:\n{}",
+                "- twelve-month: bear {} / base {} / bull {}; analyst {}. Method: ",
+                leg(engine_12.bear), leg(engine_12.base), leg(engine_12.bull), leg(model_12)
+            )),
+            "{user}"
+        );
+        assert_ne!(leg(engine_12.base), leg(model_12));
+        // The analyst's read is the VERDICT section: its gloss carries the
+        // provenance, then the appendix's conviction and expected prices with
+        // the move each implies, a null as none, then the thesis document
+        // verbatim.
+        assert!(
+            user.contains(&format!(
+                "\nVERDICT\nAn analyst's read of the holding's data and research: the conviction, \
+                 the expected share price at each horizon (USD, with the move each implies from \
+                 the current price) and the thesis document.\nConviction: {}. Expected share \
+                 price: three-month {}, twelve-month {}, three-year {}.\nThesis document:\n{}",
                 graded.appendix.conviction.unwrap().as_str(),
                 leg(graded.appendix.expected_price_3m.unwrap()),
                 leg(model_12),
@@ -6174,39 +6398,43 @@ pub(crate) mod tests {
             )),
             "{user}"
         );
-        assert_ne!(leg(engine_12.base), leg(model_12));
         assert_eq!(user.matches("- three-month: ").count(), 1, "{user}");
         assert_eq!(user.matches("- three-year: ").count(), 1, "{user}");
         assert!(user.contains("- three-year: bear ") && user.contains("extrapolation"), "{user}");
-        // The polarity gloss once and the grade's derivation once (2.3 and 3.11
-        // as one data gloss); the set once as data with no permission sentence
-        // (3.9, ruled 2026-09-17).
-        assert_eq!(user.matches("higher is better on every axis").count(), 1, "{user}");
+        // GRADE carries the letter with its derivation glossed once; the
+        // sub-scores, their polarity gloss and the risk tier stay on the thesis
+        // message (ruled 2026-10-08). The set once as data with no permission
+        // sentence (3.9, ruled 2026-09-17), the rule named on the line.
         assert!(
-            user.contains(
-                "The grade is a letter derived from the quality, valuation and risk scores.\n\
-                 quality "
-            ),
+            user.contains(&format!(
+                "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and \
+                 risk scores.\n{}.\n",
+                graded.grade.as_str()
+            )),
             "{user}"
         );
+        assert!(!user.contains("higher is better on every axis"), "{user}");
+        assert!(!user.contains("Risk tier"), "{user}");
         let set: Vec<&str> = engine_set.iter().map(Action::as_kebab).collect();
         assert!(
             user.contains(&format!(
-                "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed \
-                 in full: {}. A rung not listed is outside that read.\n",
+                "\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, \
+                 listed in full: {}. A rung not listed is outside that rule.\n",
                 set.join(", ")
             )),
             "{user}"
         );
-        // No app concept, no whole-book vocabulary, no account economics, and
-        // — on a debut — no continuity section or firmness clause.
+        // No app concept, no whole-book vocabulary, no provenance suffix or
+        // two-reads preamble, and — on a debut — no continuity section or
+        // firmness clause.
         for absent in [
             "ENGINE SET", "ENGINE ARM", "MODEL ARM", "THE VERDICT", "ACTION BASIS", "IMPLIED ",
             "TARGET PROVENANCE", "engine arm", "model arm", "engine targets",
             "model targets", "its own pick", "full ladder", "neither requires nor forbids",
             "indeterminate", "dead money", "scoreboard", "concentration", "OVERLAP", "- cash:",
-            "unconstrained", "Unrealized", "Cost basis", "PRIOR ACTION", "PRIOR ANALYSIS",
+            "unconstrained", "PRIOR ACTION", "PRIOR ANALYSIS",
             "CHANGES SINCE", "Move from PRIOR ACTION", "exactly ONE", "Keep the action firm",
+            "(computed)", "(analyst)", "Two reads of this holding", "SCORES", "PRICE TARGETS",
         ] {
             assert!(!user.contains(absent), "`{absent}` in the message: {user}");
             assert!(!system.contains(absent), "`{absent}` in the system prompt: {system}");
@@ -6214,7 +6442,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn action_prompt_distinguishes_rule_demotion_and_follows_tax_posture() {
+    fn action_prompt_distinguishes_rule_demotion_and_renders_the_position_tax_invariant() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let mut prior = v.clone();
@@ -6250,26 +6478,38 @@ pub(crate) mod tests {
 
         let exempt = render(&d);
         // A rule-demoted prior renders as data with its gloss (ruled 2026-09-17,
-        // F4) and anchors no firmness clause.
+        // F4), carries no rationale — its rationale argued the rung the rule
+        // replaced (ruled 2026-10-08) — and anchors no firmness clause.
         assert!(
-            exempt.contains("\nPRIOR ACTION\nhold, set by rule after the prior analysis, not chosen in it.\n"),
+            exempt.contains("\nPRIOR ACTION\nhold, set by rule after the prior analysis, not chosen in it.\n\nSUPPORTED ACTIONS\n"),
             "{exempt}"
         );
+        assert!(!exempt.contains("Rationale:"), "{exempt}");
         assert!(!exempt.contains("chosen in the prior analysis."), "{exempt}");
         assert!(!exempt.contains("Move from PRIOR ACTION"), "{exempt}");
         assert!(!exempt.contains("rule-demoted"), "{exempt}");
-        // The investment-only packet (2.1, ruled 2026-09-16): no tax row, no
-        // P/L, no cost basis under either profile — and the two renders are
-        // byte-identical, so the tax posture cannot reach the rung by any route.
-        for token in ["tax", "Tax", "Unrealized", "Cost basis", "P/L"] {
+        // The COMPUTED heading runs to PRIOR ACTION on a continuity run.
+        assert!(exempt.contains("under their labels, up to PRIOR ACTION; each"), "{exempt}");
+        // No tax row and no caveat under either profile, and the two renders
+        // are byte-identical, so the tax posture cannot reach the rung by any
+        // route; the position's economics render once, under POSITION alone
+        // (ruled 2026-10-08).
+        for token in ["tax", "Tax", "P/L"] {
             assert!(!exempt.contains(token), "{token} leaked: {exempt}");
         }
+        for once in ["Cost basis:", "Market value:", "Unrealized gain:"] {
+            assert_eq!(exempt.matches(once).count(), 1, "{once}: {exempt}");
+        }
+        assert!(!without_position(&exempt).contains("Cost basis"), "{exempt}");
         d.profile.tax_sensitive = true;
         let taxable = render(&d);
         assert_eq!(exempt, taxable, "the tax posture must not change the packet");
+        // A repriced position changes POSITION's lines and nothing else.
         d.position.cost_basis *= 3.0;
         let repriced = render(&d);
-        assert_eq!(exempt, repriced, "the cost basis must not change the packet");
+        assert_ne!(exempt, repriced);
+        assert_eq!(without_position(&exempt), without_position(&repriced));
+        assert!(repriced.contains("Unrealized loss: $22,500.00 (-53.6% of the cost basis)."), "{repriced}");
     }
 
     #[test]
@@ -6318,16 +6558,29 @@ pub(crate) mod tests {
             ] {
                 assert!(!prompt.contains(absent), "`{absent}`: {prompt}");
             }
-            // The sunk-cost rule is one task clause on every priced packet.
-            assert_eq!(prompt.matches("Where even the bull case in CAPITAL EFFICIENCY misses the hurdle").count(), 1, "{prompt}");
-            // The low-confidence letter is a gloss on the computed grade line.
-            assert!(prompt.contains(&format!("Grade {}{LOW_CONFIDENCE_GLOSS}. Risk tier: ", low.grade.as_str())), "{prompt}");
-            // The continuity section: the prior action as chosen, and the
-            // firmness clause in the task; the retired PRIOR ANALYSIS and
-            // CHANGES sections render nowhere — the thesis document carries
-            // the continuity read.
-            assert!(prompt.contains(&format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", graded.action.as_kebab())), "{prompt}");
-            assert!(prompt.contains("Decide it from VERDICT, SCORES and PRICE TARGETS first, refined by CAPITAL EFFICIENCY, PRIOR ACTION, SUPPORTED ACTIONS and INVESTOR PROFILE."), "{prompt}");
+            // The sunk-cost rule is one task clause on every priced packet,
+            // naming its sub-block under COMPUTED.
+            assert_eq!(prompt.matches("Where even the bull case under CAPITAL EFFICIENCY misses the hurdle").count(), 1, "{prompt}");
+            // The low-confidence letter is a gloss on the GRADE line.
+            assert!(
+                prompt.contains(&format!(
+                    "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and risk scores.\n{}; one of those scores is imputed, so the letter is low-confidence.\n",
+                    low.grade.as_str()
+                )),
+                "{prompt}"
+            );
+            // The continuity section: the prior action as chosen with its
+            // rationale, and the firmness clause in the task; the retired PRIOR
+            // ANALYSIS and CHANGES sections render nowhere — the thesis document
+            // carries the continuity read.
+            assert!(
+                prompt.contains(&format!(
+                    "\nPRIOR ACTION\n{}, chosen in the prior analysis.\nRationale: Stub action: the grade-mapped rung inside the engine set.\n",
+                    graded.action.as_kebab()
+                )),
+                "{prompt}"
+            );
+            assert!(prompt.contains("Decide it from VERDICT and COMPUTED first, refined by POSITION, PRIOR ACTION, SUPPORTED ACTIONS and INVESTOR PROFILE."), "{prompt}");
             assert!(prompt.contains(" Move from PRIOR ACTION only where the inputs have materially changed since the prior analysis.\n"), "{prompt}");
             for absent in ["PRIOR ANALYSIS", "CHANGES SINCE", "Prior engine grade", "continuity baseline", "CompanyInformation", "THESIS (analyst)", "SCENARIOS (analyst)"] {
                 assert!(!prompt.contains(absent), "`{absent}`: {prompt}");
@@ -6596,7 +6849,12 @@ pub(crate) mod tests {
         // the ledger, the what-changed rows and the self-assessment gone; the
         // action packet reads VERDICT — v70, the trail to checkpoint-v20 (the
         // verdict record's shape).
-        assert_eq!(PROMPT_VERSION, "portfolio-v70");
+        // Its task 2 (2026-10-08) gives the action packet the docs' shape —
+        // POSITION, VERDICT, one COMPUTED heading with the grade alone and the
+        // analyst's price beside each band, PRIOR ACTION with its rationale
+        // less the caveat, the suffixes and the two-reads preamble gone: v71,
+        // the trail unchanged (no persisted shape moves).
+        assert_eq!(PROMPT_VERSION, "portfolio-v71");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v20"
@@ -6667,6 +6925,16 @@ pub(crate) mod tests {
             user.contains(&format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", prior_action.as_kebab())),
             "{user}"
         );
+        // The prior rationale rides the line less the app's caveat sentence
+        // (ruled 2026-10-08): the profile is tax-aware and the position carries
+        // a gain, so a prior exit rung persisted with the caveat appended.
+        let prior_rationale = crate::portfolio::carried_rationale(d.prior_verdict.as_ref().unwrap()).unwrap();
+        assert_eq!(investment_sentence(prior_rationale), "Stub action: the grade-mapped rung inside the engine set.");
+        assert!(
+            user.contains("\nRationale: Stub action: the grade-mapped rung inside the engine set.\n"),
+            "{user}"
+        );
+        assert!(!user.contains("Tax note"), "{user}");
         assert!(
             user.contains(" Move from PRIOR ACTION only where the inputs have materially changed since the prior analysis.\n"),
             "{user}"
@@ -7018,18 +7286,25 @@ pub(crate) mod tests {
         // The role/risk message on the same two-part frame (`portfolio-v41`):
         // its own sections, the reduced set as one data line, no capital
         // efficiency or targets, and its own weighing clause.
-        assert!(action.contains("\nCLASS (computed)\nclosed-end fund\n"), "{action}");
-        assert!(action.contains("\nVERDICT (analyst)\nThesis document:\nRole: an income sleeve.\n"), "{action}");
+        assert!(action.contains("\nCLASS\nclosed-end fund\n"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is outside that read.\n"),
+            action.contains("\nVERDICT\nAn analyst's read of the holding's data and research: the thesis document.\nThesis document:\nRole: an income sleeve.\n"),
+            "{action}"
+        );
+        // POSITION renders on this branch too, and no COMPUTED heading does —
+        // the branch's sections stay top-level (ruled 2026-10-08).
+        assert_eq!(action.matches("\nPOSITION\n").count(), 1, "{action}");
+        assert!(!action.contains("\nCOMPUTED\n"), "{action}");
+        assert!(
+            action.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"),
             "{action}"
         );
         assert!(
             action.contains(
                 "Decide it from CLASS, VERDICT, RISK PROFILE and PRICE VS NAV first, refined by \
-                 SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits \
-                 add-aggressively where the other inputs support it. An add-side rung needs support \
-                 from the vehicle's own attributes, stated in the rationale.\n"
+                 POSITION, SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance \
+                 admits add-aggressively where the other inputs support it. An add-side rung needs \
+                 support from the vehicle's own attributes, stated in the rationale.\n"
             ),
             "{action}"
         );
@@ -7318,7 +7593,7 @@ pub(crate) mod tests {
         });
         assert!(
             action.contains(
-                "\nRISK PROFILE (computed)\nExpense drag: 0.0003 (0.03%/yr) of assets per year. \
+                "\nRISK PROFILE\nExpense drag: 0.0003 (0.03%/yr) of assets per year. \
                  Observable risk:"
             ),
             "{action}"
@@ -8784,7 +9059,7 @@ pub(crate) mod tests {
         assert!(!action.contains("conviction capped"), "{action}");
         assert!(!action.contains("computed action set"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim. A rung not listed is outside that read.\n"),
+            action.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim. A rung not listed is outside that rule.\n"),
             "{action}"
         );
         assert!(!action.contains("CONVICTION CEILING"), "{action}");
@@ -8880,7 +9155,7 @@ pub(crate) mod tests {
     // ---- The investment-only action packet and the app-appended tax caveat ------
 
     #[test]
-    fn the_action_packet_states_polarity_and_the_set_once_and_carries_no_size() {
+    fn the_action_packet_states_the_set_and_the_position_once_and_sizes_no_overlay() {
         use crate::portfolio::dossier::{OptionOverlay, OverlayClass, OverlayDirection, OverlayLeg};
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.option_overlay = Some(OptionOverlay {
@@ -8917,19 +9192,25 @@ pub(crate) mod tests {
             engine_set: &engine_set,
             profile: &d.profile,
         });
-        // Polarity once, on the shared gloss (2.3); the set once, as one data
-        // line with no permission sentence (2.2; 3.9 ruled 2026-09-17).
-        assert_eq!(user.matches("higher is better on every axis").count(), 1, "{user}");
-        assert_eq!(user.matches("\nSUPPORTED ACTIONS (computed)\n").count(), 1, "{user}");
+        // The set once, as one data line with no permission sentence (2.2; 3.9
+        // ruled 2026-09-17); the sub-scores' polarity gloss stays on the thesis
+        // message (ruled 2026-10-08).
+        assert_eq!(user.matches("higher is better on every axis").count(), 0, "{user}");
+        assert_eq!(user.matches("\nSUPPORTED ACTIONS\n").count(), 1, "{user}");
         for absent in [
             "The full ladder is yours", "its own pick", "ENGINE SET", "ENGINE ADMISSION FACTS",
             "restriction", "not a bound", "departure", "Its selected action",
         ] {
             assert!(!user.contains(absent), "{absent}: {user}");
         }
-        // No account economics on any route (2.1, F5, C1): the header carries
-        // identity and spot only, and the overlay renders structure and ratios.
-        for absent in ["Quantity", "Market value", "Cost basis", "Unrealized", "share-equivalents", "2×", "- tax"] {
+        // The position's economics render once, under POSITION (ruled
+        // 2026-10-08); the header carries identity and spot only, and the
+        // overlay renders structure and ratios, never the held share count.
+        assert_eq!(user.matches("\nPOSITION\n").count(), 1, "{user}");
+        for once in ["Shares held: 100.", "Cost basis: $14,000.00.", "Market value: $19,500.00."] {
+            assert_eq!(user.matches(once).count(), 1, "{once}: {user}");
+        }
+        for absent in ["share-equivalents", "2×", "- tax", "Quantity"] {
             assert!(!user.contains(absent), "{absent}: {user}");
         }
         assert!(
@@ -8976,6 +9257,126 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn position_section_renders_the_economics_and_the_change_since_the_last_pull() {
+        // POSITION (`portfolio-v71`, ruled 2026-10-08): the shares held, the
+        // cost basis, the market value, the unrealized gain or loss as dollars
+        // and as a share of the cost basis, and the change tag with the shares
+        // then and now — never the paid-up / averaged-down read.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let values = |d: &HoldingDossier| {
+            let s = position_section(d);
+            s.lines().last().unwrap().to_string()
+        };
+        // A gain on a debut (every position is new with no prior snapshot).
+        assert_eq!(
+            values(&d),
+            "Shares held: 100. Cost basis: $14,000.00. Market value: $19,500.00. Unrealized gain: \
+             $5,500.00 (+39.3% of the cost basis). Change since the last pull: new."
+        );
+        // A loss, the position increased since the last pull.
+        d.position.cost_basis = 30_000.0;
+        d.position_delta = PositionDelta {
+            change: PositionChange::Increased,
+            prior_quantity: Some(60.0),
+            prior_cost_basis: Some(8_000.0),
+        };
+        assert_eq!(
+            values(&d),
+            "Shares held: 100. Cost basis: $30,000.00. Market value: $19,500.00. Unrealized loss: \
+             $10,500.00 (-35.0% of the cost basis). Change since the last pull: increased, from \
+             60 to 100."
+        );
+        assert!(!values(&d).contains("averaged"), "{}", values(&d));
+        // Decreased, fractional shares, at cost.
+        d.position.quantity = 12.5;
+        d.position.cost_basis = 2_437.5;
+        d.position.market_value = 2_437.5;
+        d.position_delta = PositionDelta {
+            change: PositionChange::Decreased,
+            prior_quantity: Some(20.0),
+            prior_cost_basis: Some(3_900.0),
+        };
+        assert_eq!(
+            values(&d),
+            "Shares held: 12.5. Cost basis: $2,437.50. Market value: $2,437.50. Unrealized gain or \
+             loss: none. Change since the last pull: decreased, from 20 to 12.5."
+        );
+        // Unchanged; a short reads as short on both counts, and its negative
+        // netted basis keeps the dollar gain with no percentage — the card's
+        // contract (`docs/portfolio-analysis.md` §Storage and display).
+        d.position.quantity = -40.0;
+        d.position.cost_basis = -8_000.0;
+        d.position.market_value = -7_800.0;
+        d.position_delta = PositionDelta {
+            change: PositionChange::Unchanged,
+            prior_quantity: Some(-40.0),
+            prior_cost_basis: Some(-8_000.0),
+        };
+        assert_eq!(
+            values(&d),
+            "Shares held: 40 short. Cost basis: -$8,000.00. Market value: -$7,800.00. Unrealized \
+             gain: $200.00. Change since the last pull: unchanged at 40 short."
+        );
+        // An exactly-zero basis is an unreported one on the wire (the adapter
+        // maps a missing `averagePrice` to zero): not reported, and no gain or
+        // loss — never the market value read as a gain.
+        d.position.quantity = 5.0;
+        d.position.cost_basis = 0.0;
+        d.position.market_value = 50.0;
+        d.position_delta = PositionDelta::new_position();
+        assert_eq!(
+            values(&d),
+            "Shares held: 5. Cost basis: not reported. Market value: $50.00. Unrealized gain or \
+             loss: not available without a reported cost basis. Change since the last pull: new."
+        );
+        assert!(!values(&d).contains("Unrealized gain:"), "{}", values(&d));
+        // The gloss once, above the values.
+        let s = position_section(&d);
+        assert!(s.starts_with("\nPOSITION\nThe holding as the account carries it: "), "{s}");
+        assert!(s.contains("as a share of a positive cost basis; not available where no basis is reported)"), "{s}");
+        assert_eq!(s.trim_start().lines().count(), 3, "{s}");
+    }
+
+    #[test]
+    fn position_amounts_format_with_separators_and_counts_drop_trailing_zeros() {
+        assert_eq!(fmt_usd(0.0), "$0.00");
+        assert_eq!(fmt_usd(999.999), "$1,000.00");
+        assert_eq!(fmt_usd(1_234_567.891), "$1,234,567.89");
+        assert_eq!(fmt_usd(-42.5), "-$42.50");
+        assert_eq!(fmt_usd(f64::NAN), "(gap)");
+        assert_eq!(fmt_shares(100.0), "100");
+        assert_eq!(fmt_shares(0.3333), "0.3333");
+        assert_eq!(fmt_shares(2.5), "2.5");
+        assert_eq!(fmt_shares(-3.0), "3 short");
+    }
+
+    #[test]
+    fn the_thesis_message_renders_no_position_block() {
+        // The intrinsic verdict is of no investor and no position: POSITION is
+        // the action packet's alone (`docs/portfolio-analysis.md` §Intrinsic
+        // verdict).
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
+            dossier: &d,
+            engine: &engine_output,
+            analysis: "",
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+        });
+        for absent in ["\nPOSITION\n", "Shares held:", "Cost basis:", "Market value:", "Unrealized"] {
+            assert!(!interp.contains(absent), "{absent}: {interp}");
+        }
+    }
+
+    #[test]
     fn the_tax_caveat_rides_only_an_exit_rung_under_a_tax_aware_profile() {
         let mut profile = InvestorProfile::default_fixture();
         let mut pos = position(AssetClass::Stock); // market 19,500 vs cost 14,000: a gain
@@ -8988,6 +9389,12 @@ pub(crate) mod tests {
         assert_eq!(tax_caveat(&profile, &pos, Action::SellAll), Some(TAX_CAVEAT_LOSS));
         pos.cost_basis = pos.market_value;
         assert_eq!(tax_caveat(&profile, &pos, Action::SellAll), None, "break-even");
+        // An unreported basis (zero on the wire) has no defined gain, so no
+        // caveat; a negative netted basis keeps its dollar gain and the caveat.
+        pos.cost_basis = 0.0;
+        assert_eq!(tax_caveat(&profile, &pos, Action::SellAll), None, "unreported basis");
+        pos.cost_basis = -1_000.0;
+        assert_eq!(tax_caveat(&profile, &pos, Action::Trim), Some(TAX_CAVEAT_GAIN), "negative netted basis");
         profile.tax_sensitive = false;
         pos.cost_basis = 14_000.0;
         assert_eq!(tax_caveat(&profile, &pos, Action::Trim), None, "tax-exempt");
