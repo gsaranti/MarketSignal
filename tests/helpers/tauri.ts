@@ -112,8 +112,13 @@ export const samplePortfolioRun: PortfolioRun = {
         grade: "B",
         sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
         action: "hold",
-        conviction: "medium",
-        horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
+        thesis_document: "Compounding platform with durable pricing power.",
+        appendix: {
+          conviction: "medium",
+          expected_price_3m: null,
+          expected_price_12m: 210,
+          expected_price_3y: null,
+        },
         price_targets: {
           three_month: null,
           twelve_month: {
@@ -124,7 +129,6 @@ export const samplePortfolioRun: PortfolioRun = {
           },
           three_year: null,
         },
-        model_target_rationale: "base case tracks revenue drift",
         options_signal: {
           put_call_volume: null,
           put_call_open_interest: null,
@@ -136,17 +140,6 @@ export const samplePortfolioRun: PortfolioRun = {
         action_rationale: "Hold — the thesis is intact.",
         low_confidence_grade: false,
         fund_class_label: null,
-        financial_summary: "Solid margins.",
-        what_changed: "First analyzed run.",
-        model_view: {
-          sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
-          letter: "B",
-          price_targets: {
-            one_month: { base: 205, bear: 195, bull: 215 },
-            twelve_month: { base: 210, bear: 180, bull: 240 },
-          },
-          self_assessment: "",
-        },
         engine_rung: "hold",
         authored_band_relation: null,
       },

@@ -43,7 +43,6 @@ use serde_json::{json, Value};
 
 use crate::local_model::{ChatMessage, ChatResponse};
 use crate::portfolio::dossier::HoldingDossier;
-use crate::portfolio::{ConditionRole, ThesisLedger};
 use crate::progress::{RequestTarget, RunContext};
 use crate::research_executor::Clock;
 use crate::web_research::fetch::FetchedPage;
@@ -481,10 +480,6 @@ pub struct DistilledClaim {
     pub publication: PublicationDate,
     pub fact_period: FactPeriod,
     pub cached: bool,
-    /// The ledger condition this claim bears on, where the distillation named
-    /// one (validated against known condition ids) — the seed assembly's
-    /// "claims tied to an open condition" priority key.
-    pub related_condition_id: Option<String>
 }
 
 #[cfg(test)]
@@ -505,7 +500,6 @@ pub(crate) fn entry3_fixture_layer() -> TopicDistillate {
                     end: None,
                 },
                 cached: false,
-                related_condition_id: None,
             },
             DistilledClaim {
                 claim: "TSLA measure applies to July CY25".into(),
@@ -518,7 +512,6 @@ pub(crate) fn entry3_fixture_layer() -> TopicDistillate {
                     end: None,
                 },
                 cached: false,
-                related_condition_id: None,
             },
             DistilledClaim {
                 claim: "TSLA deliveries cover the three months April through June 2026".into(),
@@ -531,7 +524,6 @@ pub(crate) fn entry3_fixture_layer() -> TopicDistillate {
                     end: None,
                 },
                 cached: false,
-                related_condition_id: None,
             },
             DistilledClaim {
                 claim: "Issuer reports Q4 FY2025 revenue".into(),
@@ -544,7 +536,6 @@ pub(crate) fn entry3_fixture_layer() -> TopicDistillate {
                     end: None,
                 },
                 cached: false,
-                related_condition_id: None,
             },
         ],
     }
@@ -584,28 +575,15 @@ fn topic(key: &str, title: &str, questions: &[&str]) -> AgendaTopic {
     }
 }
 
-/// Whether the prior ledger carries a standing technology-class falsifier —
-/// one of the conditional technology topic's defined triggers.
-pub fn ledger_has_technology_falsifier(ledger: Option<&ThesisLedger>) -> bool {
-    ledger.is_some_and(|l| {
-        l.conditions
-            .iter()
-            .any(|c| c.role == ConditionRole::Falsifier && c.technology_class)
-    })
-}
-
 /// The deterministic agenda inputs the pipeline computes before the loop runs
 /// (the conditional topics' triggers — `docs/portfolio-workflow.md` §Step 6c).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AgendaTriggers {
-    /// The engine's Step-6b technology-event pre-flag fired.
+    /// The engine's Step-6b technology-event pre-flag fired — the technology
+    /// topic's only trigger (`docs/portfolio-analysis.md` §The per-holding
+    /// pipeline). The symbol-scoped `news/stock` seeds are no trigger of their
+    /// own: they ride the pass brief as leads.
     pub tech_pre_flag_fired: bool,
-    /// A standing technology-class ledger falsifier exists. The symbol-scoped
-    /// `news/stock` seeds are no trigger of their own: a qualifying seed is
-    /// defined as fresh news beside this standing falsifier, which fires the
-    /// topic by itself, and the seeds ride the pass brief as leads
-    /// (retired 2026-08-29, Codex I15).
-    pub tech_ledger_falsifier: bool,
     /// The stock entered the pre-profit overlay (eligible read).
     pub overlay_eligible: bool,
     /// The pre-profit backfill obligation binds this pass (first
@@ -732,16 +710,16 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
         agenda.push(t);
     }
 
-    // The two activation sources already persist: the pre-flag on the audit
-    // and the standing technology-class falsifier in the ledger.
-    if triggers.tech_pre_flag_fired || triggers.tech_ledger_falsifier {
+    // The pre-flag is the topic's only trigger, decided here when the agenda
+    // is assembled; a follow-up question cannot activate it.
+    if triggers.tech_pre_flag_fired {
         agenda.push(technology_topic());
     }
     agenda
 }
 
 /// The conditional technology-event topic, selected when assembling the agenda
-/// from the event pre-flag or a standing technology-class falsifier.
+/// from the event pre-flag.
 pub fn technology_topic() -> AgendaTopic {
     topic(
         "technology-event",
@@ -781,22 +759,21 @@ pub struct ResearchSeed {
     pub published: Option<String>
 }
 
-/// One topic's cross-run seed, assembled by the app: the ledger's standing
-/// conditions and the prior findings the gathering message renders as
-/// STANDING CONDITIONS and PRIOR FINDINGS (`portfolio-v43`), under the one
-/// per-topic character budget in the fixed priority order.
+/// One topic's cross-run seed, assembled by the app: the prior findings the
+/// gathering message renders as PRIOR FINDINGS (`portfolio-v43`), under the
+/// one per-topic character budget in the fixed priority order. The seed store
+/// retires with the research chain, which carries the prior analysis and the
+/// prior thesis document on the brief instead.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TopicSeed {
-    /// "Falsifier: …" / "Trigger: …" lines, in the ledger's stored order.
-    pub conditions: Vec<String>,
-    /// "<YYYY-MM-DD>: <claim> [<url>]" lines — tied to an open condition
-    /// first, then newest known publication date, then stored order.
+    /// "<claim> [<url>]" lines with their provenance — newest known
+    /// publication date first, then stored order.
     pub findings: Vec<String>
 }
 
 impl TopicSeed {
     pub fn is_empty(&self) -> bool {
-        self.conditions.is_empty() && self.findings.is_empty()
+        self.findings.is_empty()
     }
 }
 
@@ -822,77 +799,35 @@ pub fn seed_finding_line(c: &DistilledClaim) -> String {
 
 pub fn assemble_topic_seed(
     prior: Option<&TopicDistillate>,
-    ledger: Option<&ThesisLedger>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<TopicSeed> {
     // The topic-object gate: an expired or absent object never seeds.
-    let prior = prior.filter(|p| within_window(&p.vintage, now));
+    let prior = prior.filter(|p| within_window(&p.vintage, now))?;
 
-    // Priority tier 1: the ledger's conditions, in stored (insertion) order.
-    let mut conditions: Vec<String> = Vec::new();
-    if let Some(ledger) = ledger {
-        for c in &ledger.conditions {
-            let role = match c.role {
-                ConditionRole::Falsifier => "Falsifier",
-                ConditionRole::Trigger => "Trigger"
-            };
-            conditions.push(format!("{role}: {}", c.statement));
-        }
-    }
-    let mut findings: Vec<String> = Vec::new();
-    let open_condition_ids: std::collections::HashSet<&str> = ledger
-        .map(|l| l.conditions.iter().map(|c| c.condition_id.as_str()).collect())
-        .unwrap_or_default();
-
-    // Priority tiers 2–4 over the prior claims: tied-to-an-open-condition
-    // first, then newest known publication date, then stored order — a stable sort keyed
-    // (tied, publication desc with unknown last, stored index).
-    if let Some(prior) = prior {
-        let mut claims: Vec<(usize, &DistilledClaim)> = prior
-            .claims
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| within_window(&c.retrieved_at, now))
-            .collect();
-        claims.sort_by(|(ia, a), (ib, b)| {
-            let tied_a = a
-                .related_condition_id
-                .as_deref()
-                .is_some_and(|id| open_condition_ids.contains(id));
-            let tied_b = b
-                .related_condition_id
-                .as_deref()
-                .is_some_and(|id| open_condition_ids.contains(id));
-            tied_b
-                .cmp(&tied_a)
-                .then(b.publication.day.cmp(&a.publication.day))
-                .then(ia.cmp(ib))
-        });
-        for (_, c) in claims {
-            findings.push(seed_finding_line(c));
-        }
-    }
+    // The prior claims by newest known publication date, then stored order —
+    // a stable sort keyed (publication desc with unknown last, stored index).
+    let mut claims: Vec<(usize, &DistilledClaim)> = prior
+        .claims
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| within_window(&c.retrieved_at, now))
+        .collect();
+    claims.sort_by(|(ia, a), (ib, b)| {
+        b.publication.day.cmp(&a.publication.day).then(ia.cmp(ib))
+    });
 
     // The hard budget binds over the WHOLE seed: append in priority order
-    // (conditions, then findings) while it fits; drop the rest (lowest
-    // priority first, by construction).
+    // while it fits; drop the rest (lowest priority first, by construction).
     let mut out = TopicSeed::default();
     let mut used = 0usize;
-    for (piece, is_condition) in conditions
-        .into_iter()
-        .map(|p| (p, true))
-        .chain(findings.into_iter().map(|p| (p, false)))
-    {
+    for (_, c) in claims {
+        let piece = seed_finding_line(c);
         let addition = piece.chars().count() + 1;
         if used + addition > SEED_BUDGET_CHARS {
             break;
         }
         used += addition;
-        if is_condition {
-            out.conditions.push(piece);
-        } else {
-            out.findings.push(piece);
-        }
+        out.findings.push(piece);
     }
     if out.is_empty() {
         None
@@ -3818,8 +3753,8 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
 /// The gathering call's user message: one message in two parts. Part 1 is
 /// inputs only — since `portfolio-v49` (attempt-8 Finding 4, ruled
 /// 2026-09-27) in holding-constant-first order: the holding header, NEWS
-/// LEADS, on a continuity run STANDING CONDITIONS (the tool results' fields
-/// are glossed on the tool descriptions since `portfolio-v50`), then the
+/// LEADS (the tool results' fields are glossed on the tool descriptions
+/// since `portfolio-v50`), then the
 /// PAGES ALREADY RETRIEVED block, and only then the topic's own
 /// text — TOPIC, on a follow-up pass FOLLOW-UP and CLAIMS SO FAR, on the
 /// disconfirming pass CLAIMS SO FAR, on a continuity run PRIOR FINDINGS —
@@ -3847,9 +3782,9 @@ fn gathering_countdown(remaining: u32) -> ChatMessage {
     ))
 }
 
-/// The holding-constant opening of Part 1: the header, NEWS LEADS and STANDING
-/// CONDITIONS — the same bytes on every pass of
-/// the holding, so a fresh root's prompt begins where the previous root's did.
+/// The holding-constant opening of Part 1: the header and NEWS LEADS — the
+/// same bytes on every pass of the holding, so a fresh root's prompt begins
+/// where the previous root's did.
 fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
     let mut out = String::from("======== PART 1: INPUTS ========\n");
     out.push_str(ctx.holding_brief);
@@ -3869,17 +3804,6 @@ fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
                     .map(|p| format!(", {p}"))
                     .unwrap_or_default()
             ));
-        }
-    }
-    if let Some(seed) = ctx.seed {
-        if !seed.conditions.is_empty() {
-            out.push_str(
-                "\nSTANDING CONDITIONS\nConditions the thesis on this holding is being watched \
-                 against.\n",
-            );
-            for c in &seed.conditions {
-                out.push_str(&format!("- {c}\n"));
-            }
         }
     }
     out
@@ -4060,21 +3984,14 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
          a weak source lowers confidence in what it says, it does not exclude it, and a figure \
          that cannot be right is a defect of the source."
     ));
-    // The clause names the Part 1 headings it draws on, and only those the
-    // brief shows: PRIOR FINDINGS renders from the seed's findings and
-    // STANDING CONDITIONS from its conditions, each only where non-empty
+    // The clause names the Part 1 heading it draws on, and only where the
+    // brief shows it: PRIOR FINDINGS renders from the seed's findings
     // (`portfolio-v54`).
-    if let Some(seed) = ctx.seed.filter(|s| !s.is_empty()) {
-        let subject = match (!seed.findings.is_empty(), !seed.conditions.is_empty()) {
-            (true, true) => "a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS",
-            (true, false) => "a finding under PRIOR FINDINGS",
-            (false, true) => "a condition under STANDING CONDITIONS",
-            (false, false) => unreachable!("a non-empty seed has findings or conditions"),
-        };
-        item1.push_str(&format!(
-            " Where {subject} bears on a question, look for whether it still holds and for what \
-             is newer."
-        ));
+    if ctx.seed.is_some_and(|s| !s.is_empty()) {
+        item1.push_str(
+            " Where a finding under PRIOR FINDINGS bears on a question, look for whether it \
+             still holds and for what is newer.",
+        );
     }
     format!(
         "\n======== PART 2: TASK ========\n{opening}\n\n{item1}\n2. At most \
@@ -4250,12 +4167,7 @@ mod tests {
     /// The seed's lines as one text, for the seed tests' order and budget
     /// checks.
     fn seed_text(seed: &TopicSeed) -> String {
-        seed.conditions
-            .iter()
-            .chain(&seed.findings)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
+        seed.findings.join("\n")
     }
 
     fn utc(s: &str) -> chrono::DateTime<chrono::Utc> {
@@ -5204,7 +5116,7 @@ mod tests {
 
     // ---- Seed assembly ----------------------------------------------------
 
-    fn claim(text: &str, vintage: &str, related: Option<&str>) -> DistilledClaim {
+    fn claim(text: &str, vintage: &str) -> DistilledClaim {
         DistilledClaim {
             publication: crate::portfolio::research::PublicationDate::default(),
             fact_period: crate::portfolio::research::FactPeriod::default(),
@@ -5212,35 +5124,6 @@ mod tests {
             source_url: format!("https://x.example/{}", text.len()),
             retrieved_at: vintage.to_string(),
             cached: true,
-            related_condition_id: related.map(str::to_string)
-        }
-    }
-
-    fn ledger_with(statements: &[(&str, &str)]) -> ThesisLedger {
-        ThesisLedger {
-            branch: crate::portfolio::LedgerBranch::Priced,
-            original_thesis: "t".into(),
-            current_thesis: "t".into(),
-            key_drivers: vec![],
-            monitor: vec![],
-            what_must_improve: String::new(),
-            what_must_not_break: String::new(),
-            conditions: statements
-                .iter()
-                .map(|(id, s)| crate::portfolio::LedgerCondition {
-                    condition_id: id.to_string(),
-                    role: ConditionRole::Falsifier,
-                    trigger_family: None,
-                    label: None,
-                    statement: s.to_string(),
-                    quant: None,
-                    downgraded_reason: None,
-                    technology_class: false,
-                    tripped: false,
-                    supersedes: None,
-                    eval_state: None
-                })
-                .collect(),
         }
     }
 
@@ -5252,9 +5135,9 @@ mod tests {
             topic_key: "t".into(),
             vintage: "2026-07-01T00:00:00+00:00".into(),
             summary: String::new(),
-            claims: vec![claim("fresh enough", "2026-08-20T00:00:00+00:00", None)]
+            claims: vec![claim("fresh enough", "2026-08-20T00:00:00+00:00")]
         };
-        assert_eq!(assemble_topic_seed(Some(&expired), None, now), None);
+        assert_eq!(assemble_topic_seed(Some(&expired), now), None);
 
         // A fresh object seeds only its non-expired claims.
         let fresh = TopicDistillate {
@@ -5262,11 +5145,11 @@ mod tests {
             vintage: "2026-08-10T00:00:00+00:00".into(),
             summary: String::new(),
             claims: vec![
-                claim("stale claim", "2026-07-01T00:00:00+00:00", None),
-                claim("fresh claim", "2026-08-15T00:00:00+00:00", None),
+                claim("stale claim", "2026-07-01T00:00:00+00:00"),
+                claim("fresh claim", "2026-08-15T00:00:00+00:00"),
             ]
         };
-        let seed = seed_text(&assemble_topic_seed(Some(&fresh), None, now).unwrap());
+        let seed = seed_text(&assemble_topic_seed(Some(&fresh), now).unwrap());
         assert!(seed.contains("fresh claim"));
         assert!(!seed.contains("stale claim"));
     }
@@ -5339,16 +5222,16 @@ mod tests {
             Some("2026-09-01")
         );
         let mut layer = entry3_fixture_layer();
-        let seed = assemble_topic_seed(Some(&layer), None, utc("2026-09-19T00:00:00Z")).unwrap();
+        let seed = assemble_topic_seed(Some(&layer), utc("2026-09-19T00:00:00Z")).unwrap();
         assert!(seed.findings.iter().any(|f| f.contains("2025-07")));
         assert!(
             seed.findings.iter().all(|f| !f.contains("2026-09-16")),
             "retrieval is not a factual date"
         );
         layer.vintage = "2026-10-14T00:00:00Z".into();
-        assert!(assemble_topic_seed(Some(&layer), None, utc("2026-10-14T11:59:59Z")).is_some());
+        assert!(assemble_topic_seed(Some(&layer), utc("2026-10-14T11:59:59Z")).is_some());
         assert!(
-            assemble_topic_seed(Some(&layer), None, utc("2026-10-14T12:00:00Z")).is_none(),
+            assemble_topic_seed(Some(&layer), utc("2026-10-14T12:00:00Z")).is_none(),
             "rewriting the object cannot renew a claim"
         );
     }
@@ -5400,7 +5283,7 @@ mod tests {
             publication: PublicationDate::from_reported(Some("2025-03-27")),
             ..template
         });
-        let seed = assemble_topic_seed(Some(&layer), None, utc("2026-09-19T00:00:00Z"))
+        let seed = assemble_topic_seed(Some(&layer), utc("2026-09-19T00:00:00Z"))
             .unwrap();
         assert_eq!(seed.findings.len(), ambiguous.len() + 1);
         assert!(seed.findings[0].contains("known older publication"));
@@ -5473,51 +5356,6 @@ mod tests {
             assert_eq!(found.claims[0].fact_period, expected.fact_period);
             assert_eq!(found.claims[0].retrieved_at, expected.retrieved_at);
         }
-    }
-
-    #[test]
-    fn seed_priority_is_ledger_then_tied_then_newest_then_stored_order() {
-        let now = utc("2026-08-23T00:00:00+00:00");
-        let mut prior = TopicDistillate {
-            topic_key: "t".into(),
-            vintage: "2026-08-20T00:00:00+00:00".into(),
-            summary: String::new(),
-            claims: vec![
-                claim("older untied", "2026-08-10T00:00:00+00:00", None),
-                claim("newest untied", "2026-08-21T00:00:00+00:00", None),
-                claim("tied to condition", "2026-08-05T00:00:00+00:00", Some("c1")),
-            ]
-        };
-        // Deliberately oppose retrieval order: publication, not retrieval, ranks.
-        prior.claims[0].publication = PublicationDate::from_reported(Some("2026-08-01"));
-        prior.claims[1].publication = PublicationDate::from_reported(Some("2026-08-03"));
-        prior.claims[0].retrieved_at = "2026-08-22T00:00:00Z".into();
-        let ledger = ledger_with(&[("c1", "Gross margin holds above 30%")]);
-        let seed = seed_text(&assemble_topic_seed(Some(&prior), Some(&ledger), now).unwrap());
-        let pos = |needle: &str| seed.find(needle).unwrap_or_else(|| panic!("{needle} in {seed}"));
-        // Ledger first, then the tied claim (despite being oldest), then
-        // publication ordering among the untied.
-        assert!(pos("Gross margin") < pos("tied to condition"));
-        assert!(pos("tied to condition") < pos("newest untied"));
-        assert!(pos("newest untied") < pos("older untied"));
-    }
-
-    #[test]
-    fn the_seed_budget_binds_over_the_whole_seed_dropping_lowest_priority_first() {
-        let now = utc("2026-08-23T00:00:00+00:00");
-        let big = "x".repeat(SEED_BUDGET_CHARS);
-        let prior = TopicDistillate {
-            topic_key: "t".into(),
-            vintage: "2026-08-20T00:00:00+00:00".into(),
-            summary: String::new(),
-            claims: vec![claim(&big, "2026-08-21T00:00:00+00:00", None)]
-        };
-        let ledger = ledger_with(&[("c1", "The one condition that must survive")]);
-        let seed = seed_text(&assemble_topic_seed(Some(&prior), Some(&ledger), now).unwrap());
-        // The ledger condition survives; the oversized claim is dropped whole.
-        assert!(seed.contains("must survive"));
-        assert!(!seed.contains(&big));
-        assert!(seed.chars().count() <= SEED_BUDGET_CHARS);
     }
 
     // ---- Tool-call parsing ------------------------------------------------
@@ -9038,7 +8876,7 @@ mod tests {
             let seed_reads = std::cell::RefCell::new(Vec::new());
             let out = runner.run_holding("HOLDING: WID", &agenda, &[], &|key| {
                 seed_reads.borrow_mut().push(key.to_owned());
-                Some((TopicSeed { conditions: vec![format!("condition-{key}")], findings: vec![] }, "vintage".into()))
+                Some((TopicSeed { findings: vec![format!("finding-{key}")] }, "vintage".into()))
             }).unwrap();
             let calls = model.calls.lock().unwrap();
             let mut expected = vec![("a", 0), ("b", 0), ("c", 0)];
@@ -9055,12 +8893,12 @@ mod tests {
             assert!(out.topics.iter().all(|t| t.passes.len() == 3 && t.seeded_vintage.as_deref() == Some("vintage")));
             for (key, depth, messages) in calls.iter().filter(|(k, _, _)| k != "disconfirming") {
                 let brief = &messages[1].content;
-                assert!(brief.contains(&format!("condition-{key}")));
+                assert!(brief.contains(&format!("finding-{key}")), "{brief}");
                 assert_eq!(brief.contains("\nFOLLOW-UP\n"), *depth > 0);
                 for other in &keys {
                     if other != key {
                         assert!(!brief.contains(&format!("claim-{other}-")));
-                        assert!(!brief.contains(&format!("condition-{other}")));
+                        assert!(!brief.contains(&format!("finding-{other}")));
                     }
                 }
                 for previous in 0..*depth {
@@ -9254,13 +9092,13 @@ mod tests {
     #[test]
     fn the_gathering_message_is_two_parts_with_no_app_concept() {
         // `portfolio-v43`: Part 1 the inputs — the holding header, TOPIC, on a
-        // continuity run STANDING CONDITIONS and PRIOR FINDINGS, NEWS LEADS
-        // without ids (the tier scale rides the tool descriptions since v50) —
-        // and no instruction; Part 2 the task with the weighing clause, the
-        // per-reply bound and the stopping rule; no app word anywhere.
+        // continuity run PRIOR FINDINGS, NEWS LEADS without ids (the tier scale
+        // rides the tool descriptions since v50) — and no instruction; Part 2
+        // the task with the weighing clause, the per-reply bound and the
+        // stopping rule; no app word anywhere. The ledger's STANDING
+        // CONDITIONS left the brief with the ledger.
         let agenda = one_topic_agenda();
         let seed = TopicSeed {
-            conditions: vec!["Falsifier: Gross margin falls below 30%.".into()],
             findings: vec!["2026-08-01: Widget Co held 40% share. [https://example.com/share]".into()]
         };
         let s = seeds();
@@ -9277,20 +9115,18 @@ mod tests {
         let user = pass_brief(&ctx);
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").expect("two parts");
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
-        for section in ["\nTOPIC\n", "\nSTANDING CONDITIONS\n", "\nPRIOR FINDINGS\n", "\nNEWS LEADS\n"] {
+        for section in ["\nTOPIC\n", "\nPRIOR FINDINGS\n", "\nNEWS LEADS\n"] {
             assert!(part1.contains(section), "Part 1 lacks {section}: {part1}");
         }
+        assert!(!part1.contains("STANDING CONDITIONS"), "{part1}");
         // `portfolio-v49` (attempt-8 Finding 4): the holding-constant blocks
-        // lead — the header, the leads, the standing conditions, the
-        // tool-results gloss — and the topic's own text follows them.
+        // lead — the header, the leads, the tool-results gloss — and the
+        // topic's own text follows them.
         let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{section}"));
         assert!(
-            at("\nNEWS LEADS\n") < at("\nSTANDING CONDITIONS\n")
-                && at("\nSTANDING CONDITIONS\n") < at("\nTOPIC\n")
-                && at("\nTOPIC\n") < at("\nPRIOR FINDINGS\n"),
+            at("\nNEWS LEADS\n") < at("\nTOPIC\n") && at("\nTOPIC\n") < at("\nPRIOR FINDINGS\n"),
             "{part1}"
         );
-        assert!(part1.contains("- Falsifier: Gross margin falls below 30%.\n"), "{part1}");
         assert!(part1.contains("- 2026-08-01: Widget Co held 40% share. [https://example.com/share]\n"), "{part1}");
         assert!(part1.contains("- Widget beats — https://reuters.com/widget (fmp-news, 2026-08-20)\n"), "{part1}");
         assert!(!part1.contains("[seed-1]"), "{part1}");
@@ -9316,7 +9152,7 @@ mod tests {
         for item in [
             "1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS most likely to answer them.",
             "a weak source lowers confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect of the source.",
-            "Where a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS bears on a question, look for whether it still holds and for what is newer.",
+            "Where a finding under PRIOR FINDINGS bears on a question, look for whether it still holds and for what is newer.",
             "2. At most 8 tool calls in one reply.",
             "3. Stop when the questions are answered",
         ] {
@@ -9525,41 +9361,6 @@ mod tests {
         assert_eq!(spent, 2, "failed live attempts still spend the budget");
     }
 
-    #[test]
-    fn the_seed_renders_as_conditions_and_findings_under_one_budget() {
-        // `portfolio-v43`: the seed is two blocks — the ledger's conditions with
-        // their role as a word, then the dated findings with their source —
-        // assembled under the one budget in the fixed priority order.
-        let now = utc("2026-08-23T00:00:00+00:00");
-        let prior = TopicDistillate {
-            topic_key: "t".into(),
-            vintage: "2026-08-20T00:00:00+00:00".into(),
-            summary: String::new(),
-            claims: vec![claim("Widget held share", "2026-08-21T00:00:00+00:00", None)]
-        };
-        let ledger = ledger_with(&[("c1", "Gross margin holds above 30%")]);
-        let seed = assemble_topic_seed(Some(&prior), Some(&ledger), now).unwrap();
-        assert_eq!(seed.conditions.len(), 1);
-        let condition = &seed.conditions[0];
-        assert!(
-            (condition.starts_with("Falsifier: ") || condition.starts_with("Trigger: "))
-                && condition.ends_with(": Gross margin holds above 30%"),
-            "{condition}"
-        );
-        assert_eq!(seed.findings.len(), 1);
-        // `portfolio-v54`: the claim and source lead, the provenance under them.
-        assert!(seed.findings[0].starts_with("Widget held share ["), "{}", seed.findings[0]);
-        assert!(seed.findings[0].ends_with("]\n  published: unknown; fact period: unknown"), "{}", seed.findings[0]);
-        assert!(!seed.findings[0].contains("PRIOR FINDING"));
-        // The budget holds a huge finding out while the condition stays.
-        let big = TopicDistillate {
-            claims: vec![claim(&"x".repeat(SEED_BUDGET_CHARS), "2026-08-21T00:00:00+00:00", None)],
-            ..prior
-        };
-        let seed = assemble_topic_seed(Some(&big), Some(&ledger), now).unwrap();
-        assert_eq!(seed.conditions.len(), 1);
-        assert!(seed.findings.is_empty());
-    }
 }
 
 /// Rendered samples of the research messages for the fixed-evidence
@@ -9662,9 +9463,8 @@ pub(crate) mod samples {
         ]
     }
 
-    /// The continuity seed: the conditions as the assembler labels them, and
-    /// the prior claims through `seed_finding_line` so the example carries the
-    /// running app's shape (`portfolio-v54`).
+    /// The continuity seed: the prior claims through `seed_finding_line` so
+    /// the example carries the running app's shape (`portfolio-v54`).
     fn seed(stub: bool) -> TopicSeed {
         let prior_claim = |text: String, url: &str, published: &str, kind: PeriodPrecision, period: &str| DistilledClaim {
             claim: text,
@@ -9673,13 +9473,8 @@ pub(crate) mod samples {
             publication: PublicationDate::from_reported(Some(published)),
             fact_period: FactPeriod { kind, value: period.into(), end: None },
             cached: false,
-            related_condition_id: None,
         };
         TopicSeed {
-            conditions: vec![
-                "Falsifier: Automotive gross margin ex-credits falls below 14% for two consecutive quarters.".into(),
-                "Trigger: Price closes below $250.".into(),
-            ],
             findings: vec![
                 seed_finding_line(&prior_claim(
                     prose(stub, "prior finding 1 — a claim the prior run kept", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%."),
@@ -9820,7 +9615,7 @@ pub(crate) mod samples {
         vec![
             sample("root pass, first analysis, two news leads", &topic.key, pass_brief(&ctx(holding_brief, topic, None, &leads, None, &[], false))),
             sample("follow-up pass, the approved question and the topic's claims so far", &topic.key, pass_brief(&ctx(holding_brief, topic, None, &leads, Some(&fu), &claims, false))),
-            sample("root pass on a continuity run, the standing conditions and prior findings", &topic.key, pass_brief(&ctx(holding_brief, topic, Some(&seed), &leads, None, &[], false))),
+            sample("root pass on a continuity run, the prior findings", &topic.key, pass_brief(&ctx(holding_brief, topic, Some(&seed), &leads, None, &[], false))),
             sample("the disconfirming pass, the run's claims so far", &disc.key, pass_brief(&ctx(holding_brief, &disc, None, &leads, None, &claims, true))),
             sample("later topic, previously retrieved pages", &topic.key, pass_brief_with_reuse(&reuse_ctx, &reuse, !reused.is_empty())),
         ]

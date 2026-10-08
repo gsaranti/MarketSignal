@@ -239,7 +239,6 @@ pub fn offline_consolidate(inputs: &DistillInputs<'_>) -> DistilledResearch {
                     source_url: c.source_url.clone(),
                     retrieved_at: c.retrieved_at.clone(),
                     cached: false,
-                    related_condition_id: None,
                 });
             }
         }
@@ -305,15 +304,6 @@ pub struct DistillInputs<'a> {
     /// The prior per-topic layer, already filtered to non-expired topic
     /// objects (the seed gate) — merged per topic at its first reduction.
     pub priors: &'a [TopicDistillate],
-    /// The prior ledger's conditions with their app-assigned ids — rendered as
-    /// STANDING CONDITIONS on every message and the referential surface
-    /// `related_condition_id` validates against (the `confirms_driver_id`
-    /// pattern; `docs/portfolio-workflow.md` §Step 6d).
-    pub ledger_conditions: &'a [crate::portfolio::LedgerCondition],
-    /// The prior ledger's key drivers with their app-assigned ids — rendered as
-    /// KEY DRIVERS where the indicator is asked for and the referential
-    /// surface `confirms_driver_id` verifies against (ruled 2026-08-24).
-    pub ledger_key_drivers: &'a [crate::portfolio::KeyDriver],
     /// Pure consolidation — the combined findings and the topic layer, no
     /// typed field: a `role_risk_only` holding and every fund (ruled
     /// 2026-09-17: no consensus driver, narrative cap or overlay reads a
@@ -336,12 +326,11 @@ pub struct DistillInputs<'a> {
 
 // ---------------------------------------------------------------------------
 // Schemas — per call (`portfolio-v44`, ruled 2026-09-17): the alternatives ride
-// the grammar as enums — the topic keys, the condition ids, the driver ids —
-// so the RETURN SHAPE shows them and the daemon enforces them; the app
-// validators still check every reference. A field nothing can fill on this
-// call is not in its grammar: no tie without conditions, no indicator without
-// key drivers, no typed field on a consolidation-only call, no backfill
-// record without the obligation.
+// the grammar as enums — the topic keys, the claim ids — so the RETURN SHAPE
+// shows them and the daemon enforces them; the app validators still check
+// every reference. A field nothing can fill on this call is not in its
+// grammar: no typed field on a consolidation-only call, no backfill record
+// without the obligation.
 // ---------------------------------------------------------------------------
 
 fn enum_strings(values: &[&str]) -> Value {
@@ -351,28 +340,21 @@ fn enum_strings(values: &[&str]) -> Value {
 /// A claim: `evidence_id` is the pass-local id of the claim line it rests on,
 /// an enum of the ids the message shows (`portfolio-v63`, ruled 2026-09-29:
 /// an unshown id is impossible by construction, and the app resolves the id
-/// to the reference and address it rendered, so neither is copied);
-/// `related_condition_id` rides only where the ledger renders conditions —
-/// nothing can be cited on a first analysis.
-fn claim_schema(condition_ids: &[&str], claim_ids: &[&str]) -> Value {
+/// to the reference and address it rendered, so neither is copied).
+fn claim_schema(claim_ids: &[&str]) -> Value {
     let evidence_id = if claim_ids.is_empty() {
         json!({ "type": "string" })
     } else {
         json!({ "type": "string", "enum": enum_strings(claim_ids) })
     };
-    let mut properties = json!({
+    let properties = json!({
         "claim": { "type": "string" },
         "evidence_id": evidence_id
     });
-    if !condition_ids.is_empty() {
-        let mut ids: Vec<Value> = condition_ids.iter().map(|id| json!(id)).collect();
-        ids.push(Value::Null);
-        properties["related_condition_id"] = json!({ "type": ["string", "null"], "enum": ids });
-    }
     json!({ "type": "object", "properties": properties, "required": ["claim", "evidence_id"] })
 }
 
-fn topic_schema(topic_keys: &[&str], condition_ids: &[&str], claim_ids: &[&str]) -> Value {
+fn topic_schema(topic_keys: &[&str], claim_ids: &[&str]) -> Value {
     let key = if topic_keys.is_empty() {
         json!({ "type": "string" })
     } else {
@@ -383,7 +365,7 @@ fn topic_schema(topic_keys: &[&str], condition_ids: &[&str], claim_ids: &[&str])
         "properties": {
             "topic_key": key,
             "summary": { "type": "string" },
-            "claims": { "type": "array", "items": claim_schema(condition_ids, claim_ids) }
+            "claims": { "type": "array", "items": claim_schema(claim_ids) }
         },
         "required": ["topic_key", "summary", "claims"]
     })
@@ -391,12 +373,12 @@ fn topic_schema(topic_keys: &[&str], condition_ids: &[&str], claim_ids: &[&str])
 
 /// The tier-1 (and pass-level sub-distillation, and tree-level reduce) schema:
 /// one topic's portion, its claim ids the ones that message shows.
-fn tier1_schema(condition_ids: &[&str], claim_ids: &[&str]) -> Value {
+fn tier1_schema(claim_ids: &[&str]) -> Value {
     json!({
         "type": "object",
         "properties": {
             "summary": { "type": "string" },
-            "claims": { "type": "array", "items": claim_schema(condition_ids, claim_ids) }
+            "claims": { "type": "array", "items": claim_schema(claim_ids) }
         },
         "required": ["summary", "claims"]
     })
@@ -412,7 +394,7 @@ const PERIOD_SPANS: [&str; 6] =
 fn combined_schema(shape: &ReduceShape<'_>, claim_ids: &[&str]) -> Value {
     let mut properties = json!({
         "combined_findings": { "type": "string" },
-        "topics": { "type": "array", "items": topic_schema(shape.topic_keys, shape.condition_ids, claim_ids) }
+        "topics": { "type": "array", "items": topic_schema(shape.topic_keys, claim_ids) }
     });
     let mut required = vec!["combined_findings", "topics"];
     if shape.typed {
@@ -533,8 +515,6 @@ struct ClaimWire {
     claim: String,
     #[serde(default)]
     source_url: String,
-    #[serde(default)]
-    related_condition_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -621,38 +601,13 @@ fn prior_ref(c: &DistilledClaim) -> String {
     evidence_reference(&c.claim, &prior_evidence(c))
 }
 
-/// Provenance is resolved by an evidence occurrence, never URL-only. Ties are
-/// keyed by that occurrence and verbatim claim text, in separate run/prior pools.
+/// Provenance is resolved by an evidence occurrence, never URL-only.
 struct Provenance {
     evidence: HashMap<String, ClaimEvidence>,
-    /// (evidence reference, claim key) → the distinct condition ids that exact
-    /// claim cited in this run's earlier distillation hops.
-    run_ties: HashMap<(String, String), HashSet<String>>,
-    /// The same, from the prior layer's claims.
-    prior_ties: HashMap<(String, String), HashSet<String>>,
-}
-
-/// The claim-text half of a tie key: case- and whitespace-insensitive, so a
-/// verbatim re-emission matches through incidental reflow.
-fn claim_key(claim: &str) -> String {
-    claim
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
 }
 
 impl Provenance {
-    /// `known` filters the ties at insertion — a prior claim's tie to a
-    /// condition since superseded is no tie, so it can neither inherit nor
-    /// make a claim read as ambiguous beside a current one.
-    fn build(
-        research: &HoldingResearch,
-        priors: &[TopicDistillate],
-        run_ties: HashMap<(String, String), HashSet<String>>,
-        known: &HashSet<&str>,
-    ) -> Self {
-        let mut prior_ties: HashMap<(String, String), HashSet<String>> = HashMap::new();
+    fn build(research: &HoldingResearch, priors: &[TopicDistillate]) -> Self {
         let mut evidence = HashMap::new();
         for pass in research
             .topics
@@ -666,58 +621,16 @@ impl Provenance {
         }
         for prior in priors {
             for c in &prior.claims {
-                let reference = prior_ref(c);
-                if let Some(id) = c
-                    .related_condition_id
-                    .as_deref()
-                    .filter(|id| known.contains(id))
-                {
-                    prior_ties
-                        .entry((reference.clone(), claim_key(&c.claim)))
-                        .or_default()
-                        .insert(id.to_string());
-                }
-                evidence.insert(reference, prior_evidence(c));
+                evidence.insert(prior_ref(c), prior_evidence(c));
             }
         }
-        Self {
-            evidence,
-            run_ties,
-            prior_ties,
-        }
+        Self { evidence }
     }
 
     fn resolve(&self, reference: &str, url: &str) -> Option<&ClaimEvidence> {
         self.evidence
             .get(reference)
             .filter(|e| e.source_url == crate::web_research::store::normalize_url(url))
-    }
-
-    /// The single known ledger tie this exact claim (reference + text) carried, if
-    /// unambiguous — two different ties on one claim resolve to none rather
-    /// than a guess. A fresh claim reads this run's pool only; a cached one
-    /// reads this run's pool first, then the prior layer's.
-    fn tie_for(&self, reference: &str, claim: &str, cached: bool) -> Option<&str> {
-        let key = (reference.to_string(), claim_key(claim));
-        let from_run = Self::single_tie(&self.run_ties, &key);
-        if cached {
-            from_run.or_else(|| Self::single_tie(&self.prior_ties, &key))
-        } else {
-            from_run
-        }
-    }
-
-    /// One pool's tie for a claim key, only when exactly one id was cited.
-    fn single_tie<'a>(
-        pool: &'a HashMap<(String, String), HashSet<String>>,
-        key: &(String, String),
-    ) -> Option<&'a str> {
-        let ids = pool.get(key)?;
-        if ids.len() == 1 {
-            ids.iter().next().map(String::as_str)
-        } else {
-            None
-        }
     }
 
     fn known(&self, source_url: &str) -> bool {
@@ -803,12 +716,7 @@ fn call_parsed_with_retry<T: serde::de::DeserializeOwned>(
 /// calls, and the app-side reconciliation/validation of everything returned.
 pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<DistilledResearch> {
     let mut gaps: Vec<String> = Vec::new();
-    let provenance = Provenance::build(
-        inputs.research,
-        inputs.priors,
-        HashMap::new(),
-        &HashSet::new(),
-    );
+    let provenance = Provenance::build(inputs.research, inputs.priors);
     let mut admitted_refs = HashSet::new();
     let prior_by_key: HashMap<&str, &TopicDistillate> = inputs
         .priors
@@ -899,7 +807,7 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
 
     // What a reply may cite is what its message showed: each message's claim
     // index is the allow-set of the hop that parses it (`portfolio-v63`).
-    let (wire, shape, tier1_ties) = if let Some((message, scratch)) = single_pass {
+    let (wire, shape) = if let Some((message, scratch)) = single_pass {
         gaps.extend(scratch);
         admitted_refs.extend(message.prompt.claims.refs());
         let mut wire: CombinedWire = call_parsed_with_retry(
@@ -913,21 +821,11 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
         for topic in &mut wire.topics {
             resolve_claim_ids(&mut topic.claims, &message.prompt.claims);
         }
-        (wire, DistillShape::SinglePass, HashMap::new())
+        (wire, DistillShape::SinglePass)
     } else {
         // Hierarchical: a tier-1 call per topic-tree (the prior merged there),
         // then the reduce over the tier-1 outputs.
         let mut tier1_outputs: Vec<(String, Tier1Wire)> = Vec::new();
-        // The ties every earlier hop's output cited — pass bodies, tree
-        // reduces, tier-1 calls — harvested app-side so a claim a later hop
-        // re-emits verbatim without its tie inherits it.
-        let mut ties: HashMap<(String, String), HashSet<String>> = HashMap::new();
-        let known: HashSet<&str> = inputs
-            .ledger_conditions
-            .iter()
-            .map(|c| c.condition_id.as_str())
-            .collect();
-        let ids = condition_ids(inputs);
         let mut tier1_calls = 0usize;
         let mut subdistilled_topics = 0usize;
         let mut dropped_passes = 0usize;
@@ -956,7 +854,7 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                     model,
                     &format!("distill {} {}", inputs.symbol, topic.topic_key),
                     &prompt,
-                    &tier1_schema(&ids, &prompt.claims.ids()),
+                    &tier1_schema(&prompt.claims.ids()),
                     "tier-1 distillation response failed its schema parse",
                 )
                 .context("tier-1 distillation failed")?;
@@ -988,7 +886,7 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                         model,
                         &format!("distill {} {} pass {}", inputs.symbol, topic.topic_key, i),
                         &prompt,
-                        &tier1_schema(&ids, &prompt.claims.ids()),
+                        &tier1_schema(&prompt.claims.ids()),
                     )
                     .context("pass-level sub-distillation failed")?;
                     if let Ok(mut pass_wire) = serde_json::from_str::<Tier1Wire>(&body) {
@@ -1000,7 +898,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                             inputs.now,
                             &mut gaps,
                         );
-                        harvest_ties(&pass_wire, &known, &mut ties);
                         pass_summaries.push(serde_json::to_string(&pass_wire)?);
                     } else {
                         gaps.push(
@@ -1044,7 +941,7 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                     model,
                     &format!("distill {} {} reduce", inputs.symbol, topic.topic_key),
                     &prompt,
-                    &tier1_schema(&ids, &prompt.claims.ids()),
+                    &tier1_schema(&prompt.claims.ids()),
                     "tier-1 distillation response failed its schema parse",
                 )
                 .context("topic tree reduce failed")?;
@@ -1058,7 +955,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                 inputs.now,
                 &mut gaps,
             );
-            harvest_ties(&wire, &known, &mut ties);
             tier1_outputs.push((topic.topic_key.clone(), wire));
         }
         // Re-read after the loop: a topic the cap dropped whole has left the
@@ -1091,7 +987,6 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                 subdistilled_topics,
                 dropped_passes,
             },
-            ties,
         )
     };
 
@@ -1100,34 +995,9 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
         inputs,
         shape,
         gaps,
-        tier1_ties,
         &analyzed_keys,
         &admitted_refs,
     ))
-}
-
-/// Record the **known** ledger ties one intermediate output's claims cited,
-/// keyed by (evidence reference, claim text) — an unknown id is no tie, so it can
-/// neither inherit nor make a claim ambiguous.
-fn harvest_ties(
-    wire: &Tier1Wire,
-    known: &HashSet<&str>,
-    ties: &mut HashMap<(String, String), HashSet<String>>,
-) {
-    for c in &wire.claims {
-        if let Some(id) = c
-            .related_condition_id
-            .as_deref()
-            .filter(|id| known.contains(id))
-        {
-            ties.entry((
-                c.evidence_ref.clone(),
-                claim_key(&c.claim),
-            ))
-            .or_default()
-            .insert(id.to_string());
-        }
-    }
 }
 
 /// The prior objects riding the reduce as dormant: every stored prior whose
@@ -1149,7 +1019,7 @@ fn topic_input_chars_prior(prior: &TopicDistillate) -> usize {
         + prior
             .claims
             .iter()
-            .map(|c| c.claim.chars().count() + c.source_url.chars().count() + CLAIM_LINE_OVERHEAD_CHARS + tie_chars(c.related_condition_id.as_deref()) + claim_date_label(&c.publication, &c.fact_period).chars().count())
+            .map(|c| c.claim.chars().count() + c.source_url.chars().count() + CLAIM_LINE_OVERHEAD_CHARS + claim_date_label(&c.publication, &c.fact_period).chars().count())
             .sum::<usize>()
 }
 
@@ -1175,7 +1045,7 @@ fn topic_input_chars(
             p.summary.chars().count()
                 + p.claims
                     .iter()
-                    .map(|c| c.claim.chars().count() + c.source_url.chars().count() + CLAIM_LINE_OVERHEAD_CHARS + tie_chars(c.related_condition_id.as_deref()) + claim_date_label(&c.publication, &c.fact_period).chars().count())
+                    .map(|c| c.claim.chars().count() + c.source_url.chars().count() + CLAIM_LINE_OVERHEAD_CHARS + claim_date_label(&c.publication, &c.fact_period).chars().count())
                     .sum::<usize>()
         })
         .unwrap_or(0);
@@ -1185,25 +1055,18 @@ fn topic_input_chars(
 /// App-side validation + reconciliation of the combined wire: topic keys must
 /// be analyzed topics (`analyzed` — the one set [`distill`] routes and reduces
 /// on) or dormant priors, claim dates resolve by admitted evidence reference (cached
-/// expires by its own retrieval time), `related_condition_id` must be a known ledger
-/// condition, and every typed field must cite a known source URL. The typed
+/// expires by its own retrieval time), and every typed field must cite a known
+/// source URL. The typed
 /// fields are dropped whole on the consolidation-only branch.
 fn validate_combined(
     wire: CombinedWire,
     inputs: &DistillInputs<'_>,
     shape: DistillShape,
     mut gaps: Vec<String>,
-    tier1_ties: HashMap<(String, String), HashSet<String>>,
     analyzed: &HashSet<&str>,
     admitted_refs: &HashSet<String>,
 ) -> DistilledResearch {
-    let known_conditions: HashSet<&str> = inputs
-        .ledger_conditions
-        .iter()
-        .map(|c| c.condition_id.as_str())
-        .collect();
-    let provenance =
-        Provenance::build(inputs.research, inputs.priors, tier1_ties, &known_conditions);
+    let provenance = Provenance::build(inputs.research, inputs.priors);
     // A dormant prior topic re-emits reconciled — accepted like an analyzed
     // one, but its object keeps its OWN vintage (dormancy neither
     // re-researches nor re-stamps; the object still expires on its original
@@ -1259,14 +1122,7 @@ fn validate_combined(
             // different claim from the same page never borrows one and a prior
             // tie never becomes fresh support (`docs/portfolio-workflow.md`
             // §Step 6d).
-            let related = match c.related_condition_id {
-                Some(id) if known_conditions.contains(id.as_str()) => Some(id),
-                Some(_) => None,
-                None => provenance
-                    .tie_for(&c.evidence_ref, &c.claim, cached)
-                    .filter(|id| known_conditions.contains(id))
-                    .map(str::to_string),
-            };
+
             claims.push(DistilledClaim {
                 publication: evidence.publication.clone(),
                 fact_period: evidence.fact_period.clone(),
@@ -1274,7 +1130,6 @@ fn validate_combined(
                 source_url: crate::web_research::store::normalize_url(&c.source_url),
                 retrieved_at: evidence.retrieved_at.clone(),
                 cached,
-                related_condition_id: related,
             });
         }
         if dropped > 0 {
@@ -1337,20 +1192,15 @@ fn validate_combined(
             Some(mut l) => match indicator_rejection(&l, &provenance, inputs) {
                 None => {
                     // App-computed referential integrity (never model-set):
-                    // the cited driver id must exist on the current ledger's
-                    // key drivers, or the indicator stays visible evidence
-                    // with no cap suppression.
-                    l.driver_verified = !l.confirms_driver_id.trim().is_empty()
-                        && inputs.ledger_key_drivers.iter().any(|d| {
-                            !d.driver_id.is_empty() && d.driver_id == l.confirms_driver_id.trim()
-                        });
-                    if !l.driver_verified {
-                        gaps.push(format!(
-                            "leading indicator driver reference unverified (id {:?} is not a \
-                             current ledger driver) — evidence only, no cap suppression",
-                            l.confirms_driver_id
-                        ));
-                    }
+                    // no driver list exists to verify the cited id against
+                    // since the ledger retired, so the indicator stays
+                    // visible evidence with no cap suppression.
+                    l.driver_verified = false;
+                    gaps.push(format!(
+                        "leading indicator driver reference unverified (id {:?}; no current \
+                         driver list) — evidence only, no cap suppression",
+                        l.confirms_driver_id
+                    ));
                     Some(l)
                 }
                 Some(reason) => {
@@ -1875,7 +1725,6 @@ struct ReduceMessage {
 #[derive(Clone, Copy)]
 struct ReduceShape<'a> {
     topic_keys: &'a [&'a str],
-    condition_ids: &'a [&'a str],
     driver_ids: &'a [&'a str],
     typed: bool,
     overlay: bool,
@@ -1959,7 +1808,7 @@ const DISTILL_KEY_ORDER: &[&str] = &[
     "fact_type", "affects", "metric_name", "value", "direction", "kind", "issuer", "event_date",
     "metric_kind", "observation_role", "polarity", "numeric_value", "stated_low", "stated_high",
     "units", "period", "period_span", "issuer_scope", "as_of", "source_url", "source_excerpt",
-    "published_at", "confidence", "related_condition_id", "confirms_driver_id",
+    "published_at", "confidence", "confirms_driver_id",
     "checked_periods", "sources", "coverage",
 ];
 
@@ -1971,10 +1820,6 @@ fn render_shape(schema: &Value, nullable: bool) -> String {
     )
 }
 
-fn condition_ids<'a>(inputs: &DistillInputs<'a>) -> Vec<&'a str> {
-    inputs.ledger_conditions.iter().map(|c| c.condition_id.as_str()).collect()
-}
-
 // ---- Part 1 ----
 
 fn part1_header(inputs: &DistillInputs<'_>) -> String {
@@ -1982,36 +1827,6 @@ fn part1_header(inputs: &DistillInputs<'_>) -> String {
     out.push_str(inputs.holding_brief);
     if !out.ends_with('\n') {
         out.push('\n');
-    }
-    out
-}
-
-fn render_conditions(conditions: &[crate::portfolio::LedgerCondition]) -> String {
-    if conditions.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from(
-        "\nSTANDING CONDITIONS\nConditions the thesis on this holding is being watched against, \
-         each with its id.\n",
-    );
-    for c in conditions {
-        let role = match c.role {
-            crate::portfolio::ConditionRole::Falsifier => "Falsifier",
-            crate::portfolio::ConditionRole::Trigger => "Trigger",
-        };
-        out.push_str(&format!("- {} — {role}: {}\n", c.condition_id, c.statement));
-    }
-    out
-}
-
-fn render_drivers(drivers: &[&crate::portfolio::KeyDriver]) -> String {
-    if drivers.is_empty() {
-        return String::new();
-    }
-    let mut out =
-        String::from("\nKEY DRIVERS\nWhat the thesis on this holding rests on, each with its id.\n");
-    for d in drivers {
-        out.push_str(&format!("- {} — {}\n", d.driver_id, d.name));
     }
     out
 }
@@ -2027,7 +1842,7 @@ enum GlossScope {
     OneSearch,
 }
 
-fn topics_gloss(scope: GlossScope, conditions: bool, priors: bool, dormant: bool) -> String {
+fn topics_gloss(scope: GlossScope, priors: bool, dormant: bool) -> String {
     // `portfolio-v66`: the tier-1, pass-level and tree-level calls carry one
     // topic, as their system message says; the reduce keeps the many-topic form.
     // `portfolio-v67`: the pass-level call shows one of the topic's searches,
@@ -2049,12 +1864,6 @@ fn topics_gloss(scope: GlossScope, conditions: bool, priors: bool, dormant: bool
          address of the page that states it; the publication date the search or lead reported; \
          and the period the fact applies to."
     );
-    if conditions {
-        g.push_str(
-            " A claim marked \"bears on\" names the condition under STANDING CONDITIONS it is \
-             evidence on.",
-        );
-    }
     if priors {
         g.push_str(" Prior findings are from an earlier analysis of the topic, dated.");
     }
@@ -2063,13 +1872,6 @@ fn topics_gloss(scope: GlossScope, conditions: bool, priors: bool, dormant: bool
     }
     g.push('\n');
     g
-}
-
-/// A claim's rendered ledger tie, as words.
-fn render_tie(related_condition_id: Option<&str>) -> String {
-    related_condition_id
-        .map(|id| format!(" — bears on {id}"))
-        .unwrap_or_default()
 }
 
 /// The date part of a topic object's vintage — the run stamps vintages at
@@ -2090,7 +1892,6 @@ fn render_prior(prior: &TopicDistillate, index: &mut ClaimIndex) -> String {
             &c.claim,
             &c.source_url,
             &claim_date_label(&c.publication, &c.fact_period),
-            c.related_condition_id.as_deref(),
         ));
     }
     out
@@ -2099,24 +1900,15 @@ fn render_prior(prior: &TopicDistillate, index: &mut ClaimIndex) -> String {
 /// What a rendered claim line adds beyond its claim, address and provenance
 /// label — the dash, an id of up to three digits with its colon, the
 /// brackets, the separators and the newline — the per-claim constant the
-/// routing estimators count (`topic_input_chars`); a ledger tie counts on top
-/// by its own id (`tie_chars`). It was 90 while the line carried the 64-hex
-/// reference, which left it at `portfolio-v63`.
+/// routing estimators count (`topic_input_chars`). It was 90 while the line
+/// carried the 64-hex reference, which left it at `portfolio-v63`.
 const CLAIM_LINE_OVERHEAD_CHARS: usize = 16;
 
-/// The characters a claim's ledger tie adds to its line (` — bears on <id>`),
-/// none without one. Production condition ids are UUIDs, so the id is
-/// counted, never assumed short (Codex, `portfolio-v63`).
-fn tie_chars(related_condition_id: Option<&str>) -> usize {
-    related_condition_id.map_or(0, |id| " — bears on ".chars().count() + id.chars().count())
-}
-
 /// One claim line under its pass-local id: the id, the claim, the page's
-/// address, the provenance label and the tie where one stands
-/// (`portfolio-v63`; the evidence reference no longer renders — the id
-/// stands for it).
-fn claim_line(id: String, claim: &str, source_url: &str, dates: &str, tie: Option<&str>) -> String {
-    format!("- {id}: {claim} [{source_url}] — {dates}{}\n", render_tie(tie))
+/// address and the provenance label (`portfolio-v63`; the evidence reference
+/// no longer renders — the id stands for it).
+fn claim_line(id: String, claim: &str, source_url: &str, dates: &str) -> String {
+    format!("- {id}: {claim} [{source_url}] — {dates}\n")
 }
 
 fn render_search(
@@ -2133,7 +1925,6 @@ fn render_search(
                 &c.claim,
                 &c.source_url,
                 &claim_date_label(&c.publication, &c.fact_period),
-                None,
             ));
         }
     }
@@ -2164,12 +1955,7 @@ fn render_claim_lines(
     inputs: &DistillInputs<'_>,
     index: &mut ClaimIndex,
 ) -> String {
-    let provenance = Provenance::build(
-        inputs.research,
-        inputs.priors,
-        HashMap::new(),
-        &HashSet::new(),
-    );
+    let provenance = Provenance::build(inputs.research, inputs.priors);
     let mut out = String::new();
     if !claims.is_empty() {
         out.push_str("Claims:\n");
@@ -2182,7 +1968,6 @@ fn render_claim_lines(
                     .resolve(&c.evidence_ref, &c.source_url)
                     .map(|e| claim_date_label(&e.publication, &e.fact_period))
                     .unwrap_or_else(|| "dates unknown".into()),
-                c.related_condition_id.as_deref(),
             ));
         }
     }
@@ -2227,7 +2012,6 @@ fn render_contrary(
             &c.claim,
             &c.source_url,
             &claim_date_label(&c.publication, &c.fact_period),
-            None,
         ));
     }
     out
@@ -2323,7 +2107,6 @@ fn render_source_text(inputs: &DistillInputs<'_>, budget: usize, gaps: &mut Vec<
 /// What the reduce message carries, so its task names only the sections
 /// that render.
 struct TaskContext {
-    conditions: bool,
     priors: bool,
     dormant: bool,
     contrary: bool,
@@ -2395,12 +2178,6 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
     } else {
         format!(" A fact two {topics_word} state is one claim, under the topic it belongs to.")
     };
-    let tie = if ctx.conditions {
-        " related_condition_id is the id of the condition under STANDING CONDITIONS the claim \
-         is evidence on — that it has tripped, is holding, or is at risk — else null."
-    } else {
-        ""
-    };
     let dormant_rule = if ctx.dormant {
         " A topic not searched in this analysis keeps its prior findings, changed only where a claim \
          under another topic supersedes one, with nothing added."
@@ -2412,8 +2189,7 @@ fn reduce_task(shape: &ReduceShape<'_>, ctx: &TaskContext, schema: &Value) -> St
          topic_key is the topic's key under TOPICS. summary is what {summary_basis} establish, \
          as of the date under HOLDING. claims is every distinct statement the topic rests on, \
          one statement per claim{statements_from}.{sources_rule} evidence_id is the id of the \
-         claim {cited} the statement rests on.{one_claim_rule}{tie}\
-         {dormant_rule}\n"
+         claim {cited} the statement rests on.{one_claim_rule}{dormant_rule}\n"
     ));
     let mut n = 3;
     if shape.typed {
@@ -2520,7 +2296,7 @@ fn claim_rules(whole_holding: bool) -> String {
 }
 
 /// Part 2 of the tier-1, pass-level and tree-level calls.
-fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Value) -> String {
+fn topic_task(priors: bool, single_search: bool, schema: &Value) -> String {
     let mut t = String::from(TASK_OPENING);
     if single_search {
         // `portfolio-v67`: one search fetches several pages, two of which can
@@ -2559,12 +2335,6 @@ fn topic_task(conditions: bool, priors: bool, single_search: bool, schema: &Valu
              statement rests on."
         ));
     }
-    if conditions {
-        t.push_str(
-            " related_condition_id is the id of the condition under STANDING CONDITIONS the \
-             claim is evidence on — that it has tripped, is holding, or is at risk — else null.",
-        );
-    }
     t.push_str("\n\n");
     t.push_str(&claim_rules(false));
     t.push_str(&render_shape(schema, false));
@@ -2580,14 +2350,12 @@ pub(crate) fn tier1_message(
     topic: &crate::portfolio::research::TopicResearch,
     prior: Option<&TopicDistillate>,
 ) -> DistillPrompt {
-    let ids = condition_ids(inputs);
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
-    user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(GlossScope::OneTopic, !ids.is_empty(), prior.is_some(), false));
+    user.push_str(&topics_gloss(GlossScope::OneTopic, prior.is_some(), false));
     user.push_str(&render_topic_searches(topic, prior, &mut claims));
     user.push_str(PART_2);
-    user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids, &claims.ids())));
+    user.push_str(&topic_task(prior.is_some(), false, &tier1_schema(&claims.ids())));
     DistillPrompt {
         system: system_prompt(false, "summary and claims"),
         user,
@@ -2602,15 +2370,13 @@ pub(crate) fn pass_message(
     i: usize,
     pass: &crate::portfolio::research::PassFindings,
 ) -> DistillPrompt {
-    let ids = condition_ids(inputs);
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
-    user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(GlossScope::OneSearch, !ids.is_empty(), false, false));
+    user.push_str(&topics_gloss(GlossScope::OneSearch, false, false));
     user.push_str(&topic_line(&topic.topic_key, &topic.title));
     user.push_str(&render_search(i, pass, &mut claims));
     user.push_str(PART_2);
-    user.push_str(&topic_task(!ids.is_empty(), false, true, &tier1_schema(&ids, &claims.ids())));
+    user.push_str(&topic_task(false, true, &tier1_schema(&claims.ids())));
     DistillPrompt {
         system: system_prompt(false, "summary and claims"),
         user,
@@ -2627,11 +2393,9 @@ pub(crate) fn tree_reduce_message(
     pass_bodies: &[String],
     prior: Option<&TopicDistillate>,
 ) -> DistillPrompt {
-    let ids = condition_ids(inputs);
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
-    user.push_str(&render_conditions(inputs.ledger_conditions));
-    user.push_str(&topics_gloss(GlossScope::OneTopic, !ids.is_empty(), prior.is_some(), false));
+    user.push_str(&topics_gloss(GlossScope::OneTopic, prior.is_some(), false));
     user.push_str(&topic_line(&topic.topic_key, &topic.title));
     for (i, body) in pass_bodies.iter().enumerate() {
         match serde_json::from_str::<Tier1Wire>(body) {
@@ -2646,7 +2410,7 @@ pub(crate) fn tree_reduce_message(
         user.push_str(&render_prior(prior, &mut claims));
     }
     user.push_str(PART_2);
-    user.push_str(&topic_task(!ids.is_empty(), prior.is_some(), false, &tier1_schema(&ids, &claims.ids())));
+    user.push_str(&topic_task(prior.is_some(), false, &tier1_schema(&claims.ids())));
     DistillPrompt {
         system: system_prompt(false, "summary and claims"),
         user,
@@ -2668,13 +2432,9 @@ fn reduce_message(
     analyzed: &HashSet<&str>,
     gaps: &mut Vec<String>,
 ) -> ReduceMessage {
-    let ids = condition_ids(inputs);
-    let drivers: Vec<&crate::portfolio::KeyDriver> = inputs
-        .ledger_key_drivers
-        .iter()
-        .filter(|d| !d.driver_id.is_empty())
-        .collect();
-    let driver_ids: Vec<&str> = drivers.iter().map(|d| d.driver_id.as_str()).collect();
+    // No driver list exists since the ledger retired: the leading indicator is
+    // never asked for (`ReduceShape::indicator`).
+    let driver_ids: Vec<&str> = Vec::new();
     let has_pages = inputs
         .research
         .page_texts
@@ -2701,7 +2461,6 @@ fn reduce_message(
     topic_keys.extend(dormant_priors.iter().map(|p| p.topic_key.as_str()));
     let shape = ReduceShape {
         topic_keys: &topic_keys,
-        condition_ids: &ids,
         driver_ids: &driver_ids,
         typed,
         overlay: inputs.overlay_eligible,
@@ -2714,7 +2473,6 @@ fn reduce_message(
             .iter()
             .any(|t| analyzed.contains(t.topic_key.as_str()) && prior_by_key.contains_key(t.topic_key.as_str()));
     let ctx = TaskContext {
-        conditions: !ids.is_empty(),
         priors: priors_render || !dormant_priors.is_empty(),
         dormant: !dormant_priors.is_empty(),
         contrary: inputs.research.disconfirming.is_some(),
@@ -2723,11 +2481,7 @@ fn reduce_message(
 
     let mut claims = ClaimIndex::default();
     let mut user = part1_header(inputs);
-    user.push_str(&render_conditions(inputs.ledger_conditions));
-    if shape.indicator() {
-        user.push_str(&render_drivers(&drivers));
-    }
-    user.push_str(&topics_gloss(GlossScope::WholeHolding, ctx.conditions, ctx.priors, ctx.dormant));
+    user.push_str(&topics_gloss(GlossScope::WholeHolding, ctx.priors, ctx.dormant));
     match tier1 {
         Some(outputs) => {
             for (key, wire) in outputs {
@@ -2784,8 +2538,8 @@ fn reduce_message(
 
 /// The distillation messages the harness renders (`portfolio-v44`): the seven
 /// calls over hand-written TSLA research — two topics, a follow-up search, the
-/// contrary-evidence pass, one prior topic object, one dormant prior, two
-/// standing conditions, two key drivers, three fetched pages — and the
+/// contrary-evidence pass, one prior topic object, one dormant prior, three
+/// fetched pages — and the
 /// synthetic bond fund's one topic; the prompts' shape, never a run's research.
 #[cfg(test)]
 pub(crate) mod samples {
@@ -2793,7 +2547,6 @@ pub(crate) mod samples {
     use crate::portfolio::research::samples as research_samples;
     use crate::portfolio::research::samples::prose;
     use crate::portfolio::research::{EvidenceClaim, PassFindings, TopicResearch};
-    use crate::portfolio::{ConditionRole, KeyDriver, LedgerCondition, TriggerFamily};
 
     /// One rendered distillation call: its two messages, the per-call grammar
     /// the adapter passes as `format`, and the stage label the run gives it.
@@ -2844,22 +2597,6 @@ pub(crate) mod samples {
             retrieved_at: at.into(),
             surfaced_by: None,
             annotation: None,
-        }
-    }
-
-    fn condition(id: &str, role: ConditionRole, family: Option<TriggerFamily>, statement: &str) -> LedgerCondition {
-        LedgerCondition {
-            condition_id: id.into(),
-            role,
-            trigger_family: family,
-            label: None,
-            statement: statement.into(),
-            quant: None,
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: None,
         }
     }
 
@@ -2941,7 +2678,7 @@ pub(crate) mod samples {
 
     fn stock_priors(stub: bool) -> Vec<TopicDistillate> {
         use crate::portfolio::research::PeriodPrecision;
-        let prior = |claim: &str, url: &str, tie: Option<&str>, published: Option<&str>, period: Option<(PeriodPrecision, &str)>| {
+        let prior = |claim: &str, url: &str, published: Option<&str>, period: Option<(PeriodPrecision, &str)>| {
             let (publication, fact_period) = provenance(published, period);
             DistilledClaim {
                 publication,
@@ -2950,7 +2687,6 @@ pub(crate) mod samples {
                 source_url: url.into(),
                 retrieved_at: "2026-09-01T00:00:00+00:00".into(),
                 cached: false,
-                related_condition_id: tie.map(str::to_string),
             }
         };
         vec![
@@ -2959,8 +2695,8 @@ pub(crate) mod samples {
                 vintage: "2026-09-01T00:00:00+00:00".into(),
                 summary: prose(stub, "the prior run's summary of this topic", "Tesla's margin ex-credits compressed to 14.6% in Q2 2026; BYD outsold Tesla in Europe in July for a third month."),
                 claims: vec![
-                    prior(&prose(stub, "prior claim 1, tied to a standing condition", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%."), research_samples::IR_URL, Some("c-margin"), Some("2026-07-22"), Some((PeriodPrecision::Quarter, "2026-Q2"))),
-                    prior(&prose(stub, "prior claim 2", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month."), JULY_URL, None, Some("2026-08-26"), Some((PeriodPrecision::Month, "2026-07"))),
+                    prior(&prose(stub, "prior claim 1, tied to a standing condition", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%."), research_samples::IR_URL, Some("2026-07-22"), Some((PeriodPrecision::Quarter, "2026-Q2"))),
+                    prior(&prose(stub, "prior claim 2", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month."), JULY_URL, Some("2026-08-26"), Some((PeriodPrecision::Month, "2026-07"))),
                 ],
             },
             TopicDistillate {
@@ -2970,25 +2706,10 @@ pub(crate) mod samples {
                 claims: vec![prior(
                     &prose(stub, "prior claim 3", "Cybercab production began at Giga Texas ahead of a Q4 2026 launch."),
                     "https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/",
-                    None,
                     Some("2026-09-10"),
                     None,
                 )],
             },
-        ]
-    }
-
-    fn stock_conditions() -> Vec<LedgerCondition> {
-        vec![
-            condition("c-margin", ConditionRole::Falsifier, None, "Automotive gross margin ex-credits falls below 14% for two consecutive quarters."),
-            condition("c-price", ConditionRole::Trigger, Some(TriggerFamily::Trim), "Price closes below $250."),
-        ]
-    }
-
-    fn stock_drivers() -> Vec<KeyDriver> {
-        vec![
-            KeyDriver { driver_id: "d-robotaxi".into(), name: "Robotaxi commercial rollout".into(), series: None },
-            KeyDriver { driver_id: "d-energy".into(), name: "Energy storage growth".into(), series: None },
         ]
     }
 
@@ -3024,8 +2745,6 @@ pub(crate) mod samples {
         brief: &'a str,
         research: &'a HoldingResearch,
         priors: &'a [TopicDistillate],
-        conditions: &'a [LedgerCondition],
-        drivers: &'a [KeyDriver],
         consolidation_only: bool,
         overlay_eligible: bool,
         backfill_required: bool,
@@ -3036,8 +2755,6 @@ pub(crate) mod samples {
             holding_brief: brief,
             research,
             priors,
-            ledger_conditions: conditions,
-            ledger_key_drivers: drivers,
             consolidation_only,
             overlay_eligible,
             backfill_required,
@@ -3076,30 +2793,21 @@ pub(crate) mod samples {
     pub(crate) fn messages(stock_brief: &str, fund_brief: &str, stub: bool) -> Vec<Sample> {
         let research = stock_research(stub);
         let priors = stock_priors(stub);
-        let conditions = stock_conditions();
-        let drivers = stock_drivers();
         let fund = fund_research(stub);
-        let fund_conditions = vec![condition(
-            "c-dur",
-            ConditionRole::Trigger,
-            Some(TriggerFamily::Trim),
-            "Effective duration rises above 7 years.",
-        )];
-        let continuity = inputs("TSLA", "Tesla, Inc.", stock_brief, &research, &priors, &conditions, &drivers, false, true, true);
-        let debut = inputs("TSLA", "Tesla, Inc.", stock_brief, &research, &[], &[], &[], false, false, false);
-        let fund_inputs = inputs("BND", "Vanguard Total Bond Market ETF", fund_brief, &fund, &[], &fund_conditions, &[], true, false, false);
+        let continuity = inputs("TSLA", "Tesla, Inc.", stock_brief, &research, &priors, false, true, true);
+        let debut = inputs("TSLA", "Tesla, Inc.", stock_brief, &research, &[], false, false, false);
+        let fund_inputs = inputs("BND", "Vanguard Total Bond Market ETF", fund_brief, &fund, &[], true, false, false);
         let topic = &research.topics[0];
         let prior = priors.iter().find(|p| p.topic_key == topic.topic_key);
-        let topic_ids = condition_ids(&continuity);
         // Each topic message's grammar enumerates the claim ids that message
         // shows (`portfolio-v63`).
         let topic_call = |prompt: DistillPrompt| {
-            let schema = tier1_schema(&topic_ids, &prompt.claims.ids());
+            let schema = tier1_schema(&prompt.claims.ids());
             (prompt, schema)
         };
         let pass_bodies = vec![
-            json!({"summary":prose(stub, "pass 1's summary, as the pass-level call returned it", "Margin ex-credits 14.6% in Q2 2026, down from 17.2%; BYD outsold Tesla in Europe a fourth month in August."),"claims":[{"claim":prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),"source_url":research_samples::IR_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[0].claims[0]),"related_condition_id":"c-margin"}]}).to_string(),
-            json!({"summary":prose(stub, "pass 2's summary, as the pass-level call returned it", "No September price action found; NHTSA opened PE26-014 on FSD v14."),"claims":[{"claim":prose(stub, "claim 3 — one dated fact from its source", "NHTSA opened Preliminary Evaluation PE26-014 covering about 2.4 million FSD v14 vehicles after 11 intersection-crash reports."),"source_url":NHTSA_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[1].claims[0]),"related_condition_id":null}]}).to_string(),
+            json!({"summary":prose(stub, "pass 1's summary, as the pass-level call returned it", "Margin ex-credits 14.6% in Q2 2026, down from 17.2%; BYD outsold Tesla in Europe a fourth month in August."),"claims":[{"claim":prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),"source_url":research_samples::IR_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[0].claims[0])}]}).to_string(),
+            json!({"summary":prose(stub, "pass 2's summary, as the pass-level call returned it", "No September price action found; NHTSA opened PE26-014 on FSD v14."),"claims":[{"claim":prose(stub, "claim 3 — one dated fact from its source", "NHTSA opened Preliminary Evaluation PE26-014 covering about 2.4 million FSD v14 vehicles after 11 intersection-crash reports."),"source_url":NHTSA_URL,"evidence_ref":fresh_ref(&research.topics[0].passes[1].claims[0])}]}).to_string(),
         ];
         let tier1_outputs = vec![
             (
@@ -3111,7 +2819,6 @@ pub(crate) mod samples {
                         evidence_ref: fresh_ref(&research.topics[0].passes[0].claims[0]),
                         claim: prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),
                         source_url: research_samples::IR_URL.into(),
-                        related_condition_id: Some("c-margin".into()),
                     }],
                 },
             ),
@@ -3124,12 +2831,11 @@ pub(crate) mod samples {
                         evidence_ref: fresh_ref(&research.topics[1].passes[0].claims[1]),
                         claim: prose(stub, "claim 5 — a forward figure from its source", "Tesla expects 2026 capital expenditures to exceed $12B."),
                         source_url: research_samples::IR_URL.into(),
-                        related_condition_id: None,
                     }],
                 },
             ),
         ];
-        let hierarchical = inputs("TSLA", "Tesla, Inc.", stock_brief, &research, &priors, &conditions, &drivers, false, false, false);
+        let hierarchical = inputs("TSLA", "Tesla, Inc.", stock_brief, &research, &priors, false, false, false);
         vec![
             sample("reduce — stock, continuity run, overlay-eligible with the backfill obligation, single pass", "distill TSLA".into(), reduce(&continuity, None)),
             sample("reduce — stock, first analysis, no overlay", "distill TSLA".into(), reduce(&debut, None)),
@@ -3339,38 +3045,15 @@ mod tests {
         base
     }
 
-    /// Qualitative falsifiers with the given ids — the ledger surface the tie
-    /// channel renders and validates against.
-    fn conditions(ids: &[&str]) -> Vec<crate::portfolio::LedgerCondition> {
-        ids.iter()
-            .map(|id| crate::portfolio::LedgerCondition {
-                condition_id: id.to_string(),
-                role: crate::portfolio::ConditionRole::Falsifier,
-                trigger_family: None,
-                label: None,
-                statement: format!("condition {id} holds"),
-                quant: None,
-                downgraded_reason: None,
-                technology_class: false,
-                tripped: false,
-                supersedes: None,
-                eval_state: None,
-            })
-            .collect()
-    }
-
     fn inputs<'a>(
         research: &'a HoldingResearch,
         priors: &'a [TopicDistillate],
-        conditions: &'a [crate::portfolio::LedgerCondition],
     ) -> DistillInputs<'a> {
         DistillInputs {
             symbol: "WID",
             company_name: Some("Widget Industries"),
             research,
             priors,
-            ledger_conditions: conditions,
-            ledger_key_drivers: &[],
             holding_brief: "HOLDING\nWID (Widget Industries).\nPrice: $10.00 per share.\nDate: 2026-08-23.\n",
             consolidation_only: false,
             overlay_eligible: false,
@@ -3432,11 +3115,10 @@ mod tests {
                 publication: PublicationDate::from_reported(Some("2026-08-01")),
                 fact_period: FactPeriod::default(),
                 cached: false,
-                related_condition_id: None,
             }],
         };
         let priors = vec![prior.clone()];
-        let ins = inputs(&research, &priors, &[]);
+        let ins = inputs(&research, &priors);
         let analyzed = analyzed_of(&ins);
         let prior_by_key: HashMap<&str, &TopicDistillate> = [("competitive-position", &priors[0])].into();
         let message = reduce_message(&ins, None, &prior_by_key, &[], &analyzed, &mut Vec::new());
@@ -3482,7 +3164,7 @@ mod tests {
     #[test]
     fn an_unshown_evidence_id_drops_the_claim_and_a_shown_one_resolves() {
         let research = research_one_topic();
-        let ins = inputs(&research, &[], &[]);
+        let ins = inputs(&research, &[]);
         let body = combined_body(json!({"topics":[{"topic_key":"competitive-position", "summary":"s", "claims":[
             {"claim":"Q3 revenue restated", "evidence_id":"C1"},
             {"claim":"from nowhere", "evidence_id":"C7"}
@@ -3526,7 +3208,6 @@ mod tests {
                 publication: PublicationDate::from_reported(Some("2026-08-01")),
                 fact_period: fresh.fact_period.clone(),
                 cached: true,
-                related_condition_id: None,
             }],
         }];
         let tier = Tier1Wire {
@@ -3536,7 +3217,6 @@ mod tests {
                 claim: fresh.claim.clone(),
                 source_url: fresh.source_url.clone(),
                 evidence_ref: fresh_ref(fresh),
-                related_condition_id: None,
             }],
         };
         let pass_bodies = vec![serde_json::to_string(&tier).unwrap()];
@@ -3546,7 +3226,7 @@ mod tests {
         // Complete production prompts for stock and consolidation-only paths,
         // including the prior merged at tier-1 or at the tree reduction.
         for consolidation_only in [false, true] {
-            let mut ins = inputs(&research, &priors, &[]);
+            let mut ins = inputs(&research, &priors);
             ins.consolidation_only = consolidation_only;
             for (route, prompt) in [
                 ("single", reduce_user(&ins, None, &prior_map, &[])),
@@ -3624,7 +3304,7 @@ mod tests {
         let reduced = json!({"combined_findings":"Dated facts", "topics":[{"topic_key":"exposure-profile", "summary":"Dated facts", "claims":claims}]});
         let tier = json!({"summary":"Dated facts", "claims":claims});
         for route in 0..3 {
-            let mut ins = inputs(&research, &[], &[]);
+            let mut ins = inputs(&research, &[]);
             ins.now = utc("2026-09-19T00:00:00Z");
             ins.consolidation_only = true;
             let bodies = match route {
@@ -3668,7 +3348,7 @@ mod tests {
             store::save_topic_distillates(&conn, "ARKF", &out.topic_layer).unwrap();
             let loaded = store::load_topic_distillates(&conn, "ARKF").unwrap();
             assert_eq!(loaded, out.topic_layer);
-            let seed = research::assemble_topic_seed(Some(&loaded[0]), None, ins.now).unwrap();
+            let seed = research::assemble_topic_seed(Some(&loaded[0]), ins.now).unwrap();
             assert!(seed
                 .findings
                 .iter()
@@ -3676,64 +3356,6 @@ mod tests {
             assert!(seed.findings.iter().any(|s| s.contains("fact period: 2026-Q2")));
             assert!(seed.findings.iter().any(|s| s.contains("source label: Q4 FY2025")));
         }
-    }
-
-    #[test]
-    fn entry3_same_url_periods_snapshots_and_cached_refs_cannot_borrow_dates() {
-        let mut research = research_one_topic();
-        let first = &mut research.topics[0].passes[0].claims[0];
-        first.fact_period = FactPeriod {
-            kind: crate::portfolio::research::PeriodPrecision::Month,
-            value: "2026-07".into(),
-            end: None,
-        };
-        first.publication = PublicationDate::from_reported(Some("2026-08-01"));
-        let mut second = first.clone();
-        second.claim = "August revenue was $1.3B".into();
-        second.fact_period.value = "2026-08".into();
-        second.publication = PublicationDate::from_reported(Some("2026-08-22"));
-        second.retrieved_at = "2026-08-22T11:00:00Z".into();
-        research.topics[0].passes[0].claims.push(second);
-        let prior = TopicDistillate {
-            topic_key: "competitive-position".into(),
-            vintage: "2026-08-10T00:00:00Z".into(),
-            summary: "prior".into(),
-            claims: vec![DistilledClaim {
-                claim: "old July statement".into(),
-                source_url: "https://reuters.com/widget".into(),
-                retrieved_at: "2026-08-10T00:00:00Z".into(),
-                publication: PublicationDate::from_reported(Some("2026-08-01")),
-                fact_period: research.topics[0].passes[0].claims[0].fact_period.clone(),
-                cached: false,
-                related_condition_id: Some("c1".into()),
-            }],
-        };
-        let originals = &research.topics[0].passes[0].claims;
-        let body = combined_body(
-            json!({"topics":[{"topic_key":"competitive-position", "summary":"s", "claims":[
-                {"claim":"July rewritten", "source_url":originals[0].source_url, "evidence_ref":fresh_ref(&originals[0])},
-                {"claim":"August rewritten", "source_url":originals[1].source_url, "evidence_ref":fresh_ref(&originals[1])},
-                {"claim":"old July statement", "source_url":prior.claims[0].source_url, "evidence_ref":prior_ref(&prior.claims[0])},
-                {"claim":"invented reference", "source_url":originals[0].source_url, "evidence_ref":"Eunknown"},
-                {"claim":"wrong source", "source_url":"https://example.com/wrong", "evidence_ref":fresh_ref(&originals[0])}
-            ]}]}),
-        );
-        let priors = vec![prior];
-        let conds = conditions(&["c1"]);
-        let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &priors, &conds)).unwrap();
-        let claims = &out.topic_layer[0].claims;
-        assert_eq!(claims.len(), 3);
-        for i in 0..2 {
-            assert_eq!(claims[i].retrieved_at, originals[i].retrieved_at);
-            assert_eq!(claims[i].fact_period, originals[i].fact_period);
-            assert_eq!(claims[i].publication, originals[i].publication);
-            assert!(!claims[i].cached);
-        }
-        assert!(claims[2].cached);
-        assert_eq!(claims[2].retrieved_at, priors[0].claims[0].retrieved_at);
-        assert_eq!(claims[2].related_condition_id.as_deref(), Some("c1"));
-        assert!(out.gaps.iter().any(|g| g.contains("2 claim(s) dropped")));
     }
 
     #[test]
@@ -3755,7 +3377,7 @@ mod tests {
         research.topics.push(other);
         let injected = json!({"claim":"other claim", "source_url":"https://example.com/other", "evidence_ref":other_ref});
         let own = json!({"claim":"own", "source_url":"https://reuters.com/widget", "evidence_ref":own_ref});
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.input_budget_chars = topic_input_chars(&research.topics[0], None)
             .max(topic_input_chars(&research.topics[1], None));
         let model = ScriptDistill::new(vec![
@@ -3806,7 +3428,6 @@ mod tests {
                 publication: old.publication.clone(),
                 fact_period: old.fact_period.clone(),
                 cached: false,
-                related_condition_id: None,
             }],
         };
         research.topics.push(topic(
@@ -3827,7 +3448,7 @@ mod tests {
                 "summary":"The correction replaces 10 with 9; the undated 11 remains an unresolved source conflict.",
                 "claims":[emit(&revision), emit(&uncertain)]})).collect();
         for hierarchical in [false, true] {
-            let mut ins = inputs(&research, &priors, &[]);
+            let mut ins = inputs(&research, &priors);
             let final_body = json!({"combined_findings":"Correction 9; unresolved source conflict 11", "topics":reconciled});
             let bodies = if hierarchical {
                 ins.input_budget_chars = research
@@ -3864,7 +3485,7 @@ mod tests {
     fn single_pass_resolves_vintages_and_drops_unknown_urls() {
         let research = research_one_topic();
         let model = ScriptDistill::new(vec![combined_body(json!({}))]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert_eq!(out.shape, DistillShape::SinglePass);
         assert_eq!(model.stages(), vec!["distill WID"]);
         assert_eq!(out.topic_layer.len(), 1);
@@ -3885,7 +3506,7 @@ mod tests {
         let quote = "Widget Industries guided bookings of 120 units.";
         research.page_texts.insert("https://reuters.com/widget".into(), quote.into());
         for hierarchical in [false, true] {
-            let mut ins = inputs(&research, &[], &[]);
+            let mut ins = inputs(&research, &[]);
             let bodies = if hierarchical {
                 ins.input_budget_chars = 1;
                 vec![json!({"summary": "s", "claims": []}), json!({"summary": "s", "claims": []}), combined_body(json!({}))]
@@ -3904,7 +3525,7 @@ mod tests {
         research
             .page_published
             .insert("https://reuters.com/widget".into(), "2026-08-20".into());
-        let ins = inputs(&research, &[], &[]);
+        let ins = inputs(&research, &[]);
         let mut gaps = vec![];
         let section = render_source_text(&ins, 2_000, &mut gaps);
         assert!(section.chars().count() <= 2_000, "{}", section.chars().count());
@@ -3917,7 +3538,7 @@ mod tests {
         assert!(gaps.iter().any(|gap| gap.contains("no room")), "{gaps:?}");
         // A consolidation-only call (role/risk, any fund) carries no SOURCE
         // TEXT and no typed item.
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.consolidation_only = true;
         let user = reduce_user(&ins, None, &HashMap::new(), &[]);
         assert!(!user.contains("SOURCE TEXT") && !user.contains("forward_assumption"), "{user}");
@@ -3931,7 +3552,7 @@ mod tests {
         let mut research = research_one_topic();
         research.page_texts.insert("https://a.example/large".into(), "évidence ".repeat(2_000));
         research.page_texts.insert("https://z.example/large".into(), "other ".repeat(2_000));
-        let ins = inputs(&research, &[], &[]);
+        let ins = inputs(&research, &[]);
         for budget in 0..=600usize {
             let mut gaps = vec![];
             let section = render_source_text(&ins, budget, &mut gaps);
@@ -3962,7 +3583,7 @@ mod tests {
         // (rule 8) and the audit still says why (task review, 2026-09-17).
         let mut research = research_one_topic();
         research.page_texts.clear();
-        let ins = inputs(&research, &[], &[]);
+        let ins = inputs(&research, &[]);
         let user = reduce_user(&ins, None, &HashMap::new(), &[]);
         assert!(!user.contains("forward_assumption") && !user.contains("SOURCE TEXT"), "{user}");
         let model = ScriptDistill::new(vec![combined_body(json!({}))]);
@@ -3973,7 +3594,7 @@ mod tests {
             out.gaps
         );
         // A consolidation-only call records no such gap: it never asks.
-        let mut fund = inputs(&research, &[], &[]);
+        let mut fund = inputs(&research, &[]);
         fund.consolidation_only = true;
         let model = ScriptDistill::new(vec![combined_body(json!({}))]);
         let out = distill(&model, &fund).unwrap();
@@ -3986,18 +3607,16 @@ mod tests {
         // shape's top-level keys are exactly the grammar's required keys, the
         // alternatives ride the grammar, and a field nothing can fill on the
         // call is in neither (ruled 2026-09-17, `portfolio-v44`).
-        for (typed, overlay, backfill, drivers, conditions) in [
-            (false, false, false, false, false),
-            (true, false, false, false, false),
-            (true, true, false, false, true),
-            (true, true, true, true, true),
-            (false, false, false, true, true),
+        for (typed, overlay, backfill, drivers) in [
+            (false, false, false, false),
+            (true, false, false, false),
+            (true, true, false, false),
+            (true, true, true, true),
+            (false, false, false, true),
         ] {
-            let ids: Vec<&str> = if conditions { vec!["c1"] } else { vec![] };
             let driver_ids: Vec<&str> = if drivers { vec!["d1"] } else { vec![] };
             let shape = ReduceShape {
                 topic_keys: &["competitive-position"],
-                condition_ids: &ids,
                 driver_ids: &driver_ids,
                 typed,
                 overlay,
@@ -4025,10 +3644,7 @@ mod tests {
             assert_eq!(value["topics"][0]["topic_key"], "<competitive-position>");
             assert_eq!(value["topics"][0]["claims"][0]["evidence_id"], "<C1|C2>");
             let claim = &value["topics"][0]["claims"][0];
-            assert_eq!(claim.get("related_condition_id").is_some(), conditions, "{rendered}");
-            if conditions {
-                assert_eq!(claim["related_condition_id"], "<c1|null>");
-            }
+            assert!(claim.get("related_condition_id").is_none(), "{rendered}");
             if typed {
                 assert_eq!(value["forward_assumption"]["fact_type"], "<guidance|contract|filing>");
                 assert_eq!(value["forward_assumption"]["affects"], "<eps|revenue>");
@@ -4052,11 +3668,11 @@ mod tests {
         // `portfolio-v63`: the claim cites a shown id — an enum of the message's
         // ids, the shape listing them — and carries no reference or address.
         assert_eq!(
-            crate::portfolio::placeholder_shape(&tier1_schema(&["c1"], &["C1", "C2"]), DISTILL_KEY_ORDER),
-            r#"{"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2>","related_condition_id":"<c1|null>"}]}"#
+            crate::portfolio::placeholder_shape(&tier1_schema(&["C1", "C2"]), DISTILL_KEY_ORDER),
+            r#"{"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2>"}]}"#
         );
         assert_eq!(
-            crate::portfolio::placeholder_shape(&tier1_schema(&[], &[]), DISTILL_KEY_ORDER),
+            crate::portfolio::placeholder_shape(&tier1_schema(&[]), DISTILL_KEY_ORDER),
             r#"{"summary":"","claims":[{"claim":"","evidence_id":""}]}"#
         );
     }
@@ -4101,7 +3717,7 @@ mod tests {
         // First body malformed (a JSON string, not the combined object); the
         // re-attempt serves the valid one and the run proceeds.
         let model = RetryingDistill::new(vec![json!("not json"), combined_body(json!({}))]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert_eq!(out.shape, DistillShape::SinglePass);
         assert_eq!(model.inner.stages(), vec!["distill WID", "distill WID"]);
         assert_eq!(
@@ -4116,7 +3732,7 @@ mod tests {
         // Both attempts malformed: the hard failure must carry the retry
         // annotation with the first attempt's class, like RetryOnce::run's.
         let model = RetryingDistill::new(vec![json!("not json"), json!("still not json")]);
-        let err = distill(&model, &inputs(&research, &[], &[])).unwrap_err();
+        let err = distill(&model, &inputs(&research, &[])).unwrap_err();
         assert!(
             format!("{err:#}")
                 .contains("failed again after one retry (content failed its parse on the first attempt)"),
@@ -4129,7 +3745,7 @@ mod tests {
     fn the_default_gate_keeps_a_distill_parse_failure_hard() {
         let research = research_one_topic();
         let model = ScriptDistill::new(vec![json!("not json")]);
-        let err = distill(&model, &inputs(&research, &[], &[])).unwrap_err();
+        let err = distill(&model, &inputs(&research, &[])).unwrap_err();
         assert!(
             format!("{err:#}").contains("failed its schema parse"),
             "{err:#}"
@@ -4156,7 +3772,6 @@ mod tests {
                     source_url: "https://ft.com/widget-prior".into(),
                     retrieved_at: "2026-08-10T00:00:00+00:00".into(),
                     cached: true,
-                    related_condition_id: None,
                 },
                 DistilledClaim {
                     publication: crate::portfolio::research::PublicationDate::default(),
@@ -4165,7 +3780,6 @@ mod tests {
                     source_url: "https://ft.com/widget-old".into(),
                     retrieved_at: "2026-07-01T00:00:00+00:00".into(),
                     cached: true,
-                    related_condition_id: None,
                 },
             ],
         }];
@@ -4181,7 +3795,7 @@ mod tests {
             }]
         }));
         let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &priors, &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &priors)).unwrap();
         let claims = &out.topic_layer[0].claims;
         assert_eq!(claims.len(), 2, "{claims:?}");
         // The carried claim keeps its ORIGINAL vintage and cached provenance —
@@ -4193,311 +3807,7 @@ mod tests {
         assert!(claims.iter().all(|c| c.claim != "expired claim"));
     }
 
-    #[test]
-    fn related_condition_ids_validate_against_the_ledger() {
-        let research = research_one_topic();
-        let ids = conditions(&["c1"]);
-        let body = combined_body(json!({
-            "topics": [{
-                "topic_key": "competitive-position",
-                "summary": "s",
-                "claims": [
-                    {"claim": "Q3 revenue was $1.2B", "source_url": "https://reuters.com/widget",
-                     "related_condition_id": "c1"},
-                ]
-            }]
-        }));
-        let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &[], &ids)).unwrap();
-        assert_eq!(
-            out.topic_layer[0].claims[0].related_condition_id.as_deref(),
-            Some("c1")
-        );
-        // An unknown id is silently cleared (not a gap — the claim survives).
-        let body = combined_body(json!({
-            "topics": [{
-                "topic_key": "competitive-position",
-                "summary": "s",
-                "claims": [
-                    {"claim": "Q3 revenue was $1.2B", "source_url": "https://reuters.com/widget",
-                     "related_condition_id": "bogus"},
-                ]
-            }]
-        }));
-        let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &[], &ids)).unwrap();
-        assert_eq!(out.topic_layer[0].claims[0].related_condition_id, None);
-    }
-
     // ---- The research→ledger tie channel (2026-08-24 review F3) ----------
-
-    #[test]
-    fn ledger_conditions_render_for_citation_in_every_claim_emitting_prompt() {
-        let research = research_one_topic();
-        let conds = conditions(&["c1"]);
-        let topic = &research.topics[0];
-        let pass = &topic.passes[0];
-        let ins = inputs(&research, &[], &conds);
-        let prompts = [
-            tier1_message(&ins, topic, None).user,
-            pass_message(&ins, topic, 0, pass).user,
-            tree_reduce_message(&ins, topic, &["s".to_string()], None).user,
-            reduce_user(&ins, None, &HashMap::new(), &[]),
-        ];
-        for p in &prompts {
-            assert!(
-                p.contains(
-                    "\nSTANDING CONDITIONS\nConditions the thesis on this holding is being \
-                     watched against, each with its id.\n- c1 — Falsifier: condition c1 holds\n"
-                ),
-                "{p}"
-            );
-            assert!(
-                p.contains("related_condition_id is the id of the condition under STANDING CONDITIONS"),
-                "{p}"
-            );
-            assert!(p.contains("\"related_condition_id\":\"<c1|null>\""), "{p}");
-        }
-        // A debut (no ledger) renders no block and no tie field — there is
-        // nothing to tie to.
-        let bare = inputs(&research, &[], &[]);
-        let debut = reduce_user(&bare, None, &HashMap::new(), &[]);
-        assert!(!debut.contains("STANDING CONDITIONS") && !debut.contains("related_condition_id"), "{debut}");
-        assert!(!tier1_message(&bare, topic, None).user.contains("related_condition_id"));
-        // The consolidation-only branch renders it too — its 6g honors the
-        // same leg.
-        let mut rr = inputs(&research, &[], &conds);
-        rr.consolidation_only = true;
-        assert!(reduce_user(&rr, None, &HashMap::new(), &[]).contains("- c1 — Falsifier: condition c1 holds"));
-        // The reduce re-renders a tier-1 claim's tie for the model to carry.
-        let tier1 = vec![(
-            "competitive-position".to_string(),
-            Tier1Wire {
-                summary: "t1".into(),
-                claims: vec![ClaimWire {
-                    evidence_id: String::new(),
-                    evidence_ref: fresh_ref(&research.topics[0].passes[0].claims[0]),
-                    claim: "Q3 revenue was $1.2B".into(),
-                    source_url: "https://reuters.com/widget".into(),
-                    related_condition_id: Some("c1".into()),
-                }],
-            },
-        )];
-        let reduce = reduce_user(&ins, Some(&tier1), &HashMap::new(), &[]);
-        assert!(reduce.contains(": Q3 revenue was $1.2B [https://reuters.com/widget] — ") && reduce.contains("— bears on c1\n"), "{reduce}");
-    }
-
-    #[test]
-    fn a_prior_claims_tie_renders_and_is_inherited_when_the_re_emission_omits_it() {
-        let research = research_one_topic();
-        let conds = conditions(&["c1", "c2"]);
-        let prior = TopicDistillate {
-            topic_key: "competitive-position".into(),
-            vintage: "2026-08-10T00:00:00+00:00".into(),
-            summary: "prior".into(),
-            claims: vec![DistilledClaim {
-                publication: crate::portfolio::research::PublicationDate::default(),
-                fact_period: crate::portfolio::research::FactPeriod::default(),
-                claim: "carried claim".into(),
-                source_url: "https://cached.example/one".into(),
-                retrieved_at: "2026-08-10T00:00:00+00:00".into(),
-                cached: true,
-                related_condition_id: Some("c1".into()),
-            }],
-        };
-        // Rendered for the model to carry forward…
-        let mut index = ClaimIndex::default();
-        assert!(render_prior(&prior, &mut index).contains("— bears on c1"));
-        assert!(render_prior(&prior, &mut index).starts_with("Prior findings (analysis of 2026-08-10):\n"));
-        // …and inherited app-side when the re-emission omits it.
-        let priors = vec![prior];
-        let body = combined_body(json!({
-            "topics": [{
-                "topic_key": "competitive-position",
-                "summary": "s",
-                "claims": [
-                    {"claim": "carried claim", "source_url": "https://cached.example/one"},
-                ]
-            }]
-        }));
-        let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &priors, &conds)).unwrap();
-        let carried = out.topic_layer[0]
-            .claims
-            .iter()
-            .find(|c| c.claim == "carried claim")
-            .unwrap();
-        assert_eq!(carried.related_condition_id.as_deref(), Some("c1"));
-        assert!(carried.cached);
-    }
-
-    #[test]
-    fn an_ambiguous_url_tie_is_never_guessed_and_an_unknown_cited_id_never_substituted() {
-        let research = research_one_topic();
-        let conds = conditions(&["c1", "c2"]);
-        let claim = |text: &str, id: &str| DistilledClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-            claim: text.into(),
-            source_url: "https://cached.example/one".into(),
-            retrieved_at: "2026-08-10T00:00:00+00:00".into(),
-            cached: true,
-            related_condition_id: Some(id.into()),
-        };
-        let at = |text: &str, url: &str, id: &str| {
-            let mut c = claim(text, id);
-            c.source_url = url.into();
-            c
-        };
-        let prior_topic = |key: &str, claims: Vec<DistilledClaim>| TopicDistillate {
-            topic_key: key.into(),
-            vintage: "2026-08-10T00:00:00+00:00".into(),
-            summary: "prior".into(),
-            claims,
-        };
-        // Ties key on the claim (URL + text): "shared" is carried by two prior
-        // topics under different ties; "stale" ties a superseded condition.
-        let priors = vec![
-            prior_topic(
-                "competitive-position",
-                vec![
-                    at("shared", "https://cached.example/one", "c1"),
-                    at("solo", "https://cached.example/two", "c1"),
-                    at("cited", "https://cached.example/two", "c1"),
-                    at("stale", "https://cached.example/two", "gone"),
-                ],
-            ),
-            prior_topic(
-                "results-revisions",
-                vec![at("shared", "https://cached.example/one", "c2")],
-            ),
-        ];
-        let body = combined_body(json!({
-            "topics": [{
-                "topic_key": "competitive-position",
-                "summary": "s",
-                "claims": [
-                    {"claim": "shared", "source_url": "https://cached.example/one"},
-                    {"claim": "solo", "source_url": "https://cached.example/two"},
-                    {"claim": "cited", "source_url": "https://cached.example/two",
-                     "related_condition_id": "bogus"},
-                    {"claim": "stale", "source_url": "https://cached.example/two"},
-                    {"claim": "another fact from the same page",
-                     "source_url": "https://cached.example/two"},
-                ]
-            }]
-        }));
-        let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &priors, &conds)).unwrap();
-        let claims = &out.topic_layer[0].claims;
-        assert_eq!(claims.len(), 5);
-        let tie = |text: &str| {
-            claims
-                .iter()
-                .find(|c| c.claim == text)
-                .unwrap()
-                .related_condition_id
-                .as_deref()
-        };
-        // The same claim under two different ties: nothing inherits.
-        assert_eq!(tie("shared"), None);
-        // A verbatim re-emission that omits its tie inherits it.
-        assert_eq!(tie("solo"), Some("c1"));
-        // An unknown cited id nulls rather than substituting the claim's own
-        // known tie — the model asserted something the app can't verify.
-        assert_eq!(tie("cited"), None);
-        // A tie to a condition no longer on the ledger is no tie at all.
-        assert_eq!(tie("stale"), None);
-        // A different claim from a tied page never borrows the tie — inherited
-        // onto a fresh claim it would be support the 6g validator honors.
-        assert_eq!(tie("another fact from the same page"), None);
-    }
-
-    #[test]
-    fn a_prior_tie_never_rides_onto_a_claim_that_resolves_as_fresh() {
-        // An output citing this run's evidence reference cannot inherit a
-        // prior tie, even at the same URL and with identical claim text.
-        // An explicit current-call tie remains the model's own assertion.
-        let research = research_one_topic();
-        let conds = conditions(&["c1"]);
-        let priors = vec![TopicDistillate {
-            topic_key: "competitive-position".into(),
-            vintage: "2026-08-10T00:00:00+00:00".into(),
-            summary: "prior".into(),
-            claims: vec![DistilledClaim {
-                publication: crate::portfolio::research::PublicationDate::default(),
-                fact_period: crate::portfolio::research::FactPeriod::default(),
-                claim: "old reuters claim".into(),
-                source_url: "https://reuters.com/widget".into(),
-                retrieved_at: "2026-08-10T00:00:00+00:00".into(),
-                cached: true,
-                related_condition_id: Some("c1".into()),
-            }],
-        }];
-        let run = |cited: bool| {
-            let mut re_emitted = json!({"claim": "old reuters claim",
-                "source_url": "https://reuters.com/widget",
-                "evidence_ref": fresh_ref(&research.topics[0].passes[0].claims[0])});
-            if cited {
-                re_emitted["related_condition_id"] = json!("c1");
-            }
-            let body = combined_body(json!({
-                "topics": [{
-                    "topic_key": "competitive-position",
-                    "summary": "s",
-                    "claims": [re_emitted]
-                }]
-            }));
-            let model = ScriptDistill::new(vec![body]);
-            let out = distill(&model, &inputs(&research, &priors, &conds)).unwrap();
-            out.topic_layer[0].claims[0].clone()
-        };
-        let omitted = run(false);
-        assert!(!omitted.cached, "the URL was fetched this run: {omitted:?}");
-        assert_eq!(omitted.related_condition_id, None, "{omitted:?}");
-        let cited = run(true);
-        assert!(!cited.cached);
-        assert_eq!(cited.related_condition_id.as_deref(), Some("c1"));
-    }
-
-    #[test]
-    fn tier1_ties_survive_the_reduce_hop() {
-        // Hierarchical: the tier-1 output ties its claim; the reduce re-emits the
-        // claim without the tie (rendered in its prompt, but a model may still
-        // drop it) — the app carries it across the hop by URL.
-        let research = research_one_topic();
-        let conds = conditions(&["c1"]);
-        let tied = json!({"summary": "t1", "claims": [
-            {"claim": "Q3 revenue was $1.2B", "source_url": "https://reuters.com/widget",
-             "related_condition_id": "c1"}]});
-        let untied = json!({"summary": "t1", "claims": [
-            {"claim": "Q3 revenue was $1.2B", "source_url": "https://reuters.com/widget"}]});
-        let final_body = || {
-            combined_body(json!({
-                "topics": [{"topic_key": "competitive-position", "summary": "s1",
-                    "claims": [{"claim": "Q3 revenue was $1.2B", "source_url": "https://reuters.com/widget"}]}]
-            }))
-        };
-        // The topic's own input exceeds the tiny budget: a pass-level call, its
-        // tree reduce, then the final reduce — three hops. The tie survives
-        // whether it was last seen at the pass (both later hops drop it) or at
-        // the tree reduce (only the final reduce drops it).
-        for script in [
-            vec![tied.clone(), untied.clone(), final_body()],
-            vec![untied, tied, final_body()],
-        ] {
-            let model = ScriptDistill::new(script);
-            let mut ins = inputs(&research, &[], &conds);
-            ins.input_budget_chars = 10;
-            let out = distill(&model, &ins).unwrap();
-            assert!(matches!(out.shape, DistillShape::Hierarchical { .. }));
-            assert_eq!(
-                out.topic_layer[0].claims[0].related_condition_id.as_deref(),
-                Some("c1")
-            );
-            assert!(!out.topic_layer[0].claims[0].cached);
-        }
-    }
 
     #[test]
     fn typed_fields_require_known_source_urls_and_role_risk_gets_none() {
@@ -4517,7 +3827,7 @@ mod tests {
             "forensic_event": null
         }));
         let model = ScriptDistill::new(vec![body.clone()]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         // The sourced assumption survives; the unsourced indicator drops.
         assert!(out.forward_assumption.is_some());
         assert!(out.leading_indicator.is_none());
@@ -4525,7 +3835,7 @@ mod tests {
 
         // The consolidation-only branch (role/risk, any fund) is pure
         // consolidation: every typed field None.
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.consolidation_only = true;
         let model = ScriptDistill::new(vec![body]);
         let out = distill(&model, &ins).unwrap();
@@ -4600,7 +3910,7 @@ mod tests {
             "Widget Industries",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.forensic_event.is_none());
         assert!(out.gaps.iter().any(|g| g.contains("filings-classified")), "{:?}", out.gaps);
 
@@ -4612,7 +3922,7 @@ mod tests {
             "Widget Industries",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.forensic_event.is_none());
         assert!(out.gaps.iter().any(|g| g.contains("source allowlist")), "{:?}", out.gaps);
 
@@ -4623,7 +3933,7 @@ mod tests {
             "Gadget Corp",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.forensic_event.is_none());
         assert!(out.gaps.iter().any(|g| g.contains("does not identify")), "{:?}", out.gaps);
 
@@ -4640,7 +3950,7 @@ mod tests {
             "Widget Industries",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&unrelated, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&unrelated, &[])).unwrap();
         assert!(out.forensic_event.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("never names the holding")),
@@ -4663,7 +3973,7 @@ mod tests {
             "Widget Industries",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&outreach, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&outreach, &[])).unwrap();
         assert!(out.forensic_event.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("fewer than two distinct")),
@@ -4691,7 +4001,7 @@ mod tests {
             "Widget Industries",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&macro_page, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&macro_page, &[])).unwrap();
         assert!(out.forensic_event.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("source allowlist")),
@@ -4712,7 +4022,7 @@ mod tests {
             "Widget Industries",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&no_language, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&no_language, &[])).unwrap();
         assert!(out.forensic_event.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("no fraud-event language")),
@@ -4730,7 +4040,7 @@ mod tests {
             "Widget Industries",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&unfetched, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&unfetched, &[])).unwrap();
         assert!(out.forensic_event.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("not fetched by this holding's loop")),
@@ -4746,7 +4056,7 @@ mod tests {
             "Widget Industries",
             0.9,
         )]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.forensic_event.is_some(), "{:?}", out.gaps);
 
         // The typed issuer field can state the one distinctive name word or
@@ -4759,7 +4069,7 @@ mod tests {
                 issuer,
                 0.9,
             )]);
-            let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+            let out = distill(&model, &inputs(&research, &[])).unwrap();
             assert!(out.forensic_event.is_some(), "{issuer}: {:?}", out.gaps);
         }
     }
@@ -4786,7 +4096,7 @@ mod tests {
         };
         let model =
             ScriptDistill::new(vec![combined_body(assumption(1.2, Value::Null, Value::Null))]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.forward_assumption.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("never names the holding")),
@@ -4797,13 +4107,13 @@ mod tests {
         // point fact survives only when the page states its value.
         let model =
             ScriptDistill::new(vec![combined_body(assumption(1.2, Value::Null, Value::Null))]);
-        let out = distill(&model, &inputs(&research_one_topic(), &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research_one_topic(), &[])).unwrap();
         assert!(out.forward_assumption.is_some(), "{:?}", out.gaps);
         // A fabricated point value the page never states is rejected — the
         // round-3 gap: 4.85 against a page stating only $1.2B.
         let model =
             ScriptDistill::new(vec![combined_body(assumption(4.85, Value::Null, Value::Null))]);
-        let out = distill(&model, &inputs(&research_one_topic(), &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research_one_topic(), &[])).unwrap();
         assert!(out.forward_assumption.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("never states the value")),
@@ -4821,12 +4131,12 @@ mod tests {
         );
         let model =
             ScriptDistill::new(vec![combined_body(assumption(4.85, json!(4.7), json!(5.0)))]);
-        let out = distill(&model, &inputs(&range_research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&range_research, &[])).unwrap();
         assert!(out.forward_assumption.is_some(), "{:?}", out.gaps);
         // A value outside its stated range rejects.
         let model =
             ScriptDistill::new(vec![combined_body(assumption(6.0, json!(4.7), json!(5.0)))]);
-        let out = distill(&model, &inputs(&range_research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&range_research, &[])).unwrap();
         assert!(out.forward_assumption.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("outside its stated range")),
@@ -4836,12 +4146,12 @@ mod tests {
         // One endpoint without the other rejects.
         let model =
             ScriptDistill::new(vec![combined_body(assumption(4.85, json!(4.7), Value::Null))]);
-        let out = distill(&model, &inputs(&range_research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&range_research, &[])).unwrap();
         assert!(out.forward_assumption.is_none());
         // Endpoints the page never states reject.
         let model =
             ScriptDistill::new(vec![combined_body(assumption(4.85, json!(4.6), json!(5.1)))]);
-        let out = distill(&model, &inputs(&range_research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&range_research, &[])).unwrap();
         assert!(out.forward_assumption.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("range's endpoints")),
@@ -4861,10 +4171,10 @@ mod tests {
             }))
         };
         let model = ScriptDistill::new(vec![indicator(120.0)]);
-        let out = distill(&model, &inputs(&research_one_topic(), &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research_one_topic(), &[])).unwrap();
         assert!(out.leading_indicator.is_some(), "{:?}", out.gaps);
         let model = ScriptDistill::new(vec![indicator(999.0)]);
-        let out = distill(&model, &inputs(&research_one_topic(), &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research_one_topic(), &[])).unwrap();
         assert!(out.leading_indicator.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("never states the metric's value")),
@@ -4891,7 +4201,7 @@ mod tests {
                 "source_url": "https://ir.widget.com/q3", "confidence": 0.8
             }
         }))]);
-        let out = distill(&model, &inputs(&ir_research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&ir_research, &[])).unwrap();
         assert!(out.leading_indicator.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("third-party")),
@@ -4918,7 +4228,7 @@ mod tests {
                 "source_url": "https://widget.com/newsroom/q3", "confidence": 0.8
             }
         }))]);
-        let out = distill(&model, &inputs(&root_research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&root_research, &[])).unwrap();
         assert!(out.leading_indicator.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("issuer's own identity")),
@@ -4938,7 +4248,7 @@ mod tests {
             "https://ibm.com/newsroom/q3".to_string(),
             "Machines shipped: 120 units.".to_string(),
         );
-        let mut ins = inputs(&acronym_research, &[], &[]);
+        let mut ins = inputs(&acronym_research, &[]);
         ins.symbol = "XYZ";
         ins.company_name = Some("International Business Machines Corporation");
         let model = ScriptDistill::new(vec![combined_body(json!({
@@ -4982,7 +4292,7 @@ mod tests {
             }))
         };
         let model = ScriptDistill::new(vec![assumption(1.2)]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.forward_assumption.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("never states the value")),
@@ -4990,7 +4300,7 @@ mod tests {
             out.gaps
         );
         let model = ScriptDistill::new(vec![assumption(-1.2)]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.forward_assumption.is_some(), "{:?}", out.gaps);
 
         let indicator = |value: f64| {
@@ -5005,7 +4315,7 @@ mod tests {
         // A sub-1 value tries its percent render: the page prints -25%, never
         // a positive 25.
         let model = ScriptDistill::new(vec![indicator(0.25)]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.leading_indicator.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("never states the metric's value")),
@@ -5013,7 +4323,7 @@ mod tests {
             out.gaps
         );
         let model = ScriptDistill::new(vec![indicator(-0.25)]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.leading_indicator.is_some(), "{:?}", out.gaps);
     }
 
@@ -5035,27 +4345,17 @@ mod tests {
         };
 
         let model = ScriptDistill::new(vec![indicator("2026-06")]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.leading_indicator.is_some(), "{:?}", out.gaps);
         assert_eq!(out.leading_indicator.as_ref().unwrap().as_of, "2026-06");
-        // The item renders only where the ledger carries a key driver to bear
-        // on (ruled 2026-09-17), and states the date's precision as data.
+        // The item renders only where a key driver exists to bear on; no
+        // driver list exists since the ledger retired, so the item never
+        // renders and the model-emitted indicator stays visible evidence.
         assert!(!model.prompts()[0].contains("leading_indicator"), "{}", model.prompts()[0]);
-        let drivers = vec![crate::portfolio::KeyDriver {
-            driver_id: "d1".into(),
-            name: "demand".into(),
-            series: None,
-        }];
-        let mut with_driver = inputs(&research, &[], &[]);
-        with_driver.ledger_key_drivers = &drivers;
-        let user = reduce_user(&with_driver, None, &HashMap::new(), &[]);
-        assert!(user.contains("\nKEY DRIVERS\nWhat the thesis on this holding rests on, each with its id.\n- d1 — demand\n"), "{user}");
-        assert!(user.contains("as_of the day or month the measure is for, YYYY-MM-DD or YYYY-MM"), "{user}");
-        assert!(user.contains("\"confirms_driver_id\":\"<d1>\""), "{user}");
 
         for invalid in ["2026-6", "June 2026", "2026"] {
             let model = ScriptDistill::new(vec![indicator(invalid)]);
-            let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+            let out = distill(&model, &inputs(&research, &[])).unwrap();
             assert!(out.leading_indicator.is_none(), "{invalid}");
             assert!(
                 out.gaps.iter().any(|gap| gap.contains("ISO day or month precision")),
@@ -5063,63 +4363,6 @@ mod tests {
                 out.gaps
             );
         }
-    }
-
-    #[test]
-    fn indicator_driver_reference_verifies_against_ledger_ids() {
-        // Ruled 2026-08-24: only a confirms_driver_id resolving to a current
-        // ledger driver grants the cap-suppression anchor; an unknown or
-        // absent id keeps the indicator as visible evidence, gap-noted.
-        let research = research_one_topic();
-        let drivers = vec![crate::portfolio::KeyDriver {
-            driver_id: "kd-demand".into(),
-            name: "unit demand".into(),
-            series: None,
-        }];
-        let indicator = |id: &str| {
-            combined_body(json!({
-                "leading_indicator": {
-                    "metric_name": "widget bookings", "value": 120.0,
-                    "direction": "inflecting-up", "as_of": "2026-08-20",
-                    "source_url": "https://reuters.com/widget", "confidence": 0.8,
-                    "confirms_driver": "unit demand", "confirms_driver_id": id
-                }
-            }))
-        };
-        let mut ins = inputs(&research, &[], &[]);
-        ins.ledger_key_drivers = &drivers;
-        let model = ScriptDistill::new(vec![indicator("kd-demand")]);
-        let out = distill(&model, &ins).unwrap();
-        let ind = out.leading_indicator.as_ref().unwrap();
-        assert!(ind.driver_verified, "{:?}", out.gaps);
-        assert!(!out.gaps.iter().any(|g| g.contains("driver reference unverified")));
-
-        let mut ins = inputs(&research, &[], &[]);
-        ins.ledger_key_drivers = &drivers;
-        let model = ScriptDistill::new(vec![indicator("kd-bogus")]);
-        let out = distill(&model, &ins).unwrap();
-        let ind = out.leading_indicator.as_ref().unwrap();
-        assert!(!ind.driver_verified);
-        assert!(
-            out.gaps.iter().any(|g| g.contains("driver reference unverified")),
-            "{:?}",
-            out.gaps
-        );
-        // A model-emitted driver_verified is overwritten, never trusted: the
-        // schema doesn't carry the field, and validation recomputes it.
-        let mut ins = inputs(&research, &[], &[]);
-        ins.ledger_key_drivers = &[];
-        let model = ScriptDistill::new(vec![combined_body(json!({
-            "leading_indicator": {
-                "metric_name": "widget bookings", "value": 120.0,
-                "direction": "inflecting-up", "as_of": "2026-08-20",
-                "source_url": "https://reuters.com/widget", "confidence": 0.8,
-                "confirms_driver": "unit demand", "confirms_driver_id": "kd-demand",
-                "driver_verified": true
-            }
-        }))]);
-        let out = distill(&model, &ins).unwrap();
-        assert!(!out.leading_indicator.as_ref().unwrap().driver_verified);
     }
 
     #[test]
@@ -5141,7 +4384,7 @@ mod tests {
                 "conflict_handling": "supplement"
             }
         }))]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.forward_assumption.is_none());
         assert!(
             out.gaps.iter().any(|g| g.contains("no forward-fact language")),
@@ -5168,7 +4411,7 @@ mod tests {
             ]
         }));
         let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert_eq!(out.topic_layer.len(), 1);
         assert_eq!(out.topic_layer[0].summary, "first object");
         assert!(out.unreconciled_topics.is_empty());
@@ -5186,7 +4429,7 @@ mod tests {
         // reconciled object is missing.
         let body = combined_body(json!({ "topics": [] }));
         let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert_eq!(out.unreconciled_topics, vec!["competitive-position"]);
         assert!(
             out.gaps.iter().any(|g| g.contains("no reconciled object")),
@@ -5195,7 +4438,7 @@ mod tests {
         );
         // Emitting the topic clears the flag (the base body carries it).
         let model = ScriptDistill::new(vec![combined_body(json!({}))]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.unreconciled_topics.is_empty());
     }
 
@@ -5217,13 +4460,13 @@ mod tests {
         });
         // Overlay-eligible: the sourced row enters.
         let model = ScriptDistill::new(vec![combined_body(rows.clone())]);
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.overlay_eligible = true;
         let out = distill(&model, &ins).unwrap();
         assert_eq!(out.pre_profit_observations.len(), 1);
         // Not eligible: rows drop with a gap.
         let model = ScriptDistill::new(vec![combined_body(rows)]);
-        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &[])).unwrap();
         assert!(out.pre_profit_observations.is_empty());
         assert!(out.gaps.iter().any(|g| g.contains("not overlay-eligible")));
     }
@@ -5235,7 +4478,6 @@ mod tests {
         // prompt line asking for it verbatim.
         let shape = ReduceShape {
             topic_keys: &["competitive-position"],
-            condition_ids: &[],
             driver_ids: &[],
             typed: true,
             overlay: true,
@@ -5260,7 +4502,7 @@ mod tests {
             .iter()
             .any(|f| f == "period_span"));
         let research = research_one_topic();
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.overlay_eligible = true;
         ins.backfill_required = true;
         let prompt = reduce_user(&ins, None, &HashMap::new(), &[]);
@@ -5281,7 +4523,7 @@ mod tests {
         // since a date the model is never told the meaning of is noise to a
         // rule that binds on it.
         let research = research_one_topic();
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.overlay_eligible = true;
         let prompt = reduce_user(&ins, None, &HashMap::new(), &[]);
         assert!(
@@ -5298,7 +4540,7 @@ mod tests {
         // four-digit year right after a period word is the period, never the
         // value, so a row whose value is that year rejects.
         let research = research_one_topic();
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.overlay_eligible = true;
         let prompt = reduce_user(&ins, None, &HashMap::new(), &[]);
         assert!(
@@ -5332,7 +4574,6 @@ mod tests {
                 source_url: "https://ft.com/tech-prior".into(),
                 retrieved_at: "2026-08-10T00:00:00+00:00".into(),
                 cached: true,
-                related_condition_id: None,
             }],
         }];
         let body = combined_body(json!({
@@ -5344,7 +4585,7 @@ mod tests {
             ]
         }));
         let model = ScriptDistill::new(vec![body]);
-        let out = distill(&model, &inputs(&research, &priors, &[])).unwrap();
+        let out = distill(&model, &inputs(&research, &priors)).unwrap();
         let dormant = out
             .topic_layer
             .iter()
@@ -5401,7 +4642,7 @@ mod tests {
             tier1("t2", "https://apnews.com/widget"),
             final_body,
         ]);
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.input_budget_chars = 10; // Force the hierarchical route.
         let out = distill(&model, &ins).unwrap();
         match out.shape {
@@ -5437,7 +4678,7 @@ mod tests {
                     "source_url": "https://reuters.com/widget"}]}),
             combined_body(json!({})),
         ]);
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         // The budget sits exactly at the rendered tier-1 prompt: the content
         // fits it, the single-pass render (its typed-field instructions
         // included) does not, and the tier-1 render does — so the topic
@@ -5477,11 +4718,11 @@ mod tests {
         // the default roster (Codex round 1, ruled 2026-08-28).
         let research = research_one_topic();
         let content = topic_input_chars(&research.topics[0], None);
-        let tier1 = tier1_message(&inputs(&research, &[], &[]), &research.topics[0], None).chars();
+        let tier1 = tier1_message(&inputs(&research, &[]), &research.topics[0], None).chars();
         let body = json!({"summary": "s", "claims": [{"claim": "Q3 revenue was $1.2B",
                 "source_url": "https://reuters.com/widget"}]});
         let model = ScriptDistill::new(vec![body.clone(), body, combined_body(json!({}))]);
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.input_budget_chars = tier1 - 1;
         ins.issue_budget_chars = tier1 - 1;
         assert!(content <= ins.input_budget_chars, "within the budget by content");
@@ -5545,7 +4786,7 @@ mod tests {
             tier1("t2", "https://apnews.com/widget"),
             final_body,
         ]);
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         // The fast budget: each topic fits by content, the pair does not.
         ins.input_budget_chars = own.iter().copied().max().unwrap() + 5;
         assert!(own.iter().sum::<usize>() > ins.input_budget_chars);
@@ -5581,7 +4822,7 @@ mod tests {
         // seam routes up, rather than the hierarchical shape.
         let research = research_one_topic();
         let model = ScriptDistill::new(vec![combined_body(json!({}))]);
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.input_budget_chars = topic_input_chars(&research.topics[0], None) + 5;
         assert!(reduce_base(&ins) > ins.input_budget_chars);
         ins.issue_budget_chars = 100_000;
@@ -5622,7 +4863,7 @@ mod tests {
             tier1, // the tree reduce
             final_body,
         ]);
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.input_budget_chars = 10;
         let out = distill(&model, &ins).unwrap();
         match out.shape {
@@ -5691,7 +4932,6 @@ mod tests {
                 source_url: "https://ft.com/catalyst-prior".into(),
                 retrieved_at: "2026-08-10T00:00:00+00:00".into(),
                 cached: true,
-                related_condition_id: None,
             }],
         }];
         let tier1 = json!({"summary": "s", "claims": []});
@@ -5711,7 +4951,7 @@ mod tests {
             tier1, // the first topic's tree reduce
             final_body,
         ]);
-        let mut ins = inputs(&research, &priors, &[]);
+        let mut ins = inputs(&research, &priors);
         ins.input_budget_chars = 10;
         let out = distill(&model, &ins).unwrap();
 
@@ -5792,7 +5032,7 @@ mod tests {
             tier1,
             final_body,
         ]);
-        let mut ins = inputs(&research, &[], &[]);
+        let mut ins = inputs(&research, &[]);
         ins.input_budget_chars = 10;
         let out = distill(&model, &ins).unwrap();
         let reduce_prompt = model.prompts().last().cloned().unwrap();

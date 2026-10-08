@@ -1,9 +1,9 @@
 # Distillation — single pass, fund
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
-A fund's reduce is consolidation only: the combined findings and the topic layer, with the standing condition rendered for citation, and no source text or typed field.
+A fund's reduce is consolidation only: the combined findings and the topic layer, and no source text or typed field.
 Distillation is explicitly non-thinking, grammar-constrained, and issued on the fast tier where the roster has one.
 On the default roster, where the fast tier is the reasoner, the call issues on the reasoner at `num_ctx` 131072 and the rendered prompt is measured against that budget instead.
 A reply that stops exactly at the 12288-token reservation is re-issued once on the reasoner with `num_predict` 32768, its stage label suffixed `(expanded)`.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3587 chars — the messages and tools as serialized |
+| Prompt material | 3125 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ will return combined_findings and topics, as one JSON object. Part 1 of the mess
 inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (3190 chars)
+## User message (2738 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -39,15 +39,10 @@ BND (VANGUARD TOTAL BOND MARKET ETF).
 Price: $72.38 per share.
 Date: 2026-09-16.
 
-STANDING CONDITIONS
-Conditions the thesis on this holding is being watched against, each with its id.
-- c-dur — Trigger: Effective duration rises above 7 years.
-
 TOPICS
 The research on this holding, one topic at a time, each headed by its key and its title: what its
 searches established, then its claims. Each claim carries: its id; the address of the page that
-states it; the publication date the search or lead reported; and the period the fact applies to. A
-claim marked "bears on" names the condition under STANDING CONDITIONS it is evidence on.
+states it; the publication date the search or lead reported; and the period the fact applies to.
 
 TOPIC fund-exposure-profile — Exposure profile
 Search 1:
@@ -70,8 +65,7 @@ the searches left unanswered.
 under TOPICS. summary is what the topic's searches establish, as of the date under HOLDING. claims
 is every distinct statement the topic rests on, one statement per claim. evidence_id is the id of
 the claim under TOPICS the statement rests on. A fact two topics state is one claim, under the topic
-it belongs to. related_condition_id is the id of the condition under STANDING CONDITIONS the claim
-is evidence on — that it has tripped, is holding, or is at risk — else null.
+it belongs to.
 
 
 CLAIM RULES
@@ -87,7 +81,7 @@ summaries, and every topic's claims.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)
 {"combined_findings":"","topics":[{"topic_key":"<fund-exposure-profile>","summary":"","claims":[{"claim":"",
-"evidence_id":"<C1>","related_condition_id":"<c-dur|null>"}]}]}
+"evidence_id":"<C1>"}]}]}
 ~~~~
 
 ## Response schema (`format`)
@@ -112,16 +106,6 @@ RETURN SHAPE (every value is a placeholder; an array holds as many items as appl
                     "C1"
                   ],
                   "type": "string"
-                },
-                "related_condition_id": {
-                  "enum": [
-                    "c-dur",
-                    null
-                  ],
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 }
               },
               "required": [

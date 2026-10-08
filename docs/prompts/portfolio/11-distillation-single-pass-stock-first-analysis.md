@@ -1,10 +1,10 @@
 # Distillation — single pass, stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The reduce over every topic's searches at once — the single-pass route, taken when the whole input fits the budget.
-On a first analysis there are no standing conditions, no key drivers and no prior topic objects; the typed fields asked for are the forward assumption and the forensic event, read from SOURCE TEXT.
+On a first analysis there are no prior topic objects; the typed fields asked for are the forward assumption and the forensic event, read from SOURCE TEXT.
 Distillation is explicitly non-thinking, grammar-constrained, and issued on the fast tier where the roster has one.
 On the default roster, where the fast tier is the reasoner, the call issues on the reasoner at `num_ctx` 131072 and the rendered prompt is measured against that budget instead.
 A reply that stops exactly at the 12288-token reservation is re-issued once on the reasoner with `num_predict` 32768, its stage label suffixed `(expanded)`.

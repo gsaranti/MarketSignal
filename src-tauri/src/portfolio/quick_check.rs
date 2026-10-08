@@ -665,7 +665,7 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
             anyhow::bail!("run cancelled");
         }
         // The window must reach the split-bridge anchor's own bar — an
-        // unresolvable full pass carries its prior anchor forward, so the
+        // abstention carries the retained document's anchor forward, so the
         // anchor can sit older than the holding's last-pass boundary.
         let anchor_date = target
             .audit
@@ -860,12 +860,13 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     let is_stock = inp.position.asset_class == AssetClass::Stock;
     let priced = matches!(inp.verdict.disposition, VerdictDisposition::Priced(_));
     let basis = inp.audit.and_then(|a| a.quick_basis.as_ref());
-    // The withheld-comparator signature: a priced pass that could not verify
-    // its price basis carries its anchor but withholds the quick basis. Its
-    // band and revision legs don't exist to check — the families read
-    // `unknown`, never a silent `fresh_clear` vouch through legs the basis
-    // withheld; the band leg below skips on the same signature. (An abstained
-    // row lacks the anchor too, so it never matches.)
+    // The withheld-comparator signature: a priced row carrying its anchor with
+    // no quick basis — the shape a pass whose engine computed no basis leaves,
+    // since every full pass persists the basis it computed on its own anchor's
+    // basis. Its band and revision legs don't exist to check — the families
+    // read `unknown`, never a silent `fresh_clear` vouch through legs the row
+    // lacks; the band leg below skips on the same signature. (An abstained row
+    // is not priced, so it never matches.)
     let comparators_withheld = priced
         && inp
             .audit
@@ -1490,10 +1491,9 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             // the engine arm — converts onto the fresh basis (`target × f`), so
             // the compared — and rendered — pair share one basis; an
             // unresolvable bridge skips the read (fail closed). The read runs
-            // only where that pass CERTIFIED its basis (the quick basis
-            // persisted): an unresolvable pass stamps its band on the fresh
-            // basis beneath a carried anchor, and bridging that band the moment
-            // the anchor resolves would double-convert it — absent beats wrong.
+            // only where the pass persisted its basis: a priced row with none
+            // (its engine computed no basis) has nothing to certify its band
+            // against — absent beats wrong.
             let band = g.price_targets.twelve_month.as_ref().map(|t| (t.bear * f, t.bull * f));
             if let Some((bear, bull)) = band {
                 let (lo, hi) = (bear.min(bull), bear.max(bull));
@@ -1619,12 +1619,10 @@ mod tests {
     }
 
     use super::*;
-    use crate::portfolio::engine::{LedgerSeries, QuickCheckBasis};
+    use crate::portfolio::engine::QuickCheckBasis;
     use crate::portfolio::{
-        ConditionRole, Grade, GradedVerdict, HorizonOutlook, HorizonRead, LedgerBranch,
-        LedgerComparator, LedgerCondition, MonitorScenario, OptionsSignal, PortfolioRollUp,
-        PortfolioRun, PriceTarget, PriceTargets, QuantCore, RiskTier, ScenarioKind, SubScores,
-        ThesisLedger,
+        Grade, GradedVerdict, OptionsSignal, PortfolioRollUp, PortfolioRun, PriceTarget,
+        PriceTargets, RiskTier, SubScores, ThesisAppendix,
     };
     use crate::schwab::{Holdings, Position};
 
@@ -1650,60 +1648,6 @@ mod tests {
         }
     }
 
-    fn price_condition(id: &str, role: ConditionRole, threshold: f64) -> LedgerCondition {
-        LedgerCondition {
-            condition_id: id.into(),
-            role,
-            trigger_family: (role == ConditionRole::Trigger)
-                .then_some(crate::portfolio::TriggerFamily::Trim),
-            label: None,
-            statement: format!("price below {threshold}"),
-            quant: Some(QuantCore {
-                series: LedgerSeries::Price,
-                comparator: LedgerComparator::Below,
-                threshold,
-                margin: 0.0,
-            }),
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: None,
-        }
-    }
-
-    fn ledger(conditions: Vec<LedgerCondition>) -> ThesisLedger {
-        ThesisLedger {
-            branch: LedgerBranch::Priced,
-            original_thesis: "debut thesis".into(),
-            current_thesis: "standing thesis".into(),
-            key_drivers: vec![],
-            monitor: vec![
-                MonitorScenario {
-                    scenario: ScenarioKind::Bear,
-                    conditions: "bear".into(),
-                    probability_pct: 25.0,
-                    engine_target: Some(150.0),
-                },
-                MonitorScenario {
-                    scenario: ScenarioKind::Base,
-                    conditions: "base".into(),
-                    probability_pct: 50.0,
-                    engine_target: Some(210.0),
-                },
-                MonitorScenario {
-                    scenario: ScenarioKind::Bull,
-                    conditions: "bull".into(),
-                    probability_pct: 25.0,
-                    engine_target: Some(260.0),
-                },
-            ],
-            what_must_improve: String::new(),
-            what_must_not_break: String::new(),
-            conditions,
-        }
-    }
-
     fn priced_verdict(symbol: &str) -> HoldingVerdict {
         HoldingVerdict {
             symbol: symbol.into(),
@@ -1714,23 +1658,15 @@ mod tests {
                 sub_scores: SubScores { quality: 70.0, valuation: 60.0, momentum: 50.0, risk: 65.0 },
                 action: crate::portfolio::Action::Hold,
                 action_rationale: String::new(),
-                model_view: crate::portfolio::ModelView {
-                    sub_scores: SubScores { quality: 70.0, valuation: 60.0, momentum: 50.0, risk: 65.0 },
-                    letter: Grade::B,
-                    price_targets: crate::portfolio::ModelPriceTargets {
-                        one_month: crate::portfolio::ModelPriceTarget { base: 195.0, bear: 180.0, bull: 210.0 },
-                        twelve_month: crate::portfolio::ModelPriceTarget { base: 210.0, bear: 150.0, bull: 260.0 },
-                    },
-                    self_assessment: String::new(),
+                thesis_document: "Thesis: the standing thesis.".into(),
+                appendix: ThesisAppendix {
+                    conviction: Some(crate::portfolio::Conviction::Medium),
+                    expected_price_3m: None,
+                    expected_price_12m: Some(210.0),
+                    expected_price_3y: None,
                 },
                 engine_rung: crate::portfolio::Action::Hold,
                 authored_band_relation: None,
-                conviction: crate::portfolio::Conviction::Medium,
-                horizon_outlook: HorizonOutlook {
-                    short: HorizonRead::Neutral,
-                    mid: HorizonRead::Bullish,
-                    long: HorizonRead::Bullish,
-                },
                 price_targets: PriceTargets {
                     three_month: None,
                     twelve_month: Some(PriceTarget {
@@ -1741,7 +1677,6 @@ mod tests {
                     }),
                     three_year: None,
                 },
-                model_target_rationale: "fixture".into(),
                 options_signal: OptionsSignal {
                     put_call_volume: None,
                     put_call_open_interest: None,
@@ -1752,10 +1687,7 @@ mod tests {
                 dead_money: HurdleState::Indeterminate,
                 low_confidence_grade: false,
                 fund_class_label: None,
-                financial_summary: "fixture".into(),
-                what_changed: "fixture".into(),
             })),
-            thesis_ledger: Some(ledger(vec![])),
             analyzed_at: None,
             action_source: Default::default(),
             side_reversed: false,
@@ -1784,7 +1716,6 @@ mod tests {
 
     fn audit_for(symbol: &str, quick_basis: Option<QuickCheckBasis>) -> HoldingAudit {
         HoldingAudit {
-            what_changed_audit: None,
             research: None,
             symbol: symbol.into(),
             metrics: engine::ComputedMetrics {
@@ -1801,7 +1732,6 @@ mod tests {
             action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: "grade-v2".into(),
-            ledger_audit: None,
             quick_basis,
             authoring_close: None,
             fund_exposure: None,
@@ -2295,13 +2225,13 @@ mod tests {
 
     #[test]
     fn a_withheld_comparator_row_reads_unknown_not_fresh_clear() {
-        // The full-pass-output → quick-check seam: an unresolvable full pass
-        // carries its anchor, withholds the quick basis, and stamps its band on
-        // the engine arm on the FRESH basis. The next sweep must read the
-        // affected families `unknown` — never a silent `fresh_clear` vouch
-        // through legs that don't exist — and must not bridge that fresh-basis
-        // band once the anchor resolves (a double conversion would read spot
-        // outside a mis-scaled band and flag).
+        // The full-pass-output → quick-check seam: a priced row carrying its
+        // anchor with no quick basis — the shape a pass whose engine computed
+        // no basis leaves (no full pass withholds one). The next sweep must
+        // read the affected families `unknown` — never a silent `fresh_clear`
+        // vouch through legs that don't exist — and must not bridge the band
+        // (a conversion against an uncertified basis would read spot outside a
+        // mis-scaled band and flag).
         let conn = mem();
         let mut verdict = priced_verdict("AAPL");
         if let crate::portfolio::VerdictDisposition::Priced(g) = &mut verdict.disposition {
@@ -2619,11 +2549,6 @@ mod tests {
 
     /// The BONDX role-risk fund fixture with a parameterized stored exposure basis.
     fn fund_run(exposure: Option<fund::FundExposureBasis>) -> PortfolioRun {
-        let mut fund_ledger = ledger(vec![]);
-        fund_ledger.branch = LedgerBranch::RoleRiskOnly;
-        for m in &mut fund_ledger.monitor {
-            m.engine_target = None;
-        }
         let verdict = HoldingVerdict {
             symbol: "BONDX".into(),
             asset_class: AssetClass::MutualFund,
@@ -2631,7 +2556,7 @@ mod tests {
             disposition: VerdictDisposition::RoleRiskOnly(Box::new(
                 crate::portfolio::RoleRiskVerdict {
                     class_label: "US equity fund".into(),
-                    role_summary: "fixture".into(),
+                    thesis_document: "Role: fixture.".into(),
                     exposure_tilt: vec![],
                     expense_drag: Some(0.001),
                     observable_risk: None,
@@ -2641,10 +2566,8 @@ mod tests {
                     evidence_gaps: vec![],
                     action: crate::portfolio::Action::Hold,
                     action_rationale: String::new(),
-                    what_changed: "fixture".into(),
                 },
             )),
-            thesis_ledger: Some(fund_ledger),
             analyzed_at: None,
             action_source: Default::default(),
             side_reversed: false,
@@ -3028,35 +2951,5 @@ mod tests {
         assert!(s2.holdings[0].flag.is_some());
         store::clear_quick_check(&conn).unwrap();
         assert!(store::latest_quick_check(&conn).unwrap().is_none());
-    }
-    #[test]
-    fn a_breaching_ledger_condition_raises_no_flag_only_the_two_monitors_do() {
-        // The quick check reads the engine arm alone: a standing ledger condition
-        // the fresh print breaches is not evaluated between runs — the self-review
-        // tests it at the holding's next full pass. Only the hurdle and the frozen
-        // band can raise the amber flag.
-        let conn = mem();
-        let mut verdict = priced_verdict("AAPL");
-        verdict.thesis_ledger = Some(ledger(vec![price_condition(
-            "c-px",
-            ConditionRole::Falsifier,
-            180.0,
-        )]));
-        store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(basis())))).unwrap();
-        // 170 breaches the 180 falsifier on two distinct prints — enough to have
-        // confirmed a market-cadence breach — yet sits inside the band [150, 260]
-        // and clears the hurdle at the quiet basis: no monitor fires.
-        for (price, date) in [(170.0, "2026-08-01"), (171.0, "2026-08-02")] {
-            let s = run_quick_check(&StubData::quiet(price, date), &conn, &noop_ctx()).unwrap();
-            let h = &s.holdings[0];
-            assert!(h.flag.is_none(), "a ledger condition never flags: {:?}", h.flag);
-            assert!(h.notes.iter().all(|n| !n.contains("breach")), "{:?}", h.notes);
-        }
-        // The same holding flags the moment a monitor fires — the band leg here.
-        let s = run_quick_check(&StubData::quiet(140.0, "2026-08-03"), &conn, &noop_ctx()).unwrap();
-        assert_eq!(
-            s.holdings[0].flag.as_ref().map(|f| f.trigger),
-            Some(FlagTrigger::PriceOutsideBand)
-        );
     }
 }

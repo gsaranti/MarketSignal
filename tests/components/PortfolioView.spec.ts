@@ -17,7 +17,6 @@ import type {
   PortfolioRun,
   Position,
   QuickCheckState,
-  ThesisLedger,
 } from "../../src/types";
 
 function position(symbol: string, over: Partial<Position> = {}): Position {
@@ -38,8 +37,15 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     grade: "B",
     sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
     action: "hold",
-    conviction: "medium",
-    horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
+    // The model arm: the document as the anchor, the appendix beside the
+    // engine's bands — one horizon left null so the "none" render is covered.
+    thesis_document: "Compounding platform with durable pricing power.",
+    appendix: {
+      conviction: "medium",
+      expected_price_3m: 205,
+      expected_price_12m: 210,
+      expected_price_3y: null,
+    },
     price_targets: {
       // Every horizon carries a methodology; a null near-horizon fixture had
       // hidden the reveal's omission of it (large-scale review, Codex I10).
@@ -62,7 +68,6 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
         methodology: "v7 three-year extrapolation",
       },
     },
-    model_target_rationale: "base case tracks revenue drift",
     options_signal: {
       put_call_volume: null,
       put_call_open_interest: null,
@@ -74,20 +79,8 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     action_rationale: "Hold — the thesis is intact.",
     low_confidence_grade: false,
     fund_class_label: null,
-    financial_summary: "Solid margins.",
-    what_changed: "First analyzed run.",
-    // Every persisted verdict carries both arms. The base fixture's engine rung
-    // mirrors its top-level action, so no "≠ engine" divergence tag or
-    // retrospective shows unless a test overrides the arms (e.g. twoArmGraded).
-    model_view: {
-      sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
-      letter: "B",
-      price_targets: {
-        one_month: { base: 205, bear: 195, bull: 215 },
-        twelve_month: { base: 210, bear: 180, bull: 240 },
-      },
-      self_assessment: "",
-    },
+    // The base fixture's engine rung mirrors its top-level action, so no
+    // "≠ engine" divergence tag shows unless a test overrides the arms.
     engine_rung: "hold",
     authored_band_relation: null,
     ...over,
@@ -104,41 +97,6 @@ function verdict(
     asset_class: "stock",
     position_change: "unchanged",
     disposition,
-    ...over,
-  };
-}
-
-// A full priced-branch thesis ledger; override for the role-risk condition-only
-// shape (branch + null engine targets).
-function ledger(over: Partial<ThesisLedger> = {}): ThesisLedger {
-  return {
-    branch: "priced",
-    original_thesis: "Original thesis.",
-    current_thesis: "Compounding platform with durable pricing power.",
-    key_drivers: [{ driver_id: "kd-services", name: "services growth", series: null }],
-    monitor: [
-      {
-        scenario: "bear",
-        conditions: "Services growth stalls below 5%",
-        probability_pct: 20,
-        engine_target: 150,
-      },
-      {
-        scenario: "base",
-        conditions: "Services compounding holds",
-        probability_pct: 55,
-        engine_target: 210,
-      },
-      {
-        scenario: "bull",
-        conditions: "Margin expansion resumes",
-        probability_pct: 25,
-        engine_target: 280,
-      },
-    ],
-    what_must_improve: "Hardware upgrade cycle re-accelerates",
-    what_must_not_break: "Services attach rate holds above 30%",
-    conditions: [],
     ...over,
   };
 }
@@ -170,6 +128,7 @@ const run: PortfolioRun = {
     verdict("XYZ", {
       status: "insufficient-evidence",
       reason: "Too few sources to grade.",
+      prior_thesis_document: null,
     }),
     verdict("OPT", { status: "not-rated", reason: "Options are not rated." }),
   ],
@@ -408,7 +367,7 @@ describe("PortfolioView historical mode", () => {
   });
 });
 
-describe("PortfolioView setup tile and thesis monitor", () => {
+describe("PortfolioView setup tile and thesis document", () => {
   // B10: momentum is the market-setup read, outside the letter — its tile sits
   // set apart behind the divider, never among the three letter inputs.
   test("momentum renders as the set-apart Setup tile, not a letter input", () => {
@@ -427,38 +386,24 @@ describe("PortfolioView setup tile and thesis monitor", () => {
     expect(setup.attributes("title")).toBeUndefined();
   });
 
-  // B13: the ledger's bear/base/bull monitor renders as the card's scenario
-  // strip with the app-stamped engine targets and the monitor-level goalposts.
-  test("the thesis monitor renders scenarios, targets, and goalposts on a priced card", () => {
-    const monRun: PortfolioRun = {
-      ...run,
-      verdicts: [
-        verdict(
-          "AAPL",
-          { status: "priced", ...graded() },
-          { thesis_ledger: ledger() }
-        ),
-      ],
-    };
-    const wrapper = mountView({ run: monRun });
-    const cells = wrapper.findAll(".hc-scenario");
-    expect(cells).toHaveLength(3);
-    expect(cells.map((c) => c.find(".hc-kicker").text())).toEqual([
-      "bear",
-      "base",
-      "bull",
-    ]);
-    expect(cells[1].find(".hc-scenario-prob").text()).toBe("55%");
-    expect(cells[1].find(".hc-scenario-target").text()).toContain("210");
-    expect(cells[2].text()).toContain("Margin expansion resumes");
-    const goals = wrapper.find(".hc-goalposts");
-    expect(goals.text()).toContain("Must improve");
-    expect(goals.text()).toContain("Hardware upgrade cycle re-accelerates");
-    expect(goals.text()).toContain("Must not break");
-    expect(goals.text()).toContain("Services attach rate holds above 30%");
+  // The thesis document is the card's anchor on both analyzed branches,
+  // rendered verbatim with the kit's clamp-and-reveal contract.
+  test("the thesis document renders as the card's anchor on a priced card", () => {
+    const wrapper = mountView({ run });
+    const card = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
+    const anchor = card.find(".hc-thesis");
+    expect(anchor.find(".hc-kicker").text()).toBe("Thesis document");
+    expect(anchor.find(".hc-thesis-text").text()).toBe(
+      "Compounding platform with durable pricing power."
+    );
+    // No ledger machinery survives on the card.
+    expect(card.find(".hc-monitor").exists()).toBe(false);
+    expect(card.text()).not.toContain("What changed");
   });
 
-  test("a role-risk card renders the condition-only monitor without target cells", () => {
+  test("a role-risk card renders its thesis document and no priced placeholders", () => {
     const roleRun: PortfolioRun = {
       ...run,
       holdings: {
@@ -478,7 +423,7 @@ describe("PortfolioView setup tile and thesis monitor", () => {
           {
             status: "role-risk-only",
             class_label: "bond fund",
-            role_summary: "Core fixed-income sleeve.",
+            thesis_document: "Role: a core fixed-income sleeve.\n\nRisks: duration.",
             exposure_tilt: [],
             expense_drag: null,
             observable_risk: null,
@@ -488,88 +433,37 @@ describe("PortfolioView setup tile and thesis monitor", () => {
             evidence_gaps: [],
             action: "hold",
             action_rationale: "Hold — the sleeve does its job.",
-            what_changed: "new holding",
           },
-          {
-            asset_class: "etf",
-            thesis_ledger: ledger({
-              branch: "role-risk-only",
-              monitor: [
-                {
-                  scenario: "bear",
-                  conditions: "Duration losses exceed the income cushion",
-                  probability_pct: 30,
-                  engine_target: null,
-                },
-                {
-                  scenario: "base",
-                  conditions: "Carry accrues; rates range-bound",
-                  probability_pct: 70,
-                  engine_target: null,
-                },
-              ],
-            }),
-          }
+          { asset_class: "etf" }
         ),
       ],
       roll_up: { ...run.roll_up, graded_count: 0, role_risk_only_count: 1 },
     };
     const wrapper = mountView({ run: roleRun });
-    const cells = wrapper.findAll(".hc-scenario");
-    expect(cells).toHaveLength(2);
-    expect(cells[0].text()).toContain("Duration losses exceed the income cushion");
-    // Structurally null targets: no target element renders on this branch.
-    expect(wrapper.find(".hc-scenario-target").exists()).toBe(false);
+    const anchor = wrapper.find(".hc-thesis");
+    expect(anchor.find(".hc-kicker").text()).toBe("Thesis document");
+    expect(anchor.text()).toContain("Role: a core fixed-income sleeve.");
+    expect(anchor.text()).toContain("Risks: duration.");
+    expect(wrapper.find(".hc-grade").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("expected");
   });
 
-  test("no ledger means no monitor block; a partial monitor renders what exists", () => {
-    // The base fixtures carry no thesis_ledger (pre-ledger/debut shape).
-    const bare = mountView({ run });
-    expect(bare.find(".hc-monitor").exists()).toBe(false);
-    // One authored scenario and empty goalposts: the cell renders, the
-    // goalpost list drops.
-    const partialRun: PortfolioRun = {
+  test("an empty document renders no anchor", () => {
+    const bare: PortfolioRun = {
       ...run,
       verdicts: [
-        verdict(
-          "AAPL",
-          { status: "priced", ...graded() },
-          {
-            thesis_ledger: ledger({
-              monitor: [
-                {
-                  scenario: "base",
-                  conditions: "Services compounding holds",
-                  probability_pct: 60,
-                  engine_target: 200,
-                },
-              ],
-              what_must_improve: "",
-              what_must_not_break: "",
-            }),
-          }
-        ),
+        verdict("AAPL", { status: "priced", ...graded({ thesis_document: "" }) }),
       ],
     };
-    const wrapper = mountView({ run: partialRun });
-    expect(wrapper.findAll(".hc-scenario")).toHaveLength(1);
-    expect(wrapper.find(".hc-goalposts").exists()).toBe(false);
+    const wrapper = mountView({ run: bare });
+    expect(wrapper.find(".hc-thesis").exists()).toBe(false);
   });
 
-  test("the monitor renders on a historical view — it is run content, not live state", () => {
-    const monRun: PortfolioRun = {
-      ...run,
-      verdicts: [
-        verdict(
-          "AAPL",
-          { status: "priced", ...graded() },
-          { thesis_ledger: ledger() }
-        ),
-      ],
-    };
-    const wrapper = mountView({ run: monRun, historical: true });
-    expect(wrapper.find(".hc-monitor").exists()).toBe(true);
-    expect(wrapper.findAll(".hc-scenario")).toHaveLength(3);
+  test("the document renders on a historical view — it is run content, not live state", () => {
+    const wrapper = mountView({ run, historical: true });
+    expect(wrapper.find(".hc-thesis .hc-thesis-text").text()).toContain(
+      "Compounding platform"
+    );
   });
 });
 
@@ -580,8 +474,7 @@ describe("PortfolioView verdict cards", () => {
     // Graded card content.
     expect(wrapper.find(".grade.a").text()).toBe("A");
     expect(wrapper.text()).toContain("Trim");
-    expect(wrapper.text()).toContain("Solid margins.");
-    expect(wrapper.text()).toContain("What changed · since last run");
+    expect(wrapper.text()).toContain("Compounding platform with durable pricing power.");
     // Abstentions carry their reasons, no fabricated grade.
     expect(wrapper.text()).toContain("Too few sources to grade.");
     expect(wrapper.text()).toContain("Options are not rated.");
@@ -619,32 +512,54 @@ describe("PortfolioView verdict cards", () => {
     expect(prose).not.toContain("base case tracks revenue drift");
   });
 
-  test("the model's target rationale renders in the model column, outside the engine reveal", () => {
+  test("the model column renders the appendix's conviction and expected prices, a null as none", () => {
     const wrapper = mountView({ run });
-    // Visible without opening the reveal: it is the model's own call, not a
-    // disclosed calculation (portfolio-v38, fix list 3.1).
-    const kicker = wrapper.find(".holding-card .hc-target-rationale");
-    expect(kicker.exists()).toBe(true);
-    expect(kicker.text()).toBe("Target rationale");
-    const column = kicker.element.parentElement!;
-    expect(column.textContent).toContain("Model view");
-    expect(column.textContent).toContain("base case tracks revenue drift");
-    expect(wrapper.find(".holding-card .hc-methodology").exists()).toBe(false);
+    const card = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
+    const column = card.findAll(".hc-col").find((c) => c.text().startsWith("Model view"))!;
+    expect(column.find(".conviction").attributes("aria-label")).toBe("Conviction: medium");
+    expect(column.findAll(".conviction i.on")).toHaveLength(2);
+    const rows = column.findAll("dt").map((d) => d.text());
+    expect(rows).toEqual(["Conviction", "3-mo expected", "12-mo expected", "3-yr expected", "Action"]);
+    expect(column.text()).toContain("$205.00");
+    expect(column.text()).toContain("$210.00");
+    // The three-year field is null on the fixture: it renders as none, never a
+    // fabricated number.
+    const values = column.findAll("dd").map((d) => d.text());
+    expect(values[3]).toBe("none");
+    expect(column.find(".hc-none").exists()).toBe(true);
+    // No model letter, no outlook, no target rationale survive.
+    expect(card.find(".hc-model-letter").exists()).toBe(false);
+    expect(card.text()).not.toContain("Outlook");
+    expect(card.text()).not.toContain("Target rationale");
   });
 
-  test("an empty target rationale renders no kicker", () => {
-    const blank: PortfolioRun = {
+  test("a wholly null appendix renders none on every field", () => {
+    const silent: PortfolioRun = {
       ...run,
       verdicts: [
         verdict("AAPL", {
           status: "priced",
-          ...graded({ model_target_rationale: "" }),
+          ...graded({
+            appendix: {
+              conviction: null,
+              expected_price_3m: null,
+              expected_price_12m: null,
+              expected_price_3y: null,
+            },
+          }),
         }),
       ],
     };
-    const wrapper = mountView({ run: blank });
-    expect(wrapper.find(".holding-card .hc-target-rationale").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Target rationale");
+    const wrapper = mountView({ run: silent });
+    const card = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
+    const column = card.findAll(".hc-col").find((c) => c.text().startsWith("Model view"))!;
+    expect(column.find(".conviction").attributes("aria-label")).toBe("Conviction: none");
+    expect(column.findAll(".conviction i.on")).toHaveLength(0);
+    expect(column.findAll(".hc-none").map((n) => n.text())).toEqual(["none", "none", "none", "none"]);
   });
 
   test("the methodology reveal omits a three-month paragraph the engine never authored", async () => {
@@ -757,7 +672,7 @@ describe("PortfolioView verdict cards", () => {
           {
             status: "role-risk-only",
             class_label: "bond fund",
-            role_summary: "Core fixed-income sleeve supplying duration exposure.",
+            thesis_document: "Core fixed-income sleeve supplying duration exposure.",
             exposure_tilt: [{ label: "United States", weight: 0.97 }],
             expense_drag: 0.0003,
             observable_risk: 0.06,
@@ -767,7 +682,6 @@ describe("PortfolioView verdict cards", () => {
             evidence_gaps: ["no on-plan duration/credit surface"],
             action: "hold",
             action_rationale: "Hold — the sleeve does its job.",
-            what_changed: "new holding",
           },
           { asset_class: "etf" }
         ),
@@ -812,7 +726,7 @@ describe("PortfolioView verdict cards", () => {
           {
             status: "role-risk-only",
             class_label: "closed-end fund",
-            role_summary: "Income sleeve.",
+            thesis_document: "Income sleeve.",
             exposure_tilt: [],
             expense_drag: null,
             observable_risk: null,
@@ -822,7 +736,6 @@ describe("PortfolioView verdict cards", () => {
             evidence_gaps: [],
             action: "hold",
             action_rationale: "Hold — the sleeve does its job.",
-            what_changed: "new holding",
           },
           { asset_class: "etf" }
         ),
@@ -1464,7 +1377,7 @@ describe("PortfolioView selective re-analysis", () => {
         // Stamped with the run's own created_at: no stamp at all.
         verdict(
           "XYZ",
-          { status: "insufficient-evidence", reason: "thin" },
+          { status: "insufficient-evidence", reason: "thin", prior_thesis_document: null },
           { analyzed_at: run.created_at }
         ),
       ],
@@ -1544,7 +1457,7 @@ describe("PortfolioView selective re-analysis", () => {
           {
             status: "role-risk-only",
             class_label: "bond fund",
-            role_summary: "Core fixed-income sleeve.",
+            thesis_document: "Core fixed-income sleeve.",
             exposure_tilt: [],
             expense_drag: null,
             observable_risk: null,
@@ -1554,7 +1467,6 @@ describe("PortfolioView selective re-analysis", () => {
             evidence_gaps: [],
             action: "hold",
             action_rationale: "Hold — the sleeve does its job.",
-            what_changed: "carried",
           },
           {
             asset_class: "etf",
@@ -1595,7 +1507,7 @@ describe("PortfolioView per-holding action", () => {
         {
           status: "role-risk-only",
           class_label: "bond fund",
-          role_summary: "Core fixed-income sleeve.",
+          thesis_document: "Core fixed-income sleeve.",
           exposure_tilt: [],
           expense_drag: null,
           observable_risk: null,
@@ -1605,7 +1517,6 @@ describe("PortfolioView per-holding action", () => {
           evidence_gaps: [],
           action: "trim",
           action_rationale: "Duration risk outweighs the sleeve's role.",
-          what_changed: "new holding",
         },
         { asset_class: "etf" }
       ),
@@ -1632,21 +1543,17 @@ describe("PortfolioView per-holding action", () => {
   });
 });
 
-// ---- The two-arm verdict (portfolio-v7) --------------------------------------
-// Engine baseline | model view paired columns, the full-width action strip, the
-// model retrospective, and the roll-up's scoreboard + engine-bound annotations.
+// ---- The two-arm verdict ------------------------------------------------------
+// Engine baseline | model view paired columns and the full-width action strip.
 
 function twoArmGraded(over: Partial<GradedVerdict> = {}): GradedVerdict {
   return graded({
     action: "add",
-    model_view: {
-      sub_scores: { quality: 88, valuation: 35, momentum: 70, risk: 60 },
-      letter: "C",
-      price_targets: {
-        one_month: { base: 215, bear: 200, bull: 230 },
-        twelve_month: { base: 280, bear: 190, bull: 340 },
-      },
-      self_assessment: "First read for this holding — no prior call to assess.",
+    appendix: {
+      conviction: "high",
+      expected_price_3m: 215,
+      expected_price_12m: 280,
+      expected_price_3y: 400,
     },
     engine_rung: "hold",
     authored_band_relation: null,
@@ -1655,7 +1562,7 @@ function twoArmGraded(over: Partial<GradedVerdict> = {}): GradedVerdict {
 }
 
 describe("PortfolioView two-arm verdict", () => {
-  test("a v7 card renders the paired arms, the action strip, and the retrospective", () => {
+  test("a card renders the paired arms and the action strip", () => {
     const wrapper = mountView({
       run: {
         ...run,
@@ -1672,50 +1579,20 @@ describe("PortfolioView two-arm verdict", () => {
     expect(kickers.some((k) => k.startsWith("Engine baseline"))).toBe(true);
     expect(kickers.some((k) => k.startsWith("Model view"))).toBe(true);
     expect(kickers).toContain("Portfolio action");
-    expect(kickers).toContain("Model retrospective");
-    // The model letter chip is derived from the model's own scores and carries
-    // the grade-scale tint class the design system's `.grade.c` compound reads
-    // (the same `gradeClass()` binding as the engine chip).
-    expect(card.find(".hc-model-letter").text()).toBe("C");
-    expect(card.find(".hc-model-letter").classes()).toContain("c");
-    // The engine column carries the engine's own rung (a computed read) and
-    // no outlook — the engine authors none.
+    expect(kickers).not.toContain("Model retrospective");
+    // The engine column carries the engine's own rung (a computed read); the
+    // model column the appendix's expected prices as transcribed.
     const engineCol = card.find(".hc-col-intrinsic");
     expect(engineCol.text()).toContain("Hold");
-    expect(engineCol.findAll(".hc-horizon-label").length).toBe(0);
-    expect(card.findAll(".hc-horizon-label").map((x) => x.text())).toEqual(["1 mo", "1 yr", "3–5 yr"]);
-    // Model values render as authored beside the engine's.
     expect(card.text()).toContain("$280.00");
+    expect(card.text()).toContain("$400.00");
     // Only the model's action diverging from the engine's rung carries the
-    // quiet ≠ engine tag: the engine authors no conviction and no outlook.
+    // quiet ≠ engine tag.
     const tags = card.findAll(".ana-tag").map((t) => t.text());
     expect(tags.filter((t) => t === "≠ engine").length).toBe(1);
     // The action strip is full-width beneath the arms.
     expect(card.find(".hc-actionrow .hc-action-word").exists()).toBe(true);
-    expect(
-      card.find(".hc-summary + .hc-summary .hc-prose").text()
-    ).toContain("First read for this holding");
   });
-
-  test("an inverted model band renders as authored with the annotation tag", () => {
-    const inverted = twoArmGraded();
-    inverted.model_view!.price_targets.twelve_month = {
-      base: 250,
-      bear: 300,
-      bull: 200,
-    };
-    const wrapper = mountView({
-      run: {
-        ...run,
-        verdicts: [verdict("AAPL", { status: "priced", ...inverted })],
-      },
-    });
-    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
-    expect(tags).toContain("band inverted as authored");
-    // The authored numbers are not reordered.
-    expect(wrapper.text()).toContain("($300.00–$200.00)");
-  });
-
 });
 
 // The 2026-08-16 badge ruling: a selective run analyzes strictly the selection.

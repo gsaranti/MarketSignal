@@ -12,6 +12,7 @@ import type {
   PortfolioRun,
   Position,
   QuickCheckState,
+  ThesisAppendix,
 } from "../types";
 
 // The Portfolio page (docs/portfolio-analysis.md §Storage and display,
@@ -765,12 +766,6 @@ const CONVICTION_LEVEL: Record<PortfolioConviction, number> = {
   high: 3,
 };
 
-const HORIZON_DIR: Record<string, "up" | "down" | "flat"> = {
-  bullish: "up",
-  bearish: "down",
-  neutral: "flat",
-};
-
 const CHANGE_LABELS: Record<string, string> = {
   new: "New",
   increased: "Increased",
@@ -790,17 +785,22 @@ const LETTER_SUBSCORES = ["quality", "valuation", "risk"] as const;
 // pointer, keyboard, low-vision, and screen-reader users alike.
 const SETUP_NOTE = "Setup — market-setup read, outside the letter";
 
-// ---- The two-arm verdict (portfolio-v7) --------------------------------------
-// The engine baseline beside the model's own view. Every persisted verdict
-// carries both arms.
+// ---- The two-arm verdict --------------------------------------------------
+// The engine baseline beside the model's own view: the thesis document's
+// typed appendix — the conviction and the expected price at each horizon,
+// each null where the document stated none, rendered as "none".
 
-const MODEL_ARM_NOTE =
-  "Model view — the model's own numbers, unrestricted; scored against the baseline";
-const MODEL_LETTER_TITLE =
-  "The model's letter, derived from its own quality/valuation/risk through the " +
-  "shared cutoffs";
+function convictionLevel(c: PortfolioConviction | null): number {
+  return c === null ? 0 : CONVICTION_LEVEL[c];
+}
 
-const MODEL_HORIZONS = { short: "1 mo", mid: "1 yr", long: "3–5 yr" };
+function expectedPrices(a: ThesisAppendix): [string, number | null][] {
+  return [
+    ["3-mo expected", a.expected_price_3m],
+    ["12-mo expected", a.expected_price_12m],
+    ["3-yr expected", a.expected_price_3y],
+  ];
+}
 
 function gradeClass(grade: string): string {
   return grade.toLowerCase();
@@ -1517,20 +1517,20 @@ const keyFigures = computed(() => {
                   </dl>
                 </header>
 
-                <!-- The card's anchor: the ledger's standing thesis, rendered
-                     straight from the continuity-validated ledger — never a
-                     separately authored summary
-                     (docs/portfolio-analysis.md §Storage and display). Long
-                     theses follow the kit's ThesisAnchor overflow contract:
-                     a three-line clamp with a reveal shown only on overflow. -->
-                <div v-if="v.thesis_ledger" class="hc-thesis">
-                  <span class="hc-kicker">Standing thesis</span>
+                <!-- The card's anchor: the thesis document as the model wrote
+                     it, rendered verbatim — never a separately authored
+                     summary (docs/portfolio-analysis.md §Storage and display).
+                     Long documents follow the kit's ThesisAnchor overflow
+                     contract: a three-line clamp with a reveal shown only on
+                     overflow. -->
+                <div v-if="v.disposition.thesis_document" class="hc-thesis">
+                  <span class="hc-kicker">Thesis document</span>
                   <p
                     :ref="thesisRef(v.symbol)"
                     class="hc-thesis-text"
                     :class="{ clamped: !openThesis.has(v.symbol) }"
                   >
-                    {{ v.thesis_ledger.current_thesis }}
+                    {{ v.disposition.thesis_document }}
                   </p>
                   <button
                     v-if="thesisOverflow.has(v.symbol) || openThesis.has(v.symbol)"
@@ -1539,14 +1539,13 @@ const keyFigures = computed(() => {
                     :aria-expanded="openThesis.has(v.symbol)"
                     @click="toggleThesis(v.symbol)"
                   >
-                    {{ openThesis.has(v.symbol) ? "Show less" : "Read full thesis" }}
+                    {{ openThesis.has(v.symbol) ? "Show less" : "Read full document" }}
                   </button>
                 </div>
 
                 <div class="hc-body">
                   <div class="hc-col hc-col-intrinsic">
                     <span class="hc-kicker">Role &amp; risk</span>
-                    <p class="hc-prose">{{ v.disposition.role_summary }}</p>
                     <dl class="hc-kv">
                       <template v-if="v.disposition.exposure_tilt.length > 0">
                         <dt>Exposure</dt>
@@ -1623,61 +1622,7 @@ const keyFigures = computed(() => {
                   </div>
                 </div>
 
-                <!-- Thesis monitor (B13), condition-only on this branch: the
-                     role-risk ledger's scenarios carry no engine target
-                     (structurally null — docs/portfolio-analysis.md §The
-                     position thesis ledger), so the target line drops. -->
-                <div
-                  v-if="v.thesis_ledger && v.thesis_ledger.monitor.length > 0"
-                  class="hc-monitor"
-                >
-                  <div class="hc-monitor-grid">
-                    <div
-                      v-for="s in v.thesis_ledger.monitor"
-                      :key="s.scenario"
-                      class="hc-scenario"
-                    >
-                      <div class="hc-scenario-head">
-                        <span class="hc-kicker">{{ s.scenario }}</span>
-                        <span class="ana-num hc-scenario-prob"
-                          >{{ Math.round(s.probability_pct) }}%</span
-                        >
-                      </div>
-                      <span
-                        v-if="s.engine_target !== null"
-                        class="ana-num hc-scenario-target"
-                        >{{ moneyExact.format(s.engine_target) }}</span
-                      >
-                      <p class="hc-scenario-note">{{ s.conditions }}</p>
-                    </div>
-                  </div>
-                  <dl
-                    v-if="
-                      v.thesis_ledger.what_must_improve ||
-                      v.thesis_ledger.what_must_not_break
-                    "
-                    class="hc-goalposts"
-                  >
-                    <template v-if="v.thesis_ledger.what_must_improve">
-                      <dt class="hc-kicker">Must improve</dt>
-                      <dd class="hc-goalpost-text">
-                        {{ v.thesis_ledger.what_must_improve }}
-                      </dd>
-                    </template>
-                    <template v-if="v.thesis_ledger.what_must_not_break">
-                      <dt class="hc-kicker">Must not break</dt>
-                      <dd class="hc-goalpost-text">
-                        {{ v.thesis_ledger.what_must_not_break }}
-                      </dd>
-                    </template>
-                  </dl>
-                </div>
-
                 <footer class="hc-foot">
-                  <div class="hc-foot-main">
-                    <span class="hc-kicker">What changed · since last run</span>
-                    <p class="hc-changed">{{ v.disposition.what_changed }}</p>
-                  </div>
                   <span class="ana-tag" :title="'Position vs. prior run'"
                     >Position: {{ CHANGE_LABELS[v.position_change] }}</span
                   >
@@ -1816,20 +1761,20 @@ const keyFigures = computed(() => {
                   </dl>
                 </header>
 
-                <!-- The card's anchor: the ledger's standing thesis, rendered
-                     straight from the continuity-validated ledger — never a
-                     separately authored summary
-                     (docs/portfolio-analysis.md §Storage and display). Long
-                     theses follow the kit's ThesisAnchor overflow contract:
-                     a three-line clamp with a reveal shown only on overflow. -->
-                <div v-if="v.thesis_ledger" class="hc-thesis">
-                  <span class="hc-kicker">Standing thesis</span>
+                <!-- The card's anchor: the thesis document as the model wrote
+                     it, rendered verbatim — never a separately authored
+                     summary (docs/portfolio-analysis.md §Storage and display).
+                     Long documents follow the kit's ThesisAnchor overflow
+                     contract: a three-line clamp with a reveal shown only on
+                     overflow. -->
+                <div v-if="v.disposition.thesis_document" class="hc-thesis">
+                  <span class="hc-kicker">Thesis document</span>
                   <p
                     :ref="thesisRef(v.symbol)"
                     class="hc-thesis-text"
                     :class="{ clamped: !openThesis.has(v.symbol) }"
                   >
-                    {{ v.thesis_ledger.current_thesis }}
+                    {{ v.disposition.thesis_document }}
                   </p>
                   <button
                     v-if="thesisOverflow.has(v.symbol) || openThesis.has(v.symbol)"
@@ -1838,7 +1783,7 @@ const keyFigures = computed(() => {
                     :aria-expanded="openThesis.has(v.symbol)"
                     @click="toggleThesis(v.symbol)"
                   >
-                    {{ openThesis.has(v.symbol) ? "Show less" : "Read full thesis" }}
+                    {{ openThesis.has(v.symbol) ? "Show less" : "Read full document" }}
                   </button>
                 </div>
 
@@ -1958,98 +1903,46 @@ const keyFigures = computed(() => {
                     </div>
                   </div>
 
-                  <!-- The model arm: the model's own numbers, authored
-                       unrestricted and persisted exactly as returned, beside
-                       the engine's computed reads. -->
+                  <!-- The model arm: the thesis document's typed appendix —
+                       the conviction and the expected price at each horizon,
+                       persisted exactly as transcribed, beside the engine's
+                       computed reads; a null field renders as none. -->
                   <div class="hc-col">
-                    <span class="hc-kicker hc-armhead"
-                      >Model view
-                      <span
-                        class="grade hc-model-letter"
-                        :class="gradeClass(v.disposition.model_view!.letter)"
-                        :title="MODEL_LETTER_TITLE"
-                        >{{ v.disposition.model_view!.letter }}</span
-                      ></span
-                    >
-                    <div class="hc-subscores">
-                      <div
-                        v-for="name in LETTER_SUBSCORES"
-                        :key="name"
-                        class="hc-sub"
-                      >
-                        <span class="hc-sub-label">{{ name }}</span>
-                        <span class="ana-num hc-sub-value">{{
-                          Math.round(v.disposition.model_view!.sub_scores[name])
-                        }}</span>
-                      </div>
-                      <div class="hc-sub hc-sub-setup">
-                        <span class="hc-sub-label">Setup</span>
-                        <span class="ana-num hc-sub-value">{{
-                          Math.round(v.disposition.model_view!.sub_scores.momentum)
-                        }}</span>
-                      </div>
-                    </div>
-                    <p class="hc-setup-note">{{ MODEL_ARM_NOTE }}</p>
+                    <span class="hc-kicker">Model view</span>
                     <dl class="hc-kv">
                       <dt>Conviction</dt>
                       <dd>
                         <span
                           class="conviction"
                           role="img"
-                          :aria-label="`Conviction: ${v.disposition.conviction}`"
+                          :aria-label="`Conviction: ${v.disposition.appendix.conviction ?? 'none'}`"
                         >
                           <i
                             v-for="i in 3"
                             :key="i"
                             :class="{
-                              on: i <= CONVICTION_LEVEL[v.disposition.conviction],
+                              on: i <= convictionLevel(v.disposition.appendix.conviction),
                             }"
                           />
                         </span>
-                        <span class="hc-conviction-word">{{
-                          v.disposition.conviction
-                        }}</span>
+                        <span
+                          class="hc-conviction-word"
+                          :class="{ 'hc-none': v.disposition.appendix.conviction === null }"
+                          >{{ v.disposition.appendix.conviction ?? "none" }}</span
+                        >
                       </dd>
                       <template
-                        v-for="(band, window) in {
-                          '1-mo target':
-                            v.disposition.model_view!.price_targets.one_month,
-                          '12-mo target':
-                            v.disposition.model_view!.price_targets.twelve_month,
-                        }"
-                        :key="window"
+                        v-for="[label, price] in expectedPrices(v.disposition.appendix)"
+                        :key="label"
                       >
-                        <dt>{{ window }}</dt>
+                        <dt>{{ label }}</dt>
                         <dd>
-                          <span class="ana-num"
-                            >{{ moneyExact.format(band.base) }}
-                            <span class="hc-band"
-                              >({{ moneyExact.format(band.bear) }}–{{
-                                moneyExact.format(band.bull)
-                              }})</span
-                            ></span
-                          >
-                          <span
-                            v-if="band.bear > band.bull"
-                            class="ana-tag"
-                            title="The model authored bear above bull; the value renders as returned — scoring reads the band as (min, max)."
-                            >band inverted as authored</span
-                          >
+                          <span v-if="price !== null" class="ana-num">{{
+                            moneyExact.format(price)
+                          }}</span>
+                          <span v-else class="hc-none">none</span>
                         </dd>
                       </template>
-                      <dt>Outlook</dt>
-                      <dd class="hc-outlook">
-                        <span
-                          v-for="(read, horizon) in v.disposition.horizon_outlook"
-                          :key="horizon"
-                          class="hc-horizon"
-                        >
-                          <span class="hc-horizon-label">{{ MODEL_HORIZONS[horizon] }}</span>
-                          <span class="dir" :class="HORIZON_DIR[read]">{{
-                            read
-                          }}</span>
-                        </span>
-                      </dd>
                       <dt>Action</dt>
                       <dd>
                         {{ ACTION_LABELS[v.disposition.action] }}
@@ -2060,18 +1953,6 @@ const keyFigures = computed(() => {
                         >
                       </dd>
                     </dl>
-                    <!-- The model's explanation of its own bands (portfolio-v38,
-                         fix list 3.1) — the model-arm counterpart of the engine
-                         column's methodology reveal, inline since it is the
-                         model's own call rather than a disclosed calculation. -->
-                    <template v-if="v.disposition.model_target_rationale">
-                      <span class="hc-kicker hc-target-rationale"
-                        >Target rationale</span
-                      >
-                      <p class="hc-prose">
-                        {{ v.disposition.model_target_rationale }}
-                      </p>
-                    </template>
                   </div>
                 </div>
 
@@ -2150,83 +2031,8 @@ const keyFigures = computed(() => {
                     </dl>
                 </div>
 
-                <!-- Thesis monitor (B13): the ledger's bear/base/bull scenarios
-                     with the app-stamped engine targets, plus the monitor-level
-                     goalposts — rendered straight from the continuity-validated
-                     ledger (docs/portfolio-analysis.md §The position thesis
-                     ledger). Kit fidelity: Portfolio.jsx Scenarios; the goalpost
-                     lines extend the kit (recorded deviation, B13 ruling
-                     2026-08-05). Renders whatever scenarios exist. -->
-                <div
-                  v-if="v.thesis_ledger && v.thesis_ledger.monitor.length > 0"
-                  class="hc-monitor"
-                >
-                  <div class="hc-monitor-grid">
-                    <div
-                      v-for="s in v.thesis_ledger.monitor"
-                      :key="s.scenario"
-                      class="hc-scenario"
-                    >
-                      <div class="hc-scenario-head">
-                        <span class="hc-kicker">{{ s.scenario }}</span>
-                        <span class="ana-num hc-scenario-prob"
-                          >{{ Math.round(s.probability_pct) }}%</span
-                        >
-                      </div>
-                      <span
-                        v-if="s.engine_target !== null"
-                        class="ana-num hc-scenario-target"
-                        >{{ moneyExact.format(s.engine_target) }}</span
-                      >
-                      <p class="hc-scenario-note">{{ s.conditions }}</p>
-                    </div>
-                  </div>
-                  <dl
-                    v-if="
-                      v.thesis_ledger.what_must_improve ||
-                      v.thesis_ledger.what_must_not_break
-                    "
-                    class="hc-goalposts"
-                  >
-                    <template v-if="v.thesis_ledger.what_must_improve">
-                      <dt class="hc-kicker">Must improve</dt>
-                      <dd class="hc-goalpost-text">
-                        {{ v.thesis_ledger.what_must_improve }}
-                      </dd>
-                    </template>
-                    <template v-if="v.thesis_ledger.what_must_not_break">
-                      <dt class="hc-kicker">Must not break</dt>
-                      <dd class="hc-goalpost-text">
-                        {{ v.thesis_ledger.what_must_not_break }}
-                      </dd>
-                    </template>
-                  </dl>
-                </div>
-
-                <!-- Financial analysis — model prose over engine numbers. -->
-                <div v-if="v.disposition.financial_summary" class="hc-summary">
-                  <span class="hc-kicker">Financial analysis</span>
-                  <p class="hc-prose">{{ v.disposition.financial_summary }}</p>
-                </div>
-
-                <!-- The model's retrospective self-assessment (v7): prose;
-                     nothing app-side scores it. -->
-                <div
-                  v-if="v.disposition.model_view?.self_assessment"
-                  class="hc-summary"
-                >
-                  <span class="hc-kicker">Model retrospective</span>
-                  <p class="hc-prose">
-                    {{ v.disposition.model_view!.self_assessment }}
-                  </p>
-                </div>
-
-                <!-- What changed + the app-computed position delta. -->
+                <!-- The app-computed position delta. -->
                 <footer class="hc-foot">
-                  <div class="hc-foot-main">
-                    <span class="hc-kicker">What changed · since last run</span>
-                    <p class="hc-changed">{{ v.disposition.what_changed }}</p>
-                  </div>
                   <span class="ana-tag" :title="'Position vs. prior run'"
                     >Position: {{ CHANGE_LABELS[v.position_change] }}</span
                   >
@@ -2840,6 +2646,12 @@ const keyFigures = computed(() => {
   color: var(--ink-3);
 }
 
+/* The appendix's null — the document stated no value at that field. */
+.hc-none {
+  color: var(--ink-3);
+  text-transform: none;
+}
+
 /* Two linked columns; stack on narrow windows so nothing crushes. Since v7 the
    pair is engine baseline | model view (a recorded extension of the kit's
    two-linked-blocks grid — comparison by adjacency + kicker, the system's
@@ -2875,28 +2687,8 @@ const keyFigures = computed(() => {
   border-top: 1px solid var(--hairline-soft);
 }
 
-/* The model-view column head: kicker + the model's derived letter, rendered as
-   a compact grade chip beside the label (never competing with the header's
-   engine chip). */
-.hc-armhead {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-
-.hc-model-letter {
-  font-size: var(--t-caption);
-  padding: 0 var(--s-2);
-}
-
 .hc-col > .hc-kicker {
   margin-bottom: var(--s-3);
-}
-
-/* The model column's target-rationale kicker sits beneath its kv list with
-   the same seam the engine column's methodology reveal takes. */
-.hc-target-rationale {
-  margin-top: var(--s-4);
 }
 
 .hc-subscores {
@@ -2969,12 +2761,6 @@ const keyFigures = computed(() => {
 .hc-conviction-word {
   margin-left: var(--s-2);
   text-transform: capitalize;
-}
-
-.hc-outlook {
-  display: flex;
-  gap: var(--s-4);
-  flex-wrap: wrap;
 }
 
 .hc-horizon {
@@ -3063,101 +2849,7 @@ const keyFigures = computed(() => {
   color: var(--ink);
 }
 
-.hc-summary {
-  padding: var(--s-4) var(--s-5);
-  border-top: 1px solid var(--hairline-soft);
-}
-
-.hc-summary .hc-kicker {
-  margin-bottom: var(--s-2);
-}
-
-/* Thesis monitor (B13) — the kit's Scenarios strip (Portfolio.jsx): a
-   hairline-topped three-cell row, each scenario a kicker + probability over
-   the engine target and its defining conditions; the cells keep the kit's
-   tighter padding register. The goalpost lines below extend the kit
-   (recorded deviation). */
-.hc-monitor {
-  border-top: 1px solid var(--hairline-soft);
-}
-
-.hc-monitor-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.hc-scenario {
-  min-width: 0;
-  padding: var(--s-3) var(--s-4);
-}
-
-.hc-scenario + .hc-scenario {
-  border-left: 1px solid var(--hairline-soft);
-}
-
-.hc-scenario-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: var(--s-3);
-  margin-bottom: var(--s-2);
-}
-
-.hc-scenario-prob {
-  font-size: 11px;
-  color: var(--ink-3);
-}
-
-.hc-scenario-target {
-  display: block;
-  font-size: 14px;
-  color: var(--ink);
-}
-
-.hc-scenario-note {
-  font-family: var(--font-serif);
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--ink-3);
-  margin: var(--s-1) 0 0;
-  overflow-wrap: anywhere;
-}
-
-.hc-goalposts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: var(--s-4);
-  row-gap: var(--s-2);
-  margin: 0;
-  padding: var(--s-3) var(--s-4);
-  border-top: 1px solid var(--hairline-soft);
-}
-
-.hc-goalpost-text {
-  font-family: var(--font-serif);
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--ink-2);
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-/* The monitor strip stacks with the body: cell seams rotate from vertical
-   hairlines to horizontal ones. Kept AFTER the base rules above — a media
-   query adds no cascade priority, so these overrides must win by source
-   order (the hazard the .hc-col-intrinsic !important works around). */
-@media (max-width: 760px) {
-  .hc-monitor-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .hc-scenario + .hc-scenario {
-    border-left: 0;
-    border-top: 1px solid var(--hairline-soft);
-  }
-}
-
-/* The card's standing-thesis anchor (the thesis ledger's current thesis),
+/* The card's thesis-document anchor,
    per the kit's ThesisAnchor + card seams (ui_kits Portfolio.jsx): its own
    section between the header and the verdict body, closed by a bottom
    hairline — the header already draws the one above it. */
@@ -3173,6 +2865,7 @@ const keyFigures = computed(() => {
 /* The kit's thesis lead: serif at 15px in full ink (a register up from the
    13px secondary prose elsewhere on the card). */
 .hc-thesis-text {
+  white-space: pre-line;
   font-family: var(--font-serif);
   font-size: 15px;
   line-height: 1.5;
@@ -3221,27 +2914,11 @@ const keyFigures = computed(() => {
 .hc-foot {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--s-5);
   padding: var(--s-3) var(--s-5);
   border-top: 1px solid var(--hairline-soft);
   background: var(--paper-edge);
-}
-
-.hc-foot-main {
-  min-width: 0;
-}
-
-.hc-foot .hc-kicker {
-  margin-bottom: 2px;
-}
-
-.hc-changed {
-  font-family: var(--font-sans);
-  font-size: 12px;
-  color: var(--ink-2);
-  margin: 0;
-  overflow-wrap: anywhere;
 }
 
 /* The action call's rationale under the action line. */

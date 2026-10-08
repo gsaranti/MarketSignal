@@ -253,7 +253,13 @@ pub struct CheckpointHeader {
 /// states carry no condition evaluation states and no news-seed family — the
 /// quick check sweeps the two engine monitors alone — so no v18 header can
 /// resume this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v19";
+/// `checkpoint-v20` (`portfolio-v70`): the verdict's model arm is the thesis
+/// document and its typed appendix — the ledger with its conditions, the
+/// what-changed audit, the self-assessment, the horizon outlook, the model
+/// sub-scores and the model's band levels leave the verdict and the audit,
+/// an abstention retains the prior thesis document on its own variant — so no
+/// v19 row can resume this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v20";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1354,7 +1360,6 @@ mod tests {
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
-                thesis_ledger: None,
                 analyzed_at: None,
                 action_source: Default::default(),
                 side_reversed: false,
@@ -1372,7 +1377,6 @@ mod tests {
                 overview: "single fixture holding".into(),
             },
             audit: vec![HoldingAudit {
-                what_changed_audit: None,
                 research: None,
                 target_meta: None,
                 symbol: "AAPL".into(),
@@ -1384,7 +1388,6 @@ mod tests {
                 degraded_inputs: vec![],
                 action_annotations: vec![],
                 grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
-                ledger_audit: None,
                 quick_basis: None,
                 authoring_close: None,
                 fund_exposure: None,
@@ -1479,6 +1482,61 @@ mod tests {
         insert_run(&conn, &run).unwrap();
         let back = latest_run(&conn).unwrap().unwrap();
         assert_eq!(back, run, "the whole run round-trips");
+    }
+
+    /// The verdict record round-trips on every disposition: a priced verdict
+    /// with its thesis document and typed appendix (a null expected price
+    /// kept as null, never defaulted), a role/risk verdict with its document,
+    /// and an insufficient-evidence exit carrying the prior's document.
+    #[test]
+    fn priced_and_role_risk_verdicts_round_trip_with_their_thesis_documents() {
+        use crate::portfolio::pipeline::{self, tests as pt, StubAnalyst};
+        let conn = mem();
+        let stock = pt::dossier(AssetClass::Stock, pt::strong_financials());
+        let (mut priced, audit) =
+            pipeline::analyze_holding(&StubAnalyst, &stock, &pt::rates(), "2026-08-03").unwrap();
+        let VerdictDisposition::Priced(g) = &mut priced.disposition else { panic!("priced") };
+        assert!(!g.thesis_document.is_empty() && g.appendix.conviction.is_some());
+        g.appendix.expected_price_3y = None;
+        let role_risk = HoldingVerdict {
+            symbol: "BND".into(),
+            asset_class: AssetClass::Etf,
+            position_change: PositionChange::New,
+            disposition: VerdictDisposition::RoleRiskOnly(Box::new(
+                pipeline::role_risk_verdict_from_model_arm(
+                    &crate::portfolio::fund::RoleRiskReadout {
+                        class_label: "bond fund".into(),
+                        ..Default::default()
+                    },
+                    "Role: a bond sleeve.\n\nRisks: duration.".into(),
+                ),
+            )),
+            analyzed_at: Some("2026-08-03T20:00:00Z".into()),
+            action_source: Default::default(),
+            side_reversed: false,
+        };
+        let abstained = HoldingVerdict {
+            symbol: "XYZ".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::InsufficientEvidence {
+                reason: "inconclusive re-read".into(),
+                prior_thesis_document: Some("The prior document.".into()),
+            },
+            analyzed_at: Some("2026-07-20T20:00:00Z".into()),
+            action_source: Default::default(),
+            side_reversed: false,
+        };
+        let mut run = sample_run("run-verdicts", "2026-08-03T20:00:00Z");
+        run.verdicts = vec![priced, role_risk, abstained];
+        run.audit = vec![audit];
+        insert_run(&conn, &run).unwrap();
+        let back = latest_run(&conn).unwrap().unwrap();
+        assert_eq!(back, run, "every disposition round-trips");
+        let VerdictDisposition::Priced(g) = &back.verdicts[0].disposition else { panic!("priced") };
+        assert_eq!(g.appendix.expected_price_3y, None, "a null expected price stays null");
+        assert_eq!(back.verdicts[1].thesis_document(), Some("Role: a bond sleeve.\n\nRisks: duration."));
+        assert_eq!(back.verdicts[2].thesis_document(), Some("The prior document."));
     }
 
     #[test]

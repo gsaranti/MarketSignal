@@ -408,7 +408,6 @@ export type PortfolioAction =
   | "add"
   | "add-aggressively";
 export type PortfolioConviction = "high" | "medium" | "low";
-export type HorizonRead = "bullish" | "neutral" | "bearish";
 
 // The four engine-computed sub-scores, 0–100, higher is better (risk inverted at
 // source: safer scores higher).
@@ -417,12 +416,6 @@ export interface SubScores {
   valuation: number;
   momentum: number;
   risk: number;
-}
-
-export interface HorizonOutlook {
-  short: HorizonRead;
-  mid: HorizonRead;
-  long: HorizonRead;
 }
 
 // One scenario target with its methodology exposed; the engine computed the
@@ -457,30 +450,16 @@ export interface OptionsSignal {
   iv_skew: number | null;
 }
 
-// One model-authored target band (the model arm's counterpart of PriceTarget) —
-// authored freely at interpretation, persisted exactly as returned; the render
-// annotates an inverted bear/bull pair rather than reordering it.
-export interface ModelPriceTarget {
-  base: number;
-  bear: number;
-  bull: number;
-}
-
-export interface ModelPriceTargets {
-  one_month: ModelPriceTarget;
-  twelve_month: ModelPriceTarget;
-}
-
-// The model arm of the two-arm verdict (docs/portfolio-analysis.md §The holding
-// verdict): the model's own sub-scores, its letter derived through the shared
-// cutoffs, freely-authored targets, and the retrospective self-assessment.
-// Beside it, the verdict's conviction / horizon_outlook / action complete the arm.
-// Present on every persisted verdict (both arms ride every v9 record).
-export interface ModelView {
-  sub_scores: SubScores;
-  letter: PortfolioGrade;
-  price_targets: ModelPriceTargets;
-  self_assessment: string;
+// The typed appendix of the thesis document (docs/portfolio-analysis.md §The
+// holding verdict): the conviction and the expected share price at three
+// months, twelve months and three years, transcribed from the document by the
+// conversation's second message and persisted exactly as authored. Every field
+// is null where the document states no value; a null renders as none.
+export interface ThesisAppendix {
+  conviction: PortfolioConviction | null;
+  expected_price_3m: number | null;
+  expected_price_12m: number | null;
+  expected_price_3y: number | null;
 }
 
 // Spot's relationship to the engine's twelve-month band at authoring — stamped
@@ -497,10 +476,11 @@ export interface GradedVerdict {
   action: PortfolioAction;
   // The action call's one-line rationale.
   action_rationale: string;
-  conviction: PortfolioConviction;
-  horizon_outlook: HorizonOutlook;
+  // The model arm: the thesis document as the model wrote it — prose, never
+  // rewritten — and its typed appendix.
+  thesis_document: string;
+  appendix: ThesisAppendix;
   price_targets: PriceTargets;
-  model_target_rationale: string;
   options_signal: OptionsSignal;
   // Engine reads added by the fund slice.
   risk_tier: RiskTier;
@@ -511,12 +491,6 @@ export interface GradedVerdict {
   low_confidence_grade: boolean;
   // The priced fund's deterministic strategy classification; null for a stock.
   fund_class_label: string | null;
-  financial_summary: string;
-  // The what-changed audit (authored at interpretation; the retired action half
-  // no longer exists).
-  what_changed: string;
-  // The model arm — always present on every persisted verdict.
-  model_view: ModelView;
   // The engine's own action rung — a computed read beside the model's action,
   // never a recommendation (docs/portfolio-analysis.md §Starting parameters).
   engine_rung: PortfolioAction;
@@ -531,11 +505,13 @@ export interface ExposureWeight {
 }
 
 // The role_risk_only branch of an analyzed verdict: a structurally unpriceable
-// vehicle class — no letter, no targets, no conviction; role + risk + the
-// per-holding action (docs/portfolio-analysis.md §Intrinsic verdict).
+// vehicle class — no letter, no targets, no conviction; the thesis document,
+// the readout and the per-holding action (docs/portfolio-analysis.md
+// §Intrinsic verdict).
 export interface RoleRiskVerdict {
   class_label: string;
-  role_summary: string;
+  // The thesis document as the model wrote it — no prices, no conviction.
+  thesis_document: string;
   exposure_tilt: ExposureWeight[];
   expense_drag: number | null;
   observable_risk: number | null;
@@ -552,7 +528,6 @@ export interface RoleRiskVerdict {
   action: PortfolioAction;
   // The action call's one-line rationale.
   action_rationale: string;
-  what_changed: string;
 }
 
 // Internally tagged on `status` (serde `tag = "status"`): the analyzed verdict is
@@ -562,37 +537,9 @@ export type VerdictDisposition =
   | ({ status: "priced" } & GradedVerdict)
   | ({ status: "role-risk-only" } & RoleRiskVerdict)
   | { status: "not-rated"; reason: string }
-  | { status: "insufficient-evidence"; reason: string };
-
-// One bear/base/bull monitor scenario of the thesis ledger: the model's defining
-// conditions and probability lean; the engine's own scenario price target is
-// app-stamped (null on the condition-only role-risk-only branch).
-export interface MonitorScenario {
-  scenario: "bear" | "base" | "bull";
-  conditions: string;
-  probability_pct: number;
-  engine_target: number | null;
-}
-
-// The persisted per-holding thesis ledger (docs/portfolio-analysis.md §The
-// position thesis ledger). This slice renders the standing thesis as the card's
-// anchor; the conditions' machine detail stays untyped until a display slice
-// needs it.
-export interface ThesisLedger {
-  branch: "priced" | "role-risk-only";
-  original_thesis: string;
-  current_thesis: string;
-  // driver_id is the app-assigned stable identity — display ignores it today;
-  // it anchors the research loop's leading-indicator reference backend-side.
-  key_drivers: { driver_id: string; name: string; series: string | null }[];
-  monitor: MonitorScenario[];
-  what_must_improve: string;
-  what_must_not_break: string;
-  conditions: unknown[];
-  // Spot's relationship to the monitor band at authoring — app-stamped; null
-  // wherever no band exists (role-risk-only, no spot).
-  authored_band_relation: "inside" | "below-band" | "above-band" | null;
-}
+  // An abstention carries the prior's thesis document, where one exists, so
+  // the holding stays tracked across it; null on a debut abstention.
+  | { status: "insufficient-evidence"; reason: string; prior_thesis_document: string | null };
 
 // How a verdict's action came to be — the canonical vocabulary from
 // docs/portfolio-analysis.md §Outcome learning: model-chosen (a model pass
@@ -605,9 +552,6 @@ export interface HoldingVerdict {
   asset_class: AssetClass;
   position_change: PositionChange;
   disposition: VerdictDisposition;
-  // The holding's thesis ledger — the card's "why we hold this view" anchor.
-  // Null on not-rated positions.
-  thesis_ledger: ThesisLedger | null;
   // The analysis vintage (UTC RFC3339) of the full pass that produced this
   // verdict — differs from the run's created_at on a verdict a selective run
   // carried forward. Null on a debut insufficient-evidence exit, which keeps

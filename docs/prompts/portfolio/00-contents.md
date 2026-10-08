@@ -1,8 +1,8 @@
 # Portfolio Analysis prompts — contents
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v60`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
 
-One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then interpretation and the action call (Step 6f).
+One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then the thesis document, its appendix and the action call (Step 6f).
 Each file carries the request envelope, every message as sent, and the tools or the response schema.
 
 | File | Call | Step |
@@ -24,12 +24,13 @@ Each file carries the request envelope, every message as sent, and the tools or 
 | [15-distillation-pass-level](15-distillation-pass-level.md) | Distillation — pass-level sub-distillation | 6d |
 | [16-distillation-tree-level-reduce](16-distillation-tree-level-reduce.md) | Distillation — tree-level reduce over the pass outputs | 6d |
 | [17-distillation-hierarchical-reduce](17-distillation-hierarchical-reduce.md) | Distillation — the final reduce over the tier-1 outputs | 6d |
-| [18-interpretation-stock-first-analysis](18-interpretation-stock-first-analysis.md) | Interpretation — stock, first analysis | 6f |
-| [19-interpretation-stock-continuity](19-interpretation-stock-continuity.md) | Interpretation — stock, continuity run | 6f |
-| [20-interpretation-fund-first-analysis](20-interpretation-fund-first-analysis.md) | Interpretation — priced fund, first analysis | 6f |
-| [21-interpretation-fund-continuity](21-interpretation-fund-continuity.md) | Interpretation — priced fund, continuity run | 6f |
-| [22-role-risk-first-analysis](22-role-risk-first-analysis.md) | Role/risk interpretation — first analysis | 6f |
-| [23-role-risk-continuity](23-role-risk-continuity.md) | Role/risk interpretation — continuity run | 6f |
-| [24-action-priced-first-analysis](24-action-priced-first-analysis.md) | Action — priced holding, first analysis | 6f |
-| [25-action-priced-continuity](25-action-priced-continuity.md) | Action — priced holding, continuity run | 6f |
-| [26-action-role-risk](26-action-role-risk.md) | Action — role/risk branch | 6f |
+| [18-thesis-document-stock-first-analysis](18-thesis-document-stock-first-analysis.md) | Thesis document — stock, first analysis | 6f |
+| [19-thesis-document-stock-continuity](19-thesis-document-stock-continuity.md) | Thesis document — stock, continuity run | 6f |
+| [20-thesis-document-fund-first-analysis](20-thesis-document-fund-first-analysis.md) | Thesis document — priced fund, first analysis | 6f |
+| [21-thesis-document-fund-continuity](21-thesis-document-fund-continuity.md) | Thesis document — priced fund, continuity run | 6f |
+| [22-thesis-appendix](22-thesis-appendix.md) | Thesis appendix — the conversation's second message | 6f |
+| [23-role-risk-thesis-document-first-analysis](23-role-risk-thesis-document-first-analysis.md) | Role/risk thesis document — first analysis | 6f |
+| [24-role-risk-thesis-document-continuity](24-role-risk-thesis-document-continuity.md) | Role/risk thesis document — continuity run | 6f |
+| [25-action-priced-first-analysis](25-action-priced-first-analysis.md) | Action — priced holding, first analysis | 6f |
+| [26-action-priced-continuity](26-action-priced-continuity.md) | Action — priced holding, continuity run | 6f |
+| [27-action-role-risk](27-action-role-risk.md) | Action — role/risk branch | 6f |

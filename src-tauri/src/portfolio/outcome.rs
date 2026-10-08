@@ -259,7 +259,9 @@ pub struct FalsifierEvent {
 pub struct CalibrationSnapshot {
     pub sub_scores: SubScores,
     pub grade: Grade,
-    pub conviction: Conviction,
+    /// The appendix's conviction at open — null where the document stated
+    /// none (`docs/portfolio-analysis.md` §The holding verdict).
+    pub conviction: Option<Conviction>,
     pub risk_tier: RiskTier,
     /// The scenario bands and base-case targets (price targets — target
     /// calibration scores these against the price-only label).
@@ -283,20 +285,6 @@ pub struct CalibrationSnapshot {
     pub grade_parameter_version: Option<String>,
     pub target_parameter_version: Option<String>,
     pub degraded_inputs: Vec<String>,
-    /// The model arm's freely-authored target bands, frozen at open — scored by
-    /// the same interval-score machinery as the engine bands over the same
-    /// exclusion population, so the model-vs-engine head-to-head is fair
-    /// (`docs/portfolio-analysis.md` §Outcome learning). Present on every priced
-    /// episode a fresh v9-only store writes (both arms ride every verdict).
-    pub model_price_targets: crate::portfolio::ModelPriceTargets,
-    /// The model arm's own sub-scores at open (recorded for later predictor-quality
-    /// reads; no scored read yet).
-    pub model_sub_scores: SubScores,
-    /// The model's horizon outlook at open — the direction hit-rate read scores
-    /// it against the realized sign at its mapped window. (The engine authors
-    /// no outlook; this record is suspended until outcome learning reshapes the
-    /// store to the price record.)
-    pub model_outlook: crate::portfolio::HorizonOutlook,
 }
 
 /// The priced branch's episode body.
@@ -1576,24 +1564,17 @@ pub fn episode_decision(
             match rec_state(prior_v) {
                 RecState::None => EpisodeDecision::Open(vec![OpenReason::Debut]),
                 RecState::Abstained => {
-                    // A ledger-less abstained prior is a *debut* abstention — the
-                    // holding was never tracked, so nothing is comparable and the
-                    // episode opens as a debut (a weight-range "change" against
-                    // a never-committed range would be a fabricated reason).
-                    if prior_v.thesis_ledger.is_none() {
+                    // A document-less abstained prior is a *debut* abstention —
+                    // the holding was never tracked, so nothing is comparable
+                    // and the episode opens as a debut.
+                    if prior_v.thesis_document().is_none() {
                         return EpisodeDecision::Open(vec![OpenReason::Debut]);
                     }
-                    // The abstained prior retained the standing ledger: the branch
-                    // is still comparable; the action is not.
-                    let prior_branch_priced = matches!(
-                        prior_v.thesis_ledger.as_ref().map(|l| l.branch),
-                        Some(crate::portfolio::LedgerBranch::Priced) | None
-                    );
-                    let cur_priced = matches!(cur, RecState::Priced { .. });
+                    // The abstained prior retained its thesis document, which
+                    // names no branch: a branch flip across an abstention is
+                    // not detectable and is never claimed; the action is not
+                    // comparable either.
                     let mut reasons = Vec::new();
-                    if prior_branch_priced != cur_priced {
-                        reasons.push(OpenReason::BranchFlip);
-                    }
                     // The action comes from the STANDING EPISODE, not the
                     // abstained verdict (which carries none). Without this the
                     // first fresh pass after an abstention extended the episode it
@@ -1705,13 +1686,6 @@ pub struct PlanInput<'a> {
     /// decision's carrier), so a lost row can't leave the current decision
     /// untracked until the next state change.
     pub unreadable_active_symbols: HashSet<String>,
-    /// Symbols whose verdict (and audit) were carried, not freshly passed
-    /// (uppercase). A carried audit's `ledger_audit.crossings` are its *prior*
-    /// run's crossings — they attached to an episode in that run, so the
-    /// falsifier-attach loop must skip them: re-attaching one to an episode
-    /// newly opened this run (whose empty event list defeats the per-episode
-    /// dedup) would fabricate a fresh confirmation dated today.
-    pub carried_symbols: &'a HashSet<String>,
 }
 
 /// What the plan changed.
@@ -1769,15 +1743,12 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
             .audits
             .iter()
             .find(|a| a.symbol.eq_ignore_ascii_case(&verdict.symbol));
-        // The standing-thesis and self-correction signals, from this run's
-        // validated what-changed audit — **fresh passes only**: a carried
-        // audit's what-changed is its own run's fact, already consumed there
-        // (the same premise as the carried-crossings skip below).
-        let what_changed = audit
-            .filter(|_| is_fresh)
-            .and_then(|a| a.what_changed_audit.as_ref());
-        let thesis_changed = what_changed.is_some_and(|w| w.thesis_changed);
-        let self_corrections = what_changed.map(|w| w.self_correction_count).unwrap_or(0);
+        // The standing-thesis and self-correction signals went with the
+        // what-changed audit: the thesis document is read as text and
+        // validated by nothing, so no app-side signal exists until outcome
+        // learning reshapes the store to the price record.
+        let thesis_changed = false;
+        let self_corrections = 0u32;
         let mut decision =
             episode_decision(prior_v, verdict, is_fresh, standing, thesis_changed);
         // Two seeding seams convert an `Extend` into the debut open
@@ -1890,7 +1861,7 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                             snapshot: CalibrationSnapshot {
                                 sub_scores: g.sub_scores,
                                 grade: g.grade,
-                                conviction: g.conviction,
+                                conviction: g.appendix.conviction,
                                 risk_tier: g.risk_tier,
                                 price_targets: g.price_targets.clone(),
                                 dead_money: g.dead_money,
@@ -1930,12 +1901,6 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                                 degraded_inputs: audit
                                     .map(|a| a.degraded_inputs.clone())
                                     .unwrap_or_default(),
-                                // The two-arm freeze (v7): both arms' authored values
-                                // ride the episode so the scoreboard can score them
-                                // long after the run ages out.
-                                model_price_targets: g.model_view.price_targets.clone(),
-                                model_sub_scores: g.model_view.sub_scores,
-                                model_outlook: g.horizon_outlook,
                             },
                         }))
                     }
@@ -1982,111 +1947,6 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
         }
     }
 
-    // This run's confirmed falsifier crossings attach to the episode carrying the
-    // condition. With no active episode the event lands on the latest matured
-    // episode typed post-maturity — retained as context for the next episode,
-    // feeding no lead-time read. Carried audits are skipped: their crossings
-    // are prior-run facts that already attached in their own run.
-    for audit in input.audits {
-        if input.carried_symbols.contains(&audit.symbol.to_ascii_uppercase()) {
-            continue;
-        }
-        let Some(ledger_audit) = &audit.ledger_audit else {
-            continue;
-        };
-        for crossing in &ledger_audit.crossings {
-            if crossing.role != crate::portfolio::ConditionRole::Falsifier
-                || crossing.outcome != crate::portfolio::CrossingOutcome::Confirmed
-            {
-                continue;
-            }
-            // The date the crossing **confirmed** — carried on the crossing from the
-            // condition's own eval state, which stamps it once on the confirming
-            // pass. Not the consuming run's date: a between-run sweep confirms and
-            // the next full run reads that crossing days later, and this is the one
-            // stamp `stamp_lead_times` positions against bar dates, so dating it
-            // here understated every lead time by the whole sweep-to-run gap — and
-            // could sign-flip a falsifier that actually led its drawdown into one
-            // that appeared to follow it. A confirmed crossing always carries the
-            // stamp its confirming pass wrote; a confirmed one missing it can't
-            // occur on a fresh v9 store, so skip it rather than guess a date.
-            let Some(confirmed_at) = crossing.confirmed_at.clone() else {
-                continue;
-            };
-            let key = audit.symbol.to_ascii_uppercase();
-            if input.unreadable_active_symbols.contains(&key) {
-                // The actual condition carrier is the unreadable active row.
-                // A readable predecessor and the recovery debut both carried a
-                // different ledger, so either attachment would fabricate
-                // provenance. Keep the run audit's crossing and omit only the
-                // episode-owned event whose carrier cannot be named.
-                continue;
-            }
-            let (target, post_maturity) = match crossing_carrier_at_start.get(&key).copied() {
-                // The standing active episode at run start carried the ledger
-                // whose condition was evaluated, even if this run just opened
-                // a successor because the crossing moved the recommendation.
-                Some(index) => (Some(index), false),
-                // A debut has no earlier carrier. Its normally-empty crossing
-                // set may still attach to the episode just opened; otherwise a
-                // matured-only symbol keeps the existing post-maturity form.
-                None => match episodes
-                    .iter()
-                    .enumerate()
-                    .rfind(|(_, episode)| {
-                        episode.state == EpisodeState::Active
-                            && episode.symbol.eq_ignore_ascii_case(&audit.symbol)
-                    })
-                    .map(|(index, _)| index)
-                {
-                    Some(index) => (Some(index), false),
-                    None => (
-                        episodes
-                            .iter()
-                            .enumerate()
-                            .rfind(|(_, episode)| {
-                                episode.state == EpisodeState::Matured
-                                    && episode.symbol.eq_ignore_ascii_case(&audit.symbol)
-                            })
-                            .map(|(index, _)| index),
-                        true,
-                    ),
-                },
-            };
-            let Some(i) = target else { continue };
-            let ep = &mut episodes[i];
-            // Dedup on the **standing confirmation**, not the observation that
-            // re-raised it. `confirmation_observation_id` is designed to change on
-            // every re-raise — an unconsumed confirmed breach re-raises each pass
-            // against the newest print until 6g acknowledges it — so keying on it
-            // accrued a fresh event per run: on a market-cadence falsifier, ~40
-            // over a twelve-month episode, each one separately mis-stamped. The
-            // confirmation date is set once when the streak reaches its count and
-            // held until the streak resets, so it identifies the standing breach
-            // and changes only when a genuinely new one confirms.
-            //
-            // Accepted collapse: a streak that resets and re-confirms within the
-            // same ET session reads as the same event. Same-session reset and
-            // re-confirmation is one day's information, and the alternative — the
-            // changing observation id — is the defect.
-            let duplicate = ep
-                .falsifier_events
-                .iter()
-                .any(|e| e.condition_id == crossing.condition_id && e.confirmed_at == confirmed_at);
-            if duplicate {
-                continue;
-            }
-            ep.falsifier_events.push(FalsifierEvent {
-                condition_id: crossing.condition_id.clone(),
-                confirmed_at,
-                confirmation_observation_id: crossing.observation_id.clone(),
-                post_maturity,
-                lead_time_trading_days: None,
-                no_material_drawdown: None,
-            });
-            summary.changed.insert(ep.episode_id.clone());
-        }
-    }
     summary
 }
 
@@ -2377,125 +2237,15 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
         }?;
         Some((band.bear, band.base, band.bull))
     };
-    let model_band = |p: &PricedEpisode, months: u32| -> Option<(f64, f64, f64)> {
-        let t = &p.snapshot.model_price_targets;
-        let band = match months {
-            1 => &t.one_month,
-            _ => &t.twelve_month,
-        };
-        // The scorer's fail-closed read beneath the decode gate (Codex I6,
-        // ruled 2026-08-29): a band any leg of which is non-finite or
-        // non-positive is no band — excluded from the model read and the
-        // paired head-to-head below, never scored as a NaN or a negative
-        // price — the same exclusion an engine leg the scenario function
-        // could not derive takes.
-        [band.bear, band.base, band.bull]
-            .iter()
-            .all(|v| v.is_finite() && *v > 0.0)
-            .then_some((band.bear, band.base, band.bull))
-    };
     let target_calibration = band_calibration(&engine_band);
-    let model_target_calibration = band_calibration(&model_band);
-
-    // The paired head-to-head: only episodes where BOTH arms carry the band (and
-    // the shared spot/bridge exclusions pass) enter, and both arms score the same
-    // realized outcome — same-events by construction, so the comparison can't be
-    // skewed by one arm's easier population (Codex round 1, finding 3).
-    let mut head_to_head = Vec::new();
-    for months in [1u32, 12u32] {
-        let (mut e_scores, mut m_scores) = (Vec::new(), Vec::new());
-        let (mut e_hits, mut m_hits) = (0usize, 0usize);
-        for ep in episodes {
-            if !ep.vintage_fresh {
-                continue;
-            }
-            let EpisodeBody::Priced(p) = &ep.body else {
-                continue;
-            };
-            let Some(label) = scored_for(ep, months) else {
-                continue;
-            };
-            let (Some(eb), Some(mb)) = (engine_band(p, months), model_band(p, months)) else {
-                continue;
-            };
-            let Some(spot) = p.snapshot.authoring_spot.filter(|s| *s > 0.0) else {
-                continue;
-            };
-            let Some(bridge) = label.anchor_close.filter(|a| *a > 0.0) else {
-                continue;
-            };
-            let realized_r = label.end_price / bridge - 1.0;
-            // Both arms' derived reads must be finite for the pair to enter — one
-            // arm's overflow excludes the event from both, so the populations
-            // stay identical by construction.
-            let (Some((e_score, e_hit)), Some((m_score, m_hit))) =
-                (band_read(eb, spot, realized_r), band_read(mb, spot, realized_r))
-            else {
-                continue;
-            };
-            e_scores.push(e_score);
-            m_scores.push(m_score);
-            e_hits += usize::from(e_hit);
-            m_hits += usize::from(m_hit);
-        }
-        let n = e_scores.len();
-        head_to_head.push(HeadToHeadRead {
-            window_months: months,
-            scored: n,
-            engine_mean_interval_score: finite_mean(&e_scores),
-            model_mean_interval_score: finite_mean(&m_scores),
-            engine_coverage_rate: (n > 0).then(|| e_hits as f64 / n as f64),
-            model_coverage_rate: (n > 0).then(|| m_hits as f64 / n as f64),
-        });
-    }
-
-    // The model authors 1-month / 1-year / 3–5-year reads; no outcome window
-    // exists for its long outlook, so it is excluded rather than shortened. The
-    // engine authors no outlook.
-    let mut outlook_direction = Vec::new();
-    for (arm, months, horizon) in [("model", 1u32, 0), ("model", 12, 1)] {
-        let (mut scored, mut hits, mut neutral) = (0usize, 0usize, 0usize);
-        for ep in episodes {
-            if !ep.vintage_fresh {
-                continue;
-            }
-            let EpisodeBody::Priced(p) = &ep.body else {
-                continue;
-            };
-            let outlook = p.snapshot.model_outlook;
-            let Some(label) = scored_for(ep, months) else {
-                continue;
-            };
-            let pr = label.price_return;
-            let direction = match horizon {
-                0 => outlook.short,
-                1 => outlook.mid,
-                _ => outlook.long,
-            };
-            match direction {
-                crate::portfolio::HorizonRead::Neutral => neutral += 1,
-                crate::portfolio::HorizonRead::Bullish => {
-                    scored += 1;
-                    if pr > 0.0 {
-                        hits += 1;
-                    }
-                }
-                crate::portfolio::HorizonRead::Bearish => {
-                    scored += 1;
-                    if pr < 0.0 {
-                        hits += 1;
-                    }
-                }
-            }
-        }
-        outlook_direction.push(OutlookDirectionRead {
-            arm: arm.to_string(),
-            window_months: months,
-            scored,
-            hits,
-            neutral,
-        });
-    }
+    // The model arm authors no bands since the thesis document replaced the
+    // structured read — its expected prices are scored by the accuracy pass
+    // outcome learning builds, so the model calibration, the paired
+    // head-to-head and the outlook read are empty until that item reshapes
+    // the record.
+    let model_target_calibration: Vec<TargetCalibrationRead> = Vec::new();
+    let head_to_head: Vec<HeadToHeadRead> = Vec::new();
+    let outlook_direction: Vec<OutlookDirectionRead> = Vec::new();
 
     let falsifier_lead_times = episodes
         .iter()
@@ -2615,7 +2365,7 @@ pub fn matured_learning_text(records: &OutcomeRecords, run_date: &str) -> Option
 mod tests {
     use super::*;
     use crate::portfolio::{
-        GradedVerdict, HorizonOutlook, HorizonRead, OptionsSignal, PriceTarget, ThesisLedger,
+        GradedVerdict, OptionsSignal, PriceTarget,
     };
 
     fn bars(rows: &[(&str, f64)]) -> Vec<DatedValue> {
@@ -2638,36 +2388,15 @@ mod tests {
             },
             action,
             action_rationale: String::new(),
-            model_view: crate::portfolio::ModelView {
-                sub_scores: SubScores {
-                    quality: 70.0,
-                    valuation: 60.0,
-                    momentum: 55.0,
-                    risk: 65.0,
-                },
-                letter: Grade::B,
-                price_targets: crate::portfolio::ModelPriceTargets {
-                    one_month: crate::portfolio::ModelPriceTarget {
-                        base: 102.0,
-                        bear: 95.0,
-                        bull: 108.0,
-                    },
-                    twelve_month: crate::portfolio::ModelPriceTarget {
-                        base: 120.0,
-                        bear: 90.0,
-                        bull: 150.0,
-                    },
-                },
-                self_assessment: String::new(),
+            thesis_document: "Thesis: t.".into(),
+            appendix: crate::portfolio::ThesisAppendix {
+                conviction: Some(Conviction::Medium),
+                expected_price_3m: Some(102.0),
+                expected_price_12m: Some(120.0),
+                expected_price_3y: None,
             },
             engine_rung: action,
             authored_band_relation: None,
-            conviction: Conviction::Medium,
-            horizon_outlook: HorizonOutlook {
-                short: HorizonRead::Neutral,
-                mid: HorizonRead::Bullish,
-                long: HorizonRead::Bullish,
-            },
             price_targets: PriceTargets {
                 three_month: Some(PriceTarget {
                     base: 102.0,
@@ -2683,7 +2412,6 @@ mod tests {
                 }),
                 three_year: None,
             },
-            model_target_rationale: "test".into(),
             options_signal: OptionsSignal {
                 put_call_volume: None,
                 put_call_open_interest: None,
@@ -2694,31 +2422,43 @@ mod tests {
             dead_money: HurdleState::Indeterminate,
             low_confidence_grade: false,
             fund_class_label: None,
-            financial_summary: "fine".into(),
-            what_changed: "new holding".into(),
         }
     }
 
-    fn ledger(_low: f64, _high: f64) -> ThesisLedger {
-        ThesisLedger {
-            branch: crate::portfolio::LedgerBranch::Priced,
-            original_thesis: "t".into(),
-            current_thesis: "t".into(),
-            key_drivers: vec![],
-            monitor: vec![],
-            what_must_improve: String::new(),
-            what_must_not_break: String::new(),
-            conditions: vec![],
+    fn plain_audit(symbol: &str) -> HoldingAudit {
+        HoldingAudit {
+            symbol: symbol.into(),
+            metrics: Default::default(),
+            sources: vec![],
+            model_ids: vec![],
+            prompt_version: crate::portfolio::PROMPT_VERSION.into(),
+            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
+            degraded_inputs: vec![],
+            action_annotations: vec![],
+            target_meta: None,
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
+            quick_basis: None,
+            authoring_close: None,
+            fund_exposure: None,
+            pre_profit: None,
+            hurdle: None,
+            forensic: None,
+            soft_forensic: None,
+            tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
+            research: None,
         }
     }
 
-    fn verdict(symbol: &str, action: Action, weights: (f64, f64)) -> HoldingVerdict {
+    fn verdict(symbol: &str, action: Action, _weights: (f64, f64)) -> HoldingVerdict {
         HoldingVerdict {
             symbol: symbol.into(),
             asset_class: crate::portfolio::AssetClass::Stock,
             position_change: PositionChange::Unchanged,
             disposition: VerdictDisposition::Priced(Box::new(graded(action))),
-            thesis_ledger: Some(ledger(weights.0, weights.1)),
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
             side_reversed: false,
@@ -2728,11 +2468,6 @@ mod tests {
     fn fresh(mut v: HoldingVerdict, created_at: &str) -> HoldingVerdict {
         v.analyzed_at = Some(created_at.to_string());
         v
-    }
-
-    fn empty_carried() -> &'static HashSet<String> {
-        static EMPTY: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
-        EMPTY.get_or_init(HashSet::new)
     }
 
     fn plan_input<'a>(
@@ -2751,7 +2486,6 @@ mod tests {
             sector_by_symbol: sector,
             dgs2: Some(0.04),
             unreadable_active_symbols: HashSet::new(),
-            carried_symbols: empty_carried(),
         }
     }
 
@@ -2800,91 +2534,6 @@ mod tests {
         assert_eq!(episodes.len(), 1);
         assert_eq!(episodes[0].observations.len(), 1);
         assert_eq!(episodes[0].observations[0].kind, ObservationKind::Reaffirmed);
-    }
-
-    fn audit_with_wc(symbol: &str, thesis_changed: bool, self_corrections: u32) -> HoldingAudit {
-        HoldingAudit {
-            symbol: symbol.into(),
-            metrics: Default::default(),
-            sources: vec![],
-            model_ids: vec![],
-            prompt_version: "test".into(),
-            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
-            degraded_inputs: vec![],
-            action_annotations: vec![],
-            target_meta: None,
-            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
-            ledger_audit: None,
-            quick_basis: None,
-            authoring_close: None,
-            fund_exposure: None,
-            pre_profit: None,
-            hurdle: None,
-            forensic: None,
-            soft_forensic: None,
-            tech_event_pre_flag: None,
-            short_interest: None,
-            implied_expectations: None,
-            narrative: None,
-            option_overlay: None,
-            what_changed_audit: Some(crate::portfolio::WhatChangedAudit {
-                entries: vec![],
-                input_delta: vec![],
-                downgrades: vec![],
-                self_correction_count: self_corrections,
-                thesis_changed,
-            }),
-            research: None,
-        }
-    }
-
-    #[test]
-    fn a_thesis_change_opens_with_the_action_unchanged_and_seeds_the_count() {
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-        assert_eq!(episodes.len(), 1);
-        assert_eq!(episodes[0].self_correction_count, 0);
-
-        // Same branch, same action — but this run's validated what-changed audit
-        // records a thesis change with two labeled self-corrections: the
-        // standing-thesis leg opens a successor episode carrying the count.
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
-        let audits = vec![audit_with_wc("AAPL", true, 2)];
-        let mut input = plan_input("run-2", c2, &verdicts, Some(&prior), &sector);
-        input.audits = &audits;
-        let s = plan_episodes(&input, &mut episodes);
-        assert_eq!(s.opened.len(), 1);
-        assert_eq!(s.opened[0].reasons, vec![OpenReason::ThesisChange]);
-        assert_eq!(episodes.len(), 2);
-        assert_eq!(episodes[1].self_correction_count, 2);
-    }
-
-    #[test]
-    fn a_carried_audits_thesis_flag_never_opens() {
-        // A selective carry re-persists the prior audit — its what-changed flags
-        // are its own run's facts, so the standing-thesis leg must not re-fire
-        // off them (the carried-crossings premise).
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-
-        let c2 = "2026-08-11T12:00:00+00:00";
-        // Carried: the verdict keeps its prior vintage (analyzed_at != created_at).
-        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let audits = vec![audit_with_wc("AAPL", true, 1)];
-        let mut input = plan_input("run-2", c2, &verdicts, Some(&prior), &sector);
-        input.audits = &audits;
-        let s = plan_episodes(&input, &mut episodes);
-        assert!(s.opened.is_empty());
-        assert_eq!(episodes.len(), 1);
-        assert_eq!(episodes[0].self_correction_count, 0);
-        assert_eq!(episodes[0].observations[0].kind, ObservationKind::Carried);
     }
 
     #[test]
@@ -2998,6 +2647,7 @@ mod tests {
         let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
         abstained.disposition = VerdictDisposition::InsufficientEvidence {
             reason: "thin".into(),
+            prior_thesis_document: None,
         };
         abstained.analyzed_at = Some(c1.to_string()); // preserved prior vintage
         let s = plan_episodes(
@@ -3053,7 +2703,7 @@ mod tests {
         demoted.analyzed_at = Some(c1.to_string());
         demoted.action_source = ActionSource::RuleDemoted;
         let demoted = vec![demoted];
-        let mut audit = audit_with_wc("AAPL", false, 0);
+        let mut audit = plain_audit("AAPL");
         audit.hurdle = Some(HurdleRead {
             state: HurdleState::Indeterminate,
             hurdle_rate: Some(0.09),
@@ -3110,6 +2760,7 @@ mod tests {
         let mut abstained = verdict("MSFT", Action::Hold, (0.03, 0.06));
         abstained.disposition = VerdictDisposition::InsufficientEvidence {
             reason: "thin".into(),
+            prior_thesis_document: None,
         };
         let prior_msft = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c1)];
         let s = plan_episodes(
@@ -3210,436 +2861,6 @@ mod tests {
     }
 
     #[test]
-    fn extensions_and_crossings_attach_to_the_latest_active_episode() {
-        // An action change opens a successor while the older episode keeps
-        // maturing — both active. Re-affirmations and falsifier crossings must
-        // land on the latest episode (the current recommendation / ledger), not
-        // the oldest still-labeling one.
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let hold = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &hold, None, &sector), &mut episodes);
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let trim = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c2)];
-        plan_episodes(
-            &plan_input("run-2", c2, &trim, Some(&hold), &sector),
-            &mut episodes,
-        );
-        assert_eq!(episodes.len(), 2);
-        assert!(episodes.iter().all(|e| e.state == EpisodeState::Active));
-
-        let c3 = "2026-08-18T12:00:00+00:00";
-        let trim_again = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c3)];
-        let audit = HoldingAudit {
-            what_changed_audit: None,
-            research: None,
-            symbol: "AAPL".into(),
-            metrics: Default::default(),
-            sources: vec![],
-            model_ids: vec![],
-            prompt_version: "portfolio-v5".into(),
-            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
-            degraded_inputs: vec![],
-            action_annotations: vec![],
-            target_meta: None,
-            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
-            ledger_audit: Some(crate::portfolio::LedgerAudit {
-                crossings: vec![crate::portfolio::ConditionCrossing {
-                    condition_id: "c-1".into(),
-                    statement: "margin below 15%".into(),
-                    role: crate::portfolio::ConditionRole::Falsifier,
-                    outcome: crate::portfolio::CrossingOutcome::Confirmed,
-                    observed_value: 0.12,
-                    threshold: 0.15,
-                    observation_id: "2026-06-30".into(),
-                    // The engine stamped this on the confirming pass with the run's
-                    // ET session date (`run_date`).
-                    confirmed_at: Some("2026-08-18".into()),
-                }],
-                ..Default::default()
-            }),
-            quick_basis: None,
-            authoring_close: None,
-            fund_exposure: None,
-            pre_profit: None,
-            hurdle: None,
-            forensic: None,
-            soft_forensic: None,
-            tech_event_pre_flag: None,
-            short_interest: None,
-            implied_expectations: None,
-            narrative: None,
-            option_overlay: None,
-        };
-        let audits = vec![audit];
-        let mut input = plan_input("run-3", c3, &trim_again, Some(&trim), &sector);
-        input.audits = &audits;
-        let s = plan_episodes(&input, &mut episodes);
-        assert_eq!(s.extended, vec!["AAPL".to_string()]);
-        assert!(
-            episodes[0].observations.is_empty(),
-            "the older episode stopped accruing at the state change"
-        );
-        assert_eq!(episodes[1].observations.len(), 1);
-        assert!(
-            episodes[0].falsifier_events.is_empty(),
-            "the crossing belongs to the episode carrying the current ledger"
-        );
-        assert_eq!(episodes[1].falsifier_events.len(), 1);
-        // Noon UTC = the same ET day: the confirmation stamps the run's session.
-        assert_eq!(episodes[1].falsifier_events[0].confirmed_at, "2026-08-18");
-    }
-
-    #[test]
-    fn a_crossing_that_opens_a_successor_stays_on_the_episode_that_carried_it() {
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-
-        // The standing Hold episode carries c-1. Its confirmation moves the
-        // recommendation to Trim in the same run, which opens the successor.
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let current = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c2)];
-        let audits = vec![confirmed_crossing("obs-2", "2026-08-11")];
-        let mut input = plan_input("run-2", c2, &current, Some(&prior), &sector);
-        input.audits = &audits;
-        let summary = plan_episodes(&input, &mut episodes);
-
-        assert_eq!(summary.opened.len(), 1);
-        assert_eq!(episodes.len(), 2);
-        assert_eq!(episodes[0].falsifier_events.len(), 1);
-        assert!(
-            episodes[1].falsifier_events.is_empty(),
-            "the successor never carried the crossed condition"
-        );
-        assert_eq!(episodes[0].falsifier_events[0].condition_id, "c-1");
-    }
-
-    #[test]
-    fn a_crossing_with_an_unreadable_carrier_is_not_grafted_onto_recovery() {
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let current = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
-        let audits = vec![confirmed_crossing("obs-2", "2026-08-11")];
-        let mut input = plan_input("run-2", c2, &current, Some(&prior), &sector);
-        input.audits = &audits;
-        input.unreadable_active_symbols.insert("AAPL".into());
-        let summary = plan_episodes(&input, &mut episodes);
-
-        assert_eq!(summary.opened.len(), 1, "the recovery episode still opens");
-        assert_eq!(episodes.len(), 2);
-        assert!(
-            episodes.iter().all(|episode| episode.falsifier_events.is_empty()),
-            "neither the readable predecessor nor recovery debut carried the unreadable row's condition"
-        );
-    }
-
-    #[test]
-    fn a_confirmation_stamps_the_et_session_date() {
-        // An evening-ET run: 2026-08-19 01:30 UTC = 2026-08-18 21:30 EDT. The
-        // engine stamps the crossing's `confirmed_at` with the run's ET session
-        // date (`run_date`, ET-derived in `job.rs`), so the confirmation belongs
-        // to the ET session whose print confirmed it — the UTC date prefix (the
-        // 19th) would place it one session late in the lead-time read. The
-        // consumer carries that stamp straight onto the event.
-        let c1 = "2026-08-19T01:30:00+00:00";
-        let hold = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let audit = HoldingAudit {
-            what_changed_audit: None,
-            research: None,
-            symbol: "AAPL".into(),
-            metrics: Default::default(),
-            sources: vec![],
-            model_ids: vec![],
-            prompt_version: "portfolio-v5".into(),
-            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
-            degraded_inputs: vec![],
-            action_annotations: vec![],
-            target_meta: None,
-            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
-            ledger_audit: Some(crate::portfolio::LedgerAudit {
-                crossings: vec![crate::portfolio::ConditionCrossing {
-                    condition_id: "c-1".into(),
-                    statement: "margin below 15%".into(),
-                    role: crate::portfolio::ConditionRole::Falsifier,
-                    outcome: crate::portfolio::CrossingOutcome::Confirmed,
-                    observed_value: 0.12,
-                    threshold: 0.15,
-                    observation_id: "2026-08-18".into(),
-                    // The engine stamped this on the confirming pass with the run's
-                    // ET session date (`run_date`).
-                    confirmed_at: Some("2026-08-18".into()),
-                }],
-                ..Default::default()
-            }),
-            quick_basis: None,
-            authoring_close: None,
-            fund_exposure: None,
-            pre_profit: None,
-            hurdle: None,
-            forensic: None,
-            soft_forensic: None,
-            tech_event_pre_flag: None,
-            short_interest: None,
-            implied_expectations: None,
-            narrative: None,
-            option_overlay: None,
-        };
-        let audits = vec![audit];
-        let mut episodes = Vec::new();
-        let mut input = plan_input("run-1", c1, &hold, None, &sector);
-        input.audits = &audits;
-        plan_episodes(&input, &mut episodes);
-        assert_eq!(episodes.len(), 1);
-        assert_eq!(episodes[0].falsifier_events.len(), 1);
-        assert_eq!(episodes[0].falsifier_events[0].confirmed_at, "2026-08-18");
-    }
-
-    #[test]
-    fn confirmed_falsifier_crossings_attach_to_the_carrying_episode() {
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        let audit = HoldingAudit {
-            what_changed_audit: None,
-            research: None,
-            symbol: "AAPL".into(),
-            metrics: Default::default(),
-            sources: vec![],
-            model_ids: vec![],
-            prompt_version: "portfolio-v5".into(),
-            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
-            degraded_inputs: vec![],
-            action_annotations: vec![],
-            target_meta: None,
-            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
-            ledger_audit: Some(crate::portfolio::LedgerAudit {
-                crossings: vec![crate::portfolio::ConditionCrossing {
-                    condition_id: "c-1".into(),
-                    statement: "margin below 15%".into(),
-                    role: crate::portfolio::ConditionRole::Falsifier,
-                    outcome: crate::portfolio::CrossingOutcome::Confirmed,
-                    observed_value: 0.12,
-                    threshold: 0.15,
-                    observation_id: "2026-06-30".into(),
-                    // The engine stamped this on the confirming pass with the run's
-                    // ET session date (`run_date`).
-                    confirmed_at: Some("2026-08-04".into()),
-                }],
-                ..Default::default()
-            }),
-            quick_basis: None,
-            authoring_close: None,
-            fund_exposure: None,
-            pre_profit: None,
-            hurdle: None,
-            forensic: None,
-            soft_forensic: None,
-            tech_event_pre_flag: None,
-            short_interest: None,
-            implied_expectations: None,
-            narrative: None,
-            option_overlay: None,
-        };
-        let audits = vec![audit];
-        let mut input = plan_input("run-1", c1, &verdicts, None, &sector);
-        input.audits = &audits;
-        plan_episodes(&input, &mut episodes);
-        assert_eq!(episodes[0].falsifier_events.len(), 1);
-        let ev = &episodes[0].falsifier_events[0];
-        assert_eq!(ev.condition_id, "c-1");
-        assert_eq!(ev.confirmation_observation_id, "2026-06-30");
-        assert!(!ev.post_maturity);
-
-        // Re-running the same crossing dedups; a matured-only symbol takes the
-        // post-maturity form.
-        plan_episodes(&input, &mut episodes);
-        assert_eq!(episodes[0].falsifier_events.len(), 1, "deduplicated");
-        episodes[0].state = EpisodeState::Matured;
-        let mut input2 = plan_input("run-2", "2026-08-11T12:00:00+00:00", &[], None, &sector);
-        input2.audits = &audits;
-        plan_episodes(&input2, &mut episodes);
-        assert_eq!(episodes[0].falsifier_events.len(), 1, "same observation dedups");
-    }
-
-    /// An audit carrying one confirmed falsifier crossing: the observation id it was
-    /// re-raised against, and the confirmation date the engine stamps on it.
-    fn confirmed_crossing(observation_id: &str, confirmed_at: &str) -> HoldingAudit {
-        HoldingAudit {
-            what_changed_audit: None,
-            research: None,
-            symbol: "AAPL".into(),
-            metrics: Default::default(),
-            sources: vec![],
-            model_ids: vec![],
-            prompt_version: "portfolio-v5".into(),
-            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
-            degraded_inputs: vec![],
-            action_annotations: vec![],
-            target_meta: None,
-            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
-            ledger_audit: Some(crate::portfolio::LedgerAudit {
-                crossings: vec![crate::portfolio::ConditionCrossing {
-                    condition_id: "c-1".into(),
-                    statement: "margin below 15%".into(),
-                    role: crate::portfolio::ConditionRole::Falsifier,
-                    outcome: crate::portfolio::CrossingOutcome::Confirmed,
-                    observed_value: 0.12,
-                    threshold: 0.15,
-                    observation_id: observation_id.into(),
-                    confirmed_at: Some(confirmed_at.to_string()),
-                }],
-                ..Default::default()
-            }),
-            quick_basis: None,
-            authoring_close: None,
-            fund_exposure: None,
-            pre_profit: None,
-            hurdle: None,
-            forensic: None,
-            soft_forensic: None,
-            tech_event_pre_flag: None,
-            short_interest: None,
-            implied_expectations: None,
-            narrative: None,
-            option_overlay: None,
-        }
-    }
-
-    #[test]
-    fn one_standing_breach_accrues_one_event_however_often_it_re_raises() {
-        // The defect's teeth. An unconsumed confirmed breach re-raises every pass
-        // against the NEWEST print until 6g acknowledges it, so
-        // `confirmation_observation_id` changes each run BY DESIGN. Keyed on it, one
-        // standing breach accrued a fresh event per run — about forty over a
-        // twelve-month episode on a market-cadence falsifier, each separately
-        // mis-stamped. Keyed on the confirmation date, which is set once when the
-        // streak reaches its count and held until it resets, the same breach is one
-        // event no matter how many passes re-raise it.
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-0", c1, &verdicts, None, &sector), &mut episodes);
-
-        // Three later passes, each re-raising the SAME standing confirmation
-        // (`confirmed_at` fixed at 2026-08-05) against a newer close each time.
-        for (run, obs, created) in [
-            ("run-1", "2026-08-05", "2026-08-05T12:00:00+00:00"),
-            ("run-2", "2026-08-06", "2026-08-06T12:00:00+00:00"),
-            ("run-3", "2026-08-07", "2026-08-07T12:00:00+00:00"),
-        ] {
-            let audits = vec![confirmed_crossing(obs, "2026-08-05")];
-            let mut input = plan_input(run, created, &verdicts, Some(&verdicts), &sector);
-            input.audits = &audits;
-            plan_episodes(&input, &mut episodes);
-        }
-        assert_eq!(
-            episodes[0].falsifier_events.len(),
-            1,
-            "one standing breach is one event, however many passes re-raise it"
-        );
-        assert_eq!(
-            episodes[0].falsifier_events[0].confirmed_at, "2026-08-05",
-            "stamped from the CONFIRMING pass, not the run that consumed the crossing"
-        );
-
-        // A genuine re-confirmation after a reset is a distinct standing breach and
-        // does accrue its own event.
-        let audits = vec![confirmed_crossing("2026-09-10", "2026-09-10")];
-        let mut input = plan_input("run-4", "2026-09-10T12:00:00+00:00", &verdicts, Some(&verdicts), &sector);
-        input.audits = &audits;
-        plan_episodes(&input, &mut episodes);
-        assert_eq!(episodes[0].falsifier_events.len(), 2);
-    }
-
-    #[test]
-    fn carried_audit_crossings_never_attach_as_fresh_events() {
-        // A carried audit's `ledger_audit.crossings` are its PRIOR run's facts —
-        // they attached to an episode in that run. Re-processing them (the
-        // whole-audit carry rides `input.audits`) against an episode newly
-        // opened this run would fabricate a falsifier confirmation dated today
-        // (the new episode's empty event list defeats the per-episode dedup).
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let verdicts = vec![fresh(verdict("AAPL", Action::Add, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        let audit = HoldingAudit {
-            what_changed_audit: None,
-            research: None,
-            symbol: "AAPL".into(),
-            metrics: Default::default(),
-            sources: vec![],
-            model_ids: vec![],
-            prompt_version: "portfolio-v7".into(),
-            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
-            degraded_inputs: vec![],
-            action_annotations: vec![],
-            target_meta: None,
-            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
-            ledger_audit: Some(crate::portfolio::LedgerAudit {
-                crossings: vec![crate::portfolio::ConditionCrossing {
-                    condition_id: "c-1".into(),
-                    statement: "margin below 15%".into(),
-                    role: crate::portfolio::ConditionRole::Falsifier,
-                    outcome: crate::portfolio::CrossingOutcome::Confirmed,
-                    observed_value: 0.12,
-                    threshold: 0.15,
-                    observation_id: "2026-06-30".into(),
-                    // The engine stamped this on the confirming pass with the run's
-                    // ET session date (`run_date`).
-                    confirmed_at: Some("2026-08-04".into()),
-                }],
-                ..Default::default()
-            }),
-            quick_basis: None,
-            authoring_close: None,
-            fund_exposure: None,
-            pre_profit: None,
-            hurdle: None,
-            forensic: None,
-            soft_forensic: None,
-            tech_event_pre_flag: None,
-            short_interest: None,
-            implied_expectations: None,
-            narrative: None,
-            option_overlay: None,
-        };
-        let audits = vec![audit];
-        let mut input = plan_input("run-1", c1, &verdicts, None, &sector);
-        input.audits = &audits;
-        plan_episodes(&input, &mut episodes);
-        assert_eq!(episodes[0].falsifier_events.len(), 1, "the fresh run attaches");
-
-        // Run 2: the verdict's action changed (a new episode opens) and the
-        // audit rides the carry — the month-old crossing must not re-attach.
-        let c2 = "2026-09-08T12:00:00+00:00";
-        let mut carried_verdict = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        carried_verdict.analyzed_at = Some(c1.to_string());
-        let current = vec![carried_verdict];
-        let carried: HashSet<String> = ["AAPL".to_string()].into();
-        let mut input2 = plan_input("run-2", c2, &current, Some(&verdicts), &sector);
-        input2.audits = &audits;
-        input2.carried_symbols = &carried;
-        plan_episodes(&input2, &mut episodes);
-        let total_events: usize = episodes.iter().map(|e| e.falsifier_events.len()).sum();
-        assert_eq!(
-            total_events, 1,
-            "no fresh event from a carried audit: {episodes:#?}"
-        );
-    }
-
-    #[test]
     fn an_action_change_across_an_abstention_opens_instead_of_extending() {
         // Run 1 recommends Hold. Run 2 abstains, retaining the standing ledger, so
         // the episode extends. Run 3 comes back fresh with Trim — the
@@ -3660,8 +2881,11 @@ mod tests {
 
         let c2 = "2026-08-11T12:00:00+00:00";
         let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
+        // The abstention carries the prior's thesis document, as the pipeline
+        // persists it: the holding stays tracked across the abstention.
         abstained.disposition = VerdictDisposition::InsufficientEvidence {
             reason: "inconclusive re-read".into(),
+            prior_thesis_document: Some("the standing thesis".into()),
         };
         let abstained = vec![fresh(abstained, c2)];
         let s2 = plan_episodes(
@@ -3702,8 +2926,11 @@ mod tests {
 
         let c2 = "2026-08-11T12:00:00+00:00";
         let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
+        // The abstention carries the prior's thesis document, as the pipeline
+        // persists it: the holding stays tracked across the abstention.
         abstained.disposition = VerdictDisposition::InsufficientEvidence {
             reason: "inconclusive re-read".into(),
+            prior_thesis_document: Some("the standing thesis".into()),
         };
         let abstained = vec![fresh(abstained, c2)];
         plan_episodes(
@@ -3730,8 +2957,8 @@ mod tests {
         let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
         abstained.disposition = VerdictDisposition::InsufficientEvidence {
             reason: "debut abstention".into(),
+            prior_thesis_document: None,
         };
-        abstained.thesis_ledger = None;
         let current = verdict("AAPL", Action::Hold, (0.03, 0.06));
         // No standing episode either — a debut abstention was never seeded.
         let decision = episode_decision(Some(&abstained), &current, true, None, false);
@@ -3903,7 +3130,7 @@ mod tests {
                         risk: 65.0,
                     },
                     grade: Grade::B,
-                    conviction: Conviction::Medium,
+                    conviction: Some(Conviction::Medium),
                     risk_tier: RiskTier::Medium,
                     price_targets: PriceTargets {
                         three_month: Some(crate::portfolio::PriceTarget {
@@ -3931,29 +3158,6 @@ mod tests {
                     // The two-arm freeze: a model band wider than the engine's and
                     // opposite-direction outlooks, so the head-to-head reads have
                     // something to distinguish.
-                    model_price_targets: crate::portfolio::ModelPriceTargets {
-                        one_month: crate::portfolio::ModelPriceTarget {
-                            base: 108.0,
-                            bear: 90.0,
-                            bull: 125.0,
-                        },
-                        twelve_month: crate::portfolio::ModelPriceTarget {
-                            base: 140.0,
-                            bear: 70.0,
-                            bull: 200.0,
-                        },
-                    },
-                    model_sub_scores: SubScores {
-                        quality: 80.0,
-                        valuation: 40.0,
-                        momentum: 60.0,
-                        risk: 70.0,
-                    },
-                    model_outlook: crate::portfolio::HorizonOutlook {
-                        short: crate::portfolio::HorizonRead::Bullish,
-                        mid: crate::portfolio::HorizonRead::Bullish,
-                        long: crate::portfolio::HorizonRead::Bullish,
-                    },
                 },
             })),
             observations: vec![],
@@ -5050,112 +4254,15 @@ mod tests {
             .unwrap();
         assert_eq!(cal.scored, 2);
         assert!(cal.mean_interval_score.is_some());
-        // The model arm scored over the SAME population with its own frozen bands
-        // — a fair head-to-head, and a different result (the fixture's model band
-        // differs from the engine's).
-        let model_cal = reads
-            .model_target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(model_cal.scored, 2, "same exclusion rules as the engine read");
-        assert!(model_cal.mean_interval_score.is_some());
-        assert_ne!(
-            model_cal.mean_interval_score, cal.mean_interval_score,
-            "distinct bands must score distinctly"
-        );
-        // The paired head-to-head runs over the intersection — here both fixture
-        // episodes carry both bands, so the pair scores 2 with distinct means.
-        let paired = reads
-            .head_to_head
-            .iter()
-            .find(|h| h.window_months == 12)
-            .unwrap();
-        assert_eq!(paired.scored, 2, "paired population = episodes with BOTH bands");
-        assert_ne!(
-            paired.engine_mean_interval_score, paired.model_mean_interval_score,
-            "the pair scores both arms on the same events"
-        );
-        // Direction reads: the model's 1/12 months alone — the engine authors
-        // no outlook.
-        assert_eq!(reads.outlook_direction.len(), 2);
-        let read = |arm: &str, months: u32| {
-            reads
-                .outlook_direction
-                .iter()
-                .find(|r| r.arm == arm && r.window_months == months)
-                .unwrap()
-        };
-        assert_eq!(read("model", 12).scored, 2);
-        assert!(reads.outlook_direction.iter().all(|r| r.arm == "model"));
+        // The model arm authors no bands and no outlook since the thesis
+        // document replaced the structured read: its calibration, the paired
+        // head-to-head and the direction reads are empty until outcome
+        // learning scores the appendix's expected prices.
+        assert!(reads.model_target_calibration.is_empty());
+        assert!(reads.head_to_head.is_empty());
+        assert!(reads.outlook_direction.is_empty());
         assert!(!reads.eligibility.eligible, "2 of 30: below the bar");
         assert!(reads.eligibility.note.contains("below the proposal eligibility bar"));
-    }
-
-    #[test]
-    fn matured_learning_text_renders_the_paired_head_to_head_only() {
-        // The comparison line comes from the PAIRED read alone (same episodes,
-        // both arms) and renders only where the pair scored — never from the two
-        // arms' independently-pooled per-arm reads (Codex round 1, finding 3).
-        let records = OutcomeRecords {
-            opened: vec![],
-            extended: vec![],
-            alignment_tags: vec![],
-            matured: vec![MaturedNote {
-                symbol: "AAPL".into(),
-                episode_id: "ep-1".into(),
-                window_months: 12,
-                outcome: "scored".into(),
-                total_return: Some(0.10),
-                price_return: Some(0.08),
-            }],
-            pending_coverage: vec![],
-            reads: DerivedReads {
-                cohorts: vec![],
-                target_calibration: vec![],
-                model_target_calibration: vec![],
-                head_to_head: vec![
-                    // An unscored 1-mo pair renders no line.
-                    HeadToHeadRead {
-                        window_months: 1,
-                        scored: 0,
-                        engine_mean_interval_score: None,
-                        model_mean_interval_score: None,
-                        engine_coverage_rate: None,
-                        model_coverage_rate: None,
-                    },
-                    HeadToHeadRead {
-                        window_months: 12,
-                        scored: 4,
-                        engine_mean_interval_score: Some(0.50),
-                        model_mean_interval_score: Some(0.30),
-                        engine_coverage_rate: Some(0.75),
-                        model_coverage_rate: Some(1.0),
-                    },
-                ],
-                outlook_direction: vec![],
-                falsifier_lead_times: vec![],
-                self_correction: SelfCorrectionRead {
-                    total: 0,
-                    per_holding: vec![],
-                },
-                eligibility: EligibilityRecord {
-                    unique_matured_holdings: 1,
-                    bar: PROPOSAL_ELIGIBILITY_BAR,
-                    eligible: false,
-                    note: "below the proposal eligibility bar".into(),
-                },
-            },
-        };
-        let text = matured_learning_text(&records, "2026-08-05").expect("matured → text");
-        assert!(
-            text.contains(
-                "model-vs-engine 12-month interval score (paired, 4 bands): model 0.3000 \
-                 vs engine 0.5000 — lower is better"
-            ),
-            "{text}"
-        );
-        assert!(!text.contains("1-month interval score"), "{text}");
     }
 
     fn scored_label(price_return: f64, total_return: Option<f64>) -> ScoredLabel {
@@ -5258,119 +4365,6 @@ mod tests {
     }
 
     #[test]
-    fn an_off_domain_model_band_is_read_as_no_band() {
-        // The scorer's fail-closed read beneath the decode gate (Codex I6): a
-        // model band any leg of which is non-finite or non-positive is no band
-        // — excluded from the model read and the paired head-to-head — while
-        // the engine band on the same episode still scores.
-        let anchor = "2026-08-04T12:00:00+00:00";
-        let mut nan = old_episode("NANB", anchor);
-        if let EpisodeBody::Priced(p) = &mut nan.body {
-            p.snapshot.model_price_targets.twelve_month.bear = f64::NAN;
-        }
-        set_scored(&mut nan, 12, scored_label(0.10, None));
-        let mut zero = old_episode("ZERO", anchor);
-        if let EpisodeBody::Priced(p) = &mut zero.body {
-            p.snapshot.model_price_targets.twelve_month.bull = 0.0;
-        }
-        set_scored(&mut zero, 12, scored_label(0.10, None));
-        let mut clean = old_episode("OK", anchor);
-        set_scored(&mut clean, 12, scored_label(0.10, None));
-        let reads = derive_reads(&[nan, zero, clean]);
-        let engine = reads
-            .target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(engine.scored, 3, "the engine band scores every episode");
-        let model = reads
-            .model_target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(model.scored, 1, "only the in-domain model band scores");
-        assert!(model.mean_interval_score.unwrap().is_finite());
-        let paired = reads
-            .head_to_head
-            .iter()
-            .find(|h| h.window_months == 12)
-            .unwrap();
-        assert_eq!(paired.scored, 1, "an off-domain model band never pairs");
-        assert!(paired.model_mean_interval_score.unwrap().is_finite());
-    }
-
-    #[test]
-    fn an_in_domain_band_whose_derived_read_overflows_is_read_as_no_band() {
-        // The derived read, not the inputs alone (Codex I6, round 1): an
-        // in-domain `1e308` band over a $1 spot passes the decode gate and the
-        // leg guard, but its Winkler penalty overflows — so it reads as no band,
-        // excluded from the model read and the pairing, while the engine band on
-        // the same episode still scores.
-        let anchor = "2026-08-04T12:00:00+00:00";
-        let mut wide = old_episode("WIDE", anchor);
-        if let EpisodeBody::Priced(p) = &mut wide.body {
-            p.snapshot.authoring_spot = Some(1.0);
-            p.snapshot.model_price_targets.twelve_month =
-                crate::portfolio::ModelPriceTarget { base: 1e308, bear: 1e308, bull: 1e308 };
-        }
-        set_scored(&mut wide, 12, scored_label(0.10, None));
-        let mut clean = old_episode("OK", anchor);
-        set_scored(&mut clean, 12, scored_label(0.10, None));
-        let reads = derive_reads(&[wide, clean]);
-        let engine = reads
-            .target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(engine.scored, 2, "the engine band scores both episodes");
-        let model = reads
-            .model_target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(model.scored, 1, "the overflowing band is no band");
-        assert!(model.mean_interval_score.is_some_and(f64::is_finite));
-        let paired = reads
-            .head_to_head
-            .iter()
-            .find(|h| h.window_months == 12)
-            .unwrap();
-        assert_eq!(paired.scored, 1, "the overflowing band never pairs");
-
-        // Finite scores can still sum past f64::MAX: two near-max bands each
-        // read on their own, and their mean reads as absent rather than
-        // infinite — never a `Some(inf)` that serde would persist as `null`.
-        let mut near_max = Vec::new();
-        for sym in ["MAX1", "MAX2"] {
-            let mut ep = old_episode(sym, anchor);
-            if let EpisodeBody::Priced(p) = &mut ep.body {
-                p.snapshot.authoring_spot = Some(1.0);
-                p.snapshot.model_price_targets.twelve_month =
-                    crate::portfolio::ModelPriceTarget { base: 1.0, bear: 1.0, bull: 1.7e308 };
-            }
-            set_scored(&mut ep, 12, scored_label(0.10, None));
-            near_max.push(ep);
-        }
-        let reads = derive_reads(&near_max);
-        let model = reads
-            .model_target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(model.scored, 2, "each near-max band reads on its own");
-        assert_eq!(model.coverage_rate, Some(1.0));
-        assert_eq!(model.mean_interval_score, None, "an overflowing mean reads as absent");
-        let paired = reads
-            .head_to_head
-            .iter()
-            .find(|h| h.window_months == 12)
-            .unwrap();
-        assert_eq!(paired.scored, 2);
-        assert_eq!(paired.model_mean_interval_score, None);
-        assert!(paired.engine_mean_interval_score.is_some_and(f64::is_finite));
-    }
-
-    #[test]
     fn a_cohort_mean_whose_sum_overflows_reads_as_absent() {
         // The finite-mean discipline reaches the cohort returns too (Codex I6,
         // round 2): two holdings each with a finite near-max return still count
@@ -5454,28 +4448,5 @@ mod tests {
             .collect();
         assert!(versions.contains(&Some("targets-v2")));
         assert!(versions.contains(&Some("targets-v3")));
-    }
-    #[test]
-    fn model_mid_scores_at_one_year_and_long_is_not_compressed() {
-        let mut ep = old_episode("TEST", "2025-06-02T12:00:00Z");
-        let EpisodeBody::Priced(ref mut p) = ep.body else {
-            panic!("priced fixture")
-        };
-        p.snapshot.model_outlook.mid = crate::portfolio::HorizonRead::Bullish;
-        p.snapshot.model_outlook.long = crate::portfolio::HorizonRead::Bearish;
-        set_scored(&mut ep, 6, scored_label(-0.1, Some(-0.1)));
-        set_scored(&mut ep, 12, scored_label(0.1, Some(0.1)));
-        let reads = derive_reads(&[ep]);
-        assert!(!reads
-            .outlook_direction
-            .iter()
-            .any(|r| r.arm == "model" && r.window_months == 6));
-        let mid = reads
-            .outlook_direction
-            .iter()
-            .find(|r| r.arm == "model" && r.window_months == 12)
-            .unwrap();
-        assert_eq!((mid.scored, mid.hits), (1, 1));
-
     }
 }

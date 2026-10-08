@@ -1,10 +1,10 @@
 # Distillation — single pass, stock, continuity run with the overlay and the backfill obligation
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v65`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over a prior analysis of 2026-09-01, overlay-eligible.
-The single-pass reduce on a continuity run: the standing conditions and key drivers render for citation, the prior topic objects merge at their topic, a prior topic not searched in this analysis rides as dormant, and the contrary-evidence pass follows the topics.
-The overlay-eligible stock with the backfill obligation asks for every typed field: the forward assumption, the leading indicator, the forensic event, the pre-profit observation rows and the backfill record.
+The single-pass reduce on a continuity run: the prior topic objects merge at their topic, a prior topic not searched in this analysis rides as dormant, and the contrary-evidence pass follows the topics.
+The overlay-eligible stock with the backfill obligation asks for every typed field: the forward assumption, the forensic event, the pre-profit observation rows and the backfill record.
 Distillation is explicitly non-thinking, grammar-constrained, and issued on the fast tier where the roster has one.
 On the default roster, where the fast tier is the reasoner, the call issues on the reasoner at `num_ctx` 131072 and the rendered prompt is measured against that budget instead.
 A reply that stops exactly at the 12288-token reservation is re-issued once on the reasoner with `num_predict` 32768, its stage label suffixed `(expanded)`.
@@ -21,18 +21,18 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 12253 chars — the messages and tools as serialized |
+| Prompt material | 10778 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
 You are an investment analyst consolidating the research on one holding for a portfolio review. You
-will return combined_findings, topics, forward_assumption, leading_indicator, forensic_event,
-pre_profit_observations and backfill, as one JSON object. Part 1 of the message gives the inputs.
-Part 2 defines those outputs and gives the shape to return.
+will return combined_findings, topics, forward_assumption, forensic_event, pre_profit_observations
+and backfill, as one JSON object. Part 1 of the message gives the inputs. Part 2 defines those
+outputs and gives the shape to return.
 ~~~~
 
-## User message (11554 chars)
+## User message (10140 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -41,24 +41,12 @@ TSLA (name unavailable).
 Price: $358.97 per share.
 Date: 2026-09-16.
 
-STANDING CONDITIONS
-Conditions the thesis on this holding is being watched against, each with its id.
-- c-margin — Falsifier: Automotive gross margin ex-credits falls below 14% for two consecutive
-quarters.
-- c-price — Trigger: Price closes below $250.
-
-KEY DRIVERS
-What the thesis on this holding rests on, each with its id.
-- d-robotaxi — Robotaxi commercial rollout
-- d-energy — Energy storage growth
-
 TOPICS
 The research on this holding, one topic at a time, each headed by its key and its title: what its
 searches established, then its claims. Each claim carries: its id; the address of the page that
-states it; the publication date the search or lead reported; and the period the fact applies to. A
-claim marked "bears on" names the condition under STANDING CONDITIONS it is evidence on. Prior
-findings are from an earlier analysis of the topic, dated. A topic not searched in this analysis
-carries its prior findings only.
+states it; the publication date the search or lead reported; and the period the fact applies to.
+Prior findings are from an earlier analysis of the topic, dated. A topic not searched in this
+analysis carries its prior findings only.
 
 TOPIC competitive-position — Competitive / business position
 Search 1:
@@ -80,7 +68,7 @@ Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of this topic]
 - C4: [stub: prior claim 1, tied to a standing condition]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
-period: 2026-Q2 — bears on c-margin
+period: 2026-Q2
 - C5: [stub: prior claim 2]
 [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] — published: 2026-08-26;
 fact period: 2026-07
@@ -140,10 +128,9 @@ searches and prior findings establish, as of the date under HOLDING. claims is e
 statement the topic rests on, one statement per claim. The statements come from the searches and the
 prior findings, whichever topic they came under, reconciled by the rules under CLAIM RULES.
 evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact
-two searched topics state is one claim, under the topic it belongs to. related_condition_id is the
-id of the condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is
-holding, or is at risk — else null. A topic not searched in this analysis keeps its prior findings,
-changed only where a claim under another topic supersedes one, with nothing added.
+two searched topics state is one claim, under the topic it belongs to. A topic not searched in this
+analysis keeps its prior findings, changed only where a claim under another topic supersedes one,
+with nothing added.
 
 3. forward_assumption — the latest forward figure for the issuer's earnings per share or revenue
 that a page under SOURCE TEXT naming the issuer states as issued guidance, a signed contract, or a
@@ -153,19 +140,12 @@ and stated_high as its ends as printed with numeric_value between them, else bot
 page prints them (per share, or the currency and its magnitude); as_of the date the page states the
 figure, YYYY-MM-DD; source_url that page's address.
 
-4. leading_indicator — a countable, dated measure that a page under SOURCE TEXT from a source other
-than the issuer states, whose latest change confirms a driver under KEY DRIVERS, or null where no
-page states one. metric_name as the page names the measure; value as the page prints it; direction
-of its latest change <inflecting-up|inflecting-down>; as_of the day or month the measure is for,
-YYYY-MM-DD or YYYY-MM; source_url that page's address; confirms_driver_id the id of the driver under
-KEY DRIVERS it confirms.
-
-5. forensic_event — a fraud matter concerning the issuer that a document under SOURCE TEXT from a
+4. forensic_event — a fraud matter concerning the issuer that a document under SOURCE TEXT from a
 regulator or court (the SEC, the Department of Justice, the FTC, the CFTC, FINRA, a US court, the
 OCC, or the FDIC) records, or null where no such document is under SOURCE TEXT. kind "fraud"; issuer
 as the document names it; event_date; source_url the document's address.
 
-6. pre_profit_observations — each operating observation of the issuer that a page under SOURCE TEXT
+5. pre_profit_observations — each operating observation of the issuer that a page under SOURCE TEXT
 states: production, deliveries, bookings, backlog, reservations, or a unit-economics measure,
 whether a reported actual, the low or high end of a guidance range, a point guidance, or a
 contextual level. One row per observation: metric_kind and observation_role from the alternatives in
@@ -180,8 +160,8 @@ two ends joined by "to", "-", or "and"; published_at, the date the page was publ
 guidance row's issue date; confidence, 0 to 1, that the excerpt states that metric, value and
 period. An observation a claim states and no page under SOURCE TEXT states is not a row.
 
-7. backfill — the issuer's principal guided operating metric over its latest four reported periods
-at the span the guidance uses: metric_kind, units, and issuer_scope as in item 6; period_span the
+6. backfill — the issuer's principal guided operating metric over its latest four reported periods
+at the span the guidance uses: metric_kind, units, and issuer_scope as in item 5; period_span the
 span the guidance uses; checked_periods the periods found, each as its end date, YYYY-MM-DD; sources
 the addresses of the pages under SOURCE TEXT that state them; coverage
 <complete|partial|unscorable>, complete where all four periods are found, partial where fewer,
@@ -202,11 +182,10 @@ summaries, and every topic's claims.
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply; a field is null
 where its input is absent)
 {"combined_findings":"","topics":[{"topic_key":"<competitive-position|results-revisions|catalysts-risks>",
-"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4|C5|C6|C7|C8|C9>","related_condition_id":"<c-margin|c-price|null>"}]}],
-"forward_assumption":{"fact_type":"<guidance|contract|filing>","affects":"<eps|revenue>","numeric_value":0,
-"stated_low":"<0|null>","stated_high":"<0|null>","units":"","as_of":"","source_url":""},"leading_indicator":{"metric_name":"",
-"value":0,"direction":"<inflecting-up|inflecting-down>","as_of":"","source_url":"","confirms_driver_id":"<d-robotaxi|d-energy>"},
-"forensic_event":{"kind":"<fraud>","issuer":"","event_date":"","source_url":""},"pre_profit_observations":[{"metric_kind":"<production|deliveries|bookings|backlog|reservations|unit-economics>",
+"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4|C5|C6|C7|C8|C9>"}]}],"forward_assumption":{"fact_type":"<guidance|contract|filing>",
+"affects":"<eps|revenue>","numeric_value":0,"stated_low":"<0|null>","stated_high":"<0|null>","units":"",
+"as_of":"","source_url":""},"forensic_event":{"kind":"<fraud>","issuer":"","event_date":"","source_url":""},
+"pre_profit_observations":[{"metric_kind":"<production|deliveries|bookings|backlog|reservations|unit-economics>",
 "observation_role":"<actual|guidance-low|guidance-high|point-guidance|contextual-level>","polarity":"<higher-is-better|lower-is-better|target-band>",
 "numeric_value":0,"units":"","period":"","period_span":"<quarter|half-year|full-year|year-to-date|point-in-time|unknown>",
 "issuer_scope":"","source_url":"","source_excerpt":"","published_at":"","confidence":0}],"backfill":{"metric_kind":"<production|deliveries|bookings|backlog|reservations|unit-economics>",
@@ -373,48 +352,6 @@ where its input is absent)
         "null"
       ]
     },
-    "leading_indicator": {
-      "properties": {
-        "as_of": {
-          "type": "string"
-        },
-        "confirms_driver_id": {
-          "enum": [
-            "d-robotaxi",
-            "d-energy"
-          ],
-          "type": "string"
-        },
-        "direction": {
-          "enum": [
-            "inflecting-up",
-            "inflecting-down"
-          ],
-          "type": "string"
-        },
-        "metric_name": {
-          "type": "string"
-        },
-        "source_url": {
-          "type": "string"
-        },
-        "value": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "metric_name",
-        "value",
-        "direction",
-        "as_of",
-        "source_url",
-        "confirms_driver_id"
-      ],
-      "type": [
-        "object",
-        "null"
-      ]
-    },
     "pre_profit_observations": {
       "items": {
         "properties": {
@@ -523,17 +460,6 @@ where its input is absent)
                     "C9"
                   ],
                   "type": "string"
-                },
-                "related_condition_id": {
-                  "enum": [
-                    "c-margin",
-                    "c-price",
-                    null
-                  ],
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 }
               },
               "required": [
@@ -570,7 +496,6 @@ where its input is absent)
     "combined_findings",
     "topics",
     "forward_assumption",
-    "leading_indicator",
     "forensic_event",
     "pre_profit_observations",
     "backfill"

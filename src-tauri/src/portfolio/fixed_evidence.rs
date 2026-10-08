@@ -3,29 +3,23 @@
 //! 2026-09-15; `docs/verification/2026-09-16-ledger-conditions-and-action-packet.md`).
 //!
 //! Each fixture under `fixtures/attempt-6/` is **reconstructed, not replayed**:
-//! reduced from a holding's persisted row (the authored ledger conditions, the
-//! verdict digest, the engine output assembled from the audit, the distilled
-//! research text) with the position's economics replaced by synthetic values
-//! (ruled 2026-09-16, F8). The offline tests replay the persisted drafts through
-//! the 6g seam and render the action packet; the `#[ignore]`d live harness issues
-//! the interpretation and action calls against the local daemon on the same
-//! evidence and prints the per-holding table the §8.2 admission read is made
-//! from.
+//! reduced from a holding's persisted row (the verdict digest — its model arm
+//! re-shaped by hand into a thesis document and a typed appendix — the engine
+//! output assembled from the audit, the distilled research text) with the
+//! position's economics replaced by synthetic values (ruled 2026-09-16, F8).
+//! The offline tests render the thesis-document, appendix and action messages;
+//! the `#[ignore]`d live harness issues the thesis conversation and the action
+//! call against the local daemon on the same evidence and prints the
+//! per-holding table the §8.2 admission read is made from.
 
 use super::engine::{self, CompanyFinancials, EngineOutput};
 use super::pipeline::{
-    self, action_user_prompt, interpretation_user_prompt, role_risk_user_prompt, tax_caveat,
-    validate_ledger_rewrite_with_research, ActionInput, ActionSubject, HoldingAnalyst,
-    InterpretationInput, RoleRiskInput,
+    self, action_user_prompt, role_risk_user_prompt, tax_caveat, thesis_user_prompt, ActionInput,
+    ActionSubject, HoldingAnalyst, RoleRiskInput, ThesisInput,
 };
-use super::{
-    Action, AssetClass, ContinuityStamps, FalsifierDraft, LedgerDraft, MonitorScenario,
-    QuantCoreDraft, LedgerBranch, ScenarioKind, StatementBasis, ThesisLedger, TriggerDraft,
-    VerdictDisposition,
-};
+use super::{Action, AssetClass, PricedModelArm, StatementBasis, VerdictDisposition};
 use crate::portfolio::dossier::HouseView;
 use serde::Deserialize;
-use std::collections::HashSet;
 
 mod prompt_examples;
 
@@ -44,16 +38,15 @@ struct Fixture {
     equity_source: Option<crate::portfolio::EquitySource>,
     spot: f64,
     /// The dated close the run authored against — seeded as the one daily
-    /// close of the reconstructed financials, so the market-data series
-    /// resolve an observation in the live harness.
+    /// close of the reconstructed financials.
     authoring_close: engine::DatedValue,
     synthetic_position: SyntheticPosition,
-    conditions: Vec<FixtureCondition>,
-    /// The ledger's prose as the run persisted it — the current thesis, the
-    /// three monitor rows and the two must-lines — so the action packet's
-    /// THESIS and SCENARIOS sections render on the harness (`portfolio-v41`,
-    /// ruled 2026-09-17; extracted from the same rows on 2026-09-17).
-    ledger_prose: LedgerProse,
+    /// The persisted verdict, its model arm re-shaped by hand: the thesis
+    /// document composed from attempt 6's persisted prose (the thesis, the
+    /// must-lines, the scenarios, the summary and the target rationale), the
+    /// appendix from the persisted conviction with the twelve-month base as
+    /// its one expected price (the three-month and three-year null — attempt
+    /// 6 authored no such prices).
     disposition: VerdictDisposition,
     engine_output: EngineOutput,
     research_combined: String,
@@ -64,32 +57,6 @@ struct SyntheticPosition {
     quantity: f64,
     cost_basis: f64,
     market_value: f64,
-}
-
-#[derive(Deserialize)]
-struct LedgerProse {
-    current_thesis: String,
-    monitor: Vec<ProseScenario>,
-    what_must_improve: String,
-    what_must_not_break: String,
-}
-
-#[derive(Deserialize)]
-struct ProseScenario {
-    scenario: ScenarioKind,
-    conditions: String,
-    probability_pct: f64,
-}
-
-#[derive(Deserialize)]
-struct FixtureCondition {
-    role: String,
-    family: Option<String>,
-    statement: String,
-    technology_class: bool,
-    quant: Option<QuantCoreDraft>,
-    /// `kept`, `qualitative`, or `downgraded:<class>`.
-    expect: String,
 }
 
 const FIXTURES: [(&str, &str); 6] = [
@@ -114,66 +81,26 @@ fn fixtures() -> Vec<Fixture> {
         .collect()
 }
 
-/// The persisted conditions as the draft the model returned — the shape 6g
-/// validated on the run, so the replay reads the same input.
-fn draft_of(f: &Fixture) -> LedgerDraft {
-    let mut draft = pipeline::stub_ledger_draft(None, &f.symbol, false);
-    draft.falsifiers = f
-        .conditions
-        .iter()
-        .filter(|c| c.role == "falsifier")
-        .map(|c| FalsifierDraft {
-            statement: c.statement.clone(),
-            quant: c.quant.clone(),
-            technology_class: c.technology_class,
-            tripped: false,
-        })
-        .collect();
-    draft.triggers = f
-        .conditions
-        .iter()
-        .filter(|c| c.role == "trigger")
-        .map(|c| TriggerDraft {
-            statement: c.statement.clone(),
-            family: c.family.clone().unwrap_or_else(|| "trim".into()),
-            quant: c.quant.clone(),
-            fired: false,
-        })
-        .collect();
-    draft
+/// The shared rate anchors every harness input states under FETCHED VALUES.
+fn rates() -> &'static engine::RateAnchors {
+    pipeline::tests::rates_static()
 }
 
-/// The holding's ledger as the action packet reads it: the persisted prose
-/// with no conditions or drivers (the packet renders neither), the original
-/// thesis standing in for the current one, the scenario targets absent — the
-/// fields the packet does not read.
-fn ledger_of(f: &Fixture) -> ThesisLedger {
-    ThesisLedger {
-        branch: LedgerBranch::Priced,
-        original_thesis: f.ledger_prose.current_thesis.clone(),
-        current_thesis: f.ledger_prose.current_thesis.clone(),
-        key_drivers: vec![],
-        monitor: f
-            .ledger_prose
-            .monitor
-            .iter()
-            .map(|s| MonitorScenario {
-                scenario: s.scenario,
-                conditions: s.conditions.clone(),
-                probability_pct: s.probability_pct,
-                engine_target: None,
-            })
-            .collect(),
-        what_must_improve: f.ledger_prose.what_must_improve.clone(),
-        what_must_not_break: f.ledger_prose.what_must_not_break.clone(),
-        conditions: vec![],
-    }
-}
-
-fn stamps_of(f: &Fixture) -> ContinuityStamps {
-    ContinuityStamps {
-        statement_basis: f.statement_basis,
-        equity_source: f.equity_source,
+/// The thesis-document input over a fixture on a first analysis: the engine
+/// output and the distilled research as the run persisted them, no overlay,
+/// no soft flags (the reconstructed financials carry no balance rows or
+/// scores), no prior.
+fn thesis_input<'a>(f: &'a Fixture, d: &'a super::dossier::HoldingDossier) -> ThesisInput<'a> {
+    ThesisInput {
+        dossier: d,
+        engine: &f.engine_output,
+        rates: rates(),
+        analysis: &f.research_combined,
+        pre_profit: None,
+        soft_forensic: None,
+        tech_pre_flag: None,
+        narrative: None,
+        prior_split: None,
     }
 }
 
@@ -215,21 +142,6 @@ fn dossier_of(f: &Fixture, tax_sensitive: bool) -> super::dossier::HoldingDossie
     // The attempt-6 run date, the fixtures' provenance (`portfolio-v43`).
     d.analysis_date = "2026-09-16".into();
     d
-}
-
-fn expected_class(expect: &str) -> Option<&str> {
-    expect.strip_prefix("downgraded:")
-}
-
-/// The persisted condition whose model-authored text — the label on a
-/// quantitative condition, the statement on a qualitative one — starts with
-/// `prefix`.
-fn named<'a>(ledger: &'a ThesisLedger, prefix: &str) -> &'a super::LedgerCondition {
-    ledger
-        .conditions
-        .iter()
-        .find(|c| c.label.as_deref().unwrap_or(c.statement.as_str()).starts_with(prefix))
-        .unwrap_or_else(|| panic!("no condition named '{prefix}'"))
 }
 
 // ---- The synthetic role/risk fixture (`portfolio-v42`, ruled 2026-09-17) ----
@@ -361,41 +273,27 @@ fn synthetic_role_risk_fixture() -> SyntheticRoleRisk {
 /// The synthetic case's debut input.
 fn synthetic_role_risk_input(fx: &SyntheticRoleRisk) -> RoleRiskInput<'_> {
     RoleRiskInput {
-        input_delta: &[],
         dossier: &fx.dossier,
-        prior_ledger: None,
         readout: &fx.readout,
-        ledger_eval: None,
-        distilled: fx.research,
+        rates: rates(),
+        analysis: fx.research,
+        prior_split: None,
     }
 }
 
-/// The synthetic case's verdict and validated ledger off the stub's
-/// interpretation — the pipeline's own assembly, so the action packet reads
-/// what a run would have persisted.
-fn synthetic_role_risk_verdict(fx: &SyntheticRoleRisk) -> (super::RoleRiskVerdict, ThesisLedger) {
-    let interp = pipeline::StubAnalyst
+/// The synthetic case's verdict off the stub's thesis document — the
+/// pipeline's own assembly, so the action packet reads what a run would have
+/// persisted.
+fn synthetic_role_risk_verdict(fx: &SyntheticRoleRisk) -> super::RoleRiskVerdict {
+    let document = pipeline::StubAnalyst
         .interpret_role_risk(&synthetic_role_risk_input(fx))
-        .expect("the stub interprets");
-    let (ledger, _) = validate_ledger_rewrite_with_research(
-        &interp.ledger,
-        None,
-        None,
-        LedgerBranch::RoleRiskOnly,
-        true,
-        None,
-        fx.dossier.financials.current_price,
-        Some(&pipeline::fund_ledger_metrics(&fx.readout, &fx.dossier.financials)),
-        &HashSet::new(),
-        true,
-        ContinuityStamps::NONE,
-    );
-    (pipeline::role_risk_verdict_from_interpretation(&fx.readout, interp), ledger)
+        .expect("the stub writes the document");
+    pipeline::role_risk_verdict_from_model_arm(&fx.readout, document)
 }
 
 /// A stub that captures the role/risk message the pipeline renders — the
-/// continuity variant only `analyze_holding` can build, since the delta, the
-/// prior ledger's evaluation and the crossings are the pipeline's.
+/// continuity variant only `analyze_holding` can build, since PRIOR THESIS is
+/// the pipeline's read of the prior verdict.
 #[derive(Default)]
 struct RoleRiskCapture {
     system: std::cell::RefCell<Option<String>>,
@@ -403,12 +301,11 @@ struct RoleRiskCapture {
 }
 
 impl HoldingAnalyst for RoleRiskCapture {
-    fn interpret(&self, input: &InterpretationInput) -> anyhow::Result<super::Interpretation> {
+    fn interpret(&self, input: &ThesisInput) -> anyhow::Result<PricedModelArm> {
         pipeline::StubAnalyst.interpret(input)
     }
-    fn interpret_role_risk(&self, input: &RoleRiskInput) -> anyhow::Result<super::RoleRiskInterpretation> {
-        let debut = input.dossier.prior_verdict.is_none();
-        *self.system.borrow_mut() = Some(pipeline::role_risk_system_prompt(debut));
+    fn interpret_role_risk(&self, input: &RoleRiskInput) -> anyhow::Result<String> {
+        *self.system.borrow_mut() = Some(pipeline::role_risk_system_prompt());
         *self.user.borrow_mut() = Some(role_risk_user_prompt(input));
         pipeline::StubAnalyst.interpret_role_risk(input)
     }
@@ -457,17 +354,7 @@ fn reconstructed_interpretation_uses_the_persisted_options_evidence() {
     for f in fixtures() {
         let VerdictDisposition::Priced(graded) = &f.disposition else { panic!("priced fixture") };
         let d = dossier_of(&f, true);
-        let prompt = pipeline::interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: None,
-            engine: &f.engine_output,
-            distilled: &f.research_combined,
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
+        let prompt = thesis_user_prompt(&thesis_input(&f, &d));
         let options = &graded.options_signal;
         // The OPTIONS ACTIVITY section (`portfolio-v40`): the persisted values
         // with their unit and polarity, no grade-input disclaimer.
@@ -486,66 +373,17 @@ fn reconstructed_interpretation_uses_the_persisted_options_evidence() {
 }
 
 #[test]
-fn attempt_6_conditions_resolve_to_their_expected_6g_outcome() {
-    for f in fixtures() {
-        let draft = draft_of(&f);
-        let (ledger, audit) = validate_ledger_rewrite_with_research(
-            &draft,
-            None,
-            None,
-            LedgerBranch::Priced,
-            f.is_fund,
-            None,
-            Some(f.spot),
-            Some(&f.engine_output.metrics),
-            &HashSet::new(),
-            true,
-            stamps_of(&f),
-        );
-        assert_eq!(ledger.conditions.len(), f.conditions.len(), "{}: never dropped", f.symbol);
-        for expected in &f.conditions {
-            let cond = ledger
-                .conditions
-                .iter()
-                .find(|c| c.label.as_deref().unwrap_or(c.statement.as_str()) == expected.statement.trim())
-                .unwrap_or_else(|| panic!("{}: '{}' persisted", f.symbol, expected.statement));
-            match expected.expect.as_str() {
-                "kept" => {
-                    assert!(cond.quant.is_some(), "{}: '{}' kept quantitative: {:?}", f.symbol, cond.statement, cond.downgraded_reason);
-                    assert!(cond.downgraded_reason.is_none());
-                    assert!(cond.eval_state.is_some());
-                }
-                "qualitative" => {
-                    assert!(cond.quant.is_none() && cond.downgraded_reason.is_none(), "{}: '{}'", f.symbol, cond.statement);
-                }
-                other => {
-                    let class = expected_class(other).expect("downgraded:<class>");
-                    let reason = cond.downgraded_reason.as_deref().unwrap_or_else(|| {
-                        panic!("{}: '{}' should downgrade as {class}", f.symbol, cond.statement)
-                    });
-                    assert!(reason.starts_with(&format!("{class}:")), "{}: '{}' → {reason}", f.symbol, cond.statement);
-                    assert!(cond.quant.is_none() && cond.eval_state.is_none());
-                    assert!(audit.downgraded.iter().any(|d| d.contains(class)), "{:?}", audit.downgraded);
-                }
-            }
-        }
-    }
-}
-
-#[test]
 fn attempt_6_action_packets_carry_no_account_economics_and_are_tax_invariant() {
     for f in fixtures() {
         let VerdictDisposition::Priced(graded) = &f.disposition else {
             panic!("{}: every attempt-6 holding priced", f.symbol)
         };
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        let ledger = ledger_of(&f);
         let render = |d: &super::dossier::HoldingDossier| {
             action_user_prompt(&ActionInput {
                 dossier: d,
-                subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None, ledger: &ledger },
+                subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
                 engine_set: &engine_set,
-                changes: None,
                 profile: &d.profile,
             })
         };
@@ -647,19 +485,7 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
         d
     };
     for f in fixtures() {
-        let render = |d: &super::dossier::HoldingDossier| {
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
-                dossier: d,
-                prior_ledger: None,
-                engine: &f.engine_output,
-                distilled: &f.research_combined,
-                ledger_eval: None,
-                pre_profit: None,
-                tech_pre_flag: None,
-                narrative: None,
-            })
-        };
+        let render = |d: &super::dossier::HoldingDossier| thesis_user_prompt(&thesis_input(&f, d));
         let taxable = render(&dossier_of(&f, true));
         assert_eq!(taxable, render(&dossier_of(&f, false)), "{}: tax posture", f.symbol);
         assert_eq!(taxable, render(&repriced(&f)), "{}: account economics", f.symbol);
@@ -671,7 +497,11 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
             taxable.starts_with(&format!("======== PART 1: INPUTS ========\nHOLDING\n{} (", f.symbol)),
             "{taxable}"
         );
-        assert!(taxable.contains("This is the first analysis of this holding.\n"), "{taxable}");
+        // No position line of any kind: the position's change reaches the
+        // model at the action call alone (`docs/portfolio-analysis.md`
+        // §Holdings change tracking).
+        assert!(!taxable.contains("This is the first analysis of this holding."), "{taxable}");
+        assert!(!taxable.contains("position is unchanged"), "{taxable}");
         // Fix list 8.5 (portfolio-v39): a fixture carrying a computed debt / equity
         // stamps the equity source its live dossier would have, so the packet's
         // balance-sheet line never contradicts its own computed metrics.
@@ -679,7 +509,7 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
             // A fund has no statement series: its line names the market
             // metrics' cadence and the expense ratio's source instead.
             _ if f.is_fund => assert!(
-                taxable.contains("\nFINANCIAL METRICS\nThe market metrics are daily; the expense ratio is the fund's published figure.\n"),
+                taxable.contains("\nMETRICS\nThe market metrics are daily; the expense ratio is the fund's published figure.\n"),
                 "{}: {taxable}",
                 f.symbol
             ),
@@ -703,12 +533,11 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
     let readout = super::fund::RoleRiskReadout::default();
     let render = |d: &super::dossier::HoldingDossier| {
         role_risk_user_prompt(&RoleRiskInput {
-            input_delta: &[],
             dossier: d,
-            prior_ledger: None,
             readout: &readout,
-            ledger_eval: None,
-            distilled: "No research findings.",
+            rates: rates(),
+            analysis: "No research findings.",
+            prior_split: None,
         })
     };
     let base = render(&fund);
@@ -757,200 +586,11 @@ fn the_fixed_set_is_labelled_reconstructed_and_carries_no_account_economics() {
     }
 }
 
-// ---- Synthetic fixtures (ruled 2026-09-16, C2): attempt 6 produced no role/risk
-// holding and no second-run ledger, so the two paths this slice touches get
-// synthetic offline cases, labelled as such; their live halves wait for real
-// evidence.
-
-/// Synthetic, not reconstructed: the role/risk branch's ledger under the same
-/// 6g checks — a fund-computable core is kept, a stock-only series is
-/// downgraded as uncomputable, and the authoring contract offers a fund no
-/// stock-only series.
-#[test]
-fn synthetic_role_risk_fixture_scopes_the_contract_and_the_6g_checks_to_the_fund_surface() {
-    let mut draft = pipeline::stub_ledger_draft(None, "BND", true);
-    draft.falsifiers.push(FalsifierDraft {
-        statement: "Net margin falls below 5%".into(),
-        quant: Some(QuantCoreDraft {
-            series: "net-margin".into(),
-            comparator: "below".into(),
-            threshold: 0.05,
-            margin: 0.002,
-        }),
-        technology_class: false,
-        tripped: false,
-    });
-    // A cost ceiling the fund's 0.03% expense ratio already breaches — refused
-    // at authoring on the fund surface, as production's `fund_metrics` would.
-    draft.falsifiers.push(FalsifierDraft {
-        statement: "Cost ceiling".into(),
-        quant: Some(QuantCoreDraft {
-            series: "expense-ratio".into(),
-            comparator: "above".into(),
-            threshold: 0.0001,
-            margin: 0.00001,
-        }),
-        technology_class: false,
-        tripped: false,
-    });
-    let metrics = engine::ComputedMetrics { expense_ratio: Some(0.0003), ..Default::default() };
-    let (ledger, audit) = validate_ledger_rewrite_with_research(
-        &draft,
-        None,
-        None,
-        LedgerBranch::RoleRiskOnly,
-        true,
-        None,
-        Some(72.0),
-        Some(&metrics),
-        &HashSet::new(),
-        true,
-        ContinuityStamps::NONE,
-    );
-    let expense = ledger
-        .conditions
-        .iter()
-        .find(|c| c.label.as_deref() == Some("Cost drift"))
-        .expect("the fund-flavored falsifier persists");
-    assert!(expense.quant.is_some(), "{:?}", expense.downgraded_reason);
-    let ceiling = named(&ledger, "Cost ceiling");
-    assert!(
-        ceiling.downgraded_reason.as_deref().is_some_and(|r| r.starts_with("holds-at-authoring:")),
-        "{:?}",
-        ceiling.downgraded_reason
-    );
-    let stock_series = ledger
-        .conditions
-        .iter()
-        .find(|c| c.label.as_deref().is_some_and(|l| l.starts_with("Net margin")))
-        .expect("downgraded, never dropped");
-    assert!(stock_series.quant.is_none());
-    assert!(
-        stock_series
-            .downgraded_reason
-            .as_deref()
-            .is_some_and(|r| r.starts_with("series-uncomputable:")),
-        "{:?}",
-        stock_series.downgraded_reason
-    );
-    assert_eq!(audit.downgraded.len(), 2, "{:?}", audit.downgraded);
-    let contract = pipeline::LedgerSeriesContract::build(true, None, None);
-    assert!(contract.rows.iter().all(|r| r.series.computable_for(true)));
-    assert!(!contract.rows.iter().any(|r| r.series == engine::LedgerSeries::NetMargin));
-}
-
-/// Synthetic, not reconstructed: a second-run carry over DIA's kept conditions.
-/// A verbatim re-emission keeps its id and state; an edited threshold supersedes
-/// into a fresh id with the link; an edited core that already holds at the spot
-/// is refused (`holds-at-authoring`) and its ancestor closes whole rather than
-/// lending its streak.
-#[test]
-fn synthetic_prior_ledger_continuity_fixture_carries_supersedes_and_downgrades() {
-    let dia = fixtures().into_iter().find(|f| f.symbol == "DIA").unwrap();
-    let first = validate_ledger_rewrite_with_research(
-        &draft_of(&dia),
-        None,
-        None,
-        LedgerBranch::Priced,
-        true,
-        None,
-        Some(dia.spot),
-        Some(&dia.engine_output.metrics),
-        &HashSet::new(),
-        true,
-        stamps_of(&dia),
-    )
-    .0;
-    let kept_ids: Vec<(String, String)> = first
-        .conditions
-        .iter()
-        .filter(|c| c.quant.is_some())
-        .map(|c| (c.label.clone().unwrap_or_else(|| c.statement.clone()), c.condition_id.clone()))
-        .collect();
-    assert_eq!(kept_ids.len(), 2, "DIA's two price cores");
-
-    // Second run: the $575 falsifier re-emitted verbatim, the $648 trigger's
-    // threshold edited, and the falsifier's sentence flipped against its core.
-    let mut second = draft_of(&dia);
-    for t in &mut second.triggers {
-        if t.statement.starts_with("Price reaches +24%") {
-            t.statement = "Price reaches +30% from current levels".into();
-            t.quant.as_mut().unwrap().threshold = 680.0;
-        }
-    }
-    let (ledger, audit) = validate_ledger_rewrite_with_research(
-        &second,
-        Some(&first),
-        None,
-        LedgerBranch::Priced,
-        true,
-        None,
-        Some(dia.spot),
-        Some(&dia.engine_output.metrics),
-        &HashSet::new(),
-        true,
-        stamps_of(&dia),
-    );
-    let carried = named(&ledger, "Price sustains above $575");
-    let (_, prior_id) = kept_ids
-        .iter()
-        .find(|(s, _)| s.starts_with("Price sustains above $575"))
-        .unwrap();
-    assert_eq!(&carried.condition_id, prior_id, "a verbatim core carries its id");
-    assert!(carried.quant.is_some());
-    let superseding = named(&ledger, "Price reaches +30%");
-    let (_, old_id) = kept_ids
-        .iter()
-        .find(|(s, _)| s.starts_with("Price reaches +24%"))
-        .unwrap();
-    assert_ne!(&superseding.condition_id, old_id, "an edited core supersedes into a fresh id");
-    assert_eq!(superseding.supersedes.as_deref(), Some(old_id.as_str()));
-    assert_eq!(audit.superseded.len(), 1);
-
-    // Third run: the falsifier's threshold moves below the spot, so the edited
-    // core already holds at authoring — it is refused, its statement still
-    // rendered from the draft, and the ancestor closes whole (the
-    // rendered-ledger slice, ruled 2026-09-18).
-    let mut third = draft_of(&dia);
-    for f in &mut third.falsifiers {
-        if f.statement.starts_with("Price sustains above $575") {
-            f.quant.as_mut().unwrap().threshold = 500.0;
-        }
-    }
-    let (ledger, audit) = validate_ledger_rewrite_with_research(
-        &third,
-        Some(&first),
-        None,
-        LedgerBranch::Priced,
-        true,
-        None,
-        Some(dia.spot),
-        Some(&dia.engine_output.metrics),
-        &HashSet::new(),
-        true,
-        stamps_of(&dia),
-    );
-    let refused = named(&ledger, "Price sustains above $575");
-    assert!(refused.quant.is_none() && refused.eval_state.is_none());
-    assert!(
-        refused.downgraded_reason.as_deref().is_some_and(|r| r.starts_with("holds-at-authoring:")),
-        "{:?}",
-        refused.downgraded_reason
-    );
-    assert!(refused.statement.contains("above $500.00"), "{}", refused.statement);
-    assert!(
-        audit.closed.iter().any(|c| c.condition.condition_id == *prior_id),
-        "the ancestor closes whole: {:?}",
-        audit.closed.iter().map(|c| &c.condition.condition_id).collect::<Vec<_>>()
-    );
-}
-
-/// The §8.2 admission harness: the interpretation and action calls issued live
-/// against the local daemon on the reconstructed packets, `N` repeats each, the
-/// returned ledgers run through 6g, and a per-holding table printed for the
-/// human read — accepted cores beside their sentences (does the core mean what
-/// the sentence says?), downgrades by class (was a sound condition downgraded?),
-/// the rung per repeat, and the rung under the tax and cost variants.
+/// The §8.2 admission harness: the thesis-document conversation and the action
+/// call issued live against the local daemon on the reconstructed packets, `N`
+/// repeats each, and a per-holding table printed for the human read — the
+/// document's opening and its appendix beside the computed bands, the rung
+/// per repeat, and the rung under the tax and cost variants.
 ///
 /// Requires the local Ollama daemon up with the configured roster present. Run:
 ///   `MARKET_SIGNAL_LOCAL_EVAL_REPEATS=3 cargo test fixed_evidence_live -- --ignored --nocapture`
@@ -1009,6 +649,7 @@ fn fixed_evidence_live() {
     if let Some(dir) = &thought_dir {
         println!("  thinking captured under {dir} (newest folder; one fenced holding-<SYM>.txt per holding)");
     }
+    let price = |v: Option<f64>| v.map(|p| format!("{p:.2}")).unwrap_or_else(|| "none".into());
     for f in fixtures() {
         if let Some(only) = &only {
             if !only.contains(&f.symbol) {
@@ -1024,102 +665,61 @@ fn fixed_evidence_live() {
         ctx.step_started(step_key.clone(), format!("Analyze {}", f.symbol));
         println!("\n---- {} ({}; basis {:?}; spot {}) ----", f.symbol, if f.is_fund { "fund" } else { "stock" }, f.statement_basis, f.spot);
         println!(
-            "  fidelity: engine numbers, options readings, distilled research and house view exact; the ledger contract's \
-             market-data observations from the authoring close ({}), its filing-series observations \
-             unavailable (statement rows not persisted); fund context, option overlay and pre-profit \
-             overlay absent",
-            f.authoring_close.date
+            "  fidelity: engine numbers, options readings, distilled research and house view exact; \
+             the statement rows, the fund context, the option overlay, the pre-profit overlay and \
+             the soft forensic flags absent (not persisted)"
         );
 
-        // Interpretation → 6g, N repeats. The first completed interpretation
-        // also feeds a fresh-verdict action call below (the §3 slice's Codex
-        // plan review): the action reads the summary this interpretation wrote,
-        // not the fixture's persisted one.
-        let mut fresh: Option<(super::Interpretation, ThesisLedger)> = None;
+        // The thesis conversation, N repeats. The first completed one also
+        // feeds a fresh-verdict action call below (the §3 slice's Codex plan
+        // review): the action reads the document this conversation wrote, not
+        // the fixture's persisted one.
+        let mut fresh: Option<PricedModelArm> = None;
+        let engine_base = f.engine_output.price_targets.twelve_month.as_ref().map(|t| format!("{:.2}", t.base)).unwrap_or_else(|| "(gap)".into());
         for r in 1..=repeats {
-            let input = InterpretationInput {
-                input_delta: &[],
-                dossier: &d,
-                prior_ledger: None,
-                engine: &f.engine_output,
-                distilled: &f.research_combined,
-                ledger_eval: None,
-                pre_profit: None,
-                tech_pre_flag: None,
-                narrative: None,
-            };
             let started = std::time::Instant::now();
-            let interp = match analyst.interpret(&input) {
-                Ok(i) => i,
+            let arm = match analyst.interpret(&thesis_input(&f, &d)) {
+                Ok(a) => a,
                 Err(e) => {
-                    println!("  interpretation #{r}: FAILED — {e:#}");
+                    println!("  thesis #{r}: FAILED — {e:#}");
                     continue;
                 }
             };
-            // The §3 read: the prose fields beside the figures they should
-            // explain, with two printed diagnostics — never gates — for the
-            // human read: whether the target rationale names one of the
-            // model's own figures (3.1) and whether any prose carries an
-            // account-economics phrase (3.2).
-            {
-                let mt = &interp.model_price_targets;
-                let engine_base = f.engine_output.price_targets.twelve_month.as_ref().map(|t| format!("{:.2}", t.base)).unwrap_or_else(|| "(gap)".into());
-                let own: Vec<f64> = vec![mt.twelve_month.base, mt.twelve_month.bear, mt.twelve_month.bull, mt.one_month.base, mt.one_month.bear, mt.one_month.bull];
-                let names_own = own.iter().any(|v| {
-                    let whole = format!("{v:.0}");
-                    interp.model_target_rationale.contains(&whole) || interp.model_target_rationale.contains(&format!("{v:.1}")) || interp.model_target_rationale.contains(&format!("{v:.2}"))
-                });
-                println!(
-                    "    model 12-mo base {:.2} (bear {:.2} / bull {:.2}) vs engine base {engine_base}; rationale names an own figure: {}",
-                    mt.twelve_month.base, mt.twelve_month.bear, mt.twelve_month.bull, if names_own { "yes" } else { "NO" }
-                );
-                for (label, text) in [
-                    ("target rationale", interp.model_target_rationale.as_str()),
-                    ("financial summary", interp.financial_summary.as_str()),
-                    ("self-assessment", interp.self_assessment.as_str()),
-                    ("what changed", interp.what_changed.as_str()),
-                ] {
-                    println!("    {label}: {}", text.replace('\n', " "));
-                    prose_diagnostics(label, text);
-                }
-                println!("    what_changed_entries: {} (debut: app-written)", interp.what_changed_entries.len());
-            }
-            let (ledger, audit) = validate_ledger_rewrite_with_research(
-                &interp.ledger, None, None, LedgerBranch::Priced, f.is_fund, None, Some(f.spot),
-                None,
-                &HashSet::new(), true, stamps_of(&f),
+            let a = &arm.appendix;
+            println!(
+                "  thesis #{r}: {:.0}s — {} words; appendix conviction {}, expected 3m {} / 12m {} / 3y {} vs engine 12-mo base {engine_base}",
+                started.elapsed().as_secs_f64(),
+                arm.thesis_document.split_whitespace().count(),
+                a.conviction.map(|c| c.as_str()).unwrap_or("none"),
+                price(a.expected_price_3m),
+                price(a.expected_price_12m),
+                price(a.expected_price_3y),
             );
+            // The document's opening and closing paragraphs, with the prose
+            // diagnostics — never a gate.
+            let paragraphs: Vec<&str> = arm.thesis_document.split("\n\n").collect();
+            if let Some(first) = paragraphs.first() {
+                println!("    opens: {}", first.replace('\n', " "));
+            }
+            if paragraphs.len() > 1 {
+                println!("    closes: {}", paragraphs[paragraphs.len() - 1].replace('\n', " "));
+            }
+            prose_diagnostics("thesis document", &arm.thesis_document);
             if fresh.is_none() {
-                fresh = Some((interp.clone(), ledger.clone()));
+                fresh = Some(arm);
             }
-            // The prose the action packet forwards (Codex 2026-09-17, finding 3):
-            // the validated ledger's thesis and scenario rows, printed so the
-            // fresh-interpretation action rationale can be read against them.
-            println!("    thesis: {}", ledger.current_thesis.replace('\n', " "));
-            prose_diagnostics("thesis", &ledger.current_thesis);
-            for s in &ledger.monitor {
-                println!(
-                    "    scenario {} ({:.0}%): {}",
-                    s.scenario.as_str(), s.probability_pct, s.conditions.replace('\n', " ")
-                );
-                prose_diagnostics("scenario conditions", &s.conditions);
-            }
-            print_validated_ledger(&format!("interpretation #{r}"), started, &ledger, &audit);
         }
 
         // Action, N repeats, then the tax and cost variants on the fixed verdict,
-        // then one call on the verdict assembled from the fresh interpretation
-        // (the pipeline's own assembly), so clean interpretation prose is seen
-        // reaching the rung.
+        // then one call on the verdict assembled from the fresh document (the
+        // pipeline's own assembly), so clean prose is seen reaching the rung.
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        let ledger = ledger_of(&f);
-        let decide = |d: &super::dossier::HoldingDossier, subject: &super::GradedVerdict, ledger: &ThesisLedger, label: &str| {
+        let decide = |d: &super::dossier::HoldingDossier, subject: &super::GradedVerdict, label: &str| {
             let started = std::time::Instant::now();
             match analyst.decide_action(&ActionInput {
                 dossier: d,
-                subject: ActionSubject::Priced { graded: subject, engine: &f.engine_output, pre_profit: None, ledger },
+                subject: ActionSubject::Priced { graded: subject, engine: &f.engine_output, pre_profit: None },
                 engine_set: &engine_set,
-                changes: None,
                 profile: &d.profile,
             }) {
                 Ok(decision) => {
@@ -1142,21 +742,21 @@ fn fixed_evidence_live() {
             }
         };
         for r in 1..=repeats {
-            decide(&d, graded, &ledger, &format!("#{r}"));
+            decide(&d, graded, &format!("#{r}"));
         }
-        decide(&dossier_of(&f, false), graded, &ledger, "tax-exempt variant");
+        decide(&dossier_of(&f, false), graded, "tax-exempt variant");
         let mut costly = dossier_of(&f, true);
         costly.position.cost_basis *= 3.0;
-        decide(&costly, graded, &ledger, "cost-basis ×3 variant");
-        if let Some((interp, fresh_ledger)) = fresh {
-            let assembled = pipeline::graded_verdict_from_interpretation(
+        decide(&costly, graded, "cost-basis ×3 variant");
+        if let Some(arm) = fresh {
+            let assembled = pipeline::graded_verdict_from_model_arm(
                 &f.engine_output,
                 d.options_signal.clone(),
-                interp,
+                arm,
                 graded.engine_rung,
                 graded.authored_band_relation,
             );
-            decide(&d, &assembled, &fresh_ledger, "fresh-interpretation verdict");
+            decide(&d, &assembled, "fresh-document verdict");
         }
         ctx.step_finished(step_key, "ok", None);
     }
@@ -1164,10 +764,9 @@ fn fixed_evidence_live() {
     // The synthetic role/risk case (`portfolio-v42`, ruled 2026-09-17): one bond
     // fund with hand-written research, labelled synthetic — the branch's only
     // live exercise until a run supplies a real role/risk holding. Each repeat
-    // is one interpretation validated on the role/risk branch and one action
-    // call on that repeat's assembled verdict and validated ledger (ruling 11;
-    // Codex 2026-09-17), so the action's variability is measured beside the
-    // interpretation's.
+    // is one thesis document and one action call on that repeat's assembled
+    // verdict (ruling 11; Codex 2026-09-17), so the action's variability is
+    // measured beside the document's.
     if only.as_ref().is_none_or(|o| o.iter().any(|s| s == "BND")) {
         let fx = synthetic_role_risk_fixture();
         let step_key = crate::portfolio::holding_step_key("BND");
@@ -1184,45 +783,36 @@ fn fixed_evidence_live() {
         );
         for r in 1..=repeats {
             let started = std::time::Instant::now();
-            let interp = match analyst.interpret_role_risk(&synthetic_role_risk_input(&fx)) {
-                Ok(i) => i,
+            let document = match analyst.interpret_role_risk(&synthetic_role_risk_input(&fx)) {
+                Ok(doc) => doc,
                 Err(e) => {
-                    println!("  role/risk interpretation #{r}: FAILED — {e:#}");
+                    println!("  role/risk thesis #{r}: FAILED — {e:#}");
                     continue;
                 }
             };
-            println!("    role read: {}", interp.role_summary.replace('\n', " "));
-            prose_diagnostics("role read", &interp.role_summary);
-            let (ledger, audit) = validate_ledger_rewrite_with_research(
-                &interp.ledger, None, None, LedgerBranch::RoleRiskOnly, true, None,
-                fx.dossier.financials.current_price,
-                None, &HashSet::new(), true, ContinuityStamps::NONE,
+            println!(
+                "  role/risk thesis #{r}: {:.0}s — {} words",
+                started.elapsed().as_secs_f64(),
+                document.split_whitespace().count()
             );
-            println!("    thesis: {}", ledger.current_thesis.replace('\n', " "));
-            prose_diagnostics("thesis", &ledger.current_thesis);
-            for s in &ledger.monitor {
-                println!(
-                    "    scenario {} ({:.0}%): {}",
-                    s.scenario.as_str(), s.probability_pct, s.conditions.replace('\n', " ")
-                );
-                prose_diagnostics("scenario conditions", &s.conditions);
+            if let Some(first) = document.split("\n\n").next() {
+                println!("    opens: {}", first.replace('\n', " "));
             }
-            print_validated_ledger(&format!("role/risk interpretation #{r}"), started, &ledger, &audit);
+            prose_diagnostics("thesis document", &document);
 
             // The action call on this repeat's verdict — the pipeline's own
-            // assembly over the interpretation just validated.
-            let rr = pipeline::role_risk_verdict_from_interpretation(&fx.readout, interp);
+            // assembly over the document just written.
+            let rr = pipeline::role_risk_verdict_from_model_arm(&fx.readout, document);
             let started = std::time::Instant::now();
             match analyst.decide_action(&ActionInput {
                 dossier: &fx.dossier,
-                subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
+                subject: ActionSubject::RoleRisk { verdict: &rr },
                 engine_set: &super::ROLE_RISK_ACTIONS,
-                changes: None,
                 profile: &fx.dossier.profile,
             }) {
                 Ok(decision) => {
                     println!(
-                        "  action #{r} (role/risk, on interpretation #{r}): {} ({:.0}s; set [{}]) — {}",
+                        "  action #{r} (role/risk, on thesis #{r}): {} ({:.0}s; set [{}]) — {}",
                         decision.action.as_kebab(),
                         started.elapsed().as_secs_f64(),
                         super::ROLE_RISK_ACTIONS.iter().map(Action::as_kebab).collect::<Vec<_>>().join(", "),
@@ -1238,41 +828,6 @@ fn fixed_evidence_live() {
             }
         }
         ctx.step_finished(step_key, "ok", None);
-    }
-}
-
-/// The per-condition read of a validated ledger — the kept cores with the
-/// margin beside its share of the level (fix list 3.14's anchoring watch), the
-/// downgrades with their reasons, the authored qualitative conditions. A
-/// diagnostic, never a gate.
-fn print_validated_ledger(
-    label: &str,
-    started: std::time::Instant,
-    ledger: &ThesisLedger,
-    audit: &super::LedgerAudit,
-) {
-    let kept = ledger.conditions.iter().filter(|c| c.quant.is_some()).count();
-    let qualitative = ledger.conditions.iter().filter(|c| c.quant.is_none() && c.downgraded_reason.is_none()).count();
-    println!(
-        "  {label}: {:.0}s — {} conditions: {kept} quantitative kept, {qualitative} authored qualitative, {} downgraded",
-        started.elapsed().as_secs_f64(), ledger.conditions.len(), audit.downgraded.len()
-    );
-    for c in &ledger.conditions {
-        match (&c.quant, &c.downgraded_reason) {
-            (Some(q), _) => println!(
-                "    KEPT   [{:?}{}] {} {} {} (margin {}, {}) <= \"{}\"",
-                c.role, c.trigger_family.map(|f| format!(" {f:?}")).unwrap_or_default(),
-                q.series.as_kebab(), q.comparator.as_kebab(), q.threshold, q.margin,
-                if q.threshold != 0.0 {
-                    format!("{:.0}% of level", q.margin / q.threshold.abs() * 100.0)
-                } else {
-                    "no ratio: zero level".to_string()
-                },
-                c.statement
-            ),
-            (None, Some(reason)) => println!("    DOWN   \"{}\" — {reason}", c.statement),
-            (None, None) => println!("    QUAL   \"{}\"", c.statement),
-        }
     }
 }
 
@@ -1296,6 +851,22 @@ pub(crate) const GAP_ROUTING_WORDS: [&str; 6] =
     ["on-plan", "honestly", "degrade", "unsound", "this pipeline", "current data surface"];
 
 /// Assert that a rendered packet carries none of [`GAP_ROUTING_WORDS`].
+/// Every Part 1 heading a thesis-document message's Part 2 names renders in
+/// Part 1 — no item points at absent content.
+fn assert_part2_headings_render(label: &str, part1: &str, part2: &str) {
+    for heading in [
+        "FETCHED VALUES", "COMPUTED", "MARKET ANALYSIS", "ANALYSIS", "PRIOR THESIS", "CLASS",
+        "EXPOSURE TILT", "RISK PROFILE", "EVIDENCE GAPS", "SOFT FORENSIC FLAGS",
+    ] {
+        if part2.contains(heading) {
+            assert!(
+                part1.contains(&format!("\n{heading}\n")) || part1.contains(&format!("\n{heading} (")),
+                "{label}: Part 2 names {heading}, which Part 1 does not render\n{part1}"
+            );
+        }
+    }
+}
+
 fn assert_no_routing_words(label: &str, text: &str) {
     let lower = text.to_lowercase();
     for w in GAP_ROUTING_WORDS {
@@ -1320,63 +891,78 @@ pub(crate) fn banned_hits(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every priced interpretation message on the fixed set is two marked parts in
-/// order, Part 1 carrying the input sections and no instruction, Part 2 the
-/// numbered task and the return shape — and neither part, nor the system
-/// prompt, carries a banned word.
+/// Every thesis-document message on the fixed set is two marked parts in
+/// order, Part 1 carrying the input sections in the doc's order and no
+/// instruction, Part 2 the document's items in order and the length band
+/// (no JSON shape — the document is free prose) — and neither part, nor the
+/// system prompt, nor the appendix message, carries a banned word.
 #[test]
-fn attempt_6_interpretation_messages_are_two_parts_with_no_app_concept() {
+fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
     for f in fixtures() {
         let d = dossier_of(&f, true);
-        let input = InterpretationInput {
-            input_delta: &[], dossier: &d, prior_ledger: None, engine: &f.engine_output,
-            distilled: &f.research_combined, ledger_eval: None, pre_profit: None,
-            tech_pre_flag: None, narrative: None,
-        };
-        let user = interpretation_user_prompt(&input);
-        let system = pipeline::interpretation_system_prompt(f.is_fund, true);
+        let input = thesis_input(&f, &d);
+        let user = thesis_user_prompt(&input);
+        let system = pipeline::thesis_system_prompt(f.is_fund);
         let (part1, part2) = user
             .split_once("======== PART 2: TASK ========")
             .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{user}", f.symbol));
         assert!(part1.starts_with("======== PART 1: INPUTS ========"), "{}: {part1}", f.symbol);
-        for section in ["HOLDING\n", "FINANCIAL METRICS\n", "COMPUTED SCORES\n", "COMPUTED PRICE TARGETS (USD)\n", "OPTIONS ACTIVITY\n", "RESEARCH SUMMARY\n", "MARKET ANALYSIS\n", "PRIOR THESIS LEDGER\n"] {
-            assert!(part1.contains(&format!("\n{section}")), "{}: Part 1 lacks {section}\n{part1}", f.symbol);
+        // The sections in page order: the header, the fetched data, the computed
+        // reads under one heading, the market analysis, this run's analysis.
+        let mut last = 0;
+        for section in [
+            "HOLDING\n", "FETCHED VALUES\n", "COMPUTED\n", "METRICS\n", "SCORES\n",
+            "PRICE BANDS (USD)\n", "CAPITAL EFFICIENCY\n", "OPTIONS ACTIVITY\n", "MARKET ANALYSIS\n",
+            "ANALYSIS\n",
+        ] {
+            let i = part1
+                .find(&format!("\n{section}"))
+                .unwrap_or_else(|| panic!("{}: Part 1 lacks {section}\n{part1}", f.symbol));
+            assert!(i > last, "{}: {section} out of order\n{part1}", f.symbol);
+            last = i;
         }
-        // Slice 2 removes only the current computed letter and one-month
-        // derivation, preserving all numerical inputs and score uncertainty.
-        let scores = part1.split("\nCOMPUTED SCORES\n").nth(1).unwrap()
-            .split("\nCOMPUTED PRICE TARGETS").next().unwrap();
-        assert!(!scores.to_lowercase().contains("grade"), "{}: {scores}", f.symbol);
+        // A debut carries no PRIOR THESIS and no continuity clause.
+        assert!(!part1.contains("PRIOR THESIS"), "{}: {part1}", f.symbol);
+        assert!(!part2.contains("PRIOR THESIS"), "{}: {part2}", f.symbol);
+        // The scores line carries the grade and the imputed disclosure as data.
+        let scores = part1.split("\nSCORES\n").nth(1).unwrap().split("\nPRICE BANDS").next().unwrap();
+        assert!(scores.contains(&format!("Grade {}.", f.engine_output.grade.as_str())), "{}: {scores}", f.symbol);
         assert_eq!(scores.contains("One score is imputed."), f.engine_output.low_confidence_grade);
-        assert!(!part1.contains("prorated to one month"), "{}", f.symbol);
-        assert_eq!(part2.matches("The computed bands are inputs").count(), 1);
-        assert!(part2.contains("your bands may agree with them or differ"));
-        assert!(part2.contains("name your figure and the computed figure and explain why"));
+        // The three bands with their method clauses, the three-year leg as the
+        // extrapolation it is, and the capital-efficiency read with its state.
+        assert!(part1.contains("- three-month: bear ") && part1.contains("prorated to three months"), "{}", f.symbol);
+        assert!(part1.contains("- three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
+        assert!(part1.contains("; hurdle ") && part1.contains("; read: "), "{}: {part1}", f.symbol);
+        // FETCHED VALUES states the quote, the fetched closes and the Treasury
+        // prints as data; the reconstructed financials carry no statement rows.
+        assert!(part1.contains(&format!("Quote: {:.2} per share (the live print, undated).\n", f.spot)), "{}: {part1}", f.symbol);
+        assert!(part1.contains("Treasury yields (FRED): 10-year "), "{}: {part1}", f.symbol);
         // The fund section renders where the fixture carries fund context; a
         // stock never has one.
         assert!(f.is_fund || !part1.contains("\nFUND\n"), "{}", f.symbol);
         // Part 1 instructs nothing: no "Return", no "you", no numbered task item.
         assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
         assert!(!part1.to_lowercase().contains("your "), "{}: Part 1 addresses the model\n{part1}", f.symbol);
-        for item in ["1. financial_summary", "2. model_sub_scores", "3. model_price_targets", "4. horizon_outlook", "5. ledger", "6. conviction", "7. self_assessment", "RETURN SHAPE"] {
-            assert!(part2.contains(item), "{}: Part 2 lacks {item}\n{part2}", f.symbol);
+        // Part 2: the document's items in order, each naming a Part 1 section,
+        // the length band, and no JSON shape.
+        let mut last = 0;
+        for item in [
+            "\n1. The thesis — ", "\n2. The key drivers — ", "\n3. The bear, base and bull scenarios — ",
+            "\n4. The falsifiers — ", "\n5. The expected share price at three months, twelve months and three years, ",
+            "\n6. A summary paragraph — ",
+        ] {
+            let i = part2.find(item).unwrap_or_else(|| panic!("{}: Part 2 lacks {item}\n{part2}", f.symbol));
+            assert!(i > last, "{}: {item} out of order", f.symbol);
+            last = i;
         }
-        assert!(part2.contains("2 on a price of 100"), "{}", f.symbol);
-        // The fund-scoped ledger item on the priced fund message too (ruled
-        // 2026-09-17, `portfolio-v42`): the fund threshold example and the
-        // driver clause on the three funds, the stock example and no driver
-        // clause on the three stocks.
-        assert_eq!(part2.contains("(\"above 0.75%\" on expense-ratio is 0.0075)"), f.is_fund, "{}", f.symbol);
-        assert_eq!(
-            part2.contains("for a fund, the exposure it supplies, its cost and its fidelity to its mandate"),
-            f.is_fund,
-            "{}",
-            f.symbol
-        );
-        assert_eq!(part2.contains("(\"below 16%\" on gross-margin is 0.16)"), !f.is_fund, "{}", f.symbol);
-        assert!(!user.contains("CAPITAL-EFFICIENCY") && !user.contains("hurdle"), "{}: the hurdle read leaked into the interpretation call\n{user}", f.symbol);
-        assert!(!user.contains("at most 25%") && !user.contains("at most 50%"), "{}: the margin caps are shown\n{user}", f.symbol);
-        assert!(!user.contains("Field alternatives") && !user.contains("Field notes"), "{}", f.symbol);
+        assert!(part2.contains("The document runs 900 to 1,800 words."), "{}: {part2}", f.symbol);
+        assert!(part2.contains("from FETCHED VALUES, COMPUTED, ANALYSIS and MARKET ANALYSIS"), "{}: {part2}", f.symbol);
+        assert!(part2.contains("the price bands under COMPUTED are evidence, not bounds"), "{}: {part2}", f.symbol);
+        assert!(!part2.contains("RETURN SHAPE") && !part2.contains("JSON object"), "{}: {part2}", f.symbol);
+        assert!(!part2.lines().any(|l| l.starts_with('{')), "{}: a shape line\n{part2}", f.symbol);
+        assert_part2_headings_render(&f.symbol, part1, part2);
+        // The investor profile is absent — the intrinsic verdict is of no investor.
+        assert!(!user.contains("INVESTOR PROFILE"), "{}", f.symbol);
         for token in ["P75", "DGS10", "[targets-", "√t", "PR_base"] {
             assert!(!user.contains(token), "{}: internal target token {token}\n{user}", f.symbol);
         }
@@ -1384,18 +970,25 @@ fn attempt_6_interpretation_messages_are_two_parts_with_no_app_concept() {
             let hits = banned_hits(text);
             assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", f.symbol);
         }
-        // The shape is JSON with exactly the declared keys.
-        let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
-        let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
-        let mut keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        let mut declared = crate::portfolio::interpretation_keys(true);
-        declared.sort_unstable();
-        assert_eq!(keys, declared, "{}", f.symbol);
-        // The system prompt names every declared key.
-        for k in &declared {
-            assert!(system.contains(k), "{}: system prompt does not name {k}\n{system}", f.symbol);
-        }
+        assert_no_routing_words(&f.symbol, &user);
+        // The request pair: the thesis request carries no grammar under
+        // thinking; the appendix request continues the conversation — the same
+        // system and user messages, the document as the assistant's turn, the
+        // transcription ask — under the nullable grammar with thinking off.
+        let thesis = pipeline::thesis_request("r", &input);
+        assert!(thesis.format_schema.is_none() && thesis.think == Some(true), "{}", f.symbol);
+        assert_eq!(thesis.messages.len(), 2);
+        let appendix = pipeline::appendix_request("r", &input, "[stub: the document]");
+        assert_eq!(appendix.think, Some(false));
+        assert_eq!(appendix.format_schema.as_ref(), Some(&crate::portfolio::appendix_schema()));
+        assert_eq!(appendix.messages.len(), 4);
+        assert_eq!(appendix.messages[0].content, thesis.messages[0].content);
+        assert_eq!(appendix.messages[1].content, thesis.messages[1].content);
+        assert_eq!((appendix.messages[2].role.as_str(), appendix.messages[2].content.as_str()), ("assistant", "[stub: the document]"));
+        let ask = &appendix.messages[3].content;
+        assert!(ask.contains("A field is null where the document states no value."), "{ask}");
+        assert!(ask.ends_with(&format!("RETURN SHAPE (every value is a placeholder)\n{}\n", crate::portfolio::appendix_return_shape())), "{ask}");
+        assert!(banned_hits(ask).is_empty(), "{ask}");
     }
 }
 
@@ -1413,40 +1006,46 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
         let VerdictDisposition::Priced(graded) = &f.disposition else { panic!("{}: priced", f.symbol) };
         let d = dossier_of(&f, true);
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        let ledger = ledger_of(&f);
-        let render = |graded: &super::GradedVerdict, ledger: &ThesisLedger| {
+        let render = |graded: &super::GradedVerdict| {
             action_user_prompt(&ActionInput {
                 dossier: &d,
-                subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None, ledger },
+                subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
                 engine_set: &engine_set,
-                changes: None,
                 profile: &d.profile,
             })
         };
-        let user = render(graded, &ledger);
+        let user = render(graded);
         let system = pipeline::action_system_prompt();
         let (part1, part2) = user
             .split_once("\n======== PART 2: TASK ========\n")
             .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{user}", f.symbol));
         assert!(part1.starts_with(&format!("======== PART 1: INPUTS ========\nHOLDING\n{} (", f.symbol)), "{}: {part1}", f.symbol);
         for section in [
-            "SCORES\n", "PRICE TARGETS (USD, with the move each implies from the current price)\n",
-            "TARGET RATIONALE (analyst)\n", "CAPITAL EFFICIENCY\n", "CONVICTION AND OUTLOOK (analyst)\n",
-            "FINANCIAL SUMMARY (analyst)\n", "THESIS (analyst)\n", "SCENARIOS (analyst)\n",
+            "SCORES (computed)\n", "PRICE TARGETS (computed; USD, with the move each implies from the current price)\n",
+            "CAPITAL EFFICIENCY\n", "VERDICT (analyst)\n",
             "SUPPORTED ACTIONS (computed)\n", "INVESTOR PROFILE\n",
         ] {
             assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "{}: Part 1 lacks {section}\n{part1}", f.symbol);
         }
         assert!(part1.contains(&format!("Grade {}", graded.grade.as_str())));
         assert!(part1.contains("prorated to three months"));
-        assert!(part1.contains("- computed three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
+        assert!(part1.contains("- three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
         assert!(part2.contains("Name the returns you weighed by their values; do not describe them by their relation to another figure."));
-        // The thesis and the three scenario rows, as persisted.
-        assert!(part1.contains(&format!("\nTHESIS (analyst)\n{}\n", f.ledger_prose.current_thesis)), "{}", f.symbol);
-        assert_eq!(f.ledger_prose.monitor.len(), 3, "{}", f.symbol);
-        for s in &f.ledger_prose.monitor {
-            assert!(part1.contains(&format!(" ({:.0}%): {}\n", s.probability_pct, s.conditions)), "{}: {part1}", f.symbol);
-        }
+        // VERDICT: the appendix's conviction and prices — the fixture's one
+        // expected price at twelve months, none at the other horizons — then
+        // the thesis document verbatim.
+        let a = &graded.appendix;
+        assert!(
+            part1.contains(&format!(
+                "\nVERDICT (analyst)\nConviction: {}. Expected share price (USD, with the move each implies from the current price): three-month none, twelve-month {:.2} ({:+.1}%), three-year none.\nThesis document:\n{}",
+                a.conviction.unwrap().as_str(),
+                a.expected_price_12m.unwrap(),
+                (a.expected_price_12m.unwrap() / f.spot - 1.0) * 100.0,
+                graded.thesis_document
+            )),
+            "{}: {part1}",
+            f.symbol
+        );
         // The hurdle as numbers: the three tested returns and the rate, no state word.
         let h = &f.engine_output.hurdle;
         assert!(part1.contains(&format!(
@@ -1462,19 +1061,16 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
             "ENGINE SET", "ENGINE ARM", "MODEL ARM", "THE VERDICT", "ACTION BASIS", "IMPLIED ",
             "TARGET PROVENANCE", "its own pick", "full ladder", "neither requires nor forbids",
             "indeterminate", "dead money", "PRIOR ACTION", "Move from PRIOR ACTION", "Keep the action firm",
+            "TARGET RATIONALE", "CONVICTION AND OUTLOOK", "FINANCIAL SUMMARY", "THESIS (analyst)",
+            "SCENARIOS (analyst)", "PRIOR ANALYSIS", "CHANGES SINCE",
         ] {
             assert!(!user.contains(absent), "{}: `{absent}`\n{user}", f.symbol);
         }
-        // The lexicon over the app's own sentences: the analyst prose blanked.
+        // The lexicon over the app's own sentences: the analyst prose — the
+        // thesis document — blanked.
         let mut blank = (**graded).clone();
-        blank.financial_summary.clear();
-        blank.model_target_rationale.clear();
-        let mut blank_ledger = ledger.clone();
-        blank_ledger.current_thesis.clear();
-        for s in &mut blank_ledger.monitor {
-            s.conditions.clear();
-        }
-        let blanked = render(&blank, &blank_ledger);
+        blank.thesis_document.clear();
+        let blanked = render(&blank);
         for (label, text) in [("system", system.as_str()), ("user", blanked.as_str())] {
             let hits = banned_hits(text);
             assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", f.symbol);
@@ -1496,17 +1092,18 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
     }
 }
 
-/// The role/risk message on the synthetic bond fund, debut and continuity, is
-/// two marked parts in order with no app concept (`portfolio-v42`): Part 1 the
-/// input sections in the draft's order and no instruction, Part 2 the numbered
-/// task and the shape; each value once; the banned lexicon absent (the stub's
-/// prose and the hand-written research carry none, so the whole message is
-/// scanned); the system prompt the role line and every declared key.
+/// The role/risk thesis-document message on the synthetic bond fund, debut and
+/// continuity, is two marked parts in order with no app concept: Part 1 the
+/// input sections in the doc's order and no instruction, Part 2 the document's
+/// items with no prices and no conviction and no JSON shape; each value once;
+/// the banned lexicon absent (the stub's prose and the hand-written research
+/// carry none, so the whole message is scanned); the system prompt the role
+/// line and the two-part frame.
 #[test]
 fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
     let fx = synthetic_role_risk_fixture();
     let debut_user = role_risk_user_prompt(&synthetic_role_risk_input(&fx));
-    let debut_system = pipeline::role_risk_system_prompt(true);
+    let debut_system = pipeline::role_risk_system_prompt();
     let (cont_system, cont_user) = synthetic_role_risk_continuity_messages();
     for (label, system, user, debut) in [
         ("debut", &debut_system, &debut_user, true),
@@ -1522,19 +1119,11 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
             "{label}: {part1}"
         );
         let mut sections = vec![
-            "CLASS\n", "EXPOSURE TILT\n", "UNDERLYING POSITIONING (CFTC weekly, as of 2026-09-09)\n",
-            "RISK PROFILE\n", "EVIDENCE GAPS\n", "FINANCIAL METRICS\n", "RESEARCH SUMMARY\n",
-            "MARKET ANALYSIS\n",
+            "FETCHED VALUES\n", "CLASS\n", "EXPOSURE TILT\n", "UNDERLYING POSITIONING (CFTC weekly, as of 2026-09-09)\n",
+            "RISK PROFILE\n", "EVIDENCE GAPS\n", "COMPUTED\n", "MARKET ANALYSIS\n", "ANALYSIS\n",
         ];
         if !debut {
-            sections.extend([
-                "PRIOR ANALYSIS (prior read 2026-09-03T14:00:00Z)\n",
-                "CHANGES SINCE THE PRIOR ANALYSIS (each with an id)\n",
-            ]);
-        }
-        sections.push("PRIOR THESIS LEDGER");
-        if !debut {
-            sections.push("CONDITION CROSSINGS THIS RUN\n");
+            sections.push("PRIOR THESIS (written 2026-09-03)\n");
         }
         let mut last = 0;
         for section in sections {
@@ -1551,32 +1140,35 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
         );
         assert!(part1.contains("\nEVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{label}: {part1}");
         assert!(part1.contains("\nRISK PROFILE\nAnnualized realized volatility: "), "{label}: {part1}");
-        assert!(part1.contains("\nRESEARCH SUMMARY\nThe Vanguard Total Bond Market ETF tracks") || !debut, "{label}: {part1}");
-        assert_eq!(part1.matches("0.0003 (0.03%/yr)").count(), 1, "{label}: the expense ratio renders once\n{part1}");
-        assert_eq!(part1.matches("[return-volatility]").count(), 1, "{label}: the daily volatility renders once\n{part1}");
+        assert!(part1.contains("\nANALYSIS\nThe Vanguard Total Bond Market ETF tracks") || !debut, "{label}: {part1}");
+        // The fund's reported lines under FETCHED VALUES, as the provider
+        // returns them.
+        assert!(part1.contains("Fund: asset class Fixed Income; expense ratio 0.0003 (0.03%/yr); assets under management 340.0B; NAV 72.41.\n"), "{label}: {part1}");
+        assert!(part1.contains("Country weights: United States 94.0%, Supranational 2.0%, Canada 1.0%.\n"), "{label}: {part1}");
+        assert_eq!(part1.matches("daily realized return volatility: ").count(), 1, "{label}: the daily volatility renders once\n{part1}");
         assert!(!part1.contains("Return "), "{label}: Part 1 instructs\n{part1}");
         assert!(!part1.to_lowercase().contains("your "), "{label}: Part 1 addresses the model\n{part1}");
-        let mut items = vec![
-            "\n1. role_summary — a few sentences on the vehicle's mandate, the exposure it exists to supply, and the cost and risk of holding it, from CLASS, EXPOSURE TILT, RISK PROFILE, EVIDENCE GAPS, FINANCIAL METRICS and RESEARCH SUMMARY.\n",
-            "\n2. ledger — ",
-            "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n",
+        // No position line on either run: the delta reaches the action call alone.
+        assert!(!part1.contains("position is unchanged") && !part1.contains("first analysis of this holding"), "{label}: {part1}");
+        let items = [
+            "\n1. The role — the mandate and the exposure the vehicle exists to supply, and the cost and risk of holding it, from CLASS, EXPOSURE TILT, RISK PROFILE, EVIDENCE GAPS, FETCHED VALUES, COMPUTED, ANALYSIS and MARKET ANALYSIS.\n",
+            "\n2. The risks — ",
+            "\n3. The triggers for trimming or selling — each a concrete measure, a level and a period.\n",
+            "\n4. A summary paragraph — the read as a whole",
+            "\nThe document states no expected price and no conviction. It runs 900 to 1,800 words.\n",
         ];
-        if !debut {
-            items.extend(["\n3. what_changed_entries — ", "\n   what_changed — one sentence summarizing those rows.\n"]);
-        }
         for item in items {
             assert!(part2.contains(item), "{label}: Part 2 lacks {item}\n{part2}");
         }
-        assert!(part2.contains("with family \"trim\" or \"sell\"") && !part2.contains("\"add\""), "{label}: {part2}");
-        assert!(part2.contains("(\"above 0.75%\" on expense-ratio is 0.0075)"), "{label}: {part2}");
-        assert!(part2.contains("for a fund, the exposure it supplies, its cost and its fidelity to its mandate"), "{label}: {part2}");
-        assert!(part2.contains("drawing on MARKET ANALYSIS for the market setup"), "{label}: {part2}");
+        assert_eq!(part2.contains(", and what changed since the prior analysis, drawing on PRIOR THESIS"), !debut, "{label}: {part2}");
+        assert!(!part2.contains("RETURN SHAPE") && !part2.lines().any(|l| l.starts_with('{')), "{label}: {part2}");
+        assert_part2_headings_render(label, part1, part2);
         for absent in [
-            "CLASSIFICATION:", "STRUCTURAL FLAG", "EXPENSE RATIO (", "LEDGER OBSERVATION", "OBSERVABLE RISK",
+            "CLASSIFICATION:", "STRUCTURAL FLAG", "EXPENSE RATIO (", "LEDGER", "OBSERVABLE RISK",
             "DISTILLED RESEARCH", "MARKET SIGNAL", "HOUSE VIEW", "ACTION: author none", "CONTINUITY:",
-            "WHAT_CHANGED_ENTRIES:", "METRICS AVAILABLE", "REWRITE THE THESIS LEDGER", "role/risk-only",
+            "WHAT_CHANGED", "METRICS AVAILABLE", "role/risk-only", "RESEARCH SUMMARY", "FINANCIAL METRICS",
             "Field notes", "Field alternatives", "this pipeline", "this branch", "Keep the read firm",
-            "in isolation", "on-plan", "honestly", "Position change since last run",
+            "in isolation", "on-plan", "honestly", "Position change since last run", "PRIOR ANALYSIS",
         ] {
             assert!(!user.contains(absent), "{label}: `{absent}`\n{user}");
         }
@@ -1585,34 +1177,21 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
             assert!(hits.is_empty(), "{label} {l} prompt carries {hits:?}\n{text}");
         }
         assert_no_routing_words(&format!("BND {label}"), user);
-        let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
-        let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
-        let mut keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        let mut declared = crate::portfolio::role_risk_keys(debut);
-        declared.sort_unstable();
-        assert_eq!(keys, declared, "{label}");
-        assert!(
-            system.starts_with(
-                "You are an investment analyst producing an independent read of one fund holding for a portfolio review. You will return role_summary"
-            ),
-            "{label}: {system}"
+        assert_eq!(
+            system,
+            "You are an investment analyst writing the thesis document for one fund holding in a \
+             portfolio review. Part 1 of the message gives the inputs. Part 2 says what the document \
+             covers, in order, and how to return it."
         );
-        for k in &declared {
-            assert!(system.contains(k), "{label}: system prompt does not name {k}\n{system}");
-        }
-        // `portfolio-v62`: the names first, then the shared frame.
-        assert!(system.ends_with(crate::portfolio::TWO_PART_FRAME), "{label}: {system}");
     }
-    // The continuity specifics: the position sentence, the prior class and
-    // role read as data, the changes with their ids.
-    assert!(cont_user.contains("\nThe position is unchanged since the prior analysis.\n"), "{cont_user}");
+    // The continuity specifics: the prior document verbatim under its date,
+    // the stub's role read opening it; no split line without a split.
     assert!(
-        cont_user.contains("\nPRIOR ANALYSIS (prior read 2026-09-03T14:00:00Z)\n- prior class: bond fund.\n- prior role read: "),
+        cont_user.contains("\nPRIOR THESIS (written 2026-09-03)\nRole: bond fund supplying United States exposure; held for its portfolio role.\n"),
         "{cont_user}"
     );
-    assert!(cont_user.contains("\n[D1] "), "{cont_user}");
-    assert!(!debut_user.contains("PRIOR ANALYSIS"), "{debut_user}");
+    assert!(!cont_user.contains("A share split since this document was written"), "{cont_user}");
+    assert!(!debut_user.contains("PRIOR THESIS"), "{debut_user}");
 }
 
 /// The action message on the synthetic role/risk verdict is the v41 packet's
@@ -1623,25 +1202,24 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
 #[test]
 fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
     let fx = synthetic_role_risk_fixture();
-    let (rr, ledger) = synthetic_role_risk_verdict(&fx);
-    let render = |verdict: &super::RoleRiskVerdict, ledger: &ThesisLedger| {
+    let rr = synthetic_role_risk_verdict(&fx);
+    let render = |verdict: &super::RoleRiskVerdict| {
         action_user_prompt(&ActionInput {
             dossier: &fx.dossier,
-            subject: ActionSubject::RoleRisk { verdict, ledger },
+            subject: ActionSubject::RoleRisk { verdict },
             engine_set: &super::ROLE_RISK_ACTIONS,
-            changes: None,
             profile: &fx.dossier.profile,
         })
     };
-    let user = render(&rr, &ledger);
+    let user = render(&rr);
     let system = pipeline::action_system_prompt();
     let (part1, part2) = user
         .split_once("\n======== PART 2: TASK ========\n")
         .unwrap_or_else(|| panic!("no Part 2 marker\n{user}"));
     assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\nBND ("), "{part1}");
     for section in [
-        "CLASS (computed)\n", "ROLE (analyst)\n", "EXPOSURE TILT (computed)\n", "RISK PROFILE (computed)\n",
-        "EVIDENCE GAPS (computed)\n", "THESIS (analyst)\n", "SCENARIOS (analyst)\n",
+        "CLASS (computed)\n", "EXPOSURE TILT (computed)\n", "RISK PROFILE (computed)\n",
+        "EVIDENCE GAPS (computed)\n", "VERDICT (analyst)\n",
         "SUPPORTED ACTIONS (computed)\n", "INVESTOR PROFILE\n",
     ] {
         assert_eq!(part1.matches(&format!("\n{section}")).count(), 1, "Part 1 lacks {section}\n{part1}");
@@ -1654,14 +1232,13 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
         assert!(part2.contains(item), "Part 2 lacks {item}\n{part2}");
     }
     assert!(!user.contains("CAPITAL EFFICIENCY") && !user.contains("PRICE TARGETS"), "{user}");
+    // The role/risk VERDICT carries the document alone — no conviction, no
+    // expected price line.
+    assert!(part1.contains("\nVERDICT (analyst)\nThesis document:\nRole: "), "{part1}");
+    assert!(!part1.contains("Conviction:") && !part1.contains("Expected share price"), "{part1}");
     let mut blank = rr.clone();
-    blank.role_summary.clear();
-    let mut blank_ledger = ledger.clone();
-    blank_ledger.current_thesis.clear();
-    for s in &mut blank_ledger.monitor {
-        s.conditions.clear();
-    }
-    let blanked = render(&blank, &blank_ledger);
+    blank.thesis_document.clear();
+    let blanked = render(&blank);
     for (label, text) in [("system", system.as_str()), ("user", blanked.as_str())] {
         let hits = banned_hits(text);
         assert!(hits.is_empty(), "{label} prompt carries {hits:?}\n{text}");
@@ -1927,11 +1504,11 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             );
         }
         if s.label.contains("continuity") {
-            assert!(part1.contains("\nSTANDING CONDITIONS\n") && part1.contains("\nPRIOR FINDINGS\n"), "{}", s.label);
-            // `portfolio-v54`: the clause names the two headings it draws on, and
+            assert!(part1.contains("\nPRIOR FINDINGS\n") && !part1.contains("STANDING CONDITIONS"), "{}", s.label);
+            // `portfolio-v54`: the clause names the heading it draws on, and
             // PRIOR FINDINGS carries the CLAIMS SO FAR shape and gloss.
             assert!(
-                part2.contains("Where a finding under PRIOR FINDINGS or a condition under STANDING CONDITIONS bears on a question, look for whether it still holds and for what is newer."),
+                part2.contains("Where a finding under PRIOR FINDINGS bears on a question, look for whether it still holds and for what is newer."),
                 "{}: {part2}",
                 s.label
             );
@@ -2114,18 +1691,23 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
             assert_eq!(keys, ["claims", "summary"], "{}", s.label);
         }
         if s.label.contains("continuity") {
-            for section in ["\nSTANDING CONDITIONS\n", "\nKEY DRIVERS\n", "Prior findings (analysis of 2026-09-01):\n", "\nTOPIC catalysts-risks (not searched in this analysis)\n", "\nCONTRARY EVIDENCE\n", "\nSOURCE TEXT\n", " (published 2026-07-22) ===\n", "— bears on c-margin\n"] {
+            for section in ["Prior findings (analysis of 2026-09-01):\n", "\nTOPIC catalysts-risks (not searched in this analysis)\n", "\nCONTRARY EVIDENCE\n", "\nSOURCE TEXT\n", " (published 2026-07-22) ===\n"] {
                 assert!(part1.contains(section), "{}: no {section:?}\n{part1}", s.label);
             }
-            for item in ["\n3. forward_assumption — ", "\n4. leading_indicator — ", "\n5. forensic_event — ", "\n6. pre_profit_observations — ", "\n7. backfill — "] {
+            // The ledger's STANDING CONDITIONS and KEY DRIVERS left every
+            // distillation message with the ledger: no claim carries a tie and
+            // the leading indicator — which needed a driver to confirm — is
+            // never asked for, so the typed items renumber.
+            for absent in ["STANDING CONDITIONS", "KEY DRIVERS", "— bears on", "leading_indicator", "related_condition_id"] {
+                assert!(!s.user.contains(absent), "{}: {absent} survives\n{}", s.label, s.user);
+            }
+            for item in ["\n3. forward_assumption — ", "\n4. forensic_event — ", "\n5. pre_profit_observations — ", "\n6. backfill — "] {
                 assert!(part2.contains(item), "{}: no {item:?}\n{part2}", s.label);
             }
             assert!(shape_line.contains(r#""topic_key":"<competitive-position|results-revisions|catalysts-risks>""#), "{shape_line}");
-            assert!(shape_line.contains(r#""related_condition_id":"<c-margin|c-price|null>""#), "{shape_line}");
-            assert!(shape_line.contains(r#""confirms_driver_id":"<d-robotaxi|d-energy>""#), "{shape_line}");
             // `portfolio-v64`: the continuity claims item names where its statements
             // come from; the prior findings carry their dates and periods.
-            assert!(part2.contains("one statement per claim. The statements come from the searches and the prior findings, whichever topic they came under, reconciled by the rules under CLAIM RULES. evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two searched topics state is one claim, under the topic it belongs to. related_condition_id is "), "{}: {part2}", s.label);
+            assert!(part2.contains("one statement per claim. The statements come from the searches and the prior findings, whichever topic they came under, reconciled by the rules under CLAIM RULES. evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two searched topics state is one claim, under the topic it belongs to."), "{}: {part2}", s.label);
             // `portfolio-v65`: the dormant topic is "not searched in this analysis" on the
             // gloss, the heading and both item-2 sentences.
             assert!(part1.contains("Prior findings are from an earlier analysis of the topic, dated. A topic not searched in this analysis carries its prior findings only.\n"), "{}: {part1}", s.label);
@@ -2135,13 +1717,11 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
             // asks for the driver's id alone; metric_name carries a gloss; item 6 glosses
             // confidence's referent; item 7 states coverage's denominator and the periods'
             // date form.
-            assert!(part2.contains("whose latest change confirms a driver under KEY DRIVERS") && part2.contains("confirms_driver_id the id of the driver under KEY DRIVERS it confirms.\n") && !part2.contains("bears on a driver"), "{}: {part2}", s.label);
-            assert!(part2.contains("metric_name as the page names the measure;") && !s.user.contains("confirms_driver\""), "{}: {}", s.label, s.user);
             assert!(part2.contains("confidence, 0 to 1, that the excerpt states that metric, value and period."), "{}: {part2}", s.label);
             assert!(part2.contains("each as its end date, YYYY-MM-DD;") && part2.contains("complete where all four periods are found, partial where fewer, unscorable where"), "{}: {part2}", s.label);
             assert!(part1.contains("published: 2026-08-26; fact period: 2026-07\n"), "{}: {part1}", s.label);
             assert!(shape_line.contains(r#""numeric_value":0,"stated_low":"<0|null>","stated_high":"<0|null>""#), "{shape_line}");
-            assert!(s.system.contains("You will return combined_findings, topics, forward_assumption, leading_indicator, forensic_event, pre_profit_observations and backfill, as one JSON object."), "{}", s.system);
+            assert!(s.system.contains("You will return combined_findings, topics, forward_assumption, forensic_event, pre_profit_observations and backfill, as one JSON object."), "{}", s.system);
         }
         if s.label.contains("first analysis") {
             assert!(!part1.contains("STANDING CONDITIONS") && !part1.contains("KEY DRIVERS") && !part1.contains("Prior findings"), "{}: {part1}", s.label);
@@ -2162,7 +1742,7 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
         if s.label.contains("fund") {
             assert_eq!(keys, ["combined_findings", "topics"], "{}", s.label);
             assert!(!s.user.contains("SOURCE TEXT") && !s.user.contains("forward_assumption"), "{}: {}", s.label, s.user);
-            assert!(part1.contains("\nSTANDING CONDITIONS\n") && shape_line.contains(r#""related_condition_id":"<c-dur|null>""#), "{}", s.label);
+            assert!(!part1.contains("STANDING CONDITIONS") && !shape_line.contains("related_condition_id"), "{}", s.label);
         }
         if s.label.contains("hierarchical") {
             assert!(part1.contains("\nSummary:\n"), "{}: {part1}", s.label);
@@ -2180,9 +1760,9 @@ fn distillation_messages_are_two_parts_with_no_app_concept() {
 
 /// Every rendered fixed-set prompt to one Markdown file for a human read
 /// (`MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP=<file>`): the system prompts once,
-/// then per holding the interpretation message, the action message, and the
-/// lines the tax and cost variants change, then the synthetic role/risk case,
-/// then the research messages (`portfolio-v43`).
+/// then per holding the thesis-document message, the appendix ask, the action
+/// message, and the lines the tax and cost variants change, then the synthetic
+/// role/risk case, then the research messages (`portfolio-v43`).
 #[test]
 #[ignore = "writes the rendered fixed-set prompts to MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP"]
 fn fixed_evidence_prompt_dump() {
@@ -2198,28 +1778,24 @@ fn fixed_evidence_prompt_dump() {
     };
     let mut out = String::new();
     out.push_str(&format!("# Fixed-set prompts as rendered — `{}`\n\n", super::PROMPT_VERSION));
-    out.push_str("## 1. System prompts\n\n### 1a. Interpretation — stock, first analysis\n\n");
-    out.push_str(&fence(&pipeline::interpretation_system_prompt(false, true)));
-    out.push_str("### 1b. Interpretation — fund, first analysis\n\n");
-    out.push_str(&fence(&pipeline::interpretation_system_prompt(true, true)));
-    out.push_str("### 1c. Action\n\n");
+    out.push_str("## 1. System prompts\n\n### 1a. Thesis document — stock\n\n");
+    out.push_str(&fence(&pipeline::thesis_system_prompt(false)));
+    out.push_str("### 1b. Thesis document — fund\n\n");
+    out.push_str(&fence(&pipeline::thesis_system_prompt(true)));
+    out.push_str("### 1c. The appendix ask (the conversation's second message)\n\n");
+    out.push_str(&fence(&pipeline::appendix_user_prompt()));
+    out.push_str("### 1d. Action\n\n");
     out.push_str(&fence(&pipeline::action_system_prompt()));
     let mut n = 2;
     for f in fixtures() {
         let VerdictDisposition::Priced(graded) = &f.disposition else { continue };
         let d = dossier_of(&f, true);
-        let input = InterpretationInput {
-            input_delta: &[], dossier: &d, prior_ledger: None, engine: &f.engine_output,
-            distilled: &f.research_combined, ledger_eval: None, pre_profit: None,
-            tech_pre_flag: None, narrative: None,
-        };
-        let interp = interpretation_user_prompt(&input);
+        let interp = thesis_user_prompt(&thesis_input(&f, &d));
         let engine_set = engine::feasible_actions(f.engine_output.grade, &f.engine_output.hurdle, None, false);
-        let ledger = ledger_of(&f);
         macro_rules! action_input { ($dd:expr) => { ActionInput {
             dossier: $dd,
-            subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None, ledger: &ledger },
-            engine_set: &engine_set, changes: None, profile: &$dd.profile,
+            subject: ActionSubject::Priced { graded, engine: &f.engine_output, pre_profit: None },
+            engine_set: &engine_set, profile: &$dd.profile,
         } } }
         let list = action_user_prompt(&action_input!(&d));
         let dt = dossier_of(&f, false);
@@ -2231,7 +1807,7 @@ fn fixed_evidence_prompt_dump() {
             if f.is_fund { "fund" } else { "stock" },
             engine_set.iter().map(Action::as_kebab).collect::<Vec<_>>().join(", "),
             f.engine_output.hurdle.state));
-        out.push_str(&format!("### {n}a. Interpretation message ({} chars)\n\n", interp.len()));
+        out.push_str(&format!("### {n}a. Thesis-document message ({} chars)\n\n", interp.len()));
         out.push_str(&fence(&interp));
         out.push_str(&format!("### {n}b. Action message ({} chars)\n\n", list.len()));
         out.push_str(&fence(&list));
@@ -2241,41 +1817,38 @@ fn fixed_evidence_prompt_dump() {
         out.push_str(&fence(&diff_lines(&list, &cost)));
         n += 1;
     }
-    // The synthetic role/risk case (`portfolio-v42`): both system prompts, the
+    // The synthetic role/risk case (`portfolio-v42`): the system prompt, the
     // debut message with the hand-written research, the continuity message the
     // pipeline renders on a stub second run, and the action message on the
     // stub's verdict.
     let fx = synthetic_role_risk_fixture();
     let debut = role_risk_user_prompt(&synthetic_role_risk_input(&fx));
     let (cont_system, cont) = synthetic_role_risk_continuity_messages();
-    let (rr, ledger) = synthetic_role_risk_verdict(&fx);
+    let rr = synthetic_role_risk_verdict(&fx);
     let action = action_user_prompt(&ActionInput {
         dossier: &fx.dossier,
-        subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
+        subject: ActionSubject::RoleRisk { verdict: &rr },
         engine_set: &super::ROLE_RISK_ACTIONS,
-        changes: None,
         profile: &fx.dossier.profile,
     });
     out.push_str(&format!(
         "## {n}. BND (SYNTHETIC role/risk bond fund — hand-written closes, positioning and research; the fixed set's house view; engine set [sell-all, trim, hold]; no hurdle)\n\n"
     ));
-    out.push_str(&format!("### {n}a. Role/risk system prompt — first analysis\n\n"));
-    out.push_str(&fence(&pipeline::role_risk_system_prompt(true)));
-    out.push_str(&format!("### {n}b. Role/risk system prompt — continuity\n\n"));
+    out.push_str(&format!("### {n}a. Role/risk system prompt\n\n"));
     out.push_str(&fence(&cont_system));
-    out.push_str(&format!("### {n}c. Role/risk message — first analysis ({} chars)\n\n", debut.len()));
+    out.push_str(&format!("### {n}b. Role/risk thesis-document message — first analysis ({} chars)\n\n", debut.len()));
     out.push_str(&fence(&debut));
-    out.push_str(&format!("### {n}d. Role/risk message — continuity on the stub's first run ({} chars; the research summary is the offline stub's)\n\n", cont.len()));
+    out.push_str(&format!("### {n}c. Role/risk thesis-document message — continuity on the stub's first run ({} chars; the analysis is the offline stub's)\n\n", cont.len()));
     out.push_str(&fence(&cont));
-    out.push_str(&format!("### {n}e. Action message on the stub's verdict ({} chars)\n\n", action.len()));
+    out.push_str(&format!("### {n}d. Action message on the stub's verdict ({} chars)\n\n", action.len()));
     out.push_str(&fence(&action));
     // The research messages (`portfolio-v43`): the gathering and synthesis
     // passes rendered on TSLA's first stock topic and the synthetic fund's
-    // exposure-profile topic over hand-written leads, claims, conditions and
-    // pages, then what a gathering turn gets back.
+    // exposure-profile topic over hand-written leads, claims and pages, then
+    // what a gathering turn gets back.
     let n = n + 1;
     out.push_str(&format!(
-        "## {n}. Research messages (TSLA's competitive-position topic and the SYNTHETIC fund's exposure-profile topic; hand-written leads, claims, conditions and pages)\n\n"
+        "## {n}. Research messages (TSLA's competitive-position topic and the SYNTHETIC fund's exposure-profile topic; hand-written leads, claims and pages)\n\n"
     ));
     let mut letter = b'a';
     for s in research_samples() {
@@ -2298,7 +1871,7 @@ fn fixed_evidence_prompt_dump() {
     // The distillation messages (`portfolio-v44`) over hand-written research.
     let n = n + 1;
     out.push_str(&format!(
-        "## {n}. Distillation messages (hand-written TSLA research: two topics, a follow-up search, the contrary-evidence pass, one prior topic object, one dormant prior, two standing conditions, two key drivers, three fetched pages; and the SYNTHETIC fund's one topic)\n\n"
+        "## {n}. Distillation messages (hand-written TSLA research: two topics, a follow-up search, the contrary-evidence pass, one prior topic object, one dormant prior, three fetched pages; and the SYNTHETIC fund's one topic)\n\n"
     ));
     let mut letter = b'a';
     for s in distillation_samples() {

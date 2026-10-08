@@ -8,19 +8,20 @@ Today the set covers the Portfolio Analysis job, under `portfolio/`; the Trade O
 ## What each file carries
 
 A request table: the workflow step the call belongs to (`portfolio-workflow.md`), the stage label the run tracker shows, the model tier, the thinking flag, the generation options, the output protocol (a `format` grammar or the two research tools), the residency setting, and the size of the prompt material as the input guard measures it.
-Then every message of the request as sent, verbatim, each in its own fenced block: the system message, the user message, and on a gathering turn what the loop appends (the reply countdown, the model's echoed tool calls, the tool results).
+Then every message of the request as sent, verbatim, each in its own fenced block: the system message, the user message, on a gathering turn what the loop appends (the reply countdown, the model's echoed tool calls, the tool results), and on the appendix message the thesis document echoed as the assistant's turn before the transcription ask.
 Then the tools JSON or the response schema the grammar enforces, and any variant whose lines differ from the base message.
 `portfolio/00-contents.md` lists the files in pipeline order.
 
 ## The data behind the examples
 
 The holdings are the fixed evidence set of big-run attempt 6 (`src-tauri/src/portfolio/fixtures/attempt-6/README.md`): TSLA for the stock shapes, SPMO for the priced-fund shapes, and the synthetic BND bond fund for the role/risk shapes.
-Their financials, engine output, position and ledger are the reconstructed persisted values, with synthetic position economics.
+Their financials, engine output, position and verdict are the reconstructed persisted values, with synthetic position economics.
+The verdict's model arm is re-shaped by hand into a thesis document and a typed appendix, since attempt 6 wrote the structured read the document replaced.
 Every parsed article or research field is a stub: a bracketed `[stub: …]` label that keeps the field's place and names what stood there.
-Ids, dates, URLs, hosts, condition ids and section headers are never stubbed, so the tiers, the ties and the glosses that read them render as on a run.
+Ids, dates, URLs, hosts and section headers are never stubbed, so the tiers and the glosses that read them render as on a run.
 The latest report's sections under MARKET ANALYSIS are stubbed the same way; the report's dated stance lines stay.
 The continuity shapes carry a hand-written prior: attempt 6's persisted verdict re-dated to 2026-09-02 with a prior spot 3% under today's on the priced holdings, and a stub first run of 2026-09-03 on the role/risk fund.
-Attempt 6 wrote no second run, so the retrospective figures in those files are illustrative, not observed.
+Attempt 6 wrote no second run, so the prior document in those files is attempt 6's own read under an earlier date, not an observed prior.
 
 ## Regenerating
 

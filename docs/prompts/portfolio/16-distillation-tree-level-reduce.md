@@ -1,6 +1,6 @@
 # Distillation — tree-level reduce over the pass outputs
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v66`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run, the hierarchical route.
 The tree-level reduce that follows the pass-level calls: each pass output renders as its summary and claims, the prior merges here, and the call returns the topic's summary and claims.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":32768,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4166 chars — the messages and tools as serialized |
+| Prompt material | 3560 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ review. You will return summary and claims, as one JSON object. Part 1 of the me
 inputs. Part 2 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (3771 chars)
+## User message (3176 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -39,18 +39,11 @@ TSLA (name unavailable).
 Price: $358.97 per share.
 Date: 2026-09-16.
 
-STANDING CONDITIONS
-Conditions the thesis on this holding is being watched against, each with its id.
-- c-margin — Falsifier: Automotive gross margin ex-credits falls below 14% for two consecutive
-quarters.
-- c-price — Trigger: Price closes below $250.
-
 TOPICS
 The research on one topic of this holding, headed by its key and its title: what its searches
 established, then its claims. Each claim carries: its id; the address of the page that states it;
-the publication date the search or lead reported; and the period the fact applies to. A claim marked
-"bears on" names the condition under STANDING CONDITIONS it is evidence on. Prior findings are from
-an earlier analysis of the topic, dated.
+the publication date the search or lead reported; and the period the fact applies to. Prior findings
+are from an earlier analysis of the topic, dated.
 
 TOPIC competitive-position — Competitive / business position
 Search 1 (summary):
@@ -58,7 +51,7 @@ Search 1 (summary):
 Claims:
 - C1: [stub: claim 1 — one dated fact from its source]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
-period: 2026-Q2 — bears on c-margin
+period: 2026-Q2
 Search 2 (summary):
 [stub: pass 2's summary, as the pass-level call returned it]
 Claims:
@@ -69,7 +62,7 @@ Prior findings (analysis of 2026-09-01):
 [stub: the prior run's summary of this topic]
 - C3: [stub: prior claim 1, tied to a standing condition]
 [https://ir.tesla.com/press-release/tesla-second-quarter-2026-results] — published: 2026-07-22; fact
-period: 2026-Q2 — bears on c-margin
+period: 2026-Q2
 - C4: [stub: prior claim 2]
 [https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/] — published: 2026-08-26;
 fact period: 2026-07
@@ -84,9 +77,7 @@ fact, reconcile them by the rules under CLAIM RULES; and what the searches left 
 
 2. claims — every distinct statement the topic rests on, one statement per claim. The statements
 come from the searches and the prior findings, reconciled by the rules under CLAIM RULES.
-evidence_id is the id of the claim under TOPICS the statement rests on. related_condition_id is the
-id of the condition under STANDING CONDITIONS the claim is evidence on — that it has tripped, is
-holding, or is at risk — else null.
+evidence_id is the id of the claim under TOPICS the statement rests on.
 
 
 CLAIM RULES
@@ -101,7 +92,7 @@ a factual winner or supply a missing fact date. Apply the same resolution in the
 claims.
 
 RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)
-{"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4>","related_condition_id":"<c-margin|c-price|null>"}]}
+{"summary":"","claims":[{"claim":"","evidence_id":"<C1|C2|C3|C4>"}]}
 ~~~~
 
 ## Response schema (`format`)
@@ -123,17 +114,6 @@ RETURN SHAPE (every value is a placeholder; an array holds as many items as appl
               "C4"
             ],
             "type": "string"
-          },
-          "related_condition_id": {
-            "enum": [
-              "c-margin",
-              "c-price",
-              null
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
         "required": [

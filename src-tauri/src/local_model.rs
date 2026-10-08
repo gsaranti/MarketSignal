@@ -190,8 +190,8 @@ pub(crate) enum RetryClass {
     SchemaParse,
     /// The stream carried an error chunk or ended before its done chunk.
     Stream,
-    /// The interpretation parsed but a model-arm value fell outside its
-    /// declared numeric domain (`portfolio::validate_model_arm`) — a sampled
+    /// The appendix parsed but a value fell outside its declared domain
+    /// (`portfolio::validate_appendix_domain`) — a sampled
     /// response whose re-issue may well land in-domain, so it classifies
     /// transient, as its own class so the data-health read tells an
     /// off-domain value from malformed content (the 2026-08-24 review's

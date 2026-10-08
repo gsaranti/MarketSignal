@@ -1,10 +1,10 @@
 # Research gathering — root pass on a continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over a prior analysis of 2026-09-01.
-A root pass on a continuity run: the topic's standing ledger conditions and the prior run's kept findings ride as the seed.
-The seed is app-assembled from the prior ledger and the prior claims, never a model call, so the search starts from what is already known and tests it.
+A root pass on a continuity run: the prior run's kept findings ride as the seed.
+The seed is app-assembled from the prior claims, never a model call, so the search starts from what is already known and tests it.
 The loop appends the reply countdown before every turn, so the third message is part of the first request.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3749 chars — the messages and tools as serialized |
+| Prompt material | 3488 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (2259 chars)
+## User message (2003 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -46,11 +46,6 @@ https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-
 (reuters.com, 2026-09-10 14:02:00)
 - [stub: headline of lead 2] — https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14
 (nhtsa.gov, 2026-09-12 09:30:00)
-
-STANDING CONDITIONS
-Conditions the thesis on this holding is being watched against.
-- Falsifier: Automotive gross margin ex-credits falls below 14% for two consecutive quarters.
-- Trigger: Price closes below $250.
 
 TOPIC
 Competitive / business position
@@ -73,9 +68,8 @@ Find what the web shows on each question under TOPIC for this holding, as of the
 1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS
 most likely to answer them. Prefer a source tier nearer 0 and an extraction quality nearer 1 where
 the questions allow; a weak source lowers confidence in what it says, it does not exclude it, and a
-figure that cannot be right is a defect of the source. Where a finding under PRIOR FINDINGS or a
-condition under STANDING CONDITIONS bears on a question, look for whether it still holds and for
-what is newer.
+figure that cannot be right is a defect of the source. Where a finding under PRIOR FINDINGS bears on
+a question, look for whether it still holds and for what is newer.
 2. At most 8 tool calls in one reply.
 3. Stop when the questions are answered, or when what remains cannot be found: reply with one
 sentence saying which, and no tool call.

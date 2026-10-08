@@ -86,7 +86,11 @@ use crate::storage;
 /// v15: the per-holding states inside `portfolio_quick_checks.state_json` carry
 /// no condition evaluation states and no news-seed family (quick-check-v5,
 /// checkpoint-v19).
-pub const FORMAT_VERSION: u32 = 15;
+/// v16: the verdict inside `portfolio_runs.run_json` carries the thesis
+/// document and its typed appendix as the model arm, no ledger, no
+/// what-changed audit and no stand-in model view, and an abstention carries
+/// its retained prior document (checkpoint-v20).
+pub const FORMAT_VERSION: u32 = 16;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.

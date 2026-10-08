@@ -78,14 +78,6 @@ pub const SEMANTIC_RECALL_TOP_K: usize = 3;
 /// the research router's existing recent-report window (`pipeline::ROUTER_RECENT_REPORTS`).
 pub const HOUSE_VIEW_RECENT_REPORTS: u32 = 3;
 
-/// The three horizon-outlook windows the verdict reads (`docs/portfolio-analysis.md`
-/// §The holding verdict). Lengths pinned this slice — short ≈ 1 month, mid ≈ 1 year,
-/// long ≈ 3–5 years — and surfaced in the interpretation prompt so the model's reads
-/// share one definition across runs.
-pub const HORIZON_SHORT: &str = "short term (~1 month)";
-pub const HORIZON_MID: &str = "mid term (~1 year)";
-pub const HORIZON_LONG: &str = "long term (~3–5 years)";
-
 // ---- Investor profile --------------------------------------------------------
 
 /// The configured investor profile that personalizes the *action* — never the
@@ -510,39 +502,11 @@ impl Conviction {
     }
 }
 
-/// A directional read for one horizon window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum HorizonRead {
-    Bullish,
-    Neutral,
-    Bearish,
-}
-
-impl HorizonRead {
-    /// The word the prompts print — the serde form ("bearish").
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Bullish => "bullish",
-            Self::Neutral => "neutral",
-            Self::Bearish => "bearish",
-        }
-    }
-}
-
-/// Separate short-, mid-, and long-term reads (`docs/portfolio-analysis.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HorizonOutlook {
-    pub short: HorizonRead,
-    pub mid: HorizonRead,
-    pub long: HorizonRead,
-}
-
 /// One scenario price target with its methodology exposed (`docs/portfolio-analysis.md`
 /// — "computed by the financial-analysis engine as scenario outputs with their
 /// methodology and assumptions exposed"). The model selects and justifies the base
-/// case; this engine-arm number is never model-authored (the model arm's own
-/// bands ride [`ModelPriceTargets`]).
+/// case; this engine-arm number is never model-authored (the model arm states
+/// its own expected prices on the thesis appendix, [`ThesisAppendix`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PriceTarget {
     /// The base-case target value (account currency).
@@ -567,58 +531,61 @@ pub struct PriceTargets {
     pub three_year: Option<PriceTarget>,
 }
 
-/// One model-authored scenario target band — the model arm's counterpart of the
-/// engine's [`PriceTarget`] (`docs/portfolio-analysis.md` §The holding verdict, the
-/// two-arm contract). Authored freely at interpretation: no engine bound, band, or
-/// clamp applies, and the app persists it exactly as returned — within the
-/// declared domain: each leg finite and strictly positive, gated at decode by
-/// [`validate_model_arm`] (Codex I6), never clamped. Ordering is not gated:
-/// scoring reads the band as (min, max), so an inverted bear/bull pair still
-/// scores; the render annotates disorder rather than reordering the authored
-/// numbers.
+/// The **typed appendix** of the thesis document — the model arm's only typed
+/// fields (`docs/portfolio-analysis.md` §The holding verdict, the two-arm
+/// contract): the conviction and the expected share price at three months,
+/// twelve months and three years, transcribed from the document by the
+/// conversation's second, non-thinking message and persisted exactly as
+/// authored. Every field is `null` where the document states no value, and a
+/// null is acted on by presence alone — a null price opens no model leg at
+/// that horizon, a null conviction renders as none. The declared domain is
+/// app-enforced at decode ([`validate_appendix_domain`]): each present price
+/// finite and strictly positive, a present conviction one of its three values;
+/// nothing else about the arm is checked — not the document against the
+/// appendix, not the prices against the engine's bands.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelPriceTarget {
-    pub base: f64,
-    pub bear: f64,
-    pub bull: f64,
+pub struct ThesisAppendix {
+    pub conviction: Option<Conviction>,
+    pub expected_price_3m: Option<f64>,
+    pub expected_price_12m: Option<f64>,
+    pub expected_price_3y: Option<f64>,
 }
 
-/// The model arm's one-month and twelve-month targets — the same rolling windows
-/// as the engine's [`PriceTargets`]. Both are always authored: the model can always
-/// commit to a view, so the engine's missing-input `None` legs have no analog here.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelPriceTargets {
-    pub one_month: ModelPriceTarget,
-    pub twelve_month: ModelPriceTarget,
+impl ThesisAppendix {
+    /// The appendix with every field null — the document's silence on every
+    /// typed value (a `role_risk_only` holding never carries one at all).
+    pub const NONE: Self = Self {
+        conviction: None,
+        expected_price_3m: None,
+        expected_price_12m: None,
+        expected_price_3y: None,
+    };
+
+    /// Whether every field is null — an appendix that opens no episode.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::NONE
+    }
+
+    /// The three expected prices in horizon order with their horizon labels,
+    /// null where the document stated none.
+    pub fn expected_prices(&self) -> [(&'static str, Option<f64>); 3] {
+        [
+            ("three-month", self.expected_price_3m),
+            ("twelve-month", self.expected_price_12m),
+            ("three-year", self.expected_price_3y),
+        ]
+    }
 }
 
-/// The model arm of the two-arm verdict (`docs/portfolio-analysis.md` §The holding
-/// verdict): the model's own read of fields the engine also computes, authored with
-/// the engine's values in the prompt as evidence and **never validated against
-/// them**. It never alters or binds the engine baseline — the quick check,
-/// hurdle tests, monitor stamps, and outcome labels read engine values only,
-/// while machinery acting on the model's *choices* (the per-holding action
-/// call, the episode lifecycle, the letter derivation, the scoreboard's scoring)
-/// is intentional (the boundary statement: `docs/portfolio-analysis.md` §The
-/// holding verdict); these values carry into the next run's retrospective.
-/// Beside this struct, the model-authored `conviction` and `horizon_outlook` on
-/// [`GradedVerdict`] complete the arm.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelView {
-    /// The model's own four sub-scores on the engine's 0–100 scale (higher = better),
-    /// gated to that scale at decode ([`validate_model_arm`]) so the letter below
-    /// always derives from an on-scale composite.
-    pub sub_scores: SubScores,
-    /// Derived app-side from the model's quality / valuation / risk through the
-    /// shared composite weights and cutoffs ([`engine::grade_from_subscores`]) — the
-    /// model controls its letter through its scores, and letters stay comparable
-    /// across arms. Momentum stays outside the letter in both arms.
-    pub letter: Grade,
-    pub price_targets: ModelPriceTargets,
-    /// The model's retrospective self-assessment — was the prior read right, was it
-    /// better than the engine baseline, and why (prose). The scored comparison is
-    /// the deterministic scoreboard's job, never this field's.
-    pub self_assessment: String,
+/// The model arm of a priced verdict as the thesis-document conversation
+/// returns it: the document as prose, read as text and validated by nothing,
+/// and the typed appendix transcribed from it (`docs/portfolio-workflow.md`
+/// §Step 6f). The engine arm is app-stamped beside it at assembly
+/// ([`pipeline::graded_verdict_from_model_arm`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PricedModelArm {
+    pub thesis_document: String,
+    pub appendix: ThesisAppendix,
 }
 
 /// The per-stock options-activity signal computed from the Schwab option chain
@@ -640,9 +607,12 @@ pub struct OptionsSignal {
 
 /// The priced body of a holding verdict — present only when the holding was eligible,
 /// priceable, *and* cleared the evidence floor. The engine arm's numbers (grade,
-/// sub-scores, targets, tier, hurdle, options signal) come from the engine; the
-/// action with its rationale, conviction, horizon reads, prose, and the model arm
-/// ([`ModelView`]) come from the model.
+/// sub-scores, bands, tier, hurdle, options signal, its own rung) come from the
+/// engine, app-stamped and never echoed through the model; the model arm — the
+/// thesis document and its typed appendix — persists exactly as authored,
+/// type-checked only, never validated against the engine (the two-arm contract,
+/// `docs/portfolio-analysis.md` §The holding verdict); the action with its
+/// rationale comes from the separate action call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GradedVerdict {
     pub grade: Grade,
@@ -654,15 +624,17 @@ pub struct GradedVerdict {
     pub action: Action,
     /// The action call's one-line rationale for the chosen rung.
     pub action_rationale: String,
-    pub conviction: Conviction,
-    pub horizon_outlook: HorizonOutlook,
+    /// The **thesis document** — the model arm's prose: the thesis, the key
+    /// drivers, the bear / base / bull scenarios with their conditions and
+    /// probabilities, the falsifiers and triggers in words, the expected share
+    /// price at each horizon and the conviction argued in the text, and the
+    /// summary paragraph. Read as text, validated by nothing; each run's
+    /// document supersedes the prior run's, and it is where the holding's
+    /// standing view lives (`docs/portfolio-analysis.md` §The holding verdict).
+    pub thesis_document: String,
+    /// The typed appendix transcribed from the document ([`ThesisAppendix`]).
+    pub appendix: ThesisAppendix,
     pub price_targets: PriceTargets,
-    /// The model's explanation of its OWN target bands — the assumptions behind
-    /// its base case and where and why it departs from the engine's twelve-month
-    /// base target (fix list 3.1, `portfolio-v38`; the engine's methodology is
-    /// app-rendered beside its own targets). Persisted so the model arm's target
-    /// basis stays inspectable.
-    pub model_target_rationale: String,
     pub options_signal: OptionsSignal,
     /// The deterministic per-branch risk tier (`docs/portfolio-analysis.md` §Starting
     /// parameters).
@@ -679,19 +651,6 @@ pub struct GradedVerdict {
     /// stock) — "the classification is deterministic, shown on the card"
     /// (`docs/portfolio-analysis.md` §Asset eligibility), the priced branch included.
     pub fund_class_label: Option<String>,
-    /// A concise read of the company's financial health (model prose).
-    pub financial_summary: String,
-    /// The continuity diff against the prior run (model prose, or "new holding") —
-    /// the intrinsic what-changed audit, authored at 6f. The retired action half
-    /// (a 7b construction artifact) went with that stage; this is prose only.
-    pub what_changed: String,
-    /// The model arm of the two-arm verdict ([`ModelView`]) — the model's own
-    /// sub-scores, derived letter, targets, and retrospective self-assessment.
-    /// Required on every persisted verdict: a fresh v9-only store never holds a
-    /// pre-`portfolio-v7` single-arm row, so a blob missing an arm fails decode
-    /// and loud-skips as unreadable rather than rendering a partial verdict (the
-    /// frontend types both arms as present — `src/types.ts`).
-    pub model_view: ModelView,
     /// The engine's own action rung — the drafted rule over its reads
     /// ([`engine::engine_action`]: the hard-forensic exit branch, dead money
     /// and the letter, the add admission, walked into the engine's own
@@ -723,15 +682,19 @@ pub struct ExposureWeight {
 /// attributes, the full ladder structurally open while the engine arm's set stays
 /// the reduced [`ROLE_RISK_ACTIONS`], rendered as evidence with departures
 /// annotated on the audit.
-/// Engine-computed fields (exposure, expense, risk, gaps) plus the model's role read.
+/// Engine-computed fields (exposure, expense, risk, gaps) plus the model's
+/// thesis document carrying the role read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleRiskVerdict {
     /// The deterministic classification label (e.g. "bond fund", "leveraged / inverse
     /// vehicle", "equity fund below the US-exposure guard").
     pub class_label: String,
-    /// The model's role read: the mandate and the exposure the vehicle exists to
-    /// supply, read in isolation (prose).
-    pub role_summary: String,
+    /// The branch's **thesis document**: the role read — the mandate and the
+    /// exposure the vehicle exists to supply, read in isolation — the risks,
+    /// the triggers for trimming or selling and the summary paragraph, as
+    /// prose; no prices, no conviction and no appendix follow it
+    /// (`docs/portfolio-analysis.md` §Intrinsic verdict).
+    pub thesis_document: String,
     /// Top exposure weights (sector or country), engine-computed from the weightings.
     pub exposure_tilt: Vec<ExposureWeight>,
     /// The expense ratio as an annual return headwind, where reported.
@@ -757,8 +720,6 @@ pub struct RoleRiskVerdict {
     pub action: Action,
     /// The action call's one-line rationale.
     pub action_rationale: String,
-    /// The continuity diff against the prior run (model prose, or "new holding").
-    pub what_changed: String,
 }
 
 /// What a holding's analysis resolved to (`docs/portfolio-analysis.md` §Intrinsic
@@ -779,138 +740,14 @@ pub enum VerdictDisposition {
     /// Ineligible asset class (option, bond, cash, …) — excluded from grading.
     NotRated { reason: String },
     /// Eligible but below the evidence floor — an explicit abstention, never a
-    /// low-conviction guess.
-    InsufficientEvidence { reason: String },
-}
-
-// ---- Position thesis ledger ----------------------------------------------------
-//
-// The persisted per-holding standing thesis (`docs/portfolio-analysis.md` §The
-// position thesis ledger): why the job holds a view on the position, carried
-// forward run to run. The model authors the thesis / monitor / condition
-// *statements* at interpretation; the app owns everything structural — condition
-// ids, the machine-evaluable cores' validation, evaluation state, the engine
-// scenario targets stamped into the monitor, and what carries across a rewrite.
-
-/// Which verdict branch a ledger is typed by (`docs/portfolio-analysis.md` §The
-/// position thesis ledger): a `priced` ledger carries the full shape; a
-/// `role_risk_only` ledger keeps the same sections with two reductions — its
-/// monitor scenarios are condition-only (no engine scenario target exists on that
-/// branch) and its triggers are trim / sell only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LedgerBranch {
-    Priced,
-    RoleRiskOnly,
-}
-
-/// A condition's series cadence (`docs/portfolio-analysis.md` §The position thesis
-/// ledger): market-data conditions are evaluable on every pass; filing-cadence
-/// conditions advance only when a fresh observation of their series lands.
-/// Derived from the series, never authored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConditionCadence {
-    MarketData,
-    Filing,
-}
-
-/// The comparator of a machine-evaluable condition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LedgerComparator {
-    Below,
-    Above,
-}
-
-impl LedgerComparator {
-    pub fn as_kebab(&self) -> &'static str {
-        match self {
-            LedgerComparator::Below => "below",
-            LedgerComparator::Above => "above",
-        }
-    }
-}
-
-/// Whether a ledger condition is a key falsifier or a pre-committed action trigger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConditionRole {
-    Falsifier,
-    Trigger,
-}
-
-/// The action family a trigger pre-commits (`docs/portfolio-analysis.md` §The
-/// position thesis ledger — add / trim / sell triggers; a `role_risk_only` ledger's
-/// triggers are trim / sell only, since its feasible set never offers the add family).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TriggerFamily {
-    Add,
-    Trim,
-    Sell,
-}
-
-/// The machine-evaluable core of a **quantitative** condition — the structural
-/// identity the app matches across rewrites (`docs/trade-opportunities.md §The
-/// opportunity` — the suite's shared condition-identity contract, applied at
-/// Portfolio's seams): a rewrite that leaves this core unchanged carries the
-/// condition's id and evaluation state through any re-wording; an edit to it
-/// supersedes. The cadence and required consecutive-observation count are derived
-/// from the series ([`engine::LedgerSeries`]), so they are not part of the authored
-/// core.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuantCore {
-    pub series: engine::LedgerSeries,
-    pub comparator: LedgerComparator,
-    pub threshold: f64,
-    /// Materiality margin (same units as the series, absolute): a breach counts only
-    /// beyond `threshold ± margin` — the noise guard. Clamped non-negative at
-    /// validation.
-    pub margin: f64,
-}
-
-impl QuantCore {
-    /// The executable sentence the app renders from the core — the statement a
-    /// quantitative condition persists and every reader sees
-    /// (`docs/portfolio-analysis.md` §The position thesis ledger,
-    /// `portfolio-v45`): the model's short name, the series, its basis on a flow
-    /// series, the direction, the level in the series' unit, the confirmation
-    /// cadence and the margin. What the engine runs is exactly what the sentence
-    /// says, by construction, so no prose is ever read back against the core.
-    pub fn render(&self, label: Option<&str>, basis: Option<StatementBasis>) -> String {
-        let series = self.series;
-        let basis = basis
-            .filter(|_| series.flow_basis())
-            .map(|b| format!(" ({})", b.short()))
-            .unwrap_or_default();
-        let margin = if self.margin > 0.0 {
-            format!("margin ±{}", series.render_margin(self.margin))
-        } else {
-            "no margin".to_string()
-        };
-        let rule = format!(
-            "{}{basis} {} {}, {}; {margin}",
-            series.render_name(),
-            self.comparator.as_kebab(),
-            series.render_level(self.threshold),
-            series.confirmation_note()
-        );
-        match label.map(str::trim).filter(|l| !l.is_empty()) {
-            Some(label) => format!("{label} — {rule}"),
-            None => capitalize_first(&rule),
-        }
-    }
-}
-
-/// The first character upper-cased — a rendered statement with no name opens
-/// as a sentence.
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    /// low-conviction guess. The holding's prior thesis document is retained
+    /// unrewritten on the exit (`docs/portfolio-analysis.md` §Evidence floor:
+    /// only a full pass writes a new one), so the next continuity run still
+    /// reads it; `None` on a debut abstention or after a prior with no document.
+    InsufficientEvidence {
+        reason: String,
+        prior_thesis_document: Option<String>,
+    },
 }
 
 /// Which statement window a holding's fundamentals were computed on
@@ -995,189 +832,6 @@ impl EquitySource {
     }
 }
 
-/// A quantitative condition's **evaluation state** — engine state, distinct from the
-/// model-authored ledger content (`docs/storage.md §Local Analysis Suite Storage`),
-/// observation-identity-keyed so the breach streak advances only on a distinct new
-/// print or filing, never on re-evaluating the same one.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConditionEvalState {
-    /// The last distinct observation evaluated (a trading-day date for a market-data
-    /// series; a statement period end for a filing-cadence one).
-    pub last_observation_id: Option<String>,
-    pub last_value: Option<f64>,
-    /// The run date of the last evaluation.
-    pub last_evaluated_at: Option<String>,
-    /// Consecutive distinct breaching observations (reset by a clean observation).
-    pub breach_streak: u32,
-    pub first_breach_at: Option<String>,
-    /// Set when the streak reached the series' required count — a confirmed breach.
-    pub confirmed_at: Option<String>,
-    /// The acknowledgment transition (`docs/portfolio-analysis.md` §The position
-    /// thesis ledger): once a full pass consumes a confirmed breach it stamps the
-    /// confirming observation here, so the breach re-raises only when confirmed
-    /// against a *later* observation, never straight back from the one already
-    /// examined.
-    pub acknowledged_observation_id: Option<String>,
-    /// The statement basis this condition's streak was accumulated under, stamped by
-    /// the engine on first evaluation ([`StatementBasis`]).
-    ///
-    /// A statement-derived series compared across a basis change is comparing two
-    /// different measurements, so the engine types it **unevaluable** for that pass
-    /// and re-stamps — the streak cannot carry across, because the observations in it
-    /// were taken on the other basis. Stamped at authoring from the surface the
-    /// prompt described ([`ContinuityStamps`], Step 6g); a condition authored
-    /// where that surface carried no basis stays `None` until its first
-    /// evaluation, which adopts the current basis without a discontinuity (there
-    /// is nothing to disagree with).
-    pub authored_statement_basis: Option<StatementBasis>,
-    /// The equity source a balance-sheet instant's streak — debt/equity or
-    /// price/book — was accumulated under, stamped at authoring
-    /// ([`ContinuityStamps`]) or else by the engine on first evaluation beside
-    /// the basis ([`EquitySource`]); `None` on every other series, which never
-    /// read it. A source change is the instants' own
-    /// discontinuity, under the same one-pass-unevaluable-and-re-stamp treatment
-    /// as a basis change, and a pass on which both change is one pass, both
-    /// adopted together. No serde default (the fresh-start-2 rule).
-    pub authored_equity_source: Option<EquitySource>,
-}
-
-/// The continuity stamps of one authoring surface — the statement basis and the
-/// equity source the interpretation prompt described to the model when it
-/// authored a quantitative condition ([`ConditionEvalState`]'s two `authored_*`
-/// fields). Step 6g stamps every new or superseding quantitative condition from
-/// them, per series, so the first full-pass evaluation after a debut already has
-/// a stamp to disagree with; a condition authored where the surface carried
-/// none adopts at its first evaluation. Without this the run-1 ledger's instants
-/// carried no stamp until run 2's evaluation, which adopted silently across the
-/// very flip the equity gate exists for (Codex round 1 on the 2026-08-24
-/// review's group 4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ContinuityStamps {
-    pub statement_basis: Option<StatementBasis>,
-    pub equity_source: Option<EquitySource>,
-}
-
-impl ContinuityStamps {
-    /// No stamps — a surface with neither statement lines nor an equity leg (the
-    /// research-less validator wrapper the tests use).
-    pub const NONE: Self = Self {
-        statement_basis: None,
-        equity_source: None,
-    };
-
-    /// The stamps of the financials the prompt rendered.
-    pub fn of(fin: &engine::CompanyFinancials) -> Self {
-        Self {
-            statement_basis: fin.statement_basis,
-            equity_source: fin.equity_source,
-        }
-    }
-
-    /// A newly authored quantitative condition's starting state on `series`: the
-    /// basis stamp on every statement-derived series, the equity stamp on the
-    /// two balance-sheet instants alone — the same per-series rule the
-    /// evaluation's gate reads (`engine::evaluate_ledger_conditions_gated`).
-    pub fn authored_state(self, series: engine::LedgerSeries) -> ConditionEvalState {
-        let statement = series.statement_derived();
-        let instant = statement && !series.flow_basis();
-        ConditionEvalState {
-            authored_statement_basis: self.statement_basis.filter(|_| statement),
-            authored_equity_source: self.equity_source.filter(|_| instant),
-            ..Default::default()
-        }
-    }
-}
-
-/// One ledger condition — a key falsifier or an action trigger, **quantitative**
-/// (carrying a validated machine-evaluable core plus evaluation state) or
-/// **qualitative** (research / model-checkable prose; no machine state).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LedgerCondition {
-    /// Stable app-assigned id (`docs/portfolio-analysis.md` §The position thesis
-    /// ledger) — carried across rewrites when the machine core is unchanged; a
-    /// changed core supersedes into a fresh id.
-    pub condition_id: String,
-    pub role: ConditionRole,
-    /// The trigger's action family (`None` on a falsifier).
-    pub trigger_family: Option<TriggerFamily>,
-    /// The condition's statement. On a quantitative condition — kept or refused
-    /// — the app renders it from the core ([`QuantCore::render`]), so the
-    /// sentence is the rule the engine runs; on a qualitative condition it is
-    /// the model's own prose (`portfolio-v45`).
-    pub statement: String,
-    /// The model's short name for a quantitative condition, kept or refused,
-    /// rendered into the statement's head; `None` on a qualitative condition,
-    /// whose statement is the model's. No serde default (the fresh-start-2
-    /// rule): every persisted condition carries the field.
-    pub label: Option<String>,
-    /// The validated machine core — present only on a quantitative condition.
-    pub quant: Option<QuantCore>,
-    /// Logged when a claimed-quantitative condition failed executability validation
-    /// and was downgraded to qualitative (never dropped —
-    /// `docs/portfolio-workflow.md` §Step 6g).
-    pub downgraded_reason: Option<String>,
-    /// A third-party technology-event falsifier (`docs/portfolio-analysis.md` §The
-    /// position thesis ledger — the first-class qualitative falsifier class).
-    pub technology_class: bool,
-    /// The validated tripped (falsifier) / fired (trigger) claim — set only when the
-    /// claim mapped to the engine's deterministic crossing; an unmapped claim is
-    /// cleared and logged, so the ledger can't be quietly rewritten to fit a verdict.
-    pub tripped: bool,
-    /// The id of the condition this one superseded (a rewrite that changed the
-    /// machine core — fresh streak, the old condition closed into the audit).
-    pub supersedes: Option<String>,
-    /// Engine evaluation state (quantitative conditions only; app-owned).
-    pub eval_state: Option<ConditionEvalState>,
-}
-
-impl LedgerCondition {
-    /// Re-render a quantitative condition's statement from its core — after the
-    /// split re-basis has moved a price-denominated core, so the sentence names
-    /// the level the core now carries.
-    pub fn rerender_statement(&mut self) {
-        if let Some(q) = &self.quant {
-            let basis = self.eval_state.as_ref().and_then(|s| s.authored_statement_basis);
-            self.statement = q.render(self.label.as_deref(), basis);
-        }
-    }
-}
-
-/// The three monitor scenarios.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ScenarioKind {
-    Bear,
-    Base,
-    Bull,
-}
-
-impl ScenarioKind {
-    /// The word the prompts print — the serde form ("bear").
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Bear => "bear",
-            Self::Base => "base",
-            Self::Bull => "bull",
-        }
-    }
-}
-
-/// One bear / base / bull monitor scenario (`docs/portfolio-analysis.md` §The
-/// position thesis ledger): its defining conditions, a rough probability lean, and —
-/// on the `priced` branch — the **engine's** scenario price target, stamped by the
-/// app from the engine's own scenario set (never a model-written number). A
-/// `role_risk_only` scenario is condition-only (`engine_target` stays `None`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MonitorScenario {
-    pub scenario: ScenarioKind,
-    /// The conditions that define this scenario (prose).
-    pub conditions: String,
-    /// Rough probability lean, percent (0–100).
-    pub probability_pct: f64,
-    /// The engine's twelve-month scenario price target for this scenario — app-stamped.
-    pub engine_target: Option<f64>,
-}
-
 /// Spot's relationship to the engine's twelve-month bear–bull band. Stamped onto
 /// the engine arm at the checkpoint ([`GradedVerdict::authored_band_relation`])
 /// so the quick check's `PriceOutsideBand` flag fires on a *change* in the
@@ -1207,119 +861,6 @@ impl BandRelation {
     }
 }
 
-/// One key driver — a variable the thesis actually depends on, tied where possible to
-/// an engine-tracked series so the next run can read whether it moved.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KeyDriver {
-    /// The app-assigned stable identity (ruled 2026-08-24): assigned at ledger
-    /// validation, preserved across rewrites while the driver's name carries,
-    /// and the referential anchor a validated leading indicator must cite
-    /// before its presence may suppress the narrative cap.
-    pub driver_id: String,
-    pub name: String,
-    /// The engine series backing the driver, where one exists.
-    pub series: Option<engine::LedgerSeries>,
-}
-
-/// The persisted per-holding **thesis ledger** (`docs/portfolio-analysis.md` §The
-/// position thesis ledger): the standing thesis with its goalposts, carried forward
-/// run to run, re-evaluated by the engine, rewritten by interpretation, and
-/// validated by the continuity check. Persisted on the holding's verdict; an
-/// insufficient-evidence exit retains the prior ledger unchanged.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ThesisLedger {
-    pub branch: LedgerBranch,
-    /// The thesis when the position first entered an analysis — frozen at debut and
-    /// carried immutable, so drift stays legible.
-    pub original_thesis: String,
-    pub current_thesis: String,
-    pub key_drivers: Vec<KeyDriver>,
-    /// The bear / base / bull monitor.
-    pub monitor: Vec<MonitorScenario>,
-    /// What must improve to migrate toward the bull case.
-    pub what_must_improve: String,
-    /// What must not break to stay in the base case.
-    pub what_must_not_break: String,
-    /// Key falsifiers and action triggers.
-    pub conditions: Vec<LedgerCondition>,
-}
-
-/// One engine-detected condition crossing (`docs/portfolio-analysis.md` §The
-/// position thesis ledger — the engine tests which quantitative falsifiers and
-/// triggers crossed this run, under their persistence semantics), fed to
-/// interpretation and recorded on the audit.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConditionCrossing {
-    pub condition_id: String,
-    pub statement: String,
-    pub role: ConditionRole,
-    pub outcome: CrossingOutcome,
-    pub observed_value: f64,
-    pub threshold: f64,
-    /// The distinct observation the evaluation keyed on.
-    pub observation_id: String,
-    /// The date the crossing **confirmed** on — the run/sweep whose print pushed the
-    /// streak to its required count, carried from the condition's own
-    /// [`ConditionEvalState::confirmed_at`]. `None` only on a `FirstBreach` (nothing
-    /// has confirmed yet); a confirmed crossing is always stamped, so the consumer
-    /// reads the date directly rather than dating it at the consuming run.
-    ///
-    /// It exists because the confirming pass and the pass that *consumes* the
-    /// crossing are not the same event: a between-run sweep can confirm days before
-    /// the next full run reads it. Anything positioning the confirmation in time —
-    /// the falsifier lead-time read above all — must date it here, not at the
-    /// consuming run.
-    pub confirmed_at: Option<String>,
-}
-
-/// A crossing's persistence-semantics outcome: a lone noisy print is a quiet
-/// first-breach note; only a confirmed breach (the series' required consecutive
-/// distinct observations) trips a falsifier or fires a trigger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CrossingOutcome {
-    FirstBreach,
-    Confirmed,
-}
-
-/// A prior condition the rewrite closed — superseded by an edited core, or removed
-/// outright — preserved **whole**: statement, machine core, and its accumulated
-/// evaluation state as of this run's evaluation. The shared contract requires the
-/// old condition to close *with its state* into the audit record
-/// (`docs/trade-opportunities.md §The opportunity`), so the record stays
-/// reconstructible after older runs prune.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClosedCondition {
-    /// The successor's condition id on a supersession; `None` on a removal.
-    pub superseded_by: Option<String>,
-    pub condition: LedgerCondition,
-}
-
-/// The ledger legs of a holding's continuity audit (`docs/portfolio-workflow.md`
-/// §Step 6g): what the engine detected, what validation downgraded / superseded /
-/// closed / rejected — recorded so a ledger rewrite is traceable, never silent.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct LedgerAudit {
-    /// The crossings this pass consumed as continuity input.
-    pub crossings: Vec<ConditionCrossing>,
-    /// Conditions whose series could not be resolved this run (typed, not silent).
-    pub unevaluable: Vec<String>,
-    /// Claimed-quantitative conditions downgraded to qualitative (logged, never dropped).
-    pub downgraded: Vec<String>,
-    /// Rewrites that changed a machine core — the old condition closed whole (state
-    /// included), the successor starting a fresh streak with a `supersedes` link.
-    pub superseded: Vec<ClosedCondition>,
-    /// Prior conditions the rewrite removed — closed whole into this record.
-    pub closed: Vec<ClosedCondition>,
-    /// Tripped / fired claims that mapped to no engine crossing (or no source-backed
-    /// finding) and were cleared.
-    pub rejected_claims: Vec<String>,
-    /// Draft conditions dropped as duplicates of one already validated this pass
-    /// (identical role + machine core, or an identical qualitative statement) — a
-    /// repetitive model can't pad the ledger with copies.
-    pub duplicates: Vec<String>,
-}
-
 /// One holding's complete verdict record, persisted per run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HoldingVerdict {
@@ -1331,11 +872,6 @@ pub struct HoldingVerdict {
     /// the model.
     pub position_change: PositionChange,
     pub disposition: VerdictDisposition,
-    /// The holding's thesis ledger (`docs/portfolio-analysis.md` §The position
-    /// thesis ledger) — present on an analyzed (priced / role-risk-only) verdict, and
-    /// carried unchanged on an insufficient-evidence exit; `None` on a not-rated
-    /// position.
-    pub thesis_ledger: Option<ThesisLedger>,
     /// The holding's **analysis vintage** — the UTC RFC3339 timestamp of the full
     /// pass that produced this verdict (`docs/portfolio-analysis.md` §Triggering:
     /// carried verdicts ride vintage-stamped). The job stamps it at persist — a
@@ -1355,6 +891,33 @@ pub struct HoldingVerdict {
     /// a selective run no longer force-includes on a reversal (selective = strictly
     /// the user's selection, ruled 2026-08-16). A fresh pass leaves this `false`.
     pub side_reversed: bool,
+}
+
+impl HoldingVerdict {
+    /// The thesis document this verdict carries — the analyzed branches' own,
+    /// an abstention's retained prior document, and none on a not-rated
+    /// position. The continuity read of the holding's standing view
+    /// (`docs/portfolio-analysis.md` §Continuity and isolation).
+    pub fn thesis_document(&self) -> Option<&str> {
+        match &self.disposition {
+            VerdictDisposition::Priced(g) => Some(g.thesis_document.as_str()),
+            VerdictDisposition::RoleRiskOnly(r) => Some(r.thesis_document.as_str()),
+            VerdictDisposition::InsufficientEvidence {
+                prior_thesis_document,
+                ..
+            } => prior_thesis_document.as_deref(),
+            VerdictDisposition::NotRated { .. } => None,
+        }
+    }
+
+    /// The typed appendix where the verdict carries one — the priced branch
+    /// alone; a `role_risk_only` read and every exit carry none.
+    pub fn appendix(&self) -> Option<&ThesisAppendix> {
+        match &self.disposition {
+            VerdictDisposition::Priced(g) => Some(&g.appendix),
+            _ => None,
+        }
+    }
 }
 
 /// A verdict's effective analysis vintage: its own `analyzed_at` stamp, else the
@@ -1777,10 +1340,6 @@ pub struct HoldingAudit {
     /// ([`engine::grade_parameter_change`]). Stamped on every audit, the early
     /// exits included.
     pub grade_parameter_version: String,
-    /// The ledger legs of the continuity audit — crossings consumed, downgrades,
-    /// supersessions, closures, rejected claims (`docs/portfolio-workflow.md` §Step
-    /// 6g). `None` on a not-rated holding.
-    pub ledger_audit: Option<LedgerAudit>,
     /// The stored closed-form re-anchor basis for the engine-only quick paths
     /// (`docs/portfolio-analysis.md` §The quick check) — the anchor-window spread
     /// percentiles, drivers, and comparators the last full pass computed. `None` on
@@ -1851,11 +1410,6 @@ pub struct HoldingAudit {
     /// dossier assembled one. `None` on holdings with no option legs, funds, skipped
     /// retrievals.
     pub option_overlay: Option<dossier::OptionOverlay>,
-    /// The validated what-changed attribution ([`WhatChangedAudit`]) — the typed rows
-    /// resolved against the rendered input delta at the 6g seam, with the
-    /// standing-thesis and self-correction signals outcome learning consumes. `None`
-    /// on debuts, every early exit.
-    pub what_changed_audit: Option<WhatChangedAudit>,
     /// The research-loop audit record (`docs/storage.md §Local Analysis Suite
     /// Storage` — the research-derived artifacts): sources with retrieval timestamps,
     /// the distilled findings (the combined object and the reconciled per-topic seed
@@ -2046,7 +1600,8 @@ pub struct HoldingAudit {
 /// scale and target positivity, but the grammar cannot express range
 /// keywords and the app never checked, so a finite `10000` derived an
 /// ordinary A and a zero or negative target persisted into the scoreboard.
-/// The decode now rejects an off-domain response ([`validate_model_arm`])
+/// The decode now rejects an off-domain response (`validate_model_arm`, since
+/// replaced by [`validate_appendix_domain`] on the appendix)
 /// under the bounded retry-once's own class, and the model-arm paragraph
 /// names each domain as enforced — a prompt-line change and an admission
 /// gate together, stamped so a pre-fix checkpoint cannot resume into rows
@@ -2610,7 +2165,22 @@ pub struct HoldingAudit {
 /// soft flags are computed and persisted beside the hard-forensic record and
 /// render on no prompt yet. The persisted audit moves the trail to
 /// `checkpoint-v18` and the archive to format 14.
-pub const PROMPT_VERSION: &str = "portfolio-v69";
+/// `portfolio-v70` (the holding verdict, task 1 — the thesis document and the
+/// typed appendix): the structured interpretation is replaced by the
+/// thesis-document conversation — a thinking message with no grammar that
+/// writes the document over HOLDING, FETCHED VALUES, COMPUTED, MARKET
+/// ANALYSIS, ANALYSIS and on a continuity run PRIOR THESIS verbatim, then a
+/// non-thinking appendix message under the four-key nullable grammar; the
+/// `role_risk_only` message is the first message alone; the soft forensic
+/// flags render for the first time; the action packet renders VERDICT (the
+/// conviction, the three expected prices and the document verbatim) in place
+/// of the analyst SCORES row, the analyst PRICE TARGETS rows, TARGET
+/// RATIONALE, CONVICTION AND OUTLOOK, FINANCIAL SUMMARY, THESIS, SCENARIOS,
+/// PRIOR ANALYSIS and CHANGES SINCE THE PRIOR ANALYSIS; the ledger, the
+/// what-changed audit, the retrospective and the input delta leave every
+/// prompt. The persisted verdict moves the trail to `checkpoint-v20` and the
+/// archive to format 16.
+pub const PROMPT_VERSION: &str = "portfolio-v70";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2684,440 +2254,6 @@ pub struct RatePrints {
     pub fetched_at: String,
 }
 
-// ---- The model's schema-constrained interpretation ---------------------------
-
-/// The model's **draft** of a quantitative condition core — the claim the app
-/// validates (`docs/portfolio-workflow.md` §Step 6g: a class claim is app-validated,
-/// never a bare assertion): `series` / `comparator` are strings here so an
-/// unresolvable claim downgrades to qualitative with a logged reason rather than
-/// failing deserialization.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuantCoreDraft {
-    pub series: String,
-    pub comparator: String,
-    pub threshold: f64,
-    #[serde(default)]
-    pub margin: f64,
-}
-
-/// The model's draft of one falsifier.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FalsifierDraft {
-    pub statement: String,
-    /// The machine core where the condition is quantitative; `null` = qualitative.
-    #[serde(default)]
-    pub quant: Option<QuantCoreDraft>,
-    #[serde(default)]
-    pub technology_class: bool,
-    /// The model's tripped claim — honored only when it maps to an engine crossing
-    /// or a source-backed finding (Step 6g).
-    #[serde(default)]
-    pub tripped: bool,
-}
-
-/// The model's draft of one action trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TriggerDraft {
-    pub statement: String,
-    /// "add" / "trim" / "sell" (a `role_risk_only` ledger offers trim / sell only).
-    pub family: String,
-    #[serde(default)]
-    pub quant: Option<QuantCoreDraft>,
-    /// The model's fired claim — validated like a tripped falsifier.
-    #[serde(default)]
-    pub fired: bool,
-}
-
-/// The model's draft of one monitor scenario — conditions and a probability lean
-/// only; the engine's scenario price target is stamped by the app, never authored.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ScenarioDraft {
-    pub conditions: String,
-    pub probability_pct: f64,
-}
-
-/// The model's rewritten thesis ledger (`docs/portfolio-analysis.md` §The position
-/// thesis ledger — interpretation "rewrites the thesis, re-weights the scenarios,
-/// and re-sets the triggers"). The app validates it at the 6g seam: executability,
-/// condition identity / carry, and tripped / fired claims.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LedgerDraft {
-    /// The current thesis (the original thesis is app-frozen at debut, never re-authored).
-    pub thesis: String,
-    pub key_drivers: Vec<KeyDriverDraft>,
-    pub bear: ScenarioDraft,
-    pub base: ScenarioDraft,
-    pub bull: ScenarioDraft,
-    pub what_must_improve: String,
-    pub what_must_not_break: String,
-    pub falsifiers: Vec<FalsifierDraft>,
-    pub triggers: Vec<TriggerDraft>,
-}
-
-/// One key-driver draft (name + the engine series claim, validated app-side).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KeyDriverDraft {
-    pub name: String,
-    #[serde(default)]
-    pub series: Option<String>,
-}
-
-// ---- The what-changed attribution (the metric-level 6g validator) ---------------
-//
-// The typed half of the what-changed audit (`docs/portfolio-analysis.md` §What
-// changed): the model authors one row per moved intrinsic value, attributing it to
-// an external change or a self-correction; the 6g seam resolves every external
-// attribution against the engine's rendered input delta and downgrades an
-// unresolvable one to self-correction with a logged reason — so a no-new-facts
-// swing cannot be laundered as "the market changed" (`docs/portfolio-workflow.md`
-// §Step 6g).
-
-/// Which intrinsic value a what-changed row claims moved. The thesis-scoped kinds
-/// (`Thesis`, `ScenarioWeights`) are the standing-thesis episode leg's key
-/// (`docs/portfolio-analysis.md` §Outcome learning): value-level moves are input
-/// movement — observations on the active episode, never an open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ChangedValueKind {
-    Grade,
-    SubScore,
-    Conviction,
-    Target,
-    Horizon,
-    ScenarioWeights,
-    Thesis,
-    Condition,
-    /// The `role_risk_only` branch's role / exposure / risk reads.
-    RoleRead,
-}
-
-/// How a moved value is attributed (`docs/portfolio-analysis.md` §What changed):
-/// one of the three external categories, tied to evidence — or the flagged
-/// self-correction, where the inputs did not materially change and the model is
-/// revising its own prior read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ChangeAttribution {
-    MarketData,
-    CompanyInformation,
-    ResearchNarrative,
-    SelfCorrection,
-}
-
-impl ChangeAttribution {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::MarketData => "market-data",
-            Self::CompanyInformation => "company-information",
-            Self::ResearchNarrative => "research-narrative",
-            Self::SelfCorrection => "self-correction",
-        }
-    }
-
-    /// The attribution as the action packet prints it, in words.
-    pub fn as_words(self) -> &'static str {
-        match self {
-            Self::MarketData => "market data",
-            Self::CompanyInformation => "company information",
-            Self::ResearchNarrative => "research narrative",
-            Self::SelfCorrection => "self-correction",
-        }
-    }
-}
-
-/// One typed row of the what-changed audit, authored at 6f beside the prose line.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WhatChangedEntry {
-    pub kind: ChangedValueKind,
-    /// Which value moved (e.g. "quality sub-score", "twelve-month base target").
-    pub detail: String,
-    pub old: String,
-    pub new: String,
-    pub attribution: ChangeAttribution,
-    /// The input-delta entry backing an external attribution — the bracketed id
-    /// (e.g. "D2") or the entry's label verbatim; empty on a self-correction.
-    pub evidence: String,
-}
-
-/// One concrete entry of the run's input delta, rendered into the interpretation
-/// prompt with a stable id the what-changed rows cite as evidence.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DeltaEntry {
-    pub id: String,
-    pub label: String,
-    /// For a fresh research-finding entry, the ledger condition the distillation
-    /// tied it to (the validated `related_condition_id`) — the source-backed leg
-    /// a qualitative tripped/fired claim needs, surfaced to the interpretation
-    /// prompt as a research-supported mark on that condition
-    /// (`docs/portfolio-workflow.md` §Step 6d, §Step 6g).
-    pub related_condition_id: Option<String>,
-}
-
-/// The validated what-changed attribution, persisted with the holding's audit
-/// (`docs/portfolio-workflow.md` §Step 6g): the post-validation rows (an
-/// unresolvable external attribution downgraded to self-correction), the input
-/// delta they resolved against, and the two signals outcome learning consumes.
-/// `None` on debuts (nothing to attribute) and every early exit.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WhatChangedAudit {
-    pub entries: Vec<WhatChangedEntry>,
-    /// The rendered input-delta entries the external attributions resolved against.
-    pub input_delta: Vec<DeltaEntry>,
-    /// One line per validator adjustment (the logged reason): a downgraded
-    /// external row, a dropped no-move row (`old` == `new`), or a dropped
-    /// exact-duplicate row.
-    pub downgrades: Vec<String>,
-    /// Post-validation self-corrections this run (authored plus downgraded).
-    pub self_correction_count: u32,
-    /// The standing-thesis signal (`docs/portfolio-analysis.md` §Outcome
-    /// learning): a resolved external thesis / scenario-weights row, or any
-    /// self-correction.
-    pub thesis_changed: bool,
-}
-
-/// The `what_changed_entries` array schema, per branch: the priced kinds cover the
-/// intrinsic values; the role-risk branch swaps them for its role read.
-fn what_changed_entries_schema(role_risk: bool) -> Value {
-    let kinds: Vec<&str> = if role_risk {
-        vec!["role-read", "scenario-weights", "thesis", "condition"]
-    } else {
-        vec![
-            "grade",
-            "sub-score",
-            "conviction",
-            "target",
-            "horizon",
-            "scenario-weights",
-            "thesis",
-            "condition",
-        ]
-    };
-    json!({
-        "type": "array",
-        "items": {
-            "type": "object",
-            "properties": {
-                "kind": { "type": "string", "enum": kinds },
-                "detail": { "type": "string" },
-                "old": { "type": "string" },
-                "new": { "type": "string" },
-                "attribution": {
-                    "type": "string",
-                    "enum": [
-                        "market-data",
-                        "company-information",
-                        "research-narrative",
-                        "self-correction"
-                    ]
-                },
-                "evidence": { "type": "string" }
-            },
-            "required": ["kind", "detail", "old", "new", "attribution", "evidence"]
-        }
-    })
-}
-
-/// The model's grammar-constrained output (Ollama native `format`) — the only thing
-/// the 122B authors at interpretation. The engine arm's numbers come from the
-/// engine; since `portfolio-v7` this also carries the model arm's own numbers
-/// (sub-scores, target bands — [`ModelView`]'s sources) beside the judgment calls
-/// (conviction, horizon reads), the prose, the retrospective self-assessment, and
-/// the rewritten thesis ledger. Since `portfolio-v9` it carries **no action** —
-/// the per-holding action call authors that afterward ([`ActionDecision`]), so
-/// this stage stays profile-blind. Grammar-constrained decoding requests the
-/// schema shape; the pipeline still parses and validates the returned body at
-/// this stage boundary (`docs/local-models.md §Schema-constrained output`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Interpretation {
-    pub conviction: Conviction,
-    pub horizon_outlook: HorizonOutlook,
-    pub financial_summary: String,
-    /// The model's explanation of its own `model_price_targets` — the base-case
-    /// assumptions and the departure from the engine's twelve-month base target
-    /// (fix list 3.1, `portfolio-v38`).
-    pub model_target_rationale: String,
-    /// The one-line continuity summary. Grammar-required on a continuity call;
-    /// on a debut the app writes [`DEBUT_WHAT_CHANGED`] before the body is
-    /// typed ([`complete_debut_response`]), so the field is always present here.
-    pub what_changed: String,
-    /// The typed what-changed rows beside the prose line ([`WhatChangedEntry`]) —
-    /// one per moved intrinsic value, validated at the 6g seam against the
-    /// rendered input delta. Grammar-required on a continuity call; the app
-    /// writes `[]` on a debut, so no decode default is needed.
-    pub what_changed_entries: Vec<WhatChangedEntry>,
-    /// The rewritten thesis ledger — required; validated at the 6g seam.
-    pub ledger: LedgerDraft,
-    /// The model arm's four sub-scores (0–100, higher better) — its own read
-    /// beside the engine's, never validated against them (the two-arm contract),
-    /// gated to the declared scale at decode ([`validate_model_arm`]).
-    pub model_sub_scores: SubScores,
-    /// The model arm's freely-authored one- / twelve-month targets — no engine
-    /// bound or clamp applies; each leg finite and positive by the same gate.
-    pub model_price_targets: ModelPriceTargets,
-    /// The retrospective self-assessment (see [`ModelView::self_assessment`]).
-    pub self_assessment: String,
-}
-
-/// The ledger half of the interpretation schema (`docs/portfolio-analysis.md` §The
-/// position thesis ledger), shared by both branches: the series and comparator
-/// enums are structural, so a grammar-valid draft names only series the engine
-/// actually computes (the app still validates the claim — defense in depth behind
-/// the constraint). Since `portfolio-v38` the series enum is scoped to the
-/// vehicle kind (fix list 3.3, ruled 2026-09-16): a fund's schema lists only the
-/// fund-computable series and a stock's omits the expense ratio, so the model
-/// never inspects a general enum and discovers at 6g that a choice downgrades
-/// as uncomputable. A `role_risk_only` ledger's trigger-family enum drops `add`
-/// (its feasible set never offers the add family).
-pub fn ledger_schema(role_risk: bool, is_fund: bool) -> Value {
-    let series: Vec<&str> = engine::LedgerSeries::ALL
-        .iter()
-        .filter(|s| s.computable_for(is_fund))
-        .map(|s| s.as_kebab())
-        .collect();
-    // The nullable series enum for a key driver's optional backing series.
-    let mut series_or_null: Vec<Value> = series.iter().map(|s| json!(s)).collect();
-    series_or_null.push(Value::Null);
-    let quant = json!({
-        "type": ["object", "null"],
-        "properties": {
-            "series": { "type": "string", "enum": series },
-            "comparator": { "type": "string", "enum": ["below", "above"] },
-            "threshold": { "type": "number" },
-            "margin": { "type": "number" }
-        },
-        "required": ["series", "comparator", "threshold", "margin"]
-    });
-    let scenario = json!({
-        "type": "object",
-        "properties": {
-            "conditions": { "type": "string" },
-            "probability_pct": { "type": "number" }
-        },
-        "required": ["conditions", "probability_pct"]
-    });
-    let families: Vec<&str> = if role_risk {
-        vec!["trim", "sell"]
-    } else {
-        vec!["add", "trim", "sell"]
-    };
-    json!({
-        "type": "object",
-        "properties": {
-            "thesis": { "type": "string" },
-            "key_drivers": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": { "type": "string" },
-                        "series": { "type": ["string", "null"], "enum": series_or_null }
-                    },
-                    "required": ["name", "series"]
-                }
-            },
-            "bear": scenario, "base": scenario, "bull": scenario,
-            "what_must_improve": { "type": "string" },
-            "what_must_not_break": { "type": "string" },
-            "falsifiers": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "statement": { "type": "string" },
-                        "quant": quant,
-                        "technology_class": { "type": "boolean" },
-                        "tripped": { "type": "boolean" }
-                    },
-                    "required": ["statement", "quant", "technology_class", "tripped"]
-                }
-            },
-            "triggers": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "statement": { "type": "string" },
-                        "family": { "type": "string", "enum": families },
-                        "quant": quant,
-                        "fired": { "type": "boolean" }
-                    },
-                    "required": ["statement", "family", "quant", "fired"]
-                }
-            }
-        },
-        "required": [
-            "thesis", "key_drivers", "bear", "base", "bull",
-            "what_must_improve", "what_must_not_break",
-            "falsifiers", "triggers"
-        ]
-    })
-}
-
-/// The fields the priced interpretation must return on a continuity call. The
-/// schema's `required` set and the prompt's declaration are both built from this
-/// list (through [`interpretation_keys`]), so the enforced grammar and the stated
-/// contract cannot diverge. Three of these names — `conviction`, `ledger`,
-/// `self_assessment` — also appear in the instructional prose above the
-/// declaration, where a containment test cannot tell a real declaration from an
-/// incidental mention (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 2).
-pub const INTERPRETATION_KEYS: [&str; 10] = [
-    "conviction",
-    "horizon_outlook",
-    "financial_summary",
-    "model_target_rationale",
-    "what_changed",
-    "what_changed_entries",
-    "ledger",
-    "model_sub_scores",
-    "model_price_targets",
-    "self_assessment",
-];
-
-/// The `role_risk_only` branch's fields on a continuity call, on the same
-/// shared-constant footing, in the message's output order (`portfolio-v42`) so
-/// the contract line and the return shape agree.
-pub const ROLE_RISK_KEYS: [&str; 4] =
-    ["role_summary", "ledger", "what_changed_entries", "what_changed"];
-
-/// The two continuity fields the app writes itself on a debut (fix list 3.3,
-/// `portfolio-v38`, ruled 2026-09-16): with no prior verdict there is nothing to
-/// attribute, so neither is requested of the model — they leave the schema, the
-/// template and the declared key list, and [`complete_debut_response`] inserts
-/// them before the response is typed.
-pub const DEBUT_CONTINUITY_KEYS: [&str; 2] = ["what_changed", "what_changed_entries"];
-
-/// The app-written `what_changed` line on a debut (ruled 2026-09-16, F6).
-pub const DEBUT_WHAT_CHANGED: &str = "New holding (no prior verdict).";
-
-/// The priced branch's declared keys for a call: the full list on a continuity
-/// call, the list less the two debut continuity fields on a debut.
-pub fn interpretation_keys(debut: bool) -> Vec<&'static str> {
-    INTERPRETATION_KEYS
-        .iter()
-        .copied()
-        .filter(|k| !debut || !DEBUT_CONTINUITY_KEYS.contains(k))
-        .collect()
-}
-
-/// The `role_risk_only` branch's declared keys for a call, by the same rule.
-pub fn role_risk_keys(debut: bool) -> Vec<&'static str> {
-    ROLE_RISK_KEYS
-        .iter()
-        .copied()
-        .filter(|k| !debut || !DEBUT_CONTINUITY_KEYS.contains(k))
-        .collect()
-}
-
-/// Insert the app-written debut continuity fields into a decoded debut response
-/// body, so it types as the full wire struct. Idempotent on a body that already
-/// carries them (a stub or a test sample).
-pub(crate) fn complete_debut_response(body: &mut Value) {
-    if let Some(object) = body.as_object_mut() {
-        object.insert("what_changed".into(), json!(DEBUT_WHAT_CHANGED));
-        object.insert("what_changed_entries".into(), json!([]));
-    }
-}
-
 /// The frame sentences every object-returning call's system prompt closes
 /// with, after the role line and the output-name sentence (`portfolio-v62`,
 /// ruled 2026-09-29): the outputs are named once, up front, so the model
@@ -3128,68 +2264,54 @@ pub(crate) fn complete_debut_response(body: &mut Value) {
 pub(crate) const TWO_PART_FRAME: &str =
     "Part 1 of the message gives the inputs. Part 2 defines those outputs and gives the shape to return.";
 
-/// The priced branch's response-contract line, generated from
-/// [`interpretation_keys`]: the output names the system prompt states once, so
-/// the model knows what it is reading Part 1 for (`portfolio-v40`, ruled
-/// 2026-09-17). Field meanings live in the message's Part 2, each in the item
-/// that produces it, and the shape is [`interpretation_return_shape`]; the
-/// schema's `required` set and this line are built from the same list, so the
-/// enforced grammar and the stated contract cannot diverge.
-pub fn interpretation_response_contract(debut: bool) -> String {
-    response_contract_line(&interpretation_keys(debut))
-}
-
-/// The output-name sentence of every two-part message's system prompt, from
-/// the call's declared key list — one form for the priced, role/risk and
-/// action contracts. Since `portfolio-v62` it follows the role line and
-/// precedes [`TWO_PART_FRAME`].
-fn response_contract_line(keys: &[&str]) -> String {
-    let (last, head) = keys.split_last().expect("the key list is never empty");
-    format!("You will return {} and {last}, as one JSON object.", head.join(", "))
-}
-
-/// Every object's keys in the order the task items state them, for both
-/// interpretation shapes; a key the table does not name sorts after the named
-/// ones, alphabetically.
-const SHAPE_KEY_ORDER: [&str; 45] = [
-    "role_summary",
-    "conviction", "horizon_outlook", "financial_summary", "model_sub_scores",
-    "model_price_targets", "model_target_rationale", "ledger", "what_changed_entries",
-    "what_changed", "self_assessment",
-    "short", "mid", "long",
-    "quality", "valuation", "momentum", "risk",
-    "one_month", "twelve_month",
-    "thesis", "key_drivers", "base", "bear", "bull",
-    "what_must_improve", "what_must_not_break", "falsifiers",
-    "triggers", "name", "statement", "family", "quant", "series",
-    "comparator", "threshold", "margin", "technology_class", "tripped", "fired",
-    "kind", "detail", "old", "new", "attribution",
+/// The fields the typed appendix message must return, in the message's own
+/// order (`docs/portfolio-workflow.md` §Step 6f): the schema's `required` set
+/// and the return shape are both built from this list, so the enforced
+/// grammar and the stated shape cannot diverge.
+pub const APPENDIX_KEYS: [&str; 4] = [
+    "conviction",
+    "expected_price_3m",
+    "expected_price_12m",
+    "expected_price_3y",
 ];
 
-/// The placeholder-only return shape the interpretation message closes with
-/// (`portfolio-v40`): the schema's nesting with every value blank — a string is
-/// "", a number 0, a boolean false, an enum its alternatives as "<a|b|c>", a
-/// nullable enum null, an array one item — and no field notes, since every field
-/// is defined in the Part 2 item that produces it. The role/risk message closes
-/// with [`role_risk_return_shape`] on the same renderer since `portfolio-v42`,
-/// and the distillation messages on it since `portfolio-v44` (`distill.rs`).
-pub fn interpretation_return_shape(is_fund: bool, debut: bool) -> String {
-    placeholder_shape(&interpretation_schema(is_fund, debut), &SHAPE_KEY_ORDER)
+/// The JSON Schema handed to Ollama's `format` for the typed appendix: the
+/// conviction a nullable string enum, each expected price a nullable number,
+/// every field required — the grammar admits `null` on each, the document's
+/// silence (`docs/portfolio-analysis.md` §The holding verdict). The schema
+/// stays within the subset the local grammar converter proves out (type /
+/// properties / required / enum); positivity is stated in the prompt and
+/// enforced at decode ([`validate_appendix_domain`]), never as a range keyword.
+pub fn appendix_schema() -> Value {
+    let price = json!({ "type": ["number", "null"] });
+    json!({
+        "type": "object",
+        "properties": {
+            "conviction": {
+                "type": ["string", "null"],
+                "enum": ["high", "medium", "low", Value::Null]
+            },
+            "expected_price_3m": price,
+            "expected_price_12m": price,
+            "expected_price_3y": price
+        },
+        "required": APPENDIX_KEYS
+    })
 }
 
-/// The placeholder-only return shape the role/risk message closes with
-/// (`portfolio-v42`, ruled 2026-09-17): the branch's schema through the one
-/// renderer, its keys in the task's order — role_summary, ledger, then on a
-/// continuity call what_changed_entries and what_changed.
-pub fn role_risk_return_shape(debut: bool) -> String {
-    placeholder_shape(&role_risk_interpretation_schema(debut), &SHAPE_KEY_ORDER)
+/// The placeholder-only return shape the appendix message closes with: the
+/// schema's four keys in the message's order, the conviction as its
+/// alternatives with null among them, each price as "<0|null>".
+pub fn appendix_return_shape() -> String {
+    placeholder_shape(&appendix_schema(), &APPENDIX_KEYS)
 }
 
 /// A schema's nesting with every value blank — a string is "", a number 0, a
 /// boolean false, an enum its alternatives as "<a|b|c>", a nullable enum with
 /// null among them, an array one item — written with each object's keys in
 /// `order` (unnamed keys after the named ones, alphabetically). The one
-/// renderer behind [`interpretation_return_shape`] and [`action_return_shape`].
+/// renderer behind [`appendix_return_shape`], [`action_return_shape`] and the
+/// distillation shapes (`distill.rs`).
 pub(crate) fn placeholder_shape(schema: &Value, order: &[&str]) -> String {
     fn visit(schema: &Value) -> Value {
         if let Some(values) = schema.get("enum").and_then(Value::as_array) {
@@ -3244,14 +2366,6 @@ pub(crate) fn placeholder_shape(schema: &Value, order: &[&str]) -> String {
         }
     }
     write(&visit(schema), order)
-}
-
-/// The `role_risk_only` branch's response-contract line, generated from
-/// [`role_risk_keys`] on the priced branch's footing (`portfolio-v42`): the
-/// output names alone; field meanings live in the message's Part 2 and the
-/// shape is [`role_risk_return_shape`].
-pub fn role_risk_response_contract(debut: bool) -> String {
-    response_contract_line(&role_risk_keys(debut))
 }
 
 /// The pre-v44 template renderer, retired from every prompt with the
@@ -3353,170 +2467,54 @@ pub(crate) fn response_template_samples(schema: &Value) -> Vec<Value> {
     samples
 }
 
-/// The JSON Schema handed to Ollama's `format` so the interpretation is structurally
-/// valid by construction. Mirrors [`Interpretation`]'s shape; enums are string enums
-/// with the same kebab labels serde uses, so the decoded object round-trips. Since
-/// `portfolio-v7` the schema is **structurally unrestricted** (the two-arm
-/// contract — `docs/portfolio-analysis.md` §The holding verdict): the conviction
-/// enum lists all three values; the engine's evidence and any pre-profit
-/// conviction ceiling render into the prompt as evidence and into the audit as
-/// annotations, never as schema bars. Since `portfolio-v38` the schema is
-/// scoped per call (fix list 3.3): the ledger's series enum to the vehicle kind,
-/// and on a debut the two continuity fields leave the shape and the required
-/// set — the app writes them ([`complete_debut_response`]).
-pub fn interpretation_schema(is_fund: bool, debut: bool) -> Value {
-    let read = json!({ "type": "string", "enum": ["bullish", "neutral", "bearish"] });
-    let convictions = vec!["high", "medium", "low"];
-    // The model target band stays within the schema subset the local grammar
-    // converter proves out (type / properties / required / enum) — the 0–100
-    // sub-score scale and target positivity are stated in the prompt, never as
-    // numeric range keywords the grammar cannot express. What the grammar
-    // cannot express the app enforces at decode: [`validate_model_arm`] gates
-    // the declared domain (Codex I6).
-    let target = json!({
-        "type": "object",
-        "properties": {
-            "base": { "type": "number" },
-            "bear": { "type": "number" },
-            "bull": { "type": "number" }
-        },
-        "required": ["base", "bear", "bull"]
-    });
-    let mut schema = json!({
-        "type": "object",
-        "properties": {
-            "conviction": { "type": "string", "enum": convictions },
-            "horizon_outlook": {
-                "type": "object",
-                "properties": { "short": read, "mid": read, "long": read },
-                "required": ["short", "mid", "long"]
-            },
-            "financial_summary": { "type": "string" },
-            "model_target_rationale": { "type": "string" },
-            "what_changed": { "type": "string" },
-            "what_changed_entries": what_changed_entries_schema(false),
-            "ledger": ledger_schema(false, is_fund),
-            "model_sub_scores": {
-                "type": "object",
-                "properties": {
-                    "quality": { "type": "number" },
-                    "valuation": { "type": "number" },
-                    "momentum": { "type": "number" },
-                    "risk": { "type": "number" }
-                },
-                "required": ["quality", "valuation", "momentum", "risk"]
-            },
-            "model_price_targets": {
-                "type": "object",
-                "properties": { "one_month": target, "twelve_month": target },
-                "required": ["one_month", "twelve_month"]
-            },
-            "self_assessment": { "type": "string" }
-        },
-        "required": interpretation_keys(debut)
-    });
-    if debut {
-        strip_debut_continuity_fields(&mut schema);
-    }
-    schema
-}
-
-/// Remove the two app-written debut continuity fields from a schema's
-/// properties (the required set is built without them already).
-fn strip_debut_continuity_fields(schema: &mut Value) {
-    if let Some(properties) = schema["properties"].as_object_mut() {
-        for key in DEBUT_CONTINUITY_KEYS {
-            properties.remove(key);
-        }
-    }
-}
-
-/// The model arm's numeric domain, enforced app-side at the interpretation
-/// call's decode (`docs/portfolio-analysis.md` §The holding verdict; the
-/// 2026-08-24 review's Codex I6, ruled 2026-08-29): each of the four sub-scores
-/// finite within 0–100 inclusive, each of the six target legs finite and
-/// strictly positive. The grammar cannot express range keywords
-/// ([`interpretation_schema`]) and the engine's own sub-scores are clamped at
-/// source, so without this gate a finite `10000` derived an ordinary A and a
-/// zero or negative target persisted into the scoreboard. The gate is the
-/// declared scale, never the engine's values — the two-arm contract's "never
-/// validated against the engine" holds — and it rejects, never clamps.
-/// Ordering is deliberately outside the domain: a band authored bear above
-/// bull persists as authored and renders tagged (Codex I5), scoring reading it
-/// as (min, max). The error names every offending field with its authored
+/// The appendix's declared domain, enforced app-side at the appendix message's
+/// decode (`docs/portfolio-analysis.md` §The holding verdict): each present
+/// expected price finite and strictly positive — a value a share price can
+/// take — a present conviction one of its three values (the type carries
+/// that), and `null` accepted on every field as the document's silence. The
+/// grammar cannot express range keywords ([`appendix_schema`]), so without this
+/// gate a zero or negative price would persist and later score. The gate is the
+/// declared domain, never the engine's values — the two-arm contract's "never
+/// validated against the engine" holds — and it rejects the object whole,
+/// never clamps. The error names every offending field with its authored
 /// value, never the first alone, so the failure detail reads the whole
-/// response.
-pub fn validate_model_arm(
-    sub_scores: &SubScores,
-    targets: &ModelPriceTargets,
-) -> Result<(), ModelArmDomainError> {
+/// response. The rule is general: a typed model-arm field is gated to its
+/// declared domain here, so a slice that adds one extends this gate with it.
+pub fn validate_appendix_domain(appendix: &ThesisAppendix) -> Result<(), AppendixDomainError> {
     let mut violations = Vec::new();
-    let axes = [
-        ("quality", sub_scores.quality),
-        ("valuation", sub_scores.valuation),
-        ("momentum", sub_scores.momentum),
-        ("risk", sub_scores.risk),
-    ];
-    for (axis, v) in axes {
-        if !(v.is_finite() && (0.0..=100.0).contains(&v)) {
-            violations.push(format!("model_sub_scores.{axis} = {v:?} (declared 0–100)"));
-        }
-    }
-    let windows = [("one_month", &targets.one_month), ("twelve_month", &targets.twelve_month)];
-    for (window, band) in windows {
-        for (leg, v) in [("base", band.base), ("bear", band.bear), ("bull", band.bull)] {
+    for (name, value) in [
+        ("expected_price_3m", appendix.expected_price_3m),
+        ("expected_price_12m", appendix.expected_price_12m),
+        ("expected_price_3y", appendix.expected_price_3y),
+    ] {
+        if let Some(v) = value {
             if !(v.is_finite() && v > 0.0) {
-                violations.push(format!(
-                    "model_price_targets.{window}.{leg} = {v:?} (declared a finite positive price)"
-                ));
+                violations.push(format!("{name} = {v:?} (declared a finite positive price, or null)"));
             }
         }
     }
     if violations.is_empty() {
         Ok(())
     } else {
-        Err(ModelArmDomainError { violations })
+        Err(AppendixDomainError { violations })
     }
 }
 
-/// Every model-arm value outside its declared domain in one response
-/// ([`validate_model_arm`]), each entry naming the field and the authored value.
+/// Every appendix value outside its declared domain in one response
+/// ([`validate_appendix_domain`]), each entry naming the field and the authored
+/// value.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ModelArmDomainError {
+pub struct AppendixDomainError {
     pub violations: Vec<String>,
 }
 
-impl std::fmt::Display for ModelArmDomainError {
+impl std::fmt::Display for AppendixDomainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "model arm off its declared domain: {}", self.violations.join("; "))
+        write!(f, "appendix off its declared domain: {}", self.violations.join("; "))
     }
 }
 
-impl std::error::Error for ModelArmDomainError {}
-
-/// The model's schema-constrained output for a **`role_risk_only`** holding — the
-/// union's other branch (`docs/portfolio-analysis.md` §Intrinsic verdict): the role
-/// read and the continuity note. None of the priced fields exist — no grade,
-/// conviction, horizon, or target rationale — **and no action**: the branch's
-/// action is authored by the dedicated per-holding action call afterward
-/// ([`ActionDecision`]), the full ladder structurally open while the engine
-/// arm's set stays the reduced [`ROLE_RISK_ACTIONS`], rendered as evidence
-/// (`docs/portfolio-analysis.md` §Portfolio action).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RoleRiskInterpretation {
-    /// The vehicle's mandate and the exposure it exists to supply (prose).
-    pub role_summary: String,
-    /// The one-line continuity summary — grammar-required on a continuity
-    /// call, app-written on a debut ([`complete_debut_response`]).
-    pub what_changed: String,
-    /// The typed what-changed rows beside the prose line ([`WhatChangedEntry`],
-    /// the branch's reduced kind set) — validated at the 6g seam. Grammar-
-    /// required on a continuity call; the app writes `[]` on a debut.
-    pub what_changed_entries: Vec<WhatChangedEntry>,
-    /// The rewritten fund ledger — same sections, the branch's two reductions
-    /// enforced at validation (condition-only monitor, trim / sell triggers).
-    pub ledger: LedgerDraft,
-}
+impl std::error::Error for AppendixDomainError {}
 
 /// The reduced action set — a `role_risk_only` holding's **engine set**, rendered
 /// into the action call's prompt as the engine arm's evidence: the add family
@@ -3524,29 +2522,6 @@ pub struct RoleRiskInterpretation {
 /// (`docs/portfolio-analysis.md` §Portfolio action). The model's choice stays
 /// structurally open (the full ladder), departures annotated on the audit.
 pub const ROLE_RISK_ACTIONS: [Action; 3] = [Action::SellAll, Action::Trim, Action::Hold];
-
-/// The JSON Schema for [`RoleRiskInterpretation`] — no action field (the branch's
-/// action is authored by the per-holding action call, where the reduced set is
-/// the engine arm's evidence and the model's choice is structurally open), and
-/// the ledger's reduced trigger-family enum is structural. The branch is a
-/// fund by construction, so its ledger series enum is the fund-computable set
-/// (`portfolio-v38`), and a debut drops the two app-written continuity fields.
-pub fn role_risk_interpretation_schema(debut: bool) -> Value {
-    let mut schema = json!({
-        "type": "object",
-        "properties": {
-            "role_summary": { "type": "string" },
-            "what_changed": { "type": "string" },
-            "what_changed_entries": what_changed_entries_schema(true),
-            "ledger": ledger_schema(true, true)
-        },
-        "required": role_risk_keys(debut)
-    });
-    if debut {
-        strip_debut_continuity_fields(&mut schema);
-    }
-    schema
-}
 
 // ---- The per-holding action call (the profile's one entry point) --------------
 
@@ -3615,235 +2590,104 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_templates_decode_with_all_enum_choices_and_populated_nested_shapes() {
-        // Every per-call shape (fix list 3.3, portfolio-v38): stock and fund,
-        // continuity and debut. A continuity sample decodes as returned; a
-        // debut sample decodes once the app has written its continuity fields.
-        for (is_fund, debut) in [(false, false), (false, true), (true, false), (true, true)] {
-            for mut priced in response_template_samples(&interpretation_schema(is_fund, debut)) {
-                assert_eq!(priced.get("what_changed").is_none(), debut, "fund {is_fund} debut {debut}");
-                assert_eq!(priced.get("what_changed_entries").is_none(), debut);
-                if debut {
-                    assert!(serde_json::from_value::<Interpretation>(priced.clone()).is_err(), "a debut body types only once completed");
-                    complete_debut_response(&mut priced);
-                }
-                let decoded: Interpretation = serde_json::from_value(priced).unwrap();
-                assert_eq!(decoded.what_changed_entries.is_empty(), debut);
-                if debut {
-                    assert_eq!(decoded.what_changed, DEBUT_WHAT_CHANGED);
-                }
-                assert!(decoded.ledger.falsifiers[0].quant.is_some());
-                assert!(decoded.ledger.triggers[0].quant.is_some());
-            }
+    fn the_appendix_shape_is_four_nullable_keys_in_the_message_order() {
+        // The appendix message carries no contract line of its own — the
+        // conversation's system message is the thesis document's — and its
+        // shape is the placeholder-only return shape on the shared renderer:
+        // the four declared keys in the message's order, the conviction as its
+        // alternatives with null among them, each price "<0|null>", no field
+        // notes or template narration.
+        let shape_text = appendix_return_shape();
+        assert_eq!(
+            shape_text,
+            "{\"conviction\":\"<high|medium|low|null>\",\"expected_price_3m\":\"<0|null>\",\
+             \"expected_price_12m\":\"<0|null>\",\"expected_price_3y\":\"<0|null>\"}"
+        );
+        for narration in ["Field notes", "Field alternatives", "code fence", "<conviction>"] {
+            assert!(!shape_text.contains(narration), "`{narration}`: {shape_text}");
         }
-        for debut in [false, true] {
-            for mut role in response_template_samples(&role_risk_interpretation_schema(debut)) {
-                assert_eq!(role.get("what_changed").is_none(), debut);
-                if debut {
-                    complete_debut_response(&mut role);
-                }
-                let decoded: RoleRiskInterpretation = serde_json::from_value(role.clone()).unwrap();
-                assert_eq!(decoded.what_changed_entries.is_empty(), debut);
-                assert!(role.get("model_sub_scores").is_none());
-                assert_ne!(role["ledger"]["triggers"][0]["family"], "add");
-            }
+        // The schema requires every key and admits null on each.
+        let schema = appendix_schema();
+        let required: Vec<&str> = schema["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(required, APPENDIX_KEYS.to_vec());
+        assert_eq!(schema["properties"]["conviction"]["type"], json!(["string", "null"]));
+        assert!(schema["properties"]["conviction"]["enum"].as_array().unwrap().iter().any(Value::is_null));
+        for key in &APPENDIX_KEYS[1..] {
+            assert_eq!(schema["properties"][*key]["type"], json!(["number", "null"]), "{key}");
         }
-        // Completing a body that already carries the fields is idempotent.
-        let mut twice = serde_json::json!({ "what_changed": "x", "what_changed_entries": [1] });
-        complete_debut_response(&mut twice);
-        complete_debut_response(&mut twice);
-        assert_eq!(twice["what_changed"], DEBUT_WHAT_CHANGED);
-        assert_eq!(twice["what_changed_entries"], serde_json::json!([]));
-
-        // The priced branch's contract is the output-name sentence, and its
-        // shape is the placeholder-only return shape (`portfolio-v40`): exactly
-        // the declared keys, every enum its alternatives as "<a|b|c>", a
-        // nullable enum "<…|null>" (a nullable scalar "<0|null>", none here),
-        // and no field notes or template narration.
-        fn placeholders_only(v: &Value, path: &str) {
-            match v {
-                Value::String(s) => assert!(
-                    s.is_empty() || (s.starts_with('<') && s.ends_with('>') && s.contains('|')),
-                    "{path}: {s}"
-                ),
-                Value::Number(n) => assert_eq!(n.as_f64(), Some(0.0), "{path}"),
-                Value::Bool(b) => assert!(!b, "{path}"),
-                Value::Array(items) => {
-                    assert_eq!(items.len(), 1, "{path}");
-                    placeholders_only(&items[0], &format!("{path}[]"));
-                }
-                Value::Object(m) => {
-                    for (k, child) in m {
-                        placeholders_only(child, &format!("{path}.{k}"));
-                    }
-                }
-                Value::Null => {}
-            }
+        // Every materialized enum choice decodes, null included.
+        for sample in response_template_samples(&schema) {
+            let decoded: ThesisAppendix = serde_json::from_value(sample).unwrap();
+            assert!(validate_appendix_domain(&decoded).is_ok());
         }
-        for (is_fund, debut) in [(false, false), (false, true), (true, false), (true, true)] {
-            let contract = interpretation_response_contract(debut);
-            assert!(
-                contract.starts_with("You will return ") && contract.ends_with(", as one JSON object."),
-                "{contract}"
-            );
-            for k in interpretation_keys(debut) {
-                assert!(contract.contains(k), "{contract}: {k}");
-            }
-            assert_eq!(contract.contains("what_changed"), !debut, "{contract}");
-            let shape_text = interpretation_return_shape(is_fund, debut);
-            assert!(!shape_text.contains('\n'), "{shape_text}");
-            let shape: Value = serde_json::from_str(&shape_text).unwrap();
-            let mut top: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
-            top.sort_unstable();
-            let mut declared = interpretation_keys(debut);
-            declared.sort_unstable();
-            assert_eq!(top, declared, "fund {is_fund} debut {debut}");
-            assert_eq!(shape["conviction"], "<high|medium|low>");
-            for horizon in ["short", "mid", "long"] {
-                assert_eq!(shape["horizon_outlook"][horizon], "<bullish|neutral|bearish>");
-            }
-            assert_eq!(shape["ledger"]["triggers"][0]["family"], "<add|trim|sell>");
-            assert_eq!(shape["ledger"]["triggers"][0]["quant"]["comparator"], "<below|above>");
-            let driver_series = shape["ledger"]["key_drivers"][0]["series"].as_str().unwrap().to_string();
-            assert!(driver_series.starts_with('<') && driver_series.ends_with("|null>"), "a nullable enum names null: {driver_series}");
-            // Nested keys follow the task's order, not the alphabet.
-            let horizon_keys: Vec<&str> = shape_text.split("\"horizon_outlook\":{").nth(1).unwrap().split('}').next().unwrap().split(',').map(|f| f.split(':').next().unwrap().trim_matches('"')).collect();
-            assert_eq!(horizon_keys, ["short", "mid", "long"], "{shape_text}");
-            let ledger_start = shape_text.find("\"ledger\":{").unwrap();
-            let after = &shape_text[ledger_start..];
-            let (i_thesis, i_base, i_bear, i_falsifiers) = (after.find("\"thesis\"").unwrap(), after.find("\"base\"").unwrap(), after.find("\"bear\"").unwrap(), after.find("\"falsifiers\"").unwrap());
-            assert!(i_thesis < i_base && i_base < i_bear && i_bear < i_falsifiers, "{shape_text}");
-            assert_eq!(shape["ledger"]["base"]["probability_pct"], 0);
-            // The series enum scoped to the vehicle (3.3a).
-            let series = shape["ledger"]["falsifiers"][0]["quant"]["series"].as_str().unwrap().to_string();
-            assert!(series.starts_with('<') && series.ends_with('>') && series.contains('|'), "{series}");
-            assert_eq!(series.contains("pe-ratio"), !is_fund, "{series}");
-            assert_eq!(series.contains("expense-ratio"), is_fund, "{series}");
-            if debut {
-                assert!(shape.get("what_changed").is_none() && shape.get("what_changed_entries").is_none());
-            } else {
-                let attribution = shape["what_changed_entries"][0]["attribution"].as_str().unwrap();
-                assert!(attribution.starts_with('<') && attribution.contains("self-correction"), "{attribution}");
-                assert_eq!(shape["what_changed"], "");
-            }
-            placeholders_only(&shape, "");
-            for narration in [
-                "Field notes",
-                "Field alternatives",
-                "never the literal placeholder",
-                "code fence",
-                "<conviction>",
-                "neutral\"",
-            ] {
-                assert!(!contract.contains(narration) && !shape_text.contains(narration), "`{narration}`: {contract} {shape_text}");
-            }
-        }
-        // The role/risk contract is the output-name sentence too, and its shape
-        // the placeholder-only return shape on the same renderer
-        // (`portfolio-v42`): the keys in the task's order, the trim / sell
-        // families, the fund series, no field notes or template narration.
-        for debut in [false, true] {
-            let contract = role_risk_response_contract(debut);
-            assert_eq!(
-                contract,
-                if debut {
-                    "You will return role_summary and ledger, as one JSON object."
-                } else {
-                    "You will return role_summary, ledger, what_changed_entries and what_changed, \
-                     as one JSON object."
-                }
-            );
-            assert_eq!(contract.contains("what_changed"), !debut, "{contract}");
-            let shape_text = role_risk_return_shape(debut);
-            assert!(!shape_text.contains('\n'), "{shape_text}");
-            let shape: Value = serde_json::from_str(&shape_text).unwrap();
-            let mut top: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
-            top.sort_unstable();
-            let mut declared = role_risk_keys(debut);
-            declared.sort_unstable();
-            assert_eq!(top, declared, "debut {debut}");
-            assert!(shape_text.starts_with("{\"role_summary\":\"\",\"ledger\":{\"thesis\":\"\""), "{shape_text}");
-            assert_eq!(shape["ledger"]["triggers"][0]["family"], "<trim|sell>");
-            let series = shape["ledger"]["falsifiers"][0]["quant"]["series"].as_str().unwrap().to_string();
-            assert!(series.contains("expense-ratio") && !series.contains("net-margin"), "{series}");
-            if debut {
-                assert!(shape.get("what_changed").is_none() && shape.get("what_changed_entries").is_none());
-            } else {
-                assert_eq!(shape["what_changed_entries"][0]["kind"], "<role-read|scenario-weights|thesis|condition>");
-                let i_entries = shape_text.find("\"what_changed_entries\"").unwrap();
-                let i_line = shape_text.find("\"what_changed\":\"\"").unwrap();
-                assert!(i_entries < i_line, "the rows before their summary: {shape_text}");
-            }
-            placeholders_only(&shape, "");
-            for narration in [
-                "Field notes",
-                "Field alternatives",
-                "never the literal placeholder",
-                "code fence",
-                "three sibling",
-                "both are required",
-                "<role_summary>",
-            ] {
-                assert!(!contract.contains(narration) && !shape_text.contains(narration), "`{narration}`: {contract} {shape_text}");
-            }
-        }
+        // A wholly null body decodes as the document's silence; a missing key
+        // reads as null too — model-written JSON stays lenient, and the grammar
+        // requires every key, so a decode never sees one missing.
+        let silent: ThesisAppendix = serde_json::from_value(json!({
+            "conviction": null, "expected_price_3m": null,
+            "expected_price_12m": null, "expected_price_3y": null
+        }))
+        .unwrap();
+        assert!(silent.is_empty());
+        assert_eq!(silent, ThesisAppendix::NONE);
+        let sparse: ThesisAppendix = serde_json::from_value(json!({ "conviction": "high" })).unwrap();
+        assert_eq!(sparse, ThesisAppendix { conviction: Some(Conviction::High), ..ThesisAppendix::NONE });
+        let mixed: ThesisAppendix = serde_json::from_value(json!({
+            "conviction": "low", "expected_price_3m": null,
+            "expected_price_12m": 145.0, "expected_price_3y": 210.5
+        }))
+        .unwrap();
+        assert_eq!(mixed.conviction, Some(Conviction::Low));
+        assert_eq!(mixed.expected_prices()[0], ("three-month", None));
+        assert_eq!(mixed.expected_prices()[1], ("twelve-month", Some(145.0)));
+        assert!(!mixed.is_empty());
         // The action contract is the output names alone (`portfolio-v41`); the
-        // fence sentence (fix list 3.13) and the field meanings live in the
-        // message's Part 2, and the shape is placeholder-only with the ladder
-        // inline.
+        // fence sentence and the field meanings live in the message's Part 2,
+        // and the shape is placeholder-only with the ladder inline.
         assert_eq!(action_response_contract(), "You will return action and rationale, as one JSON object.");
         assert_eq!(action_return_shape(), "{\"action\":\"<sell-all|trim|hold|add|add-aggressively>\",\"rationale\":\"\"}");
     }
 
     #[test]
-    fn model_arm_domain_admits_the_scale_edges_and_an_inverted_band() {
-        // 0 and 100 are on the scale; a tiny or huge finite positive price is a
-        // price; bear above bull is I5's authored-and-annotated case, in-domain.
-        let scores = SubScores { quality: 0.0, valuation: 100.0, momentum: 50.0, risk: 99.999 };
-        let bands = ModelPriceTargets {
-            one_month: ModelPriceTarget { base: 1e-9, bear: 500.0, bull: 50.0 },
-            twelve_month: ModelPriceTarget { base: 1e300, bear: 1.0, bull: 2.0 },
+    fn appendix_domain_admits_null_and_any_finite_positive_price() {
+        // Null on every field is the document's silence; a tiny or huge finite
+        // positive price is a price.
+        assert!(validate_appendix_domain(&ThesisAppendix::NONE).is_ok());
+        let edges = ThesisAppendix {
+            conviction: Some(Conviction::High),
+            expected_price_3m: Some(1e-9),
+            expected_price_12m: None,
+            expected_price_3y: Some(1e300),
         };
-        assert!(validate_model_arm(&scores, &bands).is_ok());
+        assert!(validate_appendix_domain(&edges).is_ok());
     }
 
     #[test]
-    fn model_arm_domain_rejects_every_off_scale_value_and_names_each() {
+    fn appendix_domain_rejects_every_off_domain_price_and_names_each() {
         // Every violation in one response is named with its authored value —
-        // the failure detail reads the whole arm, never the first miss alone —
-        // and the in-domain leg beside them is not.
-        let scores = SubScores {
-            quality: 100.0001,
-            valuation: -0.0001,
-            momentum: f64::NAN,
-            risk: f64::INFINITY,
+        // the failure detail reads the whole appendix, never the first miss
+        // alone — and the in-domain and null legs beside them are not.
+        let off = ThesisAppendix {
+            conviction: None,
+            expected_price_3m: Some(0.0),
+            expected_price_12m: Some(-12.5),
+            expected_price_3y: Some(f64::INFINITY),
         };
-        let bands = ModelPriceTargets {
-            one_month: ModelPriceTarget { base: 0.0, bear: -1.0, bull: f64::NAN },
-            twelve_month: ModelPriceTarget {
-                base: f64::NEG_INFINITY,
-                bear: 10.0,
-                bull: f64::INFINITY,
-            },
-        };
-        let err = validate_model_arm(&scores, &bands).unwrap_err();
-        assert_eq!(err.violations.len(), 9, "{err}");
+        let err = validate_appendix_domain(&off).unwrap_err();
+        assert_eq!(err.violations.len(), 3, "{err}");
         let text = err.to_string();
-        assert!(text.starts_with("model arm off its declared domain: "), "{text}");
+        assert!(text.starts_with("appendix off its declared domain: "), "{text}");
         for needle in [
-            "model_sub_scores.quality = 100.0001 (declared 0–100)",
-            "model_sub_scores.valuation = -0.0001",
-            "model_sub_scores.momentum = NaN",
-            "model_sub_scores.risk = inf",
-            "model_price_targets.one_month.base = 0.0 (declared a finite positive price)",
-            "model_price_targets.one_month.bear = -1.0",
-            "model_price_targets.one_month.bull = NaN",
-            "model_price_targets.twelve_month.base = -inf",
-            "model_price_targets.twelve_month.bull = inf",
+            "expected_price_3m = 0.0 (declared a finite positive price, or null)",
+            "expected_price_12m = -12.5",
+            "expected_price_3y = inf",
         ] {
             assert!(text.contains(needle), "{needle} missing from: {text}");
         }
-        assert!(!text.contains("twelve_month.bear"), "{text}");
+        let one = ThesisAppendix { expected_price_12m: Some(f64::NAN), ..ThesisAppendix::NONE };
+        let err = validate_appendix_domain(&one).unwrap_err();
+        assert_eq!(err.violations.len(), 1, "{err}");
+        assert!(!err.to_string().contains("expected_price_3m"), "{err}");
     }
 
     /// Pins the read-only Settings payload for the fixed preset — the exact
@@ -3864,163 +2708,6 @@ mod tests {
                 "cash": "unconstrained — adds are never gated on observed Schwab cash",
             })
         );
-    }
-
-    /// A grammar-valid ledger object in the schema's own labels, for the
-    /// interpretation round-trip tests.
-    fn raw_ledger() -> Value {
-        json!({
-            "thesis": "Durable franchise at a fair multiple.",
-            "key_drivers": [
-                { "name": "margin trajectory", "series": "net-margin" },
-                { "name": "platform stickiness", "series": null }
-            ],
-            "bear": { "conditions": "margins compress", "probability_pct": 20.0 },
-            "base": { "conditions": "trajectory holds", "probability_pct": 55.0 },
-            "bull": { "conditions": "growth re-accelerates", "probability_pct": 25.0 },
-            "what_must_improve": "services mix",
-            "what_must_not_break": "gross margin",
-            "falsifiers": [{
-                "statement": "TTM net margin falls below 15%",
-                "quant": {
-                    "series": "net-margin", "comparator": "below",
-                    "threshold": 0.15, "margin": 0.01
-                },
-                "technology_class": false,
-                "tripped": false
-            }],
-            "triggers": [{
-                "statement": "Trim above the priced-in ceiling",
-                "family": "trim",
-                "quant": {
-                    "series": "price", "comparator": "above",
-                    "threshold": 150.0, "margin": 0.0
-                },
-                "fired": false
-            }]
-        })
-    }
-
-    #[test]
-    fn interpretation_round_trips_through_its_schema_labels() {
-        // The kebab labels the schema advertises are exactly what serde decodes, so a
-        // grammar-valid model object deserializes into `Interpretation` cleanly.
-        let raw = json!({
-            "conviction": "high",
-            "horizon_outlook": { "short": "neutral", "mid": "bullish", "long": "bullish" },
-            "financial_summary": "Durable margins, light leverage.",
-            "model_target_rationale": "Base case tracks the engine's DCF midpoint.",
-            "what_changed": "new holding",
-            "what_changed_entries": [],
-            "ledger": raw_ledger(),
-            "model_sub_scores": { "quality": 88.0, "valuation": 35.0, "momentum": 70.0, "risk": 60.0 },
-            "model_price_targets": {
-                "one_month": { "base": 210.0, "bear": 195.0, "bull": 225.0 },
-                "twelve_month": { "base": 260.0, "bear": 180.0, "bull": 320.0 }
-            },
-            "self_assessment": "First read; no prior call to assess."
-        });
-        let parsed: Interpretation = serde_json::from_value(raw).unwrap();
-        assert_eq!(parsed.conviction, Conviction::High);
-        assert_eq!(parsed.horizon_outlook.mid, HorizonRead::Bullish);
-        // The model arm decoded exactly as authored — no bound or clamp applies.
-        assert_eq!(parsed.model_sub_scores.valuation, 35.0);
-        assert_eq!(parsed.model_price_targets.twelve_month.bull, 320.0);
-        assert_eq!(parsed.self_assessment, "First read; no prior call to assess.");
-        // The ledger draft decoded structurally: the machine-core claims arrive as
-        // strings for app-side validation, never pre-trusted types.
-        assert_eq!(parsed.ledger.falsifiers.len(), 1);
-        let quant = parsed.ledger.falsifiers[0].quant.as_ref().unwrap();
-        assert_eq!(quant.series, "net-margin");
-        assert_eq!(quant.comparator, "below");
-        assert_eq!(parsed.ledger.key_drivers[1].series, None);
-    }
-
-    #[test]
-    fn ledger_schema_constrains_series_families_and_requires_the_ledger() {
-        // Both interpretation schemas require the rewritten ledger, the quant series
-        // enum is exactly the engine's closed executability surface for the
-        // vehicle kind (portfolio-v38, fix list 3.3a), and the role-risk
-        // trigger-family enum drops `add` (the reduced spine).
-        let schema = interpretation_schema(false, false);
-        let required: Vec<&str> = schema["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert!(required.contains(&"ledger"), "{required:?}");
-        // The model arm is schema-required in full (the two-arm contract): its own
-        // sub-scores, both freely-authored target bands, and the retrospective.
-        for field in ["model_sub_scores", "model_price_targets", "self_assessment"] {
-            assert!(required.contains(&field), "{required:?}");
-        }
-        let bands = &schema["properties"]["model_price_targets"]["properties"];
-        for window in ["one_month", "twelve_month"] {
-            let req: Vec<&str> = bands[window]["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap())
-                .collect();
-            assert_eq!(req, vec!["base", "bear", "bull"]);
-        }
-
-        let ledger = &schema["properties"]["ledger"];
-        let series: Vec<&str> = ledger["properties"]["falsifiers"]["items"]["properties"]["quant"]
-            ["properties"]["series"]["enum"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        // A stock's enum is the surface less the fund-only expense ratio.
-        assert_eq!(series.len(), engine::LedgerSeries::ALL.len() - 1);
-        assert!(series.contains(&"net-margin"));
-        assert!(!series.contains(&"expense-ratio"));
-        // Retired from the closed surface (the tunnel-vision ruling, 2026-08-14).
-        assert!(!series.contains(&"portfolio-weight"));
-        // A priced fund's enum is the fund-computable set alone — the model never
-        // inspects a series 6g would downgrade as uncomputable.
-        let fund = interpretation_schema(true, false);
-        let series_path = |s: &Value| -> Vec<String> {
-            s["properties"]["ledger"]["properties"]["falsifiers"]["items"]["properties"]["quant"]["properties"]["series"]["enum"]
-                .as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
-        };
-        let mut fund_series = series_path(&fund);
-        fund_series.sort();
-        assert_eq!(fund_series, vec!["expense-ratio", "price", "return-volatility", "trailing-return"]);
-        let driver_series = &fund["properties"]["ledger"]["properties"]["key_drivers"]["items"]["properties"]["series"]["enum"];
-        assert!(driver_series.as_array().unwrap().iter().all(|v| v.is_null() || fund_series.contains(&v.as_str().unwrap().to_string())));
-        let mut role_series = series_path(&role_risk_interpretation_schema(false));
-        role_series.sort();
-        assert_eq!(role_series, fund_series, "the role/risk branch is a fund by construction");
-        assert_eq!(series_path(&interpretation_schema(false, true)), series, "a debut scopes the shape, never the series");
-        let families: Vec<&str> = ledger["properties"]["triggers"]["items"]["properties"]
-            ["family"]["enum"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert_eq!(families, vec!["add", "trim", "sell"]);
-
-        let role = role_risk_interpretation_schema(false);
-        let role_required: Vec<&str> = role["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert!(role_required.contains(&"ledger"), "{role_required:?}");
-        let role_families: Vec<&str> = role["properties"]["ledger"]["properties"]["triggers"]
-            ["items"]["properties"]["family"]["enum"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert_eq!(role_families, vec!["trim", "sell"], "no add family on role_risk");
     }
 
 
@@ -4045,109 +2732,87 @@ mod tests {
     }
 
     #[test]
-    fn thesis_ledger_round_trips_with_eval_state() {
-        let ledger = ThesisLedger {
-            branch: LedgerBranch::Priced,
-            original_thesis: "debut thesis".into(),
-            current_thesis: "current thesis".into(),
-            key_drivers: vec![KeyDriver {
-                driver_id: "kd-margins".into(),
-                name: "margins".into(),
-                series: Some(engine::LedgerSeries::NetMargin),
-            }],
-            monitor: vec![MonitorScenario {
-                scenario: ScenarioKind::Base,
-                conditions: "holds".into(),
-                probability_pct: 55.0,
-                engine_target: Some(210.0),
-            }],
-            what_must_improve: "growth".into(),
-            what_must_not_break: "margins".into(),
-            conditions: vec![LedgerCondition {
-                condition_id: "c-1".into(),
-                role: ConditionRole::Falsifier,
-                trigger_family: None,
-                label: None,
-                statement: "net margin below 15%".into(),
-                quant: Some(QuantCore {
-                    series: engine::LedgerSeries::NetMargin,
-                    comparator: LedgerComparator::Below,
-                    threshold: 0.15,
-                    margin: 0.01,
-                }),
-                downgraded_reason: None,
-                technology_class: false,
-                tripped: false,
-                supersedes: None,
-                eval_state: Some(ConditionEvalState {
-                    last_observation_id: Some("2026-06-30".into()),
-                    last_value: Some(0.22),
-                    last_evaluated_at: Some("2026-08-03".into()),
-                    breach_streak: 0,
-                    first_breach_at: None,
-                    confirmed_at: None,
-                    acknowledged_observation_id: None,
-                    authored_statement_basis: None,
-                    authored_equity_source: None,
-                }),
-            }],
+    fn a_priced_verdict_round_trips_its_document_and_a_null_bearing_appendix() {
+        // The model arm persists exactly as authored: the document as text, the
+        // appendix with its nulls — a null field reads back null, never a
+        // defaulted value — beside the app-stamped engine arm.
+        let graded = GradedVerdict {
+            grade: Grade::B,
+            sub_scores: SubScores { quality: 70.0, valuation: 55.0, momentum: 60.0, risk: 65.0 },
+            action: Action::Hold,
+            action_rationale: "Hold on an intact thesis.".into(),
+            thesis_document: "Thesis: the franchise compounds.\n\nSummary: hold.".into(),
+            appendix: ThesisAppendix {
+                conviction: Some(Conviction::Medium),
+                expected_price_3m: None,
+                expected_price_12m: Some(145.0),
+                expected_price_3y: None,
+            },
+            price_targets: PriceTargets { three_month: None, twelve_month: None, three_year: None },
+            options_signal: OptionsSignal {
+                put_call_volume: None,
+                put_call_open_interest: None,
+                implied_volatility: None,
+                iv_skew: None,
+            },
+            risk_tier: RiskTier::Medium,
+            dead_money: HurdleState::Indeterminate,
+            low_confidence_grade: false,
+            fund_class_label: None,
+            engine_rung: Action::Hold,
+            authored_band_relation: None,
         };
         let verdict = HoldingVerdict {
             symbol: "AAPL".into(),
             asset_class: AssetClass::Stock,
             position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
-            thesis_ledger: Some(ledger.clone()),
+            disposition: VerdictDisposition::Priced(Box::new(graded.clone())),
             analyzed_at: None,
             action_source: Default::default(),
             side_reversed: false,
         };
         let s = serde_json::to_value(&verdict).unwrap();
+        assert_eq!(s["disposition"]["appendix"]["expected_price_3m"], Value::Null);
+        assert_eq!(s["disposition"]["appendix"]["expected_price_12m"], 145.0);
+        assert!(s["disposition"].get("thesis_ledger").is_none());
+        assert!(s.get("thesis_ledger").is_none());
         let back: HoldingVerdict = serde_json::from_value(s).unwrap();
-        assert_eq!(back.thesis_ledger, Some(ledger));
+        assert_eq!(back, verdict);
+        assert_eq!(back.thesis_document(), Some(graded.thesis_document.as_str()));
+        assert_eq!(back.appendix(), Some(&graded.appendix));
     }
 
     #[test]
-    fn interpretation_schema_lists_every_required_field() {
-        let schema = interpretation_schema(false, false);
-        let required: Vec<&str> = schema["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        for field in [
-            "conviction",
-            "horizon_outlook",
-            "financial_summary",
-            "model_target_rationale",
-            "what_changed",
-        ] {
-            assert!(required.contains(&field), "schema must require {field}");
-        }
-        // A debut requests neither continuity field: absent from the required
-        // set and from the properties, so the grammar cannot ask for them
-        // (fix list 3.3, portfolio-v38).
-        for (schema, keys) in [
-            (interpretation_schema(false, true), interpretation_keys(true)),
-            (role_risk_interpretation_schema(true), role_risk_keys(true)),
-        ] {
-            let required: Vec<&str> = schema["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-            assert_eq!(required, keys);
-            for key in DEBUT_CONTINUITY_KEYS {
-                assert!(!required.contains(&key), "{key}");
-                assert!(schema["properties"].get(key).is_none(), "{key}");
-            }
-        }
-        assert_eq!(interpretation_keys(false), INTERPRETATION_KEYS.to_vec());
-        assert_eq!(role_risk_keys(false), ROLE_RISK_KEYS.to_vec());
-        // The tunnel-vision contract: interpretation authors no action — the
-        // dedicated action call owns it — and the conviction enum stays the full
-        // three values (engine evidence annotates, never bars).
-        assert!(schema["properties"].get("action").is_none());
-        let convictions = schema["properties"]["conviction"]["enum"].as_array().unwrap();
-        assert_eq!(convictions.len(), 3);
-        // The action call's schema advertises the full ladder on every branch.
+    fn an_abstention_retains_the_prior_thesis_document_and_a_not_rated_carries_none() {
+        let abstained = HoldingVerdict {
+            symbol: "PGNY".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::InsufficientEvidence {
+                reason: "below the floor".into(),
+                prior_thesis_document: Some("The prior document.".into()),
+            },
+            analyzed_at: None,
+            action_source: Default::default(),
+            side_reversed: false,
+        };
+        let s = serde_json::to_value(&abstained).unwrap();
+        assert_eq!(s["disposition"]["status"], "insufficient-evidence");
+        assert_eq!(s["disposition"]["prior_thesis_document"], "The prior document.");
+        let back: HoldingVerdict = serde_json::from_value(s).unwrap();
+        assert_eq!(back.thesis_document(), Some("The prior document."));
+        assert_eq!(back.appendix(), None);
+        let not_rated = HoldingVerdict {
+            disposition: VerdictDisposition::NotRated { reason: "cash".into() },
+            ..abstained
+        };
+        assert_eq!(not_rated.thesis_document(), None);
+    }
+
+    #[test]
+    fn the_action_schema_advertises_the_full_ladder() {
+        // The action call's schema advertises the full ladder on every branch,
+        // and its required set is exactly the declared keys.
         let action_schema = action_decision_schema();
         let actions = action_schema["properties"]["action"]["enum"].as_array().unwrap();
         assert_eq!(actions.len(), 5);
@@ -4156,22 +2821,6 @@ mod tests {
             action_schema["required"].as_array().unwrap().len(),
             ACTION_KEYS.len()
         );
-    }
-
-    #[test]
-    fn role_risk_schema_carries_no_action_field() {
-        // The branch's action is authored by the dedicated per-holding action
-        // call — the 6f role/risk interpretation authors none.
-        let schema = role_risk_interpretation_schema(false);
-        assert!(schema["properties"].get("action").is_none());
-        let required: Vec<&str> = schema["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert!(!required.contains(&"action"));
-        assert!(required.contains(&"role_summary"));
     }
 
     #[test]
@@ -4196,7 +2845,7 @@ mod tests {
     fn role_risk_only_serializes_its_own_branch() {
         let v = VerdictDisposition::RoleRiskOnly(Box::new(RoleRiskVerdict {
             class_label: "bond fund".into(),
-            role_summary: "Core fixed-income sleeve.".into(),
+            thesis_document: "Role: the core fixed-income sleeve.".into(),
             exposure_tilt: vec![ExposureWeight { label: "United States".into(), weight: 0.97 }],
             expense_drag: Some(0.0003),
             observable_risk: Some(0.06),
@@ -4206,15 +2855,17 @@ mod tests {
             evidence_gaps: vec!["valuation: no on-plan duration/credit surface".into()],
             action: Action::Hold,
             action_rationale: String::new(),
-            what_changed: "new holding".into(),
         }));
         let s = serde_json::to_value(&v).unwrap();
         assert_eq!(s["status"], "role-risk-only");
         assert_eq!(s["class_label"], "bond fund");
-        // The branch carries no grade / targets / conviction keys at all.
+        // The branch carries no grade / targets / appendix keys at all — its
+        // document stands alone.
         assert!(s.get("grade").is_none());
         assert!(s.get("price_targets").is_none());
+        assert!(s.get("appendix").is_none());
         assert!(s.get("conviction").is_none());
+        assert_eq!(s["thesis_document"], "Role: the core fixed-income sleeve.");
         let round: VerdictDisposition = serde_json::from_value(s).unwrap();
         assert_eq!(round, v);
     }

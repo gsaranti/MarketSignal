@@ -1,18 +1,20 @@
 //! The per-holding pipeline (`docs/portfolio-analysis.md` §The per-holding pipeline).
 //! Orchestrates one holding from its deterministic dossier through the engine to a
-//! schema-valid verdict: eligibility → financial engine → bounded research → distill
-//! → interpret + grade → continuity. The engine owns the baseline arm's numbers;
-//! since `portfolio-v7` the model additionally authors its own arm — sub-scores,
-//! target bands, the retrospective self-assessment — beside the judgment calls and
-//! prose ([`crate::portfolio::Interpretation`]), model-arm judgment values never
-//! altering or binding the engine baseline (the boundary statement:
+//! two-arm verdict: eligibility → financial engine → bounded research → distill →
+//! the thesis-document conversation → the action call → checkpoint. The engine
+//! owns the engine arm's numbers, app-stamped and never echoed through the
+//! model; the model arm is the thesis document the reasoner writes and the
+//! typed appendix it transcribes from it ([`crate::portfolio::ThesisAppendix`]),
+//! persisted exactly as authored, type-checked only, and never altering or
+//! binding the engine baseline (the boundary statement:
 //! `docs/portfolio-analysis.md` §The holding verdict).
 //!
 //! The model stages live behind the [`HoldingAnalyst`] trait so `cargo test` runs the
 //! whole pipeline offline against [`StubAnalyst`] with no daemon, while the live
-//! [`LocalAnalyst`] wraps [`crate::local_model::LocalModelClient`] with the
-//! grammar-constrained `format` schema and the right thinking modes. The substrate is
-//! a *primitive*; this is one of the per-feature stages that wraps it
+//! [`LocalAnalyst`] wraps [`crate::local_model::LocalModelClient`] with the right
+//! thinking modes — the thesis document free prose under thinking, the appendix
+//! a grammar-constrained non-thinking transcription. The substrate is a
+//! *primitive*; this is one of the per-feature stages that wraps it
 //! (`docs/local-models.md`).
 //!
 //! The **web-research stage is live** (the research-loop slice): Step 6c runs
@@ -26,78 +28,79 @@ use anyhow::{Context, Result};
 
 use crate::local_model::{options, ChatMessage, ChatRequest, LocalModelClient, StreamRole};
 use crate::portfolio::dossier::HoldingDossier;
-use crate::portfolio::engine::{self, EngineOutput, EngineVerdict, LedgerEvaluation, RateAnchors};
+use crate::portfolio::engine::{self, EngineOutput, EngineVerdict, RateAnchors};
 use crate::portfolio::fund::{self, FundEngineVerdict, FundStructuralKind, RoleRiskReadout};
 use crate::portfolio::pre_profit::{self, PreProfitOverlay};
+use crate::portfolio::soft_forensic::{LineLeg, SoftFlagState, SoftForensicFlags};
 use crate::portfolio::{
-    interpretation_schema, role_risk_interpretation_schema, Action, ActionSource, ClosedCondition,
-    ConditionEvalState, ConditionRole, Conviction, CrossingOutcome, ExposureWeight,
-    FalsifierDraft, GradedVerdict, HoldingAudit, HoldingVerdict, HorizonOutlook, HorizonRead,
-    Interpretation, KeyDriver, KeyDriverDraft, LedgerAudit, LedgerBranch, LedgerCondition,
-    LedgerComparator, LedgerDraft, ModelPriceTarget, ModelPriceTargets, ModelView,
-    MonitorScenario, PositionChange, PositionDelta, PriceTarget,
-    QuantCore, QuantCoreDraft, RoleRiskInterpretation, RoleRiskVerdict, ScenarioDraft, SubScores,
-    ScenarioKind, ThesisLedger, TriggerDraft, TriggerFamily, VerdictDisposition, HORIZON_LONG,
-    HORIZON_MID, HORIZON_SHORT, PROMPT_VERSION,
+    appendix_schema, Action, ActionSource, Conviction, ExposureWeight, GradedVerdict,
+    HoldingAudit, HoldingVerdict, PricedModelArm, RoleRiskVerdict, ThesisAppendix,
+    VerdictDisposition, PROMPT_VERSION,
 };
 
 use crate::portfolio::distill::{self, DistillInputs, DistilledResearch, ResearchAuditRecord};
 use crate::portfolio::research::{self, HoldingResearch, ResearchPlan};
 
-/// What the interpretation stage reads: the dossier, the engine's computed analysis,
-/// and the distilled research findings. The model reasons over *this* — evidence,
-/// not a gathering transcript. It carries **no investor profile and no action
-/// machinery**: the intrinsic verdict is profile-independent by input isolation,
-/// and the per-holding action call ([`ActionInput`]) is where both live
-/// (`docs/portfolio-analysis.md` §Intrinsic verdict).
-pub struct InterpretationInput<'a> {
+/// What the thesis-document conversation reads (`docs/portfolio-workflow.md`
+/// §Step 6f): the dossier, the engine's computed analysis, the run-level rate
+/// prints and this run's analysis. The model reasons over *this* — evidence,
+/// not a gathering transcript. It carries **no investor profile, no position
+/// economics and no action machinery**: the intrinsic verdict is
+/// profile-independent by input isolation, and the per-holding action call
+/// ([`ActionInput`]) is where both live (`docs/portfolio-analysis.md`
+/// §Intrinsic verdict).
+pub struct ThesisInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub engine: &'a EngineOutput,
-    pub distilled: &'a str,
-    /// The prior thesis ledger AS INGESTED by this run — basis-normalized where
-    /// a split re-based the series (`docs/portfolio-analysis.md` §Starting
-    /// parameters), so the render, the evaluation, and the 6g carry all read one
-    /// instance. `None` on a debut. Never re-derived from the dossier.
-    pub prior_ledger: Option<&'a ThesisLedger>,
-    /// The engine's evaluation of the prior thesis ledger's quantitative conditions
-    /// (`None` on a debut — no prior ledger to evaluate).
-    pub ledger_eval: Option<&'a LedgerEvaluation>,
-    /// The finalized pre-profit execution / financing overlay — present only when
-    /// the stock actually entered it (`docs/portfolio-workflow.md` §Step 6f: the
-    /// overlay renders with its rule-bounded conviction ceiling).
+    /// The run-level Treasury prints FETCHED VALUES states.
+    pub rates: &'a RateAnchors,
+    /// This run's analysis, rendered under ANALYSIS. Until the research chain
+    /// lands it is today's distilled research — the combined findings with
+    /// the typed data lines beneath them.
+    pub analysis: &'a str,
+    /// The finalized pre-profit execution / financing overlay — present only
+    /// when the stock actually entered it.
     pub pre_profit: Option<&'a PreProfitOverlay>,
-    /// The input delta's technology-event pre-flag, where it was evaluable
-    /// (`docs/portfolio-analysis.md` §Starting parameters) — rendered only when
-    /// fired; it asserts nothing about the cause.
+    /// The four soft forensic flags beside the hard state, rendered as typed
+    /// evidence on a priced stock; `None` on a fund.
+    pub soft_forensic: Option<&'a SoftForensicFlags>,
+    /// The input delta's technology-event pre-flag, where it was evaluable —
+    /// rendered only when fired; it asserts nothing about the cause.
     pub tech_pre_flag: Option<&'a engine::TechEventPreFlag>,
-    /// The narrative-vs-reality read, where it was computable
-    /// (`docs/portfolio-analysis.md` §Starting parameters) — layer-(b)
-    /// conviction evidence; a tripped hype cap renders with its engine-matched
-    /// rule.
+    /// The narrative-vs-reality read, where it was computable.
     pub narrative: Option<&'a engine::NarrativeRead>,
-    /// The rendered input delta (`docs/portfolio-workflow.md` §Step 6g) — the
-    /// bracketed-id entries the what-changed rows cite as evidence. Empty on a
-    /// debut.
-    pub input_delta: &'a [crate::portfolio::DeltaEntry],
+    /// The split-context line PRIOR THESIS carries where a split re-based the
+    /// price series since the prior document was written; `None` on a debut
+    /// or where no split intervened.
+    pub prior_split: Option<SplitContext>,
 }
 
-/// What the `role_risk_only` interpretation reads: the dossier plus the engine's
-/// typed readout — none of the priced machinery exists on this branch.
+/// The split-context line's facts (`docs/portfolio-workflow.md` §Step 6b): what
+/// the line above a verbatim prior document states about its price basis —
+/// the document itself is never rewritten.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SplitContext {
+    /// The series was re-based since the document was written: the cumulative
+    /// factor ([`engine::split_bridge_factor`]) that brings its prices to
+    /// today's basis.
+    Rebased { factor: f64 },
+    /// The document's anchor bar is missing from the fetched window: whether a
+    /// split intervened is unknown, so the line says so rather than staying
+    /// silent (silence would read as "no split").
+    Unverifiable,
+}
+
+/// What the `role_risk_only` thesis-document message reads: the dossier plus the
+/// engine's typed readout — none of the priced machinery exists on this branch,
+/// and no appendix follows the document.
 pub struct RoleRiskInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub readout: &'a RoleRiskReadout,
-    /// The prior thesis ledger as ingested by this run (basis-normalized where a
-    /// split re-based the series) — the render's single instance; never
-    /// re-derived from the dossier.
-    pub prior_ledger: Option<&'a ThesisLedger>,
-    /// The engine's evaluation of the prior fund ledger's quantitative conditions.
-    pub ledger_eval: Option<&'a LedgerEvaluation>,
-    /// The rendered input delta — the branch's reduced entry set. Empty on a
-    /// debut.
-    pub input_delta: &'a [crate::portfolio::DeltaEntry],
-    /// The distilled fund research — pure consolidation on this branch (the
-    /// fund agenda ran; no typed field exists here).
-    pub distilled: &'a str,
+    pub rates: &'a RateAnchors,
+    /// This run's analysis — the fund agenda's distilled research until the
+    /// research chain lands.
+    pub analysis: &'a str,
+    pub prior_split: Option<SplitContext>,
 }
 
 /// The branch-shaped verdict evidence the per-holding action call reads — the
@@ -109,21 +112,17 @@ pub enum ActionSubject<'a> {
         graded: &'a GradedVerdict,
         engine: &'a EngineOutput,
         pre_profit: Option<&'a PreProfitOverlay>,
-        /// The holding's ledger as validated this run — the packet renders its
-        /// thesis and scenario rows (ruled 2026-09-17).
-        ledger: &'a ThesisLedger,
     },
     RoleRisk {
         verdict: &'a RoleRiskVerdict,
-        ledger: &'a ThesisLedger,
     },
 }
 
 /// What the **per-holding action call** reads (`docs/portfolio-analysis.md`
-/// §Portfolio action): the finished intrinsic verdict, the holding's own sizing
+/// §Portfolio action): the finished intrinsic verdict, the holding's own
 /// evidence off the dossier, the engine's per-holding action set (evidence,
 /// never a bar), and the **investor profile** — its only entry point into the
-/// job, so interpretation stays profile-blind by input isolation. Tunnel
+/// job, so the thesis document stays profile-blind by input isolation. Tunnel
 /// vision by design: no whole-book context exists here.
 pub struct ActionInput<'a> {
     pub dossier: &'a HoldingDossier,
@@ -133,8 +132,6 @@ pub struct ActionInput<'a> {
     /// role/risk branch).
     pub engine_set: &'a [Action],
     pub profile: &'a crate::portfolio::InvestorProfile,
-    /// Validated attribution from this run's interpretation, before action.
-    pub changes: Option<&'a crate::portfolio::WhatChangedAudit>,
 }
 
 /// The app-stamped annotation for a chosen rung outside the engine's per-holding
@@ -275,13 +272,17 @@ pub trait HoldingAnalyst {
     fn distill_issue_budget(&self) -> usize {
         self.distill_input_budget()
     }
-    /// Interpret the computed analysis + distilled findings into the schema-constrained
-    /// verdict judgment (the 122B reasoner in thinking mode, live).
-    fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation>;
-    /// Author the union's other branch for a structurally unpriceable vehicle: the
-    /// role read (no action — the action call authors that;
-    /// `docs/portfolio-analysis.md` §Intrinsic verdict).
-    fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation>;
+    /// Step 6f — the thesis-document conversation (`docs/portfolio-workflow.md`
+    /// §Step 6f): the document as prose under thinking with no grammar, then
+    /// the typed appendix transcribed from it in the same conversation's
+    /// second, non-thinking message under the grammar. Returns the model arm
+    /// exactly as authored, the appendix type-checked only.
+    fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm>;
+    /// The union's other branch for a structurally unpriceable vehicle: the
+    /// thesis document alone — the role read, with no prices, no conviction
+    /// and no appendix (`docs/portfolio-analysis.md` §Intrinsic verdict). The
+    /// action call authors the branch's action afterward.
+    fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String>;
     /// The **per-holding action call** (`docs/portfolio-analysis.md` §Portfolio
     /// action): decide this holding's rung-only portfolio action from its own
     /// finished verdict plus the investor profile — tunnel vision, no book
@@ -329,7 +330,6 @@ fn run_research_and_distill(
     analyst: &dyn HoldingAnalyst,
     dossier: &HoldingDossier,
     triggers: &research::AgendaTriggers,
-    prior_ledger: Option<&ThesisLedger>,
     role_risk: bool,
     run_date: &str,
 ) -> Result<(DistilledResearch, ResearchAuditRecord, HoldingResearch)> {
@@ -346,15 +346,15 @@ fn run_research_and_distill(
     let agenda = research::build_agenda(dossier, triggers);
     // Per-topic cross-run seeds, assembled deterministically — never by a
     // model call: the topic object's window gates seeding; each claim expires
-    // by its own vintage; the ledger's conditions lead the priority order
-    // (`docs/portfolio-analysis.md` §Starting parameters — Research reuse).
+    // by its own vintage (`docs/portfolio-analysis.md` §Starting parameters —
+    // Research reuse). The seed store retires with the research chain.
     let mut topic_seeds = std::collections::HashMap::new();
     for topic in &agenda {
         let prior = dossier
             .research_priors
             .iter()
             .find(|p| p.topic_key == topic.key);
-        if let Some(seed) = research::assemble_topic_seed(prior, prior_ledger, now) {
+        if let Some(seed) = research::assemble_topic_seed(prior, now) {
             let vintage = prior
                 .filter(|p| research::topic_object_fresh(p, now))
                 .map(|p| p.vintage.clone())
@@ -381,12 +381,6 @@ fn run_research_and_distill(
         .filter(|p| research::topic_object_fresh(p, now))
         .cloned()
         .collect();
-    let ledger_conditions: Vec<LedgerCondition> = prior_ledger
-        .map(|l| l.conditions.clone())
-        .unwrap_or_default();
-    let ledger_key_drivers: Vec<crate::portfolio::KeyDriver> = prior_ledger
-        .map(|l| l.key_drivers.clone())
-        .unwrap_or_default();
     // The shared holding header opens every distillation message
     // (`portfolio-v44`); a fund's distillation is pure consolidation like a
     // role/risk holding's, since no consensus driver, narrative cap or overlay
@@ -398,8 +392,6 @@ fn run_research_and_distill(
         holding_brief: &brief,
         research: &research_out,
         priors: &priors,
-        ledger_conditions: &ledger_conditions,
-        ledger_key_drivers: &ledger_key_drivers,
         consolidation_only: role_risk || dossier_is_fund(dossier),
         overlay_eligible: triggers.overlay_eligible,
         backfill_required: triggers.pre_profit_backfill,
@@ -477,33 +469,18 @@ pub(crate) fn render_fraud_record(claim: &crate::portfolio::distill::ForensicEve
     )
 }
 
-/// The validated leading indicator as one data line under RESEARCH SUMMARY;
-/// the driver clause names the ledger's driver only where the cited id
-/// verified (`portfolio-v44`).
+/// The validated leading indicator as one data line under ANALYSIS
+/// (`portfolio-v44`): the measure, its value, direction and date, and its
+/// source. The driver clause went with the ledger it named.
 pub(crate) fn render_leading_indicator(
     ind: &crate::portfolio::distill::ValidatedLeadingIndicator,
-    prior_ledger: Option<&ThesisLedger>,
 ) -> String {
     let direction = match ind.direction {
         crate::portfolio::distill::IndicatorDirection::InflectingUp => "inflecting up",
         crate::portfolio::distill::IndicatorDirection::InflectingDown => "inflecting down",
     };
-    let driver = ind
-        .driver_verified
-        .then(|| {
-            prior_ledger
-                .and_then(|l| {
-                    l.key_drivers
-                        .iter()
-                        .find(|d| d.driver_id == ind.confirms_driver_id.trim())
-                })
-                .map(|d| d.name.as_str())
-                .unwrap_or(ind.confirms_driver_id.trim())
-        })
-        .map(|name| format!(", confirming the driver \"{name}\""))
-        .unwrap_or_default();
     format!(
-        "Leading indicator: {} = {} ({direction}, as of {}){driver}; source {}.",
+        "Leading indicator: {} = {} ({direction}, as of {}); source {}.",
         ind.metric_name, ind.value, ind.as_of, ind.source_url
     )
 }
@@ -523,9 +500,6 @@ pub fn analyze_holding(
 ) -> Result<(HoldingVerdict, HoldingAudit)> {
     let symbol = dossier.position.symbol.clone();
     let asset_class = dossier.position.asset_class;
-    // The 6g executability surface is class-shaped (statement series never
-    // resolve on the fund path, the expense ratio only there) — computed once
-    // beside the class it derives from.
     let is_fund = matches!(
         asset_class,
         crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
@@ -533,10 +507,6 @@ pub fn analyze_holding(
     // App-set from the deterministic holdings diff, never the model — carried on every
     // verdict (graded or not) as the structured what-changed position tag.
     let position_change = dossier.position_delta.change;
-    // The prior run's thesis ledger (rides the prior verdict) — the standing view
-    // this run tests, rewrites, and carries (`docs/portfolio-analysis.md` §The
-    // position thesis ledger).
-    let prior_ledger = dossier.prior_ledger();
     let mut degraded = dossier.financials.gaps.clone();
     if let Some(f) = &dossier.fund {
         degraded.extend(f.fund.gaps.iter().cloned());
@@ -577,44 +547,15 @@ pub fn analyze_holding(
                 .to_string(),
         );
     }
-    // The ingested prior ledger converts onto this run's basis ONCE, here, so
-    // every machine consumer — evaluation, 6g validation and carry,
-    // persistence — sees one basis and the rewrite lands new-basis (the 6c/6d
-    // prompts read this same instance but render statements only — no machine
-    // core reaches them). Margins scale with thresholds (absolute, same units),
-    // so breach semantics are invariant under the conversion. A price
-    // condition's statement is re-rendered from the re-based core
-    // (`portfolio-v45`), so the sentence names the level the core now carries.
-    // The monitor's stamped engine targets convert for render coherence; on a
-    // resolvable pass validation re-stamps them from this run's engine set (an
-    // unresolvable pass withholds the fresh stamp — absent beats wrong).
-    let bridged_ledger: Option<crate::portfolio::ThesisLedger> = match price_bridge {
-        Some(f) if f != 1.0 => prior_ledger.map(|l| {
-            let mut l = l.clone();
-            for cond in &mut l.conditions {
-                let rebased = cond.quant.as_mut().is_some_and(|q| {
-                    if q.series.price_denominated() {
-                        q.threshold *= f;
-                        q.margin *= f;
-                        true
-                    } else {
-                        false
-                    }
-                });
-                if rebased {
-                    cond.rerender_statement();
-                }
-            }
-            for m in &mut l.monitor {
-                if let Some(t) = &mut m.engine_target {
-                    *t *= f;
-                }
-            }
-            l
-        }),
-        _ => None,
+    // The split-context line a verbatim prior document carries
+    // (`docs/portfolio-workflow.md` §Step 6b): the document is never rewritten;
+    // the line states the factor where a split re-based the series since it
+    // was written, or that the basis could not be verified this run.
+    let prior_split = match price_bridge {
+        Some(f) if f != 1.0 => Some(SplitContext::Rebased { factor: f }),
+        Some(_) => None,
+        None => Some(SplitContext::Unverifiable),
     };
-    let prior_ledger = bridged_ledger.as_ref().or(prior_ledger);
     // The prior read's per-share comparators on this run's basis: the spot and
     // every raw consensus-EPS period scale TOGETHER (their ratio — the prior
     // matched-period multiple — is basis-free and must stay so). `None` factor
@@ -642,29 +583,22 @@ pub fn analyze_holding(
         .as_ref()
         .map(|f| crate::portfolio::fund::exposure_basis(&f.fund));
     // Whether this holding's verdict actually **received house-view content**. It is
-    // `false` for every route that returns before an interpretation call — the
+    // `false` for every route that returns before a thesis-document call — the
     // eligibility gate, the listing guard, a net-short or fully-offset position, and
-    // every evidence-floor abstention — and each interpretation path sets it from the
+    // every evidence-floor abstention — and each thesis path sets it from the
     // predicate belonging to the prompt it is about to build.
-    //
-    // Not from a shared "is a house view present" test: the two prompts render
-    // *different* parts of it. The priced prompt renders the latest sections **and**
-    // the recent stances, the role/risk prompt only the latest sections — and
-    // `load_house_view` deliberately keeps the summaries when the latest report's
-    // Markdown is missing or unreadable, so a summary-only house view is reachable and
-    // reaches a role/risk verdict as nothing at all. Each predicate is defined beside
-    // its own render site so the claim cannot drift from what is actually rendered.
     let house_view_consulted = std::cell::Cell::new(false);
-    // Whether the FRED rate anchors actually fed this holding's verdict. They enter
-    // only through the priced engine outputs (the scenario targets and the hurdle
-    // read, on the stock path and the priced fund path); every earlier exit and the
-    // role/risk branch computes nothing from them, so their audits must not name
-    // them (M3 of the 2026-08-18 doc/code audit).
+    // Whether the FRED rate anchors actually fed this holding's verdict: the
+    // priced engine outputs compute from them (the scenario targets and the
+    // hurdle read, on the stock path and the priced fund path), and both
+    // thesis-document messages state the prints under FETCHED VALUES. Every
+    // earlier exit renders no prompt and computes nothing from them, so its
+    // audit must not name them (M3 of the 2026-08-18 doc/code audit).
     let rates_consulted = std::cell::Cell::new(false);
     // The Step-5 enriching feeds, each recorded only where a prompt actually
     // rendered it (the same actually-consulted discipline as the house view):
     // the CBOE backdrop and the fund's COT positioning render whenever present
-    // on the dossier at an interpretation call; the sector-benchmark series is
+    // on the dossier at a thesis-document call; the sector-benchmark series is
     // consulted exactly where the technology-event pre-flag evaluation read it.
     let backdrop_consulted = std::cell::Cell::new(false);
     let positioning_consulted = std::cell::Cell::new(false);
@@ -732,25 +666,21 @@ pub fn analyze_holding(
     // ET session, off the run's own fetched series (oldest-first). Strictly
     // before keeps the anchor off the run day's still-forming bar, so a
     // re-fetch reads back the identical close unless the series was re-based.
-    // A run whose own bridge was unresolvable CARRIES the prior anchor forward
-    // instead: the carried price values stay on that anchor's basis (the
-    // supersede guard in ledger validation holds the invariant), so provenance
-    // is preserved — later passes stay fail-closed while the bar is missing and
-    // convert correctly the moment it resolves. A fresh stamp would certify the
-    // carried values on a basis this run could not verify (~1.0 next pass, the
-    // mismatch never re-detectable); no stamp would fail open the same way.
-    let authoring_close = if price_bridge.is_some() {
-        dossier
-            .financials
-            .daily_closes
-            .iter()
-            .rev()
-            .find(|d| d.date.as_str() < run_date)
-            .cloned()
-    } else {
-        dossier.prior_authoring_close.clone()
-    };
-    let audit = |metrics, target_meta, ledger_audit, pre_profit, soft_forensic| HoldingAudit {
+    // Every pass that writes stamps its own, an unresolvable prior bridge
+    // included: everything its row persists — the document, the appendix's
+    // prices, the bands, the quick basis — is on the run's own basis, and the
+    // excluded prior comparisons are that run's recorded loss, never carried
+    // onto its row. Only an abstention carries an anchor forward — the retained
+    // document's (`abstain` below) — since its row persists no value on the
+    // run's basis (`docs/portfolio-analysis.md` §Starting parameters).
+    let authoring_close = dossier
+        .financials
+        .daily_closes
+        .iter()
+        .rev()
+        .find(|d| d.date.as_str() < run_date)
+        .cloned();
+    let audit = |metrics, target_meta, pre_profit, soft_forensic| HoldingAudit {
         symbol: symbol.clone(),
         metrics,
         sources: audit_sources(),
@@ -761,7 +691,6 @@ pub fn analyze_holding(
         action_annotations: Vec::new(),
         target_meta,
         grade_parameter_version: engine::GRADE_PARAMETER_VERSION.to_string(),
-        ledger_audit,
         quick_basis: None,
         authoring_close: authoring_close.clone(),
         fund_exposure: fund_exposure.clone(),
@@ -790,22 +719,26 @@ pub fn analyze_holding(
         implied_expectations: None,
         narrative: None,
         option_overlay: dossier.option_overlay.clone(),
-        // Validated only where an interpretation ran; every early exit records
-        // none.
-        what_changed_audit: None,
         // Recorded only where the research loop ran; every no-research exit
         // records none.
         research: None,
     };
     let abstain = |reason: String, metrics, meta, pre_profit, soft_forensic| {
+        // A below-floor exit retains the prior thesis document unrewritten —
+        // Steps 6c–6f never ran for it (`docs/portfolio-analysis.md`
+        // §Evidence floor), so the next continuity run still reads it.
+        let retained = dossier
+            .prior_verdict
+            .as_ref()
+            .and_then(|v| v.thesis_document().map(str::to_string));
         let verdict = HoldingVerdict {
             symbol: symbol.clone(),
             asset_class,
             position_change,
-            disposition: VerdictDisposition::InsufficientEvidence { reason },
-            // A below-floor exit retains the standing ledger unchanged — Steps
-            // 6c–6f never ran for it (`docs/portfolio-workflow.md` §Step 6b).
-            thesis_ledger: prior_ledger.cloned(),
+            disposition: VerdictDisposition::InsufficientEvidence {
+                reason,
+                prior_thesis_document: retained.clone(),
+            },
             // Vintages are the job layer's concern: it stamps a fresh pass with the
             // run's `created_at` and preserves an abstention's prior vintage.
             analyzed_at: None,
@@ -815,25 +748,37 @@ pub fn analyze_holding(
         // An abstaining stock still records its overlay (fresh statement leg +
         // carried observation history) and its soft forensic flags — engine-only
         // state, no model dependency, so the history survives an abstention like
-        // the standing ledger does.
-        Ok((verdict, audit(metrics, meta, None, pre_profit, soft_forensic)))
+        // the retained document does.
+        let mut record = audit(metrics, meta, pre_profit, soft_forensic);
+        // The retained document stays on the basis it was written, so the row
+        // carries the document's own anchor bar: the next continuity run's
+        // bridge then still reads the split factor its prices need. A fresh
+        // stamp would certify pre-split prices on today's basis — factor 1 on
+        // the next pass, the mismatch never re-detectable.
+        if retained.is_some() {
+            record.authoring_close = dossier.prior_authoring_close.clone();
+        }
+        Ok((verdict, record))
     };
-
-    // Eligibility: a non-equity class is never given a fabricated grade.
-    if !asset_class.is_gradeable() {
+    let not_rated = |reason: String| {
         let verdict = HoldingVerdict {
             symbol: symbol.clone(),
             asset_class,
             position_change,
-            disposition: VerdictDisposition::NotRated {
-                reason: format!("{} is not graded by the equity pipeline", asset_class.label()),
-            },
-            thesis_ledger: None,
+            disposition: VerdictDisposition::NotRated { reason },
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
             side_reversed: false,
         };
-        return Ok((verdict, audit(Default::default(), None, None, None, None)));
+        Ok((verdict, audit(Default::default(), None, None, None)))
+    };
+
+    // Eligibility: a non-equity class is never given a fabricated grade.
+    if !asset_class.is_gradeable() {
+        return not_rated(format!(
+            "{} is not graded by the equity pipeline",
+            asset_class.label()
+        ));
     }
 
     // Eligibility: a net-short position is a direction the prescriptive layer doesn't
@@ -852,19 +797,7 @@ pub fn analyze_holding(
             "fully offset — the netted position is zero shares, so there is no \
              economic exposure for the long-side ladder to act on"
         };
-        let verdict = HoldingVerdict {
-            symbol: symbol.clone(),
-            asset_class,
-            position_change,
-            disposition: VerdictDisposition::NotRated {
-                reason: reason.to_string(),
-            },
-            thesis_ledger: None,
-            analyzed_at: None,
-            action_source: ActionSource::ModelChosen,
-            side_reversed: false,
-        };
-        return Ok((verdict, audit(Default::default(), None, None, None, None)));
+        return not_rated(reason.to_string());
     }
 
     // Eligibility: the loop-time listing-resolution guard, stocks only
@@ -891,17 +824,7 @@ pub fn analyze_holding(
             _ => None,
         };
         if let Some(reason) = unsupported {
-            let verdict = HoldingVerdict {
-                symbol: symbol.clone(),
-                asset_class,
-                position_change,
-                disposition: VerdictDisposition::NotRated { reason },
-                thesis_ledger: None,
-                analyzed_at: None,
-                action_source: ActionSource::ModelChosen,
-                side_reversed: false,
-            };
-            return Ok((verdict, audit(Default::default(), None, None, None, None)));
+            return not_rated(reason);
         }
         if let Some(crate::portfolio::listing::ListingResolution::Conflict { fmp_name }) =
             &dossier.listing
@@ -970,116 +893,53 @@ pub fn analyze_holding(
                 return abstain(reason, Default::default(), None, None, None);
             }
             FundEngineVerdict::RoleRiskOnly(readout) => {
-                // Evaluate the prior fund ledger's quantitative conditions against
-                // the reduced surface this branch actually computes: the expense
-                // ratio plus the price-derived legs (trailing return, return
-                // volatility) from the closes the dossier already carries —
-                // price/weight resolve from the dossier directly. The full pass
-                // must cover the SAME fund-computable surface the quick check
-                // evaluates, or a sweep-confirmed price-leg crossing would read
-                // unevaluable here, never be acknowledged, and re-raise on every
-                // later sweep after the successful pass cleared the store.
-                let fund_metrics = fund_ledger_metrics(&readout, &dossier.financials);
-                let ledger_eval = prior_ledger.map(|l| {
-                    // The same unverifiable-basis gate as the priced branch:
-                    // price-denominated conditions never compare cross-basis.
-                    engine::evaluate_ledger_conditions_gated(
-                        l,
-                        &fund_metrics,
-                        &dossier.financials,
-                        run_date,
-                        |series| price_bridge.is_some() || !series.price_denominated(),
-                    )
-                });
-                // The union's other branch: the model authors the role read only —
-                // the branch's action is authored by the dedicated per-holding
-                // action call below, the full ladder structurally open while the
-                // engine arm's reduced set (sell-all / trim / hold) rides as
-                // annotated evidence (`docs/portfolio-analysis.md` §Portfolio
-                // action).
+                // The branch's computed surface — the expense ratio, the
+                // closed-end read and the price-derived legs — persists as the
+                // audit's metrics and renders into the message.
+                let fund_metrics = fund_metrics(&readout, &dossier.financials);
+                // The union's other branch: the model authors the thesis document
+                // carrying the role read, with no prices, no conviction and no
+                // appendix — the branch's action is authored by the dedicated
+                // per-holding action call below, the full ladder structurally
+                // open while the engine arm's reduced set (sell-all / trim /
+                // hold) rides as annotated evidence (`docs/portfolio-analysis.md`
+                // §Portfolio action).
                 house_view_consulted.set(prompt_renders_house_view(dossier));
                 backdrop_consulted.set(dossier.put_call_backdrop.is_some());
                 positioning_consulted
                     .set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
-                // The branch's rendered input delta — the what-changed rows'
-                // evidence vocabulary (`docs/portfolio-workflow.md` §Step 6g).
-                let mut input_delta = role_risk_input_delta(
-                    dossier,
-                    &fund_metrics,
-                    position_change,
-                    ledger_eval.as_ref(),
-                    price_bridge,
-                );
                 // The fund agenda runs the same 6c loop and a
-                // pure-consolidation 6d — the stub-time bypass is retired with
-                // the research slice (`docs/portfolio-workflow.md` §Step 6d).
+                // pure-consolidation 6d (`docs/portfolio-workflow.md` §Step 6d).
                 let (rr_distilled, rr_research_record, _rr_research) = run_research_and_distill(
                     analyst,
                     dossier,
                     &research::AgendaTriggers::default(),
-                    prior_ledger,
                     true,
                     run_date,
                 )?;
                 record_stage_models(analyst.fast_id());
-                // The fund research's fresh claims join the rendered delta with
-                // their ledger ties, as on the priced path.
-                push_research_delta_entries(&mut input_delta, &rr_distilled, prior_ledger);
-                let interpretation = analyst
+                // The branch's message states the Treasury prints under FETCHED
+                // VALUES, so the source is consulted here too.
+                rates_consulted.set(true);
+                let thesis_document = analyst
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
                         readout: &readout,
-                        prior_ledger,
-                        ledger_eval: ledger_eval.as_ref(),
-                        input_delta: &input_delta,
-                        distilled: &rr_distilled.combined,
+                        rates,
+                        analysis: &rr_distilled.combined,
+                        prior_split,
                     })
-                    .context("interpreting the role/risk holding")?;
-                let interpretation = own_debut_continuity_role_risk(
-                    interpretation,
-                    dossier.prior_verdict.is_none(),
-                );
+                    .context("writing the role/risk holding's thesis document")?;
                 record_stage_models(analyst.reasoner_id());
-                // The 6g what-changed attribution validator — external claims
-                // resolve against the rendered delta or downgrade to
-                // self-correction; a debut records no audit.
-                let what_changed_audit = dossier.prior_verdict.is_some().then(|| {
-                    validate_what_changed(&interpretation.what_changed_entries, input_delta)
-                });
-                // The 6g ledger seam: validate the rewrite — executability,
-                // condition identity / carry, tripped / fired claims, the branch's
-                // reductions (condition-only monitor, trim / sell triggers). The
-                // fund research's fresh claims carry the source-backed leg.
-                let research_supported: std::collections::HashSet<String> = rr_distilled
-                    .topic_layer
-                    .iter()
-                    .flat_map(|t| t.claims.iter())
-                    .filter(|c| !c.cached)
-                    .filter_map(|c| c.related_condition_id.clone())
-                    .collect();
-                let (ledger, ledger_audit) = validate_ledger_rewrite_with_research(
-                    &interpretation.ledger,
-                    prior_ledger,
-                    ledger_eval.as_ref(),
-                    LedgerBranch::RoleRiskOnly,
-                    is_fund,
-                    None,
-                    dossier.financials.current_price,
-                    Some(&fund_metrics),
-                    &research_supported,
-                    price_bridge.is_some(),
-                    crate::portfolio::ContinuityStamps::of(&dossier.financials),
-                );
                 // The action placeholder is overwritten by the decision below and
                 // never rendered into its prompt.
-                let mut rr = role_risk_verdict_from_interpretation(&readout, interpretation);
+                let mut rr = role_risk_verdict_from_model_arm(&readout, thesis_document);
                 let decision = analyst
                     .decide_action(&ActionInput {
                         dossier,
-                        subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
+                        subject: ActionSubject::RoleRisk { verdict: &rr },
                         engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
                         profile: &dossier.profile,
-                        changes: what_changed_audit.as_ref(),
                     })
                     .context("deciding the role/risk holding's action")?;
                 record_stage_models(analyst.reasoner_id());
@@ -1091,12 +951,11 @@ pub fn analyze_holding(
                     &dossier.position,
                     decision.action,
                 );
-                // The branch's computed surface persists as the audit's metrics — the
-                // same expense-ratio + price-derived legs the ledger evaluation above
-                // read (plus the CEF-only closed-end read), never the empty default
+                // The branch's computed surface persists as the audit's metrics —
+                // the same expense-ratio + price-derived legs the message rendered
+                // (plus the CEF-only closed-end read), never the empty default
                 // (M3 of the 2026-08-18 audit).
-                let mut audit_record = audit(fund_metrics, None, Some(ledger_audit), None, None);
-                audit_record.what_changed_audit = what_changed_audit;
+                let mut audit_record = audit(fund_metrics, None, None, None);
                 audit_record.research = Some(rr_research_record);
                 audit_record
                     .degraded_inputs
@@ -1110,7 +969,6 @@ pub fn analyze_holding(
                     asset_class,
                     position_change,
                     disposition: VerdictDisposition::RoleRiskOnly(Box::new(rr)),
-                    thesis_ledger: Some(ledger),
                     analyzed_at: None,
                     action_source: ActionSource::ModelChosen,
                     side_reversed: false,
@@ -1148,7 +1006,6 @@ pub fn analyze_holding(
     // hurdle) — every route above returned without one.
     rates_consulted.set(true);
 
-
     // The input delta's technology-event pre-flag (`docs/portfolio-analysis.md`
     // §Starting parameters) — an equity read, evaluable only for a carried
     // stock with a sector-benchmark series; an unevaluable read records its
@@ -1182,12 +1039,12 @@ pub fn analyze_holding(
                         // reads it — Codex 2026-08-20 round 2, finding 4).
                         benchmark_consulted.set(true);
                         match engine::tech_event_pre_flag(
-                        &dossier.financials.daily_closes,
-                        &bench.closes,
-                        &bench.symbol,
-                        &session.format("%Y-%m-%d").to_string(),
-                        engine_output.metrics.return_volatility,
-                    ) {
+                            &dossier.financials.daily_closes,
+                            &bench.closes,
+                            &bench.symbol,
+                            &session.format("%Y-%m-%d").to_string(),
+                            engine_output.metrics.return_volatility,
+                        ) {
                             Ok(flag) => (Some(flag), None),
                             Err(reason) => (
                                 None,
@@ -1201,21 +1058,6 @@ pub fn analyze_holding(
             }
         }
     };
-
-    // Evaluate the prior ledger's quantitative falsifiers and triggers against this
-    // run's computed surface — the crossings interpretation reads
-    // (`docs/portfolio-analysis.md` §The position thesis ledger). An unverifiable
-    // price basis gates price-denominated conditions out whole — never a
-    // cross-basis comparison (the degraded input above records it).
-    let ledger_eval = prior_ledger.map(|l| {
-        engine::evaluate_ledger_conditions_gated(
-            l,
-            &engine_output.metrics,
-            &dossier.financials,
-            run_date,
-            |series| price_bridge.is_some() || !series.price_denominated(),
-        )
-    });
 
     // The narrative-vs-reality read (`docs/portfolio-analysis.md` §Starting
     // parameters) — a stock's pace pair against the prior run's stored
@@ -1255,21 +1097,18 @@ pub fn analyze_holding(
         }
     };
     // Research (the live 6c loop, or the analyst's offline default) → distill
-    // → interpret.
+    // → the thesis-document conversation.
     house_view_consulted.set(prompt_renders_house_view(dossier));
     backdrop_consulted.set(dossier.put_call_backdrop.is_some());
     positioning_consulted.set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
     commodity_consulted.set(!dossier.commodity_context.is_empty());
     short_interest_consulted.set(dossier.short_interest.is_some());
     // The conditional topics' deterministic triggers (`docs/portfolio-workflow.md`
-    // §Step 6c). The symbol-scoped news seeds are no trigger here: a
-    // qualifying seed is fresh news beside a standing technology falsifier,
-    // and the falsifier fires the topic on its own — the seeds reach the loop
-    // as leads in the pass brief (retired 2026-08-29, Codex I15; the quick
-    // check's news leg is distinct and reads the conjunction as its badge).
+    // §Step 6c): the technology-event pre-flag is the technology topic's only
+    // trigger, decided when the agenda is assembled; the symbol-scoped news
+    // seeds ride the pass brief as leads and trigger nothing.
     let triggers = research::AgendaTriggers {
         tech_pre_flag_fired: tech_pre_flag.as_ref().is_some_and(|f| f.fired),
-        tech_ledger_falsifier: research::ledger_has_technology_falsifier(prior_ledger),
         overlay_eligible: pre_profit_overlay.as_ref().is_some_and(|o| o.is_eligible()),
         // The backfill obligation binds on the first overlay-eligible full
         // pass, or while a previously used guidance metric-and-span identity
@@ -1280,16 +1119,10 @@ pub fn analyze_holding(
             .filter(|o| o.is_eligible())
             .is_some_and(|o| pre_profit::backfill_required(o, dossier.prior_pre_profit.as_ref())),
     };
-    let (distilled_research, mut research_record, research_out) = run_research_and_distill(
-        analyst,
-        dossier,
-        &triggers,
-        prior_ledger,
-        false,
-        run_date,
-    )?;
+    let (distilled_research, mut research_record, research_out) =
+        run_research_and_distill(analyst, dossier, &triggers, false, run_date)?;
     record_stage_models(analyst.fast_id());
-    let distilled = distilled_research.combined.clone();
+    let analysis = distilled_research.combined.clone();
 
     // Step 6e — the observation-driven overlay finalization
     // (`docs/portfolio-workflow.md` §Step 6e): the research-fed typed rows are
@@ -1398,20 +1231,18 @@ pub fn analyze_holding(
         .as_ref()
         .map(crate::portfolio::ForensicFilingState::hard_tripped)
         .unwrap_or(false);
-    // The typed indicator reaches the model as evidence on a driver it names
-    // (its conviction-raise role is retired suite-wide with `portfolio-v7`):
-    // one data line under RESEARCH SUMMARY, the driver clause only where the
-    // reference verified against the ledger (`portfolio-v44`).
-    let distilled = match &distilled_research.leading_indicator {
-        Some(ind) => format!("{distilled}\n\n{}", render_leading_indicator(ind, prior_ledger)),
-        None => distilled,
+    // The typed indicator reaches the model as evidence: one data line under
+    // ANALYSIS (`portfolio-v44`).
+    let analysis = match &distilled_research.leading_indicator {
+        Some(ind) => format!("{analysis}\n\n{}", render_leading_indicator(ind)),
+        None => analysis,
     };
     // The advisory fraud claim reaches the model as a data line that states
     // its attribution to this holding as not established (the 2026-08-24
     // ruling, in words): it is not a hard trigger and binds nothing.
-    let distilled = match &distilled_research.forensic_event {
-        Some(claim) => format!("{distilled}\n\n{}", render_fraud_record(claim)),
-        None => distilled,
+    let analysis = match &distilled_research.forensic_event {
+        Some(claim) => format!("{analysis}\n\n{}", render_fraud_record(claim)),
+        None => analysis,
     };
 
     // The overlay's rules join only when the stock actually entered the overlay
@@ -1422,107 +1253,39 @@ pub fn analyze_holding(
         .as_ref()
         .filter(|o| o.is_eligible())
         .map(|o| &o.consequences);
-    // The rendered input delta — the what-changed rows' evidence vocabulary
-    // (`docs/portfolio-workflow.md` §Step 6g); empty on a debut.
-    let mut input_delta = priced_input_delta(
-        dossier,
-        &engine_output,
-        position_change,
-        ledger_eval.as_ref(),
-        tech_pre_flag.as_ref(),
-        narrative.as_ref(),
-        hard_forensic,
-        price_bridge,
-    );
-    // The research evidence joins the rendered delta surface — the 6g
-    // research-finding and forward-assumption legs (`docs/portfolio-workflow.md`
-    // §Step 6g): each fresh distilled claim an addressable entry, the logged
-    // assumption its own, so an external what-changed row can cite them
-    // exactly like any engine entry.
-    push_research_delta_entries(&mut input_delta, &distilled_research, prior_ledger);
-    if let Some(a) = &distilled_research.forward_assumption {
-        input_delta.push(crate::portfolio::DeltaEntry {
-            id: "forward-assumption".to_string(),
-            label: format!(
-                "research forward assumption: {} = {} {} (as of {}) [{}]",
-                a.affects, a.numeric_value, a.units, a.as_of, a.source_url
-            ),
-            related_condition_id: None,
-        });
-    }
-    let interpretation = analyst
-        .interpret(&InterpretationInput {
+    // The thesis-document conversation (`docs/portfolio-workflow.md` §Step
+    // 6f): the document as prose, then the typed appendix transcribed from it
+    // — the model arm, persisted exactly as authored and type-checked only.
+    let model_arm = analyst
+        .interpret(&ThesisInput {
             dossier,
             engine: &engine_output,
-            distilled: &distilled,
-            prior_ledger,
-            ledger_eval: ledger_eval.as_ref(),
+            rates,
+            analysis: &analysis,
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
+            soft_forensic: soft_forensic_flags.as_ref(),
             tech_pre_flag: tech_pre_flag.as_ref(),
             narrative: narrative.as_ref(),
-            input_delta: &input_delta,
+            prior_split,
         })
-        .context("interpreting the holding")?;
-    let interpretation = own_debut_continuity(interpretation, dossier.prior_verdict.is_none());
+        .context("writing the holding's thesis document")?;
     record_stage_models(analyst.reasoner_id());
-    // The 6g what-changed attribution validator — every external row resolves
-    // against the rendered delta or downgrades to self-correction with a logged
-    // reason; a debut records no audit.
-    let what_changed_audit = dossier
-        .prior_verdict
-        .is_some()
-        .then(|| validate_what_changed(&interpretation.what_changed_entries, input_delta));
-    // The 6g ledger seam: validate the rewrite and stamp the engine's scenario
-    // targets into the monitor (app-owns-the-number — a model-written target never
-    // persists). The research-supported ids carry the source-backed-finding
-    // leg for qualitative tripped/fired claims.
-    let research_supported: std::collections::HashSet<String> = distilled_research
-        .topic_layer
-        .iter()
-        .flat_map(|t| t.claims.iter())
-        .filter(|c| !c.cached)
-        .filter_map(|c| c.related_condition_id.clone())
-        .collect();
-    let (ledger, ledger_audit) = validate_ledger_rewrite_with_research(
-        &interpretation.ledger,
-        prior_ledger,
-        ledger_eval.as_ref(),
-        LedgerBranch::Priced,
-        is_fund,
-        // Fresh-basis engine targets never stamp beneath a carried anchor: an
-        // unresolvable pass stamps `None` (the band read goes absent, not
-        // wrong) — same absent-beats-wrong rule as the quick basis below.
-        engine_output
-            .price_targets
-            .twelve_month
-            .as_ref()
-            .filter(|_| price_bridge.is_some()),
-        dossier.financials.current_price,
-        Some(&engine_output.metrics),
-        &research_supported,
-        price_bridge.is_some(),
-        crate::portfolio::ContinuityStamps::of(&dossier.financials),
-    );
 
     // The engine arm's own rung — the drafted rule over its reads, the
     // hard-forensic exit branch first — and the authoring-time band relation
-    // the quick check's monitor compares against, withheld like the quick
-    // basis when the split bridge is unresolvable (`docs/portfolio-analysis.md`
-    // §Starting parameters; §The quick check).
+    // the quick check's monitor compares against, on the pass's own basis like
+    // its band and its anchor (`docs/portfolio-analysis.md` §Starting
+    // parameters; §The quick check).
     let engine_rung =
         engine::engine_action(engine_output.grade, &engine_output.hurdle, overlay_rules, hard_forensic);
     let authored_band_relation = authored_band_relation(
         dossier.financials.current_price,
-        engine_output
-            .price_targets
-            .twelve_month
-            .as_ref()
-            .filter(|_| price_bridge.is_some()),
+        engine_output.price_targets.twelve_month.as_ref(),
     );
-    let mut graded = graded_verdict_from_interpretation(
+    let mut graded = graded_verdict_from_model_arm(
         &engine_output,
         dossier.options_signal.clone(),
-        interpretation,
+        model_arm,
         engine_rung,
         authored_band_relation,
     );
@@ -1540,11 +1303,9 @@ pub fn analyze_holding(
                 graded: &graded,
                 engine: &engine_output,
                 pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
-                ledger: &ledger,
             },
             engine_set: &engine_set,
             profile: &dossier.profile,
-            changes: what_changed_audit.as_ref(),
         })
         .context("deciding the holding's action")?;
     record_stage_models(analyst.reasoner_id());
@@ -1561,7 +1322,6 @@ pub fn analyze_holding(
         asset_class,
         position_change,
         disposition: VerdictDisposition::Priced(Box::new(graded)),
-        thesis_ledger: Some(ledger),
         analyzed_at: None,
         action_source: ActionSource::ModelChosen,
         side_reversed: false,
@@ -1587,18 +1347,9 @@ pub fn analyze_holding(
             .collect(),
         target_meta: Some(engine_output.target_meta.clone()),
         grade_parameter_version: engine::GRADE_PARAMETER_VERSION.to_string(),
-        ledger_audit: Some(ledger_audit),
-        // An unresolvable pass persists NO quick-check basis: the row's anchor
-        // is the carried prior-basis one, and a fresh-basis spot/consensus
-        // beneath it would double-convert the moment the anchor resolves
-        // (fabricated revision events, mis-scaled multiples and hurdle reads).
-        // Absent beats wrong — the sweep's rate-anchor family reads its typed
-        // no-stored-basis state until a resolvable pass re-persists.
-        quick_basis: if price_bridge.is_some() {
-            engine_output.quick_basis.clone()
-        } else {
-            None
-        },
+        // The basis beneath this pass's own anchor — persisted on every priced
+        // pass, so the sweep's conversions read one basis.
+        quick_basis: engine_output.quick_basis.clone(),
         authoring_close: authoring_close.clone(),
         fund_exposure: fund_exposure.clone(),
         pre_profit: pre_profit_overlay,
@@ -1622,1590 +1373,35 @@ pub fn analyze_holding(
         implied_expectations: engine_output.implied_expectations.clone(),
         narrative,
         option_overlay: dossier.option_overlay.clone(),
-        what_changed_audit,
         research: Some(research_record),
     };
     Ok((verdict, audit_record))
 }
 
-// ---- Thesis-ledger rewrite validation (the 6g seam) ----------------------------
-
-/// The reason classes a claimed-quantitative condition downgrades under at the 6g
-/// seam (`docs/portfolio-workflow.md` §Step 6g). Every persisted
-/// `downgraded_reason` opens with its class and a colon, so a consumer or a test
-/// reads the class by prefix while the persisted shape stays a `String` (ruled
-/// 2026-09-16). Since `portfolio-v45` the statement is rendered from the core,
-/// so no class reads prose: the structural classes and the authoring-surface
-/// class remain.
-pub mod downgrade_class {
-    /// The series claim does not resolve to a series the engine computes.
-    pub const SERIES_UNRESOLVED: &str = "series-unresolved";
-    /// The series resolves but the holding's vehicle kind never computes it.
-    pub const SERIES_UNCOMPUTABLE: &str = "series-uncomputable";
-    /// The comparator or a number is malformed.
-    pub const MALFORMED: &str = "malformed";
-    /// A margin at or beyond the threshold's magnitude, or past the relative cap.
-    pub const MARGIN: &str = "margin-implausible";
-    /// A new or superseding core that already holds on the authoring surface —
-    /// the value the prompt showed is already past the threshold by more than
-    /// the margin — so it is not a crossing ahead but a reversed direction, a
-    /// unit slip or a present-tense claim (the rendered-ledger slice, ruled
-    /// 2026-09-18).
-    pub const HOLDS_AT_AUTHORING: &str = "holds-at-authoring";
-}
-
-/// The relative margin cap on the price, the multiples and the debt / equity
-/// ratio: a margin past this share of the level is implausible even when it
-/// clears the magnitude bound (fix list 1.8, ruled 2026-09-16 off the live
-/// read's L5 — a 489.5 margin on a $490 level).
-const MARGIN_CAP_PRICE_RATIO: f64 = 0.25;
-/// The relative margin cap on the fraction-unit series, whose levels sit near
-/// zero so their noise band is proportionally wider.
-const MARGIN_CAP_FRACTION: f64 = 0.50;
-
-/// Parse a draft's core — the series (and, with `vehicle` given, that the
-/// vehicle kind computes it), the comparator, a finite threshold and a
-/// non-negative margin — with the structural reason where it does not parse,
-/// opening with its [`downgrade_class`]. A refused draft's statement renders
-/// from this parse alone (no vehicle check), so a series the vehicle never
-/// computes still renders what was asked.
-fn parse_draft_core(qd: &QuantCoreDraft, vehicle: Option<bool>) -> std::result::Result<QuantCore, String> {
-    use downgrade_class as class;
-    let series = engine::LedgerSeries::parse(&qd.series).ok_or_else(|| {
-        format!(
-            "{}: series '{}' does not resolve to a series the engine computes",
-            class::SERIES_UNRESOLVED,
-            qd.series
-        )
-    })?;
-    if let Some(is_fund) = vehicle {
-        if !series.computable_for(is_fund) {
-            return Err(format!(
-                "{}: series '{}' has no {} computation — the condition would be \
-                 permanently unevaluable on this holding",
-                class::SERIES_UNCOMPUTABLE,
-                qd.series,
-                if is_fund { "fund-path" } else { "stock-path" }
-            ));
-        }
-    }
-    let comparator = match qd.comparator.trim() {
-        "below" => LedgerComparator::Below,
-        "above" => LedgerComparator::Above,
-        other => {
-            return Err(format!(
-                "{}: comparator '{other}' is not below/above",
-                class::MALFORMED
-            ))
-        }
-    };
-    if !qd.threshold.is_finite() {
-        return Err(format!("{}: threshold is not a finite number", class::MALFORMED));
-    }
-    Ok(QuantCore {
-        series,
-        comparator,
-        threshold: qd.threshold,
-        margin: if qd.margin.is_finite() { qd.margin.max(0.0) } else { 0.0 },
-    })
-}
-
-/// Validate a draft's quantitative-core claim into a persisted [`QuantCore`] — the
-/// resolution contract's app-side check (`docs/portfolio-workflow.md` §Step 6g).
-/// `Err` carries the downgrade reason, opening with its [`downgrade_class`]. The
-/// checks run in a fixed order and the first disagreement wins: series →
-/// vehicle → comparator → threshold → margin. A core that fails is downgraded
-/// to qualitative, never repaired or clamped toward the engine's view. The
-/// authoring-surface check ([`holds_at_authoring`]) runs at the condition seam,
-/// where a carried core is told apart from a new one.
-fn validate_quant_core(qd: &QuantCoreDraft, is_fund: bool) -> std::result::Result<QuantCore, String> {
-    use downgrade_class as class;
-    let core = parse_draft_core(qd, Some(is_fund))?;
-    let QuantCore { series, comparator, threshold, margin } = core;
-
-    // Margin: at or beyond the threshold's magnitude moves the effective boundary
-    // to zero or past double the level (a zero threshold is exempt — the margin
-    // is its only scale).
-    if threshold != 0.0 && margin >= threshold.abs() {
-        return Err(format!(
-            "{}: margin {} is at or beyond the threshold's magnitude {} — the effective \
-             boundary would sit at {} rather than near the stated level",
-            class::MARGIN,
-            fmt_num(margin),
-            fmt_num(threshold.abs()),
-            fmt_num(match comparator {
-                LedgerComparator::Below => threshold - margin,
-                LedgerComparator::Above => threshold + margin,
-            })
-        ));
-    }
-    let cap = if series.percent_unit() { MARGIN_CAP_FRACTION } else { MARGIN_CAP_PRICE_RATIO };
-    if threshold != 0.0 && margin > cap * threshold.abs() {
-        return Err(format!(
-            "{}: margin {} is more than {}% of the level {} — a noise band that wide would \
-             confirm a crossing far from the stated level",
-            class::MARGIN,
-            fmt_num(margin),
-            fmt_num(cap * 100.0),
-            fmt_num(threshold.abs())
-        ));
-    }
-
-    Ok(core)
-}
-
-/// The authoring-surface check: the value the prompt showed for the core's
-/// series — the run's computed metric, or the spot on the price — read through
-/// the evaluator's own predicate (`engine::evaluate_ledger_conditions_gated`:
-/// past the threshold by more than the margin). `Some(value)` where the core
-/// already holds, so a new or superseding condition is refused as
-/// `holds-at-authoring`; `None` where it does not, or where the surface carries
-/// no value for the series — or a value the evaluator would call off-scale
-/// ([`engine::LedgerSeries::admissible`]: negative equity, a non-positive P/E)
-/// — since the condition is then unevaluable rather than wrong, and keeps its
-/// core (ruled 2026-09-18).
-fn holds_at_authoring(
-    core: &QuantCore,
-    metrics: Option<&engine::ComputedMetrics>,
-    spot: Option<f64>,
-) -> Option<f64> {
-    let value = if core.series == engine::LedgerSeries::Price {
-        engine::usable_price(spot)
-    } else {
-        metrics
-            .and_then(|m| core.series.metric_value(m))
-            .filter(|v| v.is_finite() && core.series.admissible(*v))
-    }?;
-    let margin = core.margin.max(0.0);
-    let holds = match core.comparator {
-        LedgerComparator::Below => value < core.threshold - margin,
-        LedgerComparator::Above => value > core.threshold + margin,
-    };
-    holds.then_some(value)
-}
-
-/// The data phrase the continuity prompt prints on a refused condition's row,
-/// per reason class — what the model needs to author differently, with no app
-/// word: the `holds-at-authoring` reason is already that sentence; each
-/// structural class maps to one phrase (ruled 2026-09-18).
-fn refusal_phrase(reason: &str) -> String {
-    let (class, rest) = reason.split_once(':').unwrap_or(("", reason));
-    match class {
-        downgrade_class::HOLDS_AT_AUTHORING => rest.trim().to_string(),
-        downgrade_class::SERIES_UNRESOLVED | downgrade_class::SERIES_UNCOMPUTABLE => {
-            "no computed series for this holding".to_string()
-        }
-        downgrade_class::MALFORMED => "the comparator or a number did not parse".to_string(),
-        downgrade_class::MARGIN => "the margin is too wide for the level".to_string(),
-        _ => "the price basis could not be tied to the prior analysis this run".to_string(),
-    }
-}
-
-/// The statement a refused draft renders where its core never parsed (an
-/// unresolvable series, a malformed comparator or threshold): the draft's own
-/// words and figures behind the model's name, in the series' formats where the
-/// series parses, so the refused condition still says what was asked.
-fn render_unparsed_draft(qd: &QuantCoreDraft, label: &str) -> String {
-    let series = engine::LedgerSeries::parse(&qd.series);
-    let level = match series {
-        Some(s) if qd.threshold.is_finite() => s.render_level(qd.threshold),
-        _ => fmt_num(qd.threshold),
-    };
-    let margin = match series {
-        Some(s) if qd.margin.is_finite() => s.render_margin(qd.margin),
-        _ => fmt_num(qd.margin),
-    };
-    let rule = format!(
-        "{} {} {level} (margin {margin})",
-        series.map(|s| s.render_name()).unwrap_or(qd.series.trim()),
-        qd.comparator.trim()
-    );
-    if label.is_empty() {
-        rule
-    } else {
-        format!("{label} — {rule}")
-    }
-}
-
-/// A compact number render for the downgrade reasons (no trailing zeros).
-fn fmt_num(v: f64) -> String {
-    let s = format!("{v:.6}");
-    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
-    if s.is_empty() || s == "-" { "0".to_string() } else { s }
-}
-
-/// Pull the prior condition whose machine core exactly matches (the carry case:
-/// unchanged core → the id and evaluation state survive any re-wording). The
-/// trigger family disambiguates alongside the role and core — trim-vs-sell on
-/// one core are distinct pre-commitments (the dedup contract), so an equal-core
-/// pair must never exchange ids, streaks, or acknowledgments on reorder.
-fn take_exact_core(
-    pool: &mut Vec<LedgerCondition>,
-    role: ConditionRole,
-    trigger_family: Option<TriggerFamily>,
-    core: &QuantCore,
-) -> Option<LedgerCondition> {
-    pool.iter()
-        .position(|c| {
-            c.role == role
-                && c.trigger_family == trigger_family
-                && c.quant.as_ref() == Some(core)
-        })
-        .map(|i| pool.remove(i))
-}
-
-/// Pull a prior condition by its id — the pre-assigned supersession ancestor
-/// ([`assign_supersessions`]).
-fn take_by_id(pool: &mut Vec<LedgerCondition>, id: &str) -> Option<LedgerCondition> {
-    pool.iter()
-        .position(|c| c.condition_id == id)
-        .map(|i| pool.remove(i))
-}
-
-/// The per-pair supersession cost over the **complete** machine core: comparator
-/// mismatch dominates, then threshold distance, then margin distance (threshold
-/// and margin share the series' units).
-fn supersession_cost(d: &QuantCore, p: &QuantCore) -> (u32, f64, f64) {
-    (
-        u32::from(d.comparator != p.comparator),
-        (d.threshold - p.threshold).abs(),
-        (d.margin - p.margin).abs(),
-    )
-}
-
-/// One candidate assignment: each draft's prior index (`None` = unmatched, a
-/// brand-new condition) plus the summed cost tuple.
-type AssignmentCandidate = (Vec<Option<usize>>, (u32, f64, f64));
-
-/// Exhaustively search the injective assignment of changed draft cores to prior
-/// conditions minimizing the summed cost tuple, requiring a maximum matching
-/// (`min(m, n)` pairs). Groups are tiny, so exhaustive is exact and cheap.
-fn search_assignment(
-    i: usize,
-    draft_cores: &[&QuantCore],
-    prior_cores: &[&QuantCore],
-    used: &mut [bool],
-    current: &mut Vec<Option<usize>>,
-    acc: (u32, f64, f64),
-    best: &mut Option<AssignmentCandidate>,
-) {
-    let m = draft_cores.len();
-    let n = prior_cores.len();
-    if i == m {
-        if current.iter().filter(|x| x.is_some()).count() < m.min(n) {
-            return; // not a maximum matching
-        }
-        if best.as_ref().is_none_or(|(_, b)| acc < *b) {
-            *best = Some((current.clone(), acc));
-        }
-        return;
-    }
-    for j in 0..n {
-        if used[j] {
-            continue;
-        }
-        used[j] = true;
-        current[i] = Some(j);
-        let c = supersession_cost(draft_cores[i], prior_cores[j]);
-        search_assignment(
-            i + 1,
-            draft_cores,
-            prior_cores,
-            used,
-            current,
-            (acc.0 + c.0, acc.1 + c.1, acc.2 + c.2),
-            best,
-        );
-        used[j] = false;
-        current[i] = None;
-    }
-    if m > n {
-        // More drafts than priors: this draft may go unmatched (a brand-new
-        // condition), as long as the matching stays maximal.
-        current[i] = None;
-        search_assignment(i + 1, draft_cores, prior_cores, used, current, acc, best);
-    }
-}
-
-/// A group larger than this on either side skips lineage assignment entirely —
-/// conservative (fresh conditions + plain closures) over guessed links. Far above
-/// any real ledger's same-series condition count.
-const SUPERSESSION_GROUP_CAP: usize = 4;
-
-/// Globally assign the **changed** draft cores (no exact prior match) to the
-/// remaining unreserved prior conditions, per (role, trigger-family, series)
-/// group — a minimum-cost matching over the complete machine core, computed on
-/// the **canonically sorted** draft set so lineage depends on the set of drafted
-/// conditions, never on the order the model emitted them (greedy local
-/// nearest-matching flips both links when two drafts share a nearest ancestor).
-/// The family is a group axis because trim-vs-sell on one core are distinct
-/// pre-commitments — lineage never crosses families. Returns draft-key → prior
-/// `condition_id`.
-fn assign_supersessions(
-    changed: &[(ConditionRole, Option<TriggerFamily>, QuantCore, String)],
-    prior_pool: &[LedgerCondition],
-    reserved: &std::collections::HashSet<String>,
-) -> std::collections::HashMap<String, String> {
-    type GroupKey = (ConditionRole, Option<TriggerFamily>, engine::LedgerSeries);
-    let mut assigned: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut groups: Vec<GroupKey> = Vec::new();
-    for (role, family, core, _) in changed {
-        if !groups.contains(&(*role, *family, core.series)) {
-            groups.push((*role, *family, core.series));
-        }
-    }
-    for (role, family, series) in groups {
-        let mut drafts: Vec<&(ConditionRole, Option<TriggerFamily>, QuantCore, String)> = changed
-            .iter()
-            .filter(|(r, f, c, _)| *r == role && *f == family && c.series == series)
-            .collect();
-        drafts.sort_by(|a, b| {
-            (a.2.comparator.as_kebab(), a.2.threshold, a.2.margin)
-                .partial_cmp(&(b.2.comparator.as_kebab(), b.2.threshold, b.2.margin))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let priors: Vec<&LedgerCondition> = prior_pool
-            .iter()
-            .filter(|c| {
-                c.role == role
-                    && c.trigger_family == family
-                    && c.quant.as_ref().map(|q| q.series) == Some(series)
-                    && !reserved.contains(&c.condition_id)
-            })
-            .collect();
-        if priors.is_empty()
-            || drafts.len() > SUPERSESSION_GROUP_CAP
-            || priors.len() > SUPERSESSION_GROUP_CAP
-        {
-            continue;
-        }
-        let draft_cores: Vec<&QuantCore> = drafts.iter().map(|(_, _, c, _)| c).collect();
-        let prior_cores: Vec<&QuantCore> =
-            priors.iter().map(|c| c.quant.as_ref().unwrap()).collect();
-        let mut best: Option<AssignmentCandidate> = None;
-        let mut used = vec![false; prior_cores.len()];
-        let mut current: Vec<Option<usize>> = vec![None; draft_cores.len()];
-        search_assignment(
-            0,
-            &draft_cores,
-            &prior_cores,
-            &mut used,
-            &mut current,
-            (0, 0.0, 0.0),
-            &mut best,
-        );
-        if let Some((mapping, _)) = best {
-            for (i, slot) in mapping.iter().enumerate() {
-                if let Some(j) = slot {
-                    assigned.insert(drafts[i].3.clone(), priors[*j].condition_id.clone());
-                }
-            }
-        }
-    }
-    assigned
-}
-
-/// Pull the prior qualitative condition with the same statement (qualitative
-/// identity is textual — no machine core, no evaluation state to protect). The
-/// trigger family disambiguates here too, for the same reason as the exact-core
-/// carry.
-fn take_same_statement(
-    pool: &mut Vec<LedgerCondition>,
-    role: ConditionRole,
-    trigger_family: Option<TriggerFamily>,
-    statement: &str,
-) -> Option<LedgerCondition> {
-    pool.iter()
-        .position(|c| {
-            c.role == role
-                && c.trigger_family == trigger_family
-                && c.quant.is_none()
-                && c.statement == statement
-        })
-        .map(|i| pool.remove(i))
-}
-
-/// Validate one draft condition into a persisted [`LedgerCondition`]: executability
-/// (downgrade-not-drop), the authoring-surface check, app-decided identity
-/// (carry / supersede / new), and the tripped / fired claim (honored only against
-/// a confirmed engine crossing on the carried id — `docs/portfolio-workflow.md`
-/// §Step 6g). A quantitative draft's `statement` is the model's short name; the
-/// persisted statement is rendered from the core, kept or refused
-/// (`portfolio-v45`).
-#[allow(clippy::too_many_arguments)]
-fn validate_condition(
-    statement: &str,
-    role: ConditionRole,
-    trigger_family: Option<TriggerFamily>,
-    quant_draft: Option<&QuantCoreDraft>,
-    is_fund: bool,
-    technology_class: bool,
-    claimed: bool,
-    prior_pool: &mut Vec<LedgerCondition>,
-    assigned_prior: Option<&str>,
-    confirmed_ids: &std::collections::HashSet<String>,
-    research_supported: &std::collections::HashSet<String>,
-    updated_states: &std::collections::HashMap<String, ConditionEvalState>,
-    price_basis_verified: bool,
-    stamps: crate::portfolio::ContinuityStamps,
-    metrics: Option<&engine::ComputedMetrics>,
-    spot: Option<f64>,
-    audit: &mut LedgerAudit,
-) -> LedgerCondition {
-    let text = statement.trim().to_string();
-    // The model's name for a quantitative condition; a blank one persists as none.
-    let name = (!text.is_empty()).then(|| text.clone());
-    let (statement, label, quant, downgraded_reason) = match quant_draft {
-        None => (text, None, None, None),
-        Some(qd) => match validate_quant_core(qd, is_fund) {
-            Ok(core) => {
-                let carried_verbatim = prior_pool.iter().any(|c| {
-                    c.role == role
-                        && c.trigger_family == trigger_family
-                        && c.quant.as_ref() == Some(&core)
-                });
-                let statement = core.render(name.as_deref(), stamps.statement_basis);
-                if !price_basis_verified && core.series.price_denominated() && !carried_verbatim {
-                    // The unverifiable-basis supersede guard: with the split bridge
-                    // unresolvable, a NEW or RE-ANCHORED price-denominated core was
-                    // authored against fresh prices but would persist under the
-                    // carried prior-basis anchor — an untieable mix, so it
-                    // downgrades (typed, never dropped). A carried-verbatim core
-                    // stays quantitative: it shares the carried anchor's basis.
-                    let reason = "the price basis is unverifiable this run \
-                                  (split-bridge anchor unresolvable) — a new or \
-                                  re-anchored price-denominated core cannot be \
-                                  tied to the carried anchor; re-author at a \
-                                  resolvable pass"
-                        .to_string();
-                    audit.downgraded.push(format!("'{statement}': {reason}"));
-                    (statement, name, None, Some(reason))
-                } else if let Some(value) = (!carried_verbatim)
-                    .then(|| holds_at_authoring(&core, metrics, spot))
-                    .flatten()
-                {
-                    // The authoring-surface check: a carried-verbatim core was
-                    // authored earlier and may legitimately be in breach now (its
-                    // streak is the point); a new or superseding one that already
-                    // holds is not a crossing ahead.
-                    // The reason after its class is a data sentence: the
-                    // continuity prompt prints it on the refused row.
-                    let reason = format!(
-                        "{}: the {} was already {} {} when authored, past the margin {}; \
-                         it stood at {}",
-                        downgrade_class::HOLDS_AT_AUTHORING,
-                        core.series.render_name(),
-                        core.comparator.as_kebab(),
-                        core.series.render_level(core.threshold),
-                        core.series.render_margin(core.margin),
-                        core.series.render_level(value)
-                    );
-                    audit.downgraded.push(format!("'{statement}': {reason}"));
-                    (statement, name, None, Some(reason))
-                } else {
-                    (statement, name, Some(core), None)
-                }
-            }
-            Err(reason) => {
-                // Downgraded to qualitative, logged, never dropped — and it retains
-                // no machine evaluation state. The statement still renders from the
-                // draft as far as it parses, so the refused condition says what the
-                // model asked.
-                let statement = parse_draft_core(qd, None)
-                    .map(|c| c.render(name.as_deref(), stamps.statement_basis))
-                    .unwrap_or_else(|_| render_unparsed_draft(qd, name.as_deref().unwrap_or("")));
-                audit.downgraded.push(format!("'{statement}': {reason}"));
-                (statement, name, None, Some(reason))
-            }
-        },
-    };
-
-    let (condition_id, supersedes, eval_state, carried) = match &quant {
-        Some(core) => {
-            if let Some(prev) = take_exact_core(prior_pool, role, trigger_family, core) {
-                // Unchanged machine core: the id and accumulated state carry
-                // through any re-naming.
-                let state = updated_states
-                    .get(&prev.condition_id)
-                    .cloned()
-                    .or(prev.eval_state)
-                    .or_else(|| Some(ConditionEvalState::default()));
-                (prev.condition_id, prev.supersedes, state, true)
-            } else if let Some(mut prev) = assigned_prior.and_then(|id| take_by_id(prior_pool, id))
-            {
-                // Edited core: supersede the globally assigned ancestor — fresh
-                // id, fresh streak, the old condition closed **whole** into the
-                // audit (its state as of this run's evaluation preserved) with
-                // the link.
-                let new_id = uuid::Uuid::new_v4().to_string();
-                prev.eval_state = updated_states
-                    .get(&prev.condition_id)
-                    .cloned()
-                    .or(prev.eval_state);
-                let prev_id = prev.condition_id.clone();
-                audit.superseded.push(ClosedCondition {
-                    superseded_by: Some(new_id.clone()),
-                    condition: prev,
-                });
-                // A fresh streak starts stamped with the basis and source the
-                // prompt stated for this series (`ContinuityStamps`), so the
-                // first evaluation can already disagree with a flip.
-                (
-                    new_id,
-                    Some(prev_id),
-                    Some(stamps.authored_state(core.series)),
-                    false,
-                )
-            } else {
-                (
-                    uuid::Uuid::new_v4().to_string(),
-                    None,
-                    Some(stamps.authored_state(core.series)),
-                    false,
-                )
-            }
-        }
-        None => {
-            // Qualitative (authored or downgraded): carry the id on an unchanged
-            // statement — a refused draft re-emitted unchanged renders the same
-            // sentence; no machine evaluation state either way.
-            match take_same_statement(prior_pool, role, trigger_family, &statement) {
-                Some(prev) => (prev.condition_id, prev.supersedes, None, true),
-                None => (uuid::Uuid::new_v4().to_string(), None, None, false),
-            }
-        }
-    };
-
-    // The tripped / fired claim: a quantitative claim is honored only where the
-    // engine confirmed a crossing for this same (carried) condition; a
-    // qualitative claim only where a **source-backed research finding**
-    // references the carried condition — the distillation's validated
-    // `related_condition_id` linkage, fresh claims only
-    // (`docs/portfolio-workflow.md` §Step 6g). Anything else is cleared and
-    // logged: the ledger cannot be quietly rewritten to fit a new verdict.
-    let tripped = if claimed {
-        let honored = if quant.is_some() {
-            carried && confirmed_ids.contains(&condition_id)
-        } else {
-            carried && research_supported.contains(&condition_id)
-        };
-        if honored {
-            true
-        } else {
-            let reason = if quant.is_none() {
-                "no source-backed research finding supports the claim"
-            } else {
-                "no confirmed engine crossing supports the claim"
-            };
-            audit
-                .rejected_claims
-                .push(format!("'{statement}': {reason}"));
-            false
-        }
-    } else {
-        false
-    };
-
-    LedgerCondition {
-        condition_id,
-        role,
-        trigger_family,
-        statement,
-        label,
-        quant,
-        downgraded_reason,
-        technology_class,
-        tripped,
-        supersedes,
-        eval_state,
-    }
-}
-
-/// Validate the model's rewritten ledger into the persisted [`ThesisLedger`] — the
-/// ledger legs of the Step-6g continuity check (`docs/portfolio-workflow.md`
-/// §Step 6g). The app owns everything structural: condition ids and what carries
-/// across the rewrite (decided here, never asserted by the model), the
-/// executability downgrades, the tripped / fired validation against the engine's
-/// crossings, the engine scenario targets stamped into the monitor (with spot's
-/// authoring-time band relation beside them, so the quick check's outside-band
-/// flag fires on a change rather than the standing state), the branch's
-/// reductions, and the acknowledgment stamp on each consumed confirmed crossing.
-pub fn validate_ledger_rewrite(
-    draft: &LedgerDraft,
-    prior: Option<&ThesisLedger>,
-    evaluation: Option<&LedgerEvaluation>,
-    branch: LedgerBranch,
-    is_fund: bool,
-    engine_targets: Option<&PriceTarget>,
-    spot: Option<f64>,
-) -> (ThesisLedger, LedgerAudit) {
-    validate_ledger_rewrite_with_research(
-        draft,
-        prior,
-        evaluation,
-        branch,
-        is_fund,
-        engine_targets,
-        spot,
-        None,
-        &std::collections::HashSet::new(),
-        true,
-        crate::portfolio::ContinuityStamps::NONE,
-    )
-}
-
-/// The full 6g form: `research_supported` carries the condition ids that a
-/// **fresh** distilled research claim references (the validated
-/// `related_condition_id` linkage) — the source-backed-finding leg a
-/// qualitative tripped/fired claim needs. The research-less
-/// [`validate_ledger_rewrite`] passes the empty set, so a qualitative claim
-/// can never self-certify. `stamps` is the authoring surface's continuity
-/// stamps — the basis and equity source the prompt stated — written onto every
-/// new or superseding quantitative condition per series; `metrics` is the
-/// authoring surface the prompt showed, read by the `holds-at-authoring` check
-/// (the price reads the spot)
-/// ([`crate::portfolio::ContinuityStamps`]); the wrapper passes none.
-#[allow(clippy::too_many_arguments)]
-pub fn validate_ledger_rewrite_with_research(
-    draft: &LedgerDraft,
-    prior: Option<&ThesisLedger>,
-    evaluation: Option<&LedgerEvaluation>,
-    branch: LedgerBranch,
-    is_fund: bool,
-    engine_targets: Option<&PriceTarget>,
-    spot: Option<f64>,
-    metrics: Option<&engine::ComputedMetrics>,
-    research_supported: &std::collections::HashSet<String>,
-    price_basis_verified: bool,
-    stamps: crate::portfolio::ContinuityStamps,
-) -> (ThesisLedger, LedgerAudit) {
-    // Structural, not conventional: a `role_risk_only` monitor is condition-only —
-    // no engine scenario target exists on that branch — regardless of what the
-    // call site passed (`docs/portfolio-analysis.md` §The position thesis ledger).
-    let engine_targets = if branch == LedgerBranch::RoleRiskOnly {
-        None
-    } else {
-        engine_targets
-    };
-    let mut audit = LedgerAudit::default();
-    if let Some(eval) = evaluation {
-        audit.crossings = eval.crossings.clone();
-        audit.unevaluable = eval.unevaluable.clone();
-    }
-    let confirmed_ids: std::collections::HashSet<String> = evaluation
-        .map(|e| {
-            e.crossings
-                .iter()
-                .filter(|c| c.outcome == CrossingOutcome::Confirmed)
-                .map(|c| c.condition_id.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    let updated_states: std::collections::HashMap<String, ConditionEvalState> = evaluation
-        .map(|e| e.updated_states.iter().cloned().collect())
-        .unwrap_or_default();
-
-    let mut prior_pool: Vec<LedgerCondition> =
-        prior.map(|p| p.conditions.clone()).unwrap_or_default();
-    let mut conditions: Vec<LedgerCondition> = Vec::new();
-
-    // The dedup / identity key for one draft condition — the parsed machine core
-    // (quantitative) or the trimmed statement (qualitative), per role — and per
-    // family for triggers, since trim-vs-sell on one core are distinct
-    // pre-commitments.
-    let dedup_key = |role: ConditionRole,
-                     family: Option<TriggerFamily>,
-                     quant_draft: Option<&QuantCoreDraft>,
-                     statement: &str| {
-        match quant_draft.and_then(|qd| validate_quant_core(qd, is_fund).ok()) {
-            Some(core) => format!(
-                "{role:?}|{family:?}|{}|{}|{}|{}",
-                core.series.as_kebab(),
-                core.comparator.as_kebab(),
-                core.threshold,
-                core.margin
-            ),
-            None => format!("{role:?}|{family:?}|qual|{}", statement.trim()),
-        }
-    };
-    // Parse a trigger's family claim (the main loop enforces the branch rules).
-    let parse_family = |family: &str| match family.trim() {
-        "add" => Some(TriggerFamily::Add),
-        "trim" => Some(TriggerFamily::Trim),
-        "sell" => Some(TriggerFamily::Sell),
-        _ => None,
-    };
-
-    // Pre-pass over the draft's quantitative conditions: resolve every exact-core
-    // match globally first (an unchanged core always carries), then assign the
-    // remaining **changed** cores to the remaining prior conditions by a global
-    // minimum-cost matching ([`assign_supersessions`]) — so lineage is
-    // order-independent: a changed condition emitted first can neither consume an
-    // unchanged sibling a later draft still carries, nor claim another changed
-    // sibling's nearest ancestor.
-    let mut reserved: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut pre_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut changed: Vec<(ConditionRole, Option<TriggerFamily>, QuantCore, String)> = Vec::new();
-    let pre_pass_rows = draft
-        .falsifiers
-        .iter()
-        .map(|f| {
-            (
-                ConditionRole::Falsifier,
-                None,
-                f.quant.as_ref(),
-                f.statement.as_str(),
-            )
-        })
-        .chain(draft.triggers.iter().map(|t| {
-            (
-                ConditionRole::Trigger,
-                parse_family(&t.family),
-                t.quant.as_ref(),
-                t.statement.as_str(),
-            )
-        }));
-    for (role, family, quant_draft, statement) in pre_pass_rows {
-        // Mirror the main loop's trigger skip rules, so a rejected trigger
-        // neither reserves nor assigns.
-        if role == ConditionRole::Trigger
-            && (family.is_none()
-                || (family == Some(TriggerFamily::Add) && branch == LedgerBranch::RoleRiskOnly))
-        {
-            continue;
-        }
-        let Some(core) = quant_draft.and_then(|qd| validate_quant_core(qd, is_fund).ok()) else {
-            continue;
-        };
-        let key = dedup_key(role, family, quant_draft, statement);
-        if !pre_seen.insert(key.clone()) {
-            continue; // the main loop drops this duplicate too
-        }
-        if let Some(prev) = prior_pool.iter().find(|c| {
-            c.role == role
-                && c.trigger_family == family
-                && c.quant.as_ref() == Some(&core)
-                && !reserved.contains(&c.condition_id)
-        }) {
-            reserved.insert(prev.condition_id.clone());
-        } else {
-            changed.push((role, family, core, key));
-        }
-    }
-    let assigned = assign_supersessions(&changed, &prior_pool, &reserved);
-
-    // Dedup guard: a repetitive model returning the same condition twice must not
-    // pad the ledger — the second copy is dropped and logged *before* it can touch
-    // the prior pool.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for f in &draft.falsifiers {
-        let key = dedup_key(ConditionRole::Falsifier, None, f.quant.as_ref(), &f.statement);
-        if !seen.insert(key.clone()) {
-            audit.duplicates.push(format!(
-                "falsifier '{}' dropped as a duplicate of one already validated",
-                f.statement.trim()
-            ));
-            continue;
-        }
-        conditions.push(validate_condition(
-            &f.statement,
-            ConditionRole::Falsifier,
-            None,
-            f.quant.as_ref(),
-            is_fund,
-            f.technology_class,
-            f.tripped,
-            &mut prior_pool,
-            assigned.get(&key).map(String::as_str),
-            &confirmed_ids,
-            research_supported,
-            &updated_states,
-            price_basis_verified,
-            stamps,
-            metrics,
-            spot,
-            &mut audit,
-        ));
-    }
-    for t in &draft.triggers {
-        let family = parse_family(&t.family);
-        // The branch reduction: a `role_risk_only` ledger's triggers are trim /
-        // sell only — an add trigger would pre-commit to an action its feasible
-        // set never offers (`docs/portfolio-analysis.md` §The position thesis
-        // ledger). Rejected and logged, like an unparseable family.
-        match family {
-            Some(TriggerFamily::Add) if branch == LedgerBranch::RoleRiskOnly => {
-                audit.rejected_claims.push(format!(
-                    "add trigger '{}' rejected on the role_risk_only branch (trim/sell spine)",
-                    t.statement.trim()
-                ));
-                continue;
-            }
-            None => {
-                audit.rejected_claims.push(format!(
-                    "trigger '{}' rejected: family '{}' is not add/trim/sell",
-                    t.statement.trim(),
-                    t.family
-                ));
-                continue;
-            }
-            Some(_) => {}
-        }
-        let key = dedup_key(ConditionRole::Trigger, family, t.quant.as_ref(), &t.statement);
-        if !seen.insert(key.clone()) {
-            audit.duplicates.push(format!(
-                "trigger '{}' dropped as a duplicate of one already validated",
-                t.statement.trim()
-            ));
-            continue;
-        }
-        conditions.push(validate_condition(
-            &t.statement,
-            ConditionRole::Trigger,
-            family,
-            t.quant.as_ref(),
-            is_fund,
-            false,
-            t.fired,
-            &mut prior_pool,
-            assigned.get(&key).map(String::as_str),
-            &confirmed_ids,
-            research_supported,
-            &updated_states,
-            price_basis_verified,
-            stamps,
-            metrics,
-            spot,
-            &mut audit,
-        ));
-    }
-
-    // Prior conditions the rewrite removed close **whole** into the audit record —
-    // statement, core, and accumulated state (as of this run's evaluation)
-    // preserved, never silently lost.
-    for mut removed in prior_pool {
-        removed.eval_state = updated_states
-            .get(&removed.condition_id)
-            .cloned()
-            .or(removed.eval_state);
-        audit.closed.push(ClosedCondition {
-            superseded_by: None,
-            condition: removed,
-        });
-    }
-
-    // The acknowledgment transition (`docs/portfolio-workflow.md` §Step 6g): the
-    // full pass consumed this evaluation as continuity input, so each confirmed
-    // crossing's observation is stamped acknowledging — the same breach cannot
-    // re-raise off the observation this pass already examined.
-    for crossing in &audit.crossings {
-        if crossing.outcome != CrossingOutcome::Confirmed {
-            continue;
-        }
-        if let Some(cond) = conditions
-            .iter_mut()
-            .find(|c| c.condition_id == crossing.condition_id)
-        {
-            if let Some(state) = cond.eval_state.as_mut() {
-                state.acknowledged_observation_id = Some(crossing.observation_id.clone());
-            }
-        }
-    }
-
-    // Key drivers: the series tie is a claim, validated like any other
-    // (unresolvable → the driver keeps its name, untied, logged). Each driver
-    // gets an **app-assigned stable `driver_id`** (ruled 2026-08-24): a
-    // rewritten driver whose name carries (trimmed, case-insensitive) keeps
-    // the prior driver's id — the referential anchor the next run's leading
-    // indicator must cite — while a new or renamed driver mints a fresh one
-    // (a changed statement is a different driver).
-    let mut prior_driver_pool: Vec<&KeyDriver> = prior
-        .map(|p| p.key_drivers.iter().collect())
-        .unwrap_or_default();
-    let key_drivers: Vec<KeyDriver> = draft
-        .key_drivers
-        .iter()
-        .map(|d| {
-            let series = match &d.series {
-                None => None,
-                Some(claim) => match engine::LedgerSeries::parse(claim) {
-                    Some(s) => Some(s),
-                    None => {
-                        audit.downgraded.push(format!(
-                            "key driver '{}': series '{claim}' does not resolve — left untied",
-                            d.name
-                        ));
-                        None
-                    }
-                },
-            };
-            let name = d.name.trim().to_string();
-            let carried = prior_driver_pool
-                .iter()
-                .position(|p| !p.driver_id.is_empty() && p.name.trim().eq_ignore_ascii_case(&name))
-                .map(|i| prior_driver_pool.swap_remove(i).driver_id.clone());
-            KeyDriver {
-                driver_id: carried.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                name,
-                series,
-            }
-        })
-        .collect();
-
-    // The monitor: model conditions + probability leans; the engine's own scenario
-    // targets stamped by the app (`None` on the condition-only role_risk branch).
-    let clamp_pct = |p: f64| if p.is_finite() { p.clamp(0.0, 100.0) } else { 0.0 };
-    let monitor = vec![
-        MonitorScenario {
-            scenario: ScenarioKind::Bear,
-            conditions: draft.bear.conditions.trim().to_string(),
-            probability_pct: clamp_pct(draft.bear.probability_pct),
-            engine_target: engine_targets.map(|t| t.bear),
-        },
-        MonitorScenario {
-            scenario: ScenarioKind::Base,
-            conditions: draft.base.conditions.trim().to_string(),
-            probability_pct: clamp_pct(draft.base.probability_pct),
-            engine_target: engine_targets.map(|t| t.base),
-        },
-        MonitorScenario {
-            scenario: ScenarioKind::Bull,
-            conditions: draft.bull.conditions.trim().to_string(),
-            probability_pct: clamp_pct(draft.bull.probability_pct),
-            engine_target: engine_targets.map(|t| t.bull),
-        },
-    ];
-
-    let current_thesis = draft.thesis.trim().to_string();
-    let ledger = ThesisLedger {
-        branch,
-        // The original thesis is frozen at debut and carried immutable thereafter —
-        // drift stays legible (`docs/portfolio-analysis.md` §The position thesis
-        // ledger).
-        original_thesis: prior
-            .map(|p| p.original_thesis.clone())
-            .unwrap_or_else(|| current_thesis.clone()),
-        current_thesis,
-        key_drivers,
-        monitor,
-        what_must_improve: draft.what_must_improve.trim().to_string(),
-        what_must_not_break: draft.what_must_not_break.trim().to_string(),
-        conditions,
-    };
-    (ledger, audit)
-}
-
-/// Render the Step-6a semantic continuity recall — prompt fragments from this
-/// job's own memory partition (`docs/portfolio-workflow.md` §Step 6a). Nothing
-/// renders when no hit came back (a debut-empty partition, a failed lane — the
-/// gap rides the audit's degraded inputs instead).
-fn semantic_recall_prompt_section(d: &HoldingDossier) -> String {
-    if d.semantic_recall.hits.is_empty() {
-        return String::new();
-    }
-    let mut s = String::from(
-        "\nPRIOR ANALYSIS NOTES (from memory; context, not fresh evidence)\n",
-    );
-    for h in &d.semantic_recall.hits {
-        s.push_str(&format!("- {h}\n"));
-    }
-    s
-}
-
-// ---- The what-changed attribution (the metric-level 6g validator) ----------------
-
-/// The decimal floor for one comparison value. A nonzero value extends past
-/// `min_places` rather than rendering as zero; a still-smaller value falls back
-/// to its shortest round-trip representation in [`comparison_safe_pair`] or
-/// [`delta_value`].
-fn comparison_places(x: f64, min_places: usize) -> usize {
-    if x == 0.0 {
-        min_places
-    } else {
-        (min_places..=10)
-            .find(|p| (x * 10f64.powi(*p as i32)).round() != 0.0)
-            .unwrap_or(10)
-    }
-}
-
-/// Render two values at one shared precision while preserving their numeric
-/// ordering when the strings are read back. Input-delta rows use different
-/// presentation floors (spot 2, metrics 4, sub-scores 0), but none may turn an
-/// exact `old != new` into a displayed equality. Values too close to distinguish
-/// at ten places use their shortest round-trip representations.
-fn comparison_safe_pair(old: f64, new: f64, min_places: usize) -> (String, String) {
-    let old = if old == 0.0 { 0.0 } else { old };
-    let new = if new == 0.0 { 0.0 } else { new };
-    let order = old.partial_cmp(&new);
-    let faithful = |a: &str, b: &str| match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(a), Ok(b)) => a.partial_cmp(&b) == order,
-        _ => false,
-    };
-    let floor = comparison_places(old, min_places).max(comparison_places(new, min_places));
-    let render = |places: usize| (format!("{old:.places$}"), format!("{new:.places$}"));
-    (floor..=10)
-        .map(render)
-        .find(|(a, b)| faithful(a, b))
-        .unwrap_or_else(|| (format!("{old}"), format!("{new}")))
-}
-
-/// Format one side of an optional input-delta pair — `(absent)` where that run
-/// could not compute the metric, and never a fabricated zero for a tiny value.
-fn delta_value(v: Option<f64>, min_places: usize) -> String {
-    let Some(x) = v else {
-        return "(absent)".to_string();
-    };
-    let x = if x == 0.0 { 0.0 } else { x };
-    let places = comparison_places(x, min_places);
-    let rendered = format!("{x:.places$}");
-    if x != 0.0 && rendered.parse::<f64>() == Ok(0.0) {
-        format!("{x}")
-    } else {
-        rendered
-    }
-}
-
-/// Render an optional old/new pair. Two present values share comparison-safe
-/// precision; an absent side stays explicit and the present side keeps the
-/// requested presentation floor without flattening a tiny nonzero value.
-fn optional_delta_pair(
-    old: Option<f64>,
-    new: Option<f64>,
-    min_places: usize,
-) -> (String, String) {
-    match (old, new) {
-        (Some(old), Some(new)) => comparison_safe_pair(old, new, min_places),
-        (old, new) => (
-            delta_value(old, min_places),
-            delta_value(new, min_places),
-        ),
-    }
-}
-
-/// The grade branch a PRIOR record was scored on — its persisted asset class,
-/// the key the job routes the fund path on (`job.rs`, `is_fund`), so the class
-/// is the branch for every record ever written; the fund path's
-/// `fund_class_label` is a derived marker of the same fact and post-field. The
-/// stamp belongs to that record, so the branch must be its branch, not the
-/// current dossier's: priors join by symbol, and a symbol reclassified between
-/// runs would otherwise read the wrong boundary in both directions.
-fn grade_branch(prior: &HoldingVerdict) -> engine::GradeBranch {
-    match prior.asset_class {
-        crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund => {
-            engine::GradeBranch::Fund
-        }
-        _ => engine::GradeBranch::Stock,
-    }
-}
-
-/// The input-delta row for a scenario-target parameter boundary — the target
-/// mirror of the grade rows: only over a priced prior with a stamped target
-/// record, naming the horizons the boundary can have moved on the prior's branch
-/// (`engine::target_parameter_change`), so an engine target move across it is
-/// attributed to the parameter change rather than to evidence or a
-/// self-correction (the 2026-08-24 review's Codex I11).
-fn target_boundary_row(horizons: engine::TargetHorizons) -> String {
-    format!(
-        "scenario-target parameters changed since the prior analysis — the {} can move with \
-         no input change",
-        horizons.label()
-    )
-}
-
-/// The continuity NOTE for the same boundary, in the interpretation prompt —
-/// the grade NOTE's shape, naming the horizons.
-fn target_boundary_note(horizons: engine::TargetHorizons) -> String {
-    format!(
-        "- The scenario-target parameters changed since the prior analysis, so the {} may \
-         have moved with no change in the company's inputs.\n",
-        horizons.label()
-    )
-}
-
-/// Append one input-delta entry, assigning the next bracketed id.
-fn push_delta(entries: &mut Vec<crate::portfolio::DeltaEntry>, label: String) {
-    let id = format!("D{}", entries.len() + 1);
-    entries.push(crate::portfolio::DeltaEntry {
-        id,
-        label,
-        related_condition_id: None,
-    });
-}
-
-/// Append this run's fresh distilled claims to the rendered input delta as
-/// addressable entries — the 6g research-finding leg — each carrying the ledger
-/// condition it bears on where the distillation tied one (the validated
-/// `related_condition_id`, rendered by statement so the id stays app-owned).
-/// The interpretation prompt marks that condition research-supported off the
-/// entry, and a what-changed row can cite the finding like any engine entry
-/// (`docs/portfolio-workflow.md` §Step 6d, §Step 6g).
-fn push_research_delta_entries(
-    entries: &mut Vec<crate::portfolio::DeltaEntry>,
-    distilled: &DistilledResearch,
-    prior_ledger: Option<&ThesisLedger>,
-) {
-    let mut n = 0usize;
-    for topic in &distilled.topic_layer {
-        for claim in topic.claims.iter().filter(|c| !c.cached) {
-            n += 1;
-            let bears_on = claim.related_condition_id.as_deref().and_then(|id| {
-                prior_ledger?
-                    .conditions
-                    .iter()
-                    .find(|c| c.condition_id == id)
-            });
-            let tie = bears_on
-                .map(|c| format!(" — bears on ledger condition '{}'", c.statement))
-                .unwrap_or_default();
-            entries.push(crate::portfolio::DeltaEntry {
-                id: format!("research-{n}"),
-                label: format!(
-                    "research finding ({}): {} [{}]{tie}",
-                    topic.topic_key, claim.claim, claim.source_url
-                ),
-                related_condition_id: bears_on.map(|c| c.condition_id.clone()),
-            });
-        }
-    }
-}
-
-/// The delta entries both branches share: the position delta, this run's ledger
-/// crossings, and the house view where the prompt renders one.
-fn append_shared_delta(
-    entries: &mut Vec<crate::portfolio::DeltaEntry>,
-    dossier: &HoldingDossier,
-    position_change: PositionChange,
-    ledger_eval: Option<&LedgerEvaluation>,
-    price_bridge: Option<f64>,
-) {
-    // A detected re-basis is itself an input change worth attributing against —
-    // without the row, a split's apparent price collapse has no evidence entry.
-    match price_bridge {
-        Some(f) if f != 1.0 => push_delta(
-            entries,
-            format!(
-                "price series re-based since the prior analysis (split factor {f:.4}); prior \
-                 price-denominated values converted onto the fresh basis"
-            ),
-        ),
-        None => push_delta(
-            entries,
-            "price basis unverifiable this run — prior price-denominated comparisons \
-             excluded"
-                .to_string(),
-        ),
-        _ => {}
-    }
-    if position_change != PositionChange::Unchanged {
-        let move_word = match position_change {
-            PositionChange::New => "new",
-            PositionChange::Increased => "increased",
-            PositionChange::Decreased => "decreased",
-            PositionChange::Unchanged => unreachable!("guarded above"),
-        };
-        push_delta(entries, format!("position {move_word} since the prior run"));
-    }
-    if let Some(eval) = ledger_eval {
-        for c in &eval.crossings {
-            let role = match c.role {
-                crate::portfolio::ConditionRole::Falsifier => "falsifier",
-                crate::portfolio::ConditionRole::Trigger => "trigger",
-            };
-            let outcome = match c.outcome {
-                CrossingOutcome::Confirmed => "confirmed",
-                CrossingOutcome::FirstBreach => "first breach",
-            };
-            let (observed, threshold) = fmt_crossing_pair(c.observed_value, c.threshold);
-            push_delta(
-                entries,
-                format!(
-                    "ledger {role} '{}' {outcome}: observed {observed} vs threshold {threshold}",
-                    c.statement
-                ),
-            );
-        }
-    }
-    if dossier.house_view.latest_sections.is_some() {
-        push_delta(
-            entries,
-            "market analysis: a market-level analysis supplied this run".to_string(),
-        );
-    }
-}
-
-/// Assemble the priced holding's rendered **input delta**
-/// (`docs/portfolio-workflow.md` §Step 6g): the concrete, engine-computed changes
-/// since the prior read, each with a stable bracketed id the what-changed rows
-/// cite as evidence. Empty on a debut — nothing to attribute against. Resolution
-/// downstream is exact `old ≠ new` (ruled 2026-08-21): stored numerics round-trip
-/// bit-exact, so any difference is a real entry.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn priced_input_delta(
-    dossier: &HoldingDossier,
-    engine_output: &EngineOutput,
-    position_change: PositionChange,
-    ledger_eval: Option<&LedgerEvaluation>,
-    tech_pre_flag: Option<&engine::TechEventPreFlag>,
-    narrative: Option<&engine::NarrativeRead>,
-    hard_forensic: bool,
-    price_bridge: Option<f64>,
-) -> Vec<crate::portfolio::DeltaEntry> {
-    let Some(prior) = dossier.prior_verdict.as_ref() else {
-        return Vec::new();
-    };
-    let mut entries = Vec::new();
-    // The prior side converts onto the fresh basis before the row renders — a
-    // split must never read as a spot collapse. An unresolvable bridge skips the
-    // row (the shared delta carries the exclusion entry).
-    if let (Some(old), Some(new), Some(f)) = (
-        dossier.prior_spot,
-        dossier.financials.current_price,
-        price_bridge,
-    ) {
-        let old = old * f;
-        if old != new {
-            let (old, new) = comparison_safe_pair(old, new, 2);
-            push_delta(&mut entries, format!("spot: {old} -> {new}"));
-        }
-    }
-    if let Some(prior_metrics) = dossier.prior_metrics.as_ref() {
-        // The NAV-premium row carries signal only on the closed-end form
-        // (`docs/portfolio-analysis.md` §Asset eligibility) — an open-end ETF's
-        // transient premium flicker would otherwise seed a delta row every run.
-        let cef = dossier
-            .fund
-            .as_ref()
-            .is_some_and(|f| crate::portfolio::fund::is_closed_end(&f.fund));
-        for c in engine::metric_delta(prior_metrics, &engine_output.metrics) {
-            if c.name == "NAV premium" && !cef {
-                continue;
-            }
-            let (old, new) = optional_delta_pair(c.old, c.new, 4);
-            push_delta(
-                &mut entries,
-                format!("metric {}: {old} -> {new}", c.name),
-            );
-        }
-    }
-    if let VerdictDisposition::Priced(pg) = &prior.disposition {
-        // The engine's then-versus-now values — the realized data the
-        // self-review reads (`docs/portfolio-workflow.md` §Step 6b) — supply
-        // every engine row here, so the two surfaces can never disagree. The
-        // prior bands convert like the spot row and only where the prior pass
-        // CERTIFIED its basis (`prior_spot` rides the prior quick basis,
-        // withheld by an unresolvable pass): a target persisted fresh beneath
-        // a carried anchor would double-convert here the moment that anchor
-        // resolved — a fabricated target-change row in the 6g evidence
-        // vocabulary. Absent beats wrong.
-        let certified_bridge = price_bridge.filter(|_| dossier.prior_spot.is_some());
-        let realized = engine::realized_engine_data(
-            &engine::PriorEngineRead {
-                verdict: pg,
-                metrics: dossier.prior_metrics.as_ref(),
-                grade_parameter_version: dossier.prior_grade_parameter_version.as_deref(),
-                target_parameter_version: dossier.prior_target_parameter_version.as_deref(),
-                branch: grade_branch(prior),
-            },
-            engine_output,
-            dossier.financials.current_price,
-            realized_move_since_prior(dossier),
-            certified_bridge,
-        );
-        for (name, pair) in &realized.sub_scores {
-            if pair.moved() {
-                let (old, new) = comparison_safe_pair(pair.then, pair.now, 0);
-                push_delta(
-                    &mut entries,
-                    format!("computed sub-score {name}: {old} -> {new}"),
-                );
-            }
-        }
-        if realized.grade.moved() {
-            push_delta(
-                &mut entries,
-                format!(
-                    "computed grade: {} -> {}",
-                    realized.grade.then.as_str(),
-                    realized.grade.now.as_str()
-                ),
-            );
-        }
-        // The what-changed vocabulary keeps its one twelve-month row (ruled
-        // 2026-10-07): the three-month base moves with spot on nearly every
-        // run, and the three-horizon then-and-now rides the carrier for the
-        // self-review instead.
-        if certified_bridge.is_some() {
-            let pair = &realized.bands.twelve_month;
-            let old_base = pair.then.map(|b| b.base);
-            let new_base = pair.now.map(|b| b.base);
-            if old_base != new_base {
-                let (old_base, new_base) = optional_delta_pair(old_base, new_base, 4);
-                push_delta(
-                    &mut entries,
-                    format!("computed twelve-month base target: {old_base} -> {new_base}"),
-                );
-            }
-        }
-        if realized.tier.moved() {
-            push_delta(
-                &mut entries,
-                format!(
-                    "risk tier: {} -> {}",
-                    realized.tier.then.as_str(),
-                    realized.tier.now.as_str()
-                ),
-            );
-        }
-        if realized.hurdle.moved() {
-            push_delta(
-                &mut entries,
-                format!(
-                    "{CAPITAL_EFFICIENCY_DELTA_PREFIX}{:?} -> {:?}",
-                    realized.hurdle.then, realized.hurdle.now
-                ),
-            );
-        }
-        // A stamp boundary is a delta row only where it changed what this
-        // holding's prior record means — read cumulatively from the stamp
-        // history on the prior record's branch, and only over a priced prior,
-        // since a record with no letter or sub-score had nothing to move. A
-        // holding the boundary left unchanged gets no row: a citable row for a
-        // cause that could not have operated would let a real move be
-        // attributed to it.
-        match realized.grade_boundary {
-            Some(engine::GradeParameterChange::Letters) => push_delta(
-                &mut entries,
-                "grade bands changed since the prior analysis — letters can move with no input \
-                 change"
-                    .to_string(),
-            ),
-            Some(engine::GradeParameterChange::FundMomentum) => push_delta(
-                &mut entries,
-                "fund momentum moved to the short price window since the prior analysis — the \
-                 momentum sub-score can move with no input change; the letter cannot"
-                    .to_string(),
-            ),
-            Some(engine::GradeParameterChange::FundSectorPeBasis) => push_delta(
-                &mut entries,
-                "fund sector-P/E source now requires both exchange legs since the prior analysis \
-                 — the valuation sub-score and letter can move on the same served rows"
-                    .to_string(),
-            ),
-            None => {}
-        }
-        // The scenario-target stamp reads its own history on the same rule
-        // (Codex I11): naming the horizons the rows after its stamp touched —
-        // so a target that moved on a version bump alone is never attributed
-        // to company evidence or a self-correction.
-        if let Some(horizons) = realized.target_boundary {
-            push_delta(&mut entries, target_boundary_row(horizons));
-        }
-    }
-    append_shared_delta(&mut entries, dossier, position_change, ledger_eval, price_bridge);
-    if let Some(f) = tech_pre_flag.filter(|f| f.fired) {
-        push_delta(
-            &mut entries,
-            format!(
-                "technology-event pre-flag fired ({:+.1}% vs {} over {} sessions)",
-                f.relative_move * 100.0,
-                f.benchmark,
-                f.sessions
-            ),
-        );
-    }
-    if let Some(n) = narrative {
-        push_delta(
-            &mut entries,
-            format!(
-                "narrative-vs-reality read: ratio {}{}",
-                n.ratio.map(|r| format!("{r:.2}")).unwrap_or_else(|| "(unbounded)".to_string()),
-                if n.matched_rule.is_some() { " (hype read)" } else { "" }
-            ),
-        );
-    }
-    if hard_forensic {
-        push_delta(
-            &mut entries,
-            "hard forensic filing event (item-classified restatement / auditor change)"
-                .to_string(),
-        );
-    }
-    entries
-}
-
-/// The `role_risk_only` branch's reduced input delta: the position delta, the
-/// branch's computed-surface metric moves, ledger crossings, and the house view.
-fn role_risk_input_delta(
-    dossier: &HoldingDossier,
-    fund_metrics: &engine::ComputedMetrics,
-    position_change: PositionChange,
-    ledger_eval: Option<&LedgerEvaluation>,
-    price_bridge: Option<f64>,
-) -> Vec<crate::portfolio::DeltaEntry> {
-    if dossier.prior_verdict.is_none() {
-        return Vec::new();
-    }
-    let mut entries = Vec::new();
-    if let Some(prior_metrics) = dossier.prior_metrics.as_ref() {
-        for c in engine::metric_delta(prior_metrics, fund_metrics) {
-            let (old, new) = optional_delta_pair(c.old, c.new, 4);
-            push_delta(
-                &mut entries,
-                format!("metric {}: {old} -> {new}", c.name),
-            );
-        }
-    }
-    append_shared_delta(&mut entries, dossier, position_change, ledger_eval, price_bridge);
-    entries
-}
-
-/// Render the input delta and the attribution rules into the user prompt — the
-/// bracketed ids are the `what_changed_entries` evidence vocabulary.
-fn input_delta_prompt_section(entries: &[crate::portfolio::DeltaEntry]) -> String {
-    let mut s = String::from(
-        "\nCHANGES SINCE THE PRIOR ANALYSIS (each with an id)\n",
-    );
-    // The capital-efficiency row is an action-call input: it stays in the audit
-    // and the action packet's evidence list, and never reaches the interpretation
-    // projection (`portfolio-v40`, Codex round 1).
-    let shown: Vec<&crate::portfolio::DeltaEntry> = entries
-        .iter()
-        .filter(|e| !e.label.starts_with(CAPITAL_EFFICIENCY_DELTA_PREFIX))
-        .collect();
-    for e in &shown {
-        s.push_str(&format!("[{}] {}\n", e.id, e.label));
-    }
-    if shown.is_empty() {
-        s.push_str("None recorded.\n");
-    }
-    s
-}
-
-/// The capital-efficiency delta row's label prefix — one home for the push and
-/// the interpretation projection's filter.
-const CAPITAL_EFFICIENCY_DELTA_PREFIX: &str = "capital-efficiency read: ";
-
-/// The 6g **what-changed attribution validator**
-/// (`docs/portfolio-workflow.md` §Step 6g): every row the model labels external
-/// must resolve to a concrete entry in the rendered input delta — by bracketed id
-/// or label verbatim — or it is **downgraded to self-correction with a logged
-/// reason** (ruled 2026-08-21; the research-finding and
-/// `research_forward_assumption` legs are live as rendered delta entries, so
-/// the delta entries are the whole evidence surface). Two structural drops run
-/// first — deterministic string comparisons, no appraisal of the model's prose:
-/// a row whose `old` and `new` agree claims no movement, and an exact duplicate
-/// of an already-kept row restates a move already counted; either is dropped
-/// with a logged reason, so neither can open a thesis-change episode or inflate
-/// the self-correction count. The returned audit carries the two signals
-/// outcome learning consumes: the post-validation self-correction count and the
-/// standing-thesis flag (a resolved external thesis / scenario-weights row, or
-/// any self-correction).
-pub(crate) fn validate_what_changed(
-    authored: &[crate::portfolio::WhatChangedEntry],
-    input_delta: Vec<crate::portfolio::DeltaEntry>,
-) -> crate::portfolio::WhatChangedAudit {
-    use crate::portfolio::{ChangeAttribution, ChangedValueKind};
-    let resolves = |evidence: &str| {
-        let e = evidence.trim();
-        if e.is_empty() {
-            return false;
-        }
-        let head = e
-            .trim_start_matches('[')
-            .split(|c: char| c.is_whitespace() || c == ':' || c == ',' || c == ']')
-            .next()
-            .unwrap_or("");
-        input_delta
-            .iter()
-            .any(|d| d.id.eq_ignore_ascii_case(head) || d.label.eq_ignore_ascii_case(e))
-    };
-    let mut entries = Vec::with_capacity(authored.len());
-    let mut downgrades = Vec::new();
-    let mut self_correction_count = 0u32;
-    let mut thesis_changed = false;
-    let mut kept: Vec<&crate::portfolio::WhatChangedEntry> = Vec::new();
-    for row in authored {
-        if row.old.trim() == row.new.trim() {
-            downgrades.push(format!(
-                "{:?} '{}': old and new agree ({:?}) — dropped, no movement claimed",
-                row.kind, row.detail, row.old
-            ));
-            continue;
-        }
-        if kept.contains(&row) {
-            downgrades.push(format!(
-                "{:?} '{}' ({} -> {}): exact duplicate row — dropped",
-                row.kind, row.detail, row.old, row.new
-            ));
-            continue;
-        }
-        kept.push(row);
-        let mut row = row.clone();
-        if row.attribution != ChangeAttribution::SelfCorrection && !resolves(&row.evidence) {
-            downgrades.push(format!(
-                "{:?} '{}' ({} -> {}): claimed {} evidence {:?} resolves to no \
-                 input-delta entry — downgraded to self-correction",
-                row.kind,
-                row.detail,
-                row.old,
-                row.new,
-                row.attribution.as_str(),
-                row.evidence
-            ));
-            row.attribution = ChangeAttribution::SelfCorrection;
-        }
-        if row.attribution == ChangeAttribution::SelfCorrection {
-            self_correction_count += 1;
-            thesis_changed = true;
-        } else if matches!(
-            row.kind,
-            ChangedValueKind::Thesis | ChangedValueKind::ScenarioWeights
-        ) {
-            thesis_changed = true;
-        }
-        entries.push(row);
-    }
-    crate::portfolio::WhatChangedAudit {
-        entries,
-        input_delta,
-        downgrades,
-        self_correction_count,
-        thesis_changed,
-    }
-}
-
 // ---- Prompt construction (pure, testable) ------------------------------------
 
-/// The system prompt for the interpretation stage (`portfolio-v40`): the role,
-/// the output names and the two-part shape of the message — nothing that
-/// describes the data the message carries. The output-name line is
-/// [`crate::portfolio::interpretation_response_contract`], built from the same
-/// key list as the schema's required set; the frame is
-/// [`crate::portfolio::TWO_PART_FRAME`] (`portfolio-v62`).
-pub fn interpretation_system_prompt(_is_fund: bool, debut: bool) -> String {
+/// The system prompt of the thesis-document conversation (`docs/portfolio-workflow.md`
+/// §Step 6f): the role and the two-part shape of the message — nothing that
+/// describes the data the message carries, no app concept
+/// (`docs/local-models.md` §Prompt posture). The same system message heads the
+/// conversation's second, appendix message.
+pub fn thesis_system_prompt(is_fund: bool) -> String {
     format!(
-        "You are an equity analyst producing an independent read of one holding for a \
-         portfolio review. {} {}",
-        crate::portfolio::interpretation_response_contract(debut),
-        crate::portfolio::TWO_PART_FRAME
+        "You are an {} analyst writing the thesis document for one holding in a portfolio \
+         review. Part 1 of the message gives the inputs. Part 2 says what the document covers, \
+         in order, and how to return it.",
+        if is_fund { "investment" } else { "equity" }
     )
 }
 
-/// The system prompt for the `role_risk_only` interpretation (`portfolio-v42`):
-/// the role line, the output names and the two-part shape of the message — the
-/// same footing as [`interpretation_system_prompt`], the vehicle named as a fund
-/// since this branch is a fund by construction (ruled 2026-09-17). The
-/// output-name line is [`crate::portfolio::role_risk_response_contract`], built
-/// from the same key list as the schema's required set; the frame is
-/// [`crate::portfolio::TWO_PART_FRAME`] (`portfolio-v62`).
-pub fn role_risk_system_prompt(debut: bool) -> String {
-    format!(
-        "You are an investment analyst producing an independent read of one fund holding \
-         for a portfolio review. {} {}",
-        crate::portfolio::role_risk_response_contract(debut),
-        crate::portfolio::TWO_PART_FRAME
-    )
+/// The system prompt of the `role_risk_only` thesis-document message: the same
+/// footing as [`thesis_system_prompt`], the vehicle named as a fund since this
+/// branch is a fund by construction.
+pub fn role_risk_system_prompt() -> String {
+    "You are an investment analyst writing the thesis document for one fund holding in a \
+     portfolio review. Part 1 of the message gives the inputs. Part 2 says what the document \
+     covers, in order, and how to return it."
+        .to_string()
 }
 
 /// Whether a dossier's vehicle is a fund — the class-shaped executability
@@ -3298,12 +1494,10 @@ fn holding_display_name(d: &HoldingDossier) -> &str {
 }
 
 /// The role/risk branch's computed metric surface — the expense ratio and the
-/// closed-end read off the readout, plus the price legs the ledger evaluation
-/// reads (the closed-end read joins so a served NAV's premium move seeds its own
-/// input-delta row — Codex 2026-08-21 round 3, finding 3). Built once for the
-/// evaluation, the audit and the prompt's authoring contract, so the three read
-/// one surface.
-pub(crate) fn fund_ledger_metrics(
+/// closed-end read off the readout, plus the price legs (trailing return, return
+/// volatility) from the closes the dossier carries. Built once for the audit
+/// and the message, so the two read one surface.
+pub(crate) fn fund_metrics(
     readout: &RoleRiskReadout,
     fin: &engine::CompanyFinancials,
 ) -> engine::ComputedMetrics {
@@ -3317,33 +1511,32 @@ pub(crate) fn fund_ledger_metrics(
     }
 }
 
-/// The role/risk message (`portfolio-v42`, ruled 2026-09-17 on the `portfolio-v40`
-/// frame; `docs/verification/2026-09-17-role-risk-prompt-rewrite.md`): one
-/// message in two marked parts. Part 1 is inputs only — HOLDING, CLASS (the
-/// label, the reported asset class and the structure line), EXPOSURE TILT with
-/// the closed-end line and the positioning line, RISK PROFILE with the
-/// market-wide options backdrop, EVIDENCE GAPS, the shared FINANCIAL METRICS,
-/// RESEARCH SUMMARY, the shared MARKET ANALYSIS, and on a continuity call PRIOR
-/// ANALYSIS (the prior class and role read), the recall notes and the changes
-/// since; then the shared prior-ledger data and crossings — each section
-/// explained once and then its values, with no instruction in it. Part 2 is
-/// the task only: the role read, the shared ledger item with trim and sell
-/// families, on continuity the shared what-changed items, and the
-/// placeholder-only return shape. The model receives data, never a description
-/// of the app that produced it. The section names match the action packet's
-/// role/risk branch so the two packets read the holding the same way.
+/// The `role_risk_only` thesis-document message (`docs/portfolio-workflow.md`
+/// §Step 6f): one message in two marked parts. Part 1 is inputs only — HOLDING,
+/// FETCHED VALUES, then the fund's reads in place of the equity reads: CLASS
+/// (the label, the reported asset class and the structure line), EXPOSURE TILT
+/// with the closed-end line and the positioning line, RISK PROFILE with the
+/// market-wide options backdrop, EVIDENCE GAPS as data statements, the
+/// COMPUTED metric lines, MARKET ANALYSIS, ANALYSIS and on a continuity run
+/// PRIOR THESIS verbatim — each section explained once and then its values,
+/// with no instruction in it. Part 2 is the task only: the document the model
+/// writes — the role, the risks, the trim / sell triggers and the summary —
+/// with no prices and no conviction. The model receives data, never a
+/// description of the app that produced it, and no position economics
+/// (`docs/portfolio-analysis.md` §Intrinsic verdict).
 pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     let d = input.dossier;
     let r = input.readout;
-    let debut = d.prior_verdict.is_none();
     let mut p = String::from("======== PART 1: INPUTS ========\n");
 
     // HOLDING
     p.push_str(&holding_header(d));
-    p.push_str(&format!("{}\n", describe_position_change(&d.position_delta)));
+
+    // FETCHED VALUES
+    p.push_str(&fetched_values_section(d, input.rates));
 
     // CLASS: the label, the fund's reported asset class where the metadata
-    // carries one (ruled 2026-09-17), and the structure line where it applies.
+    // carries one, and the structure line where it applies.
     p.push_str(&format!("\nCLASS\n{}.", r.class_label));
     if let Some(class) = d.fund.as_ref().and_then(|f| f.fund.asset_class.as_deref()) {
         p.push_str(&format!(" Reported asset class: {class}."));
@@ -3387,8 +1580,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     }
 
     // RISK PROFILE: the annualized read with its unit, and the market-wide
-    // backdrop. The daily volatility the ledger evaluates is a FINANCIAL
-    // METRICS line, so it renders once.
+    // backdrop. The daily volatility is a COMPUTED line, so it renders once.
     p.push_str(&format!(
         "\nRISK PROFILE\nAnnualized realized volatility: {} (a fraction; 0.14 means 14% a \
          year).\n",
@@ -3402,79 +1594,32 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         p.push_str(&format!("\nEVIDENCE GAPS\n{}\n", r.evidence_gaps.join("; ")));
     }
 
-    // FINANCIAL METRICS: the branch's computed surface, each line with its
-    // ledger label, unit and confirmation rule — the shared section.
-    let fund_metrics = fund_ledger_metrics(r, &d.financials);
-    let contract = LedgerSeriesContract::build(true, Some(&fund_metrics), Some(&d.financials));
-    p.push_str(&financial_metrics_section(&contract, d, true));
-
-    // RESEARCH SUMMARY: the fund agenda's distilled research — pure
-    // consolidation on this branch (`docs/portfolio-workflow.md` §Step 6d).
-    p.push_str(&format!("\nRESEARCH SUMMARY\n{}\n", input.distilled));
+    // COMPUTED: the branch's computed surface, each line with its unit.
+    let metrics = fund_metrics(r, &d.financials);
+    p.push_str("\nCOMPUTED\nThe computed metrics, each with its unit.\n");
+    p.push_str(&computed_metrics_lines(true, &metrics));
 
     // MARKET ANALYSIS
     p.push_str(&market_analysis_section(d));
 
-    // Continuity inputs: the prior read, the prior notes, the changes since,
-    // then the prior ledger and its crossings.
-    if let Some(prior) = &d.prior_verdict {
-        p.push_str(&prior_role_read_section(prior, d.prior_vintage.as_deref()));
-        p.push_str(&semantic_recall_prompt_section(d));
-        p.push_str(&input_delta_prompt_section(input.input_delta));
-    }
-    p.push_str(&prior_ledger_data_section(
-        input.prior_ledger,
-        input.ledger_eval,
-        input.input_delta,
-    ));
+    // ANALYSIS: this run's analysis — the fund agenda's distilled research
+    // until the research chain lands.
+    p.push_str(&format!("\nANALYSIS\n{}\n", input.analysis));
+
+    // PRIOR THESIS, on a continuity run.
+    let has_prior = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).is_some();
+    p.push_str(&prior_thesis_section(d, input.prior_split));
 
     // PART 2
-    p.push_str(&role_risk_task_section(
-        &contract,
-        debut,
-        input.prior_ledger.is_some(),
-        has_tilt,
-        has_gaps,
-    ));
+    p.push_str(&role_risk_task_section(has_tilt, has_gaps, has_prior));
     p
 }
 
-/// PRIOR ANALYSIS on the role/risk branch (`portfolio-v42`, ruled 2026-09-17):
-/// the prior class and the prior role read verbatim, with the prior read's
-/// vintage, so a role-read change row has an old value to cite and the read is
-/// tested against something the model can see. A prior that was not a role and
-/// risk read (a priced read, or an abstention) says only that, as data — no
-/// sentence explains the line's reach (task review, 2026-09-17).
-fn prior_role_read_section(prior: &HoldingVerdict, vintage: Option<&str>) -> String {
-    let since = vintage
-        .map(|t| format!(" (prior read {t})"))
-        .unwrap_or_default();
-    match &prior.disposition {
-        VerdictDisposition::RoleRiskOnly(rr) => format!(
-            "\nPRIOR ANALYSIS{since}\n- prior class: {}.\n- prior role read: {}\n",
-            rr.class_label, rr.role_summary
-        ),
-        _ => format!("\nPRIOR ANALYSIS{since}\nThe prior analysis was not a role and risk read.\n"),
-    }
-}
-
-/// Part 2 of the role/risk message (`portfolio-v42`): the role read from the
-/// sections that rendered, the shared ledger item with trim and sell families,
-/// on a continuity call the shared what-changed items with this branch's detail
-/// gloss and no parameter-boundary sentence (no grade or target parameter exists
-/// here), and the placeholder-only return shape.
-fn role_risk_task_section(
-    contract: &LedgerSeriesContract,
-    debut: bool,
-    has_prior_ledger: bool,
-    has_tilt: bool,
-    has_gaps: bool,
-) -> String {
-    let mut p = String::from(
-        "\n======== PART 2: TASK ========\n\n\
-         Determine the following from the inputs and return them as one JSON object in the \
-         shape at the end, with no code fence and no surrounding text.\n",
-    );
+/// Part 2 of the role/risk message: the document's items in output order — the
+/// role from the sections that rendered, the risks, the trim / sell triggers,
+/// the summary paragraph — within the thesis document's length band, with no
+/// prices and no conviction.
+fn role_risk_task_section(has_tilt: bool, has_gaps: bool, has_prior: bool) -> String {
     let mut sections = vec!["CLASS"];
     if has_tilt {
         sections.push("EXPOSURE TILT");
@@ -3483,187 +1628,42 @@ fn role_risk_task_section(
     if has_gaps {
         sections.push("EVIDENCE GAPS");
     }
-    sections.push("FINANCIAL METRICS");
+    sections.extend(["FETCHED VALUES", "COMPUTED", "ANALYSIS"]);
     let (last, head) = sections.split_last().expect("at least two sections");
+    let mut p = String::from(
+        "\n======== PART 2: TASK ========\n\n\
+         Write the thesis document for this holding as plain text — no code fence, no JSON, no \
+         heading before the first line. It covers, in this order:\n",
+    );
     p.push_str(&format!(
-        "\n1. role_summary — a few sentences on the vehicle's mandate, the exposure it exists \
-         to supply, and the cost and risk of holding it, from {}, {last} and RESEARCH \
-         SUMMARY.\n",
+        "\n1. The role — the mandate and the exposure the vehicle exists to supply, and the cost \
+         and risk of holding it, from {}, {last} and MARKET ANALYSIS.\n",
         head.join(", ")
     ));
-    p.push_str(&ledger_task_item(2, contract, LedgerItemBranch::RoleRisk, has_prior_ledger));
-    if !debut {
-        p.push_str(&what_changed_task_items(
-            3,
-            "the role read, the scenario or the condition",
-            false,
-        ));
-    }
+    p.push_str("\n2. The risks — what could impair the role or the return path.\n");
+    p.push_str(
+        "\n3. The triggers for trimming or selling — each a concrete measure, a level and a \
+         period.\n",
+    );
     p.push_str(&format!(
-        "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
-        crate::portfolio::role_risk_return_shape(debut)
-    ));
-    p
-}
-
-/// Render the v7 retrospective block: the prior run's both-arm values and the
-/// price move since — the input the self-assessment reads against
-/// (`docs/portfolio-analysis.md` §The holding verdict; a deliberate
-/// reversal of the v4 anchoring guard). Empty when the prior verdict carries no
-/// priced body to compare.
-fn retrospective_prompt_section(d: &HoldingDossier) -> String {
-    let Some(prior) = &d.prior_verdict else {
-        return String::new();
-    };
-    let VerdictDisposition::Priced(g) = &prior.disposition else {
-        return "\nPRIOR ANALYSIS\nThe prior analysis was not a priced read (a role and risk \
-                read, or an abstention), so there are no prior scores or targets to compare.\n"
-            .to_string();
-    };
-    let mut p = String::new();
-    let since = d
-        .prior_vintage
-        .as_deref()
-        .map(|t| format!(" (prior read {t})"))
-        .unwrap_or_default();
-    p.push_str(&format!("\nPRIOR ANALYSIS{since}\n"));
-
-    let outlook = |o: &HorizonOutlook| {
-        format!(
-            "outlook s/m/l {:?}/{:?}/{:?}",
-            o.short, o.mid, o.long
-        )
-        .to_lowercase()
-    };
-    let engine_targets = {
-        let band = |label: &str, t: Option<&crate::portfolio::PriceTarget>| {
-            t.map(|t| format!("{label} base {:.2} [{:.2}\u{2013}{:.2}]", t.base, t.bear, t.bull))
-        };
-        [
-            band("3-mo", g.price_targets.three_month.as_ref()),
-            band("12-mo", g.price_targets.twelve_month.as_ref()),
-            band("3-yr", g.price_targets.three_year.as_ref()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(", ")
-    };
-    p.push_str(&format!(
-        "- prior computed read: grade {} (q {:.0} / v {:.0} / r {:.0}; momentum {:.0}); {}; \
-         risk tier {}, capital efficiency {}, computed action {}\n",
-        g.grade.as_str(),
-        g.sub_scores.quality,
-        g.sub_scores.valuation,
-        g.sub_scores.risk,
-        g.sub_scores.momentum,
-        if engine_targets.is_empty() {
-            "targets (gap)".to_string()
+        "\n4. A summary paragraph — the read as a whole{}.\n",
+        if has_prior {
+            ", and what changed since the prior analysis, drawing on PRIOR THESIS"
         } else {
-            engine_targets
-        },
-        g.risk_tier.as_str(),
-        format!("{:?}", g.dead_money).to_lowercase(),
-        g.engine_rung.as_kebab(),
-    ));
-
-    {
-        let mv = &g.model_view;
-        let mt = &mv.price_targets;
-        let (model_label, action_read) = match prior.action_source {
-            ActionSource::ModelChosen => (
-                "your prior read",
-                format!("action {} (model-chosen)", g.action.as_kebab()),
-            ),
-            ActionSource::RuleDemoted => (
-                "your prior read (its action was later demoted by rule)",
-                format!(
-                    "action {} (demoted by rule after authoring; the rung you chose is not on \
-                     record)",
-                    g.action.as_kebab()
-                ),
-            ),
-        };
-        p.push_str(&format!(
-            "- {model_label}: letter {} (q {:.0} / v {:.0} / m {:.0} / r {:.0}); \
-             1-mo base {:.2} [{:.2}\u{2013}{:.2}], 12-mo base {:.2} [{:.2}\u{2013}{:.2}]; \
-             conviction {:?}, {}, {action_read}\n",
-            mv.letter.as_str(),
-            mv.sub_scores.quality,
-            mv.sub_scores.valuation,
-            mv.sub_scores.momentum,
-            mv.sub_scores.risk,
-            mt.one_month.base,
-            mt.one_month.bear,
-            mt.one_month.bull,
-            mt.twelve_month.base,
-            mt.twelve_month.bear,
-            mt.twelve_month.bull,
-            g.conviction,
-            outlook(&g.horizon_outlook),
-        ));
-    }
-
-    if let Some(spot) = d.financials.current_price {
-        // Every prior-basis price comparison crosses to today's basis through
-        // the anchor-close bridge — the outcome slice's split-safe contract
-        // (`docs/portfolio-analysis.md` §Outcome learning) keyed on the prior
-        // read's vintage session. A raw prior-spot ratio would report a 2:1
-        // split as a ~-50% "realized" move (Codex round 2, finding 1); no
-        // anchor bar within the proximity bound → the comparison is excluded,
-        // never guessed. The target-distance reads stay labeled as exactly
-        // that: distance to the old targets, never a realized return.
-        let anchor_close = prior_anchor_close(d);
-        match anchor_close {
-            Some(anchor) => {
-                let mut vs: Vec<String> = vec![format!(
-                    "{:+.1}% realized since the prior read (anchor close {:.2}{})",
-                    (spot / anchor - 1.0) * 100.0,
-                    anchor,
-                    d.prior_spot
-                        .filter(|s| *s > 0.0)
-                        .map(|s| format!("; authoring spot {s:.2} on its own basis"))
-                        .unwrap_or_default(),
-                )];
-                // The prior authored targets are on the prior read's basis:
-                // bridge them (`target × anchor ⁄ authoring spot`) before taking
-                // a distance, so a split can't fabricate one. No authoring spot →
-                // no bridge → the distances are excluded, not guessed.
-                if let Some(prior_spot) = d.prior_spot.filter(|s| *s > 0.0) {
-                    let bridge = anchor / prior_spot;
-                    if let Some(t) = g.price_targets.twelve_month.as_ref() {
-                        if t.base > 0.0 {
-                            vs.push(format!(
-                                "distance to the prior computed 12-mo base {:+.1}%",
-                                (spot / (t.base * bridge) - 1.0) * 100.0
-                            ));
-                        }
-                    }
-                    let b = g.model_view.price_targets.twelve_month.base;
-                    if b > 0.0 {
-                        vs.push(format!(
-                            "distance to your prior 12-mo base {:+.1}%",
-                            (spot / (b * bridge) - 1.0) * 100.0
-                        ));
-                    }
-                }
-                p.push_str(&format!(
-                    "- price now {:.2}: {} (split-adjusted)\n",
-                    spot,
-                    vs.join("; ")
-                ));
-            }
-            None => p.push_str(&format!(
-                "- price now {:.2}: prior-read price comparison unavailable — no \
-                 anchor-session close at the prior vintage (excluded rather than \
-                 guessed)\n",
-                spot
-            )),
+            ""
         }
-    }
-
+    ));
+    p.push_str(&format!(
+        "\nThe document states no expected price and no conviction. It runs {} to {} words.\n",
+        fmt_thousands(THESIS_DOCUMENT_WORDS.0),
+        fmt_thousands(THESIS_DOCUMENT_WORDS.1)
+    ));
     p
 }
+
+/// The thesis document's drafted length band, stated in the prompt and never
+/// checked by the app (`docs/portfolio-analysis.md` §Starting parameters).
+pub const THESIS_DOCUMENT_WORDS: (u32, u32) = (900, 1_800);
 
 /// The COT underlying-positioning line for a commodity / macro fund
 /// (`docs/portfolio-workflow.md` §Step 5; `docs/data-sources.md §CFTC`):
@@ -3881,7 +1881,7 @@ fn narrative_prompt_section(n: Option<&engine::NarrativeRead>) -> String {
         pct(n.reality),
     );
     if let Some(rule) = &n.matched_rule {
-        s.push_str(&format!("Rule matched, capping the computed conviction: {rule}.\n"));
+        s.push_str(&format!("Rule matched: {rule}.\n"));
     }
     s
 }
@@ -3977,7 +1977,7 @@ fn forensic_prompt_section(d: &HoldingDossier, stage: PromptStage) -> String {
                     ev.confidence
                 ));
             }
-            if stage == PromptStage::Interpretation {
+            if stage == PromptStage::Thesis {
                 s.push_str(
                     "By rule: the computed action set excludes adding and the computed action \
                      reads the exit family; the grade is unchanged.\n",
@@ -3988,41 +1988,77 @@ fn forensic_prompt_section(d: &HoldingDossier, stage: PromptStage) -> String {
     }
 }
 
-/// The interpretation message (`portfolio-v40`, ruled 2026-09-17 off the v39
-/// read): one message in two marked parts. Part 1 is inputs only — every data
-/// section explained once (what it is, each field's unit or polarity) and then
-/// its values, with no instruction in it. Part 2 is the task only — numbered
-/// items in output order, each naming the input section it draws on and never
-/// restating a value or a unit, closing with the placeholder-only return shape.
-/// The model receives data, never a description of the app that produced it:
-/// no arms, baselines, stages, seams, validator behaviour, stamps or product
-/// names (`docs/portfolio-workflow.md` §Step 6f; the principle is recorded in
-/// `docs/verification/2026-09-17-interpretation-prompt-rewrite.md`). The
-/// investor profile is deliberately absent — the intrinsic verdict is of no
-/// investor (`docs/portfolio-analysis.md` §Intrinsic verdict).
-pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
+/// The thesis-document message (`docs/portfolio-workflow.md` §Step 6f): one
+/// message in two marked parts on the frame every Portfolio prompt shares.
+/// Part 1 is inputs only, in page order — HOLDING with the analysis date;
+/// FETCHED VALUES; COMPUTED (the engine's metrics with the statement-basis
+/// line, the grade and sub-scores with the polarity gloss and the imputed
+/// disclosure, the three bands with the twelve-month method and the target
+/// provenance notes, the risk tier, the capital-efficiency read, the hard
+/// forensic read as typed evidence with its rule as a fact, the soft forensic
+/// flags, the narrative-vs-reality read, the implied-expectations range, the
+/// short interest, the options signal, the option overlay, the overlay's
+/// financing / economics / dilution legs, and the Step-5 context loads where
+/// they apply); MARKET ANALYSIS; ANALYSIS; and on a continuity run PRIOR
+/// THESIS verbatim with any split-context line — each section explained once
+/// and then its values, with no instruction in it. Part 2 is the task only:
+/// what the document covers, in order, each item naming the Part 1 section it
+/// draws on and restating no value. The model receives data, never a
+/// description of the app that produced it; the investor profile and the
+/// position's economics are absent — the intrinsic verdict is of no investor
+/// (`docs/portfolio-analysis.md` §Intrinsic verdict).
+pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     let d = input.dossier;
     let e = input.engine;
     let is_fund = dossier_is_fund(d);
-    let debut = d.prior_verdict.is_none();
     let mut p = String::new();
 
     p.push_str("======== PART 1: INPUTS ========\n");
 
     // HOLDING
     p.push_str(&holding_header(d));
-    p.push_str(&format!("{}\n", describe_position_change(&d.position_delta)));
 
-    // FUND (fund only)
+    // FETCHED VALUES
+    p.push_str(&fetched_values_section(d, input.rates));
+
+    // COMPUTED — one heading, labelled sub-blocks, running to MARKET ANALYSIS.
+    p.push_str(
+        "\nCOMPUTED\nThe computed reads follow under their labels, through to MARKET \
+         ANALYSIS; each is derived from the fetched data by fixed formulas.\n",
+    );
+
+    // FUND (fund only): the class line, the exposure tilt with the closed-end
+    // line and the positioning line, the evidence gaps as data statements.
     if let Some(f) = &d.fund {
+        p.push_str("\nFUND\n");
+        if let Some(label) = &e.fund_class_label {
+            p.push_str(&format!("Class: {label}."));
+            if let Some(class) = f.fund.asset_class.as_deref() {
+                p.push_str(&format!(" Reported asset class: {class}."));
+            }
+            p.push('\n');
+        }
         p.push_str(&format!(
-            "\nFUND\nExpense ratio: {} (a fraction of assets per year; 0.0075 means 0.75%). \
-             US share of holdings: {}.\n",
-            fmt_expense_ratio(f.fund.expense_ratio),
+            "US share of holdings: {}.\n",
             crate::portfolio::fund::us_share(&f.fund)
                 .map(|s| format!("{:.0}%", s * 100.0))
                 .unwrap_or_else(|| "(gap)".to_string()),
         ));
+        let tilt: Vec<String> = f
+            .fund
+            .sector_weights
+            .iter()
+            .chain(f.fund.country_weights.iter())
+            .take(5)
+            .map(|(label, w)| format!("{label} {:.1}%", w * 100.0))
+            .collect();
+        if !tilt.is_empty() {
+            p.push_str(&format!(
+                "Exposure tilt (the largest weights, by sector where reported and otherwise by \
+                 country): {}.\n",
+                tilt.join(", ")
+            ));
+        }
         if let Some(cov) = e.metrics.composite_coverage {
             p.push_str(&format!(
                 "Composite P/E coverage: {:.0}% of fund weight; the uncovered {:.0}% is \
@@ -4040,38 +2076,52 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
                 ),
             }
         }
+        if !f.fund.gaps.is_empty() {
+            p.push_str(&format!("Evidence gaps: {}.\n", f.fund.gaps.join("; ")));
+        }
         p.push_str(&positioning_prompt_section(f));
     }
 
-    // FINANCIAL METRICS — the values, each with its ledger label, unit and
-    // confirmation rule, so the ledger item in Part 2 points here by name.
-    let contract = LedgerSeriesContract::build(is_fund, Some(&e.metrics), Some(&d.financials));
-    p.push_str(&financial_metrics_section(&contract, d, is_fund));
+    // METRICS — the values, each with its unit, under the statement-basis line.
+    p.push_str("\nMETRICS\n");
+    p.push_str(&statement_basis_line(
+        d.financials.statement_basis,
+        d.financials.equity_source,
+        is_fund,
+    ));
+    p.push_str(&computed_metrics_lines(is_fund, &e.metrics));
+    p.push_str(&consensus_blend_line(&d.financials));
+    if !d.financials.gaps.is_empty() {
+        p.push_str(&format!("Data gaps: {}\n", d.financials.gaps.join("; ")));
+    }
 
-    // COMPUTED SCORES
+    // SCORES
     p.push_str(&format!(
-        "\nCOMPUTED SCORES\nFour scores from 0 to 100, higher is better on every axis: quality; \
+        "\nSCORES\nFour scores from 0 to 100, higher is better on every axis: quality; \
          valuation, where higher means more attractive; momentum; risk, where higher means \
-         more resilient.\n\
-         quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}.{} Risk tier: {}.\n",
+         more resilient. The grade is a letter derived from the quality, valuation and risk \
+         scores.\n\
+         quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}.{} Risk tier: {}.\n",
         e.sub_scores.quality,
         e.sub_scores.valuation,
         e.sub_scores.momentum,
         e.sub_scores.risk,
+        e.grade.as_str(),
         if e.low_confidence_grade { " One score is imputed." } else { "" },
         e.risk_tier.as_str(),
     ));
 
-    // COMPUTED PRICE TARGETS — the three legs, each with its method clause so
-    // the three-year leg is weighed as the extrapolation it is
+    // PRICE BANDS — the three legs, each with its method clause so the
+    // three-year leg is weighed as the extrapolation it is
     // (`docs/portfolio-analysis.md` §Starting parameters).
-    p.push_str("\nCOMPUTED PRICE TARGETS (USD)\n");
+    p.push_str("\nPRICE BANDS (USD)\n");
     if let Some(tm) = &e.price_targets.three_month {
         p.push_str(&format!(
-            "- three-month: bear {:.2} / base {:.2} / bull {:.2}.\n",
+            "- three-month: bear {:.2} / base {:.2} / bull {:.2}. Method: {}\n",
             tm.bear,
             tm.base,
             tm.bull,
+            three_month_method(tm),
         ));
     }
     if let Some(tm) = &e.price_targets.twelve_month {
@@ -4096,9 +2146,14 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         p.push_str(&format!("- Notes: {notes}\n"));
     }
     p.push_str(&implied_expectations_prompt_section(e));
+
+    // CAPITAL EFFICIENCY — the three tested total returns, the hurdle rate and
+    // the three-state read.
+    p.push_str(&hurdle_read_section(&e.hurdle));
+
     p.push_str(&narrative_prompt_section(input.narrative));
     if let Some(overlay) = input.pre_profit {
-        p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Interpretation));
+        p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Thesis));
     }
 
     // OPTIONS ACTIVITY and the positioning legs
@@ -4115,17 +2170,11 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     p.push_str(&put_call_backdrop_prompt_section(d));
     p.push_str(&short_interest_prompt_section(d));
     p.push_str(&option_overlay_prompt_section(d));
-    p.push_str(&forensic_prompt_section(d, PromptStage::Interpretation));
+    p.push_str(&forensic_prompt_section(d, PromptStage::Thesis));
+    if let Some(flags) = input.soft_forensic {
+        p.push_str(&soft_forensic_prompt_section(flags));
+    }
     p.push_str(&commodity_prompt_section(d));
-
-    // RESEARCH SUMMARY
-    p.push_str(&format!("\nRESEARCH SUMMARY\n{}\n", input.distilled));
-
-    // MARKET ANALYSIS
-    p.push_str(&market_analysis_section(d));
-
-    // Continuity inputs: the sector-relative move, the prior read, the prior
-    // notes, the changes since, the prior ledger and its crossings.
     if let Some(f) = input.tech_pre_flag.filter(|f| f.fired) {
         p.push_str(&format!(
             "\nSECTOR-RELATIVE MOVE\n{:+.1}% versus {} over {} sessions since the prior \
@@ -4137,60 +2186,352 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
             f.threshold * 100.0,
         ));
     }
-    if let Some(prior) = &d.prior_verdict {
-        p.push_str(&retrospective_prompt_section(d));
-        let boundary = match &prior.disposition {
-            VerdictDisposition::Priced(_) => engine::grade_parameter_change(
-                d.prior_grade_parameter_version.as_deref(),
-                grade_branch(prior),
-            ),
-            _ => None,
-        };
-        match boundary {
-            Some(engine::GradeParameterChange::Letters) => p.push_str(
-                "- The grade bands changed since the prior analysis, so the letter may have \
-                 moved with no change in the company's inputs.\n",
-            ),
-            Some(engine::GradeParameterChange::FundMomentum) => p.push_str(
-                "- The fund momentum read moved to the short price window since the prior \
-                 analysis, so the momentum score may have moved with no change in the fund's \
-                 inputs; the letter did not move for that reason.\n",
-            ),
-            Some(engine::GradeParameterChange::FundSectorPeBasis) => p.push_str(
-                "- The fund sector-P/E source now requires both exchange legs since the prior \
-                 analysis, so the valuation score and the letter may have moved on the same \
-                 served rows.\n",
-            ),
-            None => {}
-        }
-        let target_boundary = match &prior.disposition {
-            VerdictDisposition::Priced(_) => engine::target_parameter_change(
-                d.prior_target_parameter_version.as_deref(),
-                grade_branch(prior),
-            ),
-            _ => None,
-        };
-        if let Some(horizons) = target_boundary {
-            p.push_str(&target_boundary_note(horizons));
-        }
-        p.push_str(&semantic_recall_prompt_section(d));
-        p.push_str(&input_delta_prompt_section(input.input_delta));
-    }
-    p.push_str(&prior_ledger_data_section(
-        input.prior_ledger,
-        input.ledger_eval,
-        input.input_delta,
-    ));
+
+    // MARKET ANALYSIS
+    p.push_str(&market_analysis_section(d));
+
+    // ANALYSIS — this run's analysis.
+    p.push_str(&format!("\nANALYSIS\n{}\n", input.analysis));
+
+    // PRIOR THESIS, on a continuity run.
+    let has_prior = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).is_some();
+    p.push_str(&prior_thesis_section(d, input.prior_split));
 
     // PART 2
-    p.push_str(&interpretation_task_section(
-        &contract,
-        is_fund,
-        d.fund.is_some(),
-        debut,
-        input.prior_ledger.is_some(),
+    p.push_str(&thesis_task_section(has_prior));
+    p
+}
+
+/// CAPITAL EFFICIENCY on the thesis message: the three tested twelve-month
+/// total returns, the hurdle rate and the three-state read, with one gloss. An
+/// unscorable read says no assessment exists this run.
+fn hurdle_read_section(h: &engine::HurdleRead) -> String {
+    let scorable = h.state != crate::portfolio::HurdleState::Unscorable;
+    match (scorable, h.hurdle_rate, h.tr_bear, h.tr_base, h.tr_bull) {
+        (true, Some(rate), Some(bear), Some(base), Some(bull)) => format!(
+            "\nCAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario (the \
+             move from the current price to the scenario price, plus forward income per share, \
+             as a fraction of the current price) and the hurdle rate it is measured against, \
+             with the read: clears when even the bear case clears the hurdle, fails when even \
+             the bull case misses it, indeterminate otherwise.\n\
+             bear {:+.1}% / base {:+.1}% / bull {:+.1}%; hurdle {:.1}%; read: {}.\n",
+            bear * 100.0,
+            base * 100.0,
+            bull * 100.0,
+            rate * 100.0,
+            format!("{:?}", h.state).to_lowercase(),
+        ),
+        _ => "\nCAPITAL EFFICIENCY\nNo assessment this run.\n".to_string(),
+    }
+}
+
+/// SOFT FORENSIC FLAGS as typed evidence (`docs/portfolio-analysis.md`
+/// §Starting parameters): each of the four tests fired, clear or unevaluable
+/// naming its missing input — never clear on a gap — with the inputs it read.
+fn soft_forensic_prompt_section(f: &SoftForensicFlags) -> String {
+    use crate::portfolio::soft_forensic::{
+        ALTMAN_Z_DISTRESS, NET_INCOME_TO_OPERATING_CASH_FLOW, PIOTROSKI_WEAK,
+        WORKING_CAPITAL_TO_REVENUE_GROWTH,
+    };
+    let state = |s: &SoftFlagState| match s {
+        SoftFlagState::Fired => "fired".to_string(),
+        SoftFlagState::Clear => "clear".to_string(),
+        SoftFlagState::Unevaluable { missing } => {
+            format!("unevaluable (missing: {})", missing.join(", "))
+        }
+    };
+    let leg = |l: &LineLeg| match l {
+        LineLeg::Evaluated { growth, fired } => format!(
+            "{:+.1}%{}",
+            growth * 100.0,
+            if *fired { ", past the test" } else { "" }
+        ),
+        LineLeg::NotApplicable => "not applicable".to_string(),
+        LineLeg::Missing => "missing".to_string(),
+        LineLeg::NotTested => "not tested".to_string(),
+    };
+    let w = &f.working_capital_build;
+    let n = &f.net_income_vs_operating_cash_flow;
+    format!(
+        "\nSOFT FORENSIC FLAGS\nFour statement tests, each fired, clear, or unevaluable where an \
+         input is missing (never read as clear).\n\
+         - Altman Z below {ALTMAN_Z_DISTRESS}: {} (Z {}).\n\
+         - Piotroski F-score at or below {PIOTROSKI_WEAK:.0}: {} (score {}).\n\
+         - TTM net income above {NET_INCOME_TO_OPERATING_CASH_FLOW}× TTM operating cash flow: {} \
+         (net income {}, operating cash flow {}).\n\
+         - Receivables or inventory growing faster than {WORKING_CAPITAL_TO_REVENUE_GROWTH}× \
+         revenue growth, year over year on the latest quarter: {} (revenue growth {}; \
+         receivables {}; inventory {}).\n",
+        state(&f.altman_z.state),
+        f.altman_z.value.map(|v| format!("{v:.2}")).unwrap_or_else(|| "(gap)".into()),
+        state(&f.piotroski.state),
+        f.piotroski.value.map(|v| format!("{v:.0}")).unwrap_or_else(|| "(gap)".into()),
+        state(&n.state),
+        n.ttm_net_income.map(fmt_magnitude).unwrap_or_else(|| "(gap)".into()),
+        n.ttm_operating_cash_flow.map(fmt_magnitude).unwrap_or_else(|| "(gap)".into()),
+        state(&w.state),
+        w.revenue_growth
+            .map(|g| format!("{:+.1}%", g * 100.0))
+            .unwrap_or_else(|| "(gap)".into()),
+        leg(&w.receivables),
+        leg(&w.inventory),
+    )
+}
+
+/// PRIOR THESIS on a continuity run: the prior run's thesis document verbatim
+/// under its date, with the split-context line above it where a split re-based
+/// the price series since it was written, or where its basis could not be
+/// verified this run (`docs/portfolio-workflow.md` §Step 6b) — the document is
+/// never rewritten. Empty on a debut, and on a prior that carries no document.
+fn prior_thesis_section(d: &HoldingDossier, split: Option<SplitContext>) -> String {
+    let Some(doc) = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()) else {
+        return String::new();
+    };
+    let written = d.prior_vintage.as_deref().map(|v| {
+        crate::market_clock::et_date_of(v)
+            .map(|day| day.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| v.to_string())
+    });
+    let mut p = match written {
+        Some(date) => format!("\nPRIOR THESIS (written {date})\n"),
+        None => "\nPRIOR THESIS\n".to_string(),
+    };
+    match split {
+        Some(SplitContext::Rebased { factor }) => p.push_str(&format!(
+            "A share split since this document was written re-based the price series by a \
+             factor of {factor:.4}: multiply the prices it states by that factor to read them on \
+             today's basis. The document is as written.\n"
+        )),
+        Some(SplitContext::Unverifiable) => p.push_str(
+            "Whether a share split re-based the price series since this document was written \
+             could not be verified this run: the close its prices were anchored to is missing \
+             from the fetched window. The document is as written; its prices may sit on a \
+             pre-split basis.\n",
+        ),
+        None => {}
+    }
+    p.push_str(doc);
+    if !doc.ends_with('\n') {
+        p.push('\n');
+    }
+    p
+}
+
+/// FETCHED VALUES — the holding's fetched data as the providers return it,
+/// glossed once and never engine-computed (`docs/portfolio-workflow.md` §Step
+/// 6c; the TTM basis and the split bridge are computations and stay out): the
+/// profile line, a fund's reported lines, the quarterly statements' headline
+/// lines for the latest eight quarters as reported, the forward consensus, the
+/// trailing dividends, the quote with the 52-week range, the close on the prior
+/// analysis's date and the dated closes three, twelve and thirty-six months
+/// back, and the Treasury prints.
+/// One renderer, shared by both thesis-document branches; the research chain
+/// re-sizes it.
+fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) -> String {
+    let fin = &d.financials;
+    let mut p = String::from(
+        "\nFETCHED VALUES\nThe holding's data as its providers return it, each figure as \
+         reported (USD; B is billions, M is millions); none is computed.\n",
+    );
+    // Profile
+    let mut profile = Vec::new();
+    let name = d
+        .company_name
+        .as_deref()
+        .or_else(|| d.fund.as_ref().and_then(|f| f.fund.name.as_deref()));
+    if let Some(name) = name {
+        profile.push(format!("name {name}"));
+    }
+    if let Some(mc) = fin.market_cap {
+        profile.push(format!("market capitalization {}", fmt_magnitude(mc)));
+    }
+    if let Some(sh) = fin.shares_outstanding {
+        profile.push(format!("shares outstanding {}", fmt_magnitude(sh)));
+    }
+    if !profile.is_empty() {
+        p.push_str(&format!("Profile: {}.\n", profile.join("; ")));
+    }
+    // A fund's reported lines
+    if let Some(f) = &d.fund {
+        let fd = &f.fund;
+        let mut lines = Vec::new();
+        if let Some(c) = fd.asset_class.as_deref() {
+            lines.push(format!("asset class {c}"));
+        }
+        if let Some(e) = fd.expense_ratio {
+            lines.push(format!("expense ratio {}", fmt_expense_ratio(Some(e))));
+        }
+        if let Some(a) = fd.aum {
+            lines.push(format!("assets under management {}", fmt_magnitude(a)));
+        }
+        if let Some(n) = fd.nav {
+            lines.push(format!("NAV {n:.2}"));
+        }
+        if !lines.is_empty() {
+            p.push_str(&format!("Fund: {}.\n", lines.join("; ")));
+        }
+        let weights = |label: &str, rows: &[(String, f64)]| -> String {
+            if rows.is_empty() {
+                return String::new();
+            }
+            let top: Vec<String> = rows
+                .iter()
+                .take(8)
+                .map(|(l, w)| format!("{l} {:.1}%", w * 100.0))
+                .collect();
+            format!("{label}: {}.\n", top.join(", "))
+        };
+        p.push_str(&weights("Sector weights", &fd.sector_weights));
+        p.push_str(&weights("Country weights", &fd.country_weights));
+    }
+    // Quarterly statements — the latest eight as reported, newest first, the
+    // cash-flow and balance-sheet lines joined by period end.
+    if !fin.quarterly_income.is_empty() {
+        let money = |v: Option<f64>| v.map(fmt_magnitude).unwrap_or_else(|| "(gap)".into());
+        let per_share = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "(gap)".into());
+        p.push_str(
+            "Quarterly statements, newest first, as reported — period end: revenue; gross \
+             profit; operating income; net income; diluted EPS; operating cash flow; free \
+             cash flow; total debt; total equity; cash and equivalents.\n",
+        );
+        for row in fin.quarterly_income.iter().take(8) {
+            let cf = fin
+                .quarterly_cash_flow
+                .iter()
+                .find(|c| c.period_end == row.period_end);
+            let bs = fin
+                .quarterly_balance_sheet
+                .iter()
+                .find(|b| b.period_end == row.period_end);
+            p.push_str(&format!(
+                "- {}: {}; {}; {}; {}; {}; {}; {}; {}; {}; {}\n",
+                row.period_end,
+                money(row.revenue),
+                money(row.gross_profit),
+                money(row.operating_income),
+                money(row.net_income),
+                per_share(row.eps_diluted),
+                money(cf.and_then(|c| c.operating_cash_flow)),
+                money(cf.and_then(|c| c.free_cash_flow)),
+                money(bs.and_then(|b| b.total_debt)),
+                money(bs.and_then(|b| b.total_equity)),
+                money(bs.and_then(|b| b.cash_and_equivalents)),
+            ));
+        }
+    }
+    // The published consensus EPS by fiscal period, as reported; the engine's
+    // twelve-month blend of these rows is a computation and renders under
+    // COMPUTED (`consensus_blend_line`).
+    if let Some(c) = &fin.consensus {
+        let per_share = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "(gap)".into());
+        let periods: Vec<String> = c
+            .eps_periods
+            .iter()
+            .map(|r| format!("{} {}", r.period_end, per_share(r.eps_mid)))
+            .collect();
+        if !periods.is_empty() {
+            p.push_str(&format!(
+                "Consensus EPS by fiscal period end, as published: {}.\n",
+                periods.join("; ")
+            ));
+        }
+    }
+    // Dividends
+    if let Some(div) = fin.ttm_dividends_per_share {
+        p.push_str(&format!(
+            "Dividends: {div:.2} per share over the trailing twelve months.\n"
+        ));
+    }
+    // The quote and the fetched closes
+    if let Some(spot) = fin.current_price.filter(|p| p.is_finite() && *p > 0.0) {
+        p.push_str(&format!("Quote: {spot:.2} per share (the live print, undated).\n"));
+    }
+    let closes = &fin.daily_closes;
+    if let (Some(first), Some(last)) = (closes.first(), closes.last()) {
+        let run = chrono::NaiveDate::parse_from_str(&d.analysis_date, "%Y-%m-%d").ok();
+        // The 52-week range over the fetched closes of the trailing year (the
+        // whole window where the run date does not parse).
+        let year_start = run
+            .and_then(|r| r.checked_sub_days(chrono::Days::new(365)))
+            .map(|d| d.format("%Y-%m-%d").to_string());
+        let year: Vec<&engine::DatedValue> = closes
+            .iter()
+            .filter(|c| year_start.as_deref().is_none_or(|start| c.date.as_str() >= start))
+            .collect();
+        let low = year.iter().min_by(|a, b| a.value.total_cmp(&b.value));
+        let high = year.iter().max_by(|a, b| a.value.total_cmp(&b.value));
+        let mut line = format!(
+            "Daily closes: {} sessions from {} to {}",
+            closes.len(),
+            first.date,
+            last.date
+        );
+        if let (Some(lo), Some(hi)) = (low, high) {
+            line.push_str(&format!(
+                ", 52-week low {:.2} on {}, high {:.2} on {}",
+                lo.value, lo.date, hi.value, hi.date
+            ));
+        }
+        // The close on the prior analysis's date — the prior verdict's effective
+        // vintage as an ET session, the date PRIOR THESIS is written under —
+        // from today's fetched series (today's basis, so a split since needs no
+        // bridge here). The anchor bar is provenance for the bridge, not this
+        // date: it precedes the session and carries across an abstention.
+        let prior_date = d.prior_vintage.as_deref().and_then(|v| {
+            crate::market_clock::et_date_of(v).map(|day| day.format("%Y-%m-%d").to_string())
+        });
+        if let Some(prior_date) = prior_date {
+            if let Some(c) = closes.iter().rev().find(|c| c.date <= prior_date) {
+                line.push_str(&format!(
+                    "; close on the prior analysis date {prior_date}: {:.2} ({})",
+                    c.value, c.date
+                ));
+            }
+        }
+        if let Some(run) = run {
+            let mut back = Vec::new();
+            for (label, months) in [("three months", 3u32), ("twelve months", 12), ("three years", 36)] {
+                let Some(target) = run.checked_sub_months(chrono::Months::new(months)) else {
+                    continue;
+                };
+                let target = target.format("%Y-%m-%d").to_string();
+                if let Some(c) = closes.iter().rev().find(|c| c.date <= target) {
+                    back.push(format!("{label} back {:.2} ({})", c.value, c.date));
+                }
+            }
+            if !back.is_empty() {
+                line.push_str(&format!("; {}", back.join(", ")));
+            }
+        }
+        line.push_str(".\n");
+        p.push_str(&line);
+    }
+    // The Treasury prints
+    let as_of = |d: Option<&String>| d.map(|s| format!(" (as of {s})")).unwrap_or_default();
+    p.push_str(&format!(
+        "Treasury yields (FRED): 10-year {:.2}%{}, 2-year {:.2}%{}.\n",
+        rates.dgs10 * 100.0,
+        as_of(rates.dgs10_date.as_ref()),
+        rates.dgs2 * 100.0,
+        as_of(rates.dgs2_date.as_ref()),
     ));
     p
+}
+
+/// A reported figure in a readable magnitude — billions or millions to one
+/// decimal, thousands to the unit, smaller figures to two places — with the
+/// sign kept. The FETCHED VALUES gloss names the suffixes once.
+fn fmt_magnitude(v: f64) -> String {
+    let a = v.abs();
+    if a >= 1e9 {
+        format!("{:.1}B", v / 1e9)
+    } else if a >= 1e6 {
+        format!("{:.1}M", v / 1e6)
+    } else if a >= 1e3 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.2}")
+    }
 }
 
 /// The market-analysis input: the latest report's thesis and strategy sections
@@ -4330,299 +2671,124 @@ fn target_notes_line(t: &engine::TargetMeta) -> Option<String> {
     }
 }
 
-/// Part 2 of the interpretation message: what to determine from the inputs, in
-/// output order, each item naming the Part 1 section it draws on. The ledger
-/// item carries the authoring contract as requirements on the output — the
-/// label, comparator, threshold and margin; the statement agreeing with the
-/// core; one level, no qualifier; null otherwise — with the margin sized by
-/// example and its caps unshown (`portfolio-v40`, ruled 2026-09-17 off the v39
-/// read, where the shown caps were sized toward). Every rule the text no longer
-/// explains is still enforced at the 6g seam.
-fn interpretation_task_section(
-    contract: &LedgerSeriesContract,
-    is_fund: bool,
-    has_fund_section: bool,
-    debut: bool,
-    has_prior_ledger: bool,
-) -> String {
+/// Part 2 of the thesis-document message: what the document covers, in
+/// output order, each item naming the Part 1 section it draws on and restating
+/// no value or unit; the expected prices and the conviction argued in the
+/// text, the computed bands evidence and never bounds; the length band stated
+/// and never checked (`docs/portfolio-workflow.md` §Step 6f).
+fn thesis_task_section(has_prior: bool) -> String {
     let mut p = String::from(
         "\n======== PART 2: TASK ========\n\n\
-         Determine the following from the inputs and return them as one JSON object in the \
-         shape at the end, with no code fence and no surrounding text.\n",
-    );
-    let summary_scope = if has_fund_section {
-        "the fund's cost, exposure and risk, from FUND, FINANCIAL METRICS and RESEARCH SUMMARY"
-    } else if is_fund {
-        "the fund's cost, exposure and risk, from FINANCIAL METRICS and RESEARCH SUMMARY"
-    } else {
-        "the holding's financial condition, from FINANCIAL METRICS and RESEARCH SUMMARY"
-    };
-    p.push_str(&format!(
-        "\n1. financial_summary — two or three sentences on {summary_scope}.\n"
-    ));
-    p.push_str(
-        "\n2. model_sub_scores — your own quality, valuation, momentum and risk, as integers on \
-         the scale defined in COMPUTED SCORES. They may agree with the computed scores or not.\n",
+         Write the thesis document for this holding as plain text — no code fence, no JSON, no \
+         heading before the first line. It covers, in this order:\n",
     );
     p.push_str(
-        "\n3. model_price_targets — your own one_month and twelve_month bands, each with base, \
-         bear and bull as positive prices in USD, bear ≤ base ≤ bull. The computed bands are \
-         inputs; your bands may agree with them or differ.\n   \
-         model_target_rationale — the assumptions behind your base case; where your \
-         twelve-month base differs, name your figure and the computed figure and explain why.\n",
+        "\n1. The thesis — the investment case, from FETCHED VALUES, COMPUTED, ANALYSIS and \
+         MARKET ANALYSIS.\n",
     );
-    // The shared horizon definitions less their "<name> term" prefix, so the
-    // item reads "short (~1 month)" rather than "short (short term (~1 month))".
-    let window = |h: &str| h.split_once(" (").map(|(_, p)| format!("({p}")).unwrap_or_else(|| h.to_string());
+    p.push_str("\n2. The key drivers — what the thesis depends on.\n");
+    p.push_str(
+        "\n3. The bear, base and bull scenarios — the conditions that produce each and your \
+         probability for it; the three sum to about 100 percent.\n",
+    );
+    p.push_str(
+        "\n4. The falsifiers — the observations that would show the thesis wrong — and the \
+         triggers — the conditions on which the position would be added to, trimmed or sold \
+         — each a concrete measure, a level and a period, a trigger stating the direction of \
+         the position change.\n",
+    );
+    p.push_str(
+        "\n5. The expected share price at three months, twelve months and three years, and \
+         your conviction in the read as a whole as high, medium or low, each argued in the \
+         text; the price bands under COMPUTED are evidence, not bounds. Where you state no \
+         price at a horizon, or no conviction, say so.\n",
+    );
     p.push_str(&format!(
-        "\n4. horizon_outlook — \"bullish\", \"neutral\" or \"bearish\" for short {}, mid {} and \
-         long {}, drawing on MARKET ANALYSIS for the market setup.\n",
-        window(HORIZON_SHORT),
-        window(HORIZON_MID),
-        window(HORIZON_LONG),
+        "\n6. A summary paragraph — the financial read, why those prices and that conviction{}.\n",
+        if has_prior {
+            ", and what changed since the prior analysis, drawing on PRIOR THESIS"
+        } else {
+            ""
+        }
     ));
-    // 5. ledger — the shared item, the full trigger ladder on this branch.
-    p.push_str(&ledger_task_item(
-        5,
-        contract,
-        LedgerItemBranch::priced(is_fund),
-        has_prior_ledger,
-    ));
-    if !debut {
-        p.push_str(&what_changed_task_items(
-            6,
-            "the named score or target horizon",
-            true,
-        ));
-        p.push_str(
-            "\n7. conviction — your confidence in this read as a whole: \"low\", \"medium\" or \
-             \"high\".\n",
-        );
-        p.push_str(
-            "\n8. self_assessment — your prior read against the computed read and what happened \
-             since, from PRIOR ANALYSIS: was it right, was it better than the computed read, \
-             and why.\n",
-        );
-    } else {
-        p.push_str(
-            "\n6. conviction — your confidence in this read as a whole: \"low\", \"medium\" or \
-             \"high\".\n",
-        );
-        p.push_str(
-            "\n7. self_assessment — one sentence noting that this is a first analysis with no \
-             prior read to assess.\n",
-        );
-    }
     p.push_str(&format!(
-        "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
-        crate::portfolio::interpretation_return_shape(is_fund, debut)
+        "\nThe document runs {} to {} words.\n",
+        fmt_thousands(THESIS_DOCUMENT_WORDS.0),
+        fmt_thousands(THESIS_DOCUMENT_WORDS.1)
     ));
     p
 }
 
-/// The message a ledger item is rendered for — the priced stock, the priced
-/// fund or the role/risk fund — which fixes the threshold example and the
-/// driver clause (a fund's on both fund variants, ruled 2026-09-17), the
-/// trigger families (trim and sell on the role/risk branch, whose schema enum
-/// drops the add family — `docs/portfolio-analysis.md` §The position thesis
-/// ledger), and whether the thesis line cites MARKET ANALYSIS (the priced
-/// message's outlook item cites it instead).
-#[derive(Clone, Copy)]
-enum LedgerItemBranch {
-    PricedStock,
-    PricedFund,
-    RoleRisk,
-}
-
-impl LedgerItemBranch {
-    /// The priced message's branch for its vehicle kind.
-    fn priced(is_fund: bool) -> Self {
-        if is_fund {
-            Self::PricedFund
-        } else {
-            Self::PricedStock
+/// A count with a thousands separator, as the docs state the length bands
+/// ("900–1,800 words").
+fn fmt_thousands(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
         }
+        out.push(c);
     }
-
-    fn is_fund(self) -> bool {
-        !matches!(self, Self::PricedStock)
-    }
-
-    fn thesis_draws_on_market(self) -> bool {
-        matches!(self, Self::RoleRisk)
-    }
-
-    fn triggers(self) -> &'static str {
-        match self {
-            Self::RoleRisk => {
-                "pre-committed conditions for trimming or selling, with family \"trim\" or \
-                 \"sell\""
-            }
-            Self::PricedStock | Self::PricedFund => {
-                "pre-committed conditions for adding, trimming or selling, with family \"add\", \
-                 \"trim\" or \"sell\""
-            }
-        }
-    }
+    out
 }
 
-/// The ledger item of Part 2, shared by the priced and role/risk messages
-/// (`portfolio-v42`): the parts in output order, the quant contract as
-/// requirements on the output — the label, comparator, threshold and margin;
-/// the statement agreeing with the core; one level, no qualifier; null
-/// otherwise — with threshold and margin in one clause each, the margin sized
-/// by example and its caps unshown (`portfolio-v40`), and the two worked
-/// examples in the vehicle's vocabulary; the branch fixes the fund form, the
-/// families and the market-analysis reference. Every rule the text no longer
-/// explains is still enforced at the 6g seam.
-fn ledger_task_item(
-    number: u8,
-    contract: &LedgerSeriesContract,
-    branch: LedgerItemBranch,
-    has_prior_ledger: bool,
-) -> String {
-    let is_fund = branch.is_fund();
-    let mut p = String::new();
-    let labels = contract
-        .rows
-        .iter()
-        .map(|r| r.series.as_kebab())
-        .collect::<Vec<_>>()
-        .join(", ");
-    if has_prior_ledger {
-        p.push_str(&format!(
-            "\n{number}. ledger — the position's thesis ledger, rewritten from PRIOR THESIS LEDGER \
-             against this analysis's inputs. Keep a condition's series, comparator, threshold \
-             and margin unless the condition itself has changed. The thesis is the current \
-             thesis; the original is kept separately.\n",
-        ));
-    } else {
-        p.push_str(&format!("\n{number}. ledger — the position's initial thesis ledger:\n"));
-    }
-    p.push_str(&format!(
-        "   - thesis: the standing thesis, in a few sentences{}.\n   \
-         - key_drivers: what the thesis depends on{}. Where a driver is one of the labelled \
-         metrics in FINANCIAL METRICS, series is its label; otherwise series is null.\n   \
-         - base, bear, bull: the conditions that define each case, with a probability in \
-         percent; the three sum to about 100.\n   \
-         - what_must_improve: what has to improve for the bull case. what_must_not_break: \
-         what has to hold for the base case.\n   \
-         - falsifiers: the observations that would show the thesis wrong. technology_class \
-         is true only for a third party's technology event (a competitor's or supplier's \
-         product or standard) and false otherwise.{}\n   \
-         - triggers: {}.{}\n\n   \
-         Every falsifier and trigger has a quant field.\n   \
-         A condition on one labelled metric is quantitative: quant holds series (one of {labels}), \
-         comparator (\"below\" or \"above\"), threshold and margin, and statement is a short name \
-         for the condition, without a figure. It is a single level on a single metric, {}, with \
-         no duration, volume or second condition (\"for two weeks\", \"on elevated volume\", \
-         \"unless …\").\n   \
-         Any other condition is qualitative: quant is null, and statement is the observation \
-         itself, specific enough to be researched. A condition that needs a duration, volume or \
-         second condition is qualitative.\n   \
-         threshold: the level, in the metric's unit ({}).\n   \
-         margin: the noise around the threshold that a crossing must clear, in the same unit — \
-         small relative to the level, for example {}.\n   \
-         {}\n",
-        if branch.thesis_draws_on_market() {
-            ", drawing on MARKET ANALYSIS for the market setup"
-        } else {
-            ""
-        },
-        if is_fund {
-            " — for a fund, the exposure it supplies, its cost and its fidelity to its mandate"
-        } else {
-            ""
-        },
-        if has_prior_ledger {
-            " tripped is true only where CONDITION CROSSINGS THIS RUN shows a confirmed crossing for \
-             that condition, or, for a qualitative condition, where a finding in CHANGES SINCE \
-             THE PRIOR ANALYSIS marked research-supported evidences it; otherwise false."
-        } else {
-            " tripped is false."
-        },
-        branch.triggers(),
-        if has_prior_ledger {
-            " fired follows the same rule as tripped."
-        } else {
-            " fired is false."
-        },
-        // A kept condition stays as it is even after a crossing — its streak is
-        // the point; only a new one must sit ahead of the metric (Codex,
-        // 2026-09-18, the rendered-ledger slice).
-        if has_prior_ledger {
-            "a new one at a level the metric has not already crossed and a kept one unchanged even \
-             after a crossing"
-        } else {
-            "one the metric has not already crossed"
-        },
-        if is_fund {
-            "\"above 0.75%\" on expense-ratio is 0.0075"
-        } else {
-            "\"below 16%\" on gross-margin is 0.16"
-        },
-        if is_fund {
-            "2 on a price of 100, 0.002 on a daily volatility of 0.02, or 0.0005 on an \
-             expense ratio of 0.0075"
-        } else {
-            "2 on a price of 100, 0.005 on a net margin of 0.16, or 1 on a P/E of 25"
-        },
-        contract.examples(),
-    ));
-    p
-}
-
-/// The two continuity items of Part 2, shared by both messages (`portfolio-v42`):
-/// what_changed_entries and what_changed, numbered from `first`. `detail` is the
-/// branch's gloss on which value a row names; `parameter_sentence` adds the
-/// priced branch's parameter-boundary attribution, which the role/risk branch
-/// has no source for. The requirements stand on the output — no validator
-/// behaviour is described.
-fn what_changed_task_items(first: u8, detail: &str, parameter_sentence: bool) -> String {
+/// The appendix message — the thesis-document conversation's second, non-thinking
+/// message (`docs/portfolio-workflow.md` §Step 6f): a transcription of the
+/// conviction and the three expected prices as the document states them, null
+/// where it states none, closing on the placeholder-only return shape.
+pub fn appendix_user_prompt() -> String {
     format!(
-        "\n{first}. what_changed_entries — one row per intrinsic value that moved since the prior \
-         analysis: kind (which kind of value, from the alternatives in the shape), detail \
-         (which one — {detail}), old and new (the value before and \
-         after), attribution, and evidence. An attribution of market-data, \
-         company-information or research-narrative cites one bracketed id from CHANGES \
-         SINCE THE PRIOR ANALYSIS, or that entry's text verbatim, in evidence; a revision of \
-         your own prior read with no new fact is attribution self-correction with evidence \
-         empty.{} A thesis or \
-         scenario-weights row is for a material change to the standing thesis, never a \
-         rephrasing. No row repeats another, and no row has old equal to new.\n   \
-         what_changed — one sentence summarizing those rows.\n",
-        if parameter_sentence {
-            " A move noted in PRIOR ANALYSIS as caused by a parameter change is attributed \
-             to that change, not to the company or to a self-correction."
-        } else {
-            ""
-        }
+        "From the thesis document you wrote, transcribe the conviction it states (high, medium \
+         or low) and the expected share price it states at three months, twelve months and \
+         three years, in USD. A field is null where the document states no value. Return \
+         them as one JSON object in the shape below, with no code fence and no surrounding \
+         text.\n\nRETURN SHAPE (every value is a placeholder)\n{}\n",
+        crate::portfolio::appendix_return_shape()
     )
 }
 
-/// FINANCIAL METRICS, shared by the priced and role/risk messages
-/// (`portfolio-v42`): the basis line, the label-and-confirmation sentence, one
-/// line per computable series with its ledger label, unit gloss and confirmation
-/// rule, and the data gaps — so the ledger item in Part 2 points here by name
-/// and no metric renders twice.
-fn financial_metrics_section(
-    contract: &LedgerSeriesContract,
-    d: &HoldingDossier,
-    is_fund: bool,
-) -> String {
-    let mut p = String::from("\nFINANCIAL METRICS\n");
-    p.push_str(&statement_basis_line(
-        d.financials.statement_basis,
-        d.financials.equity_source,
-        is_fund,
-    ));
-    p.push_str(
-        "Each metric has a label in brackets and a confirmation rule, the number of prints \
-         past a level that count as a crossing; both are used by the ledger in Part 2.\n",
-    );
-    p.push_str(&contract.metric_lines());
-    if !d.financials.gaps.is_empty() {
-        p.push_str(&format!("Data gaps: {}\n", d.financials.gaps.join("; ")));
+/// The engine's twelve-month consensus blend as a METRICS line — a computation
+/// over the published fiscal-period rows FETCHED VALUES states, and the
+/// bands' driver; empty without a consensus.
+fn consensus_blend_line(fin: &engine::CompanyFinancials) -> String {
+    let Some(c) = &fin.consensus else {
+        return String::new();
+    };
+    let per_share = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "(gap)".into());
+    let money = |v: Option<f64>| v.map(fmt_magnitude).unwrap_or_else(|| "(gap)".into());
+    format!(
+        "- forward consensus, next twelve months blended over {} fiscal period{}: EPS low {} / \
+         mid {} / high {}; revenue low {} / mid {} / high {} — the price bands' driver\n",
+        c.periods_used,
+        if c.periods_used == 1 { "" } else { "s" },
+        per_share(c.eps_low),
+        per_share(c.eps_mid),
+        per_share(c.eps_high),
+        money(c.revenue_low),
+        money(c.revenue_mid),
+        money(c.revenue_high),
+    )
+}
+
+/// The computed metric lines under COMPUTED (`portfolio-v40`): one per series
+/// the engine computes for this vehicle kind — the value and its unit gloss.
+/// A missing value prints "(gap)". The price and the expense ratio are
+/// fetched values, not computed ones: FETCHED VALUES states each once, so
+/// neither renders here.
+pub(crate) fn computed_metrics_lines(is_fund: bool, metrics: &engine::ComputedMetrics) -> String {
+    let mut p = String::new();
+    for s in engine::LedgerSeries::ALL
+        .iter()
+        .copied()
+        .filter(|s| s.computable_for(is_fund))
+        .filter(|s| !matches!(s, engine::LedgerSeries::Price | engine::LedgerSeries::ExpenseRatio))
+    {
+        let value = match s.metric_value(metrics) {
+            Some(v) => format!("{v:.4}"),
+            None => "(gap)".to_string(),
+        };
+        p.push_str(&format!("- {}: {value} — {}\n", s.describe(), s.unit_note()));
     }
     p
 }
@@ -4663,30 +2829,6 @@ fn render_places(x: f64) -> usize {
             .find(|p| (x * 10f64.powi(*p as i32)).round() != 0.0)
             .unwrap_or(10)
     }
-}
-
-/// The ledger-crossing prompt render — the observed value and the threshold
-/// as one pair at one shared precision, for both sites that print a crossing
-/// (the input-delta entry and the 6f ENGINE CONDITION CROSSINGS section).
-/// `ConditionCrossing` carries no series, so the rule is series-agnostic:
-/// four places had flattened a sub-basis-point expense ratio to `0.0000`
-/// while the direct render extended its precision, and the two sites had
-/// printed the threshold at two precisions in one prompt (the 2026-08-24
-/// review's Codex I12). The precision is **comparison-safe** (the group's
-/// Codex round 1): it starts at the pair's [`render_places`] floor and
-/// extends, to ten places, until the rendered pair orders as the values do
-/// — `0.00006` against `0.00005` had rendered `0.0001` against `0.0001`,
-/// a real crossing shown as equality. The test is on the rendered pair read
-/// back as numbers, never on the strings: the two must order as the values
-/// do, so `-0.0000000000` beside `0.0000000000` — distinct strings that read
-/// as equal — is refused (the group's Codex round 3). Rounding is monotone,
-/// so a pair that orders correctly never inverts. Two distinct values still
-/// alike at ten places fall back to the shortest round-trip render (`{}`),
-/// which differs for any two distinct `f64`s and keeps their order — the
-/// engine's comparison is exact and a zero margin is valid, so a crossing
-/// can sit closer than that (the group's Codex round 2).
-fn fmt_crossing_pair(observed: f64, threshold: f64) -> (String, String) {
-    comparison_safe_pair(observed, threshold, 4)
 }
 
 /// The IV-skew prompt render — the put-minus-call difference with an explicit
@@ -4735,11 +2877,10 @@ fn nav_premium_line(premium: f64) -> String {
 }
 
 /// The system prompt for the **per-holding action call** (`portfolio-v41`):
-/// the role, the output names and the two-part shape of the message — the
-/// same footing as [`interpretation_system_prompt`]. The ladder, the
-/// one-sentence rationale and the profile tie-break are the message's Part 2;
-/// the app's words about arms, evidence and departures are gone
-/// (`docs/portfolio-analysis.md` §Portfolio action).
+/// the role, the output names and the two-part shape of the message. The
+/// ladder, the one-sentence rationale and the profile tie-break are the
+/// message's Part 2; the app's words about arms, evidence and departures are
+/// gone (`docs/portfolio-analysis.md` §Portfolio action).
 pub fn action_system_prompt() -> String {
     format!(
         "You are an equity analyst deciding the portfolio action for one holding in a \
@@ -4755,56 +2896,36 @@ pub fn action_system_prompt() -> String {
 const TWO_READS: &str = "Two reads of this holding appear below: a computed read, derived from \
 its financial data by fixed formulas, and an analyst's read of the same data and research.\n";
 
-/// The gloss beside a computed grade resting on an imputed sub-score — one
-/// string for the interpretation and action packets.
+/// The gloss beside a computed grade resting on an imputed sub-score.
 const LOW_CONFIDENCE_GLOSS: &str = " (low-confidence: one score is imputed)";
-
-/// The three outlook words a packet prints, short / mid / long.
-fn horizon_words(o: &HorizonOutlook) -> [&'static str; 3] {
-    [o.short.as_str(), o.mid.as_str(), o.long.as_str()]
-}
 
 /// The action message (`portfolio-v41`): Part 1 the inputs, each section
 /// explained once and then its values with no instruction in it; Part 2 the
 /// task in output order and the placeholder-only shape. No arm, baseline,
-/// stage, seam, validator behaviour, stamp or product name — the rulings and
-/// the rendered draft are `docs/verification/2026-09-17-action-prompt-rewrite.md`.
-/// Tunnel vision is enforced by input isolation: no whole-book field exists
-/// here (`docs/portfolio-analysis.md` §Portfolio action).
+/// stage, seam, validator behaviour, stamp or product name. Tunnel vision is
+/// enforced by input isolation: no whole-book field exists here
+/// (`docs/portfolio-analysis.md` §Portfolio action). The packet renders VERDICT
+/// — the conviction, the three expected prices and the thesis document
+/// verbatim — in place of the retired analyst sections; its full reshape
+/// (POSITION, the COMPUTED regrouping, the task's clauses) is the next task.
 pub fn action_user_prompt(input: &ActionInput) -> String {
     let d = input.dossier;
     let mut p = String::from("======== PART 1: INPUTS ========\n");
     p.push_str(&holding_header(d));
     p.push_str(&format!("\n{TWO_READS}"));
     match &input.subject {
-        ActionSubject::Priced { graded, engine, pre_profit, ledger } => {
+        ActionSubject::Priced { graded, engine, pre_profit } => {
             p.push_str(&scores_section(graded));
             p.push_str(&price_targets_section(d, graded, engine));
-            p.push_str(&format!(
-                "\nTARGET RATIONALE (analyst)\n{}\n",
-                graded.model_target_rationale
-            ));
             p.push_str(&capital_efficiency_section(&engine.hurdle));
-            let [short, mid, long] = horizon_words(&graded.horizon_outlook);
-            p.push_str(&format!(
-                "\nCONVICTION AND OUTLOOK (analyst)\nConviction {}: the analyst's confidence in \
-                 the read as a whole. Outlook: short (about 1 month) {short}, mid (about 1 year) \
-                 {mid}, long (3–5 years) {long}.\n",
-                graded.conviction.as_str(),
-            ));
-            p.push_str(&format!(
-                "\nFINANCIAL SUMMARY (analyst)\n{}\n",
-                graded.financial_summary
-            ));
-            p.push_str(&ledger_prose_sections(ledger));
-            p.push_str(&action_continuity_sections(d, &graded.what_changed, input.changes));
+            p.push_str(&verdict_section(d, Some(&graded.appendix), &graded.thesis_document));
+            p.push_str(&prior_action_section(d));
             if let Some(overlay) = pre_profit {
                 p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Action));
             }
         }
-        ActionSubject::RoleRisk { verdict, ledger } => {
+        ActionSubject::RoleRisk { verdict } => {
             p.push_str(&format!("\nCLASS (computed)\n{}\n", verdict.class_label));
-            p.push_str(&format!("\nROLE (analyst)\n{}\n", verdict.role_summary));
             if !verdict.exposure_tilt.is_empty() {
                 let tilt: Vec<String> = verdict
                     .exposure_tilt
@@ -4836,8 +2957,8 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                     verdict.evidence_gaps.join("; ")
                 ));
             }
-            p.push_str(&ledger_prose_sections(ledger));
-            p.push_str(&action_continuity_sections(d, &verdict.what_changed, input.changes));
+            p.push_str(&verdict_section(d, None, &verdict.thesis_document));
+            p.push_str(&prior_action_section(d));
         }
     }
     p.push_str(&forensic_prompt_section(d, PromptStage::Action));
@@ -4848,9 +2969,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     // ladder). An outside-the-set rung persists as authored with the departure
     // on the audit (`outside_set_annotation`), never a bar. Since
     // `portfolio-v49` (ruled 2026-09-27) the line says the list is complete
-    // and that an unlisted rung is outside the read: the attempt-8 PSX trace
-    // read the list as the whole ladder, looked for a pick it never carries,
-    // and tried to derive the set from CAPITAL EFFICIENCY instead.
+    // and that an unlisted rung is outside the read.
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&format!(
         "\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: {}. \
@@ -4871,19 +2990,17 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     p
 }
 
-/// SCORES: the polarity gloss once, the grade's derivation once (fix list 2.3
-/// and 3.11 folded into one data gloss), then the computed and analyst rows.
+/// SCORES: the polarity gloss once, the grade's derivation once, then the
+/// computed row with the engine's own rung as a computed read.
 fn scores_section(graded: &GradedVerdict) -> String {
     let e = &graded.sub_scores;
-    let m = &graded.model_view.sub_scores;
     format!(
-        "\nSCORES\nFour scores from 0 to 100, higher is better on every axis: quality; \
+        "\nSCORES (computed)\nFour scores from 0 to 100, higher is better on every axis: quality; \
          valuation, where higher means more attractive; momentum; risk, where higher means \
          more resilient. The grade is a letter derived from the quality, valuation and risk \
          scores.\n\
-         - computed: quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}{}. \
-         Risk tier: {}. Computed action: {}.\n\
-         - analyst: quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}.\n",
+         quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}{}. \
+         Risk tier: {}. Computed action: {}.\n",
         e.quality,
         e.valuation,
         e.momentum,
@@ -4892,24 +3009,14 @@ fn scores_section(graded: &GradedVerdict) -> String {
         if graded.low_confidence_grade { LOW_CONFIDENCE_GLOSS } else { "" },
         graded.risk_tier.as_str(),
         graded.engine_rung.as_kebab(),
-        m.quality,
-        m.valuation,
-        m.momentum,
-        m.risk,
-        graded.model_view.letter.as_str(),
     )
 }
 
-/// PRICE TARGETS: both reads' bands as prices with the move each implies from
-/// the current price, the computed bands with the method clauses the
-/// interpretation packet renders (ruled 2026-09-17, in place of the provenance
-/// label). A computed band the scenario function could not derive prints
-/// "(gap)"; an analyst leg outside its domain, or whose move overflows the
-/// percentage arithmetic, prints as authored with "(off-scale as authored)";
-/// a band authored bear above bull carries "(band inverted as authored)" —
-/// annotate, never reorder, never drop (Codex I5, ruled 2026-08-28). With no
-/// usable current price the prices render without moves (unreachable on a
-/// priced holding — the quote floor — so the guard stays defensive).
+/// PRICE TARGETS: the computed bands as prices with the move each implies from
+/// the current price and the method clauses the thesis message renders. A
+/// band the scenario function could not derive prints "(gap)". With no usable
+/// current price the prices render without moves (unreachable on a priced
+/// holding — the quote floor — so the guard stays defensive).
 fn price_targets_section(
     d: &HoldingDossier,
     graded: &GradedVerdict,
@@ -4921,19 +3028,12 @@ fn price_targets_section(
         Some(m) => format!("{v:.2} ({m:+.1}%)"),
         None => format!("{v:.2}"),
     };
-    let analyst_leg = |v: f64| {
-        if v.is_finite() && v > 0.0 && mv(v).is_none_or(f64::is_finite) {
-            leg(v)
-        } else {
-            format!("{v} (off-scale as authored)")
-        }
-    };
     let mut p = String::from(
-        "\nPRICE TARGETS (USD, with the move each implies from the current price)\n",
+        "\nPRICE TARGETS (computed; USD, with the move each implies from the current price)\n",
     );
     match &graded.price_targets.twelve_month {
         Some(t) => p.push_str(&format!(
-            "- computed twelve-month: bear {} / base {} / bull {}. Method: {}.{}\n",
+            "- twelve-month: bear {} / base {} / bull {}. Method: {}.{}\n",
             leg(t.bear),
             leg(t.base),
             leg(t.bull),
@@ -4942,37 +3042,62 @@ fn price_targets_section(
                 .map(|n| format!(" Notes: {n}"))
                 .unwrap_or_default(),
         )),
-        None => p.push_str("- computed twelve-month: (gap)\n"),
+        None => p.push_str("- twelve-month: (gap)\n"),
     }
     match &graded.price_targets.three_month {
         Some(t) => p.push_str(&format!(
-            "- computed three-month: bear {} / base {} / bull {}. Method: {}.\n",
+            "- three-month: bear {} / base {} / bull {}. Method: {}.\n",
             leg(t.bear),
             leg(t.base),
             leg(t.bull),
             three_month_method(t),
         )),
-        None => p.push_str("- computed three-month: (gap)\n"),
+        None => p.push_str("- three-month: (gap)\n"),
     }
     match &graded.price_targets.three_year {
         Some(t) => p.push_str(&format!(
-            "- computed three-year: bear {} / base {} / bull {}. Method: {}.\n",
+            "- three-year: bear {} / base {} / bull {}. Method: {}.\n",
             leg(t.bear),
             leg(t.base),
             leg(t.bull),
             three_year_method(&engine.target_meta),
         )),
-        None => p.push_str("- computed three-year: (gap)\n"),
+        None => p.push_str("- three-year: (gap)\n"),
     }
-    let m = &graded.model_view.price_targets;
-    for (label, t) in [("twelve-month", &m.twelve_month), ("one-month", &m.one_month)] {
+    p
+}
+
+/// VERDICT: the analyst's read — on a priced holding the conviction and the
+/// three expected prices with the move each implies, a null field as "none",
+/// then the thesis document verbatim; on the role/risk branch the document
+/// alone (`docs/portfolio-analysis.md` §Portfolio action).
+fn verdict_section(d: &HoldingDossier, appendix: Option<&ThesisAppendix>, document: &str) -> String {
+    let mut p = String::from("\nVERDICT (analyst)\n");
+    if let Some(a) = appendix {
+        let spot = d.financials.current_price.filter(|s| s.is_finite() && *s > 0.0);
+        let price = |v: Option<f64>| match v {
+            None => "none".to_string(),
+            Some(v) => match spot {
+                Some(s) => format!("{v:.2} ({:+.1}%)", (v / s - 1.0) * 100.0),
+                None => format!("{v:.2}"),
+            },
+        };
+        let prices: Vec<String> = a
+            .expected_prices()
+            .iter()
+            .map(|(label, v)| format!("{label} {}", price(*v)))
+            .collect();
         p.push_str(&format!(
-            "- analyst {label}: bear {} / base {} / bull {}{}.\n",
-            analyst_leg(t.bear),
-            analyst_leg(t.base),
-            analyst_leg(t.bull),
-            if t.bear > t.bull { " (band inverted as authored)" } else { "" },
+            "Conviction: {}. Expected share price (USD, with the move each implies from the \
+             current price): {}.\n",
+            a.conviction.map(Conviction::as_str).unwrap_or("none"),
+            prices.join(", ")
         ));
+    }
+    p.push_str("Thesis document:\n");
+    p.push_str(document);
+    if !document.ends_with('\n') {
+        p.push('\n');
     }
     p
 }
@@ -4998,106 +3123,31 @@ fn capital_efficiency_section(h: &engine::HurdleRead) -> String {
     }
 }
 
-/// THESIS and SCENARIOS from the holding's ledger as validated this run (ruled
-/// 2026-09-17): the standing thesis, then each case's conditions with the
-/// analyst's probability for it. The must-improve / must-not-break lines stay
-/// out (ruled the same day).
-fn ledger_prose_sections(ledger: &ThesisLedger) -> String {
-    let mut p = format!("\nTHESIS (analyst)\n{}\n", ledger.current_thesis);
-    p.push_str(
-        "\nSCENARIOS (analyst)\nThe conditions that define each case, with the analyst's \
-         probability for it.\n",
-    );
-    for s in &ledger.monitor {
-        p.push_str(&format!(
-            "- {} ({:.0}%): {}\n",
-            s.scenario.as_str(),
-            s.probability_pct,
-            s.conditions
-        ));
-    }
-    p
-}
-
-/// The continuity sections, rendered only with a prior verdict: PRIOR ACTION
-/// (the rung, glossed as chosen in the prior analysis or set by rule after it —
-/// ruled 2026-09-17, F4), PRIOR ANALYSIS (the prior read's values) and CHANGES
-/// SINCE THE PRIOR ANALYSIS (the analyst's summary, the validated rows in
-/// words, the input-delta rows they cite). Absent attribution says so and is
-/// never read as unchanged evidence.
-fn action_continuity_sections(
-    d: &HoldingDossier,
-    summary: &str,
-    changes: Option<&crate::portfolio::WhatChangedAudit>,
-) -> String {
+/// PRIOR ACTION, rendered only with a prior verdict that carries an action:
+/// the rung, glossed as chosen in the prior analysis or set by rule after it
+/// (`docs/portfolio-analysis.md` §Portfolio action). An abstained or not-rated
+/// prior renders nothing.
+fn prior_action_section(d: &HoldingDossier) -> String {
     let Some(prior) = d.prior_verdict.as_ref() else {
         return String::new();
     };
-    let mut p = String::new();
-    if let Some(action) = crate::portfolio::carried_action(prior) {
-        p.push_str(&format!(
-            "\nPRIOR ACTION\n{}, {}.\n",
-            action.as_kebab(),
-            match prior.action_source {
-                ActionSource::ModelChosen => "chosen in the prior analysis",
-                ActionSource::RuleDemoted => {
-                    "set by rule after the prior analysis, not chosen in it"
-                }
-            }
-        ));
-    }
-    p.push_str("\nPRIOR ANALYSIS\n");
-    match &prior.disposition {
-        VerdictDisposition::Priced(g) => {
-            let [short, mid, long] = horizon_words(&g.horizon_outlook);
-            p.push_str(&format!(
-                "computed grade {}; analyst grade {}; conviction {}; outlook short {short}, \
-                 mid {mid}, long {long}.\nFinancial summary: {}\n",
-                g.grade.as_str(),
-                g.model_view.letter.as_str(),
-                g.conviction.as_str(),
-                g.financial_summary
-            ))
+    let Some(action) = crate::portfolio::carried_action(prior) else {
+        return String::new();
+    };
+    format!(
+        "\nPRIOR ACTION\n{}, {}.\n",
+        action.as_kebab(),
+        match prior.action_source {
+            ActionSource::ModelChosen => "chosen in the prior analysis",
+            ActionSource::RuleDemoted => "set by rule after the prior analysis, not chosen in it",
         }
-        VerdictDisposition::RoleRiskOnly(r) => {
-            p.push_str(&format!("class {}; role: {}\n", r.class_label, r.role_summary))
-        }
-        _ => p.push_str("No comparable prior read.\n"),
-    }
-    p.push_str(&format!(
-        "\nCHANGES SINCE THE PRIOR ANALYSIS\nSummary (analyst): {summary}\n"
-    ));
-    match changes {
-        Some(c) => {
-            for e in &c.entries {
-                let attribution = e.attribution.as_words();
-                let evidence = if e.evidence.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("; evidence {}", e.evidence)
-                };
-                p.push_str(&format!(
-                    "- {}: {} -> {} ({attribution}{evidence})\n",
-                    e.detail, e.old, e.new
-                ));
-            }
-            for e in &c.input_delta {
-                p.push_str(&format!("[{}] {}\n", e.id, e.label));
-            }
-            if c.entries.is_empty() {
-                p.push_str("No attributed changes are recorded.\n");
-            }
-        }
-        None => p.push_str("No change attribution is available.\n"),
-    }
-    p
+    )
 }
 
 /// Part 2 of the action message: the two items in output order, each naming
-/// the Part 1 sections it draws on — the weighing order (the former ACTION
-/// BASIS hierarchy as a task clause), the profile tie-break, on a priced
-/// holding the sunk-cost rule as one clause on every packet
-/// (`docs/portfolio-analysis.md` §Portfolio action; ruled 2026-09-17), with a
+/// the Part 1 sections it draws on — the weighing order as a task clause, the
+/// profile tie-break, on a priced holding the sunk-cost rule as one clause on
+/// every packet (`docs/portfolio-analysis.md` §Portfolio action), with a
 /// chosen prior the firmness clause — and the placeholder-only shape.
 fn action_task_section(input: &ActionInput) -> String {
     let prior = input.dossier.prior_verdict.as_ref();
@@ -5105,6 +3155,7 @@ fn action_task_section(input: &ActionInput) -> String {
         v.action_source == ActionSource::ModelChosen
             && crate::portfolio::carried_action(v).is_some()
     });
+    let prior_action = prior.is_some_and(|v| crate::portfolio::carried_action(v).is_some());
     let mut p = String::from(
         "\n======== PART 2: TASK ========\n\nDetermine the following from the inputs and return \
          them as one JSON object in the shape at the end, with no code fence and no \
@@ -5115,11 +3166,11 @@ fn action_task_section(input: &ActionInput) -> String {
     );
     let (first, mut refining): (Vec<&str>, Vec<&str>) = match &input.subject {
         ActionSubject::Priced { .. } => (
-            vec!["SCORES", "PRICE TARGETS"],
-            vec!["CAPITAL EFFICIENCY", "CONVICTION AND OUTLOOK", "THESIS", "SCENARIOS"],
+            vec!["VERDICT", "SCORES", "PRICE TARGETS"],
+            vec!["CAPITAL EFFICIENCY"],
         ),
-        ActionSubject::RoleRisk { verdict, .. } => {
-            let mut first = vec!["CLASS", "ROLE"];
+        ActionSubject::RoleRisk { verdict } => {
+            let mut first = vec!["CLASS", "VERDICT"];
             if !verdict.exposure_tilt.is_empty() {
                 first.push("EXPOSURE TILT");
             }
@@ -5131,12 +3182,11 @@ fn action_task_section(input: &ActionInput) -> String {
             if !verdict.evidence_gaps.is_empty() {
                 refining.push("EVIDENCE GAPS");
             }
-            refining.extend(["THESIS", "SCENARIOS"]);
             (first, refining)
         }
     };
-    if prior.is_some() {
-        refining.extend(["PRIOR ANALYSIS", "CHANGES SINCE THE PRIOR ANALYSIS"]);
+    if prior_action {
+        refining.push("PRIOR ACTION");
     }
     refining.extend(["SUPPORTED ACTIONS", "INVESTOR PROFILE"]);
     let list = |names: Vec<&str>| -> String {
@@ -5184,14 +3234,13 @@ fn action_task_section(input: &ActionInput) -> String {
 
 /// Which packet a shared section is rendered into. The facts are the same on
 /// both; the consequence lines (the overlay's and the forensic sweep's) render
-/// on the interpretation packet only — the action packet's SUPPORTED ACTIONS
-/// line already carries the narrowed set, and its conviction is the analyst's
-/// read (ruled 2026-09-17, F1).
+/// on the thesis-document message only — the action packet's SUPPORTED
+/// ACTIONS line already carries the narrowed set (ruled 2026-09-17, F1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptStage {
-    /// The intrinsic interpretation prompt (Step 6f): authors conviction, no action.
-    Interpretation,
-    /// The per-holding action call: authors the rung, no conviction.
+    /// The thesis-document message (Step 6f): authors the document, no action.
+    Thesis,
+    /// The per-holding action call: authors the rung, no document.
     Action,
 }
 
@@ -5268,263 +3317,6 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
     p
 }
 
-/// One row of the ledger-authoring contract: a series the engine computes for this
-/// holding's vehicle kind, with its current observation — or the typed reason it
-/// is unavailable this run — where the caller supplied the computed surface.
-pub struct SeriesContractRow {
-    pub series: engine::LedgerSeries,
-    pub observation: Option<std::result::Result<engine::ResolvedObservation, String>>,
-    /// The computed value as the metric line prints it — present even where the
-    /// observation could not be keyed (no dated print), since the value is the
-    /// input and the identity is the seam's.
-    pub value: Option<f64>,
-}
-
-/// The holding-scoped ledger-authoring contract (`docs/portfolio-analysis.md`
-/// §The position thesis ledger; ruled 2026-09-16 off attempt-6 Finding 2): only
-/// the series the engine computes for this vehicle kind, each rendered with its
-/// unit, its current observation and its confirmation cadence, so the model
-/// authors a level in the series' own units against a value it can see and a
-/// fund never sees a stock-only series.
-pub struct LedgerSeriesContract {
-    pub is_fund: bool,
-    pub rows: Vec<SeriesContractRow>,
-}
-
-impl LedgerSeriesContract {
-    /// Build the contract for a vehicle kind. `metrics` and `fin` are the
-    /// computed surface the observations resolve against; either absent renders
-    /// the rows without observations (the offline tests' form).
-    pub fn build(
-        is_fund: bool,
-        metrics: Option<&engine::ComputedMetrics>,
-        fin: Option<&engine::CompanyFinancials>,
-    ) -> Self {
-        let rows = engine::LedgerSeries::ALL
-            .iter()
-            .copied()
-            .filter(|s| s.computable_for(is_fund))
-            .map(|series| SeriesContractRow {
-                series,
-                observation: match (metrics, fin) {
-                    (Some(m), Some(f)) => Some(engine::resolve_series(series, m, f)),
-                    _ => None,
-                },
-                value: match (series, metrics, fin) {
-                    (engine::LedgerSeries::Price, _, Some(f)) => {
-                        f.current_price.filter(|p| p.is_finite() && *p > 0.0)
-                    }
-                    (engine::LedgerSeries::Price, _, None) => None,
-                    (s, Some(m), _) => s.metric_value(m),
-                    (_, None, _) => None,
-                },
-            })
-            .collect();
-        Self { is_fund, rows }
-    }
-
-    /// The metric lines every interpretation message carries under FINANCIAL
-    /// METRICS (`portfolio-v40`): one per computable series — the value, its
-    /// ledger label in brackets, its unit gloss and its confirmation rule — so the
-    /// ledger item points here by name and no series list is rendered twice.
-    /// A missing value prints "(gap)"; an observation the seam could not key
-    /// (no dated print) still shows the computed value, since the value is the
-    /// input and the identity is the seam's.
-    pub fn metric_lines(&self) -> String {
-        let mut p = String::new();
-        for row in &self.rows {
-            let s = row.series;
-            let value = match row.value {
-                Some(v) if s == engine::LedgerSeries::ExpenseRatio => fmt_expense_ratio(Some(v)),
-                Some(v) if s == engine::LedgerSeries::Price => format!("{v:.2}"),
-                Some(v) => format!("{v:.4}"),
-                None => "(gap)".to_string(),
-            };
-            p.push_str(&format!(
-                "- {} [{}]: {value} — {}; {}\n",
-                s.describe(),
-                s.as_kebab(),
-                s.unit_note(),
-                s.confirmation_note()
-            ));
-        }
-        p
-    }
-
-    /// Two branch-scoped worked examples — illustrative shapes in the vehicle's
-    /// own vocabulary, never findings.
-    fn examples(&self) -> &'static str {
-        if self.is_fund {
-            "Example, quantitative: statement \"Price support\", quant {\"series\": \
-             \"price\", \"comparator\": \"below\", \"threshold\": 38, \"margin\": 0.4}.\n   \
-             Example, qualitative: statement \"The mandate drifts from the stated index \
-             methodology\", quant null."
-        } else {
-            "Example, quantitative: statement \"Gross-margin floor\", quant \
-             {\"series\": \"gross-margin\", \"comparator\": \"below\", \"threshold\": 0.16, \
-             \"margin\": 0.005}.\n   \
-             Example, qualitative: statement \"A credible second supplier ships at scale\", \
-             quant null."
-        }
-    }
-}
-
-/// The prior ledger and this run's crossings as data (`portfolio-v40`): the
-/// standing thesis, drivers, monitor, conditions with their cores and streaks,
-/// the research-supported marks, and the crossings — rendered into Part 1 of
-/// both interpretation messages (`docs/portfolio-analysis.md` §The position
-/// thesis ledger). This is the first prior-run *content* the message carries —
-/// the standing view the model tests against fresh evidence rather than
-/// re-deriving from scratch. On a first analysis it says there is no prior
-/// ledger and nothing else.
-pub(crate) fn prior_ledger_data_section(
-    prior: Option<&ThesisLedger>,
-    eval: Option<&LedgerEvaluation>,
-    input_delta: &[crate::portfolio::DeltaEntry],
-) -> String {
-    let mut p = String::new();
-    // The conditions a fresh research finding bears on this run — the delta's
-    // tied research entries (`push_research_delta_entries`), so the model can see
-    // which qualitative claims the 6g validator will honor; the ids themselves
-    // stay held out of the projection (app-owned bookkeeping).
-    let research_supported: std::collections::HashSet<&str> = input_delta
-        .iter()
-        .filter_map(|e| e.related_condition_id.as_deref())
-        .collect();
-    match prior {
-        Some(l) => {
-            p.push_str("\nPRIOR THESIS LEDGER (the standing view this analysis tests)\n");
-            p.push_str(&format!("Original thesis: {}\n", l.original_thesis));
-            p.push_str(&format!("Current thesis: {}\n", l.current_thesis));
-            if !l.key_drivers.is_empty() {
-                let drivers: Vec<String> = l
-                    .key_drivers
-                    .iter()
-                    .map(|d| match d.series {
-                        Some(s) => format!("{} [{}]", d.name, s.as_kebab()),
-                        None => d.name.clone(),
-                    })
-                    .collect();
-                p.push_str(&format!("Key drivers: {}\n", drivers.join("; ")));
-            }
-            p.push_str("Monitor:\n");
-            for m in &l.monitor {
-                let target = m
-                    .engine_target
-                    .map(|t| format!(" [computed target {t:.2}]"))
-                    .unwrap_or_default();
-                p.push_str(&format!(
-                    "- {:?} (p≈{:.0}%){target}: {}\n",
-                    m.scenario, m.probability_pct, m.conditions
-                ));
-            }
-            if !l.what_must_improve.is_empty() {
-                p.push_str(&format!("What must improve: {}\n", l.what_must_improve));
-            }
-            if !l.what_must_not_break.is_empty() {
-                p.push_str(&format!("What must not break: {}\n", l.what_must_not_break));
-            }
-            for (title, role) in [
-                ("Falsifiers:", ConditionRole::Falsifier),
-                ("Action triggers:", ConditionRole::Trigger),
-            ] {
-                let rows: Vec<&LedgerCondition> =
-                    l.conditions.iter().filter(|c| c.role == role).collect();
-                if rows.is_empty() {
-                    continue;
-                }
-                p.push_str(title);
-                p.push('\n');
-                for c in rows {
-                    let family = c
-                        .trigger_family
-                        .map(|f| format!("{f:?} ").to_lowercase())
-                        .unwrap_or_default();
-                    let kind = match &c.quant {
-                        Some(q) => {
-                            let streak = c
-                                .eval_state
-                                .as_ref()
-                                .filter(|s| s.breach_streak > 0)
-                                .map(|s| format!("; breach streak {}", s.breach_streak))
-                                .unwrap_or_default();
-                            // The full machine core, margin included — an unstated
-                            // margin would make the model guess one, and any
-                            // mismatch reads as a core edit that supersedes the
-                            // condition and resets its breach history.
-                            format!(
-                                "quantitative: {} {} {} (margin {}){streak}",
-                                q.series.as_kebab(),
-                                q.comparator.as_kebab(),
-                                q.threshold,
-                                q.margin
-                            )
-                        }
-                        // A refused condition says why in one data phrase, so the
-                        // model authors it differently rather than re-issuing the
-                        // same core (ruled 2026-09-18).
-                        None => match &c.downgraded_reason {
-                            Some(reason) => format!("qualitative; {}", refusal_phrase(reason)),
-                            None => "qualitative".to_string(),
-                        },
-                    };
-                    let support = if research_supported.contains(c.condition_id.as_str()) {
-                        " — research-supported: a finding in CHANGES SINCE THE PRIOR ANALYSIS \
-                         bears on this condition"
-                    } else {
-                        ""
-                    };
-                    // A kept core prints raw beside the model's own name (an
-                    // empty one where the name was blank — never its render, which
-                    // the model would echo back as the name); a qualitative or
-                    // refused condition prints its statement.
-                    let text = match (&c.quant, &c.label) {
-                        (Some(_), Some(label)) => label.as_str(),
-                        (Some(_), None) => "",
-                        (None, _) => c.statement.as_str(),
-                    };
-                    p.push_str(&format!("- {family}[{kind}] {text}{support}\n"));
-                }
-            }
-
-            p.push_str("\nCONDITION CROSSINGS THIS RUN\n");
-            let mut any = false;
-            if let Some(e) = eval {
-                for c in &e.crossings {
-                    any = true;
-                    let what = match (c.outcome, c.role) {
-                        (CrossingOutcome::Confirmed, ConditionRole::Trigger) => {
-                            "TRIGGER FIRED (confirmed)"
-                        }
-                        (CrossingOutcome::Confirmed, ConditionRole::Falsifier) => {
-                            "CONFIRMED BREACH"
-                        }
-                        (CrossingOutcome::FirstBreach, _) => {
-                            "first-breach note (not yet confirmed — a lone print)"
-                        }
-                    };
-                    let (observed, threshold) = fmt_crossing_pair(c.observed_value, c.threshold);
-                    p.push_str(&format!(
-                        "- {what}: '{}' — observed {observed} vs threshold {threshold} (observation {})\n",
-                        c.statement, c.observation_id
-                    ));
-                }
-                for u in &e.unevaluable {
-                    any = true;
-                    p.push_str(&format!("- unevaluable this run: {u}\n"));
-                }
-            }
-            if !any {
-                p.push_str("- none crossed\n");
-            }
-        }
-        None => {
-            p.push_str("\nPRIOR THESIS LEDGER\nNone: this is the first analysis.\n");
-        }
-    }
-    p
-}
-
 /// The ledger section's statement-basis line — the one place the prompt says
 /// which basis the flow series stand on this run, so a flow-series threshold is
 /// authored on the basis it will be evaluated against. The flow family is read off
@@ -5575,45 +3367,18 @@ fn statement_basis_line(
     format!("{flow_line} {instants_line}\n")
 }
 
-/// The app owns a debut's continuity fields on every analyst path (fix list
-/// 3.3, `portfolio-v38`): the model path never requests them and the decoder
-/// inserts them, but a stub or any other analyst may author its own line, so
-/// the pipeline writes [`crate::portfolio::DEBUT_WHAT_CHANGED`] and an empty
-/// row set itself before the verdict is assembled. A continuity call's fields
-/// pass through untouched.
-fn own_debut_continuity(mut interpretation: Interpretation, debut: bool) -> Interpretation {
-    if debut {
-        interpretation.what_changed = crate::portfolio::DEBUT_WHAT_CHANGED.to_string();
-        interpretation.what_changed_entries.clear();
-    }
-    interpretation
-}
-
-/// The role/risk branch's form of [`own_debut_continuity`].
-fn own_debut_continuity_role_risk(
-    mut interpretation: RoleRiskInterpretation,
-    debut: bool,
-) -> RoleRiskInterpretation {
-    if debut {
-        interpretation.what_changed = crate::portfolio::DEBUT_WHAT_CHANGED.to_string();
-        interpretation.what_changed_entries.clear();
-    }
-    interpretation
-}
-
-/// The role/risk verdict assembled from a fresh interpretation: the readout's
-/// computed surface app-stamped, the model's role read and continuity line as
-/// authored, the action fields placeholders the per-holding action call
-/// overwrites (never rendered into that call's prompt). One assembly serves the
-/// pipeline and the fixed-evidence harness's synthetic role/risk case
-/// (`portfolio-v42`), beside [`graded_verdict_from_interpretation`].
-pub(crate) fn role_risk_verdict_from_interpretation(
+/// The role/risk verdict assembled from a fresh thesis document: the readout's
+/// computed surface app-stamped, the document as authored, the action fields
+/// placeholders the per-holding action call overwrites (never rendered into
+/// that call's prompt). One assembly serves the pipeline and the
+/// fixed-evidence harness, beside [`graded_verdict_from_model_arm`].
+pub(crate) fn role_risk_verdict_from_model_arm(
     readout: &RoleRiskReadout,
-    interpretation: RoleRiskInterpretation,
+    thesis_document: String,
 ) -> RoleRiskVerdict {
     RoleRiskVerdict {
         class_label: readout.class_label.clone(),
-        role_summary: interpretation.role_summary,
+        thesis_document,
         exposure_tilt: readout
             .exposure_tilt
             .iter()
@@ -5630,23 +3395,20 @@ pub(crate) fn role_risk_verdict_from_interpretation(
         evidence_gaps: readout.evidence_gaps.clone(),
         action: Action::Hold,
         action_rationale: String::new(),
-        what_changed: interpretation.what_changed,
     }
 }
 
-/// The priced verdict assembled from a fresh interpretation: the engine arm's
-/// figures app-stamped from the engine output, the model arm persisted exactly
-/// as authored with its letter derived through the shared cutoffs (the two-arm
-/// contract — `docs/portfolio-analysis.md` §The holding verdict). The action
-/// fields are placeholders the per-holding action call overwrites; they are
-/// never rendered into that call's prompt. One assembly serves the pipeline and
-/// the fixed-evidence harness, so the harness's fresh-interpretation action
-/// call reads the verdict the run would have persisted (the §3 slice's Codex
-/// plan review).
-pub(crate) fn graded_verdict_from_interpretation(
+/// The priced verdict assembled from a fresh model arm: the engine arm's
+/// figures app-stamped from the engine output, the thesis document and its
+/// appendix persisted exactly as authored (the two-arm contract —
+/// `docs/portfolio-analysis.md` §The holding verdict). The action fields are
+/// placeholders the per-holding action call overwrites; they are never
+/// rendered into that call's prompt. One assembly serves the pipeline and the
+/// fixed-evidence harness.
+pub(crate) fn graded_verdict_from_model_arm(
     engine_output: &EngineOutput,
     options_signal: crate::portfolio::OptionsSignal,
-    interpretation: Interpretation,
+    model_arm: PricedModelArm,
     engine_rung: Action,
     authored_band_relation: Option<crate::portfolio::BandRelation>,
 ) -> GradedVerdict {
@@ -5655,53 +3417,17 @@ pub(crate) fn graded_verdict_from_interpretation(
         sub_scores: engine_output.sub_scores,
         action: Action::Hold,
         action_rationale: String::new(),
-        // The model's conviction persists exactly as authored — no bail, no
-        // clamp; the engine authors none.
-        conviction: interpretation.conviction,
-        horizon_outlook: interpretation.horizon_outlook,
+        thesis_document: model_arm.thesis_document,
+        appendix: model_arm.appendix,
         price_targets: engine_output.price_targets.clone(),
-        model_target_rationale: interpretation.model_target_rationale,
         options_signal,
         risk_tier: engine_output.risk_tier,
         dead_money: engine_output.hurdle.state,
         low_confidence_grade: engine_output.low_confidence_grade,
         fund_class_label: engine_output.fund_class_label.clone(),
-        financial_summary: interpretation.financial_summary,
-        what_changed: interpretation.what_changed,
-        model_view: ModelView {
-            sub_scores: interpretation.model_sub_scores,
-            letter: engine::grade_from_subscores(&interpretation.model_sub_scores),
-            price_targets: interpretation.model_price_targets,
-            self_assessment: interpretation.self_assessment,
-        },
         engine_rung,
         authored_band_relation,
     }
-}
-
-/// The prior vintage's anchor-session close — the split-safe bridge every
-/// prior-basis price comparison crosses (`docs/portfolio-analysis.md` §Outcome
-/// learning), keyed on the vintage instant's ET session date (a UTC date prefix
-/// would key an evening-ET vintage to a session traded entirely after the prior
-/// read). `None` with no vintage or no bar inside the proximity bound — the
-/// comparison is excluded, never guessed.
-fn prior_anchor_close(d: &HoldingDossier) -> Option<f64> {
-    d.prior_vintage
-        .as_deref()
-        .and_then(crate::market_clock::et_date_of)
-        .and_then(|day| {
-            crate::portfolio::outcome::anchor_session_close(&d.financials.daily_closes, day)
-        })
-        .map(|b| b.value)
-        .filter(|c| *c > 0.0)
-}
-
-/// The move since the prior read on one basis — spot now over the prior
-/// vintage's anchor-session close, less one; `None` without a spot or an
-/// anchor (the realized data's price leg — `docs/portfolio-workflow.md` §Step 6b).
-fn realized_move_since_prior(d: &HoldingDossier) -> Option<f64> {
-    let spot = d.financials.current_price.filter(|s| s.is_finite() && *s > 0.0)?;
-    Some(spot / prior_anchor_close(d)? - 1.0)
 }
 
 /// Spot's authoring-time relation to the engine's twelve-month band — the stamp
@@ -5719,29 +3445,6 @@ pub(crate) fn authored_band_relation(
     }
 }
 
-/// A one-line description of the position's change since the prior run, for the
-/// interpretation prompt — the direction of the app-computed delta only
-/// (`docs/portfolio-analysis.md` §Holdings change tracking), so the model reasons
-/// over what the user did with the position — added to, trimmed, or left it —
-/// without the quantity or cost-basis figures. Since `portfolio-v38` those
-/// figures are account economics the intrinsic packet withholds (fix list 3.2,
-/// ruled 2026-09-16 — direction only): a paid-up-versus-averaged-down read is
-/// the account's history, not the issuer's condition.
-fn describe_position_change(delta: &PositionDelta) -> String {
-    match delta.change {
-        // "NEW" means new to this run history, nothing more — attempt 2's streams
-        // burned large reasoning shares re-litigating "NEW" as if it meant a
-        // fresh purchase (`docs/verification/2026-08-13-big-run-attempt-2.md`
-        // §Workstream 2).
-        PositionChange::New => "This is the first analysis of this holding.".to_string(),
-        PositionChange::Unchanged => {
-            "The position is unchanged since the prior analysis.".to_string()
-        }
-        PositionChange::Increased => "The position grew since the prior analysis.".to_string(),
-        PositionChange::Decreased => "The position shrank since the prior analysis.".to_string(),
-    }
-}
-
 // ---- The deterministic stub analyst (offline) --------------------------------
 
 /// A deterministic, offline [`HoldingAnalyst`] used by `cargo test` and any
@@ -5750,253 +3453,81 @@ fn describe_position_change(delta: &PositionDelta) -> String {
 /// verdict with no model call.
 pub struct StubAnalyst;
 
-/// The stub's ledger draft: echo the prior ledger where one exists (statements and
-/// machine cores unchanged, so the carry path is exercised exactly as a live model
-/// keeping its conditions would), else author a deterministic initial ledger.
-pub(crate) fn stub_ledger_draft(prior: Option<&ThesisLedger>, symbol: &str, role_risk: bool) -> LedgerDraft {
-    if let Some(l) = prior {
-        let core_draft = |q: &QuantCore| QuantCoreDraft {
-            series: q.series.as_kebab().to_string(),
-            comparator: q.comparator.as_kebab().to_string(),
-            threshold: q.threshold,
-            margin: q.margin,
-        };
-        // A verbatim re-emission: a kept core comes back under its name (blank
-        // where it had none — never its render), a qualitative or refused
-        // condition under the statement the prior ledger showed.
-        let echo = |c: &LedgerCondition| match (&c.quant, &c.label) {
-            (Some(_), label) => label.clone().unwrap_or_default(),
-            (None, _) => c.statement.clone(),
-        };
-        let scenario = |kind: ScenarioKind| {
-            l.monitor
-                .iter()
-                .find(|m| m.scenario == kind)
-                .map(|m| ScenarioDraft {
-                    conditions: m.conditions.clone(),
-                    probability_pct: m.probability_pct,
-                })
-                .unwrap_or(ScenarioDraft {
-                    conditions: "unspecified".into(),
-                    probability_pct: 33.0,
-                })
-        };
-        return LedgerDraft {
-            thesis: l.current_thesis.clone(),
-            key_drivers: l
-                .key_drivers
-                .iter()
-                .map(|d| KeyDriverDraft {
-                    name: d.name.clone(),
-                    series: d.series.map(|s| s.as_kebab().to_string()),
-                })
-                .collect(),
-            bear: scenario(ScenarioKind::Bear),
-            base: scenario(ScenarioKind::Base),
-            bull: scenario(ScenarioKind::Bull),
-            what_must_improve: l.what_must_improve.clone(),
-            what_must_not_break: l.what_must_not_break.clone(),
-            falsifiers: l
-                .conditions
-                .iter()
-                .filter(|c| c.role == ConditionRole::Falsifier)
-                .map(|c| FalsifierDraft {
-                    statement: echo(c),
-                    quant: c.quant.as_ref().map(core_draft),
-                    technology_class: c.technology_class,
-                    tripped: false,
-                })
-                .collect(),
-            triggers: l
-                .conditions
-                .iter()
-                .filter(|c| c.role == ConditionRole::Trigger)
-                .map(|c| TriggerDraft {
-                    statement: echo(c),
-                    family: match c.trigger_family {
-                        Some(TriggerFamily::Add) => "add".into(),
-                        Some(TriggerFamily::Sell) => "sell".into(),
-                        _ => "trim".into(),
-                    },
-                    quant: c.quant.as_ref().map(core_draft),
-                    fired: false,
-                })
-                .collect(),
-        };
-    }
-    // The debut draft — one quantitative falsifier and trigger on always-computable
-    // series, so offline runs exercise the executable-condition path end to end.
-    let (falsifier, f_quant) = if role_risk {
-        (
-            "Cost drift".to_string(),
-            QuantCoreDraft {
-                series: "expense-ratio".into(),
-                comparator: "above".into(),
-                threshold: 0.0075,
-                margin: 0.0005,
-            },
-        )
-    } else {
-        (
-            "Deep drawdown".to_string(),
-            QuantCoreDraft {
-                series: "trailing-return".into(),
-                comparator: "below".into(),
-                threshold: -0.40,
-                margin: 0.02,
-            },
-        )
-    };
-    LedgerDraft {
-        thesis: format!("Hold {symbol} for its established role; evidence supports the standing position."),
-        key_drivers: vec![KeyDriverDraft {
-            name: if role_risk {
-                "expense drag".into()
-            } else {
-                "margin trajectory".into()
-            },
-            series: Some(if role_risk {
-                "expense-ratio".into()
-            } else {
-                "net-margin".into()
-            }),
-        }],
-        bear: ScenarioDraft {
-            conditions: "Fundamentals deteriorate materially".into(),
-            probability_pct: 25.0,
-        },
-        base: ScenarioDraft {
-            conditions: "The current trajectory holds".into(),
-            probability_pct: 50.0,
-        },
-        bull: ScenarioDraft {
-            conditions: "Growth re-accelerates".into(),
-            probability_pct: 25.0,
-        },
-        what_must_improve: "Revenue growth and margins".into(),
-        what_must_not_break: "The core franchise and balance sheet".into(),
-        falsifiers: vec![FalsifierDraft {
-            statement: falsifier,
-            quant: Some(f_quant),
-            technology_class: false,
-            tripped: false,
-        }],
-        triggers: vec![TriggerDraft {
-            statement: "Priced-in ceiling".into(),
-            family: "trim".into(),
-            quant: Some(QuantCoreDraft {
-                series: "price".into(),
-                comparator: "above".into(),
-                threshold: 150.0,
-                margin: 0.0,
-            }),
-            fired: false,
-        }],
-    }
-}
-
 impl HoldingAnalyst for StubAnalyst {
     // Research + distillation ride the trait's offline defaults.
 
-    fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+    fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
         let e = input.engine;
+        let symbol = &input.dossier.position.symbol;
         let conviction = match e.grade {
             crate::portfolio::Grade::A | crate::portfolio::Grade::B => Conviction::High,
             crate::portfolio::Grade::C => Conviction::Medium,
             _ => Conviction::Low,
         };
-        let read = |s: f64| {
-            if s >= 60.0 {
-                HorizonRead::Bullish
-            } else if s >= 40.0 {
-                HorizonRead::Neutral
-            } else {
-                HorizonRead::Bearish
-            }
+        // The stub's expected prices: the engine's base values deterministically
+        // nudged, so the two arms are distinguishable in tests and demo runs
+        // without being random; a horizon the engine carries no band for
+        // states no price — the appendix's null, as a document's silence would.
+        let nudged = |t: Option<&crate::portfolio::PriceTarget>, scale: f64| t.map(|t| t.base * scale);
+        let appendix = ThesisAppendix {
+            conviction: Some(conviction),
+            expected_price_3m: nudged(e.price_targets.three_month.as_ref(), 1.01),
+            expected_price_12m: nudged(e.price_targets.twelve_month.as_ref(), 1.05),
+            expected_price_3y: nudged(e.price_targets.three_year.as_ref(), 1.10),
         };
-        let what_changed = if input.dossier.prior_verdict.is_some() {
-            "Reaffirmed; no material change since the prior run.".to_string()
+        let price_words = |v: Option<f64>| v.map(|p| format!("${p:.2}")).unwrap_or_else(|| "no stated price".into());
+        let continuity = if input.dossier.prior_verdict.is_some() {
+            " Since the prior analysis the read is reaffirmed; nothing material changed."
         } else {
-            "new holding".to_string()
+            ""
         };
-        Ok(Interpretation {
-            conviction,
-            horizon_outlook: HorizonOutlook {
-                short: read(e.sub_scores.momentum),
-                mid: read(e.sub_scores.quality),
-                long: read((e.sub_scores.quality + e.sub_scores.valuation) / 2.0),
-            },
-            financial_summary: format!(
-                "Composite grade {} on quality {:.0} / valuation {:.0} / momentum {:.0} / risk {:.0}.",
-                e.grade.as_str(),
-                e.sub_scores.quality,
-                e.sub_scores.valuation,
-                e.sub_scores.momentum,
-                e.sub_scores.risk
-            ),
-            model_target_rationale: "Base case follows the engine's scenario midpoint.".to_string(),
-            what_changed,
-            // The stub re-affirms — no typed rows, matching the empty-audit
-            // re-affirmation contract.
-            what_changed_entries: Vec::new(),
-            ledger: stub_ledger_draft(
-                input.prior_ledger,
-                &input.dossier.position.symbol,
-                false,
-            ),
-            // The stub's model arm: the engine's values deterministically nudged,
-            // so the two arms are distinguishable in tests and demo runs without
-            // being random.
-            model_sub_scores: SubScores {
-                quality: (e.sub_scores.quality + 5.0).min(100.0),
-                valuation: (e.sub_scores.valuation + 5.0).min(100.0),
-                momentum: (e.sub_scores.momentum + 5.0).min(100.0),
-                risk: (e.sub_scores.risk + 5.0).min(100.0),
-            },
-            model_price_targets: {
-                let spot = input.dossier.financials.current_price.unwrap_or(100.0);
-                let mt = |t: Option<&PriceTarget>, scale: f64| ModelPriceTarget {
-                    base: t.map(|t| t.base).unwrap_or(spot) * scale,
-                    bear: t.map(|t| t.bear).unwrap_or(spot * 0.9) * scale,
-                    bull: t.map(|t| t.bull).unwrap_or(spot * 1.1) * scale,
-                };
-                ModelPriceTargets {
-                    one_month: mt(e.price_targets.three_month.as_ref(), 1.01),
-                    twelve_month: mt(e.price_targets.twelve_month.as_ref(), 1.05),
-                }
-            },
-            self_assessment: if input.dossier.prior_verdict.is_some() {
-                "Prior read broadly held; no basis to fault the baseline yet.".to_string()
-            } else {
-                "First read for this holding — no prior call to assess.".to_string()
-            },
-        })
+        let thesis_document = format!(
+            "Thesis: hold {symbol} for its established role; the computed read grades it {} on \
+             quality {:.0}, valuation {:.0}, momentum {:.0} and risk {:.0}, and the evidence \
+             supports the standing position.\n\n\
+             Key drivers: the margin trajectory, the revenue growth and the balance sheet.\n\n\
+             Scenarios: bear (25%) — fundamentals deteriorate materially; base (50%) — the \
+             current trajectory holds; bull (25%) — growth re-accelerates.\n\n\
+             Falsifiers and triggers: a trailing twelve-month net margin below 10% over two \
+             quarters would show the thesis wrong; trim on a price above twice the twelve-month \
+             base over a month; add on a price below the twelve-month bear case for a month.\n\n\
+             Expected price: three months {}, twelve months {}, three years {}; conviction {}.\n\n\
+             Summary: the financial read is the computed one, the prices follow the computed \
+             bands with a modest premium, and the conviction follows the grade.{continuity}",
+            e.grade.as_str(),
+            e.sub_scores.quality,
+            e.sub_scores.valuation,
+            e.sub_scores.momentum,
+            e.sub_scores.risk,
+            price_words(appendix.expected_price_3m),
+            price_words(appendix.expected_price_12m),
+            price_words(appendix.expected_price_3y),
+            conviction.as_str(),
+        );
+        Ok(PricedModelArm { thesis_document, appendix })
     }
 
-    fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
-        Ok(RoleRiskInterpretation {
-            role_summary: format!(
-                "{} supplying {} exposure; held for its portfolio role.",
-                input.readout.class_label,
-                input
-                    .readout
-                    .exposure_tilt
-                    .first()
-                    .map(|(l, _)| l.as_str())
-                    .unwrap_or("its mandated")
-            ),
-            what_changed: if input.dossier.prior_verdict.is_some() {
-                "Reaffirmed; no material change since the prior run.".to_string()
-            } else {
-                "new holding".to_string()
-            },
-            what_changed_entries: Vec::new(),
-            ledger: stub_ledger_draft(
-                input.prior_ledger,
-                &input.dossier.position.symbol,
-                true,
-            ),
-        })
+    fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String> {
+        let r = input.readout;
+        let continuity = if input.dossier.prior_verdict.is_some() {
+            " Since the prior analysis the role is reaffirmed; nothing material changed."
+        } else {
+            ""
+        };
+        Ok(format!(
+            "Role: {} supplying {} exposure; held for its portfolio role.\n\n\
+             Risks: the expense drag, the structural path dependency where one applies, and \
+             the exposure drifting from its mandate.\n\n\
+             Triggers: trim on an expense ratio above 0.75% at the next published figure; sell \
+             on a mandate change.\n\n\
+             Summary: the vehicle supplies the exposure it exists to supply at its reported \
+             cost.{continuity}",
+            r.class_label,
+            r.exposure_tilt
+                .first()
+                .map(|(l, _)| l.as_str())
+                .unwrap_or("its mandated"),
+        ))
     }
 
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
@@ -6209,45 +3740,23 @@ fn ensure_nonempty_completion(
     Ok(())
 }
 
-/// Decode the interpretation call's completion: the schema-valid parse, then
-/// the model arm's declared numeric domain
-/// ([`crate::portfolio::validate_model_arm`]). Each failure carries the class the
-/// bounded retry-once classifies on — a parse failure `SchemaParse`, an
-/// off-domain value `ModelArmDomain` — so the re-issue fires for both and a
-/// hard failure's annotation names which one (the 2026-08-24 review's Codex
-/// I6, ruled 2026-08-29). Runs inside the retry closure, after
-/// [`ensure_nonempty_completion`], so an off-domain response gets exactly the
-/// one re-issue every content failure gets and never a second retry layer.
-/// Parse a schema-constrained response body, inserting the app-written debut
-/// continuity fields first on a debut (fix list 3.3, `portfolio-v38`): the
-/// debut grammar carries neither field, so the body is completed before it is
-/// typed, and a structural failure keeps the bounded-retry `SchemaParse` class.
-fn decode_response_body<T: serde::de::DeserializeOwned>(
-    what: &str,
-    content: &str,
-    debut: bool,
-) -> Result<T> {
-    let typed = || -> std::result::Result<T, serde_json::Error> {
-        let mut body: serde_json::Value = serde_json::from_str(content)?;
-        if debut {
-            crate::portfolio::complete_debut_response(&mut body);
-        }
-        serde_json::from_value(body)
-    };
-    typed()
+/// Decode the appendix message's completion: the schema-valid parse, then the
+/// declared domain ([`crate::portfolio::validate_appendix_domain`]). Each
+/// failure carries the class the bounded retry-once classifies on — a parse
+/// failure `SchemaParse`, an off-domain value `ModelArmDomain` — so the
+/// re-issue fires for both and a hard failure's annotation names which one.
+/// Runs inside the retry closure, after [`ensure_nonempty_completion`], so an
+/// off-domain response gets exactly the one re-issue every content failure
+/// gets and never a second retry layer; the object is rejected whole, never
+/// clamped.
+fn decode_appendix(stage: &str, content: &str) -> Result<ThesisAppendix> {
+    let appendix: ThesisAppendix = serde_json::from_str(content)
         .map_err(|e| anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse))
-        .with_context(|| format!("parsing {what} JSON: {}", body_snippet(content)))
-}
-
-fn decode_interpretation(stage: &str, content: &str, debut: bool) -> Result<Interpretation> {
-    let interpretation: Interpretation = decode_response_body("interpretation", content, debut)?;
-    crate::portfolio::validate_model_arm(
-        &interpretation.model_sub_scores,
-        &interpretation.model_price_targets,
-    )
-    .map_err(|e| anyhow::Error::new(e).context(crate::local_model::RetryClass::ModelArmDomain))
-    .with_context(|| stage.to_string())?;
-    Ok(interpretation)
+        .with_context(|| format!("parsing appendix JSON: {}", body_snippet(content)))?;
+    crate::portfolio::validate_appendix_domain(&appendix)
+        .map_err(|e| anyhow::Error::new(e).context(crate::local_model::RetryClass::ModelArmDomain))
+        .with_context(|| stage.to_string())?;
+    Ok(appendix)
 }
 
 // Per-stage context sizes (`docs/local-model-operations.md §The num_ctx trap`):
@@ -6281,6 +3790,9 @@ const KEEP_ALIVE_RESIDENT: i64 = -1;
 /// Thinking stages (interpretation, role-risk, construction): chains run tens
 /// of thousands of tokens and count against the same budget as the answer.
 pub(super) const NUM_PREDICT_THINKING: u32 = 65_536;
+/// The appendix message's ceiling: four short fields under the grammar, so a
+/// stop at this reservation is a runaway, never a legitimate transcription.
+pub(super) const NUM_PREDICT_APPENDIX: u32 = 1_024;
 /// Normal distillation ceiling. The response is a potentially wide structured
 /// object: combined narrative, per-topic claims and URLs, typed side channels,
 /// and bounded observation excerpts. A reservation-bound stop gets one larger
@@ -6411,42 +3923,63 @@ pub(super) fn research_turn_request(
     req
 }
 
-/// Build the priced-branch interpretation request: thinking on (composes with the
-/// grammar-constrained `format`), thinking sampling, interpret-sized context.
-pub(super) fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatRequest {
+/// Build the thesis-document request (`docs/portfolio-workflow.md` §Step 6f):
+/// thinking on, **no grammar** — the document is free prose — thinking
+/// sampling, the interpret-sized context.
+pub(super) fn thesis_request(reasoner_model: &str, input: &ThesisInput) -> ChatRequest {
     let is_fund = dossier_is_fund(input.dossier);
-    let debut = input.dossier.prior_verdict.is_none();
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
-            ChatMessage::system(interpretation_system_prompt(is_fund, debut)),
-            ChatMessage::user(interpretation_user_prompt(input)),
+            ChatMessage::system(thesis_system_prompt(is_fund)),
+            ChatMessage::user(thesis_user_prompt(input)),
         ],
     );
-    // The v7 unrestricted schema: full ladder, full conviction enum — the engine's
-    // own lean bars and any pre-profit ceiling render into the prompt as evidence,
-    // never as schema narrowing (`docs/portfolio-analysis.md` §The holding verdict,
-    // the two-arm contract). Scoped per call since `portfolio-v38`: the series
-    // enum to the vehicle kind, the shape to debut / continuity (fix list 3.3).
-    req.format_schema = Some(interpretation_schema(is_fund, debut));
+    req.format_schema = None;
     req.think = Some(true);
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
 }
 
-/// Build the `role_risk_only`-branch interpretation request — same mode wiring as
-/// the priced branch, reduced schema.
-pub(super) fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest {
-    let debut = input.dossier.prior_verdict.is_none();
+/// Build the appendix request — the same conversation's second message: the
+/// system and user messages of the thesis request, the document as the
+/// assistant's turn, then the transcription ask; **thinking off**, the
+/// appendix grammar ([`crate::portfolio::appendix_schema`]), non-thinking
+/// sampling at the shared context.
+pub(super) fn appendix_request(
+    reasoner_model: &str,
+    input: &ThesisInput,
+    thesis_document: &str,
+) -> ChatRequest {
+    let is_fund = dossier_is_fund(input.dossier);
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
-            ChatMessage::system(role_risk_system_prompt(debut)),
+            ChatMessage::system(thesis_system_prompt(is_fund)),
+            ChatMessage::user(thesis_user_prompt(input)),
+            ChatMessage::assistant(thesis_document.to_string()),
+            ChatMessage::user(appendix_user_prompt()),
+        ],
+    );
+    req.format_schema = Some(appendix_schema());
+    req.think = Some(false);
+    req.options = Some(options::non_thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_APPENDIX));
+    req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
+    req
+}
+
+/// Build the `role_risk_only` thesis-document request — the thesis request's
+/// wiring on the branch's message: thinking on, no grammar.
+pub(super) fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest {
+    let mut req = ChatRequest::new(
+        reasoner_model,
+        vec![
+            ChatMessage::system(role_risk_system_prompt()),
             ChatMessage::user(role_risk_user_prompt(input)),
         ],
     );
-    req.format_schema = Some(role_risk_interpretation_schema(debut));
+    req.format_schema = None;
     req.think = Some(true);
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
@@ -6657,17 +4190,19 @@ impl HoldingAnalyst for LocalAnalyst {
         distill::input_budget_chars(NUM_CTX_INTERPRET)
     }
 
-    fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
-        let mut req = interpret_request(&self.reasoner_model, input);
-        // Stream step-scoped: the structured body has no console value (it stays
-        // accumulated, never streamed), but the reasoning streams onto this
+    fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
+        let symbol = &input.dossier.position.symbol;
+        // Stream step-scoped: the reasoning and the document stream onto this
         // holding's own "Analyze {SYM}" step, so the tracker shows live thinking
         // instead of a minutes-long quiet stretch (the first live run's F8).
-        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
-        let stage = format!("interpret {}", input.dossier.position.symbol);
-        let debut = input.dossier.prior_verdict.is_none();
+        let step_key = crate::portfolio::holding_step_key(symbol);
+        // The thesis document: the retry gate re-issues the identical request
+        // once on a transient class (transport, an empty completion); a length
+        // stop is not re-issued.
+        let mut req = thesis_request(&self.reasoner_model, input);
+        let stage = format!("thesis {symbol}");
         req.stage = Some(stage.clone());
-        self.retry.run(self.client.progress(), &stage, || {
+        let thesis_document = self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
             let resp = self
                 .client
@@ -6675,15 +4210,32 @@ impl HoldingAnalyst for LocalAnalyst {
 
             ensure_not_output_limited(&stage, &req, &resp)?;
             ensure_nonempty_completion(&stage, &resp)?;
-            decode_interpretation(&stage, &resp.content, debut)
-        })
+            Ok(resp.content)
+        })?;
+        // The appendix: the same conversation's second message, decoded under
+        // the grammar and the declared domain; an off-domain or unparseable
+        // object re-issues the identical appendix message once under the same
+        // gate (`docs/portfolio-analysis.md` §The holding verdict).
+        let mut req = appendix_request(&self.reasoner_model, input, &thesis_document);
+        let stage = format!("appendix {symbol}");
+        req.stage = Some(stage.clone());
+        let appendix = self.retry.run(self.client.progress(), &stage, || {
+            self.record_model_call(&req);
+            let resp = self
+                .client
+                .chat_streaming(&req, StreamRole::Step(&step_key))?;
+
+            ensure_not_output_limited(&stage, &req, &resp)?;
+            ensure_nonempty_completion(&stage, &resp)?;
+            decode_appendix(&stage, &resp.content)
+        })?;
+        Ok(PricedModelArm { thesis_document, appendix })
     }
 
-    fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
+    fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String> {
         let mut req = role_risk_request(&self.reasoner_model, input);
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
-        let stage = format!("role-risk {}", input.dossier.position.symbol);
-        let debut = input.dossier.prior_verdict.is_none();
+        let stage = format!("thesis {}", input.dossier.position.symbol);
         req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
             self.record_model_call(&req);
@@ -6693,7 +4245,7 @@ impl HoldingAnalyst for LocalAnalyst {
 
             ensure_not_output_limited(&stage, &req, &resp)?;
             ensure_nonempty_completion(&stage, &resp)?;
-            decode_response_body("role/risk interpretation", &resp.content, debut)
+            Ok(resp.content)
         })
     }
 
@@ -6761,241 +4313,14 @@ pub(crate) mod tests {
         QuarterlyIncomeRow,
     };
     use crate::portfolio::fund::{FundContext, FundData, SectorPe};
-    use crate::portfolio::{AssetClass, InvestorProfile, OptionsSignal};
+    use crate::portfolio::{
+        AssetClass, InvestorProfile, OptionsSignal, PositionChange, PositionDelta, PriceTarget,
+    };
     use crate::portfolio::dossier::HouseView;
     use crate::schwab::Position;
     use std::collections::HashMap;
 
     // ---- The 6g what-changed attribution validator ----
-
-    fn wc_entry(
-        kind: crate::portfolio::ChangedValueKind,
-        attribution: crate::portfolio::ChangeAttribution,
-        evidence: &str,
-    ) -> crate::portfolio::WhatChangedEntry {
-        crate::portfolio::WhatChangedEntry {
-            kind,
-            detail: "conviction".into(),
-            old: "high".into(),
-            new: "medium".into(),
-            attribution,
-            evidence: evidence.into(),
-        }
-    }
-
-    /// The research-finding delta entries carry the distillation's ledger tie —
-    /// rendered by statement (the id app-owned) — for fresh claims only; a
-    /// cached claim never becomes an entry, and a tie to a condition no longer
-    /// on the ledger renders as no tie (2026-08-24 review F3).
-    #[test]
-    fn research_delta_entries_carry_the_ledger_tie_by_statement_for_fresh_claims() {
-        use crate::portfolio::research::{DistilledClaim, TopicDistillate};
-        let claim = |text: &str, cached: bool, tie: Option<&str>| DistilledClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-            claim: text.into(),
-            source_url: format!("https://x.example/{}", text.len()),
-            retrieved_at: "2026-08-26T00:00:00+00:00".into(),
-            cached,
-            related_condition_id: tie.map(str::to_string),
-        };
-        let distilled = DistilledResearch {
-            combined: "c".into(),
-            topic_layer: vec![TopicDistillate {
-                topic_key: "t".into(),
-                vintage: "2026-08-26T00:00:00+00:00".into(),
-                summary: "s".into(),
-                claims: vec![
-                    claim("fresh tied", false, Some("keep-1")),
-                    claim("cached tied", true, Some("keep-1")),
-                    claim("fresh untied", false, None),
-                    claim("fresh stale tie", false, Some("gone")),
-                ],
-            }],
-            unreconciled_topics: vec![],
-            forward_assumption: None,
-            leading_indicator: None,
-            forensic_event: None,
-            pre_profit_observations: vec![],
-            backfill: None,
-            shape: distill::DistillShape::SinglePass,
-            gaps: vec![],
-        };
-        let prior = prior_with_conditions();
-        let mut entries = Vec::new();
-        push_research_delta_entries(&mut entries, &distilled, Some(&prior));
-        assert_eq!(
-            entries.len(),
-            3,
-            "cached claims never become entries: {entries:?}"
-        );
-        assert_eq!(entries[0].id, "research-1");
-        assert!(
-            entries[0]
-                .label
-                .contains("— bears on ledger condition 'Trailing return collapses to -40%'"),
-            "{}",
-            entries[0].label
-        );
-        assert!(
-            !entries[0].label.contains("keep-1"),
-            "ids stay out: {}",
-            entries[0].label
-        );
-        assert_eq!(entries[0].related_condition_id.as_deref(), Some("keep-1"));
-        for e in &entries[1..] {
-            assert!(!e.label.contains("bears on"), "{}", e.label);
-            assert_eq!(e.related_condition_id, None, "{e:?}");
-        }
-        // A debut (no prior ledger) renders every finding untied.
-        let mut debut = Vec::new();
-        push_research_delta_entries(&mut debut, &distilled, None);
-        assert!(debut.iter().all(|e| e.related_condition_id.is_none()));
-    }
-
-    fn delta_fixture() -> Vec<crate::portfolio::DeltaEntry> {
-        vec![
-            crate::portfolio::DeltaEntry {
-                id: "D1".into(),
-                label: "spot: 100.00 -> 92.00".into(),
-                related_condition_id: None,
-            },
-            crate::portfolio::DeltaEntry {
-                id: "D2".into(),
-                label: "metric gross margin: 0.4200 -> 0.3800".into(),
-                related_condition_id: None,
-            },
-        ]
-    }
-
-    /// A resolvable external attribution survives as authored — by bracketed id,
-    /// by id with trailing prose, or by the entry's label verbatim.
-    #[test]
-    fn a_resolvable_external_attribution_is_kept() {
-        use crate::portfolio::{ChangeAttribution as CA, ChangedValueKind as CK};
-        for evidence in ["D2", "[D2]", "d2 — gross margin fell", "metric gross margin: 0.4200 -> 0.3800"] {
-            let audit = validate_what_changed(
-                &[wc_entry(CK::Conviction, CA::CompanyInformation, evidence)],
-                delta_fixture(),
-            );
-            assert_eq!(audit.entries[0].attribution, CA::CompanyInformation, "{evidence}");
-            assert!(audit.downgrades.is_empty(), "{evidence}");
-            assert_eq!(audit.self_correction_count, 0);
-            assert!(!audit.thesis_changed, "a value-level external move is input movement");
-        }
-    }
-
-    /// The laundering guard: an external claim resolving to no input-delta entry
-    /// is downgraded to self-correction with a logged reason — never kept, never
-    /// dropped.
-    #[test]
-    fn an_unresolvable_external_attribution_downgrades_to_self_correction() {
-        use crate::portfolio::{ChangeAttribution as CA, ChangedValueKind as CK};
-        let audit = validate_what_changed(
-            &[wc_entry(CK::Conviction, CA::MarketData, "the market repriced growth")],
-            delta_fixture(),
-        );
-        assert_eq!(audit.entries[0].attribution, CA::SelfCorrection);
-        assert_eq!(audit.downgrades.len(), 1);
-        assert!(audit.downgrades[0].contains("downgraded to self-correction"));
-        assert_eq!(audit.self_correction_count, 1);
-        assert!(audit.thesis_changed, "a self-correction counts as a thesis change");
-    }
-
-    /// The rendered section carries every bracketed id plus the attribution rules;
-    /// with no entries (a debut) it renders nothing at all.
-    #[test]
-    fn input_delta_section_renders_ids_and_rules_even_without_external_changes() {
-        let s = input_delta_prompt_section(&delta_fixture());
-        assert!(s.starts_with("\nCHANGES SINCE THE PRIOR ANALYSIS (each with an id)\n"), "{s}");
-        assert!(s.contains("[D1] spot: 100.00 -> 92.00"), "{s}");
-        assert!(s.contains("[D2] metric gross margin"), "{s}");
-        // The section is data only (`portfolio-v40`): the attribution rules live
-        // in each message's Part 2 items, never beside the ids.
-        for narration in ["downgraded", "self-correction", "WHAT_CHANGED_ENTRIES"] {
-            assert!(!s.contains(narration), "`{narration}` leaked: {s}");
-        }
-        let empty = input_delta_prompt_section(&[]);
-        assert!(empty.contains("None recorded.\n"), "{empty}");
-        assert!(!empty.contains("No input-delta entries are available"), "{empty}");
-        // The role/risk message states the same requirements as its own Part 2
-        // items, with this branch's detail gloss and no parameter sentence
-        // (`portfolio-v42`).
-        let rules = what_changed_task_items(3, "the role read, the scenario or the condition", false);
-        assert!(
-            rules.contains("\n3. what_changed_entries — one row per intrinsic value that moved")
-                && rules.contains("detail (which one — the role read, the scenario or the condition)"),
-            "{rules}"
-        );
-        assert!(!rules.contains("downgraded") && !rules.contains("parameter change"), "{rules}");
-        assert!(rules.contains("never a rephrasing"), "{rules}");
-        assert!(rules.contains("\n   what_changed — one sentence summarizing those rows.\n"), "{rules}");
-        // The priced continuity item states the same requirements on the output,
-        // citing the section by name, with no validator narration; a debut
-        // requests no rows at all.
-        let contract = LedgerSeriesContract::build(false, None, None);
-        let task = interpretation_task_section(&contract, false, false, false, true);
-        assert!(task.contains("\n6. what_changed_entries — one row per intrinsic value that moved"), "{task}");
-        assert!(task.contains("kind (which kind of value, from the alternatives in the shape)"), "{task}");
-        assert!(task.contains("cites one bracketed id from CHANGES SINCE THE PRIOR ANALYSIS"), "{task}");
-        assert!(task.contains("never a rephrasing"), "{task}");
-        assert!(task.contains("No row repeats another, and no row has old equal to new."), "{task}");
-        for narration in ["downgraded", "validator", "logged reason", "WHAT_CHANGED_ENTRIES"] {
-            assert!(!task.contains(narration), "`{narration}` leaked: {task}");
-        }
-        let debut = interpretation_task_section(&contract, false, false, true, false);
-        assert!(!debut.contains("what_changed"), "{debut}");
-    }
-
-    /// The standing-thesis signal: a resolved external thesis-level row trips it;
-    /// an authored self-correction needs no evidence and counts.
-    #[test]
-    fn thesis_scoped_rows_and_self_corrections_set_the_thesis_flag() {
-        use crate::portfolio::{ChangeAttribution as CA, ChangedValueKind as CK};
-        let audit = validate_what_changed(
-            &[wc_entry(CK::Thesis, CA::CompanyInformation, "D2")],
-            delta_fixture(),
-        );
-        assert!(audit.thesis_changed);
-        assert_eq!(audit.self_correction_count, 0);
-
-        let audit = validate_what_changed(
-            &[wc_entry(CK::SubScore, CA::SelfCorrection, "")],
-            delta_fixture(),
-        );
-        assert!(audit.thesis_changed);
-        assert_eq!(audit.self_correction_count, 1);
-        assert!(audit.downgrades.is_empty(), "an authored self-correction is no downgrade");
-    }
-
-    /// The structural drops — deterministic string checks, no appraisal of the
-    /// model's prose: a row claiming no movement (old == new after trim) and an
-    /// exact duplicate of a kept row are dropped with logged reasons, so
-    /// neither opens a thesis-change episode nor inflates the self-correction
-    /// count.
-    #[test]
-    fn no_move_and_duplicate_rows_are_dropped() {
-        use crate::portfolio::{ChangeAttribution as CA, ChangedValueKind as CK};
-        // An A -> A thesis row with valid evidence: dropped, no thesis change.
-        let mut same = wc_entry(CK::Thesis, CA::CompanyInformation, "D2");
-        same.old = "expansion thesis".into();
-        same.new = " expansion thesis ".into();
-        let audit = validate_what_changed(&[same], delta_fixture());
-        assert!(audit.entries.is_empty());
-        assert_eq!(audit.downgrades.len(), 1);
-        assert!(audit.downgrades[0].contains("no movement"), "{}", audit.downgrades[0]);
-        assert!(!audit.thesis_changed);
-        assert_eq!(audit.self_correction_count, 0);
-
-        // Two identical self-correction rows: one counted, one dropped.
-        let row = wc_entry(CK::SubScore, CA::SelfCorrection, "");
-        let audit = validate_what_changed(&[row.clone(), row], delta_fixture());
-        assert_eq!(audit.entries.len(), 1);
-        assert_eq!(audit.self_correction_count, 1);
-        assert_eq!(audit.downgrades.len(), 1);
-        assert!(audit.downgrades[0].contains("duplicate"), "{}", audit.downgrades[0]);
-        assert!(audit.thesis_changed, "the surviving self-correction still counts");
-    }
 
     #[test]
     fn local_analyst_records_and_drains_failed_physical_attempts() {
@@ -7080,6 +4405,13 @@ pub(crate) mod tests {
             market_value: 19_500.0,
             current_price: Some(195.0),
         }
+    }
+
+    /// The shared rate anchors as a static reference — a struct literal's
+    /// field can borrow it without a binding.
+    pub(crate) fn rates_static() -> &'static RateAnchors {
+        static RATES: std::sync::OnceLock<RateAnchors> = std::sync::OnceLock::new();
+        RATES.get_or_init(rates)
     }
 
     pub(crate) fn rates() -> RateAnchors {
@@ -7173,28 +4505,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A minimal ledger for the action packet's THESIS and SCENARIOS sections.
-    pub(crate) fn test_ledger() -> ThesisLedger {
-        ThesisLedger {
-            branch: LedgerBranch::Priced,
-            original_thesis: "A standing thesis.".into(),
-            current_thesis: "A standing thesis.".into(),
-            key_drivers: vec![],
-            monitor: [(ScenarioKind::Bear, 25.0), (ScenarioKind::Base, 50.0), (ScenarioKind::Bull, 25.0)]
-                .into_iter()
-                .map(|(scenario, probability_pct)| MonitorScenario {
-                    scenario,
-                    conditions: format!("{} case conditions.", scenario.as_str()),
-                    probability_pct,
-                    engine_target: None,
-                })
-                .collect(),
-            what_must_improve: String::new(),
-            what_must_not_break: String::new(),
-            conditions: vec![],
-        }
-    }
-
     pub(crate) fn dossier(asset_class: AssetClass, financials: CompanyFinancials) -> HoldingDossier {
         HoldingDossier {
             earnings_issuer: None,
@@ -7236,11 +4546,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_technology_topic_fires_from_the_pre_flag_or_a_standing_falsifier_and_only_once() {
-        // A fresh news seed beside a standing falsifier fires the topic from
-        // the falsifier line alone — the seed is a lead in the pass brief,
-        // never a trigger of its own (retired 2026-08-29, Codex I15) — and no
-        // combination of the triggers adds the topic twice.
+    fn the_technology_topic_fires_from_the_pre_flag_alone_and_only_once() {
+        // The pre-flag is the topic's only trigger (`docs/portfolio-analysis.md`
+        // §The per-holding pipeline): a fresh news seed fires nothing on its
+        // own — the seed is a lead in the pass brief — and the fired flag adds
+        // the topic once.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.news_seeds = vec![research::ResearchSeed {
             id: "seed-1".into(),
@@ -7259,22 +4569,7 @@ pub(crate) mod tests {
         assert_eq!(tech_topics(research::AgendaTriggers::default()), 0);
         assert_eq!(
             tech_topics(research::AgendaTriggers {
-                tech_ledger_falsifier: true,
-                ..Default::default()
-            }),
-            1
-        );
-        assert_eq!(
-            tech_topics(research::AgendaTriggers {
                 tech_pre_flag_fired: true,
-                ..Default::default()
-            }),
-            1
-        );
-        assert_eq!(
-            tech_topics(research::AgendaTriggers {
-                tech_pre_flag_fired: true,
-                tech_ledger_falsifier: true,
                 ..Default::default()
             }),
             1
@@ -7282,11 +4577,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn slice2_fund_agenda_excludes_technology_even_with_both_triggers() {
+    fn slice2_fund_agenda_excludes_technology_even_with_the_pre_flag() {
         let d = fund_dossier(us_equity_fund());
         let agenda = research::build_agenda(&d, &research::AgendaTriggers {
             tech_pre_flag_fired: true,
-            tech_ledger_falsifier: true,
             ..Default::default()
         });
         assert!(!agenda.iter().any(|t| t.key == "technology-event"));
@@ -7568,10 +4862,10 @@ pub(crate) mod tests {
     /// be checked against the calls that actually ran.
     struct TieredStub;
     impl HoldingAnalyst for TieredStub {
-        fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+        fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
             StubAnalyst.interpret(input)
         }
-        fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
+        fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String> {
             StubAnalyst.interpret_role_risk(input)
         }
         fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
@@ -7609,11 +4903,11 @@ pub(crate) mod tests {
             self.called("fast-tier");
             Ok(distill::offline_consolidate(inputs))
         }
-        fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+        fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
             self.called("reasoner");
             StubAnalyst.interpret(input)
         }
-        fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
+        fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String> {
             self.called("reasoner");
             StubAnalyst.interpret_role_risk(input)
         }
@@ -7717,10 +5011,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rate_anchors_are_a_source_only_where_a_priced_output_computed_from_them() {
-        // The FRED anchors feed the scenario targets and the hurdle read — priced
-        // outputs only. The role/risk branch and every earlier exit compute nothing
-        // from them, so their audits must not name them (M3, 2026-08-18).
+    fn rate_anchors_are_a_source_only_where_a_prompt_or_a_priced_output_read_them() {
+        // The FRED anchors feed the scenario targets and the hurdle read, and both
+        // thesis-document messages state the prints under FETCHED VALUES — so the
+        // priced paths and the role/risk branch name the source. Every earlier
+        // exit renders no prompt and computes nothing from them, so its audit must
+        // not name them (M3, 2026-08-18).
         let sources = |d: &HoldingDossier| {
             analyze_holding(&StubAnalyst, d, &rates(), "2026-08-03")
                 .unwrap()
@@ -7732,7 +5028,7 @@ pub(crate) mod tests {
         assert!(names_fred(&sources(&dossier(AssetClass::Stock, strong_financials()))));
         assert!(names_fred(&sources(&fund_dossier(us_equity_fund()))));
 
-        assert!(!names_fred(&sources(&fund_dossier(bond_fund()))), "role/risk");
+        assert!(names_fred(&sources(&fund_dossier(bond_fund()))), "role/risk: the message states the prints");
         assert!(!names_fred(&sources(&dossier(AssetClass::Cash, strong_financials()))));
         let mut floored = dossier(AssetClass::Stock, strong_financials());
         floored.financials.current_price = None;
@@ -7789,13 +5085,13 @@ pub(crate) mod tests {
         // rest of the model stage — on both branches' action calls.
         struct EmptyRationaleStub;
         impl HoldingAnalyst for EmptyRationaleStub {
-            fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+            fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
                 StubAnalyst.interpret(input)
             }
             fn interpret_role_risk(
                 &self,
                 input: &RoleRiskInput,
-            ) -> Result<RoleRiskInterpretation> {
+            ) -> Result<String> {
                 StubAnalyst.interpret_role_risk(input)
             }
             fn decide_action(
@@ -7866,11 +5162,11 @@ pub(crate) mod tests {
                         | crate::portfolio::Grade::B
                         | crate::portfolio::Grade::C
                 ));
-                // The debut line is the app's since portfolio-v38 (fix list
-                // 3.3, F6), whatever the analyst authored.
-                assert_eq!(g.what_changed, crate::portfolio::DEBUT_WHAT_CHANGED);
-                // The model's own-target explanation is carried through, not dropped.
-                assert!(!g.model_target_rationale.is_empty());
+                // The model arm persists exactly as authored: the document as
+                // text and the appendix the stub transcribed from it.
+                assert!(g.thesis_document.starts_with("Thesis: "), "{}", g.thesis_document);
+                assert!(g.appendix.conviction.is_some());
+                assert!(g.appendix.expected_price_12m.is_some());
                 // The options signal rides on the verdict but never entered the grade.
                 assert!(g.options_signal.put_call_volume.is_some());
                 // The new engine reads persist on the priced branch.
@@ -7959,75 +5255,11 @@ pub(crate) mod tests {
                 // The per-holding action call authors the branch's action; the
                 // stub's role/risk decision is hold.
                 assert_eq!(r.action, Action::Hold);
-                assert!(!r.role_summary.is_empty());
+                assert!(r.thesis_document.starts_with("Role: "), "{}", r.thesis_document);
                 assert!(!r.evidence_gaps.is_empty());
             }
             other => panic!("expected role_risk_only, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn role_risk_full_pass_evaluates_the_price_derived_ledger_series() {
-        // The full role-risk pass must cover the SAME fund-computable surface
-        // the quick check evaluates (expense ratio + the price-derived legs) —
-        // with metrics carrying only the expense ratio, a sweep-confirmed
-        // trailing-return crossing read unevaluable here, was never
-        // acknowledged, and re-raised on every later sweep after the
-        // successful pass cleared the store.
-        let mut bond = us_equity_fund();
-        bond.symbol = "BND".into();
-        bond.asset_class = Some("Fixed Income".into());
-        bond.sector_weights = vec![];
-        let (mut prior, _) = analyze_holding(
-            &StubAnalyst,
-            &fund_dossier(bond.clone()),
-            &rates(),
-            "2026-08-03",
-        )
-        .unwrap();
-        // Re-point the prior ledger's falsifier at a price-derived series.
-        let ledger = prior.thesis_ledger.as_mut().expect("role-risk ledger");
-        let falsifier = ledger
-            .conditions
-            .iter_mut()
-            .find(|c| c.role == ConditionRole::Falsifier)
-            .expect("a falsifier");
-        falsifier.quant = Some(QuantCore {
-            series: engine::LedgerSeries::TrailingReturn,
-            comparator: LedgerComparator::Below,
-            threshold: -0.40,
-            margin: 0.02,
-        });
-        // The sentence must mean what the core says, or 6g downgrades the
-        // re-emitted condition (the agreement checks, 2026-09-16).
-        falsifier.statement =
-            "The holding's price falls more than 40% below its current level".into();
-        let mut d = fund_dossier(bond);
-        d.prior_verdict = Some(prior);
-        let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
-        let la = audit.ledger_audit.expect("ledger audit");
-        assert!(
-            !la.unevaluable.iter().any(|u| u.contains("trailing")),
-            "the price-derived series must evaluate on the full role-risk pass: {:?}",
-            la.unevaluable
-        );
-        // The evaluated state keys to the marks' trading day, proving the leg
-        // actually resolved rather than silently skipping.
-        let evaluated = verdict
-            .thesis_ledger
-            .as_ref()
-            .and_then(|l| {
-                l.conditions
-                    .iter()
-                    .find(|c| {
-                        c.quant.as_ref().map(|q| q.series)
-                            == Some(engine::LedgerSeries::TrailingReturn)
-                    })
-            })
-            .and_then(|c| c.eval_state.as_ref())
-            .expect("an evaluated state on the carried condition");
-        assert_eq!(evaluated.last_observation_id.as_deref(), Some("2026-07-15"));
     }
 
     #[test]
@@ -8080,75 +5312,6 @@ pub(crate) mod tests {
             }
             other => panic!("expected not-rated, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn six_g_downgrades_a_series_the_asset_class_never_computes() {
-        // A statement series on a fund validates as quantitative under a
-        // class-blind check, then types unevaluable on every sweep — the family
-        // never clears and every selective run badges the holding. The
-        // class-aware check downgrades it to qualitative at 6g instead; the
-        // expense ratio is the stock-side mirror.
-        let mut fund_draft = stub_ledger_draft(None, "VTI", false);
-        fund_draft.falsifiers = vec![FalsifierDraft {
-            statement: "net margin below 5%".into(),
-            quant: Some(QuantCoreDraft {
-                series: "net-margin".into(),
-                comparator: "below".into(),
-                threshold: 0.05,
-                margin: 0.0,
-            }),
-            technology_class: false,
-            tripped: false,
-        }];
-        fund_draft.triggers = vec![];
-        let (ledger, audit) =
-            validate_ledger_rewrite(&fund_draft, None, None, LedgerBranch::Priced, true, None, None);
-        let cond = ledger
-            .conditions
-            .iter()
-            .find(|c| c.statement.contains("net margin"))
-            .unwrap();
-        assert!(cond.quant.is_none(), "downgraded to qualitative");
-        assert!(
-            audit.downgraded.iter().any(|d| d.contains("fund-path")),
-            "{:?}",
-            audit.downgraded
-        );
-
-        let mut stock_draft = stub_ledger_draft(None, "AAPL", false);
-        stock_draft.falsifiers = vec![FalsifierDraft {
-            statement: "expense ratio above 40 bps".into(),
-            quant: Some(QuantCoreDraft {
-                series: "expense-ratio".into(),
-                comparator: "above".into(),
-                threshold: 0.004,
-                margin: 0.0,
-            }),
-            technology_class: false,
-            tripped: false,
-        }];
-        stock_draft.triggers = vec![];
-        let (ledger, audit) = validate_ledger_rewrite(
-            &stock_draft,
-            None,
-            None,
-            LedgerBranch::Priced,
-            false,
-            None,
-            None,
-        );
-        let cond = ledger
-            .conditions
-            .iter()
-            .find(|c| c.statement.contains("expense ratio"))
-            .unwrap();
-        assert!(cond.quant.is_none(), "downgraded to qualitative");
-        assert!(
-            audit.downgraded.iter().any(|d| d.contains("stock-path")),
-            "{:?}",
-            audit.downgraded
-        );
     }
 
     #[test]
@@ -8205,7 +5368,7 @@ pub(crate) mod tests {
         });
         let (verdict, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
         assert!(
-            matches!(verdict.disposition, VerdictDisposition::InsufficientEvidence { reason } if reason.contains("unsupported financial units"))
+            matches!(verdict.disposition, VerdictDisposition::InsufficientEvidence { reason, .. } if reason.contains("unsupported financial units"))
         );
         assert!(audit.target_meta.is_none());
         assert!(audit.quick_basis.is_none());
@@ -8220,21 +5383,17 @@ pub(crate) mod tests {
         ));
         assert!(audit.target_meta.is_none());
         assert!(audit.quick_basis.is_none());
-        assert!(verdict
-            .thesis_ledger
-            .as_ref()
-            .unwrap()
-            .monitor
-            .iter()
-            .all(|m| m.engine_target.is_none()));
+        assert!(verdict.thesis_document().is_some_and(|doc| doc.starts_with("Role: ")));
+        assert_eq!(verdict.appendix(), None, "the role/risk branch carries no appendix");
     }
 
     #[test]
-    fn a_conflicting_identity_abstains_and_retains_the_prior_ledger() {
+    fn a_conflicting_identity_abstains_and_retains_the_prior_thesis_document() {
         use crate::portfolio::listing::ListingResolution;
         // The evidence floor's conflicting-identity arm: a wrong-issuer mapping
         // must never grade the wrong company's financials — and like every
-        // abstention, the standing ledger rides through unchanged.
+        // abstention, the prior thesis document rides through unrewritten,
+        // here from a prior that was itself an abstention carrying one.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.listing = Some(ListingResolution::Conflict {
             fmp_name: "Zenith Mining Corp".into(),
@@ -8243,8 +5402,10 @@ pub(crate) mod tests {
             symbol: "AAPL".into(),
             asset_class: AssetClass::Stock,
             position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
-            thesis_ledger: Some(prior_with_conditions()),
+            disposition: VerdictDisposition::InsufficientEvidence {
+                reason: "fixture".into(),
+                prior_thesis_document: Some("The prior document, verbatim.".into()),
+            },
             analyzed_at: None,
             action_source: Default::default(),
             side_reversed: false,
@@ -8252,7 +5413,7 @@ pub(crate) mod tests {
         let (verdict, _audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
         match &verdict.disposition {
-            VerdictDisposition::InsufficientEvidence { reason } => {
+            VerdictDisposition::InsufficientEvidence { reason, .. } => {
                 assert!(
                     reason.contains("conflicting identity") && reason.contains("Zenith"),
                     "{reason}"
@@ -8260,384 +5421,162 @@ pub(crate) mod tests {
             }
             other => panic!("expected insufficient-evidence, got {other:?}"),
         }
-        assert_eq!(verdict.thesis_ledger, Some(prior_with_conditions()));
+        assert_eq!(verdict.thesis_document(), Some("The prior document, verbatim."));
     }
 
-    #[test]
-    fn a_split_rebasis_normalizes_the_ingested_ledger_and_bridges_the_prior_reads() {
-        // The prior read was authored pre-4:1-split (values ×4 against today's
-        // retroactively re-based series). Its anchor bar 2026-06-30 closed at
-        // 760 old-basis; today's series carries 190 for the same session, so the
-        // bridge factor is exactly 0.25.
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        let mut ledger = prior_with_conditions();
-        ledger.conditions = vec![LedgerCondition {
-            condition_id: "px-1".into(),
-            role: ConditionRole::Falsifier,
-            trigger_family: None,
-            label: None,
-            statement: "price below $700".into(),
-            quant: Some(QuantCore {
-                series: engine::LedgerSeries::Price,
-                comparator: LedgerComparator::Below,
-                threshold: 700.0,
-                margin: 20.0,
-            }),
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: None,
-        }];
-        d.prior_verdict = Some(HoldingVerdict {
-            symbol: "AAPL".into(),
-            asset_class: AssetClass::Stock,
-            position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
-            thesis_ledger: Some(ledger),
-            analyzed_at: None,
-            action_source: Default::default(),
-            side_reversed: false,
-        });
-        d.prior_vintage = Some("2026-06-30T20:00:00Z".into());
-        d.prior_spot = Some(780.0);
-        d.prior_consensus_eps_periods = vec![engine::ConsensusEpsPeriod {
-            period_end: "2027-06-30".into(),
-            eps_mid: Some(26.0),
-            ntm_weight: 1.0,
-        }];
-        d.prior_authoring_close =
-            Some(DatedValue { date: "2026-06-30".into(), value: 760.0 });
-
-        let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
-        assert!(matches!(verdict.disposition, VerdictDisposition::Priced(_)));
-        // No fabricated crossing: unbridged, spot 195 sits far "below 700".
-        let la = audit.ledger_audit.as_ref().expect("ledger audit");
-        assert!(la.crossings.is_empty(), "no cross-basis crossing: {:?}", la.crossings);
-        // The persisted condition carries its id with the CONVERTED core — the
-        // stub re-emitted the normalized threshold verbatim, so the carry held
-        // (700 × 0.25 = 175; margin 20 × 0.25 = 5).
-        assert!(la.superseded.is_empty(), "conversion must not supersede: {:?}", la.superseded);
-        let persisted = verdict.thesis_ledger.as_ref().expect("ledger persists");
-        let px = persisted
-            .conditions
-            .iter()
-            .find(|c| c.condition_id == "px-1")
-            .expect("carried id survives the conversion");
-        let q = px.quant.as_ref().expect("still quantitative");
-        assert!((q.threshold - 175.0).abs() < 1e-9, "converted threshold: {}", q.threshold);
-        assert!((q.margin - 5.0).abs() < 1e-9, "converted margin: {}", q.margin);
-        // The sentence re-rendered from the converted core, once — a prior with
-        // no name echoes an empty name, never its render (`portfolio-v45`).
-        assert_eq!(
-            px.statement,
-            "Price below $175.00, confirmed by two consecutive daily closes; margin ±$5.00"
-        );
-        assert_eq!(px.label, None);
-        // This run stamps its own anchor: the newest settled bar strictly before
-        // the run session.
-        let anchor = audit.authoring_close.as_ref().expect("anchor stamped");
-        assert_eq!(anchor.date, "2026-07-15");
-        assert!((anchor.value - 195.0).abs() < 1e-9);
-
-        // The narrative fallback pace reads off the BRIDGED prior spot (780 ×
-        // 0.25 = 195 vs spot 195 → ~0), not a fabricated −75% collapse.
-        let mut fallback = dossier(AssetClass::Stock, strong_financials());
-        // EPS legs absent, revenue legs kept: the target ladder still prices off
-        // forward revenue per share while the narrative read drops to its
-        // operating-reality fallback — the one form whose pace leg reads
-        // `prior_spot` directly.
-        if let Some(c) = fallback.financials.consensus.as_mut() {
-            c.eps_low = None;
-            c.eps_mid = None;
-            c.eps_high = None;
+    /// A stub that keeps the thesis-document message the pipeline renders.
+    #[derive(Default)]
+    struct ThesisCapture(std::cell::RefCell<Option<String>>);
+    impl HoldingAnalyst for ThesisCapture {
+        fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
+            *self.0.borrow_mut() = Some(thesis_user_prompt(input));
+            StubAnalyst.interpret(input)
         }
-        fallback.prior_verdict = d.prior_verdict.clone();
-        fallback.prior_vintage = d.prior_vintage.clone();
-        fallback.prior_spot = d.prior_spot;
-        fallback.prior_authoring_close = d.prior_authoring_close.clone();
-        let (v2, a2) = analyze_holding(&StubAnalyst, &fallback, &rates(), "2026-08-03").unwrap();
-        let n = a2.narrative.as_ref().unwrap_or_else(|| {
-            panic!(
-                "fallback narrative reads; disposition {:?}; degraded: {:?}",
-                v2.disposition, a2.degraded_inputs
-            )
-        });
-        assert!(
-            n.expansion.abs() < 0.05,
-            "bridged pace is flat, not a split-shaped collapse: {}",
-            n.expansion
-        );
+        fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String> {
+            StubAnalyst.interpret_role_risk(input)
+        }
+        fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
+            StubAnalyst.decide_action(input)
+        }
+        fn fast_id(&self) -> String {
+            "fast-tier".into()
+        }
+        fn reasoner_id(&self) -> String {
+            "reasoner".into()
+        }
     }
 
+    /// Write → split and abstain → recover: an abstention retains the prior
+    /// document on the basis it was written and carries the document's own
+    /// anchor bar, so the next continuity run's bridge reads the split factor
+    /// and PRIOR THESIS carries the conversion line beside the pre-split
+    /// prices. A fresh stamp on the abstention would have read factor 1 there.
     #[test]
-    fn an_unresolvable_full_pass_bridge_gates_price_conditions_and_carries_the_anchor() {
-        // The prior anchor's bar date is absent from this run's series: the
-        // basis is unverifiable. The old-basis falsifier ("below 700") would
-        // false-cross at spot 195 if compared — it must be gated out whole, the
-        // degraded input recorded, and the prior anchor carried forward so a
-        // later pass stays fail-closed (and heals) instead of reading ~1.0.
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        let mut ledger = prior_with_conditions();
-        ledger.conditions = vec![LedgerCondition {
-            condition_id: "px-1".into(),
-            role: ConditionRole::Falsifier,
-            trigger_family: None,
-            label: None,
-            statement: "price below $700".into(),
-            quant: Some(QuantCore {
-                series: engine::LedgerSeries::Price,
-                comparator: LedgerComparator::Below,
-                threshold: 700.0,
-                margin: 0.0,
-            }),
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: None,
-        }];
-        d.prior_verdict = Some(HoldingVerdict {
-            symbol: "AAPL".into(),
-            asset_class: AssetClass::Stock,
-            position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
-            thesis_ledger: Some(ledger),
-            analyzed_at: None,
-            action_source: Default::default(),
-            side_reversed: false,
-        });
-        d.prior_vintage = Some("2026-06-15T20:00:00Z".into());
-        d.prior_spot = Some(780.0);
-        d.prior_authoring_close =
-            Some(DatedValue { date: "2026-06-15".into(), value: 760.0 });
-
-        let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
-        assert!(matches!(verdict.disposition, VerdictDisposition::Priced(_)));
-        let la = audit.ledger_audit.as_ref().expect("ledger audit");
-        assert!(la.crossings.is_empty(), "gated, never cross-basis: {:?}", la.crossings);
-        assert!(
-            audit
-                .degraded_inputs
-                .iter()
-                .any(|g| g.contains("split-bridge anchor")),
-            "the exclusion is a recorded degraded input: {:?}",
-            audit.degraded_inputs
-        );
-        // The prior anchor CARRIES — provenance preserved, so the carried
-        // old-basis threshold stays tied to its own basis rather than being
-        // certified fresh (never re-detectable) or dropped (fail-open next pass).
-        assert_eq!(
-            audit.authoring_close,
-            Some(DatedValue { date: "2026-06-15".into(), value: 760.0 }),
-            "the unresolvable pass carries the prior anchor forward"
-        );
-        // The carried-verbatim condition stays quantitative as stored, never
-        // half-converted (the stub re-emits it unchanged).
-        let persisted = verdict.thesis_ledger.as_ref().expect("ledger persists");
-        let px = persisted
-            .conditions
-            .iter()
-            .find(|c| c.condition_id == "px-1")
-            .expect("carried id survives");
-        assert_eq!(px.quant.as_ref().expect("still quantitative").threshold, 700.0);
-        // No fresh anchor-dependent comparator persists beneath the carried
-        // anchor: the quick basis is withheld and the monitor stamps no fresh
-        // engine targets, so nothing on this row can double-convert when the
-        // anchor later resolves.
-        assert!(
-            audit.quick_basis.is_none(),
-            "no fresh quick basis beneath a carried anchor: {:?}",
-            audit.quick_basis
-        );
-        assert!(
-            persisted.monitor.iter().all(|m| m.engine_target.is_none()),
-            "no fresh engine targets beneath a carried anchor: {:?}",
-            persisted.monitor
-        );
-
-        // Pass 2 fed from pass 1's ACTUAL persisted outputs (the prior spot
-        // comes from pass 1's quick basis, which was withheld), the bar still
-        // missing: STILL fail-closed — no crossing, the anchor still carried.
-        // The original F1 hole was exactly this pass reading a dropped anchor
-        // as factor 1.0.
-        let mut d2 = dossier(AssetClass::Stock, strong_financials());
-        d2.prior_verdict = Some(verdict.clone());
-        d2.prior_vintage = Some("2026-06-15T20:00:00Z".into());
-        d2.prior_spot = audit.quick_basis.as_ref().map(|b| b.spot);
-        d2.prior_authoring_close = audit.authoring_close.clone();
+    fn an_abstention_carries_the_retained_documents_anchor_across_a_split() {
+        use crate::portfolio::listing::ListingResolution;
+        // Run 1 writes the document on the pre-split basis and stamps its anchor.
+        let d1 = dossier(AssetClass::Stock, strong_financials());
+        let (v1, a1) = analyze_holding(&StubAnalyst, &d1, &rates(), "2026-08-03").unwrap();
+        let document = v1.thesis_document().expect("a priced document").to_string();
+        let anchor = a1.authoring_close.clone().expect("run 1 stamps its anchor");
+        // A 4-for-1 split re-bases the whole fetched series after run 1.
+        let mut rebased = strong_financials();
+        for c in &mut rebased.daily_closes {
+            c.value /= 4.0;
+        }
+        rebased.current_price = rebased.current_price.map(|p| p / 4.0);
+        // Run 2 abstains (a conflicting identity) over run 1's persisted row.
+        let mut d2 = dossier(AssetClass::Stock, rebased.clone());
+        d2.listing = Some(ListingResolution::Conflict { fmp_name: "Zenith Mining Corp".into() });
+        d2.prior_verdict = Some(v1);
+        d2.prior_vintage = Some("2026-08-03T20:00:00Z".into());
+        d2.prior_spot = a1.quick_basis.as_ref().map(|b| b.spot);
+        d2.prior_authoring_close = a1.authoring_close.clone();
         let (v2, a2) = analyze_holding(&StubAnalyst, &d2, &rates(), "2026-08-04").unwrap();
-        let la2 = a2.ledger_audit.as_ref().expect("ledger audit");
-        assert!(la2.crossings.is_empty(), "still gated: {:?}", la2.crossings);
+        assert_eq!(v2.thesis_document(), Some(document.as_str()), "the document is retained verbatim");
         assert_eq!(
-            a2.authoring_close.as_ref().map(|b| b.date.as_str()),
-            Some("2026-06-15"),
-            "the anchor keeps carrying while unresolvable"
+            a2.authoring_close.as_ref(),
+            Some(&anchor),
+            "the abstention carries the document's own anchor, never a fresh post-split stamp"
         );
-        let px2 = v2
-            .thesis_ledger
-            .as_ref()
-            .unwrap()
-            .conditions
-            .iter()
-            .find(|c| c.condition_id == "px-1")
-            .expect("carry holds");
-        assert_eq!(px2.quant.as_ref().unwrap().threshold, 700.0);
-
-        // Pass 3, the anchor's bar back in the fresh window (190 = 760 ÷ 4):
-        // the carried anchor resolves, the threshold converts under its carried
-        // id, and a fresh anchor re-stamps. Fail-closed healed into correct.
-        let mut fin3 = strong_financials();
-        fin3.daily_closes
-            .push(DatedValue { date: "2026-06-15".into(), value: 190.0 });
-        fin3.daily_closes.sort_by(|a, b| a.date.cmp(&b.date));
-        let mut d3 = dossier(AssetClass::Stock, fin3);
-        d3.prior_verdict = Some(v2.clone());
-        d3.prior_vintage = Some("2026-06-15T20:00:00Z".into());
+        // Run 3 prices again over the abstention's row (the job preserves the
+        // vintage across an abstention; the abstention persisted no quick basis).
+        let mut d3 = dossier(AssetClass::Stock, rebased);
+        d3.prior_verdict = Some(v2);
+        d3.prior_vintage = Some("2026-08-03T20:00:00Z".into());
         d3.prior_spot = a2.quick_basis.as_ref().map(|b| b.spot);
         d3.prior_authoring_close = a2.authoring_close.clone();
-        let (v3, a3) = analyze_holding(&StubAnalyst, &d3, &rates(), "2026-08-05").unwrap();
-        let px3 = v3
-            .thesis_ledger
-            .as_ref()
-            .unwrap()
-            .conditions
-            .iter()
-            .find(|c| c.condition_id == "px-1")
-            .expect("carried id survives the healing conversion");
+        let capture = ThesisCapture::default();
+        let (v3, a3) = analyze_holding(&capture, &d3, &rates(), "2026-08-05").unwrap();
+        assert!(matches!(v3.disposition, VerdictDisposition::Priced(_)), "{:?}", v3.disposition);
+        let message = capture.0.take().expect("the thesis message rendered");
         assert!(
-            (px3.quant.as_ref().unwrap().threshold - 175.0).abs() < 1e-9,
-            "healed conversion: {}",
-            px3.quant.as_ref().unwrap().threshold
+            message.contains(&format!(
+                "\nPRIOR THESIS (written 2026-08-03)\nA share split since this document was written \
+                 re-based the price series by a factor of 0.2500: multiply the prices it states by \
+                 that factor to read them on today's basis. The document is as written.\n{document}"
+            )),
+            "{message}"
         );
-        assert_eq!(
-            a3.authoring_close.as_ref().map(|b| b.date.as_str()),
-            Some("2026-07-15"),
-            "a resolvable pass re-stamps its own fresh anchor"
-        );
-        // The healed pass persists fresh comparators again, coherent with its
-        // fresh anchor.
-        assert!(a3.quick_basis.is_some(), "quick basis returns with a fresh anchor");
-        assert!(
-            v3.thesis_ledger
-                .as_ref()
-                .unwrap()
-                .monitor
-                .iter()
-                .all(|m| m.engine_target.is_some()),
-            "engine targets return with a fresh anchor"
-        );
+        // The recovering pass re-stamps its own fresh anchor on the new basis.
+        let fresh = a3.authoring_close.expect("run 3 stamps its anchor");
+        assert_eq!(fresh.date, anchor.date);
+        assert!((fresh.value - anchor.value / 4.0).abs() < 1e-9, "{fresh:?}");
     }
 
+    /// Write → unresolvable bridge → recover: a successful pass whose prior
+    /// anchor bar is missing from the fetched window records the excluded prior
+    /// comparisons as a degraded input, renders PRIOR THESIS under the
+    /// unverifiable line, and still stamps its OWN anchor with its quick basis
+    /// and band relation — its row is on its own basis — so the next pass, the
+    /// bar back in the window, bridges from that anchor at factor 1 and renders
+    /// no split line beside a document written on today's basis. (A carried
+    /// anchor there would have told the next pass to re-base already-adjusted
+    /// prices.)
     #[test]
-    fn an_unverified_basis_downgrades_a_reanchored_price_core_but_keeps_a_carried_one() {
-        // The supersede guard: with the bridge unresolvable, a RE-ANCHORED
-        // price core (authored against fresh prices) cannot persist under the
-        // carried prior-basis anchor — it downgrades, typed. A carried-verbatim
-        // core shares the carried anchor's basis and stays quantitative.
-        let prior = {
-            let mut l = prior_with_conditions();
-            l.conditions = vec![LedgerCondition {
-                condition_id: "px-1".into(),
-                role: ConditionRole::Falsifier,
-                trigger_family: None,
-                label: None,
-                statement: "price below $700".into(),
-                quant: Some(QuantCore {
-                    series: engine::LedgerSeries::Price,
-                    comparator: LedgerComparator::Below,
-                    threshold: 700.0,
-                    margin: 0.0,
-                }),
-                downgraded_reason: None,
-                technology_class: false,
-                tripped: false,
-                supersedes: None,
-                eval_state: None,
-            }];
-            l
-        };
-        let draft = |threshold: f64| LedgerDraft {
-            thesis: "t".into(),
-            key_drivers: vec![],
-            bear: ScenarioDraft { conditions: "b".into(), probability_pct: 30.0 },
-            base: ScenarioDraft { conditions: "m".into(), probability_pct: 40.0 },
-            bull: ScenarioDraft { conditions: "u".into(), probability_pct: 30.0 },
-            what_must_improve: String::new(),
-            what_must_not_break: String::new(),
-            falsifiers: vec![FalsifierDraft {
-                statement: format!("price below ${threshold}"),
-                quant: Some(QuantCoreDraft {
-                    series: "price".into(),
-                    comparator: "below".into(),
-                    threshold,
-                    margin: 0.0,
-                }),
-                technology_class: false,
-                tripped: false,
-            }],
-            triggers: vec![],
-        };
-        // Re-anchored core, basis unverified → downgraded with the typed reason.
-        let (ledger, audit) = validate_ledger_rewrite_with_research(
-            &draft(150.0),
-            Some(&prior),
-            None,
-            LedgerBranch::Priced,
-            false,
-            None,
-            None,
-            None,
-            &std::collections::HashSet::new(),
-            false,
-            crate::portfolio::ContinuityStamps::NONE,
-        );
-        let c = &ledger.conditions[0];
-        assert!(c.quant.is_none(), "re-anchored core must not persist: {c:?}");
+    fn an_unresolvable_pass_stamps_its_own_anchor_so_its_document_is_never_rebridged() {
+        // Run A on the pre-split basis stamps the 2026-07-15 bar.
+        let d1 = dossier(AssetClass::Stock, strong_financials());
+        let (v1, a1) = analyze_holding(&StubAnalyst, &d1, &rates(), "2026-08-03").unwrap();
+        let anchor_a = a1.authoring_close.clone().expect("run A stamps its anchor");
+        assert_eq!(anchor_a.date, "2026-07-15");
+        // Run B: a 4-for-1 split re-based the series, and the fetched window no
+        // longer carries A's anchor bar.
+        let mut rebased = strong_financials();
+        for c in &mut rebased.daily_closes {
+            c.value /= 4.0;
+        }
+        rebased.current_price = rebased.current_price.map(|p| p / 4.0);
+        let mut missing_bar = rebased.clone();
+        missing_bar.daily_closes.retain(|c| c.date != anchor_a.date);
+        let mut d2 = dossier(AssetClass::Stock, missing_bar);
+        d2.prior_verdict = Some(v1);
+        d2.prior_vintage = Some("2026-08-03T20:00:00Z".into());
+        d2.prior_spot = a1.quick_basis.as_ref().map(|b| b.spot);
+        d2.prior_authoring_close = Some(anchor_a.clone());
+        let capture = ThesisCapture::default();
+        let (v2, a2) = analyze_holding(&capture, &d2, &rates(), "2026-08-04").unwrap();
+        assert!(matches!(v2.disposition, VerdictDisposition::Priced(_)), "{:?}", v2.disposition);
         assert!(
-            c.downgraded_reason
-                .as_deref()
-                .is_some_and(|r| r.contains("unverifiable")),
-            "{c:?}"
+            a2.degraded_inputs.iter().any(|g| g.contains("split-bridge anchor")),
+            "the exclusion is a recorded degraded input: {:?}",
+            a2.degraded_inputs
         );
-        assert!(audit.downgraded.iter().any(|d| d.contains("unverifiable")));
-        // Carried-verbatim core, basis unverified → stays quantitative.
-        let (ledger, _) = validate_ledger_rewrite_with_research(
-            &draft(700.0),
-            Some(&prior),
-            None,
-            LedgerBranch::Priced,
-            false,
-            None,
-            None,
-            None,
-            &std::collections::HashSet::new(),
-            false,
-            crate::portfolio::ContinuityStamps::NONE,
+        let message = capture.0.take().expect("the thesis message rendered");
+        assert!(
+            message.contains(
+                "\nPRIOR THESIS (written 2026-08-03)\nWhether a share split re-based the price \
+                 series since this document was written could not be verified this run: the \
+                 close its prices were anchored to is missing from the fetched window. The \
+                 document is as written; its prices may sit on a pre-split basis.\nThesis: hold AAPL"
+            ),
+            "{message}"
         );
-        let c = &ledger.conditions[0];
-        assert_eq!(c.condition_id, "px-1", "carried id");
-        assert_eq!(c.quant.as_ref().expect("stays quantitative").threshold, 700.0);
-        // Same re-anchored core with a VERIFIED basis supersedes normally.
-        let (ledger, audit) = validate_ledger_rewrite_with_research(
-            &draft(150.0),
-            Some(&prior),
-            None,
-            LedgerBranch::Priced,
-            false,
-            None,
-            None,
-            None,
-            &std::collections::HashSet::new(),
-            true,
-            crate::portfolio::ContinuityStamps::NONE,
+        assert!(!message.contains("by a factor of"), "{message}");
+        // B's row is on its own basis: its own anchor, its basis, its band relation.
+        let anchor_b = a2.authoring_close.clone().expect("run B stamps its own anchor");
+        assert_ne!(anchor_b, anchor_a, "never the carried pre-split anchor");
+        assert_eq!(anchor_b.date, "2026-06-30", "the newest bar before the session");
+        assert!(a2.quick_basis.is_some(), "the basis persists beneath the pass's own anchor");
+        let VerdictDisposition::Priced(g2) = &v2.disposition else { unreachable!() };
+        assert!(g2.authored_band_relation.is_some(), "the band relation stamps too");
+        let doc_b = g2.thesis_document.clone();
+        // Run C: the bar back in the window, the series on B's basis — the
+        // bridge from B's anchor is 1 and B's document renders with no line.
+        let mut d3 = dossier(AssetClass::Stock, rebased);
+        d3.prior_verdict = Some(v2.clone());
+        d3.prior_vintage = Some("2026-08-04T20:00:00Z".into());
+        d3.prior_spot = a2.quick_basis.as_ref().map(|b| b.spot);
+        d3.prior_authoring_close = a2.authoring_close.clone();
+        let capture = ThesisCapture::default();
+        let (_v3, a3) = analyze_holding(&capture, &d3, &rates(), "2026-08-05").unwrap();
+        let message = capture.0.take().expect("the thesis message rendered");
+        assert!(message.contains(&format!("\nPRIOR THESIS (written 2026-08-04)\n{doc_b}")), "{message}");
+        assert!(
+            !message.contains("by a factor of") && !message.contains("could not be verified"),
+            "{message}"
         );
-        let c = &ledger.conditions[0];
-        assert_eq!(c.quant.as_ref().expect("quant supersede").threshold, 150.0);
-        assert_eq!(c.supersedes.as_deref(), Some("px-1"));
-        assert!(audit.superseded.len() == 1);
+        assert!(a3.degraded_inputs.iter().all(|g| !g.contains("split-bridge anchor")), "{:?}", a3.degraded_inputs);
     }
 
     #[test]
@@ -8684,174 +5623,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn position_change_line_states_the_direction_and_no_figure() {
-        // Direction only since portfolio-v38 (fix list 3.2, ruled 2026-09-16):
-        // the quantity and cost-basis moves are account economics the intrinsic
-        // packet withholds; the delta's direction still reaches the read
-        // (`docs/portfolio-analysis.md` §Holdings change tracking).
-        let increased = PositionDelta {
-            change: PositionChange::Increased,
-            prior_quantity: Some(100.0),
-            prior_cost_basis: Some(14_000.0),
-        };
-        let line = describe_position_change(&increased);
-        assert_eq!(line, "The position grew since the prior analysis.");
-        for figure in ["100", "140", "14000", "19500", "$", "cost basis", "quantity"] {
-            assert!(!line.contains(figure), "{figure} leaked: {line}");
-        }
-        let decreased = PositionDelta { change: PositionChange::Decreased, ..increased };
-        assert_eq!(
-            describe_position_change(&decreased),
-            "The position shrank since the prior analysis."
-        );
-        let unchanged = PositionDelta { change: PositionChange::Unchanged, ..increased };
-        assert_eq!(
-            describe_position_change(&unchanged),
-            "The position is unchanged since the prior analysis."
-        );
-        // The debut line must disarm the fresh-purchase misread: a first analysis
-        // says nothing about when the position was entered (`portfolio-v40`
-        // drops the NEW marker and its gloss for the plain sentence).
-        let debut = describe_position_change(&PositionDelta::new_position());
-        assert_eq!(debut, "This is the first analysis of this holding.");
-        for narration in ["NEW", "purchase", "cost basis", "may long predate", "prior verdict"] {
-            assert!(!debut.contains(narration), "`{narration}` leaked: {debut}");
-        }
-    }
-
-    #[test]
-    fn interpretation_prompt_carries_the_computed_numbers_in_two_parts_and_no_app_narration() {
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let input = InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "distilled findings",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        };
-        let user = interpretation_user_prompt(&input);
-        // One message in two marked parts (`portfolio-v40`): the inputs, then
-        // the task.
-        let part1 = user.find("======== PART 1: INPUTS ========").expect("part 1");
-        let part2 = user.find("======== PART 2: TASK ========").expect("part 2");
-        assert!(part1 < part2, "{user}");
-        assert_eq!(user.matches("======== PART").count(), 2, "{user}");
-        // The computed numbers, each section explained once and then its values.
-        assert!(
-            user.contains(
-                "\nCOMPUTED SCORES\nFour scores from 0 to 100, higher is better on every axis"
-            ),
-            "{user}"
-        );
-        assert!(
-            user.contains(&format!(
-                "quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Risk tier: {}.",
-                engine_output.sub_scores.quality,
-                engine_output.sub_scores.valuation,
-                engine_output.sub_scores.momentum,
-                engine_output.sub_scores.risk,
-                engine_output.risk_tier.as_str(),
-            )),
-            "{user}"
-        );
-        assert!(user.contains("\nCOMPUTED PRICE TARGETS (USD)\n- three-month: bear "), "{user}");
-        assert!(user.contains("\n- twelve-month: bear ") && user.contains("\n- three-year: bear "), "{user}");
-        assert!(user.contains(". Method: "), "{user}");
-        assert!(!user.contains("prorated to three months") && !user.contains("capped at 26%"), "{user}");
-        let scores = user.split("COMPUTED SCORES\n").nth(1).unwrap().split("COMPUTED PRICE TARGETS").next().unwrap();
-        assert!(!scores.contains("Grade") && !scores.contains("grade"), "{scores}");
-        assert!(user.contains("\nOPTIONS ACTIVITY\nput/call volume "), "{user}");
-        assert!(user.contains("\nRESEARCH SUMMARY\ndistilled findings\n"), "{user}");
-        // The task states the scale and the domain as requirements on the output.
-        assert!(
-            user.contains(
-                "2. model_sub_scores — your own quality, valuation, momentum and risk, as \
-                 integers on the scale defined in COMPUTED SCORES"
-            ),
-            "{user}"
-        );
-        assert!(user.contains("as positive prices in USD, bear ≤ base ≤ bull"), "{user}");
-        // The model is told nothing about the app: no arms, baselines, stages,
-        // validator behaviour, product names or stamps — and no weighing
-        // narrative (the F6 cross-check and the provenance / capital-efficiency
-        // lines stay in the action packet).
-        for narration in [
-            "ENGINE ",
-            "engine arm",
-            "model arm",
-            "MODEL ARM",
-            "TWO ARMS",
-            "baseline",
-            "deterministic",
-            "the app",
-            "validator",
-            "rejected",
-            "downgraded",
-            "this stage",
-            "never a gate",
-            "NOT a grade input",
-            "Market Signal",
-            "portfolio-v",
-            PROMPT_VERSION,
-            "TARGET PROVENANCE",
-            "dead money",
-            "CAPITAL-EFFICIENCY",
-            "hurdle",
-            "one input to weigh",
-            "Weigh the targets by this provenance",
-            "unrestricted",
-            "UNRESTRICTED",
-        ] {
-            assert!(!user.contains(narration), "`{narration}` leaked: {user}");
-        }
-        // Profile independence is input isolation, not instruction
-        // (`docs/portfolio-workflow.md` §Step 6f "deliberately absent"): the
-        // intrinsic prompt renders no investor profile; the profile enters at
-        // the per-holding action call only.
-        assert!(!user.contains("INVESTOR PROFILE"), "{user}");
-        // Interpretation authors no action under the tunnel-vision contract —
-        // the shape requests none, so no instruction has to forbid one.
-        assert!(!crate::portfolio::interpretation_keys(false).contains(&"action"));
-        assert!(!user.contains("portfolio action"), "{user}");
-
-        // The system prompt: the role, the output names and the two-part shape
-        // (`portfolio-v62`: the names first, then the frame) — nothing that
-        // describes the data or the app.
-        let system = interpretation_system_prompt(false, false);
-        assert_eq!(
-            system,
-            format!(
-                "You are an equity analyst producing an independent read of one holding for a \
-                 portfolio review. {} Part 1 of the message gives the inputs. Part 2 defines \
-                 those outputs and gives the shape to return.",
-                crate::portfolio::interpretation_response_contract(false)
-            )
-        );
-        for narration in [
-            "TWO ARMS",
-            "MODEL ARM",
-            "never outside them",
-            "profile-independent",
-            "Do NOT choose a portfolio action",
-            "Conviction means",
-            "THESIS LEDGER",
-            "never by itself a reason to exit",
-            "engine",
-            "baseline",
-        ] {
-            assert!(!system.contains(narration), "`{narration}` leaked: {system}");
-        }
-    }
-
-    #[test]
     fn commodity_context_renders_as_dated_levels_in_both_prompts() {
         use crate::portfolio::dossier::{CommodityGroup, CommodityPrint};
         let mut d = dossier(AssetClass::Stock, strong_financials());
@@ -8872,13 +5643,13 @@ pub(crate) mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "findings",
-            ledger_eval: None,
+            analysis: "findings",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -8903,13 +5674,13 @@ pub(crate) mod tests {
         }
         // A holding with no sector-matched prints renders no section.
         let bare = dossier(AssetClass::Stock, strong_financials());
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &bare,
-            prior_ledger: bare.prior_ledger(),
             engine: &engine_output,
-            distilled: "findings",
-            ledger_eval: None,
+            analysis: "findings",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -8932,13 +5703,13 @@ pub(crate) mod tests {
             benchmark: "XLK".into(),
         };
         let prompt = |f: Option<&engine::TechEventPreFlag>| {
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
+            thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
                 dossier: &d,
-                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
-                distilled: "findings",
-                ledger_eval: None,
+                analysis: "findings",
                 pre_profit: None,
                 tech_pre_flag: f,
                 narrative: None,
@@ -9131,13 +5902,13 @@ pub(crate) mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "findings",
-            ledger_eval: None,
+            analysis: "findings",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -9150,23 +5921,22 @@ pub(crate) mod tests {
         let mut fd = fund_dossier(us_equity_fund());
         fd.put_call_backdrop = Some(backdrop);
         let role = role_risk_user_prompt(&RoleRiskInput {
-            input_delta: &[],
+            rates: rates_static(),
+            prior_split: None,
             dossier: &fd,
-            prior_ledger: fd.prior_ledger(),
             readout: &RoleRiskReadout::default(),
-            ledger_eval: None,
-            distilled: "No research findings.",
+            analysis: "No research findings.",
         });
         assert!(role.contains(LINE), "{role}");
         // Absent, neither prompt claims it.
         let bare = dossier(AssetClass::Stock, strong_financials());
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &bare,
-            prior_ledger: bare.prior_ledger(),
             engine: &engine_output,
-            distilled: "findings",
-            ledger_eval: None,
+            analysis: "findings",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -9206,13 +5976,13 @@ pub(crate) mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "findings",
-            ledger_eval: None,
+            analysis: "findings",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -9246,10 +6016,8 @@ pub(crate) mod tests {
                 graded,
                 engine: &engine_output,
                 pre_profit: None,
-                ledger: v.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
-            changes: None,
             profile: &d.profile,
         });
         assert!(action.contains("\nFORENSIC FILINGS (8-K sweep)\nEvents found:\n"), "{action}");
@@ -9282,13 +6050,13 @@ pub(crate) mod tests {
             graded.engine_rung,
             engine::engine_action(engine_output.grade, &engine_output.hurdle, None, false)
         );
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &unknown,
-            prior_ledger: unknown.prior_ledger(),
             engine: &engine_output,
-            distilled: "findings",
-            ledger_eval: None,
+            analysis: "findings",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -9314,7 +6082,6 @@ pub(crate) mod tests {
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
         };
-        let ledger = v.thesis_ledger.as_ref().unwrap();
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -9323,9 +6090,8 @@ pub(crate) mod tests {
             engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
         let user = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::Priced { graded, engine: &engine_output, pre_profit: None, ledger },
+            subject: ActionSubject::Priced { graded, engine: &engine_output, pre_profit: None },
             engine_set: &engine_set,
-            changes: None,
             profile: &d.profile,
         });
         let system = action_system_prompt();
@@ -9339,14 +6105,10 @@ pub(crate) mod tests {
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").unwrap();
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
         for section in [
-            "SCORES\n",
-            "PRICE TARGETS (USD, with the move each implies from the current price)\n",
-            "TARGET RATIONALE (analyst)\n",
+            "SCORES (computed)\n",
+            "PRICE TARGETS (computed; USD, with the move each implies from the current price)\n",
             "CAPITAL EFFICIENCY\n",
-            "CONVICTION AND OUTLOOK (analyst)\n",
-            "FINANCIAL SUMMARY (analyst)\n",
-            "THESIS (analyst)\n",
-            "SCENARIOS (analyst)\n",
+            "VERDICT (analyst)\n",
             "SUPPORTED ACTIONS (computed)\n",
             "INVESTOR PROFILE\n",
         ] {
@@ -9358,9 +6120,9 @@ pub(crate) mod tests {
             part2.contains(
                 "\n1. action — one rung for this holding, from these inputs alone: \"sell-all\", \
                  \"trim\", \"hold\", \"add\" or \"add-aggressively\". The rung alone: no share count, \
-                 dollar amount or portfolio weight. Decide it from SCORES and PRICE TARGETS first, \
-                 refined by CAPITAL EFFICIENCY, CONVICTION AND OUTLOOK, THESIS, SCENARIOS, \
-                 SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits \
+                 dollar amount or portfolio weight. Decide it from VERDICT, SCORES and PRICE \
+                 TARGETS first, refined by CAPITAL EFFICIENCY, SUPPORTED ACTIONS and INVESTOR \
+                 PROFILE. An aggressive risk tolerance admits \
                  add-aggressively where the other inputs support it. Where even the bull case in \
                  CAPITAL EFFICIENCY misses the hurdle and the forward read is poor, lean toward \
                  realizing some or all of the position.\n"
@@ -9388,26 +6150,34 @@ pub(crate) mod tests {
         let spot = d.financials.current_price.unwrap();
         let leg = |v: f64| format!("{v:.2} ({:+.1}%)", (v / spot - 1.0) * 100.0);
         let engine_12 = graded.price_targets.twelve_month.as_ref().unwrap();
-        let model_12 = &graded.model_view.price_targets.twelve_month;
         assert!(
             user.contains(&format!(
-                "- computed twelve-month: bear {} / base {} / bull {}. Method: ",
+                "- twelve-month: bear {} / base {} / bull {}. Method: ",
                 leg(engine_12.bear), leg(engine_12.base), leg(engine_12.bull)
             )),
             "{user}"
         );
+        // The analyst's read is the VERDICT section: the appendix's conviction
+        // and expected prices with the move each implies, a null as none, then
+        // the thesis document verbatim.
+        let model_12 = graded.appendix.expected_price_12m.unwrap();
         assert!(
             user.contains(&format!(
-                "- analyst twelve-month: bear {} / base {} / bull {}.\n",
-                leg(model_12.bear), leg(model_12.base), leg(model_12.bull)
+                "\nVERDICT (analyst)\nConviction: {}. Expected share price (USD, with the move each \
+                 implies from the current price): three-month {}, twelve-month {}, three-year {}.\n\
+                 Thesis document:\n{}",
+                graded.appendix.conviction.unwrap().as_str(),
+                leg(graded.appendix.expected_price_3m.unwrap()),
+                leg(model_12),
+                leg(graded.appendix.expected_price_3y.unwrap()),
+                graded.thesis_document
             )),
             "{user}"
         );
-        assert_ne!(leg(engine_12.base), leg(model_12.base));
-        assert_eq!(user.matches("- computed three-month: ").count(), 1, "{user}");
-        assert_eq!(user.matches("- computed three-year: ").count(), 1, "{user}");
-        assert!(user.contains("- computed three-year: bear ") && user.contains("extrapolation"), "{user}");
-        assert_eq!(user.matches("- analyst one-month: ").count(), 1, "{user}");
+        assert_ne!(leg(engine_12.base), leg(model_12));
+        assert_eq!(user.matches("- three-month: ").count(), 1, "{user}");
+        assert_eq!(user.matches("- three-year: ").count(), 1, "{user}");
+        assert!(user.contains("- three-year: bear ") && user.contains("extrapolation"), "{user}");
         // The polarity gloss once and the grade's derivation once (2.3 and 3.11
         // as one data gloss); the set once as data with no permission sentence
         // (3.9, ruled 2026-09-17).
@@ -9415,7 +6185,7 @@ pub(crate) mod tests {
         assert!(
             user.contains(
                 "The grade is a letter derived from the quality, valuation and risk scores.\n\
-                 - computed: quality "
+                 quality "
             ),
             "{user}"
         );
@@ -9428,14 +6198,6 @@ pub(crate) mod tests {
             )),
             "{user}"
         );
-        // The ledger's thesis and scenarios, as validated this run.
-        assert!(user.contains(&format!("\nTHESIS (analyst)\n{}\n", ledger.current_thesis)), "{user}");
-        for s in &ledger.monitor {
-            assert!(
-                user.contains(&format!("- {} ({:.0}%): {}\n", s.scenario.as_str(), s.probability_pct, s.conditions)),
-                "{user}"
-            );
-        }
         // No app concept, no whole-book vocabulary, no account economics, and
         // — on a debut — no continuity section or firmness clause.
         for absent in [
@@ -9473,7 +6235,6 @@ pub(crate) mod tests {
         };
         let engine_set =
             engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
-        let ledger = v.thesis_ledger.as_ref().unwrap();
         let render = |d: &HoldingDossier| {
             action_user_prompt(&ActionInput {
                 dossier: d,
@@ -9481,10 +6242,8 @@ pub(crate) mod tests {
                     graded,
                     engine: &engine_output,
                     pre_profit: None,
-                    ledger,
                 },
                 engine_set: &engine_set,
-                changes: None,
                 profile: &d.profile,
             })
         };
@@ -9518,28 +6277,19 @@ pub(crate) mod tests {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let VerdictDisposition::Priced(graded) = &prior.disposition else { panic!("priced"); };
-        let ledger = prior.thesis_ledger.as_ref().unwrap();
         let mut engine = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(engine) => engine,
             _ => panic!("priced"),
         };
         d.prior_verdict = Some(prior.clone());
-        let changes = validate_what_changed(&[crate::portfolio::WhatChangedEntry {
-            kind: crate::portfolio::ChangedValueKind::Target,
-            detail: "twelve-month base".into(), old: "100".into(), new: "110".into(),
-            attribution: crate::portfolio::ChangeAttribution::CompanyInformation,
-            evidence: "D1".into(),
-        }], vec![crate::portfolio::DeltaEntry {
-            id: "D1".into(), label: "forward earnings changed".into(), related_condition_id: None,
-        }]);
         for state in [crate::portfolio::HurdleState::Fails, crate::portfolio::HurdleState::Clears,
             crate::portfolio::HurdleState::Indeterminate, crate::portfolio::HurdleState::Unscorable] {
             engine.hurdle.state = state;
             let mut low = graded.clone();
             low.low_confidence_grade = true;
             let prompt = action_user_prompt(&ActionInput {
-                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &engine, pre_profit: None, ledger },
-                engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
+                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &engine, pre_profit: None },
+                engine_set: &[Action::Hold], profile: &d.profile,
             });
             // CAPITAL EFFICIENCY as numbers (ruled 2026-09-17 off L19): the three
             // tested returns and the hurdle, no state word, no reach sentence; an
@@ -9572,86 +6322,26 @@ pub(crate) mod tests {
             assert_eq!(prompt.matches("Where even the bull case in CAPITAL EFFICIENCY misses the hurdle").count(), 1, "{prompt}");
             // The low-confidence letter is a gloss on the computed grade line.
             assert!(prompt.contains(&format!("Grade {}{LOW_CONFIDENCE_GLOSS}. Risk tier: ", low.grade.as_str())), "{prompt}");
-            // The continuity sections: the prior action as chosen, the prior read,
-            // the validated rows in words with their evidence ids, and the
-            // firmness clause in the task.
+            // The continuity section: the prior action as chosen, and the
+            // firmness clause in the task; the retired PRIOR ANALYSIS and
+            // CHANGES sections render nowhere — the thesis document carries
+            // the continuity read.
             assert!(prompt.contains(&format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", graded.action.as_kebab())), "{prompt}");
-            assert!(
-                prompt.contains(&format!(
-                    "\nPRIOR ANALYSIS\ncomputed grade {}; analyst grade {}; conviction {}; outlook short {}, mid {}, long {}.\nFinancial summary: {}\n",
-                    graded.grade.as_str(), graded.model_view.letter.as_str(), graded.conviction.as_str(),
-                    graded.horizon_outlook.short.as_str(), graded.horizon_outlook.mid.as_str(),
-                    graded.horizon_outlook.long.as_str(), graded.financial_summary
-                )),
-                "{prompt}"
-            );
-            assert!(
-                prompt.contains(&format!(
-                    "\nCHANGES SINCE THE PRIOR ANALYSIS\nSummary (analyst): {}\n- twelve-month base: 100 -> 110 (company information; evidence D1)\n[D1] forward earnings changed\n",
-                    low.what_changed
-                )),
-                "{prompt}"
-            );
-            assert!(prompt.contains("SCENARIOS, PRIOR ANALYSIS, CHANGES SINCE THE PRIOR ANALYSIS, SUPPORTED ACTIONS and INVESTOR PROFILE."), "{prompt}");
+            assert!(prompt.contains("Decide it from VERDICT, SCORES and PRICE TARGETS first, refined by CAPITAL EFFICIENCY, PRIOR ACTION, SUPPORTED ACTIONS and INVESTOR PROFILE."), "{prompt}");
             assert!(prompt.contains(" Move from PRIOR ACTION only where the inputs have materially changed since the prior analysis.\n"), "{prompt}");
-            for absent in ["Prior engine grade", "continuity baseline", "Validated change attribution is unavailable", "CompanyInformation"] {
+            for absent in ["PRIOR ANALYSIS", "CHANGES SINCE", "Prior engine grade", "continuity baseline", "CompanyInformation", "THESIS (analyst)", "SCENARIOS (analyst)"] {
                 assert!(!prompt.contains(absent), "`{absent}`: {prompt}");
             }
             // With no hurdle rate there is no assessment to render.
             let mut no_rate = engine.clone();
             no_rate.hurdle.hurdle_rate = None;
             let prompt = action_user_prompt(&ActionInput {
-                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &no_rate, pre_profit: None, ledger },
-                engine_set: &[Action::Hold], profile: &d.profile, changes: Some(&changes),
+                dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &no_rate, pre_profit: None },
+                engine_set: &[Action::Hold], profile: &d.profile,
             });
             assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment this run.\n"), "{prompt}");
             assert!(!prompt.contains("; hurdle "), "{prompt}");
         }
-        // Absent attribution says so and is never read as unchanged evidence.
-        let prompt = action_user_prompt(&ActionInput {
-            dossier: &d, subject: ActionSubject::Priced { graded, engine: &engine, pre_profit: None, ledger },
-            engine_set: &[Action::Hold], profile: &d.profile, changes: None,
-        });
-        assert!(prompt.contains("\nCHANGES SINCE THE PRIOR ANALYSIS\nSummary (analyst): "), "{prompt}");
-        assert!(prompt.contains("\nNo change attribution is available.\n"), "{prompt}");
-    }
-
-    #[test]
-    fn role_risk_ledger_observation_uses_daily_short_history_without_conversion() {
-        let mut d = dossier(AssetClass::Etf, strong_financials());
-        d.financials.price_history = vec![100.0, 101.0, 99.0, 102.0];
-        d.financials.daily_closes = vec![
-            DatedValue { date: "2025-01-01".into(), value: 20.0 },
-            DatedValue { date: "2026-01-01".into(), value: 100.0 },
-        ];
-        let readout = RoleRiskReadout { observable_risk: Some(0.417), ..Default::default() };
-        let prompt = role_risk_user_prompt(&RoleRiskInput {
-            dossier: &d, readout: &readout, prior_ledger: None, ledger_eval: None,
-            input_delta: &[], distilled: "research",
-        });
-        let daily = engine::compute_metrics(&d.financials).return_volatility.unwrap();
-        // The daily figure renders once, as the FINANCIAL METRICS line the
-        // ledger evaluates; the annualized read sits under RISK PROFILE with
-        // its unit gloss (`portfolio-v42`).
-        assert!(
-            prompt.contains(&format!(
-                "- daily realized return volatility [return-volatility]: {daily:.4} — a daily fraction"
-            )),
-            "{prompt}"
-        );
-        assert_eq!(prompt.matches("[return-volatility]").count(), 1, "{prompt}");
-        assert!(
-            prompt.contains(
-                "\nRISK PROFILE\nAnnualized realized volatility: 0.417 (a fraction; 0.14 means 14% a year).\n"
-            ),
-            "{prompt}"
-        );
-        for narration in ["short price-history window", "LEDGER OBSERVATION", "OBSERVABLE RISK", "deep history"] {
-            assert!(!prompt.contains(narration), "`{narration}` leaked: {prompt}");
-        }
-        assert!(prompt.contains("Price: $195.00 per share.\n"), "{prompt}");
-        assert!(!prompt.contains("Current price"), "{prompt}");
-        assert!((daily - 0.417 / 15.87).abs() > 0.001);
     }
 
     #[test]
@@ -9665,13 +6355,13 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         };
         let interp = |d: &HoldingDossier, narrative: Option<&engine::NarrativeRead>| {
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
+            thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
                 dossier: d,
-                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
-                distilled: "findings",
-                ledger_eval: None,
+                analysis: "findings",
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative,
@@ -9728,8 +6418,7 @@ pub(crate) mod tests {
             p.contains("NARRATIVE VS REALITY")
                 && p.contains("HYPE")
                 && p.contains(
-                    "Rule matched, capping the computed conviction: narrative-vs-reality hype: \
-                     test rule.\n"
+                    "Rule matched: narrative-vs-reality hype: test rule.\n"
                 ),
             "{p}"
         );
@@ -9750,139 +6439,12 @@ pub(crate) mod tests {
                 graded,
                 engine: &engine_output,
                 pre_profit: None,
-                ledger: v.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
-            changes: None,
             profile: &d.profile,
         });
         assert!(action.contains("SAME-UNDERLYING OPTION OVERLAY"), "{action}");
         assert!(!action.contains("SHORT INTEREST"), "positioning stays interpretation-side: {action}");
-    }
-
-    #[test]
-    fn action_prompt_tags_off_domain_analyst_legs_and_gaps_computed_legs_as_authored() {
-        // The render annotates, never reorders or drops (Codex I5, ruled
-        // 2026-08-28): a computed band the scenario function could not derive
-        // prints `(gap)`; an analyst leg outside the declared domain prints as
-        // authored with its tag in place of a price and move; a band authored
-        // bear above bull carries the inverted tag. I6 owns the upstream domain
-        // validation; this is the render's fail-closed read.
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
-        let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
-            panic!("expected a priced verdict");
-        };
-        let ledger = v.thesis_ledger.as_ref().unwrap();
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let engine_set =
-            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
-        let mut g = graded.clone();
-        g.price_targets.three_month = None;
-        g.model_view.price_targets.one_month = ModelPriceTarget { base: 100.0, bear: 120.0, bull: 90.0 };
-        g.model_view.price_targets.twelve_month = ModelPriceTarget { base: f64::NAN, bear: -5.0, bull: 0.0 };
-        let render = |d: &HoldingDossier, g: &GradedVerdict| {
-            action_user_prompt(&ActionInput {
-                dossier: d,
-                subject: ActionSubject::Priced { graded: g, engine: &engine_output, pre_profit: None, ledger },
-                engine_set: &engine_set,
-                changes: None,
-                profile: &d.profile,
-            })
-        };
-        let user = render(&d, &g);
-        // The engine's own rung rides the computed SCORES line as a computed
-        // read; the supported-actions line withholds the pick.
-        assert!(
-            user.contains(&format!(
-                "Risk tier: {}. Computed action: {}.\n",
-                g.risk_tier.as_str(),
-                g.engine_rung.as_kebab()
-            )),
-            "{user}"
-        );
-        let spot = d.financials.current_price.unwrap();
-        let leg = |v: f64| format!("{v:.2} ({:+.1}%)", (v / spot - 1.0) * 100.0);
-        assert!(user.contains("- computed three-month: (gap)\n"), "{user}");
-        // The computed twelve-month band is untouched and still renders with moves.
-        let engine_12 = g.price_targets.twelve_month.as_ref().unwrap();
-        assert!(user.contains(&format!("- computed twelve-month: bear {}", leg(engine_12.bear))), "{user}");
-        // Inverted: authored numbers, authored order, the tag beside them.
-        assert!(
-            user.contains(&format!(
-                "- analyst one-month: bear {} / base {} / bull {} (band inverted as authored).\n",
-                leg(120.0), leg(100.0), leg(90.0)
-            )),
-            "{user}"
-        );
-        // Off-scale: the raw authored value with its tag, no price or move.
-        assert!(
-            user.contains(
-                "- analyst twelve-month: bear -5 (off-scale as authored) / base NaN (off-scale as \
-                 authored) / bull 0 (off-scale as authored).\n"
-            ),
-            "{user}"
-        );
-        // Bear -5 sits below bull 0 on plain arithmetic, so the off-scale band
-        // carries no inverted tag here; the two tags are independent reads.
-        assert_eq!(user.matches("band inverted as authored").count(), 1, "{user}");
-        // A NaN leg compares false on the inverted predicate, so a NaN bear or
-        // bull is never tagged inverted; an in-domain bear above an off-scale
-        // bull carries both tags — annotate, never drop.
-        let mut both = g.clone();
-        both.model_view.price_targets.one_month = ModelPriceTarget { base: 100.0, bear: f64::NAN, bull: 90.0 };
-        both.model_view.price_targets.twelve_month = ModelPriceTarget { base: 100.0, bear: 120.0, bull: -5.0 };
-        let user3 = render(&d, &both);
-        assert!(
-            user3.contains(&format!(
-                "- analyst one-month: bear NaN (off-scale as authored) / base {} / bull {}.\n",
-                leg(100.0), leg(90.0)
-            )),
-            "{user3}"
-        );
-        assert!(
-            user3.contains(&format!(
-                "- analyst twelve-month: bear {} / base {} / bull -5 (off-scale as authored) (band inverted as authored).\n",
-                leg(120.0), leg(100.0)
-            )),
-            "{user3}"
-        );
-        assert_eq!(user3.matches("band inverted as authored").count(), 1, "{user3}");
-        // A finite, positive leg whose move from spot overflows the percentage
-        // arithmetic is off-scale too — the guard reads the derived move, so the
-        // message never carries `inf%` (Codex round 1).
-        let mut penny = strong_financials();
-        penny.current_price = Some(1.0);
-        let d4 = dossier(AssetClass::Stock, penny);
-        let mut huge = g.clone();
-        huge.model_view.price_targets.twelve_month = ModelPriceTarget { base: 1e308, bear: 0.5, bull: 2.0 };
-        let user4 = render(&d4, &huge);
-        assert!(!user4.contains("inf"), "{user4}");
-        assert!(
-            user4.contains("- analyst twelve-month: bear 0.50 (-50.0%) / base 1")
-                && user4.contains("0 (off-scale as authored) / bull 2.00 (+100.0%).\n"),
-            "{user4}"
-        );
-        // No usable current price → prices without moves on both reads; the
-        // method clauses still render, since they describe the bands.
-        let mut unpriced = strong_financials();
-        unpriced.current_price = None;
-        let d2 = dossier(AssetClass::Stock, unpriced);
-        let user2 = render(&d2, &g);
-        assert!(
-            user2.contains(&format!(
-                "- computed twelve-month: bear {:.2} / base {:.2} / bull {:.2}. Method: ",
-                engine_12.bear, engine_12.base, engine_12.bull
-            )),
-            "{user2}"
-        );
-        assert!(
-            user2.contains("- analyst one-month: bear 120.00 / base 100.00 / bull 90.00 (band inverted as authored).\n"),
-            "{user2}"
-        );
     }
 
     #[test]
@@ -10029,10 +6591,15 @@ pub(crate) mod tests {
         // monitors alone — the ledger-condition evaluation and the news-seed
         // leg gone; no prompt renders the sweep, so v69 stands, the trail to
         // checkpoint-v19 (the pinned tail sweep loses its condition states).
-        assert_eq!(PROMPT_VERSION, "portfolio-v69");
+        // The holding verdict, task 1 (2026-10-07): the model arm becomes the
+        // thesis document and its typed appendix — the interpretation grammar,
+        // the ledger, the what-changed rows and the self-assessment gone; the
+        // action packet reads VERDICT — v70, the trail to checkpoint-v20 (the
+        // verdict record's shape).
+        assert_eq!(PROMPT_VERSION, "portfolio-v70");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v19"
+            "checkpoint-v20"
         );
     }
 
@@ -10066,114 +6633,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn interpretation_prompt_states_the_model_domain_as_a_requirement() {
-        // The domain is stated as a requirement on the output (`portfolio-v40`):
-        // the scale by reference to COMPUTED SCORES, the bands as ordered
-        // positive prices — never a description of what the decode rejects,
-        // clamps or annotates (the gate itself is unchanged, ruled 2026-08-29).
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "distilled findings",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        assert!(
-            user.contains("as integers on the scale defined in COMPUTED SCORES"),
-            "{user}"
-        );
-        assert!(
-            user.contains(
-                "each with base, bear and bull as positive prices in USD, bear ≤ base ≤ bull"
-            ),
-            "{user}"
-        );
-        for narration in ["rejected", "never clamped", "annotated", "a zero or negative leg"] {
-            assert!(!user.contains(narration), "`{narration}` leaked: {user}");
-        }
-    }
-
-    #[test]
-    fn decode_interpretation_rejects_an_off_domain_model_arm_under_its_own_class() {
-        // Codex I6 (ruled 2026-08-29): the schema grammar cannot express range
-        // keywords, so the decode enforces the declared domain — every
-        // offending field named — under `ModelArmDomain`, the class the bounded
-        // retry-once re-issues on, distinct from a parse failure's `SchemaParse`.
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let input = InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "distilled findings",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        };
-        let stub = StubAnalyst.interpret(&input).unwrap();
-        // The stub's own arm is in-domain, so the offline fixture cannot drift
-        // off the gate silently.
-        let clean = serde_json::to_string(&stub).unwrap();
-        assert!(decode_interpretation("interpret TEST", &clean, false).is_ok());
-
-        let mut off = serde_json::to_value(&stub).unwrap();
-        off["model_sub_scores"]["quality"] = serde_json::json!(10000.0);
-        off["model_sub_scores"]["risk"] = serde_json::json!(-1.0);
-        off["model_price_targets"]["twelve_month"]["bear"] = serde_json::json!(0.0);
-        off["model_price_targets"]["one_month"]["bull"] = serde_json::json!(-5.0);
-        let err = decode_interpretation("interpret TEST", &off.to_string(), false).unwrap_err();
-        assert_eq!(
-            crate::local_model::retry_class(&err),
-            Some(crate::local_model::RetryClass::ModelArmDomain)
-        );
-        let detail = format!("{err:#}");
-        for field in [
-            "model_sub_scores.quality = 10000.0",
-            "model_sub_scores.risk = -1.0",
-            "model_price_targets.twelve_month.bear = 0.0",
-            "model_price_targets.one_month.bull = -5.0",
-        ] {
-            assert!(detail.contains(field), "{field} missing from: {detail}");
-        }
-        // The chain reads stage → class → the named violations, each layer once.
-        assert!(
-            detail.starts_with(
-                "interpret TEST: model arm value off its declared domain: model arm off its \
-                 declared domain: "
-            ),
-            "{detail}"
-        );
-
-        // An inverted band is in-domain — I5's authored-and-annotated posture
-        // holds; ordering is the model's own.
-        let mut inverted = serde_json::to_value(&stub).unwrap();
-        inverted["model_price_targets"]["twelve_month"]["bear"] = serde_json::json!(500.0);
-        inverted["model_price_targets"]["twelve_month"]["bull"] = serde_json::json!(50.0);
-        assert!(decode_interpretation("interpret TEST", &inverted.to_string(), false).is_ok());
-
-        // Malformed content keeps its own class.
-        let err = decode_interpretation("interpret TEST", "not json", false).unwrap_err();
-        assert_eq!(
-            crate::local_model::retry_class(&err),
-            Some(crate::local_model::RetryClass::SchemaParse)
-        );
-    }
-
-    #[test]
     fn action_prompt_names_a_chosen_prior_action_and_the_firmness_clause() {
         // A model-chosen prior renders as PRIOR ACTION and the task's firmness
         // clause refers to it (ruled 2026-09-17, F4). The retired whole-book-era
@@ -10200,10 +6659,8 @@ pub(crate) mod tests {
                 graded,
                 engine: &engine_output,
                 pre_profit: None,
-                ledger: v.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
-            changes: None,
             profile: &d.profile,
         });
         assert!(
@@ -10226,13 +6683,13 @@ pub(crate) mod tests {
         // bar — the two-arm contract).
         struct RogueActionStub;
         impl HoldingAnalyst for RogueActionStub {
-            fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+            fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
                 StubAnalyst.interpret(input)
             }
             fn interpret_role_risk(
                 &self,
                 input: &RoleRiskInput,
-            ) -> Result<RoleRiskInterpretation> {
+            ) -> Result<String> {
                 StubAnalyst.interpret_role_risk(input)
             }
             fn decide_action(
@@ -10275,292 +6732,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retrospective_renders_both_prior_reads_and_the_realized_since() {
-        // The v7 retrospective (the deliberate reversal of the v4 anchoring
-        // guard): a prior priced verdict's engine + model arms render with the
-        // price-since read.
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        let (prior, _) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
-        d.prior_verdict = Some(prior);
-        d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
-        d.prior_spot = Some(180.0);
-        // The prior vintage's anchor-session close (same basis, no split): the
-        // bridge's realized leg. Without a bar inside the proximity bound the
-        // comparison would be excluded, so the fixture carries one.
-        d.financials.daily_closes.push(DatedValue {
-            date: "2026-07-29".into(),
-            value: 180.0,
-        });
-
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "distilled findings",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        assert!(
-            user.contains(
-                "\nPRIOR ANALYSIS (prior read 2026-07-29T12:00:00Z)\n- prior computed read: grade "
-            ),
-            "{user}"
-        );
-        assert!(user.contains("\n- your prior read: letter "), "{user}");
-        // The continuity message carries no app concept either (`portfolio-v40`):
-        // the prior read, the changes list and the prior ledger are data.
-        let hits = crate::portfolio::fixed_evidence::banned_hits(&user);
-        assert!(hits.is_empty(), "continuity message carries {hits:?}\n{user}");
-        // The production delta labels are data too (Codex, round 1): none carries a
-        // banned word, and the capital-efficiency row stays out of the projection.
-        let mut moved = engine_output.clone();
-        moved.grade = crate::portfolio::Grade::A;
-        moved.sub_scores.quality += 5.0;
-        let prior_state = match &d.prior_verdict.as_ref().unwrap().disposition {
-            VerdictDisposition::Priced(g) => g.dead_money,
-            other => panic!("{other:?}"),
-        };
-        moved.hurdle.state = if prior_state == crate::portfolio::HurdleState::Fails {
-            crate::portfolio::HurdleState::Clears
-        } else {
-            crate::portfolio::HurdleState::Fails
-        };
-        let delta = priced_input_delta(&d, &moved, PositionChange::Increased, None, None, None, true, Some(0.5));
-        assert!(delta.iter().any(|e| e.label.starts_with(CAPITAL_EFFICIENCY_DELTA_PREFIX)), "{delta:?}");
-        for e in &delta {
-            let hits = crate::portfolio::fixed_evidence::banned_hits(&e.label);
-            assert!(hits.is_empty(), "delta label carries {hits:?}: {}", e.label);
-            assert!(!e.label.contains("Market Signal") && !e.label.contains("-v"), "{}", e.label);
-        }
-        let section = input_delta_prompt_section(&delta);
-        assert!(!section.contains("capital-efficiency"), "{section}");
-        assert!(section.contains("computed grade: "), "{section}");
-        for narration in ["RETROSPECTIVE", "ENGINE arm", "MODEL arm", "(yours)"] {
-            assert!(!user.contains(narration), "`{narration}` leaked: {user}");
-        }
-        // The realized move computes off the prior vintage's anchor-session
-        // close (the split-safe bridge — Codex round 2, finding 1), never
-        // against a target; here the anchor bar equals the authoring spot
-        // (180 → 195 = +8.3%). The target reads are labeled as distances,
-        // not returns (Codex round 1, finding 2).
-        assert!(
-            user.contains(
-                "+8.3% realized since the prior read (anchor close 180.00; \
-                 authoring spot 180.00 on its own basis)"
-            ),
-            "{user}"
-        );
-        assert!(
-            user.contains("distance to the prior computed 12-mo base"),
-            "{user}"
-        );
-        assert!(
-            user.contains("distance to your prior 12-mo base"),
-            "{user}"
-        );
-        assert!(user.contains("computed action "), "{user}");
-        assert!(!user.contains("matured scored windows"), "{user}");
-        // The self-assessment is a Part 2 item drawing on the section by name.
-        assert!(
-            user.contains(
-                "8. self_assessment — your prior read against the computed read and what \
-                 happened since, from PRIOR ANALYSIS"
-            ),
-            "{user}"
-        );
-        assert!(!user.contains("Write self_assessment against this"), "{user}");
-
-        // A carry rule can overwrite the persisted action without preserving
-        // the model's original rung. The retrospective keeps the authored model
-        // read but names that action provenance instead of calling the rule's
-        // hold "yours".
-        let prior = d.prior_verdict.as_mut().unwrap();
-        prior.action_source = ActionSource::RuleDemoted;
-        let VerdictDisposition::Priced(graded) = &mut prior.disposition else {
-            panic!("expected a priced prior");
-        };
-        graded.action = Action::Hold;
-        let demoted = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "distilled findings",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        assert!(
-            demoted.contains("\n- your prior read (its action was later demoted by rule): letter "),
-            "{demoted}"
-        );
-        assert!(
-            demoted.contains(
-                "action hold (demoted by rule after authoring; the rung you chose is not on \
-                 record)"
-            ),
-            "{demoted}"
-        );
-        assert!(!demoted.contains("- your prior read: letter"), "{demoted}");
-
-        // A debut renders no retrospective and says so in the model-arm brief.
-        let debut = dossier(AssetClass::Stock, strong_financials());
-        let debut_user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &debut,
-            prior_ledger: debut.prior_ledger(),
-            engine: &engine_output,
-            distilled: "distilled findings",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        assert!(!debut_user.contains("PRIOR ANALYSIS"), "{debut_user}");
-        assert!(debut_user.contains("This is the first analysis of this holding.\n"), "{debut_user}");
-        assert!(
-            debut_user.contains(
-                "7. self_assessment — one sentence noting that this is a first analysis with no \
-                 prior read to assess."
-            ),
-            "{debut_user}"
-        );
-    }
-
-    #[test]
-    fn retrospective_bridge_keys_the_prior_vintage_to_its_et_session() {
-        // An evening-ET prior read: 2026-07-30 01:30 UTC = 2026-07-29 21:30 EDT
-        // — the vintage belongs to the ET session of the 29th. The bridge must
-        // key that session's close (180), not the UTC-dated 30th's (250, a
-        // session traded entirely after the prior read).
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        let (prior, _) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
-        d.prior_verdict = Some(prior);
-        d.prior_vintage = Some("2026-07-30T01:30:00Z".into());
-        d.prior_spot = Some(180.0);
-        d.financials.daily_closes.push(DatedValue {
-            date: "2026-07-29".into(),
-            value: 180.0,
-        });
-        d.financials.daily_closes.push(DatedValue {
-            date: "2026-07-30".into(),
-            value: 250.0,
-        });
-
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "distilled findings",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        assert!(user.contains("anchor close 180.00"), "{user}");
-    }
-
-    #[test]
-    fn retrospective_realized_move_is_split_safe_via_the_anchor_close_bridge() {
-        // A 2:1 split between reads: the prior read authored at 180.00; the same
-        // economic level trades near 90 today. A raw prior-spot ratio would
-        // report ~−46% "realized" (Codex round 2, finding 1); the anchor-close
-        // bridge keys both legs to today's basis — the true +8.3% renders, and
-        // the prior targets cross through `target × anchor ⁄ authoring spot`.
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        let (prior, _) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
-        d.prior_verdict = Some(prior);
-        d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
-        d.prior_spot = Some(180.0); // pre-split basis
-        d.financials.current_price = Some(97.5); // post-split basis
-        d.financials.daily_closes.push(DatedValue {
-            date: "2026-07-29".into(),
-            value: 90.0, // the vintage session's close on today's basis
-        });
-
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        assert!(
-            user.contains(
-                "+8.3% realized since the prior read (anchor close 90.00; \
-                 authoring spot 180.00 on its own basis)"
-            ),
-            "{user}"
-        );
-        // The raw cross-basis ratio (97.5 ⁄ 180 − 1 ≈ −45.8%) must be nowhere.
-        assert!(!user.contains("-45.8"), "{user}");
-        assert!(user.contains("(split-adjusted)") && !user.contains("bridge"), "{user}");
-    }
-
-    #[test]
-    fn retrospective_excludes_the_price_comparison_without_an_anchor_close() {
-        // The fixture's dated closes end 2026-07-15 — outside the proximity
-        // bound around the 2026-07-29 vintage — so the bridge has no anchor
-        // session and every price comparison is excluded, never guessed (the
-        // outcome slice's shared contract). The rest of the retrospective
-        // still renders.
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        let (prior, _) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
-        d.prior_verdict = Some(prior);
-        d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
-        d.prior_spot = Some(180.0);
-
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        assert!(user.contains("\nPRIOR ANALYSIS (prior read"), "{user}");
-        assert!(
-            user.contains("prior-read price comparison unavailable"),
-            "{user}"
-        );
-        assert!(!user.contains("% realized"), "{user}");
-        assert!(!user.contains("distance to the prior computed"), "{user}");
-        assert!(!user.contains("distance to your prior"), "{user}");
-    }
-
-    #[test]
     fn target_provenance_renders_the_anchored_and_carry_branches() {
         let d = dossier(AssetClass::Stock, strong_financials());
         let mut engine_output = match engine::analyze(&d.financials, &rates()) {
@@ -10571,13 +6742,13 @@ pub(crate) mod tests {
         engine_output.target_meta.rate_anchored = true;
         engine_output.target_meta.anchor_observations = 40;
         engine_output.target_meta.current_multiple_carry = false;
-        let anchored = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let anchored = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
+            analysis: "",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -10604,13 +6775,13 @@ pub(crate) mod tests {
         engine_output.target_meta.current_multiple_carry = true;
         engine_output.target_meta.flat_driver = true;
         engine_output.target_meta.dispersion_floor_applied = true;
-        let carried = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let carried = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
+            analysis: "",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -10625,13 +6796,13 @@ pub(crate) mod tests {
 
         // Neither anchored nor carried: the raw-percentile fallback branch.
         engine_output.target_meta.current_multiple_carry = false;
-        let fallback = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let fallback = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
+            analysis: "",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -10647,443 +6818,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn continuity_notes_a_band_recalibration_only_on_version_mismatch() {
-        let base = dossier(AssetClass::Stock, strong_financials());
-        let (prior, _) = analyze_holding(&StubAnalyst, &base, &rates(), "2026-08-01").unwrap();
-        assert!(
-            matches!(prior.disposition, VerdictDisposition::Priced(_)),
-            "fixture sanity: the prior is priced"
-        );
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let prompt = |d: &HoldingDossier| {
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
-                dossier: d,
-                prior_ledger: d.prior_ledger(),
-                engine: &engine_output,
-                distilled: "",
-                ledger_eval: None,
-                pre_profit: None,
-                tech_pre_flag: None,
-                narrative: None,
-            })
-        };
-
-        const NOTE: &str = "- The grade bands changed since the prior analysis, so the letter may \
-                            have moved with no change in the company's inputs.\n";
-        // No prior verdict: new holding, no recalibration note.
-        assert!(!prompt(&d).contains(NOTE), "no prior verdict");
-
-        // Prior verdict stamped across the v2 retune: the note fires, as data
-        // under PRIOR ANALYSIS; the attribution of a parameter-driven move is
-        // a Part 2 requirement (`portfolio-v40`).
-        d.prior_verdict = Some(prior);
-        d.prior_grade_parameter_version = Some("grade-v2".into());
-        let p = prompt(&d);
-        assert!(p.contains(NOTE), "{p}");
-        assert!(!p.contains("recalibrated") && !p.contains("NOTE:"), "{p}");
-        assert!(
-            p.contains(
-                "A move noted in PRIOR ANALYSIS as caused by a parameter change is attributed to \
-                 that change, not to the company or to a self-correction."
-            ),
-            "{p}"
-        );
-
-        // Prior verdict stamped with the current bands: no note.
-        d.prior_grade_parameter_version = Some(engine::GRADE_PARAMETER_VERSION.to_string());
-        assert!(!prompt(&d).contains(NOTE), "same-version prior");
-
-        // A prior that was never priced had no letter to move: no note, whatever
-        // its stamp says — and a prior with no stamp asserts no cause.
-        d.prior_verdict = Some(HoldingVerdict {
-            symbol: "AAPL".into(),
-            asset_class: AssetClass::Stock,
-            position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated {
-                reason: "fixture".into(),
-            },
-            thesis_ledger: None,
-            analyzed_at: None,
-            action_source: Default::default(),
-            side_reversed: false,
-        });
-        d.prior_grade_parameter_version = None;
-        assert!(!prompt(&d).contains(NOTE), "not-rated prior");
-    }
-
-    /// A stamp boundary reaches the model as what it changed for THIS holding,
-    /// read from the stamp history on the PRIOR record's branch and only over a
-    /// priced prior. A stock across v2.1 → v2.3 gets neither NOTE nor delta row
-    /// (neither fund-only change touched it); a priced fund across v2.2 gets the
-    /// exchange-basis NOTE and row, and that letter-bearing correction dominates
-    /// the older momentum-only re-homing when the prior is older; an unrecognized stamp, a
-    /// missing stamp, and a never-priced prior get nothing; the branch is the
-    /// prior's persisted asset
-    /// class, so a fund record without the derived label still reads as a fund;
-    /// and a symbol reclassified between runs reads its prior's branch, not the
-    /// current dossier's.
-    #[test]
-    fn the_stamp_boundary_names_what_changed_and_skips_an_unchanged_holding() {
-        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let prompt = |d: &HoldingDossier| {
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
-                dossier: d,
-                prior_ledger: d.prior_ledger(),
-                engine: &engine_output,
-                distilled: "",
-                ledger_eval: None,
-                pre_profit: None,
-                tech_pre_flag: None,
-                narrative: None,
-            })
-        };
-        let delta = |d: &HoldingDossier| {
-            priced_input_delta(
-                d,
-                &engine_output,
-                PositionChange::Unchanged,
-                None,
-                None,
-                None,
-                false,
-                Some(1.0),
-            )
-        };
-        let boundary_rows = |entries: &[crate::portfolio::DeltaEntry]| -> Vec<String> {
-            entries
-                .iter()
-                .filter(|e| {
-                    e.label.contains("grade bands changed")
-                        || e.label.contains("momentum moved to the short price window")
-                        || e.label.contains("requires both exchange legs")
-                })
-                .map(|e| e.label.clone())
-                .collect()
-        };
-        let silent = |d: &HoldingDossier, case: &str| {
-            let p = prompt(d);
-            assert!(
-                !p.contains("grade bands changed")
-                    && !p.contains("momentum read moved")
-                    && !p.contains("sector-P/E source now requires"),
-                "{case}: {p}"
-            );
-            let rows = delta(d);
-            assert!(boundary_rows(&rows).is_empty(), "{case}: {rows:?}");
-        };
-        let recalibrated = |d: &HoldingDossier, case: &str| {
-            let p = prompt(d);
-            assert!(
-                p.contains(
-                    "- The grade bands changed since the prior analysis, so the letter may have \
-                     moved with no change in the company's inputs.\n"
-                ),
-                "{case}: {p}"
-            );
-            assert!(
-                !p.contains("momentum read moved") && !p.contains("recalibrated"),
-                "{case}: {p}"
-            );
-            let rows = boundary_rows(&delta(d));
-            assert_eq!(rows.len(), 1, "{case}: {rows:?}");
-            assert!(
-                rows[0].starts_with("grade bands changed since the prior analysis"),
-                "{case}: {rows:?}"
-            );
-        };
-        let exchange_basis = |d: &HoldingDossier, case: &str| {
-            let p = prompt(d);
-            assert!(
-                p.contains(
-                    "- The fund sector-P/E source now requires both exchange legs since the prior \
-                     analysis, so the valuation score and the letter may have moved on the same \
-                     served rows.\n"
-                ),
-                "{case}: {p}"
-            );
-            assert!(
-                !p.contains("momentum read moved") && !p.contains("grade bands changed"),
-                "{case}: {p}"
-            );
-            let rows = boundary_rows(&delta(d));
-            assert_eq!(rows.len(), 1, "{case}: {rows:?}");
-            assert!(
-                rows[0].starts_with("fund sector-P/E source now requires both exchange legs since the prior analysis"),
-                "{case}: {rows:?}"
-            );
-            assert!(rows[0].contains("letter can move"), "{case}: {rows:?}");
-        };
-
-        // A priced stock prior.
-        let base = dossier(AssetClass::Stock, strong_financials());
-        let (stock_prior, _) =
-            analyze_holding(&StubAnalyst, &base, &rates(), "2026-08-01").unwrap();
-        assert!(matches!(
-            stock_prior.disposition,
-            VerdictDisposition::Priced(_)
-        ));
-        let mut stock = dossier(AssetClass::Stock, strong_financials());
-        stock.prior_verdict = Some(stock_prior.clone());
-        stock.prior_grade_parameter_version = Some("grade-v2.1".into());
-        silent(&stock, "stock across v2.1");
-        stock.prior_grade_parameter_version = Some("grade-v2.2".into());
-        silent(&stock, "stock across v2.2");
-        stock.prior_grade_parameter_version = Some("grade-v2".into());
-        recalibrated(&stock, "stock across v2 (signed P/E)");
-        stock.prior_grade_parameter_version = None;
-        silent(&stock, "stock with no stamp (no audit row)");
-        stock.prior_grade_parameter_version = Some("grade-v9.9".into());
-        silent(&stock, "stock from an unrecognized stamp");
-
-        // A priced fund prior.
-        let (fund_prior, _) = analyze_holding(
-            &StubAnalyst,
-            &fund_dossier(us_equity_fund()),
-            &rates(),
-            "2026-08-01",
-        )
-        .unwrap();
-        assert!(matches!(
-            fund_prior.disposition,
-            VerdictDisposition::Priced(_)
-        ));
-        let mut fund = fund_dossier(us_equity_fund());
-        fund.prior_verdict = Some(fund_prior.clone());
-        fund.prior_grade_parameter_version = Some("grade-v2.2".into());
-        exchange_basis(&fund, "fund across v2.2");
-        fund.prior_grade_parameter_version = Some("grade-v2.1".into());
-        exchange_basis(&fund, "fund across v2.1");
-        let rows = boundary_rows(&delta(&fund));
-        // The row names the change, never the stamps (`portfolio-v40`).
-        assert!(rows[0].starts_with("fund sector-P/E source now requires both exchange legs") && !rows[0].contains("grade-v"), "{rows:?}");
-        fund.prior_grade_parameter_version = Some("grade-v2".into());
-        exchange_basis(&fund, "fund across v2");
-        fund.prior_grade_parameter_version = None;
-        silent(&fund, "fund with no stamp (no audit row)");
-        fund.prior_grade_parameter_version = Some("grade-v9.9".into());
-        silent(&fund, "fund from an unrecognized stamp");
-
-        // The branch is the prior's persisted asset class — the routing key — so a
-        // fund record without the derived `fund_class_label` (no label derived)
-        // still reads the fund branch.
-        let mut unlabeled = fund_prior.clone();
-        if let VerdictDisposition::Priced(g) = &mut unlabeled.disposition {
-            g.fund_class_label = None;
-        }
-        fund.prior_verdict = Some(unlabeled);
-        fund.prior_grade_parameter_version = Some("grade-v2.2".into());
-        exchange_basis(&fund, "fund prior without the derived label");
-
-        // The branch is the PRIOR record's, not the current dossier's: a fund
-        // prior now scored as a stock still crosses the exchange-basis
-        // correction, and a stock prior now scored as a fund crosses nothing.
-        let mut now_stock = dossier(AssetClass::Stock, strong_financials());
-        now_stock.prior_verdict = Some(fund_prior);
-        now_stock.prior_grade_parameter_version = Some("grade-v2.2".into());
-        exchange_basis(&now_stock, "fund prior on a stock dossier");
-        let mut now_fund = fund_dossier(us_equity_fund());
-        now_fund.prior_verdict = Some(stock_prior);
-        now_fund.prior_grade_parameter_version = Some("grade-v2.2".into());
-        silent(&now_fund, "stock prior on a fund dossier");
-
-        // A fund prior that was never priced had no letter or target to move.
-        fund.prior_verdict = Some(HoldingVerdict {
-            symbol: fund.position.symbol.clone(),
-            asset_class: AssetClass::Etf,
-            position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated {
-                reason: "fixture".into(),
-            },
-            thesis_ledger: None,
-            analyzed_at: None,
-            action_source: Default::default(),
-            side_reversed: false,
-        });
-        fund.prior_grade_parameter_version = Some("grade-v2.2".into());
-        silent(&fund, "never-priced fund prior");
-        fund.prior_grade_parameter_version = None;
-        silent(&fund, "never-priced fund prior with no stamp");
-    }
-
-    /// Codex I11: the scenario-target stamp carries the same attribution, read
-    /// from the prior audit's `target_meta.parameter_version`. The v6
-    /// complete-exchange rule moves both fund horizons but no stock horizon, so
-    /// a priced v5 fund gets exactly one row and NOTE while a v5 stock stays
-    /// silent. The current stamp, no target record, pre-anchor v4, an
-    /// unrecognized stamp, and a never-priced prior stay silent.
-    #[test]
-    fn the_target_stamp_boundary_is_silent_on_every_reachable_stamp_and_renders_the_horizons() {
-        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let prompt = |d: &HoldingDossier| {
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
-                dossier: d,
-                prior_ledger: d.prior_ledger(),
-                engine: &engine_output,
-                distilled: "",
-                ledger_eval: None,
-                pre_profit: None,
-                tech_pre_flag: None,
-                narrative: None,
-            })
-        };
-        let delta = |d: &HoldingDossier| {
-            priced_input_delta(
-                d,
-                &engine_output,
-                PositionChange::Unchanged,
-                None,
-                None,
-                None,
-                false,
-                Some(1.0),
-            )
-        };
-        let silent = |d: &HoldingDossier, case: &str| {
-            let p = prompt(d);
-            assert!(
-                !p.contains("target parameter version changed")
-                    && !p.contains("scenario-target parameters changed"),
-                "{case}: {p}"
-            );
-            let rows = delta(d);
-            assert!(
-                rows
-                    .iter()
-                    .all(|e| !e.label.contains("scenario-target parameters changed")),
-                "{case}: {rows:?}"
-            );
-        };
-        let moved = |d: &HoldingDossier, horizons: &str, case: &str| {
-            let p = prompt(d);
-            assert!(
-                p.contains(&format!(
-                    "- The scenario-target parameters changed since the prior analysis, so the \
-                     {horizons} may have moved with no change in the company's inputs.\n"
-                )),
-                "{case}: {p}"
-            );
-            assert!(!p.contains("NOTE:"), "{case}: {p}");
-            let rows = delta(d);
-            let target_rows: Vec<_> = rows
-                .iter()
-                .filter(|entry| entry.label.contains("scenario-target parameters changed"))
-                .collect();
-            assert_eq!(target_rows.len(), 1, "{case}: {rows:?}");
-            assert!(
-                target_rows[0]
-                    .label
-                    .contains(&format!("{horizons} can move")),
-                "{case}: {target_rows:?}"
-            );
-        };
-
-        let base = dossier(AssetClass::Stock, strong_financials());
-        let (stock_prior, _) =
-            analyze_holding(&StubAnalyst, &base, &rates(), "2026-08-01").unwrap();
-        assert!(matches!(
-            stock_prior.disposition,
-            VerdictDisposition::Priced(_)
-        ));
-        let mut stock = dossier(AssetClass::Stock, strong_financials());
-        stock.prior_verdict = Some(stock_prior);
-        stock.prior_target_parameter_version =
-            Some(engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string());
-        silent(&stock, "stock on the current stamp");
-        // A v5 or v6 stock prior crosses v7 alone: the near-horizon leg
-        // re-defined and the three-year leg new.
-        for stamp in ["targets-v5", "targets-v6"] {
-            stock.prior_target_parameter_version = Some(stamp.into());
-            moved(&stock, "three-month and three-year targets", "stock prior across v7");
-        }
-        stock.prior_target_parameter_version = None;
-        silent(&stock, "stock with no target record");
-        stock.prior_target_parameter_version = Some("targets-v4".into());
-        silent(&stock, "stock from targets-v4 (unrecognized by ruling)");
-        stock.prior_target_parameter_version = Some("targets-v9.9".into());
-        silent(&stock, "stock from an unrecognized stamp");
-
-        let (fund_prior, _) = analyze_holding(
-            &StubAnalyst,
-            &fund_dossier(us_equity_fund()),
-            &rates(),
-            "2026-08-01",
-        )
-        .unwrap();
-        assert!(matches!(
-            fund_prior.disposition,
-            VerdictDisposition::Priced(_)
-        ));
-        let mut fund = fund_dossier(us_equity_fund());
-        fund.prior_verdict = Some(fund_prior);
-        fund.prior_target_parameter_version = Some("targets-v5".into());
-        moved(
-            &fund,
-            "three-month, twelve-month and three-year targets",
-            "fund prior across the complete-exchange boundary and v7",
-        );
-        fund.prior_target_parameter_version = Some("targets-v6".into());
-        moved(&fund, "three-month and three-year targets", "fund prior across v7");
-        for stamp in [Some(engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string()), None, Some("targets-v4".into())] {
-            fund.prior_target_parameter_version = stamp;
-            silent(&fund, "fund prior");
-        }
-
-        // A never-priced prior had no target to move, whatever it carries.
-        stock.prior_verdict = Some(HoldingVerdict {
-            symbol: "AAPL".into(),
-            asset_class: AssetClass::Stock,
-            position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated {
-                reason: "fixture".into(),
-            },
-            thesis_ledger: None,
-            analyzed_at: None,
-            action_source: Default::default(),
-            side_reversed: false,
-        });
-        stock.prior_target_parameter_version = Some("targets-v4".into());
-        silent(&stock, "never-priced prior");
-
-        // The renders, on explicit horizons — the label is the engine's one
-        // vocabulary for both.
-        let row = target_boundary_row(engine::TargetHorizons::THREE_MONTH);
-        assert_eq!(
-            row,
-            "scenario-target parameters changed since the prior analysis — the three-month \
-             target can move with no input change"
-        );
-        let note = target_boundary_note(engine::TargetHorizons::of(true, true, false));
-        assert_eq!(
-            note,
-            "- The scenario-target parameters changed since the prior analysis, so the three-month \
-             and twelve-month targets may have moved with no change in the company's inputs.\n"
-        );
-        // The note is data (`portfolio-v40`); the attribution of such a move is a
-        // Part 2 requirement, never an instruction riding the note.
-        for narration in [
-            "NOTE:",
-            "Attribute such a target move",
-            "target parameter version changed",
-            "what_changed",
-        ] {
-            assert!(!note.contains(narration), "`{narration}` leaked: {note}");
-        }
-    }
-
-    #[test]
     fn house_view_renders_as_market_analysis_on_both_interpretation_messages() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.house_view.latest_sections = Some("Thesis: risk-off.".into());
@@ -11091,13 +6825,13 @@ pub(crate) mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let user = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
+            analysis: "",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -11109,19 +6843,19 @@ pub(crate) mod tests {
             user.contains("\nMARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
             "{user}"
         );
-        assert!(user.contains("drawing on MARKET ANALYSIS for the market setup"), "{user}");
+        assert!(user.contains("from FETCHED VALUES, COMPUTED, ANALYSIS and MARKET ANALYSIS."), "{user}");
         for narration in ["MARKET SIGNAL", "HOUSE VIEW", "never by itself a reason to exit", "scope:"] {
             assert!(!user.contains(narration), "`{narration}` leaked: {user}");
         }
         // Absent, the section is absent (the item's reference stays).
         let bare = dossier(AssetClass::Stock, strong_financials());
-        let bare_user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let bare_user = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &bare,
-            prior_ledger: bare.prior_ledger(),
             engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
+            analysis: "",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -11130,7 +6864,7 @@ pub(crate) mod tests {
 
         // The role/risk message renders the same section through the same
         // renderer (`portfolio-v42`): no product name, no scope clause, and the
-        // thesis line of its ledger item draws on it by name.
+        // role item draws on it by name.
         let readout = RoleRiskReadout {
             class_label: "equity fund below the US-exposure guard".into(),
             structural_kind: None,
@@ -11142,18 +6876,17 @@ pub(crate) mod tests {
             evidence_gaps: vec![],
         };
         let role = role_risk_user_prompt(&RoleRiskInput {
-            input_delta: &[],
+            rates: rates_static(),
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             readout: &readout,
-            ledger_eval: None,
-            distilled: "No research findings.",
+            analysis: "No research findings.",
         });
         assert!(
             role.contains("\nMARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
             "{role}"
         );
-        assert!(role.contains("drawing on MARKET ANALYSIS for the market setup"), "{role}");
+        assert!(role.contains("from CLASS, RISK PROFILE, FETCHED VALUES, COMPUTED, ANALYSIS and MARKET ANALYSIS."), "{role}");
         for narration in ["MARKET SIGNAL", "HOUSE VIEW", "never by itself a reason to exit", "scope:"] {
             assert!(!role.contains(narration), "`{narration}` leaked: {role}");
         }
@@ -11169,12 +6902,11 @@ pub(crate) mod tests {
                 ..Default::default()
             };
             role_risk_user_prompt(&RoleRiskInput {
-                input_delta: &[],
+            rates: rates_static(),
+            prior_split: None,
                 dossier: &d,
-                prior_ledger: d.prior_ledger(),
                 readout: &readout,
-                ledger_eval: None,
-                distilled: "No research findings.",
+                analysis: "No research findings.",
             })
         };
 
@@ -11223,12 +6955,11 @@ pub(crate) mod tests {
         };
         let prompt = |r: &RoleRiskReadout| {
             role_risk_user_prompt(&RoleRiskInput {
-                input_delta: &[],
+            rates: rates_static(),
+            prior_split: None,
                 dossier: &d,
-                prior_ledger: d.prior_ledger(),
                 readout: r,
-                ledger_eval: None,
-                distilled: "No research findings.",
+                analysis: "No research findings.",
             })
         };
         let discount = prompt(&readout(true, Some(-0.072)));
@@ -11266,7 +6997,7 @@ pub(crate) mod tests {
         // The action prompt's role-risk arm holds the same gate.
         let mut rr = crate::portfolio::RoleRiskVerdict {
             class_label: "closed-end fund".into(),
-            role_summary: "income sleeve".into(),
+            thesis_document: "Role: an income sleeve.".into(),
             exposure_tilt: vec![],
             expense_drag: None,
             observable_risk: None,
@@ -11276,14 +7007,11 @@ pub(crate) mod tests {
             evidence_gaps: vec![],
             action: crate::portfolio::Action::Hold,
             action_rationale: String::new(),
-            what_changed: "new holding".into(),
         };
-        let ledger = test_ledger();
         let action = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
+            subject: ActionSubject::RoleRisk { verdict: &rr },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
-            changes: None,
             profile: &d.profile,
         });
         assert!(action.contains("\nPRICE VS NAV: -7.2% (discount)"), "{action}");
@@ -11291,16 +7019,14 @@ pub(crate) mod tests {
         // its own sections, the reduced set as one data line, no capital
         // efficiency or targets, and its own weighing clause.
         assert!(action.contains("\nCLASS (computed)\nclosed-end fund\n"), "{action}");
-        assert!(action.contains("\nROLE (analyst)\nincome sleeve\n"), "{action}");
-        assert!(action.contains("\nTHESIS (analyst)\nA standing thesis.\n"), "{action}");
-        assert!(action.contains("- base (50%): base case conditions.\n"), "{action}");
+        assert!(action.contains("\nVERDICT (analyst)\nThesis document:\nRole: an income sleeve.\n"), "{action}");
         assert!(
             action.contains("\nSUPPORTED ACTIONS (computed)\nThe rungs the computed read supports, listed in full: sell-all, trim, hold. A rung not listed is outside that read.\n"),
             "{action}"
         );
         assert!(
             action.contains(
-                "Decide it from CLASS, ROLE, RISK PROFILE and PRICE VS NAV first, refined by THESIS, SCENARIOS, \
+                "Decide it from CLASS, VERDICT, RISK PROFILE and PRICE VS NAV first, refined by \
                  SUPPORTED ACTIONS and INVESTOR PROFILE. An aggressive risk tolerance admits \
                  add-aggressively where the other inputs support it. An add-side rung needs support \
                  from the vehicle's own attributes, stated in the rationale.\n"
@@ -11316,162 +7042,11 @@ pub(crate) mod tests {
         rr.nav_premium = None;
         let action_gap = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
+            subject: ActionSubject::RoleRisk { verdict: &rr },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
-            changes: None,
             profile: &d.profile,
         });
         assert!(!action_gap.contains("PRICE VS NAV:"), "{action_gap}");
-    }
-
-    #[test]
-    fn the_target_delta_row_requires_a_certified_prior_basis() {
-        // A prior pass that withheld its basis (unresolvable bridge) persisted
-        // its verdict targets fresh; the next pass's bridge must not convert
-        // them — the row is excluded on an uncertified prior basis, never a
-        // fabricated target-change entry in the 6g evidence vocabulary.
-        let base = dossier(AssetClass::Stock, strong_financials());
-        let (prior_verdict, _) =
-            analyze_holding(&StubAnalyst, &base, &rates(), "2026-08-01").unwrap();
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        d.prior_verdict = Some(prior_verdict);
-        d.prior_spot = None;
-        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let entries = priced_input_delta(
-            &d,
-            &engine_output,
-            PositionChange::Unchanged,
-            None,
-            None,
-            None,
-            false,
-            Some(0.25),
-        );
-        assert!(
-            !entries.iter().any(|e| e.label.contains("twelve-month base target")),
-            "uncertified prior basis must exclude the row: {entries:?}"
-        );
-        // With a certified prior basis the same comparison renders (the 0.25
-        // conversion moves the old side).
-        d.prior_spot = Some(780.0);
-        let entries = priced_input_delta(
-            &d,
-            &engine_output,
-            PositionChange::Unchanged,
-            None,
-            None,
-            None,
-            false,
-            Some(0.25),
-        );
-        assert!(
-            entries.iter().any(|e| e.label.contains("twelve-month base target")),
-            "certified prior basis renders the bridged row: {entries:?}"
-        );
-    }
-
-    #[test]
-    fn input_delta_renders_every_exact_move_as_a_visible_move() {
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        let (mut prior, _) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-01").unwrap();
-        let VerdictDisposition::Priced(prior_graded) = &mut prior.disposition else {
-            panic!("expected a priced prior");
-        };
-        prior_graded.sub_scores.quality = 61.7;
-        d.prior_verdict = Some(prior);
-        d.prior_spot = Some(195.001);
-        d.financials.current_price = Some(195.002);
-
-        let mut engine_output = match engine::analyze(&strong_financials(), &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let mut prior_metrics = engine_output.metrics.clone();
-        prior_metrics.net_margin = Some(0.10001);
-        engine_output.metrics.net_margin = Some(0.10002);
-        engine_output.sub_scores.quality = 62.3;
-        d.prior_metrics = Some(prior_metrics);
-
-        let entries = priced_input_delta(
-            &d,
-            &engine_output,
-            PositionChange::Unchanged,
-            None,
-            None,
-            None,
-            false,
-            Some(1.0),
-        );
-        let labels = entries
-            .iter()
-            .map(|entry| entry.label.as_str())
-            .collect::<Vec<_>>();
-        assert!(labels.contains(&"spot: 195.001 -> 195.002"), "{labels:?}");
-        assert!(
-            labels.contains(&"metric net margin: 0.10001 -> 0.10002"),
-            "{labels:?}"
-        );
-        assert!(
-            labels.contains(&"computed sub-score quality: 61.7 -> 62.3"),
-            "{labels:?}"
-        );
-        for label in labels {
-            if let Some((old, new)) = label.split_once(" -> ") {
-                assert_ne!(old.rsplit_once(": ").map_or(old, |(_, value)| value), new, "{label}");
-            }
-        }
-    }
-
-    #[test]
-    fn the_nav_premium_delta_row_is_gated_to_the_closed_end_form() {
-        // An open-end ETF's transient premium flicker must not seed a 6g input
-        // delta row every run; on the closed-end form the move IS the read.
-        let mut d = fund_dossier(us_equity_fund());
-        d.prior_verdict = Some(HoldingVerdict {
-            symbol: d.position.symbol.clone(),
-            asset_class: AssetClass::Etf,
-            position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
-            thesis_ledger: None,
-            analyzed_at: None,
-            action_source: Default::default(),
-            side_reversed: false,
-        });
-        d.prior_metrics = Some(engine::ComputedMetrics {
-            nav_premium: Some(0.001),
-            ..Default::default()
-        });
-        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
-            EngineVerdict::Analyzed(mut o) => {
-                o.metrics = engine::ComputedMetrics {
-                    nav_premium: Some(0.004),
-                    ..Default::default()
-                };
-                o
-            }
-            other => panic!("{other:?}"),
-        };
-        let entries =
-            priced_input_delta(&d, &engine_output, PositionChange::Unchanged, None, None, None, false, Some(1.0));
-        assert!(
-            !entries.iter().any(|e| e.label.contains("NAV premium")),
-            "open-end: {entries:?}"
-        );
-        // The same move on a closed-end fund is a delta row.
-        if let Some(f) = d.fund.as_mut() {
-            f.fund.profile_is_fund = Some(true);
-            f.fund.profile_description = Some("a closed-end equity fund".into());
-        }
-        let entries =
-            priced_input_delta(&d, &engine_output, PositionChange::Unchanged, None, None, None, false, Some(1.0));
-        assert!(
-            entries.iter().any(|e| e.label.contains("NAV premium")),
-            "closed-end: {entries:?}"
-        );
     }
 
     #[test]
@@ -11486,13 +7061,13 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         };
         let prompt = |d: &HoldingDossier, e: &EngineOutput| {
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
+            thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
                 dossier: d,
-                prior_ledger: d.prior_ledger(),
                 engine: e,
-                distilled: "",
-                ledger_eval: None,
+                analysis: "",
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
@@ -11541,13 +7116,13 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         };
         let prompt = |d: &HoldingDossier| {
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
+            thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
                 dossier: d,
-                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
-                distilled: "",
-                ledger_eval: None,
+                analysis: "",
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
@@ -11608,137 +7183,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn crossing_pairs_render_at_one_comparison_safe_precision() {
-        // Codex I12: one formatter for the pair — four places extending where
-        // a nonzero value would round to zero (the expense-ratio rule), and
-        // further (the group's Codex rounds 1–3) until the rendered pair, read
-        // back as numbers, orders as the values do, so a real crossing never
-        // renders as equality and, on that fixed-decimal branch, the two
-        // values print at one shared precision; past ten places the
-        // round-trip fallback prints each at its own shortest exact form.
-        // Order is the guarantee, not distance: `0.0000451`
-        // against `0.0000449` renders `0.00005` against `0.00004`, the gap
-        // magnified, and `0.0000649` against `0.0000451` renders `0.00006`
-        // against `0.00005`, the gap shrunk — fixed-precision rounding can
-        // do either to a distance, and the render promises neither.
-        let pair = |o: f64, t: f64| {
-            let (a, b) = fmt_crossing_pair(o, t);
-            format!("{a} vs {b}")
-        };
-        assert_eq!(pair(0.0075, 0.0075), "0.0075 vs 0.0075");
-        assert_eq!(pair(-0.45, -0.4), "-0.4500 vs -0.4000");
-        assert_eq!(pair(1234.5678, 1234.5677), "1234.5678 vs 1234.5677");
-        assert_eq!(pair(0.03 / 100.0, 0.0), "0.0003 vs 0.0000");
-        // Each value alone would take four places and print `0.0001`; the
-        // pair extends until the crossing shows.
-        assert_eq!(pair(0.00006, 0.00005), "0.00006 vs 0.00005");
-        // The observed value's own floor governs both, so the threshold never
-        // reads as `0.0001` beside `0.00004`.
-        assert_eq!(pair(0.00004, 0.00005), "0.00004 vs 0.00005");
-        assert_eq!(pair(0.00001, 0.00002), "0.00001 vs 0.00002");
-        assert_eq!(pair(-0.00004, 0.00003), "-0.00004 vs 0.00003");
-        // A negative zero is zero.
-        assert_eq!(pair(-0.0, 0.0), "0.0000 vs 0.0000");
-        // Past ten places the pair falls back to the shortest round-trip
-        // render, so a zero-margin crossing that close still reads as one
-        // (Codex round 2) — distinct values never render alike.
-        assert_eq!(pair(1e-12, 0.0), "0.000000000001 vs 0");
-        assert_eq!(pair(0.1000000000001, 0.1), "0.1000000000001 vs 0.1");
-        let (o, t) = fmt_crossing_pair(0.1 + f64::EPSILON, 0.1);
-        assert_ne!(o, t);
-        assert!(o.parse::<f64>().unwrap() > t.parse::<f64>().unwrap());
-        // The stop test reads the pair back as numbers (Codex round 3): a
-        // tiny negative against zero renders `-0.0000000000` beside
-        // `0.0000000000` at ten places — distinct strings that read as equal
-        // — so it falls through to the round-trip render like any other
-        // crossing too close to show.
-        assert_eq!(pair(-1e-12, 0.0), "-0.000000000001 vs 0");
-        assert_eq!(pair(0.0, -1e-12), "0 vs -0.000000000001");
-        assert_eq!(pair(-1e-12, 1e-12), "-0.000000000001 vs 0.000000000001");
-        // Every rendered pair orders as its values do.
-        for (o, t) in [
-            (0.0075, 0.0075),
-            (-0.45, -0.4),
-            (0.00006, 0.00005),
-            (0.00004, 0.00005),
-            (-1e-12, 0.0),
-            (0.1 + f64::EPSILON, 0.1),
-            (-0.0, 0.0),
-        ] {
-            let (ro, rt) = fmt_crossing_pair(o, t);
-            assert_eq!(
-                ro.parse::<f64>().unwrap().partial_cmp(&rt.parse::<f64>().unwrap()),
-                o.partial_cmp(&t),
-                "{o} vs {t} rendered {ro} vs {rt}"
-            );
-        }
-    }
-
-    #[test]
-    fn comparison_safe_pairs_respect_each_delta_surface_floor() {
-        assert_eq!(
-            comparison_safe_pair(61.7, 62.3, 0),
-            ("61.7".to_string(), "62.3".to_string())
-        );
-        assert_eq!(
-            comparison_safe_pair(195.001, 195.002, 2),
-            ("195.001".to_string(), "195.002".to_string())
-        );
-        assert_eq!(
-            comparison_safe_pair(0.10001, 0.10002, 4),
-            ("0.10001".to_string(), "0.10002".to_string())
-        );
-        assert_eq!(delta_value(Some(1e-12), 4), "0.000000000001");
-        assert_eq!(delta_value(Some(-0.0), 4), "0.0000");
-        assert_eq!(delta_value(None, 4), "(absent)");
-    }
-
-    #[test]
-    fn both_crossing_renders_state_observed_and_threshold_identically() {
-        // Codex I12: the input-delta entry and the 6f ENGINE CONDITION
-        // CROSSINGS section print the same crossing through one pair
-        // formatter — a sub-basis-point expense ratio no longer flattens to
-        // `0.0000` at either site, the threshold no longer prints at four
-        // places in one and shortest-round-trip in the other, and a crossing
-        // whose two values each round to `0.0001` shows as the crossing it is.
-        let prior = prior_with_conditions();
-        let crossing = |observed: f64, threshold: f64| ConditionCrossing {
-            condition_id: "keep-1".into(),
-            statement: "Expense ratio rises".into(),
-            role: ConditionRole::Falsifier,
-            outcome: CrossingOutcome::Confirmed,
-            observed_value: observed,
-            threshold,
-            observation_id: "2026-07-16".into(),
-            confirmed_at: Some("2026-07-16".into()),
-        };
-        let eval = LedgerEvaluation {
-            crossings: vec![crossing(0.00006, 0.00005), crossing(-0.45, -0.4)],
-            unevaluable: vec![],
-            unevaluable_series: vec![],
-            updated_states: vec![],
-        };
-        let section = prior_ledger_data_section(Some(&prior), Some(&eval), &[]);
-        let d = fund_dossier(us_equity_fund());
-        let mut entries = Vec::new();
-        append_shared_delta(&mut entries, &d, PositionChange::Unchanged, Some(&eval), Some(1.0));
-        let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
-        for rendered in [
-            "observed 0.00006 vs threshold 0.00005",
-            "observed -0.4500 vs threshold -0.4000",
-        ] {
-            assert!(section.contains(rendered), "{rendered}: {section}");
-            assert!(
-                labels.iter().any(|l| l.contains(rendered)),
-                "{rendered}: {labels:?}"
-            );
-        }
-        assert!(!section.contains("0.0000 vs"), "{section}");
-        assert!(!section.contains("0.0001 vs threshold 0.0001"), "{section}");
-        assert!(!section.contains("threshold -0.4 "), "{section}");
-    }
-
-    #[test]
     fn the_priced_fund_prompt_renders_guards_us_share_and_twelve_month_methodology() {
         // Codex I8: the FUND CONTEXT line reads `fund::us_share` — every US
         // alias summed and capped, the ≥ 70% guard's own read — where it had
@@ -11752,13 +7196,13 @@ pub(crate) mod tests {
                 EngineVerdict::Analyzed(o) => o,
                 other => panic!("{other:?}"),
             };
-            interpretation_user_prompt(&InterpretationInput {
-                input_delta: &[],
+            thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
                 dossier: &d,
-                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
-                distilled: "",
-                ledger_eval: None,
+                analysis: "",
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
@@ -11780,10 +7224,10 @@ pub(crate) mod tests {
         assert!(capped.contains("US share of holdings: 100%."), "{capped}");
         let gap = prompt_for(vec![]);
         assert!(gap.contains("US share of holdings: (gap)."), "{gap}");
-        // Slice 2 keeps the twelve-month method; the three-month computed band
-        // supplies its prices without the proration method; the three-year
-        // band carries its extrapolation clause so it is weighed as one.
-        assert!(us.contains("\nCOMPUTED PRICE TARGETS (USD)\n- three-month: bear "), "{us}");
+        // Each band carries its method clause — the three-month its proration,
+        // the twelve-month its drivers, the three-year its extrapolation — so
+        // each is weighed as what it is.
+        assert!(us.contains("\nPRICE BANDS (USD)\n- three-month: bear "), "{us}");
         let twelve = us.find("- twelve-month: bear ").unwrap_or_else(|| panic!("{us}"));
         let line = us[twelve..].lines().next().unwrap();
         // The method is a plain clause from the typed target inputs, never the
@@ -11792,7 +7236,7 @@ pub(crate) mod tests {
         let three_month = us.find("- three-month: bear ").unwrap_or_else(|| panic!("{us}"));
         let line = us[three_month..].lines().next().unwrap();
         assert!(line.contains(" / base ") && line.contains(" / bull "), "{line}");
-        assert!(!line.contains("Method:") && !line.contains("prorated"), "{line}");
+        assert!(line.contains(". Method: ") && line.contains("prorated to three months"), "{line}");
         let three_year = us.find("- three-year: bear ").unwrap_or_else(|| panic!("{us}"));
         let line = us[three_year..].lines().next().unwrap();
         assert!(line.contains(". Method: ") && line.contains("extrapolation"), "{line}");
@@ -11814,52 +7258,48 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let role = role_risk_user_prompt(&RoleRiskInput {
-            input_delta: &[],
+            rates: rates_static(),
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             readout: &readout,
-            ledger_eval: None,
-            distilled: "No research findings.",
+            analysis: "No research findings.",
         });
-        // The role/risk message renders the ratio once, as its FINANCIAL
-        // METRICS line (`portfolio-v42`).
+        // The role/risk message renders the ratio once, as the fund's reported
+        // line under FETCHED VALUES; the computed lines never restate it.
         assert!(
-            role.contains(
-                "- fund expense ratio [expense-ratio]: 0.0003 (0.03%/yr) — a fraction of assets \
-                 per year, never a percent (0.0075 means 0.75%); confirmed by one filing\n"
-            ),
+            role.contains("\nFund: asset class Equity; expense ratio 0.0003 (0.03%/yr); "),
             "{role}"
         );
         assert_eq!(role.matches("0.0003 (0.03%/yr)").count(), 1, "renders once: {role}");
+        assert!(!role.contains("fund expense ratio:"), "{role}");
         assert!(!role.contains("EXPENSE RATIO ("), "{role}");
 
         let engine_output = match engine::analyze(&strong_financials(), &rates()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
+            analysis: "",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
         });
+        assert!(interp.contains("\nFUND\nUS share of holdings: 99%.\n"), "{interp}");
         assert!(
-            interp.contains(
-                "\nFUND\nExpense ratio: 0.0003 (0.03%/yr) (a fraction of assets per year; 0.0075 \
-                 means 0.75%). US share of holdings: 99%.\n"
-            ),
+            interp.contains("\nFund: asset class Equity; expense ratio 0.0003 (0.03%/yr); "),
             "{interp}"
         );
-        assert!(!interp.contains("FUND CONTEXT"), "{interp}");
+        assert_eq!(interp.matches("0.0003 (0.03%/yr)").count(), 1, "renders once: {interp}");
+        assert!(!interp.contains("FUND CONTEXT") && !interp.contains("fund expense ratio:"), "{interp}");
 
         let rr = crate::portfolio::RoleRiskVerdict {
             class_label: "bond fund".into(),
-            role_summary: "income sleeve".into(),
+            thesis_document: "Role: an income sleeve.".into(),
             exposure_tilt: vec![],
             expense_drag: Some(0.0003),
             observable_risk: None,
@@ -11869,14 +7309,11 @@ pub(crate) mod tests {
             evidence_gaps: vec![],
             action: crate::portfolio::Action::Hold,
             action_rationale: String::new(),
-            what_changed: "new holding".into(),
         };
-        let ledger = test_ledger();
         let action = action_user_prompt(&ActionInput {
             dossier: &d,
-            subject: ActionSubject::RoleRisk { verdict: &rr, ledger: &ledger },
+            subject: ActionSubject::RoleRisk { verdict: &rr },
             engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
-            changes: None,
             profile: &d.profile,
         });
         assert!(
@@ -11923,12 +7360,11 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let role = role_risk_user_prompt(&RoleRiskInput {
-            input_delta: &[],
+            rates: rates_static(),
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             readout: &readout,
-            ledger_eval: None,
-            distilled: "No research findings.",
+            analysis: "No research findings.",
         });
         const SECTION: &str = "\nUNDERLYING POSITIONING (CFTC weekly, as of 2026-08-11)\nGold — \
                                speculator net +200000 contracts (50.0% of OI long), w/w +4000\n";
@@ -11942,13 +7378,13 @@ pub(crate) mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
+            analysis: "",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -11956,17 +7392,16 @@ pub(crate) mod tests {
         assert!(interp.contains(SECTION), "{interp}");
         let fund_section = interp.find("\nFUND\n").expect("fund section");
         let positioning = interp.find(SECTION).expect("positioning line");
-        let metrics = interp.find("\nFINANCIAL METRICS\n").expect("metrics section");
+        let metrics = interp.find("\nMETRICS\n").expect("metrics section");
         assert!(fund_section < positioning && positioning < metrics, "{interp}");
 
         let bare = fund_dossier(us_equity_fund());
         let role = role_risk_user_prompt(&RoleRiskInput {
-            input_delta: &[],
+            rates: rates_static(),
+            prior_split: None,
             dossier: &bare,
-            prior_ledger: bare.prior_ledger(),
             readout: &readout,
-            ledger_eval: None,
-            distilled: "No research findings.",
+            analysis: "No research findings.",
         });
         assert!(!role.contains("UNDERLYING POSITIONING"), "{role}");
     }
@@ -12046,15 +7481,15 @@ pub(crate) mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let interpret = interpret_request(
+        let interpret = thesis_request(
             "reasoner-model",
-            &InterpretationInput {
-                input_delta: &[],
+            &ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
                 dossier: &d,
-                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
-                distilled: "distilled findings",
-                ledger_eval: None,
+                analysis: "distilled findings",
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
@@ -12066,7 +7501,27 @@ pub(crate) mod tests {
         assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET);
         assert_eq!(opts["num_predict"], NUM_PREDICT_THINKING, "output reservation");
         assert_eq!(opts["temperature"], 1.0, "thinking-general row");
-        assert!(interpret.format_schema.is_some(), "grammar-constrained");
+        assert!(interpret.format_schema.is_none(), "the document is free prose");
+        // The appendix: the same conversation continued, thinking off under
+        // the nullable grammar, the non-thinking row at the shared context.
+        let appendix = appendix_request("reasoner-model", &ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
+            dossier: &d,
+            engine: &engine_output,
+            analysis: "distilled findings",
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+        }, "The document.");
+        assert_eq!(appendix.think, Some(false));
+        assert_eq!(appendix.keep_alive, Some(-1));
+        assert_eq!(appendix.format_schema.as_ref(), Some(&crate::portfolio::appendix_schema()));
+        let opts = appendix.options.as_ref().unwrap();
+        assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET, "one num_ctx per model");
+        assert_eq!(opts["num_predict"], NUM_PREDICT_APPENDIX, "output reservation");
+        assert_eq!(opts["temperature"], 0.7, "non-thinking-general row");
 
         let readout = RoleRiskReadout {
             class_label: "commodity fund".into(),
@@ -12081,12 +7536,11 @@ pub(crate) mod tests {
         let role_risk = role_risk_request(
             "reasoner-model",
             &RoleRiskInput {
-                input_delta: &[],
+            rates: rates_static(),
+            prior_split: None,
                 dossier: &d,
-                prior_ledger: d.prior_ledger(),
                 readout: &readout,
-                ledger_eval: None,
-                distilled: "No research findings.",
+                analysis: "No research findings.",
             },
         );
         assert_eq!(role_risk.think, Some(true));
@@ -12094,7 +7548,7 @@ pub(crate) mod tests {
         let opts = role_risk.options.as_ref().unwrap();
         assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET);
         assert_eq!(opts["num_predict"], NUM_PREDICT_THINKING, "output reservation");
-        assert!(role_risk.format_schema.is_some(), "grammar-constrained");
+        assert!(role_risk.format_schema.is_none(), "the document is free prose");
     }
 
     #[test]
@@ -12396,8 +7850,6 @@ pub(crate) mod tests {
             company_name: None,
             research: &research,
             priors: &[],
-            ledger_conditions: &[],
-            ledger_key_drivers: &[],
             holding_brief: "HOLDING\nTEST (name unavailable).\nPrice: (gap)\nDate: 2026-09-16.\n",
             consolidation_only: false,
             overlay_eligible: false,
@@ -12438,274 +7890,7 @@ pub(crate) mod tests {
         assert_eq!(analyst.fast_id(), "f");
     }
 
-    // ---- Thesis-ledger validation (the 6g seam) + prompt rendering -------------
-
-    use crate::portfolio::{ConditionCrossing, ConditionEvalState};
-
-    /// A prior priced ledger with one quantitative falsifier ("keep-1", carrying a
-    /// live first-breach streak), one quantitative trim trigger ("trig-1"), and one
-    /// qualitative falsifier ("qual-1").
-    fn prior_with_conditions() -> ThesisLedger {
-        ThesisLedger {
-            branch: LedgerBranch::Priced,
-            original_thesis: "the debut thesis".into(),
-            current_thesis: "the standing thesis".into(),
-            key_drivers: vec![KeyDriver {
-                driver_id: "kd-margins".into(),
-                name: "margins".into(),
-                series: Some(engine::LedgerSeries::NetMargin),
-            }],
-            monitor: vec![
-                MonitorScenario {
-                    scenario: ScenarioKind::Bear,
-                    conditions: "bear case".into(),
-                    probability_pct: 25.0,
-                    engine_target: Some(150.0),
-                },
-                MonitorScenario {
-                    scenario: ScenarioKind::Base,
-                    conditions: "base case".into(),
-                    probability_pct: 50.0,
-                    engine_target: Some(210.0),
-                },
-                MonitorScenario {
-                    scenario: ScenarioKind::Bull,
-                    conditions: "bull case".into(),
-                    probability_pct: 25.0,
-                    engine_target: Some(240.0),
-                },
-            ],
-            what_must_improve: "growth".into(),
-            what_must_not_break: "margins".into(),
-            conditions: vec![
-                LedgerCondition {
-                    condition_id: "keep-1".into(),
-                    role: ConditionRole::Falsifier,
-                    trigger_family: None,
-                    label: None,
-                    statement: "Trailing return collapses to -40%".into(),
-                    quant: Some(QuantCore {
-                        series: engine::LedgerSeries::TrailingReturn,
-                        comparator: LedgerComparator::Below,
-                        threshold: -0.40,
-                        margin: 0.02,
-                    }),
-                    downgraded_reason: None,
-                    technology_class: false,
-                    tripped: false,
-                    supersedes: None,
-                    eval_state: Some(ConditionEvalState {
-                        last_observation_id: Some("2026-07-15".into()),
-                        breach_streak: 1,
-                        first_breach_at: Some("2026-08-01".into()),
-                        ..Default::default()
-                    }),
-                },
-                LedgerCondition {
-                    condition_id: "trig-1".into(),
-                    role: ConditionRole::Trigger,
-                    trigger_family: Some(TriggerFamily::Trim),
-                    label: None,
-                    statement: "Trim after a 25% trailing run-up".into(),
-                    quant: Some(QuantCore {
-                        series: engine::LedgerSeries::TrailingReturn,
-                        comparator: LedgerComparator::Above,
-                        threshold: 0.25,
-                        margin: 0.0,
-                    }),
-                    downgraded_reason: None,
-                    technology_class: false,
-                    tripped: false,
-                    supersedes: None,
-                    eval_state: Some(ConditionEvalState::default()),
-                },
-                LedgerCondition {
-                    condition_id: "qual-1".into(),
-                    role: ConditionRole::Falsifier,
-                    trigger_family: None,
-                    label: None,
-                    statement: "A credible competitor ships at scale".into(),
-                    quant: None,
-                    downgraded_reason: None,
-                    technology_class: true,
-                    tripped: false,
-                    supersedes: None,
-                    eval_state: None,
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn debut_rewrite_freezes_the_original_thesis_and_stamps_engine_targets() {
-        let draft = stub_ledger_draft(None, "AAPL", false);
-        let targets = PriceTarget {
-            base: 210.0,
-            bear: 180.0,
-            bull: 240.0,
-            methodology: "m".into(),
-        };
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, Some(&targets), None);
-        assert_eq!(ledger.branch, LedgerBranch::Priced);
-        assert_eq!(ledger.original_thesis, ledger.current_thesis, "frozen at debut");
-        assert_eq!(ledger.conditions.len(), 2);
-        for c in &ledger.conditions {
-            assert!(!c.condition_id.is_empty());
-            if c.quant.is_some() {
-                assert!(c.eval_state.is_some(), "quant conditions start machine state");
-            }
-        }
-        // The engine's own scenario targets stamped into the monitor — never a
-        // model-written number.
-        let target_of = |k: ScenarioKind| {
-            ledger
-                .monitor
-                .iter()
-                .find(|m| m.scenario == k)
-                .unwrap()
-                .engine_target
-        };
-        assert_eq!(target_of(ScenarioKind::Bear), Some(180.0));
-        assert_eq!(target_of(ScenarioKind::Base), Some(210.0));
-        assert_eq!(target_of(ScenarioKind::Bull), Some(240.0));
-        assert!(audit.downgraded.is_empty());
-        assert!(audit.rejected_claims.is_empty());
-    }
-
-    /// Codex round 1 on group 4 (I11 + I13): a new or superseding quantitative
-    /// condition is stamped at authoring from the surface the prompt described,
-    /// per series — so the first full-pass evaluation after a debut has a stamp
-    /// to disagree with, where the run-1 ledger's instants used to carry none
-    /// until run 2's evaluation adopted silently across the very flip I13 gates.
-    #[test]
-    fn a_new_condition_is_stamped_at_authoring_per_series_so_a_flip_before_its_first_evaluation_is_caught(
-    ) {
-        use crate::portfolio::{ContinuityStamps, EquitySource, FalsifierDraft, StatementBasis};
-        let falsifier = |statement: &str, series: &str, threshold: f64| FalsifierDraft {
-            statement: statement.into(),
-            quant: Some(QuantCoreDraft {
-                series: series.into(),
-                comparator: "above".into(),
-                threshold,
-                margin: 0.0,
-            }),
-            technology_class: false,
-            tripped: false,
-        };
-        let draft_with = |de_threshold: f64| {
-            let mut draft = stub_ledger_draft(None, "AAPL", false);
-            draft.falsifiers = vec![
-                falsifier(
-                    &format!("debt/equity above {de_threshold}"),
-                    "debt-to-equity",
-                    de_threshold,
-                ),
-                falsifier("net margin above 90%", "net-margin", 0.9),
-                falsifier("price above $500", "price", 500.0),
-            ];
-            draft.triggers = vec![];
-            draft
-        };
-        let validate = |draft: &LedgerDraft, prior: Option<&ThesisLedger>, stamps| {
-            validate_ledger_rewrite_with_research(
-                draft,
-                prior,
-                None,
-                LedgerBranch::Priced,
-                false,
-                None,
-                None,
-                None,
-                &std::collections::HashSet::new(),
-                true,
-                stamps,
-            )
-        };
-        let state_of = |ledger: &ThesisLedger, kebab: &str| {
-            ledger
-                .conditions
-                .iter()
-                .find(|c| c.quant.as_ref().is_some_and(|q| q.series.as_kebab() == kebab))
-                .unwrap_or_else(|| panic!("{kebab}"))
-                .eval_state
-                .clone()
-                .expect("a quantitative condition starts machine state")
-        };
-
-        // The debut surface: TTM flows, FMP's quarterly equity.
-        let authored = ContinuityStamps {
-            statement_basis: Some(StatementBasis::Ttm),
-            equity_source: Some(EquitySource::FmpQuarterly),
-        };
-        let (debut, _) = validate(&draft_with(3.0), None, authored);
-        let de = state_of(&debut, "debt-to-equity");
-        assert_eq!(de.authored_statement_basis, Some(StatementBasis::Ttm));
-        assert_eq!(de.authored_equity_source, Some(EquitySource::FmpQuarterly));
-        assert_eq!(de.breach_streak, 0);
-        let nm = state_of(&debut, "net-margin");
-        assert_eq!(nm.authored_statement_basis, Some(StatementBasis::Ttm));
-        assert_eq!(
-            nm.authored_equity_source, None,
-            "a flow series never carries the equity stamp"
-        );
-        let px = state_of(&debut, "price");
-        assert_eq!(
-            (px.authored_statement_basis, px.authored_equity_source),
-            (None, None),
-            "a price series carries neither"
-        );
-
-        // The research-less wrapper stamps nothing — a surface with no lines.
-        let (bare, _) =
-            validate_ledger_rewrite(&draft_with(3.0), None, None, LedgerBranch::Priced, false, None, None);
-        let bare_de = state_of(&bare, "debt-to-equity");
-        assert_eq!(
-            (bare_de.authored_statement_basis, bare_de.authored_equity_source),
-            (None, None)
-        );
-
-        // A superseding core (edited threshold) starts a fresh streak stamped with
-        // THIS run's surface; a carried-verbatim core keeps its carried state.
-        let later = ContinuityStamps {
-            statement_basis: Some(StatementBasis::Annual),
-            equity_source: Some(EquitySource::SecAnnual),
-        };
-        let (next, audit) = validate(&draft_with(4.0), Some(&debut), later);
-        assert_eq!(audit.superseded.len(), 1, "{:?}", audit.superseded);
-        let de2 = state_of(&next, "debt-to-equity");
-        assert_eq!(de2.authored_statement_basis, Some(StatementBasis::Annual));
-        assert_eq!(de2.authored_equity_source, Some(EquitySource::SecAnnual));
-        let nm2 = state_of(&next, "net-margin");
-        assert_eq!(
-            nm2.authored_statement_basis,
-            Some(StatementBasis::Ttm),
-            "carried verbatim: the carried stamp stands"
-        );
-
-        // The teeth: the debut's D/E condition, evaluated for the first time on a
-        // surface whose equity leg fell to SEC's annual print, is typed
-        // unevaluable — never silently adopted and compared across the step.
-        let mut fin = strong_financials();
-        fin.statement_basis = Some(StatementBasis::Ttm);
-        fin.equity_source = Some(EquitySource::SecAnnual);
-        let mut metrics = engine::compute_metrics(&fin);
-        metrics.debt_to_equity = Some(3.5);
-        let eval = engine::evaluate_ledger_conditions(&debut, &metrics, &fin, "2026-08-20");
-        assert!(
-            eval.crossings.iter().all(|c| !c.statement.contains("debt/equity")),
-            "{:?}",
-            eval.crossings
-        );
-        assert!(
-            eval.unevaluable.iter().any(|u| u.contains("debt/equity above 3")
-                && u.contains(
-                    "equity source changed (FMP's latest quarterly balance sheet → SEC's"
-                )),
-            "{:?}",
-            eval.unevaluable
-        );
-    }
+    // ---- The engine's realized data + prompt rendering ----------------------------
 
     #[test]
     fn realized_engine_data_resolves_every_stored_value_at_exact_inequality() {
@@ -12739,7 +7924,7 @@ pub(crate) mod tests {
                 },
                 current,
                 d.financials.current_price,
-                realized_move_since_prior(&d),
+                d.financials.current_price.map(|s| s / 180.0 - 1.0),
                 bridge,
             )
         };
@@ -12763,8 +7948,7 @@ pub(crate) mod tests {
         let moved = read(Some(engine::SCENARIO_TARGET_PARAMETER_VERSION), Some(1.0), &nudged);
         let (name, pair) = moved.sub_scores.iter().find(|(_, p)| p.moved()).unwrap();
         assert_eq!(*name, "quality");
-        let (then, now) = comparison_safe_pair(pair.then, pair.now, 0);
-        assert_ne!(then, now);
+        assert_ne!(pair.then, pair.now);
         assert_eq!(moved.sub_scores.iter().filter(|(_, p)| p.moved()).count(), 1);
 
         // No certified bridge: the prior band side is withheld, never compared
@@ -12824,625 +8008,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn unresolvable_series_downgrades_to_qualitative_logged_never_dropped() {
-        let mut draft = stub_ledger_draft(None, "AAPL", false);
-        draft.falsifiers[0].quant = Some(QuantCoreDraft {
-            series: "made-up-series".into(),
-            comparator: "below".into(),
-            threshold: 1.0,
-            margin: 0.0,
-        });
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, None);
-        let f = ledger
-            .conditions
-            .iter()
-            .find(|c| c.role == ConditionRole::Falsifier)
-            .unwrap();
-        assert!(f.quant.is_none(), "downgraded to qualitative");
-        assert!(f.downgraded_reason.is_some());
-        assert!(f.eval_state.is_none(), "a downgraded condition carries no machine state");
-        assert_eq!(audit.downgraded.len(), 1);
-        assert_eq!(
-            ledger.conditions.len(),
-            2,
-            "downgraded, never dropped: {:?}",
-            ledger.conditions
-        );
-    }
-
-    #[test]
-    fn unchanged_core_carries_id_and_state_through_rewording() {
-        let prior = prior_with_conditions();
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        // Re-word the quantitative falsifier; the machine core is untouched.
-        draft.falsifiers[0].statement = "The price collapses more than 40% (reworded)".into();
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        let f = ledger
-            .conditions
-            .iter()
-            .find(|c| c.role == ConditionRole::Falsifier && c.quant.is_some())
-            .unwrap();
-        assert_eq!(f.condition_id, "keep-1", "unchanged core carries the id");
-        assert_eq!(
-            f.eval_state.as_ref().unwrap().breach_streak,
-            1,
-            "accumulated state carries through the re-wording"
-        );
-        assert!(audit.superseded.is_empty());
-        // The qualitative condition carried by unchanged statement.
-        let q = ledger.conditions.iter().find(|c| c.quant.is_none()).unwrap();
-        assert_eq!(q.condition_id, "qual-1");
-    }
-
-    #[test]
-    fn changed_core_supersedes_with_a_fresh_streak() {
-        let prior = prior_with_conditions();
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        // Edit the falsifier's threshold: same series + role, changed core.
-        draft.falsifiers[0].quant.as_mut().unwrap().threshold = -0.50;
-        draft.falsifiers[0].statement = "Trailing return collapses to -50%".into();
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        let f = ledger
-            .conditions
-            .iter()
-            .find(|c| c.role == ConditionRole::Falsifier && c.quant.is_some())
-            .unwrap();
-        assert_ne!(f.condition_id, "keep-1", "a threshold edit cannot inherit the id");
-        assert_eq!(f.supersedes.as_deref(), Some("keep-1"));
-        assert_eq!(
-            f.eval_state.as_ref().unwrap().breach_streak,
-            0,
-            "the successor starts a fresh streak"
-        );
-        assert_eq!(audit.superseded.len(), 1);
-        let closed = &audit.superseded[0];
-        assert_eq!(closed.condition.condition_id, "keep-1");
-        assert_eq!(closed.superseded_by.as_deref(), Some(f.condition_id.as_str()));
-        // The shared contract: the old condition closes WITH its accumulated
-        // state into the audit record — reconstructible after run pruning.
-        assert_eq!(
-            closed.condition.eval_state.as_ref().unwrap().breach_streak,
-            1,
-            "{:?}",
-            closed.condition.eval_state
-        );
-    }
-
-    #[test]
-    fn carry_is_order_independent_across_same_series_siblings() {
-        // Prior holds two same-series falsifiers; the draft emits a CHANGED
-        // version of keep-2 FIRST and the unchanged keep-1 second. The changed
-        // condition must supersede keep-2 — never consume the unchanged sibling
-        // keep-1 that a later draft condition still carries.
-        let mut prior = prior_with_conditions();
-        prior.conditions.push(LedgerCondition {
-            condition_id: "keep-2".into(),
-            role: ConditionRole::Falsifier,
-            trigger_family: None,
-            label: None,
-            statement: "Trailing return collapses harder to -60%".into(),
-            quant: Some(QuantCore {
-                series: engine::LedgerSeries::TrailingReturn,
-                comparator: LedgerComparator::Below,
-                threshold: -0.60,
-                margin: 0.02,
-            }),
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: Some(ConditionEvalState::default()),
-        });
-        let core_draft = |threshold: f64| QuantCoreDraft {
-            series: "trailing-return".into(),
-            comparator: "below".into(),
-            threshold,
-            margin: 0.02,
-        };
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        draft.falsifiers = vec![
-            FalsifierDraft {
-                statement: "Collapses even harder to -65%".into(),
-                quant: Some(core_draft(-0.65)), // keep-2's core, edited
-                technology_class: false,
-                tripped: false,
-            },
-            FalsifierDraft {
-                statement: "Trailing return collapses to -40%".into(),
-                quant: Some(core_draft(-0.40)), // keep-1's core, unchanged
-                technology_class: false,
-                tripped: false,
-            },
-        ];
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        let unchanged = ledger
-            .conditions
-            .iter()
-            .find(|c| c.quant.as_ref().map(|q| q.threshold) == Some(-0.40))
-            .unwrap();
-        assert_eq!(unchanged.condition_id, "keep-1", "the sibling's carry survives");
-        assert_eq!(unchanged.eval_state.as_ref().unwrap().breach_streak, 1);
-        let changed = ledger
-            .conditions
-            .iter()
-            .find(|c| c.quant.as_ref().map(|q| q.threshold) == Some(-0.65))
-            .unwrap();
-        assert_eq!(changed.supersedes.as_deref(), Some("keep-2"));
-        assert_eq!(audit.superseded.len(), 1);
-        assert_eq!(audit.superseded[0].condition.condition_id, "keep-2");
-    }
-
-    #[test]
-    fn two_edited_siblings_each_supersede_their_nearest_ancestor_in_either_order() {
-        // BOTH same-series siblings edited (nothing reserved): each draft must
-        // link to its nearest prior core — never to whichever sat first in the
-        // pool — and the pairing must not depend on draft order (Codex round 2,
-        // finding 2). Priors: -0.40 (keep-1) and -0.60 (keep-2); drafts: -0.65
-        // (nearest -0.60) and -0.45 (nearest -0.40).
-        let mut prior = prior_with_conditions();
-        prior.conditions.push(LedgerCondition {
-            condition_id: "keep-2".into(),
-            role: ConditionRole::Falsifier,
-            trigger_family: None,
-            label: None,
-            statement: "Trailing return collapses harder to -60%".into(),
-            quant: Some(QuantCore {
-                series: engine::LedgerSeries::TrailingReturn,
-                comparator: LedgerComparator::Below,
-                threshold: -0.60,
-                margin: 0.02,
-            }),
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: Some(ConditionEvalState::default()),
-        });
-        let falsifier = |threshold: f64| FalsifierDraft {
-            statement: format!("Edited at {:.0}%", threshold * 100.0),
-            quant: Some(QuantCoreDraft {
-                series: "trailing-return".into(),
-                comparator: "below".into(),
-                threshold,
-                margin: 0.02,
-            }),
-            technology_class: false,
-            tripped: false,
-        };
-        for order in [[-0.65, -0.45], [-0.45, -0.65]] {
-            let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-            draft.falsifiers = order.iter().map(|t| falsifier(*t)).collect();
-            let (ledger, audit) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-            let ancestor_of = |threshold: f64| {
-                ledger
-                    .conditions
-                    .iter()
-                    .find(|c| c.quant.as_ref().map(|q| q.threshold) == Some(threshold))
-                    .unwrap()
-                    .supersedes
-                    .clone()
-            };
-            assert_eq!(
-                ancestor_of(-0.65).as_deref(),
-                Some("keep-2"),
-                "draft order {order:?}"
-            );
-            assert_eq!(
-                ancestor_of(-0.45).as_deref(),
-                Some("keep-1"),
-                "draft order {order:?}"
-            );
-            assert_eq!(audit.superseded.len(), 2, "draft order {order:?}");
-        }
-    }
-
-    /// A bare priced prior ledger holding only the given trailing-return
-    /// falsifier cores (id, comparator, threshold, margin).
-    fn prior_of_cores(cores: &[(&str, LedgerComparator, f64, f64)]) -> ThesisLedger {
-        let mut prior = prior_with_conditions();
-        prior.conditions = cores
-            .iter()
-            .map(|(id, comparator, threshold, margin)| LedgerCondition {
-                condition_id: (*id).into(),
-                role: ConditionRole::Falsifier,
-                trigger_family: None,
-                label: None,
-                statement: format!("prior {id}"),
-                quant: Some(QuantCore {
-                    series: engine::LedgerSeries::TrailingReturn,
-                    comparator: *comparator,
-                    threshold: *threshold,
-                    margin: *margin,
-                }),
-                downgraded_reason: None,
-                technology_class: false,
-                tripped: false,
-                supersedes: None,
-                eval_state: Some(ConditionEvalState::default()),
-            })
-            .collect();
-        prior
-    }
-
-    #[test]
-    fn shared_nearest_ancestor_resolves_globally_in_either_order() {
-        // Codex round 3: both drafts (-0.41, -0.42) are locally nearest to the
-        // SAME prior (-0.40); greedy matching flips both links with draft order.
-        // The global assignment must give -0.41 → -0.40 and -0.42 → -0.60 (the
-        // minimum total distance) regardless of emission order.
-        let prior = prior_of_cores(&[
-            ("keep-1", LedgerComparator::Below, -0.40, 0.02),
-            ("keep-2", LedgerComparator::Below, -0.60, 0.02),
-        ]);
-        let falsifier = |threshold: f64| FalsifierDraft {
-            statement: format!("Edited at {:.0}%", threshold * 100.0),
-            quant: Some(QuantCoreDraft {
-                series: "trailing-return".into(),
-                comparator: "below".into(),
-                threshold,
-                margin: 0.02,
-            }),
-            technology_class: false,
-            tripped: false,
-        };
-        for order in [[-0.41, -0.42], [-0.42, -0.41]] {
-            let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-            draft.falsifiers = order.iter().map(|t| falsifier(*t)).collect();
-            let (ledger, _) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-            let ancestor_of = |threshold: f64| {
-                ledger
-                    .conditions
-                    .iter()
-                    .find(|c| c.quant.as_ref().map(|q| q.threshold) == Some(threshold))
-                    .unwrap()
-                    .supersedes
-                    .clone()
-            };
-            assert_eq!(
-                ancestor_of(-0.41).as_deref(),
-                Some("keep-1"),
-                "draft order {order:?}"
-            );
-            assert_eq!(
-                ancestor_of(-0.42).as_deref(),
-                Some("keep-2"),
-                "draft order {order:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn equal_core_trigger_families_never_exchange_identity_on_reorder() {
-        // Codex round 4: trim and sell triggers on ONE machine core are distinct
-        // pre-commitments (the dedup contract) — reordering them must never swap
-        // their stable ids, streaks, or acknowledgments.
-        let price_core = QuantCore {
-            series: engine::LedgerSeries::Price,
-            comparator: LedgerComparator::Above,
-            threshold: 150.0,
-            margin: 0.0,
-        };
-        let mut prior = prior_with_conditions();
-        prior.conditions = vec![
-            LedgerCondition {
-                condition_id: "trim-1".into(),
-                role: ConditionRole::Trigger,
-                trigger_family: Some(TriggerFamily::Trim),
-                label: None,
-                statement: "Trim above the priced-in ceiling of $150".into(),
-                quant: Some(price_core.clone()),
-                downgraded_reason: None,
-                technology_class: false,
-                tripped: false,
-                supersedes: None,
-                // Distinct marker state: a live first-breach streak.
-                eval_state: Some(ConditionEvalState {
-                    last_observation_id: Some("2026-07-15".into()),
-                    breach_streak: 1,
-                    first_breach_at: Some("2026-08-01".into()),
-                    ..Default::default()
-                }),
-            },
-            LedgerCondition {
-                condition_id: "sell-1".into(),
-                role: ConditionRole::Trigger,
-                trigger_family: Some(TriggerFamily::Sell),
-                label: None,
-                statement: "Exit fully above the priced-in ceiling of $150".into(),
-                quant: Some(price_core.clone()),
-                downgraded_reason: None,
-                technology_class: false,
-                tripped: false,
-                supersedes: None,
-                // Distinct marker state: an acknowledged prior confirmation.
-                eval_state: Some(ConditionEvalState {
-                    last_observation_id: Some("2026-07-10".into()),
-                    acknowledged_observation_id: Some("2026-07-10".into()),
-                    ..Default::default()
-                }),
-            },
-        ];
-        let trigger = |family: &str| TriggerDraft {
-            statement: format!("{family} above the priced-in ceiling of $150"),
-            family: family.into(),
-            quant: Some(QuantCoreDraft {
-                series: "price".into(),
-                comparator: "above".into(),
-                threshold: 150.0,
-                margin: 0.0,
-            }),
-            fired: false,
-        };
-        for order in [["trim", "sell"], ["sell", "trim"]] {
-            let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-            draft.triggers = order.iter().map(|f| trigger(f)).collect();
-            let (ledger, audit) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-            let by_family = |family: TriggerFamily| {
-                ledger
-                    .conditions
-                    .iter()
-                    .find(|c| c.trigger_family == Some(family))
-                    .unwrap()
-            };
-            let trim = by_family(TriggerFamily::Trim);
-            assert_eq!(trim.condition_id, "trim-1", "draft order {order:?}");
-            assert_eq!(
-                trim.eval_state.as_ref().unwrap().breach_streak,
-                1,
-                "trim keeps its own streak, draft order {order:?}"
-            );
-            let sell = by_family(TriggerFamily::Sell);
-            assert_eq!(sell.condition_id, "sell-1", "draft order {order:?}");
-            assert_eq!(
-                sell.eval_state
-                    .as_ref()
-                    .unwrap()
-                    .acknowledged_observation_id
-                    .as_deref(),
-                Some("2026-07-10"),
-                "sell keeps its own acknowledgment, draft order {order:?}"
-            );
-            assert!(audit.superseded.is_empty(), "draft order {order:?}");
-            assert!(audit.closed.is_empty(), "draft order {order:?}");
-        }
-    }
-
-    #[test]
-    fn supersession_lineage_never_crosses_trigger_families() {
-        // A changed trim core with only a SELL prior on the same series: no link
-        // — the sell prior closes as removed, the trim condition starts fresh.
-        let mut prior = prior_with_conditions();
-        prior.conditions = vec![LedgerCondition {
-            condition_id: "sell-1".into(),
-            role: ConditionRole::Trigger,
-            trigger_family: Some(TriggerFamily::Sell),
-            label: None,
-            statement: "Exit fully above the priced-in ceiling of $150".into(),
-            quant: Some(QuantCore {
-                series: engine::LedgerSeries::Price,
-                comparator: LedgerComparator::Above,
-                threshold: 150.0,
-                margin: 0.0,
-            }),
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: Some(ConditionEvalState::default()),
-        }];
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        draft.triggers = vec![TriggerDraft {
-            statement: "Trim above a higher ceiling of $180".into(),
-            family: "trim".into(),
-            quant: Some(QuantCoreDraft {
-                series: "price".into(),
-                comparator: "above".into(),
-                threshold: 180.0,
-                margin: 0.0,
-            }),
-            fired: false,
-        }];
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        let trim = ledger
-            .conditions
-            .iter()
-            .find(|c| c.trigger_family == Some(TriggerFamily::Trim))
-            .unwrap();
-        assert_eq!(trim.supersedes, None, "no cross-family lineage");
-        assert!(audit.superseded.is_empty());
-        assert!(
-            audit
-                .closed
-                .iter()
-                .any(|c| c.condition.condition_id == "sell-1"),
-            "{:?}",
-            audit.closed
-        );
-    }
-
-    #[test]
-    fn margin_participates_in_supersession_lineage() {
-        // Two priors identical except for margin (margin is part of the machine
-        // core); an edited draft must link to the margin-nearest ancestor, never
-        // fall back to pool order.
-        let prior = prior_of_cores(&[
-            ("tight", LedgerComparator::Below, -0.40, 0.02),
-            ("wide", LedgerComparator::Below, -0.40, 0.10),
-        ]);
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        draft.falsifiers = vec![FalsifierDraft {
-            statement: "Widened noise guard at -40%".into(),
-            quant: Some(QuantCoreDraft {
-                series: "trailing-return".into(),
-                comparator: "below".into(),
-                threshold: -0.40,
-                margin: 0.09,
-            }),
-            technology_class: false,
-            tripped: false,
-        }];
-        let (ledger, _) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        let edited = ledger
-            .conditions
-            .iter()
-            .find(|c| c.quant.as_ref().map(|q| q.margin) == Some(0.09))
-            .unwrap();
-        assert_eq!(edited.supersedes.as_deref(), Some("wide"));
-    }
-
-    #[test]
-    fn removed_conditions_close_into_the_audit() {
-        let prior = prior_with_conditions();
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        draft.triggers.clear();
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        assert!(!ledger.conditions.iter().any(|c| c.condition_id == "trig-1"));
-        assert!(
-            audit
-                .closed
-                .iter()
-                .any(|c| c.condition.condition_id == "trig-1" && c.superseded_by.is_none()),
-            "{:?}",
-            audit.closed
-        );
-    }
-
-    #[test]
-    fn tripped_claims_are_honored_only_against_a_confirmed_crossing() {
-        let prior = prior_with_conditions();
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        draft.falsifiers[0].tripped = true; // quantitative (keep-1)
-        draft.falsifiers[1].tripped = true; // qualitative (qual-1)
-
-        // No engine crossing at all: both claims cleared and logged — the ledger
-        // cannot be quietly rewritten to fit a new verdict.
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        assert!(ledger.conditions.iter().all(|c| !c.tripped));
-        assert_eq!(audit.rejected_claims.len(), 2, "{:?}", audit.rejected_claims);
-
-        // A confirmed crossing on keep-1: the quantitative claim is honored, the
-        // consumed crossing's observation stamped acknowledging; the qualitative
-        // claim stays rejected (no source-backed finding exists).
-        let eval = LedgerEvaluation {
-            crossings: vec![ConditionCrossing {
-                condition_id: "keep-1".into(),
-                statement: "Trailing return collapses to -40%".into(),
-                role: ConditionRole::Falsifier,
-                outcome: CrossingOutcome::Confirmed,
-                observed_value: -0.45,
-                threshold: -0.40,
-                observation_id: "2026-07-16".into(),
-                // The engine stamped this on the confirming pass with the run's
-                // ET session date (`run_date`).
-                confirmed_at: Some("2026-07-16".into()),
-            }],
-            unevaluable: vec![],
-            unevaluable_series: vec![],
-            updated_states: vec![(
-                "keep-1".into(),
-                ConditionEvalState {
-                    last_observation_id: Some("2026-07-16".into()),
-                    breach_streak: 2,
-                    confirmed_at: Some("2026-08-03".into()),
-                    ..Default::default()
-                },
-            )],
-        };
-        let (ledger, audit) = validate_ledger_rewrite(
-            &draft,
-            Some(&prior),
-            Some(&eval),
-            LedgerBranch::Priced,
-            false,
-            None,
-            None,
-        );
-        let f = ledger
-            .conditions
-            .iter()
-            .find(|c| c.condition_id == "keep-1")
-            .unwrap();
-        assert!(f.tripped);
-        assert_eq!(
-            f.eval_state
-                .as_ref()
-                .unwrap()
-                .acknowledged_observation_id
-                .as_deref(),
-            Some("2026-07-16"),
-            "the consumed confirmation acknowledges its observation"
-        );
-        assert_eq!(audit.rejected_claims.len(), 1, "{:?}", audit.rejected_claims);
-        assert_eq!(audit.crossings.len(), 1, "the consumed crossing rides the audit");
-    }
-
-    #[test]
-    fn a_qualitative_tripped_claim_is_honored_by_a_source_backed_research_finding() {
-        // The 6g research leg (`docs/portfolio-workflow.md` §Step 6g): a
-        // qualitative falsifier claimed tripped is honored when a fresh
-        // distilled claim references its carried condition id — and only then.
-        let prior = prior_with_conditions();
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        draft.falsifiers[1].tripped = true; // qualitative (qual-1)
-
-        let supported: std::collections::HashSet<String> =
-            ["qual-1".to_string()].into_iter().collect();
-        let (ledger, audit) = validate_ledger_rewrite_with_research(
-            &draft,
-            Some(&prior),
-            None,
-            LedgerBranch::Priced,
-            false,
-            None,
-            None,
-            None,
-            &supported,
-            true,
-            crate::portfolio::ContinuityStamps::NONE,
-        );
-        let q = ledger
-            .conditions
-            .iter()
-            .find(|c| c.condition_id == "qual-1")
-            .unwrap();
-        assert!(q.tripped, "{:?}", audit.rejected_claims);
-        assert!(audit.rejected_claims.is_empty());
-
-        // A finding referencing some OTHER condition never certifies this one.
-        let unrelated: std::collections::HashSet<String> =
-            ["other-id".to_string()].into_iter().collect();
-        let (ledger, audit) = validate_ledger_rewrite_with_research(
-            &draft,
-            Some(&prior),
-            None,
-            LedgerBranch::Priced,
-            false,
-            None,
-            None,
-            None,
-            &unrelated,
-            true,
-            crate::portfolio::ContinuityStamps::NONE,
-        );
-        assert!(ledger.conditions.iter().all(|c| !c.tripped));
-        assert!(audit
-            .rejected_claims
-            .iter()
-            .any(|r| r.contains("no source-backed research finding")));
-    }
-
-    #[test]
     fn the_assumption_recompute_is_shadow_only() {
         // Ruled 2026-08-24: the engine's hypothetical refinement records as a
         // would-have line; nothing splices into the baseline (structurally —
@@ -13473,46 +8038,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn key_driver_ids_carry_by_name_and_mint_fresh_otherwise() {
-        // Ruled 2026-08-24: app-assigned stable driver identity — a rewrite
-        // whose driver name carries keeps the prior id; a new name mints one.
-        let prior = prior_with_conditions();
-        let mut draft = stub_ledger_draft(None, "WID", false);
-        draft.key_drivers = vec![
-            KeyDriverDraft {
-                name: "margins".into(),
-                series: None,
-            },
-            KeyDriverDraft {
-                name: "unit demand".into(),
-                series: None,
-            },
-        ];
-        let (ledger, _) = validate_ledger_rewrite(
-            &draft,
-            Some(&prior),
-            None,
-            LedgerBranch::Priced,
-            false,
-            None,
-            None,
-        );
-        let carried = ledger
-            .key_drivers
-            .iter()
-            .find(|d| d.name == "margins")
-            .unwrap();
-        assert_eq!(carried.driver_id, "kd-margins", "same-name driver keeps its id");
-        let fresh = ledger
-            .key_drivers
-            .iter()
-            .find(|d| d.name == "unit demand")
-            .unwrap();
-        assert!(!fresh.driver_id.is_empty());
-        assert_ne!(fresh.driver_id, "kd-margins");
-    }
-
-    #[test]
     fn the_research_fraud_claim_is_advisory_and_never_a_hard_trigger() {
         // Ruled 2026-08-24: the research-fed claim renders as clearly-labeled
         // attention evidence — the hard-forensic state comes from the
@@ -13533,9 +8058,10 @@ pub(crate) mod tests {
              holding is not established."
         );
         assert!(crate::portfolio::fixed_evidence::banned_hits(&block).is_empty(), "{block}");
-        // The indicator line names the ledger's driver only where the id verified.
+        // The indicator line: the measure, its value, direction and date, and
+        // its source — the driver clause went with the ledger it named.
         use crate::portfolio::distill::{IndicatorDirection, ValidatedLeadingIndicator};
-        let mut ind = ValidatedLeadingIndicator {
+        let ind = ValidatedLeadingIndicator {
             metric_name: "EU BEV registrations".into(),
             value: 21_400.0,
             direction: IndicatorDirection::InflectingUp,
@@ -13544,424 +8070,13 @@ pub(crate) mod tests {
             confirms_driver_id: "d-energy".into(),
             driver_verified: false,
         };
-        let ledger = ThesisLedger {
-            key_drivers: vec![crate::portfolio::KeyDriver {
-                driver_id: "d-energy".into(),
-                name: "Energy storage growth".into(),
-                series: None,
-            }],
-            ..test_ledger()
-        };
-        let unverified = render_leading_indicator(&ind, Some(&ledger));
+        let line = render_leading_indicator(&ind);
         assert_eq!(
-            unverified,
+            line,
             "Leading indicator: EU BEV registrations = 21400 (inflecting up, as of 2026-08); \
              source https://www.acea.auto/august."
         );
-        ind.driver_verified = true;
-        let verified = render_leading_indicator(&ind, Some(&ledger));
-        assert!(verified.contains(", confirming the driver \"Energy storage growth\"; source"), "{verified}");
-        for line in [&unverified, &verified] {
-            assert!(crate::portfolio::fixed_evidence::banned_hits(line).is_empty(), "{line}");
-        }
-    }
-
-    #[test]
-    fn role_risk_reductions_bind_condition_only_monitor_and_no_add_trigger() {
-        let mut draft = stub_ledger_draft(None, "BND", true);
-        draft.triggers.push(TriggerDraft {
-            statement: "Add on weakness".into(),
-            family: "add".into(),
-            quant: None,
-            fired: false,
-        });
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::RoleRiskOnly, false, None, None);
-        assert_eq!(ledger.branch, LedgerBranch::RoleRiskOnly);
-        assert!(
-            ledger.monitor.iter().all(|m| m.engine_target.is_none()),
-            "condition-only monitor on this branch"
-        );
-        assert!(
-            !ledger
-                .conditions
-                .iter()
-                .any(|c| c.trigger_family == Some(TriggerFamily::Add)),
-            "no add trigger persists on the reduced spine"
-        );
-        assert!(
-            audit.rejected_claims.iter().any(|r| r.contains("add trigger")),
-            "{:?}",
-            audit.rejected_claims
-        );
-    }
-
-    #[test]
-    fn role_risk_guard_strips_engine_targets_even_when_the_call_site_passes_them() {
-        // The condition-only monitor is structural inside the validator, not a
-        // call-site convention: a role_risk_only rewrite handed engine targets
-        // still persists none.
-        let draft = stub_ledger_draft(None, "BND", true);
-        let targets = PriceTarget {
-            base: 210.0,
-            bear: 180.0,
-            bull: 240.0,
-            methodology: "m".into(),
-        };
-        let (ledger, _) = validate_ledger_rewrite(
-            &draft,
-            None,
-            None,
-            LedgerBranch::RoleRiskOnly,
-            false,
-            Some(&targets),
-            Some(195.0),
-        );
-        assert!(ledger.monitor.iter().all(|m| m.engine_target.is_none()));
-    }
-
-    #[test]
-    fn duplicate_conditions_drop_with_a_logged_note_and_never_touch_the_pool() {
-        // Prior holds TWO same-series falsifiers with different thresholds; the
-        // draft repeats one condition twice. The duplicate must be dropped before
-        // carry matching — otherwise it would wrongly supersede the sibling.
-        let mut prior = prior_with_conditions();
-        prior.conditions.push(LedgerCondition {
-            condition_id: "keep-2".into(),
-            role: ConditionRole::Falsifier,
-            trigger_family: None,
-            label: None,
-            statement: "Trailing return collapses harder to -60%".into(),
-            quant: Some(QuantCore {
-                series: engine::LedgerSeries::TrailingReturn,
-                comparator: LedgerComparator::Below,
-                threshold: -0.60,
-                margin: 0.02,
-            }),
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: Some(ConditionEvalState::default()),
-        });
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        // Duplicate the first falsifier (the -0.40 core) and drop the -0.60 one
-        // from the draft, so a leaked duplicate would supersede "keep-2".
-        let dup = draft.falsifiers[0].clone();
-        draft
-            .falsifiers
-            .retain(|f| f.quant.as_ref().map(|q| q.threshold) != Some(-0.60));
-        draft.falsifiers.push(dup);
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        assert_eq!(audit.duplicates.len(), 1, "{:?}", audit.duplicates);
-        // Exactly one -0.40 condition persists, carrying its id; keep-2 was
-        // closed (removed by the rewrite), never superseded by the duplicate.
-        let kept: Vec<&LedgerCondition> = ledger
-            .conditions
-            .iter()
-            .filter(|c| c.quant.as_ref().map(|q| q.threshold) == Some(-0.40))
-            .collect();
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].condition_id, "keep-1");
-        assert!(audit.superseded.is_empty(), "{:?}", audit.superseded);
-        assert!(
-            audit
-                .closed
-                .iter()
-                .any(|c| c.condition.condition_id == "keep-2"),
-            "{:?}",
-            audit.closed
-        );
-
-        // A duplicated qualitative statement dedups the same way.
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        let dup = draft
-            .falsifiers
-            .iter()
-            .find(|f| f.quant.is_none())
-            .unwrap()
-            .clone();
-        draft.falsifiers.push(dup);
-        let (_, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
-        assert_eq!(audit.duplicates.len(), 1, "{:?}", audit.duplicates);
-    }
-
-    #[test]
-    fn ledger_data_and_task_item_render_debut_prior_and_crossings() {
-        // Debut: the data section says none; the shared task item carries the
-        // authoring contract as requirements on the output (`portfolio-v42`).
-        let none = prior_ledger_data_section(None, None, &[]);
-        assert!(none.contains("\nPRIOR THESIS LEDGER\nNone: this is the first analysis.\n"), "{none}");
-        let stock = LedgerSeriesContract::build(false, None, None);
-        let item = ledger_task_item(5, &stock, LedgerItemBranch::PricedStock, false);
-        assert!(item.starts_with("\n5. ledger — the position's initial thesis ledger:\n"), "{item}");
-        assert!(item.contains("Every falsifier and trigger has a quant field."), "{item}");
-        assert!(item.contains("technology_class is true only for a third party's technology event"), "{item}");
-        assert!(item.contains("with family \"add\", \"trim\" or \"sell\". fired is false."), "{item}");
-        assert!(item.contains("(\"below 16%\" on gross-margin is 0.16)"), "{item}");
-        assert!(!item.contains("for a fund, the exposure it supplies"), "{item}");
-        for narration in ["REWRITE THE THESIS LEDGER", "the app", "engine", "downgrades", "machine-evaluated", "action call"] {
-            assert!(!item.contains(narration), "`{narration}` leaked: {item}");
-        }
-        // The fund form on both fund variants (ruled 2026-09-17): the fund
-        // threshold example and the driver clause; on the role/risk branch the
-        // trim / sell families and the market-analysis reference on the thesis
-        // line, which the priced fund message's outlook item carries instead.
-        let fund = LedgerSeriesContract::build(true, None, None);
-        let rr = ledger_task_item(2, &fund, LedgerItemBranch::RoleRisk, false);
-        assert!(rr.starts_with("\n2. ledger — the position's initial thesis ledger:\n"), "{rr}");
-        assert!(
-            rr.contains("- thesis: the standing thesis, in a few sentences, drawing on MARKET ANALYSIS for the market setup.\n"),
-            "{rr}"
-        );
-        assert!(
-            rr.contains("- key_drivers: what the thesis depends on — for a fund, the exposure it supplies, its cost and its fidelity to its mandate. Where a driver"),
-            "{rr}"
-        );
-        assert!(
-            rr.contains("- triggers: pre-committed conditions for trimming or selling, with family \"trim\" or \"sell\". fired is false.\n"),
-            "{rr}"
-        );
-        assert!(!rr.contains("\"add\""), "{rr}");
-        assert!(rr.contains("(\"above 0.75%\" on expense-ratio is 0.0075)"), "{rr}");
-        assert!(rr.contains("0.0005 on an expense ratio of 0.0075"), "{rr}");
-        assert!(rr.contains("Price support"), "{rr}");
-        let priced_fund = ledger_task_item(5, &fund, LedgerItemBranch::PricedFund, false);
-        assert!(priced_fund.contains("for a fund, the exposure it supplies"), "{priced_fund}");
-        assert!(priced_fund.contains("(\"above 0.75%\" on expense-ratio is 0.0075)"), "{priced_fund}");
-        assert!(priced_fund.contains("with family \"add\", \"trim\" or \"sell\"."), "{priced_fund}");
-        assert!(!priced_fund.contains("drawing on MARKET ANALYSIS"), "{priced_fund}");
-        // On continuity the carry rule and the tripped / fired rule.
-        let cont = ledger_task_item(5, &stock, LedgerItemBranch::PricedStock, true);
-        assert!(cont.contains("rewritten from PRIOR THESIS LEDGER"), "{cont}");
-        assert!(cont.contains("tripped is true only where CONDITION CROSSINGS THIS RUN shows a confirmed"), "{cont}");
-        assert!(cont.contains("marked research-supported evidences it"), "{cont}");
-        assert!(cont.contains("fired follows the same rule as tripped."), "{cont}");
-        assert!(cont.contains("a kept one unchanged even after a crossing"), "{cont}");
-        assert!(!item.contains("kept one"), "{item}");
-
-        // A prior ledger renders whole — the first prior-run content in the prompt —
-        // with the engine's crossings and typed unevaluable notes beside it.
-        let prior = prior_with_conditions();
-        let eval = LedgerEvaluation {
-            crossings: vec![ConditionCrossing {
-                condition_id: "keep-1".into(),
-                statement: "Trailing return collapses to -40%".into(),
-                role: ConditionRole::Falsifier,
-                outcome: CrossingOutcome::Confirmed,
-                observed_value: -0.45,
-                threshold: -0.40,
-                observation_id: "2026-07-16".into(),
-                // The engine stamped this on the confirming pass with the run's
-                // ET session date (`run_date`).
-                confirmed_at: Some("2026-07-16".into()),
-            }],
-            unevaluable: vec!["condition 'x': net margin is a gap this run".into()],
-            unevaluable_series: vec![engine::LedgerSeries::NetMargin],
-            updated_states: vec![],
-        };
-        let s = prior_ledger_data_section(Some(&prior), Some(&eval), &[]);
-        assert!(s.contains("the debut thesis"), "original thesis renders: {s}");
-        assert!(s.contains("the standing thesis"), "{s}");
-        assert!(s.contains("CONFIRMED BREACH"), "{s}");
-        assert!(s.contains("unevaluable this run"), "{s}");
-        assert!(s.contains("breach streak 1"), "the live streak renders: {s}");
-        // The FULL machine core renders, margin included — an unstated margin
-        // would force the model to guess one, and a guessed mismatch reads as a
-        // core edit that supersedes the condition (Codex round 1, finding 1).
-        assert!(s.contains("(margin 0.02)"), "{s}");
-        // The ledger carries no target-weight range under the tunnel-vision
-        // contract — a weight is a book fact, retired from the per-holding loop.
-        assert!(!s.contains("Target weight range"), "{s}");
-
-        // The research-supported mark (2026-08-24 review F3): a fresh research
-        // entry tied to a condition marks that row — by statement, the id held
-        // out — and the task item names the mark as the qualitative leg;
-        // without a tied entry no row is marked and the retired "none are
-        // available this run" sentence is gone for good.
-        assert!(!s.contains("RESEARCH-SUPPORTED THIS RUN:"), "{s}");
-        assert!(!s.contains("none are available this run"), "{s}");
-        let tied = vec![crate::portfolio::DeltaEntry {
-            id: "research-1".into(),
-            label: "research finding (t): a claim [https://x.example/a]".into(),
-            related_condition_id: Some("keep-1".into()),
-        }];
-        let marked = prior_ledger_data_section(Some(&prior), Some(&eval), &tied);
-        assert!(
-            marked.contains(
-                " — research-supported: a finding in CHANGES SINCE THE PRIOR ANALYSIS bears on \
-                 this condition\n"
-            ),
-            "{marked}"
-        );
-        assert!(!marked.contains("RESEARCH-SUPPORTED THIS RUN:"), "{marked}");
-        assert!(!marked.contains("keep-1"), "condition ids stay out of the prompt: {marked}");
-
-        // Both interpretation messages carry the section and the item.
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        // Both messages state the ledger as a Part 2 item over the prior ledger
-        // rendered as data (`portfolio-v40`; the role/risk message since
-        // `portfolio-v42`).
-        assert!(user.contains("\n5. ledger — the position's initial thesis ledger:\n"), "{user}");
-        assert!(user.contains("\nPRIOR THESIS LEDGER\nNone: this is the first analysis.\n"), "{user}");
-        assert!(!user.contains("REWRITE THE THESIS LEDGER"), "{user}");
-        for system in [interpretation_system_prompt(false, false), role_risk_system_prompt(false)] {
-            assert!(system.contains("ledger") && !system.contains("THESIS LEDGER"), "{system}");
-        }
-        let rr = role_risk_user_prompt(&RoleRiskInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: None,
-            readout: &RoleRiskReadout::default(),
-            ledger_eval: None,
-            distilled: "",
-        });
-        assert!(rr.contains("\n2. ledger — the position's initial thesis ledger:\n"), "{rr}");
-        assert!(rr.contains("\nPRIOR THESIS LEDGER\nNone: this is the first analysis.\n"), "{rr}");
-        assert!(!rr.contains("REWRITE THE THESIS LEDGER"), "{rr}");
-    }
-
-    /// The 2026-08-24 large-scale review's Priority-1 minor: the vocabulary said
-    /// "TTM net margin" while an annual-fallback holding's thresholds were
-    /// evaluated against annual prints and no prompt said so. The labels now name
-    /// no basis and the section states the holding's basis once, beside them.
-    #[test]
-    fn ledger_section_states_the_statement_basis() {
-        use crate::portfolio::{EquitySource, StatementBasis};
-        // The flow family and the instants pinned by name, so a production drift to
-        // a hand-written list or a predicate change shows here, not only in the gate
-        // (Codex round 1: the gate's whole family is not basis-homogeneous).
-        const FLOW: &str = "Flow metrics (net margin, gross margin, revenue growth, P/E, P/S)";
-        const INSTANTS: &str = "Balance-sheet metrics (debt / equity, P/B)";
-        // The basis line and the metric lines, as FINANCIAL METRICS renders them
-        // on both messages (`portfolio-v42`).
-        let section = |basis: Option<StatementBasis>, equity: Option<EquitySource>| {
-            statement_basis_line(basis, equity, false)
-                + &LedgerSeriesContract::build(false, None, None).metric_lines()
-        };
-
-        let ttm = section(Some(StatementBasis::Ttm), Some(EquitySource::FmpQuarterly));
-        // The metric lines carry the label, the unit and the confirmation rule,
-        // and name no basis (`portfolio-v40`).
-        assert!(
-            ttm.contains("- net margin [net-margin]: (gap) — a fraction, never a percent (0.16 means 16%); confirmed by one filing\n"),
-            "{ttm}"
-        );
-        assert!(
-            ttm.contains("- gross margin [gross-margin]: (gap) — a fraction, never a percent (0.16 means 16%); confirmed by one filing\n"),
-            "{ttm}"
-        );
-        assert!(
-            !ttm.contains("TTM net margin") && !ttm.contains("TTM gross margin"),
-            "{ttm}"
-        );
-        // One sentence per family: the flow basis, then which balance sheet
-        // supplied the instants' equity (Codex I13, `portfolio-v23`).
-        assert!(
-            ttm.contains(&format!(
-                "{FLOW} are on a TTM (four trailing quarters) basis. {INSTANTS} are from FMP's \
-                 latest quarterly balance sheet.\n"
-            )),
-            "{ttm}"
-        );
-        for narration in ["statement basis this run:", "Author their thresholds", "supplied this run by"] {
-            assert!(!ttm.contains(narration), "`{narration}` leaked: {ttm}");
-        }
-
-        let annual = section(Some(StatementBasis::Annual), Some(EquitySource::SecAnnual));
-        assert!(
-            annual.contains(&format!(
-                "{FLOW} are on a SEC annual (latest full year — the quarterly window fell back) \
-                 basis. {INSTANTS} are from SEC's latest annual stockholders' equity (the \
-                 quarterly balance-sheet leg fell back).\n"
-            )),
-            "{annual}"
-        );
-        assert!(
-            !annual.contains("TTM (four trailing quarters)")
-                && !annual.contains("FMP's latest quarterly balance sheet"),
-            "{annual}"
-        );
-
-        // No statement lines and no equity: each sentence says so rather than
-        // naming a basis or a source.
-        let none = section(None, None);
-        assert!(
-            none.contains(&format!(
-                "{FLOW} have no statement basis this run — no income-statement lines were \
-                 available — so they are not evaluable here. {INSTANTS} have no balance sheet \
-                 this run — no equity line was available — so they are not evaluable here.\n"
-            )),
-            "{none}"
-        );
-        assert!(!none.contains(" are on a ") && !none.contains(" are from "), "{none}");
-
-        // A balance-sheet instant standing alone (FMP's own beside thin quarters):
-        // no flow basis, but the instants still read — and name their source.
-        let instant_only = section(None, Some(EquitySource::FmpQuarterly));
-        assert!(
-            instant_only.contains(&format!("{FLOW} have no statement basis this run")),
-            "{instant_only}"
-        );
-        assert!(
-            instant_only.contains(&format!("{INSTANTS} are from FMP's latest quarterly balance sheet.\n")),
-            "{instant_only}"
-        );
-        assert!(!instant_only.contains("have no balance sheet this run"), "{instant_only}");
-
-        // A fund has no statement series: its line names the market metrics'
-        // cadence and the expense ratio's source instead.
-        let rr = statement_basis_line(None, None, true);
-        assert!(
-            rr.contains("The market metrics are daily; the expense ratio is the fund's published figure.\n"),
-            "{rr}"
-        );
-        assert!(!rr.contains("statement basis") && !rr.contains(FLOW), "{rr}");
-
-        // The interpretation message reads the dossier's stamped basis and source,
-        // once, under FINANCIAL METRICS.
-        let mut d = dossier(AssetClass::Stock, strong_financials());
-        d.financials.statement_basis = Some(StatementBasis::Annual);
-        d.financials.equity_source = Some(EquitySource::SecAnnual);
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: d.prior_ledger(),
-            engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        let line = format!(
-            "\nFINANCIAL METRICS\n{FLOW} are on a SEC annual (latest full year — the quarterly \
-             window fell back) basis. {INSTANTS} are from SEC's latest annual stockholders' \
-             equity (the quarterly balance-sheet leg fell back).\n"
-        );
-        assert_eq!(user.matches(&line).count(), 1, "{user}");
-        assert!(!user.contains("METRICS AVAILABLE FOR QUANTITATIVE LEDGER CONDITIONS"), "{user}");
+        assert!(crate::portfolio::fixed_evidence::banned_hits(&line).is_empty(), "{line}");
     }
 
     /// Finding 4 (`docs/verification/2026-08-10-big-run-attempt-1.md`): the header
@@ -14089,389 +8204,271 @@ pub(crate) mod tests {
         keys
     }
 
+    /// The thesis conversation's requests are scoped to the vehicle and the
+    /// debut / continuity shape: the thesis request free prose under thinking
+    /// (no grammar), its system line naming an equity analyst on a stock and an
+    /// investment analyst on a fund, its METRICS block the vehicle's own
+    /// series; the appendix request the same conversation continued under the
+    /// nullable grammar with thinking off, every key the grammar requires
+    /// declared in the ask (Finding 2: a contract enforced in one place and
+    /// unstated in the other drifts silently); PRIOR THESIS and the continuity
+    /// clause only with a prior document; the role/risk request the thesis
+    /// wiring with no grammar.
     #[test]
-    fn every_constrained_prompt_declares_its_own_response_keys() {
-        // Containment over a whole prompt proves nothing here: every one of these
-        // prompts mentions some of its own key names in the instructional prose above
-        // the declaration (`conviction`, `ledger`, `self_assessment` in the priced
-        // branch; `ledger` in role-risk; `action`, `rationale` in the action call).
-        // So each contract is generated from the constant its schema's `required`
-        // set is built from, and the two seams that leaves are what this pins:
-        // schema-from-constant, and prompt-carries-contract.
-        use crate::portfolio as pf;
-
-        struct ContractCase {
-            what: &'static str,
-            required: Vec<String>,
-            keys: Vec<&'static str>,
-            contract: String,
-            prompt: String,
-            /// The placeholder-only return shape (`portfolio-v40` on the priced
-            /// branch, `portfolio-v41` on the action call), rendered at the end
-            /// of the user message; the role/risk prompt declares the key list
-            /// inline in the contract.
-            return_shape: Option<String>,
-        }
-        // Every per-call shape since portfolio-v38 (fix list 3.3): stock and
-        // fund, continuity and debut, on both branches.
-        let mut cases = vec![ContractCase {
-            what: "action call",
-            required: required_keys(&pf::action_decision_schema()),
-            keys: pf::ACTION_KEYS.to_vec(),
-            contract: pf::action_response_contract(),
-            prompt: action_system_prompt(),
-            return_shape: Some(pf::action_return_shape()),
-        }];
-        for (is_fund, debut) in [(false, false), (false, true), (true, false), (true, true)] {
-            cases.push(ContractCase {
-                what: if debut { "priced debut" } else { "priced continuity" },
-                required: required_keys(&pf::interpretation_schema(is_fund, debut)),
-                keys: pf::interpretation_keys(debut),
-                contract: pf::interpretation_response_contract(debut),
-                prompt: interpretation_system_prompt(is_fund, debut),
-                return_shape: Some(pf::interpretation_return_shape(is_fund, debut)),
-            });
-            // The user message closes on the shape, verbatim.
-            let task = interpretation_task_section(
-                &LedgerSeriesContract::build(is_fund, None, None),
-                is_fund,
-                false,
-                debut,
-                !debut,
-            );
-            let expected = format!(
-                "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
-                pf::interpretation_return_shape(is_fund, debut)
-            );
-            assert!(task.ends_with(&expected), "fund {is_fund} debut {debut}: {task}");
-        }
-        for debut in [false, true] {
-            cases.push(ContractCase {
-                what: if debut { "role-risk debut" } else { "role-risk continuity" },
-                required: required_keys(&pf::role_risk_interpretation_schema(debut)),
-                keys: pf::role_risk_keys(debut),
-                contract: pf::role_risk_response_contract(debut),
-                prompt: role_risk_system_prompt(debut),
-                return_shape: Some(pf::role_risk_return_shape(debut)),
-            });
-            // The role/risk message closes on its shape, verbatim (`portfolio-v42`).
-            let task = role_risk_task_section(
-                &LedgerSeriesContract::build(true, None, None),
-                debut,
-                !debut,
-                true,
-                true,
-            );
-            let expected = format!(
-                "\nRETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n{}\n",
-                pf::role_risk_return_shape(debut)
-            );
-            assert!(task.ends_with(&expected), "role/risk debut {debut}: {task}");
-        }
-
-        for c in cases {
-            assert_eq!(
-                non_empty(c.required, c.what),
-                c.keys.iter().map(|k| k.to_string()).collect::<Vec<_>>(),
-                "{}: schema drifted from the key constant",
-                c.what
-            );
-            match &c.return_shape {
-                Some(shape) => {
-                    // The contract names every key ("You will return k1, …
-                    // and kN"), and the shape carries exactly the declared set.
-                    assert!(
-                        c.contract.starts_with("You will return ")
-                            && c.contract.ends_with(", as one JSON object."),
-                        "{}: {}",
-                        c.what,
-                        c.contract
-                    );
-                    for k in &c.keys {
-                        assert!(
-                            c.contract.contains(k),
-                            "{}: contract does not name `{k}`: {}",
-                            c.what,
-                            c.contract
-                        );
-                    }
-                    let parsed: serde_json::Value =
-                        serde_json::from_str(shape).expect("the return shape is JSON");
-                    let mut top: Vec<&str> = parsed
-                        .as_object()
-                        .expect("an object")
-                        .keys()
-                        .map(String::as_str)
-                        .collect();
-                    top.sort_unstable();
-                    let mut declared = c.keys.clone();
-                    declared.sort_unstable();
-                    assert_eq!(
-                        top, declared,
-                        "{}: return shape drifted from the key constant",
-                        c.what
-                    );
-                }
-                None => {
-                    let declared = c.keys.join(", ");
-                    assert!(
-                        c.contract.contains(&declared),
-                        "{}: contract does not declare the exact key list `{declared}`",
-                        c.what
-                    );
-                }
-            }
-            assert!(
-                c.prompt.contains(&c.contract),
-                "{}: prompt does not carry the contract",
-                c.what
-            );
-            for residue in ["decoder", "dropped on decode", "spend no reasoning"] {
-                assert!(
-                    !c.contract.contains(residue),
-                    "{}: response contract leaked `{residue}`: {}",
-                    c.what,
-                    c.contract
-                );
-            }
-        }
-
-        // The branch carries no action of its own — declaring one would invite it.
-        assert!(!pf::role_risk_response_contract(false).contains("model_price_targets"));
-
-        // The internal build vocabulary of Finding 3 stays out of every prompt.
-        for p in [
-            interpretation_system_prompt(false, false),
-            interpretation_system_prompt(true, true),
-            role_risk_system_prompt(false),
-            role_risk_system_prompt(true),
-            action_system_prompt(),
-        ] {
-            assert!(!p.contains("pre-v7"), "internal version vocabulary leaked: {p}");
-        }
-    }
-
-    /// Fix list 3.3 (portfolio-v38): the request built for a holding carries the
-    /// schema and contract for its vehicle kind and its debut / continuity
-    /// shape — a fund's grammar lists no stock-only series, a debut's requests
-    /// no continuity field — and the debut user prompt no longer instructs on
-    /// `what_changed_entries`.
-    #[test]
-    fn the_interpretation_request_is_scoped_to_the_vehicle_and_the_debut_shape() {
+    fn the_thesis_conversation_requests_are_scoped_to_the_vehicle_and_the_debut_shape() {
         let stock = dossier(AssetClass::Stock, strong_financials());
         let engine_output = match engine::analyze(&stock.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        fn input<'a>(d: &'a HoldingDossier, engine: &'a EngineOutput) -> InterpretationInput<'a> {
-            InterpretationInput {
-                input_delta: &[],
+        fn input<'a>(d: &'a HoldingDossier, engine: &'a EngineOutput) -> ThesisInput<'a> {
+            ThesisInput {
                 dossier: d,
-                prior_ledger: None,
                 engine,
-                distilled: "",
-                ledger_eval: None,
+                rates: rates_static(),
+                analysis: "",
                 pre_profit: None,
+                soft_forensic: None,
                 tech_pre_flag: None,
                 narrative: None,
+                prior_split: None,
             }
         }
-        let debut_req = interpret_request("qwen", &input(&stock, &engine_output));
-        let schema = debut_req.format_schema.as_ref().unwrap();
-        assert!(schema["properties"].get("what_changed").is_none());
-        assert!(schema["properties"].get("what_changed_entries").is_none());
-        let series = schema["properties"]["ledger"]["properties"]["falsifiers"]["items"]["properties"]["quant"]["properties"]["series"]["enum"].to_string();
-        assert!(series.contains("pe-ratio") && !series.contains("expense-ratio"), "{series}");
-        let user = interpretation_user_prompt(&input(&stock, &engine_output));
-        assert!(user.contains("This is the first analysis of this holding.\n"), "{user}");
-        assert!(
-            user.contains(
-                "7. self_assessment — one sentence noting that this is a first analysis with no \
-                 prior read to assess."
-            ),
-            "{user}"
-        );
-        for absent in ["must be []", "what_changed", "CONTINUITY:"] {
+        let debut_req = thesis_request("qwen", &input(&stock, &engine_output));
+        assert!(debut_req.format_schema.is_none() && debut_req.think == Some(true));
+        assert_eq!(debut_req.messages.len(), 2);
+        assert!(debut_req.messages[0].content.starts_with("You are an equity analyst writing the thesis document"), "{}", debut_req.messages[0].content);
+        let user = &debut_req.messages[1].content;
+        assert!(!user.contains("PRIOR THESIS") && !user.contains("drawing on PRIOR THESIS"), "{user}");
+        assert!(user.contains("\n6. A summary paragraph — the financial read, why those prices and that conviction.\n"), "{user}");
+        let metrics = user.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
+        assert!(metrics.contains("- price / earnings multiple: ") && !metrics.contains("fund expense ratio"), "{metrics}");
+        for absent in ["This is the first analysis of this holding.", "self_assessment", "what_changed", "CONTINUITY:", "RETURN SHAPE"] {
             assert!(!user.contains(absent), "`{absent}` leaked: {user}");
         }
 
-        let mut fund = dossier(AssetClass::Etf, strong_financials());
-        fund.prior_verdict = stock.prior_verdict.clone();
-        let (v, _) = analyze_holding(&StubAnalyst, &fund, &rates(), "2026-08-03").unwrap();
-        fund.prior_verdict = Some(v);
-        let cont_req = interpret_request("qwen", &input(&fund, &engine_output));
-        let schema = cont_req.format_schema.as_ref().unwrap();
-        assert!(schema["properties"].get("what_changed").is_some());
-        let series = schema["properties"]["ledger"]["properties"]["falsifiers"]["items"]["properties"]["quant"]["properties"]["series"]["enum"].to_string();
-        assert!(series.contains("expense-ratio") && !series.contains("pe-ratio"), "{series}");
-        let role_req = role_risk_request("qwen", &RoleRiskInput {
-            input_delta: &[],
-            dossier: &stock,
-            prior_ledger: None,
-            readout: &RoleRiskReadout::default(),
-            ledger_eval: None,
-            distilled: "",
-        });
-        assert!(role_req.format_schema.as_ref().unwrap()["properties"].get("what_changed").is_none());
-    }
+        // The appendix: the conversation continued, the grammar's required keys
+        // each declared in the ask.
+        let appendix = appendix_request("qwen", &input(&stock, &engine_output), "The document.");
+        assert_eq!(appendix.format_schema.as_ref(), Some(&crate::portfolio::appendix_schema()));
+        assert_eq!(appendix.think, Some(false));
+        assert_eq!(appendix.messages.len(), 4);
+        assert_eq!(appendix.messages[0].content, debut_req.messages[0].content);
+        assert_eq!(appendix.messages[1].content, debut_req.messages[1].content);
+        assert_eq!((appendix.messages[2].role.as_str(), appendix.messages[2].content.as_str()), ("assistant", "The document."));
+        assert_eq!(appendix.messages[3].role, "user");
+        let ask = &appendix.messages[3].content;
+        for key in non_empty(required_keys(appendix.format_schema.as_ref().unwrap()), "the appendix grammar") {
+            assert!(ask.contains(&format!("\"{key}\"")), "the appendix ask does not declare {key}\n{ask}");
+        }
+        assert_eq!(
+            appendix.options.as_ref().map(|o| o["num_predict"].clone()),
+            Some(serde_json::json!(NUM_PREDICT_APPENDIX))
+        );
 
-    /// The app owns a debut's continuity fields on every analyst path
-    /// (fix list 3.3, ruled 2026-09-16 F6): the stub authors its own line, and
-    /// the persisted verdict still carries the app's sentence and no rows; a
-    /// continuity run keeps the analyst's line.
-    #[test]
-    fn a_debut_persists_the_app_written_continuity_fields_on_both_branches() {
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
-        let VerdictDisposition::Priced(graded) = &v.disposition else { panic!("priced") };
-        assert_eq!(graded.what_changed, crate::portfolio::DEBUT_WHAT_CHANGED);
-        let mut second = d.clone();
-        second.prior_verdict = Some(v.clone());
-        let (v2, _) = analyze_holding(&StubAnalyst, &second, &rates(), "2026-08-10").unwrap();
-        let VerdictDisposition::Priced(graded) = &v2.disposition else { panic!("priced") };
-        assert!(graded.what_changed.starts_with("Reaffirmed"), "{}", graded.what_changed);
+        // A continuity run: PRIOR THESIS under the prior's date — the stub's
+        // document verbatim — and the continuity clause on the summary item.
+        let mut cont = dossier(AssetClass::Stock, strong_financials());
+        let (v, _) = analyze_holding(&StubAnalyst, &cont, &rates(), "2026-08-03").unwrap();
+        assert!(v.thesis_document().is_some(), "{v:?}");
+        cont.prior_verdict = Some(v);
+        cont.prior_vintage = Some("2026-08-03T20:00:00Z".into());
+        let cont_req = thesis_request("qwen", &input(&cont, &engine_output));
+        assert!(cont_req.format_schema.is_none());
+        let user = &cont_req.messages[1].content;
+        assert!(user.contains("\nPRIOR THESIS (written 2026-08-03)\nThesis: hold AAPL "), "{user}");
+        assert!(user.contains(", and what changed since the prior analysis, drawing on PRIOR THESIS.\n"), "{user}");
+        // FETCHED VALUES states the close on the prior analysis's date — the
+        // vintage's ET session, the date PRIOR THESIS is written under.
+        assert!(user.contains("; close on the prior analysis date 2026-08-03: "), "{user}");
+        // The twelve-month consensus blend is a computation: it renders under
+        // COMPUTED as a METRICS line, while FETCHED VALUES states the published
+        // fiscal-period rows alone.
+        let (part1, _) = user.split_once("======== PART 2: TASK ========").unwrap();
+        let fetched = part1.split("\nFETCHED VALUES\n").nth(1).unwrap().split("\nCOMPUTED\n").next().unwrap();
+        assert!(fetched.contains("Consensus EPS by fiscal period end, as published: "), "{fetched}");
+        assert!(!fetched.contains("blended"), "{fetched}");
+        let metrics = part1.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
+        assert!(metrics.contains("- forward consensus, next twelve months blended over "), "{metrics}");
 
-        let fund = fund_dossier(bond_fund());
-        let (rv, _) = analyze_holding(&StubAnalyst, &fund, &rates(), "2026-08-03").unwrap();
-        let VerdictDisposition::RoleRiskOnly(role) = &rv.disposition else { panic!("role/risk: {:?}", rv.disposition) };
-        assert_eq!(role.what_changed, crate::portfolio::DEBUT_WHAT_CHANGED);
-        // The role/risk continuity run keeps the analyst's line too.
-        let mut second = fund.clone();
-        second.prior_verdict = Some(rv.clone());
-        let (rv2, _) = analyze_holding(&StubAnalyst, &second, &rates(), "2026-08-10").unwrap();
-        let VerdictDisposition::RoleRiskOnly(role) = &rv2.disposition else { panic!("role/risk: {:?}", rv2.disposition) };
-        assert!(role.what_changed.starts_with("Reaffirmed"), "{}", role.what_changed);
-    }
+        // A fund: the investment analyst's line and the fund's series — no
+        // stock multiple, and the expense ratio under FETCHED VALUES alone.
+        let fund = fund_dossier(us_equity_fund());
+        let fund_req = thesis_request("qwen", &input(&fund, &engine_output));
+        assert!(fund_req.messages[0].content.starts_with("You are an investment analyst writing the thesis document"), "{}", fund_req.messages[0].content);
+        let user = &fund_req.messages[1].content;
+        let metrics = user.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
+        assert!(metrics.contains("- daily realized return volatility: ") && !metrics.contains("price / earnings multiple") && !metrics.contains("fund expense ratio"), "{metrics}");
+        assert!(user.contains("; expense ratio 0.0003 (0.03%/yr); "), "{user}");
 
-    #[test]
-    fn debut_authors_a_ledger_and_an_abstention_retains_the_prior_one() {
-        // A priced debut carries the authored ledger, its monitor stamped from the
-        // engine's own scenario set.
-        let (verdict, audit) = analyze_holding(
-            &StubAnalyst,
-            &dossier(AssetClass::Stock, strong_financials()),
-            &rates(),
-            "2026-08-03",
-        )
-        .unwrap();
-        let ledger = verdict.thesis_ledger.as_ref().expect("priced verdict carries a ledger");
-        assert_eq!(ledger.branch, LedgerBranch::Priced);
-        assert_eq!(ledger.original_thesis, ledger.current_thesis);
-        let twelve = match &verdict.disposition {
-            VerdictDisposition::Priced(g) => g.price_targets.twelve_month.clone().unwrap(),
-            other => panic!("{other:?}"),
-        };
-        let base = ledger
-            .monitor
-            .iter()
-            .find(|m| m.scenario == ScenarioKind::Base)
-            .unwrap();
-        assert_eq!(base.engine_target, Some(twelve.base));
-        assert!(audit.ledger_audit.is_some());
-
-        // An insufficient-evidence exit retains the standing ledger unchanged —
-        // 6c–6f never ran for it (`docs/portfolio-workflow.md` §Step 6b).
-        let thin = CompanyFinancials {
-            symbol: "X".into(),
-            current_price: Some(50.0),
-            ..CompanyFinancials::default()
-        };
-        let mut d = dossier(AssetClass::Stock, thin);
-        d.prior_verdict = Some(HoldingVerdict {
+        // A role/risk prior and an abstained prior that kept its document
+        // render PRIOR THESIS the same way; an abstained prior without one
+        // renders no section and no continuity clause.
+        let prior_of = |disposition: VerdictDisposition| HoldingVerdict {
             symbol: "AAPL".into(),
             asset_class: AssetClass::Stock,
             position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
-            thesis_ledger: Some(prior_with_conditions()),
-            analyzed_at: None,
+            disposition,
+            analyzed_at: Some("2026-08-03T20:00:00Z".into()),
             action_source: Default::default(),
             side_reversed: false,
+        };
+        let cases = [
+            (
+                prior_of(VerdictDisposition::RoleRiskOnly(Box::new(role_risk_verdict_from_model_arm(
+                    &RoleRiskReadout::default(),
+                    "Role: a sleeve.".into(),
+                )))),
+                Some("Role: a sleeve."),
+            ),
+            (
+                prior_of(VerdictDisposition::InsufficientEvidence {
+                    reason: "thin".into(),
+                    prior_thesis_document: Some("The retained document.".into()),
+                }),
+                Some("The retained document."),
+            ),
+            (
+                prior_of(VerdictDisposition::InsufficientEvidence {
+                    reason: "thin".into(),
+                    prior_thesis_document: None,
+                }),
+                None,
+            ),
+        ];
+        for (prior, expected) in cases {
+            let mut d = dossier(AssetClass::Stock, strong_financials());
+            d.prior_verdict = Some(prior);
+            d.prior_vintage = Some("2026-08-03T20:00:00Z".into());
+            let user = thesis_user_prompt(&input(&d, &engine_output));
+            match expected {
+                Some(doc) => {
+                    assert!(user.contains(&format!("\nPRIOR THESIS (written 2026-08-03)\n{doc}")), "{user}");
+                    assert!(user.contains("drawing on PRIOR THESIS"), "{user}");
+                }
+                None => assert!(!user.contains("PRIOR THESIS"), "{user}"),
+            }
+        }
+
+        let role_req = role_risk_request("qwen", &RoleRiskInput {
+            dossier: &stock,
+            readout: &RoleRiskReadout::default(),
+            rates: rates_static(),
+            analysis: "",
+            prior_split: None,
         });
-        let (v2, _) =
-            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
-        assert!(matches!(
-            v2.disposition,
-            VerdictDisposition::InsufficientEvidence { .. }
-        ));
-        assert_eq!(v2.thesis_ledger, Some(prior_with_conditions()));
+        assert!(role_req.format_schema.is_none() && role_req.think == Some(true));
+        assert_eq!(role_req.messages[0].content, role_risk_system_prompt());
     }
 
+    /// An off-domain appendix is rejected whole under `ModelArmDomain` and an
+    /// unparseable body under `SchemaParse`, so the bounded retry-once
+    /// re-issues the identical message exactly once and then fails the
+    /// holding naming the class; a null-bearing in-domain body decodes as the
+    /// document's silence.
     #[test]
-    fn a_market_data_trigger_walks_through_first_breach_to_confirmed_and_ack() {
-        // The stub's debut trigger (price above 150) is authored at a spot of
-        // 140 — a crossing ahead, so the authoring-surface check keeps it — and
-        // breached at spot 195 from run 2 on: a market-data condition (count 2)
-        // whose observation identity is the marks' trading day, so run 2 logs
-        // a quiet first-breach note, run 3 — carrying a genuinely NEW trading
-        // print — confirms and fires, and the consuming pass stamps the
-        // acknowledging observation.
-        let mut fin1 = strong_financials();
-        fin1.current_price = Some(140.0);
-        let d1 = dossier(AssetClass::Stock, fin1);
-        let (v1, _) = analyze_holding(&StubAnalyst, &d1, &rates(), "2026-08-03").unwrap();
+    fn an_off_domain_appendix_re_issues_once_then_fails() {
+        use crate::local_model::{retry_class, RetryClass, RetryOnce};
+        let off_domain = r#"{"conviction":"high","expected_price_3m":-5,"expected_price_12m":null,"expected_price_3y":null}"#;
+        let err = decode_appendix("appendix AAPL", off_domain).unwrap_err();
+        assert_eq!(retry_class(&err), Some(RetryClass::ModelArmDomain));
+        assert!(format!("{err:#}").contains("appendix off its declared domain"), "{err:#}");
+        let err = decode_appendix("appendix AAPL", "not json").unwrap_err();
+        assert_eq!(retry_class(&err), Some(RetryClass::SchemaParse));
+        let silent = decode_appendix(
+            "appendix AAPL",
+            r#"{"conviction":null,"expected_price_3m":null,"expected_price_12m":null,"expected_price_3y":null}"#,
+        )
+        .unwrap();
+        assert!(silent.is_empty());
+        // The retry gate over the decode: two off-domain replies are exactly
+        // two attempts and a failure, one retry event between them; nothing
+        // is clamped into domain.
+        let retry = RetryOnce::without_delay();
+        let progress = crate::progress::RunContext::noop();
+        let attempts = std::cell::Cell::new(0u32);
+        let out: Result<ThesisAppendix> = retry.run(&progress, "appendix AAPL", || {
+            attempts.set(attempts.get() + 1);
+            decode_appendix("appendix AAPL", off_domain)
+        });
+        let err = out.unwrap_err();
+        assert_eq!(attempts.get(), 2, "one re-issue, never a second");
+        assert!(format!("{err:#}").contains("appendix off its declared domain"), "{err:#}");
+        let events = retry.take_events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(events[0].cause.to_lowercase().contains("domain"), "{}", events[0].cause);
+    }
 
-        let mut d2 = dossier(AssetClass::Stock, strong_financials());
-        d2.prior_verdict = Some(v1);
-        let (v2, audit2) =
-            analyze_holding(&StubAnalyst, &d2, &rates(), "2026-08-04").unwrap();
-        let a2 = audit2.ledger_audit.unwrap();
-        assert!(
-            a2.crossings.iter().any(|c| c.role == ConditionRole::Trigger
-                && c.outcome == CrossingOutcome::FirstBreach),
-            "{:?}",
-            a2.crossings
-        );
-
-        // A rerun with NO new trading print must not advance the streak — the
-        // observation identity is the marks' day, never the run's calendar date.
-        let mut d2b = dossier(AssetClass::Stock, strong_financials());
-        d2b.prior_verdict = Some(v2.clone());
-        let (_, audit2b) =
-            analyze_holding(&StubAnalyst, &d2b, &rates(), "2026-08-05").unwrap();
-        let a2b = audit2b.ledger_audit.unwrap();
-        assert!(
-            !a2b
-                .crossings
-                .iter()
-                .any(|c| c.outcome == CrossingOutcome::Confirmed),
-            "{:?}",
-            a2b.crossings
-        );
-
-        let mut fin3 = strong_financials();
-        fin3.daily_closes.push(
-            crate::portfolio::engine::DatedValue {
-                date: "2026-08-05".into(),
-                value: 196.0,
+    /// The soft forensic flags render under COMPUTED as typed evidence in all
+    /// three states — fired, clear, and unevaluable naming the missing input
+    /// — each with the inputs it read; a holding without them renders no
+    /// section.
+    #[test]
+    fn the_soft_forensic_section_renders_fired_clear_and_unevaluable() {
+        use crate::portfolio::soft_forensic::{
+            LineLeg, NetIncomeVsOperatingCashFlow, ScoreFlag, SoftFlagState, SoftForensicFlags,
+            WorkingCapitalBuild,
+        };
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let flags = SoftForensicFlags {
+            altman_z: ScoreFlag { value: Some(1.21), state: SoftFlagState::Fired },
+            piotroski: ScoreFlag { value: Some(7.0), state: SoftFlagState::Clear },
+            net_income_vs_operating_cash_flow: NetIncomeVsOperatingCashFlow {
+                ttm_net_income: None,
+                ttm_operating_cash_flow: Some(2.5e9),
+                state: SoftFlagState::Unevaluable { missing: vec!["TTM net income".into()] },
             },
-        );
-        let mut d3 = dossier(AssetClass::Stock, fin3);
-        d3.prior_verdict = Some(v2);
-        let (v3, audit3) =
-            analyze_holding(&StubAnalyst, &d3, &rates(), "2026-08-05").unwrap();
-        let a3 = audit3.ledger_audit.unwrap();
+            working_capital_build: WorkingCapitalBuild {
+                revenue_growth: Some(0.08),
+                receivables: LineLeg::Evaluated { growth: 0.31, fired: true },
+                inventory: LineLeg::NotApplicable,
+                state: SoftFlagState::Fired,
+            },
+        };
+        fn input<'a>(
+            d: &'a HoldingDossier,
+            engine: &'a EngineOutput,
+            soft: Option<&'a SoftForensicFlags>,
+        ) -> ThesisInput<'a> {
+            ThesisInput {
+                dossier: d,
+                engine,
+                rates: rates_static(),
+                analysis: "",
+                pre_profit: None,
+                soft_forensic: soft,
+                tech_pre_flag: None,
+                narrative: None,
+                prior_split: None,
+            }
+        }
+        let user = thesis_user_prompt(&input(&d, &engine_output, Some(&flags)));
+        let (part1, _) = user.split_once("======== PART 2: TASK ========").unwrap();
+        let computed = part1.find("\nCOMPUTED\n").expect("COMPUTED");
+        let section = part1.find("\nSOFT FORENSIC FLAGS\n").expect("the section");
+        let analysis = part1.find("\nANALYSIS\n").expect("ANALYSIS");
+        assert!(computed < section && section < analysis, "{part1}");
+        assert!(part1.contains("- Altman Z below 1.8: fired (Z 1.21).\n"), "{part1}");
+        assert!(part1.contains("- Piotroski F-score at or below 3: clear (score 7).\n"), "{part1}");
         assert!(
-            a3.crossings.iter().any(|c| c.role == ConditionRole::Trigger
-                && c.outcome == CrossingOutcome::Confirmed),
-            "{:?}",
-            a3.crossings
+            part1.contains(
+                "- TTM net income above 1.3× TTM operating cash flow: unevaluable (missing: TTM net \
+                 income) (net income (gap), operating cash flow 2.5B).\n"
+            ),
+            "{part1}"
         );
-        let l3 = v3.thesis_ledger.unwrap();
-        let trigger = l3
-            .conditions
-            .iter()
-            .find(|c| c.role == ConditionRole::Trigger)
-            .unwrap();
-        assert_eq!(
-            trigger
-                .eval_state
-                .as_ref()
-                .unwrap()
-                .acknowledged_observation_id
-                .as_deref(),
-            Some("2026-08-05"),
-            "the consuming pass acknowledges the confirming observation"
+        assert!(
+            part1.contains(
+                "revenue growth, year over year on the latest quarter: fired (revenue growth +8.0%; \
+                 receivables +31.0%, past the test; inventory not applicable).\n"
+            ),
+            "{part1}"
         );
+        assert!(!thesis_user_prompt(&input(&d, &engine_output, None)).contains("SOFT FORENSIC FLAGS"));
     }
 
     // ---- The pre-profit execution / financing overlay ----------------------------
@@ -14610,7 +8607,7 @@ pub(crate) mod tests {
         let VerdictDisposition::Priced(g) = verdict.disposition else {
             panic!("expected a priced verdict");
         };
-        assert_eq!(g.conviction, Conviction::High);
+        assert_eq!(g.appendix.conviction, Some(Conviction::High));
         // The observation history carried through the run.
         assert_eq!(overlay.observations.len(), 4);
 
@@ -14620,13 +8617,13 @@ pub(crate) mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let user = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "none",
-            ledger_eval: None,
+            analysis: "none",
             pre_profit: Some(&overlay),
             tech_pre_flag: None,
             narrative: None,
@@ -14656,7 +8653,7 @@ pub(crate) mod tests {
         assert!(overlay.consequences.bar_add_family);
         assert!(!overlay.consequences.exit_family_only);
 
-        let interp = pre_profit_prompt_section(&overlay, PromptStage::Interpretation);
+        let interp = pre_profit_prompt_section(&overlay, PromptStage::Thesis);
         let action = pre_profit_prompt_section(&overlay, PromptStage::Action);
         assert!(
             interp.contains("- the computed action set excludes adding, on the financing rule.\n"),
@@ -14683,12 +8680,12 @@ pub(crate) mod tests {
         // for the annotation render.
         struct DefiantAnalyst;
         impl HoldingAnalyst for DefiantAnalyst {
-            fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+            fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
                 let mut i = StubAnalyst.interpret(input)?;
-                i.conviction = Conviction::High;
+                i.appendix.conviction = Some(Conviction::High);
                 Ok(i)
             }
-            fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
+            fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String> {
                 StubAnalyst.interpret_role_risk(input)
             }
             fn decide_action(
@@ -14728,7 +8725,7 @@ pub(crate) mod tests {
             panic!("expected a priced verdict");
         };
         assert_eq!(g.action, Action::Add, "the model's lean persists as authored");
-        assert_eq!(g.conviction, Conviction::High, "the engine caps no conviction");
+        assert_eq!(g.appendix.conviction, Some(Conviction::High), "the engine caps no conviction");
         assert!(
             matches!(g.engine_rung, Action::Trim | Action::SellAll),
             "the engine arm's own rung obeys its severe bar, got {:?}",
@@ -14741,13 +8738,13 @@ pub(crate) mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
-            distilled: "none",
-            ledger_eval: None,
+            analysis: "none",
             pre_profit: Some(&overlay),
             tech_pre_flag: None,
             narrative: None,
@@ -14774,10 +8771,8 @@ pub(crate) mod tests {
                 graded: &g,
                 engine: &engine_output,
                 pre_profit: Some(&overlay),
-                ledger: verdict.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
-            changes: None,
             profile: &d.profile,
         });
         assert!(!action.contains("UNRESTRICTED"), "{action}");
@@ -14882,297 +8877,6 @@ pub(crate) mod tests {
 
     // ---- The 6g core checks and the rendered statement (`portfolio-v45`) --------
 
-    fn core(series: &str, comparator: &str, threshold: f64, margin: f64) -> QuantCoreDraft {
-        QuantCoreDraft {
-            series: series.into(),
-            comparator: comparator.into(),
-            threshold,
-            margin,
-        }
-    }
-
-    /// The reason class a check returned, or `None` where the core validated.
-    fn class_of(qd: QuantCoreDraft, is_fund: bool) -> Option<String> {
-        validate_quant_core(&qd, is_fund)
-            .err()
-            .map(|e| e.split(':').next().unwrap().to_string())
-    }
-
-    #[test]
-    fn six_g_core_checks_cover_the_structural_classes_and_the_margin_bounds() {
-        use downgrade_class as c;
-        // Equality moves the "below" boundary to zero (Codex, plan round 2).
-        assert_eq!(class_of(core("price", "below", 100.0, 100.0), false).as_deref(), Some(c::MARGIN));
-        // Under the magnitude bound but past the relative cap (fix list 1.8, ruled
-        // 2026-09-16): a quarter of the level on the price, half on a fraction.
-        assert_eq!(class_of(core("price", "below", 100.0, 99.0), false).as_deref(), Some(c::MARGIN));
-        assert_eq!(class_of(core("price", "below", 100.0, 26.0), false).as_deref(), Some(c::MARGIN));
-        assert_eq!(class_of(core("price", "below", 100.0, 25.0), false), None);
-        // A zero threshold is exempt: the margin is its only scale.
-        assert_eq!(class_of(core("net-margin", "below", 0.0, 0.02), false), None);
-        // A negative threshold compares on magnitude.
-        assert_eq!(class_of(core("trailing-return", "below", -0.40, 0.40), false).as_deref(), Some(c::MARGIN));
-        assert_eq!(class_of(core("trailing-return", "below", -0.40, 0.21), false).as_deref(), Some(c::MARGIN));
-        assert_eq!(class_of(core("trailing-return", "below", -0.40, 0.20), false), None);
-        // The structural classes: an unresolvable series, a series the vehicle
-        // never computes, a malformed comparator.
-        assert_eq!(class_of(core("ebitda-margin", "below", 0.2, 0.01), false).as_deref(), Some(c::SERIES_UNRESOLVED));
-        assert_eq!(class_of(core("pe-ratio", "above", 38.0, 0.5), true).as_deref(), Some(c::SERIES_UNCOMPUTABLE));
-        assert_eq!(class_of(core("price", "under", 100.0, 1.0), false).as_deref(), Some(c::MALFORMED));
-    }
-
-    #[test]
-    fn a_rendered_statement_states_the_rule_the_engine_runs() {
-        use crate::portfolio::StatementBasis;
-        let q = |series: engine::LedgerSeries, comparator: LedgerComparator, threshold: f64, margin: f64| QuantCore {
-            series,
-            comparator,
-            threshold,
-            margin,
-        };
-        assert_eq!(
-            q(engine::LedgerSeries::GrossMargin, LedgerComparator::Below, 0.16, 0.005)
-                .render(Some("Gross-margin floor"), Some(StatementBasis::Ttm)),
-            "Gross-margin floor — gross margin (TTM) below 16%, confirmed by one filing; margin ±0.5pp"
-        );
-        assert_eq!(
-            q(engine::LedgerSeries::Price, LedgerComparator::Below, 38.0, 0.4).render(Some("Price support"), None),
-            "Price support — price below $38.00, confirmed by two consecutive daily closes; margin ±$0.40"
-        );
-        assert_eq!(
-            q(engine::LedgerSeries::PeRatio, LedgerComparator::Above, 25.0, 1.0)
-                .render(Some("Multiple ceiling"), Some(StatementBasis::Annual)),
-            "Multiple ceiling — price / earnings multiple (annual) above 25x, confirmed by two consecutive daily closes; margin ±1x"
-        );
-        assert_eq!(
-            q(engine::LedgerSeries::ExpenseRatio, LedgerComparator::Above, 0.0075, 0.0005).render(Some("Cost drift"), None),
-            "Cost drift — fund expense ratio above 0.75%, confirmed by one filing; margin ±0.05pp"
-        );
-        // No name: the sentence opens capitalized; the basis rides only a flow
-        // series; a zero margin reads as none.
-        assert_eq!(
-            q(engine::LedgerSeries::TrailingReturn, LedgerComparator::Below, -0.40, 0.02)
-                .render(None, Some(StatementBasis::Ttm)),
-            "Trailing price return below -40%, confirmed by two consecutive daily closes; margin ±2pp"
-        );
-        assert_eq!(
-            q(engine::LedgerSeries::DebtToEquity, LedgerComparator::Above, 1.5, 0.0).render(Some(" "), None),
-            "Debt / equity ratio above 1.5, confirmed by one filing; no margin"
-        );
-        assert_eq!(
-            q(engine::LedgerSeries::ReturnVolatility, LedgerComparator::Above, 0.0267, 0.002)
-                .render(Some("Regime break"), None),
-            "Regime break — daily realized return volatility above 2.67%, confirmed by two consecutive daily closes; margin ±0.2pp"
-        );
-        // A refused draft whose core never parsed still renders what was asked.
-        assert_eq!(
-            render_unparsed_draft(&core("ebitda-margin", "under", 0.2, 0.01), "Cash floor"),
-            "Cash floor — ebitda-margin under 0.2 (margin 0.01)"
-        );
-    }
-
-    #[test]
-    fn six_g_refuses_a_new_core_that_already_holds_and_keeps_a_carried_one() {
-        use downgrade_class as c;
-        // A debut trigger "price above $150" at a spot of 200 already holds: not
-        // a crossing ahead, refused with the class and the shown value, its
-        // statement still rendered from the draft behind the model's name.
-        let draft = stub_ledger_draft(None, "AAPL", false);
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, Some(200.0));
-        let trigger = ledger.conditions.iter().find(|c| c.role == ConditionRole::Trigger).unwrap();
-        assert!(trigger.quant.is_none() && trigger.eval_state.is_none());
-        let reason = trigger.downgraded_reason.as_deref().unwrap();
-        assert!(reason.starts_with("holds-at-authoring:"), "{reason}");
-        assert_eq!(
-            reason,
-            "holds-at-authoring: the price was already above $150.00 when authored, past the margin $0.00; it stood at $200.00"
-        );
-        assert_eq!(trigger.label.as_deref(), Some("Priced-in ceiling"));
-        assert_eq!(
-            trigger.statement,
-            "Priced-in ceiling — price above $150.00, confirmed by two consecutive daily closes; no margin"
-        );
-        assert!(audit.downgraded.iter().any(|d| d.contains(c::HOLDS_AT_AUTHORING)), "{:?}", audit.downgraded);
-        assert_eq!(ledger.conditions.len(), 2, "refused, never dropped");
-        // A kept core's statement is the render and its label the model's name.
-        let falsifier = ledger.conditions.iter().find(|c| c.role == ConditionRole::Falsifier).unwrap();
-        assert_eq!(falsifier.label.as_deref(), Some("Deep drawdown"));
-        assert_eq!(
-            falsifier.statement,
-            "Deep drawdown — trailing price return below -40%, confirmed by two consecutive daily closes; margin ±2pp"
-        );
-        // At a spot of 120 the same core is a crossing ahead and keeps its core;
-        // the trailing-return core reads no metric here and keeps too.
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, Some(120.0));
-        assert!(ledger.conditions.iter().all(|c| c.quant.is_some()), "{:?}", audit.downgraded);
-        assert!(audit.downgraded.is_empty());
-
-        // A carried-verbatim core that now holds keeps its id and state: it was
-        // authored earlier, and its streak is the point.
-        let mut prior = prior_with_conditions();
-        prior.conditions.push(LedgerCondition {
-            condition_id: "px-keep".into(),
-            role: ConditionRole::Trigger,
-            trigger_family: Some(TriggerFamily::Trim),
-            statement: "Priced-in ceiling — price above $150.00, confirmed by two consecutive daily closes; no margin".into(),
-            label: Some("Priced-in ceiling".into()),
-            quant: Some(QuantCore {
-                series: engine::LedgerSeries::Price,
-                comparator: LedgerComparator::Above,
-                threshold: 150.0,
-                margin: 0.0,
-            }),
-            downgraded_reason: None,
-            technology_class: false,
-            tripped: false,
-            supersedes: None,
-            eval_state: Some(ConditionEvalState {
-                breach_streak: 1,
-                ..Default::default()
-            }),
-        });
-        let draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, Some(200.0));
-        let carried = ledger.conditions.iter().find(|c| c.condition_id == "px-keep").expect("carried verbatim");
-        assert!(carried.quant.is_some());
-        assert_eq!(carried.eval_state.as_ref().unwrap().breach_streak, 1);
-        assert!(audit.downgraded.is_empty(), "{:?}", audit.downgraded);
-        // An edited core that holds at the spot is refused; its assigned
-        // ancestor closes whole rather than lending its streak.
-        let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
-        let t = draft.triggers.iter_mut().find(|t| t.statement == "Priced-in ceiling").unwrap();
-        t.quant.as_mut().unwrap().threshold = 160.0;
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, Some(200.0));
-        let refused = ledger.conditions.iter().find(|c| c.label.as_deref() == Some("Priced-in ceiling")).unwrap();
-        assert!(refused.quant.is_none());
-        assert!(refused.downgraded_reason.as_deref().unwrap().starts_with("holds-at-authoring:"));
-        assert!(refused.statement.contains("above $160.00"), "{}", refused.statement);
-        assert!(
-            audit.closed.iter().any(|c| c.condition.condition_id == "px-keep"),
-            "the ancestor closes whole: {:?}",
-            audit.closed.iter().map(|c| &c.condition.condition_id).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn a_refused_core_persists_its_render_and_the_class_prefix() {
-        // Through the seam: a structurally refused core persists qualitative
-        // with the class-prefixed reason, no machine state, the audit line and
-        // a statement rendered from the draft — never dropped, never repaired.
-        let mut draft = stub_ledger_draft(None, "PGNY", false);
-        draft.falsifiers = vec![FalsifierDraft {
-            statement: "Volatility regime".into(),
-            quant: Some(core("return-volatility", "above", 0.0267, 0.15)),
-            technology_class: false,
-            tripped: false,
-        }];
-        draft.triggers = vec![];
-        let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, None);
-        let cond = &ledger.conditions[0];
-        assert!(cond.quant.is_none() && cond.eval_state.is_none());
-        assert_eq!(cond.label.as_deref(), Some("Volatility regime"));
-        assert_eq!(
-            cond.statement,
-            "Volatility regime — daily realized return volatility above 2.67%, confirmed by two consecutive daily closes; margin ±15pp"
-        );
-        let reason = cond.downgraded_reason.as_deref().unwrap();
-        assert!(reason.starts_with("margin-implausible:"), "{reason}");
-        assert!(audit.downgraded.iter().any(|d| d.contains("margin-implausible:")), "{:?}", audit.downgraded);
-        assert_eq!(ledger.conditions.len(), 1, "refused, never dropped");
-        // A re-emission of the same refused draft carries the id: the render is
-        // deterministic, so qualitative identity holds without any prose read.
-        let (again, _) =
-            validate_ledger_rewrite(&draft, Some(&ledger), None, LedgerBranch::Priced, false, None, None);
-        assert_eq!(again.conditions[0].condition_id, cond.condition_id);
-    }
-
-    #[test]
-    fn the_prior_ledger_row_prints_the_raw_core_beside_the_name() {
-        // The continuity prompt shows a kept core once, raw, with the model's
-        // own name — never the rendered sentence, whose rounded figures the
-        // model would have to convert back (ruled 2026-09-18).
-        let mut prior = prior_with_conditions();
-        prior.conditions[0].label = Some("Deep drawdown".into());
-        prior.conditions[0].rerender_statement();
-        let section = prior_ledger_data_section(Some(&prior), None, &[]);
-        assert!(
-            section.contains("[quantitative: trailing-return below -0.4 (margin 0.02); breach streak 1] Deep drawdown\n"),
-            "{section}"
-        );
-        assert!(!section.contains("confirmed by two consecutive daily closes"), "{section}");
-        // A refused condition prints its statement with one data phrase naming
-        // why, so the model authors it differently; a qualitative one prints as
-        // before.
-        prior.conditions[0].quant = None;
-        prior.conditions[0].downgraded_reason = Some(
-            "holds-at-authoring: the trailing price return was already below -40% when authored, past the margin 2pp; it stood at -55%".into(),
-        );
-        let section = prior_ledger_data_section(Some(&prior), None, &[]);
-        assert!(
-            section.contains("[qualitative; the trailing price return was already below -40% when authored, past the margin 2pp; it stood at -55%] Deep drawdown — trailing price return below -40%"),
-            "{section}"
-        );
-        prior.conditions[0].downgraded_reason = Some("margin-implausible: margin 0.4 is at or beyond the threshold's magnitude 0.4".into());
-        let section = prior_ledger_data_section(Some(&prior), None, &[]);
-        assert!(section.contains("[qualitative; the margin is too wide for the level] Deep drawdown"), "{section}");
-        for narration in ["the app", "engine", "downgrade", "machine-evaluated", "unevaluable"] {
-            assert!(!section.contains(narration), "`{narration}` leaked: {section}");
-        }
-    }
-
-    #[test]
-    fn an_off_scale_value_skips_the_authoring_check_like_a_missing_one() {
-        // A loss-maker's negative P/E is off-scale for the evaluator, which
-        // types the condition unevaluable rather than compared — so a new
-        // "P/E below 15x" keeps its core there (ruled 2026-09-18), while the
-        // same core at a positive P/E of 10 already holds and is refused.
-        let mut draft = stub_ledger_draft(None, "X", false);
-        draft.falsifiers = vec![FalsifierDraft {
-            statement: "Cheap multiple".into(),
-            quant: Some(core("pe-ratio", "below", 15.0, 0.5)),
-            technology_class: false,
-            tripped: false,
-        }];
-        draft.triggers = vec![];
-        let at = |pe: f64| {
-            let metrics = engine::ComputedMetrics { pe_ratio: Some(pe), ..Default::default() };
-            validate_ledger_rewrite_with_research(
-                &draft, None, None, LedgerBranch::Priced, false, None, None, Some(&metrics),
-                &std::collections::HashSet::new(), true, crate::portfolio::ContinuityStamps::NONE,
-            ).0
-        };
-        assert!(at(-20.0).conditions[0].quant.is_some(), "off-scale skips the check");
-        let refused = at(10.0);
-        assert!(refused.conditions[0].downgraded_reason.as_deref().unwrap().starts_with("holds-at-authoring:"));
-        assert!(at(20.0).conditions[0].quant.is_some(), "a crossing ahead keeps");
-    }
-
-    #[test]
-    fn a_rebased_price_core_rerenders_its_statement() {
-        // The split re-basis scales a price core and re-renders its sentence,
-        // so the statement names the level the core now carries.
-        let mut cond = prior_with_conditions().conditions.remove(0);
-        cond.label = Some("Support".into());
-        cond.quant = Some(QuantCore {
-            series: engine::LedgerSeries::Price,
-            comparator: LedgerComparator::Below,
-            threshold: 700.0,
-            margin: 20.0,
-        });
-        cond.rerender_statement();
-        assert_eq!(cond.statement, "Support — price below $700.00, confirmed by two consecutive daily closes; margin ±$20.00");
-        let q = cond.quant.as_mut().unwrap();
-        q.threshold *= 0.25;
-        q.margin *= 0.25;
-        cond.rerender_statement();
-        assert_eq!(cond.statement, "Support — price below $175.00, confirmed by two consecutive daily closes; margin ±$5.00");
-    }
-
     // ---- The investment-only action packet and the app-appended tax caveat ------
 
     #[test]
@@ -15209,10 +8913,8 @@ pub(crate) mod tests {
                 graded,
                 engine: &engine_output,
                 pre_profit: None,
-                ledger: v.thesis_ledger.as_ref().unwrap(),
             },
             engine_set: &engine_set,
-            changes: None,
             profile: &d.profile,
         });
         // Polarity once, on the shared gloss (2.3); the set once, as one data
@@ -15239,13 +8941,13 @@ pub(crate) mod tests {
         // The interpretation prompt renders the same unsized overlay since
         // portfolio-v38 (fix list 3.2, the Codex plan review): contracts over
         // coverage had given the held share count away.
-        let interp = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
             dossier: &d,
-            prior_ledger: None,
             engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
+            analysis: "",
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -15298,10 +9000,10 @@ pub(crate) mod tests {
         // plus the app's caveat, appended after the rung is fixed.
         struct Trimmer;
         impl HoldingAnalyst for Trimmer {
-            fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+            fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
                 StubAnalyst.interpret(input)
             }
-            fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
+            fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String> {
                 StubAnalyst.interpret_role_risk(input)
             }
             fn decide_action(&self, _: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
@@ -15328,97 +9030,4 @@ pub(crate) mod tests {
         assert_eq!(g.action_rationale, "Trim on the verdict.");
     }
 
-    #[test]
-    fn the_ledger_contract_scopes_series_by_vehicle_and_shows_observations() {
-        // A fund never sees a stock-only series; a stock's current value renders
-        // beside each series it may threshold (1.1's checks). Both messages
-        // render one set of metric lines under FINANCIAL METRICS through one
-        // section (`portfolio-v42`).
-        let fund_contract = LedgerSeriesContract::build(true, None, None);
-        let fund = fund_contract.metric_lines();
-        for absent in ["[net-margin]", "[gross-margin]", "[revenue-growth]", "[pe-ratio]", "[debt-to-equity]"] {
-            assert!(!fund.contains(absent), "{absent}: {fund}");
-        }
-        for present in ["[expense-ratio]: (gap)", "[price]: (gap)", "[return-volatility]: (gap)", "[trailing-return]: (gap)"] {
-            assert!(fund.contains(present), "{present}: {fund}");
-        }
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let stock = LedgerSeriesContract::build(false, Some(&engine_output.metrics), Some(&d.financials));
-        let rendered = stock.metric_lines();
-        assert!(!rendered.contains("[expense-ratio]"), "{rendered}");
-        let net = engine_output.metrics.net_margin.unwrap();
-        assert!(
-            rendered.contains(&format!(
-                "- net margin [net-margin]: {net:.4} — a fraction, never a percent (0.16 means 16%); confirmed by one filing\n"
-            )),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("- the holding's price (account currency) [price]: 195.00 — dollars per share; confirmed by two consecutive daily closes\n"),
-            "{rendered}"
-        );
-        // The item's authoring sentences (1.7, 1.9 and 3.8) on both vehicles:
-        // the level in the sentence, the threshold exactly it, the margin the
-        // separate band, and the key-driver null rule — with the margin caps
-        // enforced, not shown (`portfolio-v40`).
-        for (contract, branch, label) in [
-            (&stock, LedgerItemBranch::PricedStock, "stock"),
-            (&fund_contract, LedgerItemBranch::PricedFund, "fund"),
-        ] {
-            let item = ledger_task_item(5, contract, branch, false);
-            assert!(item.contains("statement is a short name for the condition, without a figure"), "{label}: {item}");
-            assert!(item.contains("one the metric has not already crossed"), "{label}: {item}");
-            assert!(item.contains("threshold: the level, in the metric's unit"), "{label}: {item}");
-            assert!(item.contains("margin: the noise around the threshold that a crossing must clear, in the same unit — small relative to the level"), "{label}: {item}");
-            assert!(item.contains("otherwise series is null."), "{label}: {item}");
-            for narration in ["at most", "A zero level has no cap", "current observation", "confirms on", "ENGINE SERIES", "METRICS AVAILABLE"] {
-                assert!(!item.contains(narration), "{label}: `{narration}` leaked: {item}");
-            }
-        }
-        // Both messages carry the worked examples in the vehicle's vocabulary.
-        assert!(stock.examples().contains("gross-margin"), "{}", stock.examples());
-        assert!(fund_contract.examples().contains("Price support"));
-        let user = interpretation_user_prompt(&InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: None,
-            engine: &engine_output,
-            distilled: "",
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        });
-        assert!(
-            user.contains("Example, quantitative: statement \"Gross-margin floor\", quant {\"series\": \"gross-margin\", \"comparator\": \"below\", \"threshold\": 0.16, \"margin\": 0.005}."),
-            "{user}"
-        );
-        // The priced message renders each metric line once, under FINANCIAL
-        // METRICS, and the ledger item points there by label; the sizing
-        // examples stand where the caps were shown.
-        assert_eq!(user.matches("[net-margin]:").count(), 1, "{user}");
-        assert!(
-            user.contains("quant holds series (one of net-margin, gross-margin, revenue-growth, debt-to-equity, return-volatility, trailing-return, pe-ratio, ps-ratio, pb-ratio, price)"),
-            "{user}"
-        );
-        assert!(user.contains("statement is a short name for the condition, without a figure"), "{user}");
-        assert!(
-            user.contains("for example 2 on a price of 100, 0.005 on a net margin of 0.16, or 1 on a P/E of 25."),
-            "{user}"
-        );
-        for narration in [
-            "Worked examples",
-            "The statement and `quant` must agree",
-            "at most",
-            "METRICS AVAILABLE FOR QUANTITATIVE LEDGER CONDITIONS",
-            "the app",
-            "downgrades",
-        ] {
-            assert!(!user.contains(narration), "`{narration}` leaked: {user}");
-        }
-    }
 }

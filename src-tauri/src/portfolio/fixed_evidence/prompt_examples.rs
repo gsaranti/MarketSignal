@@ -10,7 +10,8 @@
 //! stubbed the same way; ids, dates, URLs, hosts and section headers stay, so
 //! the tiers and the glosses that read them render as on a run. The
 //! continuity shapes carry a hand-written prior — attempt 6's persisted
-//! verdict re-dated two weeks before the run, with a prior spot 3% under
+//! verdict, its model arm re-shaped by hand into a thesis document and an
+//! appendix, re-dated two weeks before the run, with a prior spot 3% under
 //! today's and its anchor bar — since attempt 6 wrote no second run.
 //!
 //! Regenerate from `src-tauri/` with
@@ -27,12 +28,12 @@ use crate::local_model::{prompt_material_chars, ChatMessage, ChatRequest};
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::research::{self, samples as research_samples};
 use crate::portfolio::{distill, ActionSource, HoldingVerdict, PositionChange, PositionDelta, ROLE_RISK_ACTIONS};
+use std::collections::HashSet;
 use serde_json::Value;
 use std::cell::RefCell;
 
 const REASONER: &str = "reasoner";
 const FAST: &str = "fast";
-const RUN_DATE: &str = "2026-09-16";
 const PRIOR_VINTAGE: &str = "2026-09-02T14:00:00Z";
 const PRIOR_SESSION: &str = "2026-09-02";
 const STUB_DISTILLED_STOCK: &str =
@@ -91,35 +92,12 @@ fn graded_of(f: &Fixture) -> &crate::portfolio::GradedVerdict {
     }
 }
 
-/// The priced continuity shape's inputs: the fixture's persisted verdict as
-/// the prior (its conditions validated through 6g as on the debut, its prose
-/// as persisted), the hand-written prior spot and anchor bar, and the
-/// pipeline's own evaluation and rendered delta over them.
-struct Continuity {
-    dossier: HoldingDossier,
-    ledger: ThesisLedger,
-    ledger_eval: engine::LedgerEvaluation,
-    input_delta: Vec<crate::portfolio::DeltaEntry>,
-}
-
-fn continuity_of(f: &Fixture) -> Continuity {
+/// The priced continuity shape's dossier: the fixture's persisted verdict as
+/// the prior (its thesis document and appendix as re-shaped by hand), the
+/// hand-written prior spot and anchor bar, and the prior's engine stamps so
+/// the pipeline reads it as a same-vintage prior.
+fn continuity_dossier(f: &Fixture) -> HoldingDossier {
     let mut d = debut_dossier(f);
-    let validated = validate_ledger_rewrite_with_research(
-        &draft_of(f),
-        None,
-        None,
-        LedgerBranch::Priced,
-        f.is_fund,
-        None,
-        Some(f.spot),
-        Some(&f.engine_output.metrics),
-        &HashSet::new(),
-        true,
-        stamps_of(f),
-    )
-    .0;
-    let mut ledger = ledger_of(f);
-    ledger.conditions = validated.conditions;
     let prior_spot = (f.spot * 0.97 * 100.0).round() / 100.0;
     let anchor = engine::DatedValue { date: PRIOR_SESSION.into(), value: prior_spot };
     d.financials.daily_closes.insert(0, anchor.clone());
@@ -128,7 +106,6 @@ fn continuity_of(f: &Fixture) -> Continuity {
         asset_class: f.asset_class,
         position_change: PositionChange::New,
         disposition: f.disposition.clone(),
-        thesis_ledger: Some(ledger.clone()),
         analyzed_at: Some(PRIOR_VINTAGE.into()),
         action_source: ActionSource::ModelChosen,
         side_reversed: false,
@@ -144,24 +121,22 @@ fn continuity_of(f: &Fixture) -> Continuity {
         prior_quantity: Some(f.synthetic_position.quantity),
         prior_cost_basis: Some(f.synthetic_position.cost_basis),
     };
-    let ledger_eval = engine::evaluate_ledger_conditions_gated(
-        &ledger,
-        &f.engine_output.metrics,
-        &d.financials,
-        RUN_DATE,
-        |_| true,
-    );
-    let input_delta = pipeline::priced_input_delta(
-        &d,
-        &f.engine_output,
-        PositionChange::Unchanged,
-        Some(&ledger_eval),
-        None,
-        None,
-        false,
-        Some(1.0),
-    );
-    Continuity { dossier: d, ledger, ledger_eval, input_delta }
+    d
+}
+
+/// The thesis-document input over a dossier, the research stubbed.
+fn thesis_input<'a>(f: &'a Fixture, d: &'a HoldingDossier) -> ThesisInput<'a> {
+    ThesisInput {
+        dossier: d,
+        engine: &f.engine_output,
+        rates: rates(),
+        analysis: STUB_DISTILLED_STOCK,
+        pre_profit: None,
+        soft_forensic: None,
+        tech_pre_flag: None,
+        narrative: None,
+        prior_split: None,
+    }
 }
 
 /// A stub that keeps the role/risk request the pipeline builds on a second
@@ -172,13 +147,10 @@ struct RequestCapture {
 }
 
 impl HoldingAnalyst for RequestCapture {
-    fn interpret(&self, input: &InterpretationInput) -> anyhow::Result<crate::portfolio::Interpretation> {
+    fn interpret(&self, input: &ThesisInput) -> anyhow::Result<PricedModelArm> {
         pipeline::StubAnalyst.interpret(input)
     }
-    fn interpret_role_risk(
-        &self,
-        input: &RoleRiskInput,
-    ) -> anyhow::Result<crate::portfolio::RoleRiskInterpretation> {
+    fn interpret_role_risk(&self, input: &RoleRiskInput) -> anyhow::Result<String> {
         *self.role_risk.borrow_mut() = Some(pipeline::role_risk_request(REASONER, input));
         pipeline::StubAnalyst.interpret_role_risk(input)
     }
@@ -327,8 +299,8 @@ fn examples() -> Vec<Example> {
         step: "6c",
         holding: "TSLA, on a continuity run over a prior analysis of 2026-09-01",
         sentences: lines(&[
-            "A root pass on a continuity run: the topic's standing ledger conditions and the prior run's kept findings ride as the seed.",
-            "The seed is app-assembled from the prior ledger and the prior claims, never a model call, so the search starts from what is already known and tests it.",
+            "A root pass on a continuity run: the prior run's kept findings ride as the seed.",
+            "The seed is app-assembled from the prior claims, never a model call, so the search starts from what is already known and tests it.",
             gathering_common[0],
         ]),
         stage: g(2).stage.clone(),
@@ -490,7 +462,7 @@ fn examples() -> Vec<Example> {
         holding: tsla_holding,
         sentences: with_common(&[
             "The reduce over every topic's searches at once — the single-pass route, taken when the whole input fits the budget.",
-            "On a first analysis there are no standing conditions, no key drivers and no prior topic objects; the typed fields asked for are the forward assumption and the forensic event, read from SOURCE TEXT.",
+            "On a first analysis there are no prior topic objects; the typed fields asked for are the forward assumption and the forensic event, read from SOURCE TEXT.",
         ]),
         stage: d(1).stage.clone(),
         request: distill_request(d(1)),
@@ -503,8 +475,8 @@ fn examples() -> Vec<Example> {
         step: "6d",
         holding: "TSLA, on a continuity run over a prior analysis of 2026-09-01, overlay-eligible",
         sentences: with_common(&[
-            "The single-pass reduce on a continuity run: the standing conditions and key drivers render for citation, the prior topic objects merge at their topic, a prior topic not searched in this analysis rides as dormant, and the contrary-evidence pass follows the topics.",
-            "The overlay-eligible stock with the backfill obligation asks for every typed field: the forward assumption, the leading indicator, the forensic event, the pre-profit observation rows and the backfill record.",
+            "The single-pass reduce on a continuity run: the prior topic objects merge at their topic, a prior topic not searched in this analysis rides as dormant, and the contrary-evidence pass follows the topics.",
+            "The overlay-eligible stock with the backfill obligation asks for every typed field: the forward assumption, the forensic event, the pre-profit observation rows and the backfill record.",
         ]),
         stage: d(0).stage.clone(),
         request: distill_request(d(0)),
@@ -517,7 +489,7 @@ fn examples() -> Vec<Example> {
         step: "6d",
         holding: bnd_holding,
         sentences: with_common(&[
-            "A fund's reduce is consolidation only: the combined findings and the topic layer, with the standing condition rendered for citation, and no source text or typed field.",
+            "A fund's reduce is consolidation only: the combined findings and the topic layer, and no source text or typed field.",
         ]),
         stage: d(2).stage.clone(),
         request: distill_request(d(2)),
@@ -577,46 +549,35 @@ fn examples() -> Vec<Example> {
         extras: vec![],
     });
 
-    // ---- Step 6f: interpretation ----
-    let interpretation_common =
-        "The interpretation is a thinking call under the schema grammar: Part 1 the computed evidence, the options read, the research summary and the market analysis; Part 2 the read to return.";
-    let continuity_note = "The prior here is attempt 6's persisted verdict re-dated to 2026-09-02, with a hand-written prior spot 3% under today's and its anchor bar; attempt 6 wrote no second run, so the retrospective's figures are illustrative.";
+    // ---- Step 6f: the thesis document and its appendix ----
+    let thesis_common =
+        "The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.";
+    let continuity_note = "The prior here is attempt 6's persisted verdict, its model arm re-shaped by hand into a thesis document and an appendix, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's and its anchor bar; attempt 6 wrote no second run.";
     for (f, file, title, holding, own) in [
         (
             &tsla,
-            "18-interpretation-stock-first-analysis",
-            "Interpretation — stock, first analysis",
+            "18-thesis-document-stock-first-analysis",
+            "Thesis document — stock, first analysis",
             tsla_holding,
-            "On a first analysis the model authors the initial thesis ledger, and the self-assessment is one sentence noting there is no prior read.",
+            "On a first analysis there is no PRIOR THESIS, and the summary item asks for no continuity clause.",
         ),
         (
             &spmo,
-            "20-interpretation-fund-first-analysis",
-            "Interpretation — priced fund, first analysis",
-            "SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis; the fixture carries no fund context, so the fund-specific sections do not render",
-            "A priced fund takes the same call with the fund's metric labels; on a first analysis the model authors the initial thesis ledger.",
+            "20-thesis-document-fund-first-analysis",
+            "Thesis document — priced fund, first analysis",
+            "SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis; the fixture carries no fund context, so the FUND block does not render",
+            "A priced fund takes the same call with the fund's metric labels and an investment analyst's role line.",
         ),
     ] {
         let d = debut_dossier(f);
-        let input = InterpretationInput {
-            input_delta: &[],
-            dossier: &d,
-            prior_ledger: None,
-            engine: &f.engine_output,
-            distilled: STUB_DISTILLED_STOCK,
-            ledger_eval: None,
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        };
         out.push(Example {
             file,
             title,
             step: "6f",
             holding,
-            sentences: lines(&[interpretation_common, own]),
-            stage: format!("interpret {}", f.symbol),
-            request: pipeline::interpret_request(REASONER, &input),
+            sentences: lines(&[thesis_common, own]),
+            stage: format!("thesis {}", f.symbol),
+            request: pipeline::thesis_request(REASONER, &thesis_input(f, &d)),
             variants: vec![],
             extras: vec![],
         });
@@ -624,76 +585,84 @@ fn examples() -> Vec<Example> {
     for (f, file, title, holding, own) in [
         (
             &tsla,
-            "19-interpretation-stock-continuity",
-            "Interpretation — stock, continuity run",
-            "TSLA, on a continuity run over the prior read of 2026-09-02",
-            "On a continuity run the prior read and its ledger render as PRIOR ANALYSIS and PRIOR THESIS LEDGER with each quantitative condition's evaluation, the rendered input delta is the what-changed vocabulary, and the schema adds the what-changed rows and the ledger rewrite.",
+            "19-thesis-document-stock-continuity",
+            "Thesis document — stock, continuity run",
+            "TSLA, on a continuity run over the prior document of 2026-09-02",
+            "On a continuity run the prior document renders verbatim as PRIOR THESIS under its date, and the summary item asks what changed since it; the document is never rewritten.",
         ),
         (
             &spmo,
-            "21-interpretation-fund-continuity",
-            "Interpretation — priced fund, continuity run",
-            "SPMO, on a continuity run over the prior read of 2026-09-02; the fixture carries no fund context, so the fund-specific sections do not render",
-            "The fund's continuity shape carries the same prior sections and what-changed rows as the stock's.",
+            "21-thesis-document-fund-continuity",
+            "Thesis document — priced fund, continuity run",
+            "SPMO, on a continuity run over the prior document of 2026-09-02; the fixture carries no fund context, so the FUND block does not render",
+            "The fund's continuity shape carries the same PRIOR THESIS section and continuity clause as the stock's.",
         ),
     ] {
-        let c = continuity_of(f);
-        let input = InterpretationInput {
-            input_delta: &c.input_delta,
-            dossier: &c.dossier,
-            prior_ledger: c.dossier.prior_ledger(),
-            engine: &f.engine_output,
-            distilled: STUB_DISTILLED_STOCK,
-            ledger_eval: Some(&c.ledger_eval),
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        };
+        let d = continuity_dossier(f);
         out.push(Example {
             file,
             title,
             step: "6f",
             holding,
-            sentences: lines(&[interpretation_common, own, continuity_note]),
-            stage: format!("interpret {}", f.symbol),
-            request: pipeline::interpret_request(REASONER, &input),
+            sentences: lines(&[thesis_common, own, continuity_note]),
+            stage: format!("thesis {}", f.symbol),
+            request: pipeline::thesis_request(REASONER, &thesis_input(f, &d)),
+            variants: vec![],
+            extras: vec![],
+        });
+    }
+    {
+        let d = debut_dossier(&tsla);
+        let input = thesis_input(&tsla, &d);
+        let document = pipeline::StubAnalyst.interpret(&input).expect("the stub writes the document").thesis_document;
+        out.push(Example {
+            file: "22-thesis-appendix",
+            title: "Thesis appendix — the conversation's second message",
+            step: "6f",
+            holding: tsla_holding,
+            sentences: lines(&[
+                "The appendix is the thesis conversation's second message: the same system and user messages, the document the model returned as the assistant turn, then the transcription ask under the nullable grammar with thinking off.",
+                "The grammar admits a null in every field; an object off its declared domain — a conviction outside high, medium and low, a price not finite and positive — is rejected whole and the identical message re-issued once.",
+                "The assistant turn shown is the offline stub's document on the TSLA debut packet; a run's is the model's own.",
+            ]),
+            stage: "appendix TSLA".into(),
+            request: pipeline::appendix_request(REASONER, &input, &document),
             variants: vec![],
             extras: vec![],
         });
     }
     {
         let input = RoleRiskInput {
-            input_delta: &[],
             dossier: &fx.dossier,
-            prior_ledger: None,
             readout: &fx.readout,
-            ledger_eval: None,
-            distilled: STUB_DISTILLED_FUND,
+            rates: rates(),
+            analysis: STUB_DISTILLED_FUND,
+            prior_split: None,
         };
         out.push(Example {
-            file: "22-role-risk-first-analysis",
-            title: "Role/risk interpretation — first analysis",
+            file: "23-role-risk-thesis-document-first-analysis",
+            title: "Role/risk thesis document — first analysis",
             step: "6f",
             holding: bnd_holding,
             sentences: lines(&[
-                "The role/risk branch of the intrinsic verdict, taken for a vehicle class the engine cannot price: the fund readout stands where the computed scores would, and the model returns the role read and the ledger, never a grade or a target.",
+                "The role/risk branch of the intrinsic verdict, taken for a vehicle class the engine cannot price: the fund readout stands where the computed scores would, and the document states no expected price and no conviction, so the conversation has no appendix message.",
                 "The hand-written Treasury positioning line and the venue put/call backdrop render because the synthetic dossier carries them.",
             ]),
-            stage: "role-risk BND".into(),
+            stage: "thesis BND".into(),
             request: pipeline::role_risk_request(REASONER, &input),
             variants: vec![],
             extras: vec![],
         });
         out.push(Example {
-            file: "23-role-risk-continuity",
-            title: "Role/risk interpretation — continuity run",
+            file: "24-role-risk-thesis-document-continuity",
+            title: "Role/risk thesis document — continuity run",
             step: "6f",
             holding: "BND, on a continuity run over a stub first run of 2026-09-03",
             sentences: lines(&[
-                "The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior read, the prior ledger with each condition's evaluation, the position sentence and the what-changed rows.",
-                "The research summary is the offline stub's, since the stub run issues no research call.",
+                "The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.",
+                "The analysis is the offline stub's, since the stub run issues no research call.",
             ]),
-            stage: "role-risk BND".into(),
+            stage: "thesis BND".into(),
             request: role_risk_continuity_request(&fx),
             variants: vec![],
             extras: vec![],
@@ -706,13 +675,11 @@ fn examples() -> Vec<Example> {
     {
         let graded = graded_of(&tsla);
         let engine_set = engine::feasible_actions(tsla.engine_output.grade, &tsla.engine_output.hurdle, None, false);
-        let ledger = ledger_of(&tsla);
         let make = |d: &HoldingDossier| -> String {
             action_user_prompt(&ActionInput {
                 dossier: d,
-                subject: ActionSubject::Priced { graded, engine: &tsla.engine_output, pre_profit: None, ledger: &ledger },
+                subject: ActionSubject::Priced { graded, engine: &tsla.engine_output, pre_profit: None },
                 engine_set: &engine_set,
-                changes: None,
                 profile: &d.profile,
             })
         };
@@ -720,9 +687,8 @@ fn examples() -> Vec<Example> {
             REASONER,
             &ActionInput {
                 dossier: &tsla_debut,
-                subject: ActionSubject::Priced { graded, engine: &tsla.engine_output, pre_profit: None, ledger: &ledger },
+                subject: ActionSubject::Priced { graded, engine: &tsla.engine_output, pre_profit: None },
                 engine_set: &engine_set,
-                changes: None,
                 profile: &tsla_debut.profile,
             },
         );
@@ -732,12 +698,13 @@ fn examples() -> Vec<Example> {
         let mut costly = debut_dossier(&tsla);
         costly.position.cost_basis *= 3.0;
         out.push(Example {
-            file: "24-action-priced-first-analysis",
+            file: "25-action-priced-first-analysis",
             title: "Action — priced holding, first analysis",
             step: "6f",
             holding: tsla_holding,
             sentences: lines(&[
                 action_common,
+                "VERDICT carries the appendix's conviction and expected prices, each with the move it implies from the current price, then the thesis document verbatim.",
                 "The packet carries no account economics: the two variants below show which lines a tax-exempt profile and a tripled cost basis change.",
             ]),
             stage: "action TSLA".into(),
@@ -758,39 +725,24 @@ fn examples() -> Vec<Example> {
         });
     }
     {
-        let c = continuity_of(&tsla);
-        let input = InterpretationInput {
-            input_delta: &c.input_delta,
-            dossier: &c.dossier,
-            prior_ledger: c.dossier.prior_ledger(),
-            engine: &tsla.engine_output,
-            distilled: STUB_DISTILLED_STOCK,
-            ledger_eval: Some(&c.ledger_eval),
-            pre_profit: None,
-            tech_pre_flag: None,
-            narrative: None,
-        };
-        let interpretation = pipeline::StubAnalyst.interpret(&input).expect("the stub interprets");
-        let changes = pipeline::validate_what_changed(&interpretation.what_changed_entries, c.input_delta.clone());
-        let mut graded = graded_of(&tsla).clone();
-        graded.what_changed = interpretation.what_changed.clone();
+        let d = continuity_dossier(&tsla);
+        let graded = graded_of(&tsla);
         let engine_set = engine::feasible_actions(tsla.engine_output.grade, &tsla.engine_output.hurdle, None, false);
         let input = ActionInput {
-            dossier: &c.dossier,
-            subject: ActionSubject::Priced { graded: &graded, engine: &tsla.engine_output, pre_profit: None, ledger: &c.ledger },
+            dossier: &d,
+            subject: ActionSubject::Priced { graded, engine: &tsla.engine_output, pre_profit: None },
             engine_set: &engine_set,
-            changes: Some(&changes),
-            profile: &c.dossier.profile,
+            profile: &d.profile,
         };
         out.push(Example {
-            file: "25-action-priced-continuity",
+            file: "26-action-priced-continuity",
             title: "Action — priced holding, continuity run",
             step: "6f",
-            holding: "TSLA, on a continuity run over the prior read of 2026-09-02",
+            holding: "TSLA, on a continuity run over the prior document of 2026-09-02",
             sentences: lines(&[
                 action_common,
-                "On a continuity run the what-changed sentence and the validated what-changed rows join the packet beside the position delta.",
-                "The verdict shown is attempt 6's persisted read with this run's what-changed sentence from the offline stub, which re-affirms and authors no rows.",
+                "On a continuity run the prior rung joins the packet as PRIOR ACTION, glossed as chosen in the prior analysis or set by rule after it, and the task holds the action firm unless the inputs materially changed.",
+                "The verdict shown is attempt 6's persisted read as the prior and as this run's — the fixture carries one verdict.",
             ]),
             stage: "action TSLA".into(),
             request: pipeline::action_request(REASONER, &input),
@@ -799,23 +751,22 @@ fn examples() -> Vec<Example> {
         });
     }
     {
-        let (verdict, ledger) = synthetic_role_risk_verdict(&fx);
+        let verdict = synthetic_role_risk_verdict(&fx);
         let input = ActionInput {
             dossier: &fx.dossier,
-            subject: ActionSubject::RoleRisk { verdict: &verdict, ledger: &ledger },
+            subject: ActionSubject::RoleRisk { verdict: &verdict },
             engine_set: &ROLE_RISK_ACTIONS,
-            changes: None,
             profile: &fx.dossier.profile,
         };
         out.push(Example {
-            file: "26-action-role-risk",
+            file: "27-action-role-risk",
             title: "Action — role/risk branch",
             step: "6f",
             holding: bnd_holding,
             sentences: lines(&[
                 action_common,
-                "On the role/risk branch the role read and its ledger stand in for the graded verdict, and the engine set is the reduced ladder (sell-all, trim, hold).",
-                "The verdict and ledger are the offline stub's on the synthetic fund, validated through the same 6g seam a run uses.",
+                "On the role/risk branch the readout's computed sections and the thesis document stand in for the graded verdict — VERDICT carries the document alone — and the engine set is the reduced ladder (sell-all, trim, hold).",
+                "The document is the offline stub's on the synthetic fund, assembled into the verdict by the pipeline's own seam.",
             ]),
             stage: "action BND".into(),
             request: pipeline::action_request(REASONER, &input),
@@ -943,9 +894,14 @@ fn render_messages(messages: &[ChatMessage]) -> String {
                 users += 1;
                 if users == 1 {
                     out.push_str(&format!("## User message ({n} chars)\n\n"));
-                } else {
+                } else if m.content.starts_with("SEARCHING\n") {
                     out.push_str("## Appended user message (the turn countdown)\n\n");
+                } else {
+                    out.push_str(&format!("## Appended user message ({n} chars)\n\n"));
                 }
+            }
+            "assistant" if m.tool_calls.is_none() => {
+                out.push_str(&format!("## Assistant message (the model's reply, echoed back; {n} chars)\n\n"))
             }
             "assistant" => out.push_str("## Assistant message (the model's tool calls, echoed back)\n\n"),
             "tool" => out.push_str(&format!("## Tool message ({n} chars)\n\n")),
@@ -1014,7 +970,7 @@ fn render_contents(examples: &[Example]) -> String {
         "*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `{}`; regenerate rather than edit (`docs/prompts/README.md`).*\n\n",
         crate::portfolio::PROMPT_VERSION
     ));
-    out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then interpretation and the action call (Step 6f).\n");
+    out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then the thesis document, its appendix and the action call (Step 6f).\n");
     out.push_str("Each file carries the request envelope, every message as sent, and the tools or the response schema.\n\n");
     out.push_str("| File | Call | Step |\n| --- | --- | --- |\n");
     for ex in examples {
@@ -1102,7 +1058,7 @@ fn portfolio_prompt_examples_write() {
 #[test]
 fn portfolio_prompt_examples_render() {
     let examples = examples();
-    assert_eq!(examples.len(), 26);
+    assert_eq!(examples.len(), 27);
     // The header names the stamp this file last changed at, and the writer's
     // comparison sets that stamp aside and nothing else.
     let first = render(&examples[0]);

@@ -516,17 +516,6 @@ pub struct PriorHolding {
     pub authoring_close: Option<crate::portfolio::engine::DatedValue>,
 }
 
-impl HoldingDossier {
-    /// The prior run's thesis ledger for this holding — it rides the prior verdict
-    /// (`docs/portfolio-analysis.md` §The position thesis ledger: read at dossier
-    /// assembly, re-evaluated and rewritten each run). `None` on a debut or a
-    /// not-rated prior.
-    pub fn prior_ledger(&self) -> Option<&crate::portfolio::ThesisLedger> {
-        self.prior_verdict
-            .as_ref()
-            .and_then(|v| v.thesis_ledger.as_ref())
-    }
-}
 
 /// Adopt the **TTM statement basis** where the quarterly income prints support it
 /// (`docs/portfolio-analysis.md` §Starting parameters — the grade-band slice's F5
@@ -2364,7 +2353,6 @@ Sources and footnotes.
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
-                thesis_ledger: None,
                 analyzed_at: None,
                 action_source: Default::default(),
                 side_reversed: false,
@@ -2415,7 +2403,6 @@ Sources and footnotes.
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
-                thesis_ledger: None,
                 analyzed_at: None,
                 action_source: Default::default(),
                 side_reversed: false,
@@ -2433,7 +2420,6 @@ Sources and footnotes.
                 overview: String::new(),
             },
             audit: vec![crate::portfolio::HoldingAudit {
-                what_changed_audit: None,
                 research: None,
                 symbol: "AAPL".into(),
                 metrics: Default::default(),
@@ -2449,7 +2435,6 @@ Sources and footnotes.
                     ..Default::default()
                 }),
                 grade_parameter_version: "grade-v2".into(),
-                ledger_audit: None,
                 quick_basis: None,
                 authoring_close: None,
                 fund_exposure: None,
@@ -2501,7 +2486,6 @@ Sources and footnotes.
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
-                thesis_ledger: None,
                 analyzed_at: Some("2026-07-29T12:00:00Z".into()),
                 action_source: Default::default(),
                 side_reversed: false,

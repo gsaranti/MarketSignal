@@ -975,15 +975,19 @@ fn semantic_query_text(
     if let Some(i) = industry {
         q.push_str(&format!(", industry {i}"));
     }
-    if let Some(ledger) = prior.and_then(|p| p.verdict.thesis_ledger.as_ref()) {
-        q.push_str(&format!(". Standing thesis: {}", ledger.current_thesis));
-        if !ledger.key_drivers.is_empty() {
-            let drivers: Vec<&str> =
-                ledger.key_drivers.iter().map(|d| d.name.as_str()).collect();
-            q.push_str(&format!(" Key drivers: {}", drivers.join(", ")));
-        }
+    // The prior thesis document's opening stands in for the retired ledger's
+    // thesis line until the removal sweep retires the recall path.
+    if let Some(doc) = prior.and_then(|p| p.verdict.thesis_document()) {
+        q.push_str(&format!(". Standing thesis: {}", document_opening(doc)));
     }
     q
+}
+
+/// The first paragraph of a thesis document, capped — the opening the recall
+/// query and nothing else reads.
+fn document_opening(doc: &str) -> String {
+    let first = doc.trim().split("\n\n").next().unwrap_or("").trim();
+    crate::data_sources::cap_chars(first, 600).0
 }
 
 /// Run the Step-6a semantic continuity retrieval — fail-soft
@@ -1045,47 +1049,32 @@ fn semantic_recall_for(
 /// P/L sign back into an intrinsic interpretation (fix list 3.2, `portfolio-v38`).
 fn holding_summary_text(v: &crate::portfolio::HoldingVerdict) -> Option<String> {
     use crate::portfolio::pipeline::investment_sentence;
-    let ledger = v.thesis_ledger.as_ref();
-    let thesis = ledger
-        .map(|l| l.current_thesis.as_str())
-        .filter(|t| !t.trim().is_empty())
-        .unwrap_or("(none recorded)");
-    let drivers = ledger
-        .map(|l| {
-            l.key_drivers
-                .iter()
-                .map(|d| d.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .filter(|d| !d.is_empty())
-        .unwrap_or_else(|| "(none recorded)".to_string());
-    let lean = ledger
-        .map(|l| {
-            l.monitor
-                .iter()
-                .map(|m| format!("{:?} {:.0}%", m.scenario, m.probability_pct))
-                .collect::<Vec<_>>()
-                .join(" / ")
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "(none recorded)".to_string());
+    // The thesis document itself is the summary's substance (the embedding
+    // request builder byte-caps what goes on the wire); the path retires with
+    // the removal sweep once the job stops writing to vector memory.
+    let document = |doc: &str| {
+        let doc = doc.trim();
+        if doc.is_empty() {
+            "(none recorded)".to_string()
+        } else {
+            doc.to_string()
+        }
+    };
     match &v.disposition {
         crate::portfolio::VerdictDisposition::Priced(g) => Some(format!(
-            "{}: grade {}, conviction {:?}, action {} — {}. Standing thesis: {} \
-             Key drivers: {}. Scenario lean: {}.",
+            "{}: grade {}, conviction {}, action {} — {}. Standing thesis: {}",
             v.symbol,
             g.grade.as_str(),
-            g.conviction,
+            g.appendix
+                .conviction
+                .map(crate::portfolio::Conviction::as_str)
+                .unwrap_or("none"),
             g.action.as_kebab(),
             investment_sentence(&g.action_rationale),
-            thesis,
-            drivers,
-            lean,
+            document(&g.thesis_document),
         )),
         crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => Some(format!(
-            "{}: role/risk-only ({}{}), action {} — {}. Role: {} Standing \
-             thesis: {} Key drivers: {}. Scenario lean: {}.",
+            "{}: role/risk-only ({}{}), action {} — {}. Role: {}",
             v.symbol,
             r.class_label,
             if r.structural_flag {
@@ -1095,10 +1084,7 @@ fn holding_summary_text(v: &crate::portfolio::HoldingVerdict) -> Option<String> 
             },
             r.action.as_kebab(),
             investment_sentence(&r.action_rationale),
-            r.role_summary,
-            thesis,
-            drivers,
-            lean,
+            document(&r.thesis_document),
         )),
         _ => None,
     }
@@ -3137,7 +3123,6 @@ mod tests {
             action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.into(),
-            ledger_audit: None,
             quick_basis: None,
             authoring_close: None,
             fund_exposure: None,
@@ -3150,7 +3135,6 @@ mod tests {
             implied_expectations: None,
             narrative: None,
             option_overlay: None,
-            what_changed_audit: None,
             research: Some(crate::portfolio::distill::ResearchAuditRecord {
                 combined: "research".into(),
                 seed_layer: vec![],
@@ -4093,7 +4077,7 @@ mod tests {
         assert!(
             matches!(
                 &msft.disposition,
-                crate::portfolio::VerdictDisposition::InsufficientEvidence { reason }
+                crate::portfolio::VerdictDisposition::InsufficientEvidence { reason, .. }
                     if reason.contains("conflicting identity")
             ),
             "{:?}",
@@ -4105,8 +4089,8 @@ mod tests {
             "the abstention preserves the prior full pass's vintage"
         );
         assert!(
-            msft.thesis_ledger.is_some(),
-            "the standing ledger rides through the conflict abstention"
+            msft.thesis_document().is_some(),
+            "the prior thesis document rides through the conflict abstention"
         );
     }
 
@@ -4875,7 +4859,7 @@ mod tests {
             if let VerdictDisposition::Priced(g) = &v.disposition {
                 eprintln!(
                     "  {} — grade {} action {:?} conviction {:?}\n    summary: {}",
-                    v.symbol, g.grade.as_str(), g.action, g.conviction, g.financial_summary
+                    v.symbol, g.grade.as_str(), g.action, g.appendix.conviction, g.thesis_document
                 );
             } else {
                 eprintln!("  {} — {:?}", v.symbol, v.disposition);
@@ -4961,24 +4945,17 @@ mod tests {
             .unwrap();
         assert_eq!(count, 2);
 
-        // The thesis ledger carries run to run: run 1 authored the debut ledger;
-        // run 2's validated rewrite kept the unchanged cores' condition ids and the
-        // frozen original thesis (`docs/portfolio-analysis.md` §The position thesis
-        // ledger), and its audit records the ledger legs.
-        let l1 = first.verdicts[0]
-            .thesis_ledger
-            .as_ref()
-            .expect("run 1 authors the debut ledger");
-        let l2 = second.verdicts[0]
-            .thesis_ledger
-            .as_ref()
-            .expect("run 2 carries a ledger");
-        assert_eq!(l1.original_thesis, l1.current_thesis, "frozen at debut");
-        assert_eq!(l2.original_thesis, l1.original_thesis);
-        let ids1: Vec<&str> = l1.conditions.iter().map(|c| c.condition_id.as_str()).collect();
-        let ids2: Vec<&str> = l2.conditions.iter().map(|c| c.condition_id.as_str()).collect();
-        assert_eq!(ids1, ids2, "unchanged cores carry their ids");
-        assert!(second.audit[0].ledger_audit.is_some());
+        // The thesis document carries run to run: run 1 wrote the debut
+        // document; run 2 read it as PRIOR THESIS and wrote its own, which
+        // supersedes it (`docs/portfolio-analysis.md` §The holding verdict).
+        let d1 = first.verdicts[0].thesis_document().expect("run 1 writes the debut document");
+        let d2 = second.verdicts[0].thesis_document().expect("run 2 writes its own document");
+        assert!(!d1.trim().is_empty() && !d2.trim().is_empty());
+        assert!(
+            d2.contains("Since the prior analysis"),
+            "run 2's document is the continuity read: {d2}"
+        );
+        assert!(!d1.contains("Since the prior analysis"), "{d1}");
     }
 
     #[test]
@@ -5412,8 +5389,8 @@ mod tests {
         }
         fn interpret(
             &self,
-            input: &crate::portfolio::pipeline::InterpretationInput,
-        ) -> Result<crate::portfolio::Interpretation> {
+            input: &crate::portfolio::pipeline::ThesisInput,
+        ) -> Result<crate::portfolio::PricedModelArm> {
             let stage = format!("interpret {}", input.dossier.position.symbol);
             self.record_usage(stage.clone(), self.interpret_tokens);
             self.retries
@@ -5434,7 +5411,7 @@ mod tests {
         fn interpret_role_risk(
             &self,
             input: &crate::portfolio::pipeline::RoleRiskInput,
-        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
+        ) -> Result<String> {
             crate::portfolio::pipeline::StubAnalyst.interpret_role_risk(input)
         }
         fn decide_action(
@@ -5474,14 +5451,14 @@ mod tests {
         }
         fn interpret(
             &self,
-            input: &crate::portfolio::pipeline::InterpretationInput,
-        ) -> Result<crate::portfolio::Interpretation> {
+            input: &crate::portfolio::pipeline::ThesisInput,
+        ) -> Result<crate::portfolio::PricedModelArm> {
             crate::portfolio::pipeline::StubAnalyst.interpret(input)
         }
         fn interpret_role_risk(
             &self,
             input: &crate::portfolio::pipeline::RoleRiskInput,
-        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
+        ) -> Result<String> {
             crate::portfolio::pipeline::StubAnalyst.interpret_role_risk(input)
         }
         fn decide_action(
@@ -6373,8 +6350,8 @@ mod tests {
             position_change: Default::default(),
             disposition: crate::portfolio::VerdictDisposition::InsufficientEvidence {
                 reason: "thin".into(),
+                prior_thesis_document: None,
             },
-            thesis_ledger: None,
             analyzed_at: Some(created.into()),
             action_source: Default::default(),
             side_reversed: false,
@@ -6428,7 +6405,7 @@ mod tests {
         v.disposition = crate::portfolio::VerdictDisposition::RoleRiskOnly(Box::new(
             crate::portfolio::RoleRiskVerdict {
                 class_label: "bond fund".into(),
-                role_summary: "Core fixed-income sleeve.".into(),
+                thesis_document: "Role: the core fixed-income sleeve.".into(),
                 exposure_tilt: Vec::new(),
                 expense_drag: None,
                 observable_risk: None,
@@ -6438,7 +6415,6 @@ mod tests {
                 evidence_gaps: Vec::new(),
                 action: crate::portfolio::Action::SellAll,
                 action_rationale: format!("Exit the sleeve on mandate drift. {TAX_CAVEAT_LOSS}"),
-                what_changed: crate::portfolio::DEBUT_WHAT_CHANGED.into(),
             },
         ));
         let text = holding_summary_text(&v).unwrap();
@@ -6526,7 +6502,7 @@ mod tests {
         role.disposition = crate::portfolio::VerdictDisposition::RoleRiskOnly(Box::new(
             crate::portfolio::RoleRiskVerdict {
                 class_label: "bond fund".into(),
-                role_summary: "Core fixed-income sleeve.".into(),
+                thesis_document: "Role: the core fixed-income sleeve.".into(),
                 exposure_tilt: Vec::new(),
                 expense_drag: None,
                 observable_risk: None,
@@ -6536,7 +6512,6 @@ mod tests {
                 evidence_gaps: Vec::new(),
                 action: crate::portfolio::Action::SellAll,
                 action_rationale: format!("Exit the sleeve on mandate drift. {TAX_CAVEAT_LOSS}"),
-                what_changed: crate::portfolio::DEBUT_WHAT_CHANGED.into(),
             },
         ));
         for (v, key) in [(&priced, "taxed-run:AAPL"), (&role, "taxed-run:BND")] {
@@ -6735,8 +6710,8 @@ mod tests {
             ) => {
                 assert_eq!(carried.grade, prior.grade);
                 assert_eq!(carried.action, prior.action);
-                assert_eq!(carried.conviction, prior.conviction);
-                assert_eq!(carried.what_changed, prior.what_changed);
+                assert_eq!(carried.appendix, prior.appendix);
+                assert_eq!(carried.thesis_document, prior.thesis_document);
                 assert_eq!(carried.price_targets, prior.price_targets);
                 assert_eq!(carried.sub_scores, prior.sub_scores);
             }
@@ -6935,7 +6910,7 @@ mod tests {
             v.disposition = crate::portfolio::VerdictDisposition::RoleRiskOnly(Box::new(
                 crate::portfolio::RoleRiskVerdict {
                     class_label: "bond fund".into(),
-                    role_summary: "Core fixed-income sleeve.".into(),
+                    thesis_document: "Role: the core fixed-income sleeve.".into(),
                     exposure_tilt: Vec::new(),
                     expense_drag: None,
                     observable_risk: None,
@@ -6945,7 +6920,6 @@ mod tests {
                     evidence_gaps: Vec::new(),
                     action: crate::portfolio::Action::Add,
                     action_rationale: String::new(),
-                    what_changed: "new holding".into(),
                 },
             ));
         });
