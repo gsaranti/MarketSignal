@@ -38,8 +38,8 @@ use crate::portfolio::{
     ThesisAppendix, VerdictDisposition, PROMPT_VERSION,
 };
 
-use crate::portfolio::distill::{self, DistillInputs, DistilledResearch, ResearchAuditRecord};
-use crate::portfolio::research::{self, HoldingResearch, ResearchPlan};
+use crate::portfolio::distill;
+use crate::portfolio::research::{self, HoldingBrief, HoldingResearch, ResearchAuditRecord, ResearchPlan};
 
 /// What the thesis-document conversation reads (`docs/portfolio-workflow.md`
 /// §Step 6f): the dossier, the engine's computed analysis, the run-level rate
@@ -54,9 +54,10 @@ pub struct ThesisInput<'a> {
     pub engine: &'a EngineOutput,
     /// The run-level Treasury prints FETCHED VALUES states.
     pub rates: &'a RateAnchors,
-    /// This run's analysis, rendered under ANALYSIS. Until the research chain
-    /// lands it is today's distilled research — the combined findings with
-    /// the typed data lines beneath them.
+    /// This run's analysis, rendered under ANALYSIS. Until consolidation
+    /// lands (the research chain, task 2) it is the bridge: this run's
+    /// write-ups as written under their topic headings
+    /// ([`distill::bridge_analysis`]).
     pub analysis: &'a str,
     /// The finalized pre-profit execution / financing overlay — present only
     /// when the stock actually entered it.
@@ -97,8 +98,8 @@ pub struct RoleRiskInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub readout: &'a RoleRiskReadout,
     pub rates: &'a RateAnchors,
-    /// This run's analysis — the fund agenda's distilled research until the
-    /// research chain lands.
+    /// This run's analysis — the fund agenda's write-ups through the bridge
+    /// until consolidation lands.
     pub analysis: &'a str,
     pub prior_split: Option<SplitContext>,
 }
@@ -260,26 +261,6 @@ pub trait HoldingAnalyst {
     ) -> Result<HoldingResearch> {
         Ok(research::offline_stub(plan))
     }
-    /// Step 6d — the distillation primitive (`docs/portfolio-workflow.md`
-    /// §Step 6d). Defaults to the deterministic offline consolidation (no
-    /// model call, no typed fields).
-    fn distill_research(&self, inputs: &DistillInputs) -> Result<DistilledResearch> {
-        Ok(distill::offline_consolidate(inputs))
-    }
-    /// The consolidation call's input budget (chars) the deterministic
-    /// single-vs-hierarchical routing sizes against. The live analyst derives
-    /// it from the resolved distill `num_ctx`; the offline default is generous.
-    fn distill_input_budget(&self) -> usize {
-        200_000
-    }
-
-    /// The widest rendered prompt the adapter will issue — the reasoner's
-    /// budget on a distinct roster, the shared budget on the default one. The
-    /// rendered-size fallbacks in `distill` compare against it, so a smaller
-    /// shape is taken only where the issue guard would refuse.
-    fn distill_issue_budget(&self) -> usize {
-        self.distill_input_budget()
-    }
     /// Step 6f — the thesis-document conversation (`docs/portfolio-workflow.md`
     /// §Step 6f): the document as prose under thinking with no grammar, then
     /// the typed appendix transcribed from it in the same conversation's
@@ -330,167 +311,50 @@ pub trait HoldingAnalyst {
     }
 }
 
-/// Run Steps 6c–6d for one holding: assemble the deterministic research plan
-/// (agenda, structured seeds, per-topic cross-run seed texts), run the
-/// analyst's research loop, then the distillation primitive — returning the
-/// distilled output beside the audit record the run persists.
-fn run_research_and_distill(
+/// The holding-constant brief the research loop leads every gathering message
+/// with (`docs/portfolio-workflow.md` §Step 6c): the holding header, FETCHED
+/// VALUES as the thesis-document message renders it — the same bytes, so the
+/// three messages share one rendering — the news leads, and on a continuity
+/// run PRIOR THESIS with its date and any split-context line, the prior run's
+/// thesis document verbatim. The prior analysis joins the block with
+/// consolidation (the research chain, task 2).
+pub(crate) fn research_brief(
+    dossier: &HoldingDossier,
+    rates: &RateAnchors,
+    prior_split: Option<SplitContext>,
+) -> HoldingBrief {
+    HoldingBrief {
+        header: holding_header(dossier),
+        fetched_values: fetched_values_section(dossier, rates),
+        leads: dossier.news_seeds.clone(),
+        prior_documents: prior_thesis_section(dossier, prior_split),
+    }
+}
+
+/// Run Step 6c for one holding: assemble the deterministic research plan (the
+/// agenda and the holding-constant brief), run the analyst's research loop,
+/// and return the bridge ANALYSIS beside the audit record the run persists.
+/// Consolidation — the budget check, the distillation shapes and the analysis
+/// call — lands with the research chain's task 2.
+fn run_research(
     analyst: &dyn HoldingAnalyst,
     dossier: &HoldingDossier,
     triggers: &research::AgendaTriggers,
-    role_risk: bool,
-    run_date: &str,
-) -> Result<(DistilledResearch, ResearchAuditRecord, HoldingResearch)> {
-    let symbol = &dossier.position.symbol;
-    // The run's session date at midnight UTC — the topic layer's vintage stamp
-    // and the seed windows' "now" (day precision is ample against ~4-week
-    // windows; claims keep their own full retrieval timestamps).
-    let now = chrono::NaiveDate::parse_from_str(run_date, "%Y-%m-%d")
-        .ok()
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|dt| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc))
-        .unwrap_or_else(chrono::Utc::now);
-
-    let agenda = research::build_agenda(dossier, triggers);
-    // Per-topic cross-run seeds, assembled deterministically — never by a
-    // model call: the topic object's window gates seeding; each claim expires
-    // by its own vintage (`docs/portfolio-analysis.md` §Starting parameters —
-    // Research reuse). The seed store retires with the research chain.
-    let mut topic_seeds = std::collections::HashMap::new();
-    for topic in &agenda {
-        let prior = dossier
-            .research_priors
-            .iter()
-            .find(|p| p.topic_key == topic.key);
-        if let Some(seed) = research::assemble_topic_seed(prior, now) {
-            let vintage = prior
-                .filter(|p| research::topic_object_fresh(p, now))
-                .map(|p| p.vintage.clone())
-                .unwrap_or_default();
-            topic_seeds.insert(topic.key.clone(), (seed, vintage));
-        }
-    }
+    rates: &RateAnchors,
+    prior_split: Option<SplitContext>,
+) -> Result<(String, ResearchAuditRecord)> {
     let plan = ResearchPlan {
-        agenda,
-        seeds: dossier.news_seeds.clone(),
-        topic_seeds,
+        agenda: research::build_agenda(dossier, triggers),
+        brief: research_brief(dossier, rates, prior_split),
         // The holding's own tracker step: the loop's thinking and request rows
         // land on the step the job already opened for this symbol.
-        step_label: crate::portfolio::holding_step_key(symbol),
+        step_label: crate::portfolio::holding_step_key(&dossier.position.symbol),
     };
     let research_out = analyst
         .research(dossier, &plan)
         .context("researching the holding")?;
-
-    // Only non-expired topic objects join the distillation merge.
-    let priors: Vec<research::TopicDistillate> = dossier
-        .research_priors
-        .iter()
-        .filter(|p| research::topic_object_fresh(p, now))
-        .cloned()
-        .collect();
-    // The shared holding header opens every distillation message
-    // (`portfolio-v44`); a fund's distillation is pure consolidation like a
-    // role/risk holding's, since no consensus driver, narrative cap or overlay
-    // reads a fund's typed field (ruled 2026-09-17).
-    let brief = holding_header(dossier);
-    let inputs = DistillInputs {
-        symbol,
-        company_name: dossier.company_name.as_deref(),
-        holding_brief: &brief,
-        research: &research_out,
-        priors: &priors,
-        consolidation_only: role_risk || dossier_is_fund(dossier),
-        overlay_eligible: triggers.overlay_eligible,
-        backfill_required: triggers.pre_profit_backfill,
-        input_budget_chars: analyst.distill_input_budget(),
-        issue_budget_chars: analyst.distill_issue_budget(),
-        now,
-    };
-    let distilled = analyst
-        .distill_research(&inputs)
-        .context("distilling research findings")?;
-
-    let mut sources: Vec<String> = research_out
-        .topics
-        .iter()
-        .flat_map(|t| t.passes.iter())
-        .chain(research_out.disconfirming.iter())
-        .flat_map(|p| p.claims.iter())
-        .map(|c| format!("{} ({})", c.source_url, c.retrieved_at))
-        .collect();
-    sources.sort();
-    sources.dedup();
-    let mut gaps = research_out.gaps.clone();
-    gaps.extend(distilled.gaps.iter().cloned());
-    let record = ResearchAuditRecord {
-        combined: distilled.combined.clone(),
-        seed_layer: distilled.topic_layer.clone(),
-        shape: distilled.shape.clone(),
-        fetches_spent: research_out.fetches_spent,
-        elapsed_secs: research_out.elapsed_secs,
-        seed_decisions: research_out.seed_decisions.clone(),
-        sources,
-        gaps,
-        unreconciled_topics: distilled.unreconciled_topics.clone(),
-        forward_assumption_resolution: None,
-        forward_assumption: distilled.forward_assumption.clone(),
-        leading_indicator: distilled.leading_indicator.clone(),
-        forensic_event: distilled.forensic_event.clone(),
-    };
-    Ok((distilled, record, research_out))
-}
-
-/// The Step-6e shadow resolution line (ruled 2026-08-24): the engine evaluated
-/// the assumption and computed the hypothetical refinement, but the write-back
-/// is parked — this recorded would-have outcome is what the promotion decision
-/// reads after manually inspected shadow cases. The standing Step-6b targets
-/// are untouched by construction (`engine_output` is immutable past 6b).
-fn shadow_assumption_resolution(
-    standing_base: Option<f64>,
-    refined: &engine::RefinedTargets,
-) -> String {
-    let would_be = refined.price_targets.twelve_month.as_ref().map(|t| t.base);
-    format!(
-        "shadow (write-back parked — pending shadow-mode evidence): {}; would have moved the \
-         12-month base target {} -> {}",
-        refined.matched_rule,
-        standing_base.map_or("n/a".to_string(), |v| format!("{v:.2}")),
-        would_be.map_or("n/a".to_string(), |v| format!("{v:.2}")),
-    )
-}
-
-/// The validated fraud claim as one data line under RESEARCH SUMMARY: the
-/// document's host, its date, the issuer as the document names it and the
-/// address — and that whether it concerns this holding is not established
-/// (advisory by the 2026-08-24 ruling, stated in words since `portfolio-v44`).
-pub(crate) fn render_fraud_record(claim: &crate::portfolio::distill::ForensicEventClaim) -> String {
-    let host = reqwest::Url::parse(claim.source_url.trim())
-        .ok()
-        .and_then(|u| u.host_str().map(crate::web_research::registry::normalize_host))
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "regulator or court".to_string());
-    format!(
-        "Fraud record: a {host} document dated {} names {} in a fraud matter; source {}. \
-         Whether it concerns this holding is not established.",
-        claim.event_date, claim.issuer, claim.source_url
-    )
-}
-
-/// The validated leading indicator as one data line under ANALYSIS
-/// (`portfolio-v44`): the measure, its value, direction and date, and its
-/// source. The driver clause went with the ledger it named.
-pub(crate) fn render_leading_indicator(
-    ind: &crate::portfolio::distill::ValidatedLeadingIndicator,
-) -> String {
-    let direction = match ind.direction {
-        crate::portfolio::distill::IndicatorDirection::InflectingUp => "inflecting up",
-        crate::portfolio::distill::IndicatorDirection::InflectingDown => "inflecting down",
-    };
-    format!(
-        "Leading indicator: {} = {} ({direction}, as of {}); source {}.",
-        ind.metric_name, ind.value, ind.as_of, ind.source_url
-    )
+    let analysis = distill::bridge_analysis(&research_out);
+    Ok((analysis, ResearchAuditRecord::from_research(&research_out)))
 }
 
 /// Run one holding through the pipeline end to end, returning its verdict and audit
@@ -916,25 +780,24 @@ pub fn analyze_holding(
                 backdrop_consulted.set(dossier.put_call_backdrop.is_some());
                 positioning_consulted
                     .set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
-                // The fund agenda runs the same 6c loop and a
-                // pure-consolidation 6d (`docs/portfolio-workflow.md` §Step 6d).
-                let (rr_distilled, rr_research_record, _rr_research) = run_research_and_distill(
+                // The fund agenda runs the same 6c loop (`docs/portfolio-workflow.md`
+                // §Step 6c); the brief states the Treasury prints under FETCHED
+                // VALUES, so the source is consulted here too.
+                rates_consulted.set(true);
+                let (rr_analysis, rr_research_record) = run_research(
                     analyst,
                     dossier,
                     &research::AgendaTriggers::default(),
-                    true,
-                    run_date,
+                    rates,
+                    prior_split,
                 )?;
-                record_stage_models(analyst.fast_id());
-                // The branch's message states the Treasury prints under FETCHED
-                // VALUES, so the source is consulted here too.
-                rates_consulted.set(true);
+                record_stage_models(analyst.reasoner_id());
                 let thesis_document = analyst
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
                         readout: &readout,
                         rates,
-                        analysis: &rr_distilled.combined,
+                        analysis: &rr_analysis,
                         prior_split,
                     })
                     .context("writing the role/risk holding's thesis document")?;
@@ -985,12 +848,11 @@ pub fn analyze_holding(
             }
         }
     } else {
-        // The pre-profit overlay's statement leg over the carried observation
-        // history (`docs/portfolio-workflow.md` §Step 6b) — no candidate rows
-        // exist yet at this seam; the research-fed rows arrive at the Step-6e
-        // finalization below, which recomputes the overlay whole. Computed for
-        // every stock: the eligibility result persists even when the stock
-        // does not enter.
+        // The pre-profit overlay's statement legs over the carried observation
+        // history (`docs/portfolio-workflow.md` §Step 6b) — no research-fed
+        // rows exist: the execution read has no producer. Computed for every
+        // stock: the eligibility result persists even when the stock does not
+        // enter.
         pre_profit_overlay = Some(pre_profit::compute_overlay(
             &dossier.financials,
             dossier.prior_pre_profit.as_ref(),
@@ -1118,145 +980,27 @@ pub fn analyze_holding(
     let triggers = research::AgendaTriggers {
         tech_pre_flag_fired: tech_pre_flag.as_ref().is_some_and(|f| f.fired),
         overlay_eligible: pre_profit_overlay.as_ref().is_some_and(|o| o.is_eligible()),
-        // The backfill obligation binds on the first overlay-eligible full
-        // pass, or while a previously used guidance metric-and-span identity
-        // has fewer than four comparable stored periods
-        // (`docs/portfolio-analysis.md` §Starting parameters).
-        pre_profit_backfill: pre_profit_overlay
-            .as_ref()
-            .filter(|o| o.is_eligible())
-            .is_some_and(|o| pre_profit::backfill_required(o, dossier.prior_pre_profit.as_ref())),
     };
-    let (distilled_research, mut research_record, research_out) =
-        run_research_and_distill(analyst, dossier, &triggers, false, run_date)?;
-    record_stage_models(analyst.fast_id());
-    let analysis = distilled_research.combined.clone();
+    let (analysis, research_record) =
+        run_research(analyst, dossier, &triggers, rates, prior_split)?;
+    record_stage_models(analyst.reasoner_id());
 
-    // Step 6e — the observation-driven overlay finalization
-    // (`docs/portfolio-workflow.md` §Step 6e): the research-fed typed rows are
-    // validated with the two activation legs over the loop's fetched pages
-    // (holding identity + source-text corroboration — the discharged
-    // obligation), merged into the period-end-and-span-keyed history, and the overlay
-    // recomputed whole; the backfill attempt's record joins where the agenda
-    // required one.
-    if pre_profit_overlay.as_ref().is_some_and(pre_profit::PreProfitOverlay::is_eligible)
-        && (!distilled_research.pre_profit_observations.is_empty()
-            || distilled_research.backfill.is_some())
-    {
-        let evidence = pre_profit::SourceEvidence {
-            texts: &research_out.page_texts,
-            symbol: &symbol,
-            company_name: dossier.company_name.as_deref(),
-        };
-        let mut refined = pre_profit::compute_overlay_with_sources(
-            &dossier.financials,
-            dossier.prior_pre_profit.as_ref(),
-            distilled_research.pre_profit_observations.clone(),
-            Some(&evidence),
-        );
-        if let Some(backfill) = distilled_research.backfill.clone() {
-            refined.backfill_attempts.push(backfill);
-        }
-        pre_profit_overlay = Some(refined);
-    }
-    if triggers.pre_profit_backfill && distilled_research.backfill.is_none() {
-        // The obligation was to search; an attempt that never reported stays a
-        // recorded gap, never an inferred observation.
-        research_record
-            .gaps
-            .push("pre-profit backfill required but no attempt was reported".to_string());
-    }
-
-    // Step 6e — the forward-assumption target recompute runs in **shadow
-    // mode** (ruled 2026-08-24): the engine still evaluates the claim under
-    // the app-owned conflict policy and computes the hypothetical refined
-    // targets, but the result is **never spliced into the baseline** — the
-    // mechanical legs cannot verify that the number is semantically the
-    // claimed forward driver, so the write-back is parked and the recorded
-    // would-have outcome is the evidence the promotion decision reads after
-    // manually inspected shadow cases. Every resolution — the shadow
-    // would-have line or the failed condition — records on the audit; the
-    // structured Step-6b targets always stand.
-    if let Some(assumption) = &distilled_research.forward_assumption {
-        let affects = format!(
-            "{} {}",
-            assumption.affects.to_ascii_lowercase(),
-            assumption.fact_type.to_ascii_lowercase()
-        );
-        let metric = if affects.contains("eps") || affects.contains("earnings") {
-            Some(engine::AssumptionMetric::ForwardEps)
-        } else if affects.contains("revenue") || affects.contains("sales") {
-            Some(engine::AssumptionMetric::ForwardRevenue)
-        } else {
-            None
-        };
-        let resolution = match metric {
-            None => format!(
-                "rejected: {:?} maps to no recomputable driver (drafted mapping: EPS / revenue)",
-                assumption.affects
-            ),
-            Some(metric) => {
-                let input = engine::ForwardAssumptionInput {
-                    metric,
-                    value: assumption.numeric_value,
-                    units: assumption.units.clone(),
-                    // The model declares no conflict handling since
-                    // `portfolio-v44` (ruled 2026-09-17: with a feed value
-                    // present both declarations rejected, without one both
-                    // filled): every fact reads as a supplement fill under
-                    // the app-owned policy.
-                    supersede: false,
-                    fact_type: assumption.fact_type.clone(),
-                    as_of: assumption.as_of.clone(),
-                    source_url: assumption.source_url.clone(),
-                };
-                match engine::refine_targets_with_assumption(&dossier.financials, rates, &input) {
-                    Ok(refined) => shadow_assumption_resolution(
-                        engine_output
-                            .price_targets
-                            .twelve_month
-                            .as_ref()
-                            .map(|t| t.base),
-                        &refined,
-                    ),
-                    Err(condition) => condition,
-                }
-            }
-        };
-        research_record.forward_assumption_resolution = Some(resolution);
-    }
-
-    // The research-fed fraud claim is **advisory** (ruled 2026-08-24): the
-    // deterministic legs establish provenance and relevance, not that the
-    // issuer is the accused party, so the claim never joins the hard-forensic
-    // producer state — the hard rule trips from the item-classified filing
-    // kinds alone. The validated claim rides the audit record and reaches the
-    // model as cited attention evidence below; promotion back to a hard
-    // trigger waits on explicit acknowledgment or a source-specific adapter
-    // that reads the accused party from structured document fields.
+    // The hard-forensic state trips from the item-classified filing kinds
+    // alone (`docs/portfolio-analysis.md` §Starting parameters): a fraud
+    // allegation reaches the model only through the research write-ups and
+    // the analysis, as prose it weighs.
     let filing_state = dossier.filing_events.clone();
     let hard_forensic = filing_state
         .as_ref()
         .map(crate::portfolio::ForensicFilingState::hard_tripped)
         .unwrap_or(false);
-    // The typed indicator reaches the model as evidence: one data line under
-    // ANALYSIS (`portfolio-v44`).
-    let analysis = match &distilled_research.leading_indicator {
-        Some(ind) => format!("{analysis}\n\n{}", render_leading_indicator(ind)),
-        None => analysis,
-    };
-    // The advisory fraud claim reaches the model as a data line that states
-    // its attribution to this holding as not established (the 2026-08-24
-    // ruling, in words): it is not a hard trigger and binds nothing.
-    let analysis = match &distilled_research.forensic_event {
-        Some(claim) => format!("{analysis}\n\n{}", render_fraud_record(claim)),
-        None => analysis,
-    };
 
     // The overlay's rules join only when the stock actually entered the overlay
     // (a priced fund carries none) — they bind the engine's own rung and its
-    // per-holding action set below. Derived after the Step-6e
-    // finalization so a research-fed execution/severe state binds this run.
+    // per-holding action set below. The overlay is the statement legs alone:
+    // its execution read has no deterministic producer, and the issuer's
+    // operating observations reach the model through the write-ups
+    // (`docs/portfolio-workflow.md` §Step 6b).
     let overlay_rules = pre_profit_overlay
         .as_ref()
         .filter(|o| o.is_eligible())
@@ -1610,8 +1354,8 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     // MARKET ANALYSIS
     p.push_str(&market_analysis_section(d));
 
-    // ANALYSIS: this run's analysis — the fund agenda's distilled research
-    // until the research chain lands.
+    // ANALYSIS: this run's analysis — the bridge render of the fund agenda's
+    // write-ups until consolidation lands (the research chain, task 2).
     p.push_str(&format!("\nANALYSIS\n{}\n", input.analysis));
 
     // PRIOR THESIS, on a continuity run.
@@ -2399,8 +2143,9 @@ fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) -> String {
         let per_share = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "(gap)".into());
         p.push_str(
             "Quarterly statements, newest first, as reported — period end: revenue; gross \
-             profit; operating income; net income; diluted EPS; operating cash flow; free \
-             cash flow; total debt; total equity; cash and equivalents.\n",
+             profit; operating income; net income; diluted EPS; diluted shares; operating \
+             cash flow; free cash flow; capital expenditure; total debt; total equity; cash \
+             and equivalents.\n",
         );
         for row in fin.quarterly_income.iter().take(8) {
             let cf = fin
@@ -2412,15 +2157,17 @@ fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) -> String {
                 .iter()
                 .find(|b| b.period_end == row.period_end);
             p.push_str(&format!(
-                "- {}: {}; {}; {}; {}; {}; {}; {}; {}; {}; {}\n",
+                "- {}: {}; {}; {}; {}; {}; {}; {}; {}; {}; {}; {}; {}\n",
                 row.period_end,
                 money(row.revenue),
                 money(row.gross_profit),
                 money(row.operating_income),
                 money(row.net_income),
                 per_share(row.eps_diluted),
+                money(row.diluted_shares),
                 money(cf.and_then(|c| c.operating_cash_flow)),
                 money(cf.and_then(|c| c.free_cash_flow)),
+                money(cf.and_then(|c| c.capex)),
                 money(bs.and_then(|b| b.total_debt)),
                 money(bs.and_then(|b| b.total_equity)),
                 money(bs.and_then(|b| b.cash_and_equivalents)),
@@ -3999,8 +3746,8 @@ pub(super) fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
 /// Where one distillation call issues — the app-side guard against the
 /// daemon's silent front-truncation (`docs/local-models.md §The local-model
 /// adapter seam`; the 2026-08-24 review's reduce-prompt minor, ruled
-/// 2026-08-28). The rendered prompt — instruction scaffolding, ledger
-/// conditions, and distillates together — is measured in chars against its
+/// 2026-08-28). The rendered prompt — the instruction scaffolding and the
+/// write-ups it distills together — is measured in chars against its
 /// model's input budget before any request exists. Within the fast tier's
 /// budget it issues there at [`distill_num_ctx`]; over it but within the
 /// reasoner's, it issues on the resident reasoner at the interpretation
@@ -4010,7 +3757,9 @@ pub(super) fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
 /// unclassified so the retry gate never re-issues a deterministic outcome,
 /// and the run fails legibly. On the default roster (fast = reasoner) the two
 /// rungs are one budget and only the refusal is live. Pure, so the routing is
-/// pinned offline.
+/// pinned offline. Parked until consolidation issues a call (the research
+/// chain, task 2).
+#[allow(dead_code)] // parked for consolidation (the research chain, task 2)
 fn distill_route<'a>(
     stage: &str,
     prompt_chars: usize,
@@ -4034,15 +3783,17 @@ fn distill_route<'a>(
 
 /// Build one distillation call's request: **explicitly non-thinking**
 /// (`Some(false)` — an omitted flag rides Qwen's thinking-on default and cost
-/// the first live run ~45 minutes, F3), non-thinking sampling, the
-/// grammar-constraining `format` schema, the caller-routed model and context
-/// size ([`distill_route`]). Pure, so the per-stage wiring is asserted offline.
+/// the first live run ~45 minutes, F3), non-thinking sampling, **no grammar**
+/// (`docs/portfolio-workflow.md` §Step 6d: a distillation returns prose), the
+/// caller-routed model and context size ([`distill_route`]). Parked until
+/// consolidation issues a call (the research chain, task 2). Pure, so the
+/// per-stage wiring is asserted offline.
+#[allow(dead_code)] // parked for consolidation (the research chain, task 2)
 pub(super) fn distill_request(
     model: &str,
     num_ctx: u32,
     num_predict: u32,
     prompt: &distill::DistillPrompt,
-    schema: &serde_json::Value,
 ) -> ChatRequest {
     // The role line and the two-part message (`portfolio-v44`).
     let mut req = ChatRequest::new(
@@ -4053,7 +3804,7 @@ pub(super) fn distill_request(
         ],
     );
     req.think = Some(false);
-    req.format_schema = Some(schema.clone());
+    req.format_schema = None;
     req.options = Some(options::non_thinking_general(num_ctx, num_predict));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
@@ -4063,6 +3814,7 @@ pub(super) fn distill_request(
 /// request declared the normal ceiling and the daemon reports that it generated
 /// exactly that many tokens. A stop below it is context-bound or unattributable
 /// and keeps the existing hard-failure posture.
+#[allow(dead_code)] // parked for consolidation (the research chain, task 2)
 fn hit_normal_distill_reservation(
     req: &ChatRequest,
     resp: &crate::local_model::ChatResponse,
@@ -4072,11 +3824,65 @@ fn hit_normal_distill_reservation(
         && resp.eval_count == Some(u64::from(NUM_PREDICT_DISTILL))
 }
 
+/// One distillation call on the live adapter, parked until consolidation
+/// issues one (the research chain, task 2): the issue guard sizes the
+/// rendered prompt — both messages — against its model's budget before any
+/// request exists ([`distill_route`]); a reply that stops exactly at the
+/// normal reservation takes the one expanded re-attempt on the reasoner
+/// (`docs/local-models.md §The local-model adapter seam`). Returns the stage
+/// whose single re-attempt was spent beside the prose, so the outer
+/// transport retry gate never adds a third call after it.
+#[allow(dead_code)] // parked for consolidation (the research chain, task 2)
+fn distill_prose_call(
+    analyst: &LocalAnalyst,
+    stage: &str,
+    prompt: &distill::DistillPrompt,
+) -> Result<(String, bool)> {
+    let (model, num_ctx) = distill_route(
+        stage,
+        prompt.chars(),
+        &analyst.fast_model,
+        &analyst.reasoner_model,
+    )?;
+    let mut req = distill_request(model, num_ctx, NUM_PREDICT_DISTILL, prompt);
+    req.stage = Some(stage.to_string());
+    analyst.record_model_call(&req);
+    let resp = analyst.client.chat(&req)?;
+
+    if hit_normal_distill_reservation(&req, &resp) {
+        // The rendered prompt already passed the reasoner's 60% input guard,
+        // leaving more than the 32 K expanded ceiling in its 128 K context.
+        // Route the one evidence-triggered re-attempt there even when the
+        // normal call used a 32 K fast tier, whose shared context could not
+        // hold both.
+        let mut expanded_req = distill_request(
+            &analyst.reasoner_model,
+            NUM_CTX_INTERPRET,
+            NUM_PREDICT_DISTILL_RETRY,
+            prompt,
+        );
+        expanded_req.stage = Some(format!("{stage} (expanded)"));
+        analyst.record_model_call(&expanded_req);
+        let expanded_resp = analyst.client.chat(&expanded_req)?;
+
+        ensure_not_output_limited(stage, &expanded_req, &expanded_resp).with_context(|| {
+            format!(
+                "{stage}: expanded distillation attempt also length-stopped after the normal \
+                 {NUM_PREDICT_DISTILL}-token reservation bound"
+            )
+        })?;
+        ensure_nonempty_completion(stage, &expanded_resp)?;
+        return Ok((expanded_resp.content, true));
+    }
+    ensure_not_output_limited(stage, &req, &resp)?;
+    ensure_nonempty_completion(stage, &resp)?;
+    Ok((resp.content, false))
+}
+
 /// Build one research-loop turn's request: thinking on, the shared interpret
-/// context (one `num_ctx` per model). Tools and the findings grammar are passed
-/// per phase and never together — the gathering turns carry `tools` with no
-/// `format`, the synthesis call carries `format` with no `tools` (attempt-4
-/// Finding 4, fix B).
+/// context (one `num_ctx` per model). The gathering turns carry `tools` with
+/// no `format`; the synthesis conversation carries neither — its write-up and
+/// its follow-up reply are prose (`docs/portfolio-workflow.md` §Step 6c).
 pub(super) fn research_turn_request(
     reasoner_model: &str,
     messages: Vec<ChatMessage>,
@@ -4245,118 +4051,11 @@ impl HoldingAnalyst for LocalAnalyst {
             progress: &ctx.progress,
             step_label: plan.step_label.clone(),
         };
-        let brief = holding_header(dossier);
         runner.run_holding_with_issuer(
-            &brief,
+            &plan.brief,
             &plan.agenda,
-            &plan.seeds,
             dossier.earnings_issuer.as_ref(),
-            &|key| plan.topic_seeds.get(key).cloned(),
         )
-    }
-
-    fn distill_research(&self, inputs: &DistillInputs) -> Result<DistilledResearch> {
-        struct ModelAdapter<'a> {
-            analyst: &'a LocalAnalyst,
-            /// Stages that spent their single re-attempt on an expanded output
-            /// request. The outer parse/transport retry gate must not add a
-            /// third call afterward.
-            spent_output_retries: std::cell::RefCell<std::collections::HashSet<String>>,
-        }
-        impl distill::DistillModel for ModelAdapter<'_> {
-            fn distill_call(
-                &self,
-                stage: &str,
-                prompt: &distill::DistillPrompt,
-                schema: &serde_json::Value,
-            ) -> Result<String> {
-                // The issue guard: size the rendered prompt — both messages —
-                // against its model's budget before any request exists
-                // (`distill_route`).
-                let (model, num_ctx) = distill_route(
-                    stage,
-                    prompt.chars(),
-                    &self.analyst.fast_model,
-                    &self.analyst.reasoner_model,
-                )?;
-                let mut req = distill_request(
-                    model,
-                    num_ctx,
-                    NUM_PREDICT_DISTILL,
-                    prompt,
-                    schema,
-                );
-                req.stage = Some(stage.to_string());
-                self.analyst.record_model_call(&req);
-                let resp = self.analyst.client.chat(&req)?;
-
-                if hit_normal_distill_reservation(&req, &resp) {
-                    // The rendered prompt already passed the reasoner's 60%
-                    // input guard, leaving more than the 32 K expanded ceiling
-                    // in its 128 K context. Route the one evidence-triggered
-                    // re-attempt there even when the normal call used a 32 K
-                    // fast tier, whose shared context could not hold both.
-                    self.spent_output_retries
-                        .borrow_mut()
-                        .insert(stage.to_string());
-                    let mut expanded_req = distill_request(
-                        &self.analyst.reasoner_model,
-                        NUM_CTX_INTERPRET,
-                        NUM_PREDICT_DISTILL_RETRY,
-                        prompt,
-                        schema,
-                    );
-                    expanded_req.stage = Some(format!("{stage} (expanded)"));
-                    self.analyst.record_model_call(&expanded_req);
-                    let expanded_resp = self.analyst.client.chat(&expanded_req)?;
-
-                    ensure_not_output_limited(stage, &expanded_req, &expanded_resp).with_context(
-                        || {
-                            format!(
-                                "{stage}: expanded distillation attempt also length-stopped after \
-                                 the normal {NUM_PREDICT_DISTILL}-token reservation bound"
-                            )
-                        },
-                    )?;
-                    ensure_nonempty_completion(stage, &expanded_resp)?;
-                    return Ok(expanded_resp.content);
-                }
-                ensure_not_output_limited(stage, &req, &resp)?;
-                ensure_nonempty_completion(stage, &resp)?;
-                Ok(resp.content)
-            }
-
-            fn retry_permitted(&self, stage: &str, err: &anyhow::Error) -> bool {
-                // A normal-reservation stop already spent this stage's single
-                // re-attempt on the expanded request. Do not let the outer
-                // parse/transport retry layer add a third call afterward.
-                if self.spent_output_retries.borrow().contains(stage) {
-                    return false;
-                }
-                self.analyst
-                    .retry
-                    .permit(self.analyst.client.progress(), stage, err)
-            }
-        }
-        distill::distill(
-            &ModelAdapter {
-                analyst: self,
-                spent_output_retries: std::cell::RefCell::new(
-                    std::collections::HashSet::new(),
-                ),
-            },
-            inputs,
-        )
-    }
-
-    fn distill_input_budget(&self) -> usize {
-        distill::input_budget_chars(distill_num_ctx(&self.fast_model, &self.reasoner_model))
-    }
-
-    fn distill_issue_budget(&self) -> usize {
-        // The guard's widest rung (`distill_route`): the reasoner's context on
-        // both rosters — equal to the routing budget on the default one.
-        distill::input_budget_chars(NUM_CTX_INTERPRET)
     }
 
     fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
@@ -4551,8 +4250,7 @@ pub(crate) mod tests {
             routed,
             num_ctx,
             NUM_PREDICT_DISTILL,
-            &distill::DistillPrompt { system: "s".into(), user: "wide prompt".into(), claims: Default::default() },
-            &serde_json::json!({"type": "object"}),
+            &distill::DistillPrompt { system: "s".into(), user: "wide prompt".into() },
         );
         analyst.record_model_call(&distill);
 
@@ -4689,7 +4387,6 @@ pub(crate) mod tests {
             prior_metrics: None,
             semantic_recall: Default::default(),
             news_seeds: Vec::new(),
-            research_priors: Vec::new(),
             analysis_date: "2026-07-28".into(),
             company_name: None,
             position: position(asset_class),
@@ -4764,29 +4461,6 @@ pub(crate) mod tests {
         assert!(!agenda.iter().any(|t| t.key == "technology-event"));
     }
 
-    #[test]
-    fn the_pre_profit_backfill_agenda_keeps_reporting_spans_separate() {
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let agenda = research::build_agenda(
-            &d,
-            &research::AgendaTriggers {
-                overlay_eligible: true,
-                pre_profit_backfill: true,
-                ..Default::default()
-            },
-        );
-        let topic = agenda
-            .iter()
-            .find(|t| t.key == "pre-profit-execution")
-            .expect("the eligible stock gets the pre-profit topic");
-        let backfill = topic
-            .questions
-            .iter()
-            .find(|q| q.starts_with("Also find the issuer's latest four reported periods"))
-            .expect("the binding obligation reaches the agenda");
-        assert!(backfill.contains("exact reporting span"), "{backfill}");
-        assert!(backfill.contains("never substitute quarterly"), "{backfill}");
-    }
 
     /// A priced-fund dossier: a US equity ETF with a full sector-P/E surface.
     fn fund_dossier(fund: FundData) -> HoldingDossier {
@@ -5077,10 +4751,6 @@ pub(crate) mod tests {
             self.called("reasoner");
             Ok(research::offline_stub(plan))
         }
-        fn distill_research(&self, inputs: &DistillInputs) -> Result<DistilledResearch> {
-            self.called("fast-tier");
-            Ok(distill::offline_consolidate(inputs))
-        }
         fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
             self.called("reasoner");
             StubAnalyst.interpret(input)
@@ -5145,23 +4815,22 @@ pub(crate) mod tests {
         assert!(matches!(v.disposition, VerdictDisposition::InsufficientEvidence { .. }));
         assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
 
-        // The role/risk branch runs the fund agenda's research + a
-        // pure-consolidation distillation (the stub-time bypass is retired
-        // with the research slice — `docs/portfolio-workflow.md` §Step 6d),
-        // then the reasoner's role read + action call: fast tier + reasoner.
+        // The role/risk branch runs the fund agenda's research on the reasoner,
+        // then the reasoner's role read + action call: the reasoner alone, once
+        // (no distillation call exists until consolidation lands).
         let (v, a) = run(&fund_dossier(bond_fund()));
         assert!(matches!(v.disposition, VerdictDisposition::RoleRiskOnly(_)));
-        assert_eq!(a.model_ids, vec!["fast-tier".to_string(), "reasoner".to_string()]);
+        assert_eq!(a.model_ids, vec!["reasoner".to_string()]);
 
-        // The priced path runs both, in call order: distill (fast) then the
-        // reasoner's interpretation + action call.
+        // The priced path likewise: research, then the reasoner's
+        // interpretation + action call — one id, deduplicated in place.
         let (v, a) = run(&dossier(AssetClass::Stock, strong_financials()));
         assert!(matches!(v.disposition, VerdictDisposition::Priced(_)));
-        assert_eq!(a.model_ids, vec!["fast-tier".to_string(), "reasoner".to_string()]);
+        assert_eq!(a.model_ids, vec!["reasoner".to_string()]);
         // And the priced fund path likewise.
         let (v, a) = run(&fund_dossier(us_equity_fund()));
         assert!(matches!(v.disposition, VerdictDisposition::Priced(_)), "{v:?}");
-        assert_eq!(a.model_ids, vec!["fast-tier".to_string(), "reasoner".to_string()]);
+        assert_eq!(a.model_ids, vec!["reasoner".to_string()]);
 
         // One entry when the fast tier is the reasoner (the blank-fast-tier
         // fallback, or a same-model stub) — never the same id twice.
@@ -5175,8 +4844,9 @@ pub(crate) mod tests {
         assert_eq!(a.model_ids, vec!["stub-analyst".to_string()]);
 
         // Exact telemetry supersedes configured-stage guesses: live research
-        // is the first model call, so a distinct roster persists reasoner then
-        // fast tier (and dedups the later reasoner judgments in place).
+        // is the first model call and every later judgment runs on the same
+        // reasoner, so the recorded ids dedup to the one in place; the fast
+        // tier is never called while no distillation issues.
         let exact = TelemetryTieredStub::default();
         let (_, a) = analyze_holding(
             &exact,
@@ -5185,7 +4855,7 @@ pub(crate) mod tests {
             "2026-08-03",
         )
         .unwrap();
-        assert_eq!(a.model_ids, vec!["reasoner".to_string(), "fast-tier".to_string()]);
+        assert_eq!(a.model_ids, vec!["reasoner".to_string()]);
     }
 
     #[test]
@@ -5864,6 +5534,68 @@ pub(crate) mod tests {
             narrative: None,
         });
         assert!(!interp.contains("COMMODITY PRICES"), "{interp}");
+    }
+
+    /// The research brief's FETCHED VALUES is the thesis-document message's
+    /// block to the byte on both branches, so the gathering, synthesis and
+    /// thesis messages share one rendering (`docs/portfolio-workflow.md`
+    /// §Step 6c); the statement line carries every headline the dossier holds,
+    /// diluted shares and capital expenditure among them, as reported.
+    #[test]
+    fn the_research_brief_fetched_values_are_the_thesis_message_block_to_the_byte() {
+        let mut fin = strong_financials();
+        fin.quarterly_cash_flow = fin
+            .quarterly_income
+            .iter()
+            .take(8)
+            .map(|r| crate::portfolio::engine::QuarterlyCashFlowRow {
+                period_end: r.period_end.clone(),
+                filing_date: None,
+                free_cash_flow: Some(20.0e9),
+                operating_cash_flow: Some(28.0e9),
+                capex: Some(-8.0e9),
+            })
+            .collect();
+        let d = dossier(AssetClass::Stock, fin);
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let block = research_brief(&d, rates_static(), None).fetched_values;
+        assert!(block.starts_with("\nFETCHED VALUES\n"), "{block}");
+        assert!(
+            block.contains(
+                "period end: revenue; gross profit; operating income; net income; diluted \
+                 EPS; diluted shares; operating cash flow; free cash flow; capital \
+                 expenditure; total debt; total equity; cash and equivalents.\n\
+                 - 2026-06-30: 100.0B; (gap); (gap); (gap); 1.55; 15.0B; 28.0B; 20.0B; \
+                 -8.0B; (gap); (gap); (gap)\n"
+            ),
+            "{block}"
+        );
+        let interp = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
+            dossier: &d,
+            engine: &engine_output,
+            analysis: "findings",
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+        });
+        assert!(interp.contains(block.as_str()), "{interp}");
+
+        let fd = fund_dossier(us_equity_fund());
+        let block = research_brief(&fd, rates_static(), None).fetched_values;
+        let role = role_risk_user_prompt(&RoleRiskInput {
+            rates: rates_static(),
+            prior_split: None,
+            dossier: &fd,
+            readout: &RoleRiskReadout::default(),
+            analysis: "No research findings.",
+        });
+        assert!(role.contains(block.as_str()), "{role}");
     }
 
     #[test]
@@ -6854,10 +6586,18 @@ pub(crate) mod tests {
         // analyst's price beside each band, PRIOR ACTION with its rationale
         // less the caveat, the suffixes and the two-reads preamble gone: v71,
         // the trail unchanged (no persisted shape moves).
-        assert_eq!(PROMPT_VERSION, "portfolio-v71");
+        // The research chain, task 1 (2026-10-08): the loop writes prose —
+        // the synthesis returns the write-up under no grammar and its second
+        // message the follow-up question or `none`; the brief leads with the
+        // holding-constant block (FETCHED VALUES, NEWS LEADS, PRIOR THESIS);
+        // the claims layer, PRIOR FINDINGS, CLAIMS SO FAR and the distillation
+        // grammar with its typed channels gone — v72, the trail to
+        // checkpoint-v21 (the audit's research record: the write-ups and the
+        // typed roster).
+        assert_eq!(PROMPT_VERSION, "portfolio-v72");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v20"
+            "checkpoint-v21"
         );
     }
 
@@ -7694,13 +7434,11 @@ pub(crate) mod tests {
         // `keep_alive`.
         let d = dossier(AssetClass::Stock, strong_financials());
 
-        let schema = serde_json::json!({"type": "object"});
         let distill = distill_request(
             "fast-model",
             NUM_CTX_DISTILL,
             NUM_PREDICT_DISTILL,
-            &distill::DistillPrompt { system: "s".into(), user: "prompt".into(), claims: Default::default() },
-            &schema,
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
         );
         assert_eq!(distill.think, Some(false));
         assert_eq!(distill.keep_alive, Some(-1));
@@ -7708,10 +7446,7 @@ pub(crate) mod tests {
         assert_eq!(opts["num_ctx"], NUM_CTX_DISTILL);
         assert_eq!(opts["num_predict"], NUM_PREDICT_DISTILL, "output reservation");
         assert_eq!(opts["temperature"], 0.7, "non-thinking-general row");
-        assert!(
-            distill.format_schema.is_some(),
-            "distill is grammar-constrained (the stub-era exception is retired)"
-        );
+        assert!(distill.format_schema.is_none(), "a distillation returns prose under no grammar (docs §Step 6d)");
 
         // Fix B: gathering and synthesis are separate calls — tools and the
         // findings grammar never ride one request.
@@ -7733,19 +7468,18 @@ pub(crate) mod tests {
         assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET, "one num_ctx per model");
         assert_eq!(opts["temperature"], 1.0, "thinking-general row");
 
+        // The synthesis conversation carries neither tools nor a grammar: the
+        // write-up and the follow-up reply are prose.
         let synth = research_turn_request(
             "reasoner-model",
             vec![ChatMessage::user("evidence")],
             None,
-            Some(&schema),
+            None,
         );
         assert_eq!(synth.think, Some(true));
         assert_eq!(synth.keep_alive, Some(-1));
         assert!(synth.tools.is_none(), "synthesis carries no tools");
-        assert!(
-            synth.format_schema.is_some(),
-            "the findings grammar rides the separate synthesis call"
-        );
+        assert!(synth.format_schema.is_none(), "the write-up is prose under no grammar");
         assert_eq!(
             synth.options.as_ref().unwrap()["num_ctx"],
             NUM_CTX_INTERPRET,
@@ -7828,13 +7562,11 @@ pub(crate) mod tests {
 
     #[test]
     fn distill_expands_only_an_exact_normal_reservation_stop() {
-        let schema = serde_json::json!({"type": "object"});
         let normal = distill_request(
             "fast-tier",
             NUM_CTX_DISTILL,
             NUM_PREDICT_DISTILL,
-            &distill::DistillPrompt { system: "s".into(), user: "prompt".into(), claims: Default::default() },
-            &schema,
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
         );
         let response = |eval_count| crate::local_model::ChatResponse {
             content: "partial".into(),
@@ -7861,8 +7593,7 @@ pub(crate) mod tests {
             "reasoner",
             NUM_CTX_INTERPRET,
             NUM_PREDICT_DISTILL_RETRY,
-            &distill::DistillPrompt { system: "s".into(), user: "prompt".into(), claims: Default::default() },
-            &schema,
+            &distill::DistillPrompt { system: "s".into(), user: "prompt".into() },
         );
         assert_eq!(
             crate::local_model::request_num_ctx(&expanded),
@@ -8093,7 +7824,9 @@ pub(crate) mod tests {
     fn an_over_budget_distillation_prompt_never_reaches_the_daemon() {
         // The refusal happens before a request exists: a listener standing in
         // for the daemon accepts nothing, and the failure names the refusal —
-        // the run fails legibly instead of the daemon front-truncating.
+        // the run fails legibly instead of the daemon front-truncating. The
+        // guard is parked until consolidation issues a call (the research
+        // chain, task 2); the test pins it as the seam it stays.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -8102,44 +7835,13 @@ pub(crate) mod tests {
             "qwen3.5:122b".into(),
             "qwen3.5:35b".into(),
         );
-        // One topic whose single pass alone outgrows even the reasoner's
-        // budget: the routing sub-distills it along the pass seam, and that
-        // pass call is the first prompt the adapter would issue.
+        // One rendered prompt that outgrows even the reasoner's budget.
         let over = distill::input_budget_chars(NUM_CTX_INTERPRET) + 1;
-        let research = research::HoldingResearch {
-            topics: vec![research::TopicResearch {
-                topic_key: "competitive-position".into(),
-                title: "Competitive position".into(),
-                seeded_vintage: None,
-                passes: vec![research::PassFindings {
-                    findings: "x".repeat(over),
-                    claims: Vec::new(),
-                    followup: None,
-                }],
-                skipped: None,
-            }],
-            ..Default::default()
-        };
-        let inputs = DistillInputs {
-            symbol: "TEST",
-            company_name: None,
-            research: &research,
-            priors: &[],
-            holding_brief: "HOLDING\nTEST (name unavailable).\nPrice: (gap)\nDate: 2026-09-16.\n",
-            consolidation_only: false,
-            overlay_eligible: false,
-            backfill_required: false,
-            input_budget_chars: analyst.distill_input_budget(),
-            issue_budget_chars: analyst.distill_issue_budget(),
-            now: chrono::Utc::now(),
-        };
-        let err = analyst.distill_research(&inputs).unwrap_err();
+        let prompt = distill::DistillPrompt { system: "s".into(), user: "x".repeat(over) };
+        let err = distill_prose_call(&analyst, "distill TEST", &prompt).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("refused before issue"), "{msg}");
-        assert!(
-            msg.contains("distill TEST competitive-position pass 0"),
-            "{msg}"
-        );
+        assert!(msg.contains("distill TEST"), "{msg}");
         // Nothing connected: the refusal preceded any request.
         assert!(
             matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
@@ -8280,78 +7982,6 @@ pub(crate) mod tests {
         assert_eq!(relation_at(300.0), Some(BandRelation::AboveBand));
         assert_eq!(authored_band_relation(None, Some(&targets)), None);
         assert_eq!(authored_band_relation(Some(200.0), None), None);
-    }
-
-    #[test]
-    fn the_assumption_recompute_is_shadow_only() {
-        // Ruled 2026-08-24: the engine's hypothetical refinement records as a
-        // would-have line; nothing splices into the baseline (structurally —
-        // `engine_output` is immutable past 6b).
-        let refined = engine::RefinedTargets {
-            price_targets: crate::portfolio::PriceTargets {
-                three_month: None,
-                twelve_month: Some(crate::portfolio::PriceTarget {
-                    base: 120.0,
-                    bear: 80.0,
-                    bull: 150.0,
-                    methodology: "test".into(),
-                }),
-                three_year: None,
-            },
-            target_meta: engine::TargetMeta::default(),
-            hurdle: engine::HurdleRead::default(),
-            implied_expectations: None,
-            quick_basis: None,
-            matched_rule: "supplement: filled the absent forward-revenue driver".into(),
-        };
-        let line = shadow_assumption_resolution(Some(100.0), &refined);
-        assert!(line.starts_with("shadow (write-back parked"), "{line}");
-        assert!(line.contains("100.00 -> 120.00"), "{line}");
-        assert!(line.contains("supplement: filled"), "{line}");
-        let no_standing = shadow_assumption_resolution(None, &refined);
-        assert!(no_standing.contains("n/a -> 120.00"), "{no_standing}");
-    }
-
-    #[test]
-    fn the_research_fraud_claim_is_advisory_and_never_a_hard_trigger() {
-        // Ruled 2026-08-24: the research-fed claim renders as clearly-labeled
-        // attention evidence — the hard-forensic state comes from the
-        // item-classified filings alone (no merge path exists any more, so a
-        // validated claim structurally cannot trip the hard rule).
-        use crate::portfolio::distill::ForensicEventClaim;
-        let claim = ForensicEventClaim {
-            kind: "fraud".into(),
-            issuer: "ACME Motors".into(),
-            event_date: "2026-08-01".into(),
-            source_url: "https://www.sec.gov/litigation/acme".into(),
-        };
-        let block = render_fraud_record(&claim);
-        assert_eq!(
-            block,
-            "Fraud record: a sec.gov document dated 2026-08-01 names ACME Motors in a fraud \
-             matter; source https://www.sec.gov/litigation/acme. Whether it concerns this \
-             holding is not established."
-        );
-        assert!(crate::portfolio::fixed_evidence::banned_hits(&block).is_empty(), "{block}");
-        // The indicator line: the measure, its value, direction and date, and
-        // its source — the driver clause went with the ledger it named.
-        use crate::portfolio::distill::{IndicatorDirection, ValidatedLeadingIndicator};
-        let ind = ValidatedLeadingIndicator {
-            metric_name: "EU BEV registrations".into(),
-            value: 21_400.0,
-            direction: IndicatorDirection::InflectingUp,
-            as_of: "2026-08".into(),
-            source_url: "https://www.acea.auto/august".into(),
-            confirms_driver_id: "d-energy".into(),
-            driver_verified: false,
-        };
-        let line = render_leading_indicator(&ind);
-        assert_eq!(
-            line,
-            "Leading indicator: EU BEV registrations = 21400 (inflecting up, as of 2026-08); \
-             source https://www.acea.auto/august."
-        );
-        assert!(crate::portfolio::fixed_evidence::banned_hits(&line).is_empty(), "{line}");
     }
 
     /// Finding 4 (`docs/verification/2026-08-10-big-run-attempt-1.md`): the header

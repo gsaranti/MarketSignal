@@ -1,6 +1,6 @@
 # Research gathering — the second turn, after tool results
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v58`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v72`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The second gathering request: the first request's messages, then the model's tool calls echoed back as an assistant message, one tool message per call in order, and the next countdown.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4144 chars — the messages and tools as serialized |
+| Prompt material | 4513 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (1360 chars)
+## User message (1723 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -37,6 +37,14 @@ HOLDING
 TSLA (name unavailable).
 Price: $358.97 per share.
 Date: 2026-09-16.
+
+FETCHED VALUES
+The holding's data as its providers return it, each figure as reported (USD; B is billions, M is
+millions); none is computed.
+Quote: 358.97 per share (the live print, undated).
+Daily closes: 1 sessions from 2026-09-14 to 2026-09-14, 52-week low 358.97 on 2026-09-14, high
+358.97 on 2026-09-14.
+Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
 
 NEWS LEADS
 Recent headlines about the holding, each with its source and date. A headline is a lead, not

@@ -1117,12 +1117,6 @@ const GENERIC_NAME_TOKENS: &[&str] = &[
     "CO",
 ];
 
-/// Whether a name word is a generic corporate suffix (case-insensitive) —
-/// exposed for the first-party host check's acronym derivation.
-pub(crate) fn is_generic_name_token(word: &str) -> bool {
-    GENERIC_NAME_TOKENS.contains(&word.to_ascii_uppercase().as_str())
-}
-
 /// The distinctive issuer-name tokens (uppercased): ≥4 chars and not a
 /// generic corporate suffix — the identity vocabulary shared by the page
 /// matcher and the first-party host check.
@@ -1411,12 +1405,11 @@ pub struct HoldingAudit {
     /// retrievals.
     pub option_overlay: Option<dossier::OptionOverlay>,
     /// The research-loop audit record (`docs/storage.md §Local Analysis Suite
-    /// Storage` — the research-derived artifacts): sources with retrieval timestamps,
-    /// the distilled findings (the combined object and the reconciled per-topic seed
-    /// layer), per-topic seeded-vs-cold decisions, budget spend, and the distillation
-    /// shape. `None` on every no-research exit (not-rated, the listing guard, an
-    /// evidence-floor abstention).
-    pub research: Option<distill::ResearchAuditRecord>,
+    /// Storage` — the research-derived artifacts): the write-ups as written,
+    /// the disconfirming pass's write-up, the page roster, the budget spend
+    /// and the gaps. `None` on every no-research exit (not-rated, the listing
+    /// guard, an evidence-floor abstention).
+    pub research: Option<research::ResearchAuditRecord>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -2193,7 +2186,21 @@ pub struct HoldingAudit {
 /// the provenance suffixes gone; Part 2 weighs VERDICT and COMPUTED first,
 /// POSITION among the refining inputs. No persisted shape moves: the trail
 /// stays at `checkpoint-v20` and the archive at format 16.
-pub const PROMPT_VERSION: &str = "portfolio-v71";
+/// `portfolio-v72` (the research chain, task 1 — the loop writes prose): the
+/// synthesis conversation returns the pass's write-up as prose under no
+/// grammar, and its second message asks for the follow-up question (the one
+/// word `none` the only reply the app reads); the gathering brief leads with
+/// the holding-constant block — HOLDING, FETCHED VALUES as the thesis message
+/// renders it, NEWS LEADS, on a continuity run PRIOR THESIS — then PAGES
+/// ALREADY RETRIEVED and the topic text, FOLLOW-UP with WRITE-UP SO FAR on a
+/// follow-up pass and WRITE-UPS SO FAR on the disconfirming pass; the claims
+/// layer, PRIOR FINDINGS, CLAIMS SO FAR, the findings grammar and the
+/// distillation grammar with its typed channels leave every prompt; ANALYSIS
+/// is this run's write-ups under their topic headings until consolidation
+/// lands. The persisted audit — the write-ups, the disconfirming write-up,
+/// the page roster — moves the trail to `checkpoint-v21`, and the seed table
+/// leaves the archive at format 17.
+pub const PROMPT_VERSION: &str = "portfolio-v72";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

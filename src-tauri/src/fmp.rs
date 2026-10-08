@@ -2828,8 +2828,8 @@ mod tests {
             statuses,
             vec![
                 ("quick-earnings".to_string(), "malformed".to_string()),
-                ("quick-news".to_string(), "malformed".to_string()),
-                ("quick-news".to_string(), "empty".to_string()),
+                ("news-leads".to_string(), "malformed".to_string()),
+                ("news-leads".to_string(), "empty".to_string()),
                 ("company-eod-deep".to_string(), "malformed".to_string()),
                 ("company-quote".to_string(), "ok".to_string()),
                 ("company-eod".to_string(), "malformed".to_string()),
@@ -3010,13 +3010,13 @@ mod tests {
             statuses,
             vec![
                 ("quick-earnings".to_string(), "malformed".to_string()),
-                ("quick-news".to_string(), "malformed".to_string()),
-                ("quick-news".to_string(), "malformed".to_string()),
+                ("news-leads".to_string(), "malformed".to_string()),
+                ("news-leads".to_string(), "malformed".to_string()),
                 ("company-eod-deep".to_string(), "malformed".to_string()),
                 ("company-quote".to_string(), "ok".to_string()),
                 ("company-eod".to_string(), "malformed".to_string()),
                 ("quick-earnings".to_string(), "ok".to_string()),
-                ("quick-news".to_string(), "ok".to_string()),
+                ("news-leads".to_string(), "ok".to_string()),
             ],
             "{statuses:?}"
         );
@@ -4959,10 +4959,13 @@ const INCOME_QUARTERS_LIMIT: &str = "16";
 const CASH_FLOW_QUARTERS_LIMIT: &str = "8";
 
 /// Quarters of balance-sheet history requested — the newest print (the leverage
-/// leg, the P/B denominator and the runway's liquid-resource lines) plus the four
-/// behind it, so the soft forensic flags' year-over-year receivables and
-/// inventory comparator sits at index 4 under the contiguity gate.
-const BALANCE_SHEET_QUARTERS_LIMIT: &str = "5";
+/// leg, the P/B denominator and the runway's liquid-resource lines) plus the
+/// seven behind it: the soft forensic flags' year-over-year receivables and
+/// inventory comparator sits at index 4 under the contiguity gate, and the
+/// prompts' FETCHED VALUES renders the statements' headline lines over the
+/// latest eight quarters on every leg (`docs/portfolio-workflow.md` §Step 6c;
+/// ruled 2026-10-08).
+const BALANCE_SHEET_QUARTERS_LIMIT: &str = "8";
 
 /// The tracker-row status a suite fetch's *parse* earned. HTTP-level gaps
 /// never reach this enum — they keep the `GapReason` kebab vocabulary on the
@@ -5771,7 +5774,7 @@ impl FmpDataSource {
         from: &str,
     ) -> Result<Vec<SymbolNewsItem>> {
         match self.suite_get_shaped(
-            "quick-news",
+            "news-leads",
             symbol,
             "Symbol news",
             FMP_NEWS_STOCK_SYMBOL_PATH,

@@ -87,23 +87,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // The per-topic distilled-findings layer (`docs/portfolio-analysis.md`
-    // §Starting parameters — Research reuse): one distilled object per
-    // (symbol, topic), the rolling per-holding state that seeds the next
-    // run's research loop. Survives independently of run retention (the
-    // ~4-week seed gate filters at read time — a dormant topic's object is
-    // kept, aging by its own vintage). Job-partitioned by construction
-    // (Portfolio's layer only). Exported by data portability (format v4).
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS portfolio_research_seeds (
-            symbol    TEXT NOT NULL,
-            topic_key TEXT NOT NULL,
-            vintage   TEXT NOT NULL,
-            seed_json TEXT NOT NULL,
-            PRIMARY KEY (symbol, topic_key)
-        )",
-        [],
-    )?;
     // The interrupted-run checkpoint store (`docs/portfolio-analysis.md §Failure
     // posture` — per-holding checkpoint/resume): one header row — the pinned run
     // identity, holdings pull, Step-5 shared context, version stamps, and the
@@ -259,7 +242,12 @@ pub struct CheckpointHeader {
 /// sub-scores and the model's band levels leave the verdict and the audit,
 /// an abstention retains the prior thesis document on its own variant — so no
 /// v19 row can resume this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v20";
+/// `checkpoint-v21` (`portfolio-v72`): the audit's research record is the
+/// write-ups as written with the disconfirming pass's, the typed page roster
+/// and the gaps — the combined findings, the seed layer, the seed decisions,
+/// the claim-derived sources, the distillation shape and the typed channels
+/// leave it — so no v20 row can resume this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v21";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -686,72 +674,6 @@ pub struct HoldingsPull {
     pub holdings: Holdings,
 }
 
-// ---- The per-topic distilled-findings layer (research reuse) ----------------
-
-/// Persist one holding's fresh per-topic layer — the reduce-reconciled topic
-/// objects that become the next run's seeds. INSERT OR REPLACE per topic: an
-/// analyzed topic's object is rewritten whole; a dormant topic's row is left
-/// untouched only when the layer re-emitted it reconciled — a topic the
-/// distillation failed to re-emit is deleted instead
-/// ([`delete_topic_distillates`]), never left to seed the next run stale.
-pub fn save_topic_distillates(
-    conn: &Connection,
-    symbol: &str,
-    layer: &[crate::portfolio::research::TopicDistillate],
-) -> Result<()> {
-    for t in layer {
-        conn.execute(
-            "INSERT OR REPLACE INTO portfolio_research_seeds (symbol, topic_key, vintage, seed_json)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![symbol, t.topic_key, t.vintage, serde_json::to_string(t)?],
-        )?;
-    }
-    Ok(())
-}
-
-/// Delete named topic rows for one holding — the reconciliation contract's
-/// teeth: an analyzed or dormant topic the distillation failed to re-emit
-/// cannot be trusted as reconciled, so its stale row is dropped (the next run
-/// seeds that topic cold) rather than surviving unreconciled.
-pub fn delete_topic_distillates(
-    conn: &Connection,
-    symbol: &str,
-    topic_keys: &[String],
-) -> Result<()> {
-    for key in topic_keys {
-        conn.execute(
-            "DELETE FROM portfolio_research_seeds WHERE symbol = ?1 AND topic_key = ?2",
-            params![symbol, key],
-        )?;
-    }
-    Ok(())
-}
-
-/// Load one holding's whole per-topic layer (every stored topic object; the
-/// seed gate filters expiry at assembly). A corrupt row is skipped with a log
-/// line, never a failed load — the loop just runs that topic cold.
-pub fn load_topic_distillates(
-    conn: &Connection,
-    symbol: &str,
-) -> Result<Vec<crate::portfolio::research::TopicDistillate>> {
-    let mut stmt = conn.prepare(
-        "SELECT seed_json FROM portfolio_research_seeds WHERE symbol = ?1 ORDER BY topic_key",
-    )?;
-    let rows = stmt
-        .query_map(params![symbol], |r| r.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|json| match serde_json::from_str(&json) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                eprintln!("skipping a corrupt research-seed row for {symbol}: {e}");
-                None
-            }
-        })
-        .collect())
-}
-
 /// Persist a standalone pull, replacing any prior one — the store holds only the
 /// most recent snapshot.
 pub fn save_pull(conn: &Connection, pull: &HoldingsPull) -> Result<()> {
@@ -1053,28 +975,32 @@ pub fn record_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
     Ok(())
 }
 
+/// A run whose first audit carries a populated research record — one
+/// write-up, the disconfirming pass's, one roster entry — the round-trip
+/// fixture the store and portability tests share.
 #[cfg(test)]
 pub(crate) fn entry3_test_run() -> PortfolioRun {
-    use crate::portfolio::{
-        distill::{DistillShape, ResearchAuditRecord},
-        research,
-    };
-    let layer = research::entry3_fixture_layer();
+    use crate::portfolio::research::{PageRosterEntry, ResearchAuditRecord, TopicWriteUp};
     let mut run = tests::sample_run("entry3", "2026-09-19T00:00:00Z");
     run.audit[0].research = Some(ResearchAuditRecord {
-        combined: "Reconstructed dating evidence".into(),
-        seed_layer: vec![layer.clone()],
-        shape: DistillShape::SinglePass,
+        write_ups: vec![TopicWriteUp {
+            topic_key: "exposure-profile".into(),
+            title: "Exposure profile".into(),
+            write_up: Some("Reconstructed dating evidence: the venue change took effect on 2025-03-31 (https://example.com/reconstructed-arkf).".into()),
+            passes: 1,
+            skipped: None,
+        }],
+        disconfirming: Some("Nothing found against the exposure read.".into()),
+        roster: vec![PageRosterEntry {
+            url: "https://example.com/reconstructed-arkf".into(),
+            title: "ARKF venue change".into(),
+            published: Some("2025-03-27".into()),
+            retrieved_at: "2026-09-16T12:00:00Z".into(),
+            source_tier: Some(1),
+        }],
         fetches_spent: 2,
         elapsed_secs: 0,
-        seed_decisions: vec![],
-        sources: vec![],
         gaps: vec![],
-        unreconciled_topics: vec![],
-        forward_assumption: None,
-        leading_indicator: None,
-        forensic_event: None,
-        forward_assumption_resolution: None,
     });
     run
 }
@@ -1278,62 +1204,6 @@ mod tests {
         assert_eq!(cp.accumulators, CheckpointAccumulators::default());
     }
 
-    #[test]
-    fn topic_distillates_round_trip_replace_per_topic_and_skip_corrupt_rows() {
-        use crate::portfolio::research::TopicDistillate;
-        let conn = mem();
-        let object = |key: &str, vintage: &str| TopicDistillate {
-            topic_key: key.into(),
-            vintage: vintage.into(),
-            summary: format!("{key} summary"),
-            claims: vec![],
-        };
-        save_topic_distillates(
-            &conn,
-            "AAPL",
-            &[object("competitive-position", "2026-08-01T00:00:00+00:00")],
-        )
-        .unwrap();
-        // A re-analyzed topic replaces its row; an untouched topic survives.
-        save_topic_distillates(
-            &conn,
-            "AAPL",
-            &[
-                object("competitive-position", "2026-08-23T00:00:00+00:00"),
-                object("results-revisions", "2026-08-23T00:00:00+00:00"),
-            ],
-        )
-        .unwrap();
-        let loaded = load_topic_distillates(&conn, "AAPL").unwrap();
-        assert_eq!(loaded.len(), 2);
-        assert!(loaded
-            .iter()
-            .all(|t| t.vintage == "2026-08-23T00:00:00+00:00"));
-        // Another symbol's layer is invisible (job-partitioned per holding).
-        assert!(load_topic_distillates(&conn, "MSFT").unwrap().is_empty());
-        // A corrupt row skips with a log line, never a failed load.
-        conn.execute(
-            "INSERT OR REPLACE INTO portfolio_research_seeds (symbol, topic_key, vintage, seed_json)
-             VALUES ('AAPL', 'broken', 'x', 'not json')",
-            [],
-        )
-        .unwrap();
-        assert_eq!(load_topic_distillates(&conn, "AAPL").unwrap().len(), 2);
-        // An unreconciled topic's row deletes by name — other topics and other
-        // symbols untouched.
-        save_topic_distillates(
-            &conn,
-            "MSFT",
-            &[object("competitive-position", "2026-08-23T00:00:00+00:00")],
-        )
-        .unwrap();
-        delete_topic_distillates(&conn, "AAPL", &["competitive-position".to_string()]).unwrap();
-        let remaining = load_topic_distillates(&conn, "AAPL").unwrap();
-        assert!(remaining.iter().all(|t| t.topic_key != "competitive-position"));
-        assert!(remaining.iter().any(|t| t.topic_key == "results-revisions"));
-        assert_eq!(load_topic_distillates(&conn, "MSFT").unwrap().len(), 1);
-    }
-
     pub(super) fn sample_run(run_id: &str, created_at: &str) -> PortfolioRun {
         let position = Position {
             symbol: "AAPL".into(),
@@ -1407,18 +1277,11 @@ mod tests {
     }
 
     #[test]
-    fn entry3_populated_claims_round_trip_and_legacy_shapes_are_loud_skips() {
-        use crate::portfolio::research;
+    fn entry3_populated_research_round_trips_and_legacy_shapes_are_loud_skips() {
         let conn = mem();
         let run = entry3_test_run();
-        let layer = research::entry3_fixture_layer();
         insert_run(&conn, &run).unwrap();
         assert_eq!(latest_run(&conn).unwrap().unwrap(), run);
-        save_topic_distillates(&conn, "AAPL", std::slice::from_ref(&layer)).unwrap();
-        assert_eq!(
-            load_topic_distillates(&conn, "AAPL").unwrap(),
-            vec![layer.clone()]
-        );
         let mut header = checkpoint_header(&run);
         save_checkpoint_header(&conn, &header).unwrap();
         let row = CheckpointHolding {
@@ -1438,22 +1301,15 @@ mod tests {
         .unwrap();
         assert_eq!(load_checkpoint(&conn).unwrap().unwrap().holdings, vec![row]);
 
-        let mut legacy = serde_json::to_value(&layer).unwrap();
-        for claim in legacy["claims"].as_array_mut().unwrap() {
-            let claim = claim.as_object_mut().unwrap();
-            let retrieved = claim.remove("retrieved_at").unwrap();
-            claim.insert("vintage".into(), retrieved);
-            claim.remove("publication");
-            claim.remove("fact_period");
-        }
-        conn.execute(
-            "UPDATE portfolio_research_seeds SET seed_json=?1",
-            [legacy.to_string()],
-        )
-        .unwrap();
-        assert!(load_topic_distillates(&conn, "AAPL").unwrap().is_empty());
+        // A research record of the retired shape — the combined findings and
+        // the seed layer in place of the write-ups and the roster — is a
+        // loud skip, never a defaulted read (the pre-release posture).
         let mut legacy_run = serde_json::to_value(&run).unwrap();
-        legacy_run["audit"][0]["research"]["seed_layer"][0] = legacy;
+        let research = legacy_run["audit"][0]["research"].as_object_mut().unwrap();
+        research.remove("write_ups");
+        research.remove("roster");
+        research.insert("combined".into(), serde_json::json!("Reconstructed dating evidence"));
+        research.insert("seed_layer".into(), serde_json::json!([]));
         conn.execute(
             "UPDATE portfolio_runs SET run_json=?1",
             [legacy_run.to_string()],

@@ -615,6 +615,9 @@ pub fn compute_overlay(
 /// (`docs/portfolio-workflow.md` §Step 6e). The unevidenced [`compute_overlay`]
 /// rejects every candidate, so rows enter the history only through this seam,
 /// each stamped with the prompt version it was admitted under (Codex I20).
+/// The evidenced path parks for the removal sweep (ruled 2026-10-08): the
+/// research loop no longer produces candidates, so the live caller is
+/// [`compute_overlay`] with no evidence and only tests pass any.
 pub fn compute_overlay_with_sources(
     fin: &CompanyFinancials,
     prior: Option<&PreProfitOverlay>,
@@ -929,6 +932,8 @@ fn material_dilution(inputs: &StatementInputs) -> Option<bool> {
 /// The research loop's source evidence for the two activation legs
 /// (`docs/portfolio-workflow.md` §Step 6e): the loop's fetched page texts
 /// (keyed by normalized URL), the holding's symbol, and its issuer name.
+/// Parks for the removal sweep (ruled 2026-10-08) with the evidenced overlay
+/// path; only tests construct it.
 pub struct SourceEvidence<'a> {
     pub texts: &'a std::collections::HashMap<String, String>,
     pub symbol: &'a str,
@@ -1059,6 +1064,7 @@ fn month_end(year: i32, month: u32) -> Option<String> {
 /// Zero is unsigned. Deterministic and deliberately literal — the model may
 /// extract a row only from source text that states the value. Shared by the
 /// forward-assumption and leading-indicator legs, which inherit the sign rule.
+#[allow(dead_code)] // the research-fed observation path parks for the removal sweep (ruled 2026-10-08)
 pub(crate) fn value_in_text(value: f64, text: &str) -> bool {
     let haystack: String = text.replace(',', "");
     let len = haystack.len();
@@ -1071,6 +1077,7 @@ pub(crate) fn value_in_text(value: f64, text: &str) -> bool {
 /// `28.999999999999996`). The comparison allows only a small floating-point
 /// roundoff envelope, preserves the printed sign (including accounting
 /// parentheses), and requires the percent marker after the token.
+#[allow(dead_code)] // the research-fed observation path parks for the removal sweep (ruled 2026-10-08)
 pub(crate) fn fraction_percent_in_text(value: f64, text: &str) -> bool {
     if !value.is_finite() {
         return false;

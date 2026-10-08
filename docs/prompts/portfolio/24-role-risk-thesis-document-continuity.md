@@ -1,10 +1,10 @@
 # Role/risk thesis document — continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v72`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, on a continuity run over a stub first run of 2026-09-03.
 The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.
-The analysis is the offline stub's, since the stub run issues no research call.
+The analysis is the bridge's one no-write-up sentence, since the stub run issues no research call and writes nothing.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 
 ## Request
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3818 chars — the messages and tools as serialized |
+| Prompt material | 3733 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ review. Part 1 of the message gives the inputs. Part 2 says what the document co
 how to return it.
 ~~~~
 
-## User message (3454 chars)
+## User message (3369 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -92,8 +92,7 @@ A market-level analysis dated 2026-09-16, followed by the stance of the 3 most r
 - 2026-08-25: thesis mixed, risk posture mixed
 
 ANALYSIS
-Web research unavailable (offline analyst); the read rests on the computed financials and the market
-analysis only.
+No research write-up this run.
 
 PRIOR THESIS (written 2026-09-03)
 Role: bond fund supplying United States exposure; held for its portfolio role.

@@ -8,29 +8,30 @@
 //! ones); the reasoner *works* it, one topic at a time in isolation. Each
 //! topic's pass is a bounded multi-turn **gathering loop** in which the model
 //! emits `web_search` / `web_fetch` tool calls, the orchestrator executes them,
-//! and the results return as tool messages; the pass's findings are then
-//! authored by a **separate synthesis call** over a fresh, tool-history-free
-//! conversation, so the gathering turns and the findings grammar never share a
-//! request (attempt-4 Finding 4, fix B). Per-pass turn, tool-batch, and aggregate
-//! history bounds work beside per-topic depth ≤ 2 follow-ups (≤ 3 passes per
-//! topic, each follow-up an orchestrator-approved *proposal*) and a per-item
-//! fetch + wall-clock budget that binds first, spent across topics in priority
-//! order and polled at request boundaries — a spent budget stops further
-//! fetches and topics but never suppresses the current pass's one terminal
-//! findings turn, and the lowest-priority remaining topics skip fail-soft as
-//! recorded gaps.
+//! and the results return as tool messages; the pass's **write-up** is then
+//! authored by a **separate synthesis conversation** over a fresh,
+//! tool-history-free conversation with no grammar — prose, read as text and
+//! validated by nothing — whose second message asks whether the research has a
+//! follow-up question (the one word `none` the only reply the app interprets).
+//! Per-pass turn, tool-batch, and aggregate history bounds work beside
+//! per-topic depth ≤ 2 follow-ups (≤ 3 passes per topic, each follow-up the
+//! model's question the orchestrator decides to spend) and a per-item fetch +
+//! wall-clock budget that binds first, spent across topics in priority order
+//! and polled at request boundaries — a spent budget stops further fetches and
+//! topics but never suppresses the current pass's synthesis, and the
+//! lowest-priority remaining topics skip fail-soft as recorded gaps.
 //!
-//! Context stays bounded by extraction and an evidence ledger, never by
-//! re-distilling findings mid-loop: each pass ends with a schema-constrained
-//! findings turn whose claims (claim + source URL + timestamp) append to the
-//! per-holding ledger, app-validated so a claim can only cite a source body actually shown to synthesis,
-//! whether fetched in this pass or reused from this holding. Seeds are leads, never evidence —
-//! a seed never enters the ledger as a claim; `surfaced_by` lineage is
-//! stamped deterministically when a seed's URL is deep-read (the
-//! model-attributed leg was retired with `portfolio-v43`: nothing read it).
+//! Context stays bounded by extraction and by bounded documents, never by a
+//! transcript: a topic has one write-up at any time, rewritten whole by each
+//! follow-up pass, and the disconfirming pass writes its own over the run's
+//! write-ups. Provenance rides the page and its roster, not a typed claim:
+//! every page the model reads carries its address, the reported publication
+//! date and the retrieval time in its header, and every page shown enters the
+//! holding's page roster on the audit. The news leads are leads, never
+//! evidence.
 //!
 //! Failure posture: web errors degrade the evidence (an errored search/fetch
-//! returns an error note as the tool result and the loop continues); a model
+//! returns a fixed sentence as the tool result and the loop continues); a model
 //! failure propagates hard, per the 6c–6f rule (`docs/portfolio-analysis.md`
 //! §Failure posture). Fetched page text is data, not instructions — it is
 //! framed as quoted evidence in the tool result.
@@ -107,20 +108,17 @@ const SEARCH_SNIPPET_CAP_CHARS: usize = 1_000;
 const PUBLISHED_CAP_CHARS: usize = 100;
 const TOOL_URL_CAP_CHARS: usize = 2_048;
 
-/// Bounds on the model-derived sections of the pass prefix (`pass_brief`) — the
-/// prior-claims ledger and the follow-up text are accumulated model output with
-/// no schema length bound, so without these the prefix (the gathering request's
-/// whole user message, and the synthesis prefix) could exceed the input guard
-/// before any evidence is sized (attempt-4 review, Finding 1). A per-claim cap,
-/// a total ledger-block cap, and a follow-up cap keep the prefix bounded, with a
-/// final head-cap in `pass_brief` as the hard backstop.
-const PRIOR_CLAIM_CAP_CHARS: usize = 400;
-const PRIOR_CLAIMS_BLOCK_CHARS: usize = 8_000;
+/// Bounds on the model-derived sections of the pass prefix (`pass_brief`) — a
+/// write-up and the follow-up question are model output with no grammar
+/// bound, so without these the prefix (the gathering request's whole user
+/// message, and the synthesis prefix) could exceed the input guard before any
+/// evidence is sized (attempt-4 review, Finding 1). A per-write-up cap and a
+/// follow-up cap keep the prefix bounded, with a final head-cap in
+/// `pass_brief` as the hard backstop. A write-up's length band is 400–900
+/// words (`docs/portfolio-analysis.md §Starting parameters`), so the cap sits
+/// well above a document that keeps its band.
+const WRITE_UP_CAP_CHARS: usize = 12_000;
 const FOLLOWUP_CAP_CHARS: usize = 1_000;
-
-/// Claims accepted per pass — bounds ledger growth against a runaway
-/// findings turn. Excess drops with a log line.
-const MAX_CLAIMS_PER_PASS: usize = 20;
 
 
 /// Gathering-phase degradation for one pass — search/fetch failures, fetch-cap
@@ -318,240 +316,9 @@ fn gathering_packet_fits(messages: &[ChatMessage], tools: &Value) -> bool {
         <= budget.saturating_sub(GATHERING_PACKET_RESERVE_CHARS)
 }
 
-/// The per-topic seed's hard character budget — over the WHOLE seed (ledger
-/// conditions and prior claims together), deterministic priority truncation
-/// (`docs/portfolio-analysis.md §Starting parameters` — Research reuse).
-pub const SEED_BUDGET_CHARS: usize = 4_000;
-
-/// The shared research-freshness window (days) — claim-vintage expiry and the
-/// topic-object seed gate both read it.
+/// The shared research-freshness window (days) — the news leads' lookback and
+/// the document cache's reuse window both read it.
 pub const RESEARCH_FRESHNESS_DAYS: i64 = crate::web_research::store::RESEARCH_FRESHNESS_DAYS;
-
-// ---------------------------------------------------------------------------
-// Durable shapes shared with distillation (Step 6d) and the seed layer
-// ---------------------------------------------------------------------------
-
-/// Search/seed-reported publication metadata, never inferred from retrieval.
-/// `reported` preserves the source's precision; `day` exists only for an
-/// unambiguous canonical calendar day. An empty report means unknown.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PublicationDate {
-    pub reported: String,
-    pub day: Option<String>,
-}
-
-impl PublicationDate {
-    pub fn from_reported(raw: Option<&str>) -> Self {
-        let raw = raw.unwrap_or("").trim();
-        let reported: String = raw.chars().take(160).collect();
-        let day = if raw.chars().count() <= 160 {
-            raw.get(..10)
-                .filter(|prefix| {
-                    canonical_day(prefix)
-                        // Validate the entire report before assigning a sortable day.
-                        // Search/seed providers emit dates, RFC3339 timestamps, or
-                        // local timestamps with a space/T separator. Preserve the
-                        // source's calendar day without inventing a timezone.
-                        && (raw.len() == 10
-                            || chrono::DateTime::parse_from_rfc3339(raw).is_ok()
-                            || ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"]
-                                .iter()
-                                .any(|fmt| chrono::NaiveDateTime::parse_from_str(raw, fmt).is_ok()))
-                })
-                .map(str::to_string)
-        } else {
-            None
-        };
-        Self { reported, day }
-    }
-}
-
-fn canonical_day(s: &str) -> bool {
-    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .is_ok_and(|d| d.format("%Y-%m-%d").to_string() == s)
-}
-
-/// A claim's source-stated period, preserving fiscal/partial precision.
-/// Calendar boundaries are never guessed from a fiscal label.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum PeriodPrecision {
-    Day,
-    Month,
-    Quarter,
-    Year,
-    Range,
-    Fiscal,
-    #[default]
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct FactPeriod {
-    pub kind: PeriodPrecision,
-    pub value: String,
-    pub end: Option<String>,
-}
-
-impl FactPeriod {
-    pub fn valid(&self) -> bool {
-        if self.value.chars().count() > 120 {
-            return false;
-        }
-        if self.kind != PeriodPrecision::Range && self.end.is_some() {
-            return false;
-        }
-        match self.kind {
-            PeriodPrecision::Day => canonical_day(&self.value),
-            PeriodPrecision::Month => {
-                self.value.len() == 7 && canonical_day(&format!("{}-01", self.value))
-            }
-            PeriodPrecision::Quarter => {
-                let bytes = self.value.as_bytes();
-                bytes.len() == 7
-                    && bytes[..4].iter().all(u8::is_ascii_digit)
-                    && &bytes[4..6] == b"-Q"
-                    && (b'1'..=b'4').contains(&bytes[6])
-                    && canonical_day(&format!("{}-01-01", &self.value[..4]))
-            }
-            PeriodPrecision::Year => {
-                self.value.len() == 4
-                    && self.value.bytes().all(|b| b.is_ascii_digit())
-                    && canonical_day(&format!("{}-01-01", self.value))
-            }
-            PeriodPrecision::Range => {
-                canonical_day(&self.value)
-                    && self
-                        .end
-                        .as_deref()
-                        .is_some_and(|end| canonical_day(end) && end >= self.value.as_str())
-            }
-            PeriodPrecision::Fiscal => {
-                !self.value.trim().is_empty()
-                    && self.value.trim() == self.value
-                    && !self.value.chars().any(char::is_control)
-            }
-            PeriodPrecision::Unknown => self.value.is_empty(),
-        }
-    }
-
-    pub fn render(&self) -> String {
-        match self.kind {
-            PeriodPrecision::Unknown => "unknown".into(),
-            PeriodPrecision::Range => format!(
-                "{} through {}",
-                self.value,
-                self.end.as_deref().unwrap_or("unknown")
-            ),
-            PeriodPrecision::Fiscal => format!("source label: {}", self.value),
-            _ => self.value.clone(),
-        }
-    }
-}
-
-fn fact_period_schema() -> Value {
-    json!({"type":"object", "properties": {
-        "kind": {"type":"string", "enum":["day","month","quarter","year","range","fiscal","unknown"]},
-        "value": {"type":"string"}, "end": {"type":["string","null"]}
-    }, "required":["kind","value","end"]})
-}
-
-pub fn claim_date_label(publication: &PublicationDate, period: &FactPeriod) -> String {
-    format!(
-        "published: {}; fact period: {}",
-        if publication.reported.is_empty() {
-            "unknown"
-        } else {
-            &publication.reported
-        },
-        period.render()
-    )
-}
-
-/// One distilled claim in the persisted per-topic layer. `retrieved_at` is the
-/// claim's own retrieval date (RFC 3339) — expiry is by claim vintage, never
-/// the object's; `cached` marks a claim carried from a prior run's layer
-/// rather than freshly confirmed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DistilledClaim {
-    pub claim: String,
-    pub source_url: String,
-    pub retrieved_at: String,
-    pub publication: PublicationDate,
-    pub fact_period: FactPeriod,
-    pub cached: bool,
-}
-
-#[cfg(test)]
-pub(crate) fn entry3_fixture_layer() -> TopicDistillate {
-    TopicDistillate {
-        topic_key: "exposure-profile".into(),
-        vintage: "2026-09-19T00:00:00Z".into(),
-        summary: "Reconstructed dating fixture, not archived historical source text.".into(),
-        claims: vec![
-            DistilledClaim {
-                claim: "ARKF trading venue change takes effect March 31, 2025".into(),
-                source_url: "https://example.com/reconstructed-arkf".into(),
-                retrieved_at: "2026-09-16T12:00:00Z".into(),
-                publication: PublicationDate::from_reported(Some("2025-03-27")),
-                fact_period: FactPeriod {
-                    kind: PeriodPrecision::Day,
-                    value: "2025-03-31".into(),
-                    end: None,
-                },
-                cached: false,
-            },
-            DistilledClaim {
-                claim: "TSLA measure applies to July CY25".into(),
-                source_url: "https://example.com/reconstructed-tsla".into(),
-                retrieved_at: "2026-09-16T12:00:00Z".into(),
-                publication: PublicationDate::from_reported(Some("2025-08-15")),
-                fact_period: FactPeriod {
-                    kind: PeriodPrecision::Month,
-                    value: "2025-07".into(),
-                    end: None,
-                },
-                cached: false,
-            },
-            DistilledClaim {
-                claim: "TSLA deliveries cover the three months April through June 2026".into(),
-                source_url: "https://example.com/reconstructed-tsla".into(),
-                retrieved_at: "2026-09-16T12:00:00Z".into(),
-                publication: PublicationDate::default(),
-                fact_period: FactPeriod {
-                    kind: PeriodPrecision::Quarter,
-                    value: "2026-Q2".into(),
-                    end: None,
-                },
-                cached: false,
-            },
-            DistilledClaim {
-                claim: "Issuer reports Q4 FY2025 revenue".into(),
-                source_url: "https://example.com/reconstructed-fiscal".into(),
-                retrieved_at: "2026-09-16T12:00:00Z".into(),
-                publication: PublicationDate::from_reported(Some("2026-02-01")),
-                fact_period: FactPeriod {
-                    kind: PeriodPrecision::Fiscal,
-                    value: "Q4 FY2025".into(),
-                    end: None,
-                },
-                cached: false,
-            },
-        ],
-    }
-}
-
-/// One topic's persisted distilled object — the per-topic seed layer's unit
-/// (`docs/portfolio-analysis.md §Starting parameters` — Research reuse). The
-/// `vintage` is the last run this topic was analyzed; it gates whether the
-/// topic seeds at all, while each claim expires by its own vintage.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TopicDistillate {
-    pub topic_key: String,
-    pub vintage: String,
-    pub summary: String,
-    pub claims: Vec<DistilledClaim>
-}
 
 // ---------------------------------------------------------------------------
 // Agenda
@@ -561,7 +328,7 @@ pub struct TopicDistillate {
 /// budget is spent in it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgendaTopic {
-    /// Stable key — the seed layer's storage partition.
+    /// Stable key — the write-up's label on the audit and the stage label.
     pub key: String,
     pub title: String,
     pub questions: Vec<String>
@@ -585,11 +352,7 @@ pub struct AgendaTriggers {
     /// own: they ride the pass brief as leads.
     pub tech_pre_flag_fired: bool,
     /// The stock entered the pre-profit overlay (eligible read).
-    pub overlay_eligible: bool,
-    /// The pre-profit backfill obligation binds this pass (first
-    /// overlay-eligible full pass, or a used guidance metric-and-span identity
-    /// under four comparable stored periods).
-    pub pre_profit_backfill: bool
+    pub overlay_eligible: bool
 }
 
 /// Assemble the holding's agenda deterministically (`docs/portfolio-workflow.md`
@@ -693,21 +456,14 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
     ];
 
     if triggers.overlay_eligible {
-        let mut t = topic(
+        agenda.push(topic(
             "pre-profit-execution",
             "Pre-profit execution and financing proof",
             &[
                 "What comparable, dated operating observations has the issuer reported — production, deliveries where applicable, bookings / backlog / reservations, guidance ranges and matching actuals, unit economics?",
                 "What is gross-margin commentary showing, and what are cash needs, capital spending, and issued or planned financing?",
             ],
-        );
-        if triggers.pre_profit_backfill {
-            t.questions.push(
-                "Also find the issuer's latest four reported periods for its principal guided operating metric, at the exact reporting span the guidance uses (half-year or full-year guidance needs half-year or full-year actuals; never substitute quarterly history for it), and state the span, the periods found, their sources, and whether the four are complete, partial, or could not be established."
-                    .to_string(),
-            );
-        }
-        agenda.push(t);
+        ));
     }
 
     // The pre-flag is the topic's only trigger, decided here when the agenda
@@ -732,24 +488,25 @@ pub fn technology_topic() -> AgendaTopic {
 }
 
 /// The disconfirming pass's topic (`docs/web-research.md §Source quality and
-/// evidence weighting`): one question over the run's claims so far, which the
-/// pass brief renders as CLAIMS SO FAR (`portfolio-v43`).
+/// evidence weighting`): one question over the run's write-ups so far, which
+/// the pass brief renders as WRITE-UPS SO FAR.
 pub(crate) fn disconfirming_topic() -> AgendaTopic {
     topic(
         "disconfirming",
         "Contrary evidence",
-        &["What contradicts the claims under CLAIMS SO FAR, or the picture they form together — contrary data, claims that have failed, credible bear arguments?"],
+        &["What contradicts the write-ups under WRITE-UPS SO FAR, or the picture they form together — contrary data, claims that have failed, credible bear arguments?"],
     )
 }
 
 // ---------------------------------------------------------------------------
-// Seeds
+// The news leads and the holding-constant brief
 // ---------------------------------------------------------------------------
 
-/// One structured seed fed to the loop — a lead, never evidence
-/// (`docs/web-research.md §The research loop and context management`). The
-/// app assigns the stable `id` the deterministic `surfaced_by` lineage and the
-/// audit carry; no prompt renders it since `portfolio-v43`.
+/// One news lead fed to the loop — a lead, never evidence
+/// (`docs/web-research.md §The research loop and context management`): a
+/// dated headline with its address, rendered under NEWS LEADS as a fetch
+/// candidate beside the search results. The app assigns the stable `id` for
+/// the audit's trace; no prompt renders it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResearchSeed {
     pub id: String,
@@ -759,223 +516,149 @@ pub struct ResearchSeed {
     pub published: Option<String>
 }
 
-/// One topic's cross-run seed, assembled by the app: the prior findings the
-/// gathering message renders as PRIOR FINDINGS (`portfolio-v43`), under the
-/// one per-topic character budget in the fixed priority order. The seed store
-/// retires with the research chain, which carries the prior analysis and the
-/// prior thesis document on the brief instead.
+/// The holding-constant text every pass's brief leads with
+/// (`docs/portfolio-workflow.md` §Step 6c): the holding header, FETCHED VALUES
+/// as the thesis-document message renders it — the same bytes, so the three
+/// messages share one rendering — the news leads, and on a continuity run the
+/// prior documents block: PRIOR THESIS with its date and any split-context
+/// line, the prior run's thesis document verbatim. The pipeline assembles it;
+/// the loop renders it in this order on every gathering brief, and the
+/// synthesis message leads with the header and FETCHED VALUES alone.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct TopicSeed {
-    /// "<claim> [<url>]" lines with their provenance — newest known
-    /// publication date first, then stored order.
-    pub findings: Vec<String>
+pub struct HoldingBrief {
+    /// The HOLDING block (`pipeline::holding_header`).
+    pub header: String,
+    /// The FETCHED VALUES block (`pipeline::fetched_values_section`), empty
+    /// where the brief carries none.
+    pub fetched_values: String,
+    /// The news leads (NEWS LEADS).
+    pub leads: Vec<ResearchSeed>,
+    /// The prior documents on a continuity run, rendered as the thesis message
+    /// renders them (PRIOR THESIS under its date with any split-context line);
+    /// empty on a debut.
+    pub prior_documents: String,
 }
 
-impl TopicSeed {
-    pub fn is_empty(&self) -> bool {
-        self.findings.is_empty()
+impl HoldingBrief {
+    /// The header and FETCHED VALUES — the bytes every synthesis on the
+    /// holding opens with.
+    fn lead(&self) -> String {
+        format!("{}{}", self.header, self.fetched_values)
     }
-}
-
-/// Assemble one topic's cross-run seed deterministically — never by a
-/// model call (`docs/portfolio-analysis.md §Starting parameters` — Research
-/// reuse). Non-expired claims only (each by its OWN vintage against `now`),
-/// under the hard per-topic character budget with the fixed priority order:
-/// the topic's ledger conditions first (stored order), then prior claims tied
-/// to an open condition, then newest known publication date, then stored order. Returns
-/// `None` when the topic has no seedable content (cold).
-/// One prior claim as PRIOR FINDINGS shows it (`portfolio-v54`): the claim
-/// and its source on the first line, the provenance under it — the CLAIMS SO
-/// FAR shape, so a prior claim and a claim so far read alike. The rendered
-/// examples render through this same function.
-pub fn seed_finding_line(c: &DistilledClaim) -> String {
-    format!(
-        "{} [{}]\n  {}",
-        c.claim,
-        c.source_url,
-        claim_date_label(&c.publication, &c.fact_period)
-    )
-}
-
-pub fn assemble_topic_seed(
-    prior: Option<&TopicDistillate>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Option<TopicSeed> {
-    // The topic-object gate: an expired or absent object never seeds.
-    let prior = prior.filter(|p| within_window(&p.vintage, now))?;
-
-    // The prior claims by newest known publication date, then stored order —
-    // a stable sort keyed (publication desc with unknown last, stored index).
-    let mut claims: Vec<(usize, &DistilledClaim)> = prior
-        .claims
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| within_window(&c.retrieved_at, now))
-        .collect();
-    claims.sort_by(|(ia, a), (ib, b)| {
-        b.publication.day.cmp(&a.publication.day).then(ia.cmp(ib))
-    });
-
-    // The hard budget binds over the WHOLE seed: append in priority order
-    // while it fits; drop the rest (lowest priority first, by construction).
-    let mut out = TopicSeed::default();
-    let mut used = 0usize;
-    for (_, c) in claims {
-        let piece = seed_finding_line(c);
-        let addition = piece.chars().count() + 1;
-        if used + addition > SEED_BUDGET_CHARS {
-            break;
-        }
-        used += addition;
-        out.findings.push(piece);
-    }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
-}
-
-/// The topic-object seed gate: whether a persisted topic object is inside the
-/// shared freshness window by its own vintage (an expired or unreadable one
-/// never seeds and never joins the distillation merge).
-pub fn topic_object_fresh(prior: &TopicDistillate, now: chrono::DateTime<chrono::Utc>) -> bool {
-    within_window(&prior.vintage, now)
-}
-
-fn within_window(vintage: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
-    chrono::DateTime::parse_from_rfc3339(vintage)
-        .map(|t| {
-            now.signed_duration_since(t.with_timezone(&chrono::Utc))
-                .num_days()
-                < RESEARCH_FRESHNESS_DAYS
-        })
-        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
 // The loop's output shapes
 // ---------------------------------------------------------------------------
 
-/// One ledger entry: a claim with its source URL and retrieval timestamp,
-/// app-validated against the pass's actually-fetched URLs.
+/// One topic's write-up (`docs/portfolio-workflow.md` §Step 6c): the topic's
+/// running account of what its research established, rewritten whole by each
+/// follow-up pass, so a topic has one write-up at any time — `None` where no
+/// pass retrieved a page with body text (a pass that retrieved none spends no
+/// synthesis and leaves no write-up of its own).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EvidenceClaim {
-    pub claim: String,
-    pub source_url: String,
-    pub retrieved_at: String,
-    pub publication: PublicationDate,
-    pub fact_period: FactPeriod,
-    /// Deterministic seed lineage: the seed whose URL this claim's source
-    /// resolves to, where one does (`surfaced_by` — stamped free, no model
-    /// attribution involved).
-    pub surfaced_by: Option<String>,
-    /// The app-computed source annotation for the claim's document.
-    pub annotation: Option<SourceAnnotation>
-}
-
-/// A follow-up proposal — a structured field the orchestrator reads and
-/// decides whether to spend; the model never recurses on its own.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FollowupProposal {
-    pub question: String,
-    pub rationale: String,
-}
-
-/// One pass's outcome: the full findings response preserved whole, its
-/// validated ledger claims, and the structured side-channels.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PassFindings {
-    pub findings: String,
-    pub claims: Vec<EvidenceClaim>,
-    pub followup: Option<FollowupProposal>
-}
-
-/// One topic's research: its passes (root + approved follow-ups), preserved
-/// whole for distillation — never summarized in between.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TopicResearch {
+pub struct TopicWriteUp {
     pub topic_key: String,
     pub title: String,
-    /// The seeding object's vintage when this topic seeded; `None` = cold.
-    pub seeded_vintage: Option<String>,
-    pub passes: Vec<PassFindings>,
+    pub write_up: Option<String>,
+    /// Passes run on the topic — the root plus the follow-ups spent.
+    pub passes: usize,
     /// Set when the topic never ran (budget exhausted before it) — the
     /// fail-soft degraded-input gap.
     pub skipped: Option<String>
 }
 
-/// The whole holding's research — what flows to Step-6d distillation.
+/// One page shown to the model, as the holding's page roster records it
+/// (`docs/storage.md §Local Analysis Suite Storage`): its address, title,
+/// the publication date the search reported, the retrieval time and the
+/// source tier — never its text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageRosterEntry {
+    pub url: String,
+    pub title: String,
+    pub published: Option<String>,
+    pub retrieved_at: String,
+    pub source_tier: Option<u8>,
+}
+
+/// The whole holding's research — what flows to consolidation (Step 6d).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct HoldingResearch {
-    pub topics: Vec<TopicResearch>,
-    /// The once-per-holding disconfirming-fetch pass (after the topics), or
-    /// `None` with its gap recorded when the budget was exhausted.
-    pub disconfirming: Option<PassFindings>,
+    pub topics: Vec<TopicWriteUp>,
+    /// The once-per-holding disconfirming pass's write-up (after the topics),
+    /// or `None` with its gap recorded when the budget was exhausted or the
+    /// pass retrieved no page.
+    pub disconfirming: Option<String>,
+    /// Every page shown to the model, in first-retrieval order.
+    pub roster: Vec<PageRosterEntry>,
     pub fetches_spent: u32,
     pub elapsed_secs: u64,
     /// Recorded degraded-input gaps (skipped topics, an unspent disconfirming
-    /// pass, dropped claims/seeds).
+    /// pass, gathering degradation, evidence omitted or truncated).
     pub gaps: Vec<String>,
-    /// The seeds fed to this loop (leads, never evidence).
-    pub seeds: Vec<ResearchSeed>,
-    /// Per-topic seeded-vs-cold decisions, logged for the audit record.
-    pub seed_decisions: Vec<String>,
-    /// The fetched pages' extracted text (normalized URL → capped text) — the
-    /// Step-6e activation legs' corroboration base (transient run state; the
-    /// audit record never carries it).
-    pub page_texts: std::collections::HashMap<String, String>,
-    /// The publication date the search (or the seed) reported for each
-    /// fetched page, by the same normalized URL, as the backend gave it and
-    /// capped — the distillation's SOURCE TEXT headers carry it (ruled
-    /// 2026-09-17, `portfolio-v44`); a page without one shows no date.
-    pub page_published: std::collections::HashMap<String, String>
+}
+
+/// The per-holding research audit record (`docs/storage.md §Local Analysis
+/// Suite Storage` — the research-derived artifacts): the write-ups as written,
+/// the disconfirming pass's write-up, the page roster, the budget spend and the
+/// degraded gaps. The distillation shape with its call count and the analysis
+/// join the record with consolidation (`docs/portfolio-workflow.md` §Step 6d).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResearchAuditRecord {
+    pub write_ups: Vec<TopicWriteUp>,
+    pub disconfirming: Option<String>,
+    pub roster: Vec<PageRosterEntry>,
+    pub fetches_spent: u32,
+    pub elapsed_secs: u64,
+    pub gaps: Vec<String>,
+}
+
+impl ResearchAuditRecord {
+    /// The record the loop's output persists as.
+    pub fn from_research(research: &HoldingResearch) -> Self {
+        Self {
+            write_ups: research.topics.clone(),
+            disconfirming: research.disconfirming.clone(),
+            roster: research.roster.clone(),
+            fetches_spent: research.fetches_spent,
+            elapsed_secs: research.elapsed_secs,
+            gaps: research.gaps.clone(),
+        }
+    }
 }
 
 /// Everything a holding's research needs, assembled deterministically by the
-/// pipeline before the loop runs: the agenda, the structured seeds, and the
-/// per-topic cross-run seeds (key → (seed, seeding vintage)).
+/// pipeline before the loop runs: the agenda, the holding-constant brief, and
+/// the tracker step.
 #[derive(Debug, Clone, Default)]
 pub struct ResearchPlan {
     pub agenda: Vec<AgendaTopic>,
-    pub seeds: Vec<ResearchSeed>,
-    pub topic_seeds: std::collections::HashMap<String, (TopicSeed, String)>,
+    pub brief: HoldingBrief,
     /// The tracker step this loop streams under.
     pub step_label: String
 }
 
 /// The offline analyst's research — pipeline-shaped with no web tool: every
-/// agenda topic present, the first carrying one deterministic
-/// research-unavailable note, the loop's absence a recorded gap. The defaulted
-/// [`crate::portfolio::pipeline::HoldingAnalyst::research`] path for
-/// deterministic stubs and the demo.
+/// agenda topic present and skipped with no write-up, the loop's absence a
+/// recorded gap, so the ANALYSIS the thesis document reads is the bridge's
+/// one no-write-up sentence rather than a note under a topic's title. The
+/// defaulted [`crate::portfolio::pipeline::HoldingAnalyst::research`] path
+/// for deterministic stubs and the demo.
 pub fn offline_stub(plan: &ResearchPlan) -> HoldingResearch {
     let topics = plan
         .agenda
         .iter()
-        .enumerate()
-        .map(|(i, t)| TopicResearch {
+        .map(|t| TopicWriteUp {
             topic_key: t.key.clone(),
             title: t.title.clone(),
-            seeded_vintage: None,
-            passes: if i == 0 {
-                vec![PassFindings {
-                    findings: "Web research unavailable (offline analyst); the read rests on the \
-                               computed financials and the market analysis only."
-                        .to_string(),
-                    claims: Vec::new(),
-                    followup: None
-                }]
-            } else {
-                Vec::new()
-            },
-            skipped: (i > 0).then(|| "offline analyst".to_string())
+            write_up: None,
+            passes: 0,
+            skipped: Some("offline analyst".to_string())
         })
         .collect();
     HoldingResearch {
         topics,
         gaps: vec!["research: offline analyst (no web tool)".to_string()],
-        seeds: plan.seeds.clone(),
         ..Default::default()
     }
 }
@@ -1541,133 +1224,33 @@ pub fn research_tools() -> Value {
     ])
 }
 
-/// The synthesis call's findings grammar (`format`) — the one schema-constrained
-/// call per pass, issued after the tools-only gathering loop (fix B). Since
-/// `portfolio-v43` the object is the findings, the claims and — on a topic
-/// pass only — the follow-up proposal: `topic_answered`, `material_forward_fact`
-/// and the model-attributed `seeded_by` were parsed and persisted and read by
-/// nothing (ruled 2026-09-17; fix list 4.1, 4.2, 4.6), and the disconfirming
-/// pass's follow-up was asked and discarded by contract. Since `portfolio-v60`
-/// the follow-up fields ride only a pass that offers one
-/// (`PassContext::offers_followup`): a topic's last pass under the depth cap
-/// drops them as the disconfirming pass does.
-fn findings_schema(offers_followup: bool) -> Value {
-    let mut properties = json!({
-        "findings": { "type": "string" },
-        "claims": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "claim": { "type": "string" },
-                    "source_id": { "type": "string" },
-                    "fact_period": fact_period_schema()
-                },
-                "required": ["claim", "source_id", "fact_period"]
-            }
-        }
-    });
-    if offers_followup {
-        let followup = json!({
-            "followup_question": { "type": ["string", "null"] },
-            "followup_rationale": { "type": ["string", "null"] }
-        });
-        properties
-            .as_object_mut()
-            .expect("an object")
-            .extend(followup.as_object().expect("an object").clone());
-    }
-    json!({
-        "type": "object",
-        "properties": properties,
-        "required": ["findings", "claims"]
-    })
+/// Whether a follow-up reply is the one word `none` — the only reply the app
+/// interprets (`docs/web-research.md §The research loop and context
+/// management`); anything else is the follow-up question verbatim. Read
+/// trimmed and case-insensitively, with surrounding quotes or backticks and a
+/// trailing period stripped (ruled 2026-10-08), so `None.` reads as none and a
+/// question is never lost to the word appearing inside it.
+pub(crate) fn reads_none(reply: &str) -> bool {
+    let word = reply
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '*' | '_'))
+        .trim()
+        .trim_end_matches('.')
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '*' | '_'));
+    word.eq_ignore_ascii_case("none")
 }
 
-/// The findings turn's wire shape. The grammar-required fields stay required at
-/// the Rust boundary too: model-wire lenience is appropriate for optional
-/// fields, but defaulting one of these would turn a grammar miss into a blank,
-/// apparently completed pass (attempt-4 Finding 4 closure C3).
-#[derive(Debug, Deserialize)]
-struct FindingsWire {
-    findings: String,
-    claims: Vec<ClaimWire>,
-    #[serde(default)]
-    followup_question: Option<String>,
-    #[serde(default)]
-    followup_rationale: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClaimWire {
-    claim: String,
-    // A pass-local source id on the wire; resolved to the existing URL contract
-    // immediately after parsing, before citation validation and persistence.
-    #[serde(rename = "source_id")]
-    source_url: String,
-    #[serde(default)]
-    fact_period: FactPeriod
-}
-
-/// The placeholder-only return shape that closes Part 2 of the synthesis
-/// message (`portfolio-v43`) — the keys `findings_schema` enforces, in output
-/// order, every value a placeholder: the source id lists the ids EVIDENCE
-/// shows so a literal copy can never match an unshown page (an unlisted id is
-/// dropped and gap-logged regardless). The `format` grammar is a decoding mask
-/// the model never sees; told only that "your output grammar" existed, it
-/// resolved "JSON or Markdown?" toward a hand-built Markdown block while
-/// planning its content, and the topic worked under that confusion dropped
-/// whole at reconciliation (attempt-5 Finding 5). Pinned to the grammar's key
-/// set by test, so the shape shown and the shape enforced cannot drift.
-fn findings_return_shape(offers_followup: bool, ids: &[String]) -> String {
-    let source_id = if ids.is_empty() {
-        "<the id of a page in EVIDENCE>".to_string()
+/// The follow-up reply read: `none` is no follow-up, anything else is the
+/// question verbatim once trimmed. A blank reply never reaches here — the
+/// prose turn classifies it as an empty completion and retries or fails.
+fn followup_question_of(reply: &str) -> Option<String> {
+    let question = reply.trim();
+    if reads_none(question) {
+        None
     } else {
-        format!("<{}>", ids.join("|"))
-    };
-    // The value placeholder lists one format per kind in the kind
-    // placeholder's order (`portfolio-v49`): attempt 8 showed the model
-    // quoting the prose format correctly and still writing the source's own
-    // wording at the point of writing, where the shape alone was in view.
-    // A string-or-null field shows both alternatives inside quotes, so the
-    // shape stays valid JSON and a literal null never reads as the only value
-    // (`portfolio-v59`, ruled 2026-09-29).
-    let mut shape = format!(r#"{{"findings":"","claims":[{{"claim":"","source_id":"{source_id}","fact_period":{{"kind":"<day|month|quarter|year|range|fiscal|unknown>","value":"<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>","end":"<YYYY-MM-DD|null>"}}}}]"#);
-    if offers_followup {
-        shape.push_str(
-            r#","followup_question":"<question|null>","followup_rationale":"<why|null>""#,
-        );
+        Some(question.to_string())
     }
-    shape.push('}');
-    shape
-}
-
-/// Decode and semantically validate the grammar-constrained findings object.
-/// Serde enforces the required keys and types; the explicit nonblank checks
-/// cover constraints the local grammar subset cannot express. Every failure is
-/// the same retryable `SchemaParse` class as malformed JSON, so an incomplete
-/// object cannot silently bypass the bounded synthesis re-issue.
-fn parse_findings_wire(content: &str) -> Result<FindingsWire> {
-    let wire = serde_json::from_str::<FindingsWire>(content).map_err(|e| {
-        anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
-    })?;
-    if wire.findings.trim().is_empty() {
-        return Err(anyhow::Error::new(crate::local_model::RetryClass::SchemaParse)
-            .context("research findings response carried a blank `findings` field"));
-    }
-    for (index, claim) in wire.claims.iter().enumerate() {
-        if claim.claim.trim().is_empty() {
-            return Err(anyhow::Error::new(crate::local_model::RetryClass::SchemaParse).context(
-                format!("research findings claim {index} carried blank claim text"),
-            ));
-        }
-        if claim.source_url.trim().is_empty() {
-            return Err(anyhow::Error::new(crate::local_model::RetryClass::SchemaParse).context(
-                format!("research findings claim {index} carried a blank source id"),
-            ));
-        }
-    }
-    Ok(wire)
 }
 
 // ---------------------------------------------------------------------------
@@ -1783,17 +1366,21 @@ impl ReusablePage {
                 .all(|url| check_url_policy(url).is_ok())
     }
 
-    fn alias(&self, seeds: &[ResearchSeed]) -> Option<String> {
-        let normalize = crate::web_research::store::normalize_url;
-        self.requested_urls
-            .iter()
-            .find(|url| {
-                seeds
-                    .iter()
-                    .any(|seed| normalize(&seed.url) == normalize(url))
-            })
-            .or_else(|| self.requested_urls.first())
-            .map(|url| normalize(url))
+    /// The page as the roster records it — the final address, the title, the
+    /// reported publication date, the retrieval time and the source tier.
+    fn roster_entry(&self) -> PageRosterEntry {
+        let (title, _) = crate::data_sources::cap_chars(&self.page.title, TITLE_CAP_CHARS);
+        let published = self.published.as_deref().map(|p| {
+            let (published, _) = crate::data_sources::cap_chars(p, PUBLISHED_CAP_CHARS);
+            published
+        });
+        PageRosterEntry {
+            url: self.key(),
+            title,
+            published,
+            retrieved_at: self.page.retrieved_at.clone(),
+            source_tier: self.annotation.as_ref().map(|a| a.source_tier),
+        }
     }
 
     fn render(&self, body_chars: usize) -> String {
@@ -1888,18 +1475,20 @@ fn reuse_pages(
     (block, selected)
 }
 
-/// Everything a pass needs beyond the runner: the holding brief, the topic,
-/// the cross-run seed, and the news leads.
+/// Everything a pass needs beyond the runner: the holding-constant brief, the
+/// topic, and the pass's own text — the follow-up question it pursues with the
+/// topic's write-up so far, or on the disconfirming pass the run's write-ups.
 struct PassContext<'a> {
-    holding_brief: &'a str,
+    brief: &'a HoldingBrief,
     topic: &'a AgendaTopic,
-    seed: Option<&'a TopicSeed>,
-    seeds: &'a [ResearchSeed],
-    /// A follow-up pass's approved proposal (rendered in the brief's topic block).
-    followup: Option<&'a FollowupProposal>,
-    /// Prior passes' claims for this topic — the ledger the pass reasons
-    /// beside (append-only across passes).
-    prior_claims: &'a [EvidenceClaim],
+    /// A follow-up pass's question (rendered in the brief's topic block).
+    followup: Option<&'a str>,
+    /// The topic's write-up so far — the document the follow-up pass rewrites
+    /// whole; `None` on a root pass.
+    write_up_so_far: Option<&'a str>,
+    /// The run's write-ups so far, each under its topic's title — the
+    /// disconfirming pass's subject; empty on every topic pass.
+    write_ups_so_far: &'a [(String, String)],
     /// The disconfirming pass's special framing.
     disconfirming: bool,
     /// The pass's depth within its topic: 0 for the root, one more per
@@ -1909,13 +1498,23 @@ struct PassContext<'a> {
 }
 
 impl PassContext<'_> {
-    /// Whether the synthesis asks for a follow-up proposal: only where the
-    /// app can spend one — never on the disconfirming pass, and never on the
-    /// last pass a topic's depth cap allows (`portfolio-v60`, ruled
-    /// 2026-09-29), whose proposal no pass could take up.
+    /// Whether the synthesis conversation's second message asks for a
+    /// follow-up question: only where the app can spend one — never on the
+    /// disconfirming pass, and never on the last pass a topic's depth cap
+    /// allows (`portfolio-v60`, ruled 2026-09-29), whose question no pass
+    /// could take up.
     fn offers_followup(&self) -> bool {
         !self.disconfirming && followup_spendable(self.depth)
     }
+}
+
+/// One pass's outcome: the write-up the synthesis wrote (`None` where the pass
+/// retrieved no page with body text and spent no synthesis), and the follow-up
+/// question where the second message asked and the reply was one.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct PassOutcome {
+    write_up: Option<String>,
+    followup: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1938,30 +1537,24 @@ impl ResearchRunner<'_> {
     /// disconfirming pass, under the shared budget.
     pub fn run_holding(
         &self,
-        holding_brief: &str,
+        brief: &HoldingBrief,
         agenda: &[AgendaTopic],
-        seeds: &[ResearchSeed],
-        seed_for_topic: &dyn Fn(&str) -> Option<(TopicSeed, String)>,
     ) -> Result<HoldingResearch> {
-        self.run_holding_with_issuer(holding_brief, agenda, seeds, None, seed_for_topic)
+        self.run_holding_with_issuer(brief, agenda, None)
     }
 
     pub fn run_holding_with_issuer(
         &self,
-        holding_brief: &str,
+        brief: &HoldingBrief,
         agenda: &[AgendaTopic],
-        seeds: &[ResearchSeed],
         issuer: Option<&crate::sec::earnings::Issuer>,
-        seed_for_topic: &dyn Fn(&str) -> Option<(TopicSeed, String)>,
     ) -> Result<HoldingResearch> {
+        let leads = &brief.leads;
         let mut recovery = EarningsRecovery { issuer: issuer.cloned(), ..Default::default() };
-        for seed in seeds {
-            recovery.titles.insert(crate::web_research::store::normalize_url(&seed.url), seed.headline.chars().take(TITLE_CAP_CHARS).collect());
+        for lead in leads {
+            recovery.titles.insert(crate::web_research::store::normalize_url(&lead.url), lead.headline.chars().take(TITLE_CAP_CHARS).collect());
         }
-        let mut out = HoldingResearch {
-            seeds: seeds.to_vec(),
-            ..Default::default()
-        };
+        let mut out = HoldingResearch::default();
         let mut page_texts = std::collections::HashMap::new();
         let mut inventory = Vec::new();
         // Titles and publication dates ride a parallel per-holding map (like
@@ -1971,10 +1564,10 @@ impl ResearchRunner<'_> {
         // (`portfolio-v43`).
         let mut page_meta: std::collections::HashMap<String, PageMeta> =
             std::collections::HashMap::new();
-        // The publication dates the search results (and the seeds) reported,
+        // The publication dates the search results (and the leads) reported,
         // by normalized URL — a served page's header carries the one for its
         // URL where there is one.
-        let mut published_by_url: std::collections::HashMap<String, String> = seeds
+        let mut published_by_url: std::collections::HashMap<String, String> = leads
             .iter()
             .filter_map(|s| {
                 s.published
@@ -1988,19 +1581,20 @@ impl ResearchRunner<'_> {
         // agenda assembly, before any pass runs.
         struct TopicWork {
             topic: AgendaTopic,
-            seed: Option<TopicSeed>,
-            research: TopicResearch,
+            research: TopicWriteUp,
+            /// The question the pending follow-up pass pursues.
+            followup: Option<String>,
         }
         let new_topic = |topic: AgendaTopic| TopicWork {
-            research: TopicResearch {
+            research: TopicWriteUp {
                 topic_key: topic.key.clone(),
                 title: topic.title.clone(),
-                seeded_vintage: None,
-                passes: Vec::new(),
+                write_up: None,
+                passes: 0,
                 skipped: None,
             },
             topic,
-            seed: None,
+            followup: None,
         };
         let mut topics: Vec<TopicWork> = agenda.iter().cloned().map(new_topic).collect();
         let mut pending: std::collections::BTreeSet<(bool, usize, usize)> =
@@ -2024,26 +1618,12 @@ impl ResearchRunner<'_> {
                 }
                 continue;
             }
-            if !is_followup {
-                // Resolve each topic's seed once, when its root actually runs.
-                if let Some((seed, vintage)) = seed_for_topic(&work.topic.key) {
-                    work.seed = Some(seed);
-                    work.research.seeded_vintage = Some(vintage).filter(|v| !v.is_empty());
-                }
-                out.seed_decisions.push(match &work.research.seeded_vintage {
-                    Some(v) => format!("{}: seeded (vintage {v})", work.topic.key),
-                    None => format!("{}: cold", work.topic.key),
-                });
-            }
-            let topic_claims: Vec<EvidenceClaim> = work.research.passes.iter()
-                .flat_map(|pass| pass.claims.iter().cloned()).collect();
             let ctx = PassContext {
-                holding_brief,
+                brief,
                 topic: &work.topic,
-                seed: work.seed.as_ref(),
-                seeds,
-                followup: work.research.passes.last().and_then(|p| p.followup.as_ref()),
-                prior_claims: &topic_claims,
+                followup: if is_followup { work.followup.as_deref() } else { None },
+                write_up_so_far: if is_followup { work.research.write_up.as_deref() } else { None },
+                write_ups_so_far: &[],
                 disconfirming: false,
                 depth,
             };
@@ -2057,36 +1637,42 @@ impl ResearchRunner<'_> {
                 &mut inventory,
                 &mut recovery,
             )?;
-            if pass.followup.is_some() && followup_spendable(depth) {
+            work.research.passes += 1;
+            // The follow-up pass rewrites the topic's write-up whole; a pass
+            // that wrote none leaves the write-up so far standing.
+            if let Some(write_up) = pass.write_up {
+                work.research.write_up = Some(write_up);
+            }
+            work.followup = pass.followup;
+            if work.followup.is_some() && followup_spendable(depth) {
                 pending.insert((true, index, depth + 1));
             }
-            work.research.passes.push(pass);
         }
-        let worked: Vec<TopicResearch> = topics.into_iter().map(|t| t.research).collect();
+        let worked: Vec<TopicWriteUp> = topics.into_iter().map(|t| t.research).collect();
 
-        // The disconfirming-fetch pass: once per holding, after its topics,
-        // spent from the same budget, outside any topic's depth cap
-        // (`docs/portfolio-workflow.md` §Step 6c — the canonical placement).
-        let any_findings = worked.iter().any(|t| !t.passes.is_empty());
-        if any_findings {
+        // The disconfirming pass: once per holding, after its topics, spent
+        // from the same budget, outside any topic's depth cap
+        // (`docs/portfolio-workflow.md` §Step 6c — the canonical placement) —
+        // one gathering conversation searching for evidence against the run's
+        // write-ups so far, then its own synthesis writing its own write-up.
+        let write_ups: Vec<(String, String)> = worked
+            .iter()
+            .filter_map(|t| t.write_up.as_ref().map(|w| (t.title.clone(), w.clone())))
+            .collect();
+        if !write_ups.is_empty() {
             if self.budget.exhausted(fetches_spent) {
                 out.gaps.push(
                     "disconfirming-fetch pass not spent: budget exhausted (recorded gap, lower conviction)"
                         .to_string(),
                 );
             } else {
-                let all_claims: Vec<EvidenceClaim> = worked
-                    .iter()
-                    .flat_map(|t| t.passes.iter().flat_map(|p| p.claims.iter().cloned()))
-                    .collect();
                 let disconfirm_topic = disconfirming_topic();
                 let ctx = PassContext {
-                    holding_brief,
+                    brief,
                     topic: &disconfirm_topic,
-                    seed: None,
-                    seeds,
                     followup: None,
-                    prior_claims: &all_claims,
+                    write_up_so_far: None,
+                    write_ups_so_far: &write_ups,
                     disconfirming: true,
                     depth: 0,
                 };
@@ -2100,23 +1686,16 @@ impl ResearchRunner<'_> {
                     &mut inventory,
                     &mut recovery,
                 )?;
-                out.disconfirming = Some(pass);
+                out.disconfirming = pass.write_up;
             }
         }
 
         out.gaps.extend(recovery.gaps);
         out.topics = worked;
-        out.page_texts = page_texts;
-        out.page_published = page_meta
-            .iter()
-            .filter_map(|(url, meta)| {
-                meta.published.as_deref().map(|p| {
-                    let (published, _) =
-                        crate::data_sources::cap_chars(p, PUBLISHED_CAP_CHARS);
-                    (url.clone(), published)
-                })
-            })
-            .collect();
+        // Every page shown to the model, in first-retrieval order — the
+        // inventory holds exactly the served pages, each shown at least once
+        // as a tool result (`docs/storage.md §Local Analysis Suite Storage`).
+        out.roster = inventory.iter().map(ReusablePage::roster_entry).collect();
         out.fetches_spent = fetches_spent;
         out.elapsed_secs = self.budget.clock.elapsed().as_secs();
         Ok(out)
@@ -2126,8 +1705,8 @@ impl ResearchRunner<'_> {
     /// the tools and no grammar — a turn that requests tools continues the loop,
     /// a turn that requests none (or a spent fetch, turn, tool-batch, or aggregate
     /// history budget) ends gathering.
-    /// Then `synthesize_findings` authors the pass's findings from a separate,
-    /// tool-history-free conversation carrying the grammar and no tools, so the
+    /// Then `synthesize_write_up` authors the pass's write-up from a separate,
+    /// tool-history-free conversation carrying no tools and no grammar, so the
     /// two never share a request (attempt-4 Finding 4, fix B) — a
     /// budget-interrupted pass still synthesizes from what landed, never nothing.
     #[allow(clippy::too_many_arguments)] // transient holding stores plus this pass's budget and gaps
@@ -2141,31 +1720,18 @@ impl ResearchRunner<'_> {
         published_by_url: &mut std::collections::HashMap<String, String>,
         inventory: &mut Vec<ReusablePage>,
         recovery: &mut EarningsRecovery,
-    ) -> Result<PassFindings> {
+    ) -> Result<PassOutcome> {
         let tools = research_tools();
         let (reuse_block, reused) = reuse_pages(ctx, inventory, gaps);
         let mut messages = vec![
             ChatMessage::system(research_system_prompt()),
             ChatMessage::user(pass_brief_with_reuse(ctx, &reuse_block, !reused.is_empty())),
         ];
-        // Explicitly fetched URLs (reused sources join after gathering) —
-        // plus a final→requested alias so a redirecting seed URL keeps its
-        // lineage (the claim cites the final URL; the seed stored the
-        // requested one).
+        // Explicitly fetched URLs (reused sources join after gathering).
         let mut fetched: Vec<(String, String, Option<SourceAnnotation>)> = Vec::new();
-        let mut url_aliases: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        for source in &reused {
-            let key = source.key();
-            // Prefer a seed's requested alias when several aliases reached the
-            // same page. The source retains all aliases across explicit reads.
-            if let Some(url) = source.alias(ctx.seeds) {
-                url_aliases.insert(key, url);
-            }
-        }
-        // The gathering phase's degradation, accumulated across turns — the
-        // synthesis call reads it (as a brief note) since the tool-call history
-        // that carried these failures is discarded (attempt-4 review, Finding 2).
+        // The gathering phase's degradation, accumulated across turns — a
+        // persisted gap, since the tool-call history that carried these
+        // failures is discarded (attempt-4 review, Finding 2).
         let mut degradation = PassDegradation::default();
 
         // ── Gathering ──────────────────────────────────────────────────────
@@ -2287,7 +1853,6 @@ impl ResearchRunner<'_> {
                         ctx,
                         fetches_spent,
                         &mut fetched,
-                        &mut url_aliases,
                         page_texts,
                         page_meta,
                         published_by_url,
@@ -2347,24 +1912,22 @@ impl ResearchRunner<'_> {
         let fetched = roster;
 
         // ── Synthesis ──────────────────────────────────────────────────────
-        // A fresh two-message conversation carrying only the gathered evidence
-        // and the findings grammar — no tool-call history — so the grammar
-        // engages cleanly, the way the interpretation call (which never fails
-        // its parse) does. The gathering degradation the discarded history
-        // carried is recorded as a data-health gap (until `portfolio-v59` it
-        // was also a SEARCHING note in the brief — dropped, ruled 2026-09-29,
-        // since the fresh synthesis conversation cannot attribute aggregate
-        // losses to a question).
+        // A fresh conversation carrying only the gathered evidence, with no
+        // tools, no grammar and no tool-call history. The gathering
+        // degradation the discarded history carried is recorded as a
+        // data-health gap and reaches no model (`portfolio-v59`, ruled
+        // 2026-09-29: the fresh synthesis conversation cannot attribute
+        // aggregate losses to a question).
         if let Some(summary) = degradation.summary() {
             gaps.push(format!(
                 "topic {}: gathering degraded — {summary}; coverage partial",
                 ctx.topic.key
             ));
         }
-        // No page with body text landed: the app records the pass itself and
-        // spends no synthesis call (fix list 4.3, ruled 2026-09-17) — the fixed
-        // sentence plus the searching note, no claims, no follow-up, and the
-        // same gap the synthesis brief would have recorded for body-less pages.
+        // No page with body text landed: the pass spends no synthesis
+        // conversation — the topic's write-up so far stands, the pass leaves
+        // none of its own, and its losses persist as gaps
+        // (`docs/web-research.md §The research loop and context management`).
         let mut seen = std::collections::HashSet::new();
         let (with_body, without_body) = fetched
             .iter()
@@ -2384,54 +1947,56 @@ impl ResearchRunner<'_> {
                     ctx.topic.key
                 ));
             }
-            let mut findings =
-                String::from("No page could be retrieved for this topic; nothing was established.");
-            if let Some(note) = degradation.model_note() {
-                findings.push(' ');
-                findings.push_str(&note);
-            }
-            return Ok(PassFindings {
-                findings,
-                claims: Vec::new(),
-                followup: None
-            });
+            gaps.push(format!(
+                "topic {}: no page with body text was retrieved; the pass wrote no write-up{}",
+                ctx.topic.key,
+                degradation
+                    .model_note()
+                    .map(|note| format!(" ({note})"))
+                    .unwrap_or_default()
+            ));
+            return Ok(PassOutcome::default());
         }
-        // The gathering degradation is a persisted gap only (`portfolio-v59`,
-        // ruled 2026-09-29): the synthesis is a fresh conversation that never
-        // saw which search or fetch served which question, so a note of
-        // aggregate losses could only be guessed onto a gap; the findings
-        // state what stays unanswered and the audit keeps the mechanism.
-        let (wire, shown) = self.synthesize_findings(
-            ctx,
-            &fetched,
-            &explicit,
-            page_texts,
-            page_meta,
-            gaps,
-        )?;
-        // Validate only against the sources the synthesis was actually shown — a
-        // page dropped for budget leaves the allow-set, so a claim citing
-        // evidence the synthesis never saw is rejected, not accepted (round-8).
-        let shown_fetched: Vec<(String, String, Option<SourceAnnotation>)> = fetched
-            .iter()
-            .filter(|(url, _, _)| shown.contains_key(url))
-            .cloned()
-            .collect();
-        Ok(self.validate_findings(wire, ctx, &shown_fetched, &url_aliases, page_meta, gaps))
+        self.synthesize_write_up(ctx, &fetched, &explicit, page_texts, page_meta, gaps)
     }
 
-    /// Write up one pass's findings from a fresh conversation — the gathered
-    /// evidence rendered into a single user message, with the findings grammar
-    /// and **no** tool-call history (Finding 4:
-    /// `docs/verification/2026-08-31-big-run-attempt-4-findings.md`). The
-    /// bounded retry-once is kept as defense in depth: a transient call failure
-    /// retries the call (once), and a schema-parse failure re-issues the
-    /// synthesis (once) — the same two legs, and the same four-call worst-case
-    /// bound, the tool loop used to carry. A persistent parse failure names the
-    /// class and carries a snippet of the offending body, so a residual is
-    /// diagnosable off the tracker.
+    /// One prose turn of the synthesis conversation under the bounded
+    /// retry-once (`docs/local-models.md §The local-model adapter seam`): a
+    /// transient call failure re-attempts the identical messages once, and a
+    /// blank reply — the adapter's empty-completion class — is a transient
+    /// failure of the same kind. The reply is returned as text, validated by
+    /// nothing else.
+    fn prose_turn(&self, stage: &str, messages: &[ChatMessage]) -> Result<String> {
+        let issue = || -> Result<String> {
+            let resp = self.model.research_turn(stage, messages, None, None)?;
+            if resp.content.trim().is_empty() {
+                return Err(
+                    anyhow::Error::new(crate::local_model::RetryClass::EmptyCompletion).context(
+                        format!("{stage}: the model returned an empty completion body"),
+                    ),
+                );
+            }
+            Ok(resp.content)
+        };
+        match issue() {
+            Ok(content) => Ok(content),
+            Err(first) if self.model.retry_permitted(stage, &first) => issue()
+                .map_err(|e| e.context(crate::local_model::retried_once_annotation(&first))),
+            Err(first) => Err(first),
+        }
+    }
+
+    /// Write up one pass from a fresh conversation (`docs/portfolio-workflow.md`
+    /// §Step 6c): the gathered evidence rendered into a single user message
+    /// with no grammar and **no** tool-call history (Finding 4:
+    /// `docs/verification/2026-08-31-big-run-attempt-4-findings.md`); the
+    /// reply is the pass's write-up as prose. Where the pass offers a
+    /// follow-up, the same conversation's second message asks whether the
+    /// research has a follow-up question — the write-up echoed as the
+    /// assistant's turn, then the ask — and the reply is the question verbatim
+    /// or the one word `none`, the only reply the app interprets.
     #[allow(clippy::too_many_arguments)] // the roster and its first-claim set are one input split by kind (`portfolio-v49`)
-    fn synthesize_findings(
+    fn synthesize_write_up(
         &self,
         ctx: &PassContext<'_>,
         fetched: &[(String, String, Option<SourceAnnotation>)],
@@ -2439,12 +2004,11 @@ impl ResearchRunner<'_> {
         page_texts: &std::collections::HashMap<String, String>,
         page_meta: &std::collections::HashMap<String, PageMeta>,
         gaps: &mut Vec<String>,
-    ) -> Result<(FindingsWire, std::collections::HashMap<String, String>)> {
-        let schema = findings_schema(ctx.offers_followup());
+    ) -> Result<PassOutcome> {
         let stage = research_retry_stage(&self.step_label, &ctx.topic.key, "synthesis");
         let mut shown = std::collections::HashMap::new();
-        let messages = vec![
-            ChatMessage::system(synthesis_system_prompt(ctx.offers_followup())),
+        let mut messages = vec![
+            ChatMessage::system(synthesis_system_prompt()),
             ChatMessage::user(synthesis_brief(
                 ctx,
                 fetched,
@@ -2455,58 +2019,27 @@ impl ResearchRunner<'_> {
                 &mut shown,
             )),
         ];
-        // The parse leg of the bounded retry-once fires at most once; the
-        // call leg is gated per issued call below.
-        let mut findings_retry_used = false;
-        loop {
-            if self.progress.is_cancelled() {
-                bail!("research cancelled");
-            }
-            let resp = match self
-                .model
-                .research_turn(&stage, &messages, None, Some(&schema))
-            {
-                Ok(resp) => resp,
-                Err(first) if self.model.retry_permitted(&stage, &first) => self
-                    .model
-                    .research_turn(&stage, &messages, None, Some(&schema))
-                    .map_err(|e| e.context(crate::local_model::retried_once_annotation(&first)))
-                    .context("synthesizing findings failed")?,
-                Err(first) => return Err(first.context("synthesizing findings failed"))
-            };
-            let parsed = parse_findings_wire(&resp.content).map_err(|e| {
-                e.context(format!(
-                    "research findings response failed its schema parse (body: {})",
-                    body_snippet(&resp.content)
-                ))
-            });
-            match parsed {
-                Ok(mut wire) => {
-                    for claim in &mut wire.claims {
-                        claim.source_url = shown.iter()
-                            .find(|(_, id)| **id == claim.source_url)
-                            .map(|(url, _)| url.clone())
-                            .unwrap_or_default();
-                    }
-                    return Ok((wire, shown));
-                }
-                Err(err) => {
-                    if !findings_retry_used && self.model.retry_permitted(&stage, &err) {
-                        findings_retry_used = true;
-                        continue;
-                    }
-                    // After a fired parse retry the hard failure names the class,
-                    // like every other leg's second failure.
-                    if findings_retry_used {
-                        return Err(err.context(format!(
-                            "failed again after one retry ({} on the first attempt)",
-                            crate::local_model::RetryClass::SchemaParse
-                        )));
-                    }
-                    return Err(err);
-                }
-            }
+        if self.progress.is_cancelled() {
+            bail!("research cancelled");
         }
+        let write_up = self
+            .prose_turn(&stage, &messages)
+            .context("writing the pass's write-up failed")?;
+        if !ctx.offers_followup() {
+            return Ok(PassOutcome { write_up: Some(write_up), followup: None });
+        }
+        if self.progress.is_cancelled() {
+            bail!("research cancelled");
+        }
+        // The second message: the write-up as the assistant's turn, then the
+        // follow-up ask, under its own stage label so a fired retry names it.
+        messages.push(ChatMessage::assistant(write_up.clone()));
+        messages.push(ChatMessage::user(followup_ask()));
+        let followup_stage = format!("{stage} follow-up");
+        let reply = self
+            .prose_turn(&followup_stage, &messages)
+            .context("asking for the pass's follow-up question failed")?;
+        Ok(PassOutcome { write_up: Some(write_up), followup: followup_question_of(&reply) })
     }
 
     /// Execute one search call, with its tracker row. Degradation (a failed
@@ -2830,7 +2363,6 @@ impl ResearchRunner<'_> {
         ctx: &PassContext<'_>,
         fetches_spent: &mut u32,
         fetched: &mut Vec<(String, String, Option<SourceAnnotation>)>,
-        url_aliases: &mut std::collections::HashMap<String, String>,
         page_texts: &mut std::collections::HashMap<String, String>,
         page_meta: &mut std::collections::HashMap<String, PageMeta>,
         published_by_url: &std::collections::HashMap<String, String>,
@@ -2866,9 +2398,6 @@ impl ResearchRunner<'_> {
                 );
                 let normalized = crate::web_research::store::normalize_url(&page.final_url);
                 let requested = crate::web_research::store::normalize_url(url);
-                if requested != normalized {
-                    url_aliases.insert(normalized.clone(), requested.clone());
-                }
                 // Preserve the original extracted length before storing the bounded
                 // synthesis body: an evidence-truncation event must survive as a
                 // persisted degradation gap, not only as an inline model marker.
@@ -2909,12 +2438,9 @@ impl ResearchRunner<'_> {
                             source.requested_urls.push(alias.clone());
                         }
                     }
-                    *old = source.clone();
+                    *old = source;
                 } else {
-                    inventory.push(source.clone());
-                }
-                if let Some(alias) = source.alias(ctx.seeds) {
-                    url_aliases.insert(normalized.clone(), alias);
+                    inventory.push(source);
                 }
                 // A repeated explicit read replaces body and provenance as one
                 // snapshot; first-source dedup must not retain an older date.
@@ -2926,99 +2452,6 @@ impl ResearchRunner<'_> {
                 render_page(&page, annotation.as_ref(), published.as_deref())
             }
             Err(e) => fetch_failed_line(&e),
-        }
-    }
-
-    /// Validate the findings turn: claims must cite a source shown to synthesis
-    /// (dropped-and-logged otherwise, capped), and the deterministic
-    /// `surfaced_by` lineage is stamped where a claim's source resolves to a
-    /// seed URL (the model-attributed leg is gone since `portfolio-v43`).
-    fn validate_findings(
-        &self,
-        wire: FindingsWire,
-        ctx: &PassContext<'_>,
-        fetched: &[(String, String, Option<SourceAnnotation>)],
-        url_aliases: &std::collections::HashMap<String, String>,
-        page_meta: &std::collections::HashMap<String, PageMeta>,
-        gaps: &mut Vec<String>,
-    ) -> PassFindings {
-        let seed_by_url: std::collections::HashMap<String, &ResearchSeed> = ctx
-            .seeds
-            .iter()
-            .map(|s| (crate::web_research::store::normalize_url(&s.url), s))
-            .collect();
-
-
-        let mut claims = Vec::new();
-        let mut dropped = 0usize;
-        for mut c in wire.claims {
-            if !c.fact_period.valid() {
-                // Name the rejected pair so the gap is attributable to the
-                // value the model wrote, not only to the topic (attempt-8
-                // Finding 2: 16 of 17 rejections were unattributable). The kind
-                // renders in its wire form; the value is capped since `valid`
-                // rejects over-long values too.
-                let kind = serde_json::to_value(&c.fact_period.kind)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_default();
-                let (value, cut) = crate::data_sources::cap_chars(&c.fact_period.value, 80);
-                let end = match &c.fact_period.end {
-                    Some(end) => format!(", end {end:?}"),
-                    None => String::new(),
-                };
-                gaps.push(format!(
-                    "topic {}: invalid fact period retained as unknown (kind {kind}, value {value:?}{}{end})",
-                    ctx.topic.key,
-                    if cut { "…" } else { "" },
-                ));
-                c.fact_period = FactPeriod::default();
-            }
-            if claims.len() >= MAX_CLAIMS_PER_PASS {
-                dropped += 1;
-                continue;
-            }
-            let normalized = crate::web_research::store::normalize_url(&c.source_url);
-            match fetched.iter().find(|(u, _, _)| *u == normalized) {
-                Some((url, retrieved_at, annotation)) => claims.push(EvidenceClaim {
-                    claim: c.claim,
-                    source_url: url.clone(),
-                    retrieved_at: retrieved_at.clone(),
-                    publication: PublicationDate::from_reported(page_meta.get(url).and_then(|m| m.published.as_deref())),
-                    fact_period: c.fact_period,
-                    // The final URL, or its requested-URL alias, keys the
-                    // deterministic seed lineage — a redirecting seed URL
-                    // keeps its surfaced_by.
-                    surfaced_by: seed_by_url
-                        .get(url)
-                        .or_else(|| url_aliases.get(url).and_then(|a| seed_by_url.get(a)))
-                        .map(|s| s.id.clone()),
-                    annotation: annotation.clone()
-                }),
-                None => {
-                    dropped += 1;
-                }
-            }
-        }
-        if dropped > 0 {
-            gaps.push(format!(
-                "topic {}: {dropped} claim(s) dropped (unresolved source ID, source not shown, or over the per-pass cap)",
-                ctx.topic.key
-            ));
-        }
-        let followup = wire.followup_question.filter(|q| !q.trim().is_empty()).map(|question| {
-            FollowupProposal {
-                question,
-                rationale: wire.followup_rationale.unwrap_or_default(),
-            }
-        });
-        PassFindings {
-            findings: wire.findings,
-            claims,
-            // The disconfirming pass proposes no follow-ups by contract (it
-            // sits outside every topic's depth budget), nor does a topic's last
-            // pass under the cap (`portfolio-v60`): neither is asked for one.
-            followup: if ctx.offers_followup() { followup } else { None }
         }
     }
 }
@@ -3041,30 +2474,27 @@ with web_search and fetch with web_fetch, and write nothing up in this conversat
         .to_string()
 }
 
-/// The synthesis call's system prompt (`portfolio-v43`): the role line, the
-/// output names and the two-part shape — findings, claims and a follow-up
-/// proposal, or findings and claims alone on the disconfirming pass, whose
-/// follow-up the app never spends (nothing conditional on a case that is not
-/// this call), and since `portfolio-v60` on a topic's last pass under the
-/// depth cap, for the same reason. The object's shape closes Part 2 of the user message
-/// (`synthesis_task`), pinned to the grammar's key set by test. The system
-/// prompt is not part of the brief's sized packet; it rides the slack above
-/// `input_budget_chars`, which a test keeps it well inside.
-fn synthesis_system_prompt(offers_followup: bool) -> String {
-    // The object's keys, as on every other object-returning call
-    // (`portfolio-v62`, ruled 2026-09-29).
-    let names = if offers_followup {
-        "findings, claims, followup_question and followup_rationale"
-    } else {
-        "findings and claims"
-    };
-    // The names precede the frame since `portfolio-v62` (ruled 2026-09-29),
-    // the frame shared with every object-returning call.
-    format!(
-        "You are an investment analyst writing up one topic of research on one holding for a \
-portfolio review. You will return {names}, as one JSON object. {}",
-        crate::portfolio::TWO_PART_FRAME
-    )
+/// The synthesis conversation's system prompt (`portfolio-v72`): the role
+/// line and the two-part shape on the frame every prose call shares (the
+/// thesis document's), since the write-up is prose under no grammar. The
+/// system prompt is not part of the brief's sized packet; it rides the slack
+/// above `input_budget_chars`, which a test keeps it well inside.
+fn synthesis_system_prompt() -> String {
+    "You are an investment analyst writing up one topic of research on one holding for a \
+portfolio review. Part 1 of the message gives the inputs. Part 2 says what the write-up covers \
+and how to return it."
+        .to_string()
+}
+
+/// The synthesis conversation's second message (`docs/portfolio-workflow.md`
+/// §Step 6c): whether the research has a follow-up question. The reply is the
+/// question as plain text and nothing else, or the one word `none`, the only
+/// reply the app interprets.
+pub(crate) fn followup_ask() -> String {
+    "Does the research have a follow-up question — one further question on the questions under \
+TOPIC worth a search of its own? Reply with the question as plain text and nothing else, or the \
+one word none."
+        .to_string()
 }
 
 /// The EVIDENCE section's gloss, once per synthesis message (`portfolio-v43`;
@@ -3134,127 +2564,138 @@ fn topic_section(topic: &AgendaTopic) -> String {
     out
 }
 
-/// The FOLLOW-UP section, shared by both messages: the approved proposal's
-/// question and, where it gave one, its rationale — each capped, since both
-/// are unbounded model output (Finding 1).
-fn followup_section(f: &FollowupProposal) -> String {
-    let mut out =
-        String::from("\nFOLLOW-UP\nThe question this pass pursues, and why it was proposed.\n");
-    let (question, cut) = crate::data_sources::cap_chars(&f.question, FOLLOWUP_CAP_CHARS);
+/// The FOLLOW-UP section, shared by both messages: the question the pass
+/// pursues — capped, since it is unbounded model output (Finding 1).
+fn followup_section(question: &str) -> String {
+    let mut out = String::from("\nFOLLOW-UP\nThe question this pass pursues.\n");
+    let (question, cut) = crate::data_sources::cap_chars(question, FOLLOWUP_CAP_CHARS);
     out.push_str(&question);
     if cut {
         out.push('…');
     }
     out.push('\n');
-    if !f.rationale.trim().is_empty() {
-        out.push_str("Because: ");
-        let (rationale, cut) = crate::data_sources::cap_chars(&f.rationale, FOLLOWUP_CAP_CHARS);
-        out.push_str(&rationale);
-        if cut {
-            out.push('…');
-        }
+    out
+}
+
+/// One write-up as a block's body, capped at the write-up cap with the
+/// continuation line where it was cut.
+fn capped_write_up(write_up: &str) -> String {
+    let (text, cut) = crate::data_sources::cap_chars(write_up.trim(), WRITE_UP_CAP_CHARS);
+    let mut out = text;
+    if cut {
+        out.push_str(INPUTS_CONTINUE_MARKER);
+    } else {
         out.push('\n');
     }
     out
 }
 
-/// Part 2 of the synthesis message (`portfolio-v43`): the task in output
-/// order — findings, claims, and on a topic pass the follow-up proposal —
-/// each item naming the Part 1 section it draws on, closing with the
-/// placeholder-only shape whose source id lists the ids EVIDENCE shows.
-/// Since `portfolio-v59` (ruled 2026-09-29) the items are plain sentences:
-/// each field is defined where it is named, the figure clause says what a
-/// figure is quoted with, and the fact-period kinds are a semicolon list
-/// with each format bracketed. Since `portfolio-v60` (ruled 2026-09-29) the
-/// follow-up pass's subject reads "For the question under FOLLOW-UP, state
-/// what EVIDENCE shows.", the topic pass's construction, and item 3 renders
-/// only where the pass offers a follow-up (`PassContext::offers_followup`).
-fn synthesis_task(ctx: &PassContext<'_>, ids: &[String]) -> String {
-    // The preamble says once that the names below are the object's fields, in
-    // place of tagging each (`portfolio-v59`). The no-fence clause stays: the
-    // grammar makes a fence impossible at decode time, but the model deliberates
-    // the question in its thinking unless told, and the sentence was measured
-    // to cut that (fix list 3.7, ruled 2026-09-16: interpretation fence markers
-    // fell from twelve to three).
-    let mut out = String::from(
-        "\n======== PART 2: TASK ========\n\nDetermine the following from the inputs and return \
-them as one JSON object in the shape under RETURN SHAPE, with no code fence and no surrounding \
-text; the names below are its fields.\n\n",
-    );
-    // "written first and never left empty" sits on the item itself
-    // (`portfolio-v49`, ruled 2026-09-27): three attempt-8 syntheses opened on
-    // the claims array and failed the blank-findings guard, while every
-    // success followed the shape's order.
-    out.push_str("1. findings — write this first and never leave it empty. ");
-    if ctx.disconfirming {
-        out.push_str(
-            "State how EVIDENCE bears on the claims under CLAIMS SO FAR: which it contradicts or \
-weakens and how, which it leaves standing, and any contrary evidence that stands on its own.",
-        );
-    } else {
-        out.push_str(if ctx.followup.is_some() {
-            "For the question under FOLLOW-UP, state what EVIDENCE shows."
-        } else {
-            "For each question under TOPIC, state what EVIDENCE shows."
-        });
-        out.push_str(
-            " Where a page gives a figure, quote it with the date or period the page gives for \
-it. Say where pages disagree, and what stays unanswered.",
-        );
+/// The WRITE-UP SO FAR section of a follow-up pass, shared by both messages:
+/// the topic's write-up from its earlier passes, which the pass rewrites
+/// whole.
+fn write_up_so_far_section(write_up: &str) -> String {
+    format!(
+        "\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\n{}",
+        capped_write_up(write_up)
+    )
+}
+
+/// The WRITE-UPS SO FAR section of the disconfirming pass, shared by both
+/// messages: this run's write-ups on the holding, each under its topic's
+/// title.
+fn write_ups_so_far_section(write_ups: &[(String, String)]) -> String {
+    let mut out =
+        String::from("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n");
+    if write_ups.is_empty() {
+        out.push_str("None.\n");
     }
+    for (title, write_up) in write_ups {
+        out.push_str(&format!("\n{title}\n{}", capped_write_up(write_up)));
+    }
+    out
+}
+
+/// The clause naming where a figure's source is stated: the page's address,
+/// or FETCHED VALUES where the brief carries that block — never a heading
+/// the message does not show.
+fn source_clause(ctx: &PassContext<'_>) -> &'static str {
+    if ctx.brief.fetched_values.is_empty() {
+        "the address of the page under EVIDENCE that states it"
+    } else {
+        "the address of the page under EVIDENCE that states it, or FETCHED VALUES where the \
+figure comes from there"
+    }
+}
+
+/// Part 2 of the synthesis message (`docs/portfolio-workflow.md` §Step 6c):
+/// the write-up — what the research established on the topic's questions,
+/// each figure with the date or period its source gives for it and that
+/// source, where pages disagree, and what the evidence leaves unanswered,
+/// within the write-up's length band; on a follow-up pass the topic's
+/// write-up rewritten whole with the new evidence folded in; on the
+/// disconfirming pass how the evidence bears on the run's write-ups. The
+/// no-fence clause stays from the typed calls: the model deliberates the
+/// question in its thinking unless told (fix list 3.7, ruled 2026-09-16).
+fn synthesis_task(ctx: &PassContext<'_>) -> String {
+    let mut out = String::from("\n======== PART 2: TASK ========\n\n");
+    let plain = "as plain text — no code fence, no JSON, no heading before the first line";
+    if ctx.disconfirming {
+        out.push_str(&format!(
+            "Write the pass's write-up {plain}. It states how EVIDENCE bears on the write-ups \
+under WRITE-UPS SO FAR: which it contradicts or weakens and how, which it leaves standing, and \
+any contrary evidence that stands on its own."
+        ));
+    } else if ctx.followup.is_some() {
+        out.push_str(&format!(
+            "Rewrite the write-up under WRITE-UP SO FAR whole {plain}, folding in what EVIDENCE \
+shows on the question under FOLLOW-UP, so the topic has one write-up: what the research \
+establishes on each question under TOPIC, where pages disagree, and what the evidence leaves \
+unanswered."
+        ));
+    } else {
+        out.push_str(&format!(
+            "Write the topic's write-up {plain}. It states what EVIDENCE establishes on each \
+question under TOPIC, where pages disagree, and what the evidence leaves unanswered."
+        ));
+    }
+    // Each figure with the date or period its source gives for it and that
+    // source — the page's address, or FETCHED VALUES where the brief carries
+    // the block (`docs/portfolio-workflow.md` §Step 6c).
+    out.push_str(&format!(
+        " Each figure is quoted with the date or period its source gives for it, and its source \
+is named: {}.",
+        source_clause(ctx)
+    ));
     // The governed source-quality rule reaches the call that authors the
-    // findings, not only the gathering conversation it never sees
-    // (`docs/web-research.md §Source quality and evidence weighting`; Codex,
-    // `portfolio-v43` round 1).
-    // The fallible-source clause rides this sentence since `portfolio-v59`,
-    // out of the EVIDENCE gloss, as v50 did on the gathering side.
+    // write-up, not only the gathering conversation it never sees
+    // (`docs/web-research.md §Source quality and evidence weighting`).
     out.push_str(
         " Weigh each page by its source tier and extraction quality; a weak source lowers \
 confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect \
 of the source.",
     );
-    out.push_str(
-        "\n\n2. claims — the statements the findings rest on, one statement per claim, each stated \
-by a page in EVIDENCE. source_id is that page's id as EVIDENCE shows it. fact_period is the period the fact applies to, never when it was retrieved or \
-when this analysis runs. Its kind is one of: day (value YYYY-MM-DD, e.g. 2026-06-30); month \
-(YYYY-MM, e.g. 2026-06); quarter (a calendar quarter, YYYY-Qn, e.g. 2026-Q2); year (YYYY, e.g. \
-2026); range (value the first day and end the last, both YYYY-MM-DD, e.g. 2026-04-01 through \
-2026-06-30); fiscal (the source's own fiscal-period label as the value, e.g. Q4 FY2025); unknown \
-(value empty). end is null for every kind but range. Use quarter only where the source states a \
-calendar quarter or a period that covers one without ambiguity, and never turn a fiscal label \
-into a calendar period. Keep an announcement date and an effective date as separate claims.\n\n",
-    );
-    if ctx.offers_followup() {
-        out.push_str(
-            "3. followup_question — one further question worth a search of its own, or null; \
-followup_rationale — why, or null.\n\n",
-        );
-    }
-    out.push_str(
-        "RETURN SHAPE (every value is a placeholder; an array holds as many items as apply)\n",
-    );
-    out.push_str(&findings_return_shape(ctx.offers_followup(), ids));
-    out.push('\n');
+    // The length band, stated as an instruction and checked by nothing
+    // (`docs/portfolio-analysis.md §Starting parameters`).
+    out.push_str("\n\nThe write-up runs 400 to 900 words.\n");
     out
 }
 
-/// The synthesis call's user message: one message in two parts. Part 1 is
-/// inputs only — since `portfolio-v49` (attempt-8 Finding 4, ruled
-/// 2026-09-27) in holding-constant-first order: the holding header, then
-/// EVIDENCE, the retrieved pages with their headers glossed once, in the
-/// order the gathering conversation showed them (the reused pages in
-/// first-retrieval order, then this pass's own fetches), then TOPIC, on a
-/// follow-up pass FOLLOW-UP, on the disconfirming pass CLAIMS SO FAR (the
-/// SEARCHING note left the brief at `portfolio-v59`: the degradation is a
-/// persisted gap only). Part 2 is the task in output order and the return
-/// shape. The order serves the runtime's prefix cache:
-/// consecutive syntheses on one holding begin with the same header and the
-/// same leading pages, and the topic-variable tail after the evidence stays
-/// short, so the previous synthesis's saved checkpoint falls inside the
-/// shared text. The evidence is sized against the model's input budget with
-/// the shared chars-per-token guard, Part 2 and the topic block reserved
-/// first, and trimmed per-page only if it would overflow — the sanctioned
-/// lever, never raising `num_ctx` (BUILD §Standing constraints).
+/// The synthesis conversation's first message: one message in two parts.
+/// Part 1 is inputs only — since `portfolio-v49` (attempt-8 Finding 4, ruled
+/// 2026-09-27) in holding-constant-first order: the holding header and
+/// FETCHED VALUES, then EVIDENCE, the retrieved pages with their headers
+/// glossed once, in the order the gathering conversation showed them (the
+/// reused pages in first-retrieval order, then this pass's own fetches), then
+/// TOPIC, on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR, on the
+/// disconfirming pass WRITE-UPS SO FAR. Part 2 is the write-up task. The
+/// order serves the runtime's prefix cache: consecutive syntheses on one
+/// holding begin with the same header, fetched values and leading pages, and
+/// the topic-variable tail after the evidence stays short, so the previous
+/// synthesis's saved checkpoint falls inside the shared text. The evidence is
+/// sized against the model's input budget with the shared chars-per-token
+/// guard, Part 2 and the topic block reserved first, and trimmed per-page
+/// only if it would overflow — the sanctioned lever, never raising `num_ctx`
+/// (BUILD §Standing constraints).
 #[allow(clippy::too_many_arguments)] // the roster and its first-claim set are one input split by kind (`portfolio-v49`)
 fn synthesis_brief(
     ctx: &PassContext<'_>,
@@ -3268,15 +2709,16 @@ fn synthesis_brief(
     page_texts: &std::collections::HashMap<String, String>,
     page_meta: &std::collections::HashMap<String, PageMeta>,
     gaps: &mut Vec<String>,
-    // The URLs and IDs actually rendered into the brief — a dropped page is excluded, so
-    // its URL leaves the claim validator's allow-set and a claim citing evidence
-    // the synthesis never saw is rejected, not accepted (round-8).
+    // The URLs and ids actually rendered into the brief — the pages shown to
+    // the synthesis, each under the id its header carries; a dropped page is
+    // excluded.
     shown: &mut std::collections::HashMap<String, String>,
 ) -> String {
     let mut out = synthesis_lead(ctx);
     // The topic block closes Part 1 after the evidence (`portfolio-v49`); it
     // is reserved before the pages are sized.
     let tail = synthesis_orientation(ctx);
+    let task = synthesis_task(ctx);
     out.push_str("\nEVIDENCE\n");
     out.push_str(&evidence_gloss(ctx));
     out.push('\n');
@@ -3294,7 +2736,7 @@ fn synthesis_brief(
     if unique.is_empty() {
         out.push_str("No page was retrieved for this topic.\n");
         out.push_str(&tail);
-        out.push_str(&synthesis_task(ctx, &[]));
+        out.push_str(&task);
         return out;
     }
     // A fetch that extracted no body text carries no citable article evidence —
@@ -3328,7 +2770,7 @@ fn synthesis_brief(
     if kept.is_empty() {
         out.push_str("The pages selected for this topic carried no usable text.\n");
         out.push_str(&tail);
-        out.push_str(&synthesis_task(ctx, &[]));
+        out.push_str(&task);
         return out;
     }
     // The source annotation, matching `render_page` so the synthesis call —
@@ -3374,15 +2816,12 @@ fn synthesis_brief(
     let budget = crate::portfolio::distill::input_budget_chars(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
     );
-    // Part 2 is reserved at its largest (every kept id listed in the shape)
-    // before the evidence is sized, so the task always renders whole.
-    let all_ids: Vec<String> = (1..=kept.len()).map(|i| format!("S{i}")).collect();
-    let task_reserve = synthesis_task(ctx, &all_ids).chars().count();
-    let finish = |out: &mut String, shown: &std::collections::HashMap<String, String>| {
+    // Part 2 is reserved before the evidence is sized, so the task always
+    // renders whole.
+    let task_reserve = task.chars().count();
+    let finish = |out: &mut String, _shown: &std::collections::HashMap<String, String>| {
         out.push_str(&tail);
-        let mut ids: Vec<String> = shown.values().cloned().collect();
-        ids.sort_by_key(|id| id[1..].parse::<usize>().unwrap_or(0));
-        out.push_str(&synthesis_task(ctx, &ids));
+        out.push_str(&task);
     };
     // Size against the model's input budget with the shared chars-per-token
     // guard. Page selection and body allocation are one plan: a source is kept
@@ -3473,7 +2912,7 @@ fn synthesis_brief(
         ));
         out.push_str("The pages selected for this topic are too long to show.\n");
         out.push_str(&tail);
-        out.push_str(&synthesis_task(ctx, &[]));
+        out.push_str(&task);
         return out;
     }
 
@@ -3629,9 +3068,10 @@ struct PagePlan {
     dropped: bool
 }
 
-/// Admit a planned source to the synthesis claim-validator allow-set only when
-/// the plan carries usable evidence. This duplicates the allocator invariant at
-/// the security boundary so a future math regression fails closed in release.
+/// Admit a planned source to the shown set — its header's id — only when the
+/// plan carries usable evidence. This duplicates the allocator invariant at
+/// the boundary so a future math regression fails closed in release: a page
+/// with no usable body is never shown as a source.
 fn admit_planned_source(
     plan: PagePlan,
     source_url: &str,
@@ -3669,76 +3109,39 @@ fn plan_evidence(lengths: &[usize], available: usize, marker_len: usize) -> Vec<
         .collect()
 }
 
-/// A capped head and tail of a model completion body for a diagnostic error
-/// message — so a residual synthesis parse failure carries what the model
-/// actually returned (Finding 4's failing-body capture) rather than an opaque
-/// serde EOF. The tail is kept since attempt-8 Finding 1: a claims-first body
-/// puts the field that failed its guard at the very end, where a head-only
-/// snippet never reached.
-fn body_snippet(content: &str) -> String {
-    const HEAD_CAP: usize = 400;
-    const TAIL_CAP: usize = 200;
-    let total = content.chars().count();
-    if total <= HEAD_CAP + TAIL_CAP {
-        return content.to_string();
-    }
-    let (head, _) = crate::data_sources::cap_chars(content, HEAD_CAP);
-    let tail_start = content
-        .char_indices()
-        .nth(total - TAIL_CAP)
-        .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let tail = &content[tail_start..];
-    let elided = total - HEAD_CAP - TAIL_CAP;
-    format!("{head} …({elided} chars elided, {total} chars total)… {tail}")
-}
-
 /// Render a source header with its admitted ID (or the largest possible ID
 /// while reserving space before selection).
 fn synthesis_header(header: &str, id: &str) -> String {
     format!("\n=== {id}{header}")
 }
 
-/// Part 1's opening (`portfolio-v49`): the holding header alone — the bytes
-/// every synthesis on the holding shares, so consecutive syntheses begin
-/// alike and the evidence that follows can extend a saved prefix.
+/// Part 1's opening (`portfolio-v49`): the holding header and FETCHED VALUES
+/// — the bytes every synthesis on the holding shares, so consecutive
+/// syntheses begin alike and the evidence that follows can extend a saved
+/// prefix.
 fn synthesis_lead(ctx: &PassContext<'_>) -> String {
     let mut out = String::from("======== PART 1: INPUTS ========\n");
-    out.push_str(ctx.holding_brief);
+    out.push_str(&ctx.brief.lead());
     out
 }
 
 /// The topic-variable block of Part 1, rendered after the evidence since
 /// `portfolio-v49` (attempt-8 Finding 4, ruled 2026-09-27): TOPIC, on a
-/// follow-up pass FOLLOW-UP, and on the disconfirming pass CLAIMS SO FAR —
-/// this pass's own frame and nothing the write-up does not need: no prior
-/// findings, standing conditions or news leads (ruled 2026-09-17; the
-/// distillation merges passes and priors), no URL roster beyond the
-/// evidence, and no instruction. Capped so the task always renders whole.
+/// follow-up pass FOLLOW-UP and WRITE-UP SO FAR, and on the disconfirming
+/// pass WRITE-UPS SO FAR — this pass's own frame and nothing the write-up
+/// does not need: no news leads, no prior documents, no URL roster beyond
+/// the evidence, and no instruction. Capped so the task always renders
+/// whole.
 fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
     let mut out = topic_section(ctx.topic);
     if let Some(followup) = ctx.followup {
         out.push_str(&followup_section(followup));
     }
+    if let Some(write_up) = ctx.write_up_so_far {
+        out.push_str(&write_up_so_far_section(write_up));
+    }
     if ctx.disconfirming {
-        // The gloss names the two provenance fields each line carries, in the
-        // gathering brief's words; the lines carry no source here
-        // (`portfolio-v60`, ruled 2026-09-29).
-        out.push_str(
-            "\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim \
-             carries: the publication date the search or lead reported; and the period the fact \
-             applies to.\n",
-        );
-        if ctx.prior_claims.is_empty() {
-            out.push_str("None.\n");
-        }
-        for claim in ctx.prior_claims.iter().take(40) {
-            out.push_str(&format!(
-                "- {}\n  {}\n",
-                crate::data_sources::cap_chars(&claim.claim, PRIOR_CLAIM_CAP_CHARS).0,
-                claim_date_label(&claim.publication, &claim.fact_period)
-            ));
-        }
+        out.push_str(&write_ups_so_far_section(ctx.write_ups_so_far));
     }
     let cap = crate::portfolio::distill::input_budget_chars(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
@@ -3752,20 +3155,19 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
 
 /// The gathering call's user message: one message in two parts. Part 1 is
 /// inputs only — since `portfolio-v49` (attempt-8 Finding 4, ruled
-/// 2026-09-27) in holding-constant-first order: the holding header, NEWS
-/// LEADS (the tool results' fields are glossed on the tool descriptions
-/// since `portfolio-v50`), then the
-/// PAGES ALREADY RETRIEVED block, and only then the topic's own
-/// text — TOPIC, on a follow-up pass FOLLOW-UP and CLAIMS SO FAR, on the
-/// disconfirming pass CLAIMS SO FAR, on a continuity run PRIOR FINDINGS —
-/// each explained once and then its values, no instruction in it. Part 2 is
-/// the task: what to find, how to weigh a source, the per-reply bound and
-/// when to stop. The order serves the runtime's prefix cache: consecutive
-/// topic roots share their leading text through the reused pages, and the
-/// topic-variable tail that follows stays short, so the previous root's
-/// saved checkpoint falls inside the shared text. The inputs are bounded
-/// (the claims block by count and chars, the seed by its budget) and each
-/// block is capped so the task always renders whole (Finding 1); TOPIC
+/// 2026-09-27) in holding-constant-first order: the holding header, FETCHED
+/// VALUES, NEWS LEADS (the tool results' fields are glossed on the tool
+/// descriptions since `portfolio-v50`), on a continuity run the prior
+/// documents, then the PAGES ALREADY RETRIEVED block, and only then the
+/// topic's own text — TOPIC, on a follow-up pass FOLLOW-UP and WRITE-UP SO
+/// FAR, on the disconfirming pass WRITE-UPS SO FAR — each explained once and
+/// then its values, no instruction in it. Part 2 is the task: what to find,
+/// how to weigh a source, the per-reply bound and when to stop. The order
+/// serves the runtime's prefix cache: consecutive topic roots share their
+/// leading text through the reused pages, and the topic-variable tail that
+/// follows stays short, so the previous root's saved checkpoint falls inside
+/// the shared text. The inputs are bounded (each write-up by its cap) and
+/// each block is capped so the task always renders whole (Finding 1); TOPIC
 /// leads the capped topic block, so the questions survive any cut.
 /// The brief with no reuse block and no page shown — the tests' and samples'
 /// shorthand; production sizes and renders through `pass_brief_with_reuse`
@@ -3782,18 +3184,19 @@ fn gathering_countdown(remaining: u32) -> ChatMessage {
     ))
 }
 
-/// The holding-constant opening of Part 1: the header and NEWS LEADS — the
-/// same bytes on every pass of the holding, so a fresh root's prompt begins
-/// where the previous root's did.
+/// The holding-constant opening of Part 1 (`docs/portfolio-workflow.md`
+/// §Step 6c): the header, FETCHED VALUES, NEWS LEADS and on a continuity run
+/// the prior documents — the same bytes on every pass of the holding, so a
+/// fresh root's prompt begins where the previous root's did.
 fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
     let mut out = String::from("======== PART 1: INPUTS ========\n");
-    out.push_str(ctx.holding_brief);
-    if !ctx.seeds.is_empty() {
+    out.push_str(&ctx.brief.lead());
+    if !ctx.brief.leads.is_empty() {
         out.push_str(
             "\nNEWS LEADS\nRecent headlines about the holding, each with its source and date. A \
              headline is a lead, not evidence.\n",
         );
-        for s in ctx.seeds {
+        for s in &ctx.brief.leads {
             out.push_str(&format!(
                 "- {} — {} ({}{})\n",
                 s.headline,
@@ -3806,62 +3209,23 @@ fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
             ));
         }
     }
+    out.push_str(&ctx.brief.prior_documents);
     out
 }
 
-/// The topic-variable block of Part 1: TOPIC, FOLLOW-UP, CLAIMS SO FAR and
-/// PRIOR FINDINGS — what changes from pass to pass, rendered after the reused
-/// pages.
+/// The topic-variable block of Part 1: TOPIC, on a follow-up pass FOLLOW-UP
+/// and WRITE-UP SO FAR, on the disconfirming pass WRITE-UPS SO FAR — what
+/// changes from pass to pass, rendered after the reused pages.
 fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
     let mut out = topic_section(ctx.topic);
-    if let Some(f) = ctx.followup {
-        out.push_str(&followup_section(f));
+    if let Some(question) = ctx.followup {
+        out.push_str(&followup_section(question));
     }
-    if ctx.disconfirming || !ctx.prior_claims.is_empty() {
-        out.push_str("\nCLAIMS SO FAR\n");
-        out.push_str(if ctx.disconfirming {
-            "What this run's research established on the holding. Each claim carries: its source; \
-             the publication date the search or lead reported; and the period the fact applies \
-             to.\n"
-        } else {
-            "What this topic's earlier searching established. Each claim carries: its source; the \
-             publication date the search or lead reported; and the period the fact applies to.\n"
-        });
-        if ctx.prior_claims.is_empty() {
-            out.push_str("None.\n");
-        }
-        // The ledger is accumulated model output (up to all claims from every
-        // prior pass on the disconfirming pass), each claim string unbounded.
-        // Cap each claim and stop the block at a total budget so the prefix
-        // stays bounded, with a count of what was omitted (Finding 1).
-        let mut block = 0usize;
-        let mut shown = 0usize;
-        for c in ctx.prior_claims.iter().take(40) {
-            let (claim, cut) = crate::data_sources::cap_chars(&c.claim, PRIOR_CLAIM_CAP_CHARS);
-            let line = format!("- {}{} [{}]\n  {}\n", claim, if cut { "…" } else { "" }, c.source_url, claim_date_label(&c.publication, &c.fact_period));
-            if shown > 0 && block + line.chars().count() > PRIOR_CLAIMS_BLOCK_CHARS {
-                break;
-            }
-            block += line.chars().count();
-            out.push_str(&line);
-            shown += 1;
-        }
-        let omitted = ctx.prior_claims.len() - shown;
-        if omitted > 0 {
-            out.push_str(&format!("(+{omitted} more claims not shown)\n"));
-        }
+    if let Some(write_up) = ctx.write_up_so_far {
+        out.push_str(&write_up_so_far_section(write_up));
     }
-    if let Some(seed) = ctx.seed {
-        if !seed.findings.is_empty() {
-            out.push_str(
-                "\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic. Each claim \
-                 carries: its source; the publication date the search or lead reported; and the \
-                 period the fact applies to.\n",
-            );
-            for f in &seed.findings {
-                out.push_str(&format!("- {f}\n"));
-            }
-        }
+    if ctx.disconfirming {
+        out.push_str(&write_ups_so_far_section(ctx.write_ups_so_far));
     }
     out
 }
@@ -3917,27 +3281,21 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, pages_shown: bool) 
 /// shown (`portfolio-v50`); a brief with none asks to search first. On a
 /// follow-up pass the opening's second sentence says what the TOPIC questions
 /// are for and that the pass does not search them, and items 1 and 3 name the
-/// FOLLOW-UP question (`portfolio-v51`). Since `portfolio-v60` (ruled
-/// 2026-09-29) that pass points at its headings as every other pass does —
-/// "the question under FOLLOW-UP", "the questions under TOPIC", "the claims
-/// under CLAIMS SO FAR" — never with a heading as an adjective.
+/// FOLLOW-UP question (`portfolio-v51`); on the disconfirming pass it says the
+/// write-ups under WRITE-UPS SO FAR are what its question tests. Every pass
+/// points at its headings — never with a heading as an adjective
+/// (`portfolio-v60`, ruled 2026-09-29).
 fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     let opening = if ctx.disconfirming {
         "Find what the web shows on the question under TOPIC for this holding, as of the date \
-         under HOLDING. The claims under CLAIMS SO FAR are what that question tests: search for \
-         evidence against them, not for more evidence for them."
+         under HOLDING. The write-ups under WRITE-UPS SO FAR are what that question tests: search \
+         for evidence against them, not for more evidence for them."
             .to_string()
     } else if ctx.followup.is_some() {
-        format!(
-            "Find what the web shows on the question under FOLLOW-UP for this holding, as of the \
-             date under HOLDING. The questions under TOPIC are what that question serves; this pass \
-             does not search them{}.",
-            if ctx.prior_claims.is_empty() {
-                ""
-            } else {
-                ", and the claims under CLAIMS SO FAR need no second search"
-            }
-        )
+        "Find what the web shows on the question under FOLLOW-UP for this holding, as of the \
+         date under HOLDING. The questions under TOPIC are what that question serves; this pass \
+         does not search them."
+            .to_string()
     } else {
         "Find what the web shows on each question under TOPIC for this holding, as of the date \
          under HOLDING."
@@ -3947,7 +3305,7 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     // any, the news leads — one clause under the one relevance test, since a
     // lead orients the research and only its fetched page can be evidence
     // (`portfolio-v50`; the leads render on every pass of the holding).
-    let candidates = if ctx.seeds.is_empty() {
+    let candidates = if ctx.brief.leads.is_empty() {
         "the results"
     } else {
         "the results and the leads under NEWS LEADS"
@@ -3984,15 +3342,6 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
          a weak source lowers confidence in what it says, it does not exclude it, and a figure \
          that cannot be right is a defect of the source."
     ));
-    // The clause names the Part 1 heading it draws on, and only where the
-    // brief shows it: PRIOR FINDINGS renders from the seed's findings
-    // (`portfolio-v54`).
-    if ctx.seed.is_some_and(|s| !s.is_empty()) {
-        item1.push_str(
-            " Where a finding under PRIOR FINDINGS bears on a question, look for whether it \
-             still holds and for what is newer.",
-        );
-    }
     format!(
         "\n======== PART 2: TASK ========\n{opening}\n\n{item1}\n2. At most \
          {MAX_TOOL_CALLS_PER_TURN} tool calls in one reply.\n3. Stop when {answered}, or when \
@@ -4164,18 +3513,6 @@ mod tests {
         assert!(format!("{err:#}").contains("HTTP 403"), "{err:#}");
     }
 
-    /// The seed's lines as one text, for the seed tests' order and budget
-    /// checks.
-    fn seed_text(seed: &TopicSeed) -> String {
-        seed.findings.join("\n")
-    }
-
-    fn utc(s: &str) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .unwrap()
-            .with_timezone(&chrono::Utc)
-    }
-
     // Entry 4: use the production web adapter, failure memory and runner with
     // scripted transport and a monotonic clock; no live service or model call.
     #[derive(Default)]
@@ -4295,16 +3632,8 @@ mod tests {
             progress,
             step_label: "research TEST".into(),
         };
-        let context = PassContext {
-            holding_brief: "WID",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0,
-        };
+        let brief = brief_of("WID");
+        let context = pass_ctx(&brief, &agenda[0]);
         runner.fetch_with_retry(url, &context, spent)
     }
 
@@ -4530,12 +3859,11 @@ mod tests {
                 progress: &progress,
                 step_label: (*holding).into(),
             };
-            let out = runner
-                .run_holding(holding, &one_topic_agenda(), &[], &|_| None)
-                .unwrap();
+            let brief = brief_of(holding);
+            let out = runner.run_holding(&brief, &one_topic_agenda()).unwrap();
             assert_eq!(out.fetches_spent, u32::from(index == 0));
-            assert!(out.topics[0].passes[0].claims.is_empty());
-            assert!(out.page_texts.is_empty());
+            assert!(out.topics[0].write_up.is_none() && out.topics[0].passes == 1);
+            assert!(out.roster.is_empty());
             // These are the gap strings the pipeline copies to HoldingAudit.
             let persisted = serde_json::to_value(&out).unwrap();
             assert!(persisted["gaps"]
@@ -5114,248 +4442,23 @@ mod tests {
         assert_eq!(served.final_url, page.final_url);
     }
 
-    // ---- Seed assembly ----------------------------------------------------
-
-    fn claim(text: &str, vintage: &str) -> DistilledClaim {
-        DistilledClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-            claim: text.to_string(),
-            source_url: format!("https://x.example/{}", text.len()),
-            retrieved_at: vintage.to_string(),
-            cached: true,
-        }
-    }
+    // ---- The follow-up reply ------------------------------------------------
 
     #[test]
-    fn seed_assembly_expires_by_claim_vintage_and_object_vintage() {
-        let now = utc("2026-08-23T00:00:00+00:00");
-        // An expired topic object never seeds, whatever its claims say.
-        let expired = TopicDistillate {
-            topic_key: "t".into(),
-            vintage: "2026-07-01T00:00:00+00:00".into(),
-            summary: String::new(),
-            claims: vec![claim("fresh enough", "2026-08-20T00:00:00+00:00")]
-        };
-        assert_eq!(assemble_topic_seed(Some(&expired), now), None);
-
-        // A fresh object seeds only its non-expired claims.
-        let fresh = TopicDistillate {
-            topic_key: "t".into(),
-            vintage: "2026-08-10T00:00:00+00:00".into(),
-            summary: String::new(),
-            claims: vec![
-                claim("stale claim", "2026-07-01T00:00:00+00:00"),
-                claim("fresh claim", "2026-08-15T00:00:00+00:00"),
-            ]
-        };
-        let seed = seed_text(&assemble_topic_seed(Some(&fresh), now).unwrap());
-        assert!(seed.contains("fresh claim"));
-        assert!(!seed.contains("stale claim"));
-    }
-
-    #[test]
-    fn slice2_quarters_validate_render_and_round_trip_without_fiscal_conversion() {
-        for value in ["2026-Q1", "2026-Q2", "2026-Q3", "2026-Q4"] {
-            let quarter = FactPeriod { kind: PeriodPrecision::Quarter, value: value.into(), end: None };
-            assert!(quarter.valid());
-            assert_eq!(quarter.render(), value);
-            let encoded = serde_json::to_value(&quarter).unwrap();
-            assert_eq!(encoded, json!({"kind":"quarter", "value":value, "end":null}));
-            assert_eq!(serde_json::from_value::<FactPeriod>(encoded).unwrap(), quarter);
+    fn the_one_word_none_is_the_only_reply_the_app_reads() {
+        // Ruled 2026-10-08: trimmed, case-insensitive, surrounding quotes and
+        // a trailing period tolerated; anything else is the question verbatim.
+        for reply in ["none", "None", " NONE ", "None.", "\"none\"", "`none`", "'None.'", "**none**"] {
+            assert!(reads_none(reply), "{reply:?}");
+            assert_eq!(followup_question_of(reply), None, "{reply:?}");
         }
-        for value in ["2026-Q0", "2026-Q5", "26-Q2", "2026-q2", "2026-Q02", "2026-Q2 ",
-            " 2026-Q2", "２０２６-Q2", "202éQ2", "Q4 FY2025", "2026-06-30", ""] {
-            assert!(!FactPeriod { kind: PeriodPrecision::Quarter, value: value.into(), end: None }.valid(), "{value}");
-        }
-        assert!(!FactPeriod { kind: PeriodPrecision::Quarter, value: "2026-Q2".into(), end: Some("2026-06-30".into()) }.valid());
-        let fiscal = FactPeriod { kind: PeriodPrecision::Fiscal, value: "Q4 FY2025".into(), end: None };
-        assert!(fiscal.valid());
-        assert_eq!(fiscal.render(), "source label: Q4 FY2025");
-    }
-
-    #[test]
-    fn entry3_date_precision_unknowns_and_retrieval_expiry_are_independent() {
-        for (kind, value, end, valid) in [
-            (PeriodPrecision::Day, "2024-02-29", None, true),
-            (PeriodPrecision::Day, "2025-02-29", None, false),
-            (PeriodPrecision::Day, "2026-9-01", None, false),
-            (PeriodPrecision::Month, "2025-07", None, true),
-            (PeriodPrecision::Month, "2025-13", None, false),
-            (PeriodPrecision::Year, "2025", None, true),
-            (PeriodPrecision::Fiscal, "FY25 Q3", None, true),
-            (
-                PeriodPrecision::Range,
-                "2025-01-01",
-                Some("2025-03-31"),
-                true,
-            ),
-            (
-                PeriodPrecision::Range,
-                "2025-03-31",
-                Some("2025-01-01"),
-                false,
-            ),
-            (PeriodPrecision::Unknown, "", None, true),
-            (PeriodPrecision::Unknown, "2026-09-19", None, false),
-        ] {
-            let period = FactPeriod {
-                kind,
-                value: value.into(),
-                end: end.map(str::to_string),
-            };
-            assert_eq!(period.valid(), valid, "{period:?}");
-        }
-        for raw in [
-            None,
-            Some("unknown"),
-            Some("2026-9-1"),
-            Some("2025-02-29"),
-            Some("July CY25"),
-        ] {
-            assert_eq!(PublicationDate::from_reported(raw).day, None);
+        for reply in ["no", "none of the above", "What happened to costs?", "Is none of the guidance met?"] {
+            assert!(!reads_none(reply), "{reply:?}");
         }
         assert_eq!(
-            PublicationDate::from_reported(Some("2026-09-01T08:00:00Z"))
-                .day
-                .as_deref(),
-            Some("2026-09-01")
+            followup_question_of("  What happened to costs?\n"),
+            Some("What happened to costs?".to_string())
         );
-        let mut layer = entry3_fixture_layer();
-        let seed = assemble_topic_seed(Some(&layer), utc("2026-09-19T00:00:00Z")).unwrap();
-        assert!(seed.findings.iter().any(|f| f.contains("2025-07")));
-        assert!(
-            seed.findings.iter().all(|f| !f.contains("2026-09-16")),
-            "retrieval is not a factual date"
-        );
-        layer.vintage = "2026-10-14T00:00:00Z".into();
-        assert!(assemble_topic_seed(Some(&layer), utc("2026-10-14T11:59:59Z")).is_some());
-        assert!(
-            assemble_topic_seed(Some(&layer), utc("2026-10-14T12:00:00Z")).is_none(),
-            "rewriting the object cannot renew a claim"
-        );
-    }
-
-    #[test]
-    fn entry3_publication_requires_a_complete_date_or_timestamp() {
-        for (raw, expected) in [
-            ("2026-09-01", "2026-09-01"),
-            (" 2026-09-01 ", "2026-09-01"),
-            ("2024-02-29", "2024-02-29"),
-            ("2026-09-01T08:00:00Z", "2026-09-01"),
-            ("2026-09-01T08:00:00.123Z", "2026-09-01"),
-            ("2026-09-01T23:30:00-07:00", "2026-09-01"),
-            ("2026-09-01T00:30:00+14:00", "2026-09-01"),
-            ("2026-09-01 08:00:00", "2026-09-01"),
-            ("2026-09-01 08:00:00.123456", "2026-09-01"),
-            ("2026-09-01T08:00:00", "2026-09-01"),
-        ] {
-            let publication = PublicationDate::from_reported(Some(raw));
-            assert_eq!(publication.day.as_deref(), Some(expected), "{raw}");
-            assert_eq!(publication.reported, raw.trim());
-        }
-        let ambiguous = [
-            "2026-09-01 or 2026-09-02",
-            "2026-09-01 to 2026-09-30",
-            "2026-09-01Tgarbage",
-            "2026-09-01T",
-            "2026-09-01T25:00:00Z",
-            "2026-09-01T08:00:00Z extra",
-            "2026-09-01 08:00:00 or 09:00:00",
-            "2026-09-01 08:00:00 unknown timezone",
-            "2026-09-01T08:00:00+99:00",
-            "2025-02-29T08:00:00Z",
-        ];
-        let mut layer = entry3_fixture_layer();
-        let template = layer.claims[0].clone();
-        layer.claims = ambiguous.iter().enumerate().map(|(i, raw)| {
-            let publication = PublicationDate::from_reported(Some(raw));
-            assert_eq!(publication.day, None, "{raw}");
-            assert_eq!(publication.reported, *raw);
-            DistilledClaim {
-                claim: format!("ambiguous report {i}"),
-                publication,
-                ..template.clone()
-            }
-        }).collect();
-        layer.claims.push(DistilledClaim {
-            claim: "known older publication".into(),
-            publication: PublicationDate::from_reported(Some("2025-03-27")),
-            ..template
-        });
-        let seed = assemble_topic_seed(Some(&layer), utc("2026-09-19T00:00:00Z"))
-            .unwrap();
-        assert_eq!(seed.findings.len(), ambiguous.len() + 1);
-        assert!(seed.findings[0].contains("known older publication"));
-        for (i, finding) in seed.findings[1..].iter().enumerate() {
-            assert!(finding.contains(&format!("ambiguous report {i}")), "{finding}");
-        }
-    }
-
-    #[test]
-    fn entry3_source_evidence_synthesis_preserves_periods_and_publication() {
-        // Reconstructed ARKF/TSLA source cases; the model is scripted, so this
-        // verifies the production evidence/validation path, not live reasoning.
-        let fixture = entry3_fixture_layer();
-        for expected in fixture.claims {
-            let agenda = one_topic_agenda();
-            let ctx = PassContext {
-                holding_brief: "HOLDING: dating fixture",
-                topic: &agenda[0],
-                seed: None,
-                seeds: &[],
-                followup: None,
-                prior_claims: &[],
-                disconfirming: false,
-                depth: 0,
-            };
-            let model = ScriptModel::new(vec![findings_turn(json!({
-                "findings": expected.claim, "claims": [{"claim": expected.claim,
-                    "source_id":"S1", "fact_period": expected.fact_period}]
-            }))]);
-            let web = ScriptWeb::new();
-            let clock = FrozenClock(Duration::from_secs(10));
-            let progress = RunContext::noop();
-            let runner = runner(&model, &web, &clock, &progress, 10);
-            let fetched = vec![(
-                expected.source_url.clone(),
-                expected.retrieved_at.clone(),
-                None,
-            )];
-            let pages = [(
-                expected.source_url.clone(),
-                format!(
-                    "Published {}. {}.",
-                    expected.publication.reported, expected.claim
-                ),
-            )]
-            .into_iter()
-            .collect();
-            let meta = [(
-                expected.source_url.clone(),
-                PageMeta {
-                    title: "Reconstructed evidence".into(),
-                    published: Some(expected.publication.reported.clone()),
-                },
-            )]
-            .into_iter()
-            .collect();
-            let mut gaps = vec![];
-            let (wire, _) = runner
-                .synthesize_findings(&ctx, &fetched, &Default::default(), &pages, &meta, &mut gaps)
-                .unwrap();
-            let found = runner.validate_findings(
-                wire,
-                &ctx,
-                &fetched,
-                &Default::default(),
-                &meta,
-                &mut gaps,
-            );
-            assert_eq!(found.claims[0].publication, expected.publication);
-            assert_eq!(found.claims[0].fact_period, expected.fact_period);
-            assert_eq!(found.claims[0].retrieved_at, expected.retrieved_at);
-        }
     }
 
     // ---- Tool-call parsing ------------------------------------------------
@@ -5385,43 +4488,6 @@ mod tests {
         assert!(matches!(&calls[3], ToolCall::Unknown { name } if name.contains("missing query")));
     }
 
-    #[test]
-    fn findings_wire_rejects_missing_required_and_semantically_blank_fields() {
-        let invalid = [
-            json!({}),
-            json!({"claims": []}),
-            json!({"findings": "usable"}),
-            json!({"findings": [], "claims": []}),
-            json!({"findings": "   ", "claims": []}),
-            json!({
-                "findings": "usable",
-                "claims": [{"claim": "claim without a source"}]
-            }),
-            json!({
-                "findings": "usable",
-                "claims": [{"claim": " ", "source_id": "S1"}]
-            }),
-            json!({
-                "findings": "usable",
-                "claims": [{"claim": "claim", "source_id": " "}]
-            }),
-        ];
-        for body in invalid {
-            let err = parse_findings_wire(&body.to_string()).unwrap_err();
-            assert_eq!(
-                crate::local_model::retry_class(&err),
-                Some(crate::local_model::RetryClass::SchemaParse),
-                "{body}: {err:#}"
-            );
-        }
-
-        let valid = parse_findings_wire(
-            &json!({"findings": "usable", "claims": []}).to_string(),
-        )
-        .unwrap();
-        assert_eq!(valid.findings, "usable");
-    }
-
     // ---- The pass loop (scripted model + web) -----------------------------
 
     /// A scripted model: each entry is one turn's response.
@@ -5448,7 +4514,9 @@ mod tests {
         }
     }
 
-    fn findings_turn(body: Value) -> ChatResponse {
+    /// A prose reply — a synthesis conversation's write-up or its follow-up
+    /// reply.
+    fn prose(body: &str) -> ChatResponse {
         ChatResponse {
             content: body.to_string(),
             thinking: None,
@@ -5460,8 +4528,9 @@ mod tests {
     }
 
     /// A no-tool-call gathering turn that ends the gather loop (its content is
-    /// discarded — findings come from the separate synthesis call, fix B). A
-    /// pass's script is now `[...tool turns..., gather_done(), <synthesis>]`.
+    /// discarded — the write-up comes from the separate synthesis
+    /// conversation). A pass's script is `[...tool turns..., gather_done(),
+    /// <write-up>, <follow-up reply where the pass offers one>]`.
     fn gather_done() -> ChatResponse {
         ChatResponse {
             content: "Done gathering; ready to report.".into(),
@@ -5471,6 +4540,18 @@ mod tests {
             done_reason: Some("stop".into()),
             tool_calls: None
         }
+    }
+
+    const WRITE_UP: &str =
+        "Widget Co is executing well: Q3 revenue was $1.2 billion (https://reuters.com/widget, \
+         retrieved 2026-08-22). Nothing in the evidence contradicts the beat.";
+
+    fn write_up() -> ChatResponse {
+        prose(WRITE_UP)
+    }
+
+    fn no_followup() -> ChatResponse {
+        prose("none")
     }
 
     impl ResearchModel for ScriptModel {
@@ -5563,23 +4644,36 @@ mod tests {
         }
     }
 
-    fn simple_findings() -> Value {
-        json!({
-            "findings": "Widget Co is executing well; revenue beat.",
-            "claims": [
-                {"claim": "Q3 revenue was $1.2B", "source_id": "S1"},
-                {"claim": "fabricated citation", "source_id": "S999"}
-            ],
-            "followup_question": null,
-            "followup_rationale": null,
-        })
+    const WID_HEADER: &str =
+        "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n";
+
+    /// A brief carrying the header alone — the tests' shorthand.
+    fn brief_of(header: &str) -> HoldingBrief {
+        HoldingBrief { header: header.to_string(), ..Default::default() }
+    }
+
+    /// The Widget Co brief with its one news lead.
+    fn brief_with_leads() -> HoldingBrief {
+        HoldingBrief { header: WID_HEADER.into(), leads: leads(), ..Default::default() }
+    }
+
+    fn pass_ctx<'a>(brief: &'a HoldingBrief, topic: &'a AgendaTopic) -> PassContext<'a> {
+        PassContext {
+            brief,
+            topic,
+            followup: None,
+            write_up_so_far: None,
+            write_ups_so_far: &[],
+            disconfirming: false,
+            depth: 0,
+        }
     }
 
     fn one_topic_agenda() -> Vec<AgendaTopic> {
         vec![topic("competitive-position", "Competitive position", &["q1"])]
     }
 
-    fn seeds() -> Vec<ResearchSeed> {
+    fn leads() -> Vec<ResearchSeed> {
         vec![ResearchSeed {
             id: "seed-1".into(),
             headline: "Widget beats".into(),
@@ -5645,10 +4739,6 @@ mod tests {
         let issuer =
             crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://www.phillips66.com")
                 .unwrap();
-        let mut findings = simple_findings();
-        findings["findings"] =
-            json!("Phillips 66 reported second-quarter earnings and 96% refining utilization.");
-        findings["claims"][0]["claim"] = json!("Phillips 66 reported refining utilization of 96%.");
         let model = Entry5RecordingModel {
             inner: ScriptModel::new(vec![
                 turn_with_tools(json!([
@@ -5657,7 +4747,8 @@ mod tests {
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://investor.phillips66.com/2026/reports-second-quarter-results"}}}
                 ])),
                 gather_done(),
-                findings_turn(findings),
+                prose("Phillips 66 reported second-quarter earnings and 96% refining utilization."),
+                no_followup(),
                 gather_done(),
             ]),
             calls: Mutex::new(Vec::new()),
@@ -5675,8 +4766,9 @@ mod tests {
             progress: &progress,
             step_label: "holding-PSX".into(),
         };
+        let brief = brief_of("PSX");
         let out = runner
-            .run_holding_with_issuer("PSX", &one_topic_agenda(), &[], Some(&issuer), &|_| None)
+            .run_holding_with_issuer(&brief, &one_topic_agenda(), Some(&issuer))
             .unwrap();
         assert_eq!(out.fetches_spent, 5);
         assert_eq!(
@@ -5684,15 +4776,12 @@ mod tests {
             5,
             "neither repeated URL nor a different URL for the same release rediscover it"
         );
-        let pass = &out.topics[0].passes[0];
-        assert_eq!(pass.claims.len(), 1, "unshown S999 was rejected");
-        assert_eq!(pass.claims[0].source_url, SLICE3_EXHIBIT);
-        assert_eq!(
-            out.page_published.get(SLICE3_EXHIBIT).map(String::as_str),
-            Some("2026-08-05")
-        );
-        assert!(out.page_texts[SLICE3_EXHIBIT].contains("96%"));
-        assert!(!out.page_texts.contains_key(SLICE3_IR));
+        assert!(out.topics[0].write_up.as_deref().unwrap().contains("96%"));
+        // The roster carries the recovered exhibit under its own address with
+        // the release's publication date, and never the denied IR address.
+        assert_eq!(out.roster.len(), 1, "{:?}", out.roster);
+        assert_eq!(out.roster[0].url, SLICE3_EXHIBIT);
+        assert_eq!(out.roster[0].published.as_deref(), Some("2026-08-05"));
         assert!(
             out.gaps.iter().any(|g| g.contains("gathering degraded")),
             "original denial remains an operational gap"
@@ -5770,13 +4859,14 @@ mod tests {
             progress: &progress,
             step_label: "holding-PSX".into(),
         };
+        let brief = brief_of("PSX");
         let out = runner
-            .run_holding_with_issuer("PSX", &one_topic_agenda(), &[], Some(&issuer), &|_| None)
+            .run_holding_with_issuer(&brief, &one_topic_agenda(), Some(&issuer))
             .unwrap();
         assert_eq!(out.fetches_spent, 2);
         assert_eq!(server.requests().len(), 2);
-        assert!(out.page_texts.is_empty());
-        assert!(out.topics[0].passes[0].claims.is_empty());
+        assert!(out.roster.is_empty());
+        assert!(out.topics[0].write_up.is_none(), "no page landed, so no synthesis ran");
         assert!(out
             .gaps
             .iter()
@@ -5869,16 +4959,8 @@ mod tests {
             step_label: "holding-PSX".into(),
         };
         let agenda = one_topic_agenda();
-        let ctx = PassContext {
-            holding_brief: "PSX",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0,
-        };
+        let brief = brief_of("PSX");
+        let ctx = pass_ctx(&brief, &agenda[0]);
         let issuer =
             crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://phillips66.com")
                 .unwrap();
@@ -5957,16 +5039,8 @@ mod tests {
             step_label: "holding-PSX".into(),
         };
         let agenda = one_topic_agenda();
-        let ctx = PassContext {
-            holding_brief: "PSX",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0,
-        };
+        let brief = brief_of("PSX");
+        let ctx = pass_ctx(&brief, &agenda[0]);
         let issuer =
             crate::sec::earnings::Issuer::new("PSX", "0001534701", "https://phillips66.com")
                 .unwrap();
@@ -6000,7 +5074,7 @@ mod tests {
             tools: Option<&Value>,
             format: Option<&Value>,
         ) -> Result<ChatResponse> {
-            assert_ne!(tools.is_some(), format.is_some());
+            assert!(format.is_none(), "no research call carries a grammar");
             self.calls
                 .lock()
                 .unwrap()
@@ -6036,21 +5110,25 @@ mod tests {
 
     #[test]
     fn entry5_topics_and_followups_reuse_bodies_with_original_provenance() {
-        let mut root = simple_findings();
-        root["findings"] = json!("ROOT FINDINGS MUST NOT SEED ANOTHER TOPIC");
-        root["followup_question"] = json!("What happened to costs?");
         let script = || {
             vec![
+                // Topic a's root: one fetch, then the write-up and a question.
                 turn_with_tools(
                     json!([{"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}]),
                 ),
                 gather_done(),
-                findings_turn(root.clone()),
+                prose("ROOT WRITE-UP MUST NOT SEED ANOTHER TOPIC"),
+                prose("What happened to costs?"),
+                // Topic b's root: reuse only.
                 gather_done(),
-                findings_turn(simple_findings()), // second topic root, reuse only
+                prose("Costs declined (https://reuters.com/final)."),
+                no_followup(),
+                // Topic a's follow-up: reuse only, the write-up rewritten whole.
                 gather_done(),
-                findings_turn(simple_findings()), // first topic follow-up, reuse only
-                gather_done(), // contrary search gets no automatic evidence or synthesis
+                prose("REWRITTEN WHOLE: revenue was $1.2 billion and costs declined."),
+                no_followup(),
+                // The contrary search gets no automatic evidence or synthesis.
+                gather_done(),
             ]
         };
         let web = Entry5Web {
@@ -6062,6 +5140,7 @@ mod tests {
             topic("a", "Revenue", &["What was revenue?"]),
             topic("b", "Costs", &["Did costs decline?"]),
         ];
+        let brief = brief_with_leads();
         // Two holdings using the same web seam must each start without sources.
         for _ in 0..2 {
             let model = Entry5RecordingModel {
@@ -6079,31 +5158,42 @@ mod tests {
                 progress: &progress,
                 step_label: "research TEST".into(),
             };
-            let out = r
-                .run_holding("HOLDING: WID", &agenda, &seeds(), &|_| None)
-                .unwrap();
+            let out = r.run_holding(&brief, &agenda).unwrap();
             assert_eq!(out.fetches_spent, 1);
-            assert_eq!(out.topics[0].passes.len(), 2);
-            let original = &out.topics[0].passes[0].claims[0];
-            let reused = &out.topics[1].passes[0].claims[0];
-            assert_eq!(original, reused);
-            assert_eq!(reused.surfaced_by.as_deref(), Some("seed-1"));
-            assert_eq!(reused.retrieved_at, "2026-08-22T10:00:00+00:00");
-            assert_eq!(reused.source_url, "https://reuters.com/final");
+            assert_eq!(out.topics[0].passes, 2);
             assert_eq!(
-                out.topics[1].passes[0].claims.len(),
-                1,
-                "unknown S999 stays rejected"
+                out.topics[0].write_up.as_deref(),
+                Some("REWRITTEN WHOLE: revenue was $1.2 billion and costs declined."),
+                "the follow-up pass rewrites the topic's write-up whole"
             );
-            assert_eq!(out.page_published[&reused.source_url], "2026-08-20");
-            assert!(out.disconfirming.as_ref().unwrap().claims.is_empty());
+            assert_eq!(out.topics[1].passes, 1);
+            assert!(out.topics[1].write_up.as_deref().unwrap().contains("Costs declined"));
+            // The roster: the one page read, under its final address with the
+            // publication date the lead reported and the original retrieval.
+            assert_eq!(out.roster.len(), 1, "{:?}", out.roster);
+            assert_eq!(out.roster[0].url, "https://reuters.com/final");
+            assert_eq!(out.roster[0].title, "Original headline");
+            assert_eq!(out.roster[0].published.as_deref(), Some("2026-08-20"));
+            assert_eq!(out.roster[0].retrieved_at, "2026-08-22T10:00:00+00:00");
+            assert!(out.disconfirming.is_none(), "the contrary search retrieved no page");
+            assert!(out.gaps.iter().any(|g| g.contains("topic disconfirming: no page with body text")), "{:?}", out.gaps);
             let calls = model.calls.lock().unwrap();
+            // Topic a: two gathering turns, the write-up, the ask; topic b: one
+            // gathering turn, the write-up, the ask; topic a's follow-up: the
+            // same three; the disconfirming pass: one gathering turn.
+            assert_eq!(calls.len(), 11, "{:?}", calls.iter().map(|c| &c.0).collect::<Vec<_>>());
             assert!(!calls[0].1[1].content.contains("PAGES ALREADY RETRIEVED"));
-            let followup = &calls[5].1[1].content;
+            // The follow-up ask is the synthesis conversation's second message.
+            assert_eq!(calls[3].1.len(), 4);
+            assert_eq!(calls[3].1[2].content, "ROOT WRITE-UP MUST NOT SEED ANOTHER TOPIC");
+            assert_eq!(calls[3].1[3].content, followup_ask());
+            assert!(calls[3].0.ends_with(" synthesis follow-up"), "{}", calls[3].0);
+            let followup = &calls[7].1[1].content;
             assert!(followup.contains("PAGES ALREADY RETRIEVED"));
-            assert!(followup.contains("FOLLOW-UP") && followup.contains("CLAIMS SO FAR"));
-            assert!(calls[5].1.last().unwrap().content.contains("including this one: 8."));
-            let topic_b = &calls[3].1[1].content;
+            assert!(followup.contains("\nFOLLOW-UP\n") && followup.contains("What happened to costs?"));
+            assert!(followup.contains("\nWRITE-UP SO FAR\n") && followup.contains("ROOT WRITE-UP MUST NOT SEED"));
+            assert!(calls[7].1.last().unwrap().content.contains("including this one: 8."));
+            let topic_b = &calls[4].1[1].content;
             for value in [
                 "Did costs decline?",
                 "Revenue was $1.2 billion",
@@ -6113,12 +5203,12 @@ mod tests {
             ] {
                 assert!(topic_b.contains(value), "missing {value}: {topic_b}");
             }
-            assert!(!topic_b.contains("ROOT FINDINGS MUST NOT SEED"));
-            assert_eq!(calls[3].1.len(), 3, "new topic has a brief and appended countdown");
-            assert!(!calls[7].1[1].content.contains("PAGES ALREADY RETRIEVED"));
-            assert!(calls[7].1[1]
-                .content
-                .contains("are what that question tests: search for evidence against them"));
+            assert!(!topic_b.contains("ROOT WRITE-UP MUST NOT SEED"));
+            assert_eq!(calls[4].1.len(), 3, "new topic has a brief and appended countdown");
+            let disconfirm = &calls[10].1[1].content;
+            assert!(!disconfirm.contains("PAGES ALREADY RETRIEVED"));
+            assert!(disconfirm.contains("are what that question tests: search for evidence against them"));
+            assert!(disconfirm.contains("\nWRITE-UPS SO FAR\n") && disconfirm.contains("REWRITTEN WHOLE") && disconfirm.contains("\nCosts\n"));
             assert!(model.inner.turns.lock().unwrap().borrow().is_empty());
         }
         assert_eq!(*web.calls.lock().unwrap(), 2);
@@ -6157,11 +5247,6 @@ mod tests {
                 )))
             }
         }
-        // `portfolio-v49`: the re-read page keeps its first-retrieval position
-        // (second, after the page read first in topic a), so topic b's claim
-        // cites S2.
-        let mut refetch = simple_findings();
-        refetch["claims"][0]["source_id"] = json!("S2");
         let model = Entry5RecordingModel {
             inner: ScriptModel::new(vec![
                 turn_with_tools(json!([
@@ -6169,12 +5254,14 @@ mod tests {
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
                 ])),
                 gather_done(),
-                findings_turn(simple_findings()),
+                write_up(),
+                no_followup(),
                 turn_with_tools(
                     json!([{"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/final"}}}]),
                 ),
                 gather_done(),
-                findings_turn(refetch),
+                write_up(),
+                no_followup(),
                 gather_done(),
             ]),
             calls: Mutex::new(Vec::new()),
@@ -6196,21 +5283,22 @@ mod tests {
             step_label: "research TEST".into(),
         };
         let agenda = vec![topic("a", "A", &["q1"]), topic("b", "B", &["q2"])];
-        let out = r
-            .run_holding("HOLDING: WID", &agenda, &seeds(), &|_| None)
-            .unwrap();
+        let brief = brief_with_leads();
+        let out = r.run_holding(&brief, &agenda).unwrap();
         assert_eq!(out.fetches_spent, 3);
-        let claim = &out.topics[1].passes[0].claims[0];
-        assert_eq!(claim.source_url, "https://reuters.com/final");
-        assert_eq!(claim.retrieved_at, "2026-08-22T10:00:03+00:00");
-        assert_eq!(claim.surfaced_by.as_deref(), Some("seed-1"));
-        assert_eq!(out.page_texts[&claim.source_url], "Revised version");
-        assert_eq!(out.page_published[&claim.source_url], "2026-08-20");
+        // `portfolio-v49`: the re-read page keeps its first-retrieval position
+        // (second, after the page read first in topic a) with the fresh read's
+        // provenance — on the roster and in the synthesis.
+        assert_eq!(out.roster.len(), 2);
+        assert_eq!(out.roster[0].url, "https://reuters.com/other");
+        assert_eq!(out.roster[1].url, "https://reuters.com/final");
+        assert_eq!(out.roster[1].title, "Revised version");
+        assert_eq!(out.roster[1].retrieved_at, "2026-08-22T10:00:03+00:00");
+        assert_eq!(out.roster[1].published.as_deref(), Some("2026-08-20"));
         let calls = model.calls.lock().unwrap();
-        let synthesis = &calls[5].1[1].content;
-        // The roster renders in first-retrieval order (`portfolio-v49`): the
-        // page read first in topic a leads, and the re-read page keeps its
-        // position with the fresh read's provenance.
+        // Topic a: two gathering turns, the write-up, the ask (calls 0–3);
+        // topic b: two gathering turns, then its write-up (call 6).
+        let synthesis = &calls[6].1[1].content;
         assert!(synthesis.contains("=== S1: https://reuters.com/other"));
         assert!(synthesis.contains("=== S2: https://reuters.com/final"));
         assert!(synthesis.find("=== S1:").unwrap() < synthesis.find("=== S2:").unwrap());
@@ -6220,18 +5308,10 @@ mod tests {
     }
 
     #[test]
-    fn entry5_reused_body_omitted_by_synthesis_cannot_support_a_claim() {
+    fn entry5_a_reused_page_whose_header_cannot_render_is_omitted_as_a_gap() {
         let agenda = one_topic_agenda();
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0,
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &agenda[0]);
         let long_url = format!("https://reuters.com/{}", "x".repeat(600_000));
         let page = ReusablePage {
             page: FetchedPage {
@@ -6249,7 +5329,10 @@ mod tests {
             truncated: false,
         };
         let mut inventory = vec![page];
-        let model = ScriptModel::new(vec![gather_done(), findings_turn(simple_findings())]);
+        // The page reuses (its address is elided in the gathering result) but
+        // its header cannot render in the synthesis packet, so the write-up
+        // is written over no shown page and the omission persists as a gap.
+        let model = ScriptModel::new(vec![gather_done(), prose("Nothing could be shown."), no_followup()]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let progress = RunContext::noop();
@@ -6270,23 +5353,16 @@ mod tests {
                 &mut EarningsRecovery::default(),
             )
             .unwrap();
-        assert!(out.claims.is_empty());
+        assert_eq!(out.write_up.as_deref(), Some("Nothing could be shown."));
         assert_eq!(spent, 0);
         assert_eq!(web.fetch_count(), 0);
-        assert!(
-            gaps.iter().any(|g| g.contains("omitted entirely")),
-            "{gaps:?}"
-        );
-        assert!(
-            gaps.iter().any(|g| g.contains("claim(s) dropped")),
-            "{gaps:?}"
-        );
+        assert!(gaps.iter().any(|g| g.contains("omitted entirely")), "{gaps:?}");
     }
 
     #[test]
     fn entry5_countdown_includes_current_reply_and_retries_keep_the_same_packet() {
         struct CountingModel {
-            calls: Mutex<Vec<String>>,
+            gathering: Mutex<Vec<String>>,
         }
         impl ResearchModel for CountingModel {
             fn research_turn(
@@ -6296,8 +5372,12 @@ mod tests {
                 tools: Option<&Value>,
                 format: Option<&Value>,
             ) -> Result<ChatResponse> {
-                assert!(tools.is_some() && format.is_none());
-                let mut calls = self.calls.lock().unwrap();
+                assert!(format.is_none());
+                if tools.is_none() {
+                    // The synthesis conversation: the write-up, then the ask.
+                    return Ok(if messages.len() == 2 { write_up() } else { no_followup() });
+                }
+                let mut calls = self.gathering.lock().unwrap();
                 calls.push(serde_json::to_string(messages).unwrap());
                 if calls.len() == 2 {
                     bail!("one scripted retry");
@@ -6317,7 +5397,7 @@ mod tests {
             }
         }
         let model = CountingModel {
-            calls: Mutex::new(Vec::new()),
+            gathering: Mutex::new(Vec::new()),
         };
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
@@ -6333,14 +5413,17 @@ mod tests {
             progress: &progress,
             step_label: "research TEST".into(),
         };
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
         assert!(out.gaps.iter().any(|g| g.contains("8-turn cap")));
-        let calls = model.calls.lock().unwrap();
-        assert_eq!(calls.len(), 10);
+        // Searches alone land no page, so the topic wrote nothing and the
+        // disconfirming pass never ran: the ten calls are the topic's eight
+        // turns, the one retry, and nothing more.
+        assert!(out.topics[0].write_up.is_none());
+        let calls = model.gathering.lock().unwrap();
+        assert_eq!(calls.len(), 9);
         assert_eq!(calls[1], calls[2], "a retry is the identical turn");
-        for (packet, remaining) in calls.iter().zip([8, 7, 7, 6, 5, 4, 3, 2, 1, 8]) {
+        for (packet, remaining) in calls.iter().zip([8, 7, 7, 6, 5, 4, 3, 2, 1]) {
             let messages: Vec<Value> = serde_json::from_str(packet).unwrap();
             assert_eq!(packet.matches("Replies remaining").count(), (9 - remaining) as usize);
             assert!(!messages[1]["content"].as_str().unwrap().contains("Replies remaining"));
@@ -6348,8 +5431,8 @@ mod tests {
             assert_eq!(messages.last().unwrap()["content"], gathering_countdown(remaining).content);
         }
         // Every previously issued message remains byte-identical, including
-        // tool calls/results and old countdowns. The final call is a new pass.
-        for pair in calls[..9].windows(2) {
+        // tool calls/results and old countdowns.
+        for pair in calls.windows(2) {
             let before: Vec<Value> = serde_json::from_str(&pair[0]).unwrap();
             let after: Vec<Value> = serde_json::from_str(&pair[1]).unwrap();
             assert_eq!(serde_json::to_string(&before).unwrap(),
@@ -6360,16 +5443,8 @@ mod tests {
     #[test]
     fn entry5_reuse_is_bounded_and_policy_checked_with_truncation_visible() {
         let agenda = one_topic_agenda();
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0,
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &agenda[0]);
         let source = ReusablePage {
             page: FetchedPage {
                 final_url: "https://reuters.com/a".into(),
@@ -6406,25 +5481,32 @@ mod tests {
         assert!(!block.contains("127.0.0.1") && !block.contains("file:///"));
         assert!(block.contains(PAGE_CONTINUES_MARKER));
         assert!(gaps.iter().any(|g| g.contains("omitted from gathering")));
-        let brief = pass_brief_with_reuse(&ctx, &block, !selected.is_empty());
+        let brief_text = pass_brief_with_reuse(&ctx, &block, !selected.is_empty());
         // `portfolio-v50`: with a page shown, item 1 names the block it reads.
-        assert!(brief.contains("1. Read the pages under PAGES ALREADY RETRIEVED against the questions."), "{brief}");
+        assert!(brief_text.contains("1. Read the pages under PAGES ALREADY RETRIEVED against the questions."), "{brief_text}");
         let cap = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         ) / 3;
         assert!(
-            brief.chars().count() + gathering_countdown(8).content.chars().count() <= cap,
+            brief_text.chars().count() + gathering_countdown(8).content.chars().count() <= cap,
             "{} > {cap}",
-            brief.chars().count()
+            brief_text.chars().count()
         );
         assert!(gathering_packet_fits(
             &[
                 ChatMessage::system(research_system_prompt()),
-                ChatMessage::user(brief),
+                ChatMessage::user(brief_text),
                 gathering_countdown(8),
             ],
             &research_tools()
         ));
+        // The roster entry caps the title and the date the same way the
+        // headers do.
+        let entry = inventory[3].roster_entry();
+        assert_eq!(entry.url, "https://reuters.com/0");
+        assert!(entry.title.chars().count() <= TITLE_CAP_CHARS);
+        assert!(entry.published.as_deref().unwrap().chars().count() <= PUBLISHED_CAP_CHARS);
+        assert_eq!(entry.source_tier, None);
     }
 
     /// The bound the runtime's saved checkpoint needs: llama.cpp's server saves
@@ -6469,7 +5551,8 @@ mod tests {
                 {"function": {"name": "web_fetch", "arguments": {"url": format!("https://example.com/{n}")}}}
             ])));
             script.push(gather_done());
-            script.push(findings_turn(simple_findings()));
+            script.push(write_up());
+            script.push(no_followup());
         }
         script.push(gather_done()); // the disconfirming pass fetches nothing
         let model = Entry5RecordingModel {
@@ -6495,14 +5578,13 @@ mod tests {
             topic("b", "Beta", &["qb"]),
             topic("c", "Gamma", &["qc"]),
         ];
-        let out = r
-            .run_holding(
-                "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n",
-                &agenda,
-                &seeds(),
-                &|_| None,
-            )
-            .unwrap();
+        let brief = HoldingBrief {
+            header: WID_HEADER.into(),
+            fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
+            leads: leads(),
+            prior_documents: String::new(),
+        };
+        let out = r.run_holding(&brief, &agenda).unwrap();
         assert_eq!(out.fetches_spent, 3);
         let calls = model.calls.lock().unwrap();
         let user = |stage_part: &str| -> String {
@@ -6519,22 +5601,28 @@ mod tests {
         let (root_b, root_c) = (user(" b gathering turn 1"), user(" c gathering turn 1"));
         let shared = &root_b[..topic_at(&root_b)];
         assert!(
-            shared.contains("\nNEWS LEADS\n")
+            shared.contains("\nFETCHED VALUES\n")
+                && shared.contains("\nNEWS LEADS\n")
                 && shared.contains("\nPAGES ALREADY RETRIEVED\n")
                 && shared.contains("https://example.com/1"),
             "{shared}"
         );
+        assert!(shared.find("\nFETCHED VALUES\n").unwrap() < shared.find("\nNEWS LEADS\n").unwrap());
         assert!(root_c.starts_with(shared), "root c does not extend root b:\n{root_c}");
         assert!(root_c.contains("https://example.com/2") && root_c.contains("\nTOPIC\nGamma\n"));
         let tail = root_b[topic_at(&root_b)..].chars().count()
             + gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count();
         assert!(tail <= RESTORE_TAIL_CHARS, "gathering tail {tail} chars");
 
-        // Syntheses: the header plus the previous synthesis's whole evidence is
-        // a byte prefix of the next synthesis; ids follow first-retrieval
-        // order; EVIDENCE precedes TOPIC.
+        // Syntheses: the header and FETCHED VALUES plus the previous
+        // synthesis's whole evidence is a byte prefix of the next synthesis;
+        // ids follow first-retrieval order; EVIDENCE precedes TOPIC.
         let (synth_b, synth_c) = (user(" b synthesis"), user(" c synthesis"));
         let shared = &synth_b[..topic_at(&synth_b)];
+        assert!(
+            shared.starts_with(&format!("======== PART 1: INPUTS ========\n{}", brief.lead())),
+            "{shared}"
+        );
         assert!(
             shared.contains("=== S1: https://example.com/1")
                 && shared.contains("=== S2: https://example.com/2"),
@@ -6543,6 +5631,7 @@ mod tests {
         assert!(synth_c.starts_with(shared), "synthesis c does not extend synthesis b:\n{synth_c}");
         assert!(synth_c.contains("=== S3: https://example.com/3"));
         assert!(synth_c.find("\nEVIDENCE\n").unwrap() < topic_at(&synth_c));
+        assert!(!synth_c.contains("\nNEWS LEADS\n"), "the synthesis carries no leads");
         let tail = synth_b[topic_at(&synth_b)..].chars().count();
         assert!(tail <= RESTORE_TAIL_CHARS, "synthesis tail {tail} chars");
     }
@@ -6572,19 +5661,11 @@ mod tests {
             page_texts.insert(url.to_string(), letter.repeat(11_000));
         }
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &explicit,
@@ -6593,22 +5674,22 @@ mod tests {
             &mut gaps,
             &mut shown,
         );
-        assert!(brief.chars().count() <= budget);
+        assert!(rendered.chars().count() <= budget);
         assert_eq!(shown.len(), 27);
         assert_eq!(shown["https://example.com/own/a"], "S26");
         assert_eq!(shown["https://example.com/own/b"], "S27");
         assert!(
-            brief.contains(&"A".repeat(11_000)) && brief.contains(&"B".repeat(11_000)),
+            rendered.contains(&"A".repeat(11_000)) && rendered.contains(&"B".repeat(11_000)),
             "an explicit page was cut"
         );
-        assert_eq!(brief.matches(PAGE_CONTINUES_MARKER).count(), 25);
+        assert_eq!(rendered.matches(PAGE_CONTINUES_MARKER).count(), 25);
         assert!(
             gaps.iter().any(|g| g.contains("25 of 27 evidence page(s) truncated")),
             "{gaps:?}"
         );
         assert!(
-            brief.find("=== S1: https://example.com/reused/0").unwrap()
-                < brief.find("=== S26: https://example.com/own/a").unwrap()
+            rendered.find("=== S1: https://example.com/reused/0").unwrap()
+                < rendered.find("=== S26: https://example.com/own/a").unwrap()
         );
     }
 
@@ -6622,30 +5703,25 @@ mod tests {
         let prefix_cap = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         ) / 3;
-        let flood = vec![ResearchSeed {
-            id: "seed-flood".into(),
-            headline: "h".repeat(prefix_cap),
-            url: "https://example.com/flood".into(),
-            source: "example.com".into(),
-            published: None,
-        }];
-        let ctx = PassContext {
-            holding_brief: "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &flood,
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
+        let brief = HoldingBrief {
+            header: WID_HEADER.into(),
+            leads: vec![ResearchSeed {
+                id: "seed-flood".into(),
+                headline: "h".repeat(prefix_cap),
+                url: "https://example.com/flood".into(),
+                source: "example.com".into(),
+                published: None,
+            }],
+            ..Default::default()
         };
+        let ctx = pass_ctx(&brief, &agenda[0]);
         let countdown = gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count();
-        let brief = pass_brief(&ctx);
-        assert!(brief.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &brief[brief.len() - 600..]);
-        assert_eq!(brief.matches(INPUTS_CONTINUE_MARKER.trim()).count(), 1);
-        assert!(brief.find(INPUTS_CONTINUE_MARKER).unwrap() < brief.find("\nTOPIC\n").unwrap());
-        assert!(brief.chars().count() + countdown <= prefix_cap);
-        assert!(brief.ends_with(&gathering_task(&ctx, false)));
+        let rendered = pass_brief(&ctx);
+        assert!(rendered.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &rendered[rendered.len() - 600..]);
+        assert_eq!(rendered.matches(INPUTS_CONTINUE_MARKER.trim()).count(), 1);
+        assert!(rendered.find(INPUTS_CONTINUE_MARKER).unwrap() < rendered.find("\nTOPIC\n").unwrap());
+        assert!(rendered.chars().count() + countdown <= prefix_cap);
+        assert!(rendered.ends_with(&gathering_task(&ctx, false)));
         // The production path on a later topic: the inventory is not empty, no
         // page fits, and the reuse block is its heading and omission line —
         // framing the constant block's cap reserves, so TOPIC still renders
@@ -6668,15 +5744,15 @@ mod tests {
         let mut gaps = Vec::new();
         let (block, selected) = reuse_pages(&ctx, &inventory, &mut gaps);
         assert!(selected.is_empty() && block.contains("1 previously retrieved page(s) are not shown."), "{block}");
-        let brief = pass_brief_with_reuse(&ctx, &block, !selected.is_empty());
-        assert!(brief.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &brief[brief.len() - 600..]);
-        assert!(brief.contains("\nPAGES ALREADY RETRIEVED\n"));
+        let rendered = pass_brief_with_reuse(&ctx, &block, !selected.is_empty());
+        assert!(rendered.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &rendered[rendered.len() - 600..]);
+        assert!(rendered.contains("\nPAGES ALREADY RETRIEVED\n"));
         // A heading-and-omission block shows no page, so item 1 asks to search
         // first rather than to read pages that are not there (`portfolio-v50`).
-        assert!(!brief.contains("Read the pages under") && brief.contains("1. Search for what the questions ask"), "{brief}");
-        assert_eq!(brief.matches(INPUTS_CONTINUE_MARKER.trim()).count(), 1);
-        assert!(brief.chars().count() + countdown <= prefix_cap);
-        assert!(brief.ends_with(&gathering_task(&ctx, false)));
+        assert!(!rendered.contains("Read the pages under") && rendered.contains("1. Search for what the questions ask"), "{rendered}");
+        assert_eq!(rendered.matches(INPUTS_CONTINUE_MARKER.trim()).count(), 1);
+        assert!(rendered.chars().count() + countdown <= prefix_cap);
+        assert!(rendered.ends_with(&gathering_task(&ctx, false)));
     }
 
     #[test]
@@ -6705,19 +5781,11 @@ mod tests {
             page_texts.insert(url.to_string(), "the page this topic asked for".to_string());
         }
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &explicit,
@@ -6726,7 +5794,7 @@ mod tests {
             &mut gaps,
             &mut shown,
         );
-        assert!(brief.chars().count() <= budget);
+        assert!(rendered.chars().count() <= budget);
         assert!(shown.len() < 2002, "{}", shown.len());
         assert!(shown.contains_key(own[0]) && shown.contains_key(own[1]), "{shown:?}");
         assert!(gaps.iter().any(|g| g.contains("omitted entirely")), "{gaps:?}");
@@ -6735,84 +5803,22 @@ mod tests {
         let last = shown.len();
         assert_eq!(shown[own[0]], format!("S{}", last - 1));
         assert_eq!(shown[own[1]], format!("S{last}"));
-        assert!(brief.contains("the page this topic asked for"));
-    }
-
-    #[test]
-    fn the_return_shape_carries_exactly_the_grammar_keys_on_both_passes() {
-        // Attempt-5 Finding 5: the `format` grammar never reaches the model, so
-        // the shape that closes Part 2 is the only place the object's keys can
-        // — pin the shown keys to the enforced ones, on a pass that offers a
-        // follow-up and on one that does not (the disconfirming pass since
-        // `portfolio-v43`, a topic's last pass under the depth cap since
-        // `portfolio-v60`), so the two cannot drift apart.
-        use std::collections::BTreeSet;
-        for offers_followup in [true, false] {
-            let schema = findings_schema(offers_followup);
-            let properties = schema["properties"].as_object().unwrap();
-            let required: Vec<&str> = schema["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|k| k.as_str().unwrap())
-                .collect();
-            assert_eq!(required, ["findings", "claims"]);
-            let ids = vec!["S1".to_string(), "S2".to_string()];
-            let shape: serde_json::Value =
-                serde_json::from_str(&findings_return_shape(offers_followup, &ids)).unwrap();
-            assert_eq!(
-                shape.as_object().unwrap().keys().collect::<BTreeSet<_>>(),
-                properties.keys().collect::<BTreeSet<_>>(),
-                "offers_followup {offers_followup}"
-            );
-            assert_eq!(shape["claims"][0]["source_id"], "<S1|S2>");
-            assert_eq!(
-                shape["claims"][0].as_object().unwrap().keys().collect::<BTreeSet<_>>(),
-                schema["properties"]["claims"]["items"]["properties"]
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .collect::<BTreeSet<_>>()
-            );
-            assert_eq!(offers_followup, properties.contains_key("followup_question"));
-            assert!(!properties.contains_key("followup_technology_event"));
-            let periods = &schema["properties"]["claims"]["items"]["properties"]["fact_period"]["properties"]["kind"]["enum"];
-            let kinds: Vec<_> = periods.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-            assert_eq!(shape["claims"][0]["fact_period"]["kind"], format!("<{}>", kinds.join("|")));
-            assert!(kinds.contains(&"quarter"));
-            // The value placeholder lists one format per kind, in the kind
-            // placeholder's order, so position maps kind to format at the
-            // point of writing (attempt-8 Finding 2, ruled 2026-09-27).
-            let value = shape["claims"][0]["fact_period"]["value"].as_str().unwrap();
-            assert_eq!(value, "<YYYY-MM-DD|YYYY-MM|YYYY-Qn|YYYY|YYYY-MM-DD|fiscal label|empty>");
-            assert_eq!(value.trim_matches(['<', '>']).split('|').count(), kinds.len());
-            // The system prompt names the outputs and never the grammar.
-            let system = synthesis_system_prompt(offers_followup);
-            assert!(!system.to_lowercase().contains("grammar"), "{system}");
-            assert_eq!(system.contains("followup_question and followup_rationale"), offers_followup, "{system}");
-        }
-        // With no page shown, the placeholder names the rule, never an id.
-        assert!(findings_return_shape(true, &[]).contains("<the id of a page in EVIDENCE>"));
+        assert!(rendered.contains("the page this topic asked for"));
     }
 
     #[test]
     fn the_synthesis_message_is_two_parts_with_no_app_concept() {
-        // `portfolio-v43`: Part 1 the inputs — the holding header, TOPIC,
-        // SEARCHING where gathering lost something, EVIDENCE glossed once with
-        // the tier scale's polarity and no recency score — and no instruction;
-        // Part 2 the task in output order ending on the shape; no app word
-        // anywhere.
+        // Part 1 the inputs — the holding header and FETCHED VALUES, EVIDENCE
+        // glossed once with the tier scale's polarity and no recency score,
+        // then TOPIC — and no instruction; Part 2 the write-up task with its
+        // length band and no return shape; no app word anywhere.
         let agenda = one_topic_agenda();
-        let ctx = PassContext {
-            holding_brief: "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
+        let brief = HoldingBrief {
+            header: WID_HEADER.into(),
+            fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
+            ..Default::default()
         };
+        let ctx = pass_ctx(&brief, &agenda[0]);
         let url = "https://reuters.com/widget".to_string();
         let fetched = vec![(
             url.clone(),
@@ -6845,13 +5851,13 @@ mod tests {
         );
         let (part1, part2) = user.split_once("======== PART 2: TASK ========").expect("two parts");
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
-        for section in ["\nTOPIC\n", "\nEVIDENCE\n"] {
+        for section in ["\nFETCHED VALUES\n", "\nTOPIC\n", "\nEVIDENCE\n"] {
             assert!(part1.contains(section), "Part 1 lacks {section}: {part1}");
         }
         // `portfolio-v49` (attempt-8 Finding 4): the evidence follows the header
-        // and precedes the topic's text; `portfolio-v59`: no SEARCHING note.
+        // and the fetched values and precedes the topic's text.
         let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{section}"));
-        assert!(at("\nEVIDENCE\n") < at("\nTOPIC\n"), "{part1}");
+        assert!(at("\nFETCHED VALUES\n") < at("\nEVIDENCE\n") && at("\nEVIDENCE\n") < at("\nTOPIC\n"), "{part1}");
         assert!(!part1.contains("SEARCHING") && !part2.contains("SEARCHING"), "{user}");
         assert!(
             part1.contains(
@@ -6868,92 +5874,95 @@ mod tests {
             "Part 1 instructs: {part1}"
         );
         for item in [
-            "return them as one JSON object in the shape under RETURN SHAPE, with no code fence and no surrounding text; the names below are its fields.",
-            "1. findings — write this first and never leave it empty. For each question under TOPIC, state what EVIDENCE shows. Where a page gives a figure, quote it with the date or period the page gives for it. Say where pages disagree, and what stays unanswered. Weigh each page",
-            "2. claims — the statements the findings rest on, one statement per claim, each stated by a page in EVIDENCE. source_id is that page's id as EVIDENCE shows it.",
-            "Its kind is one of: day (value YYYY-MM-DD, e.g. 2026-06-30); month (YYYY-MM, e.g. 2026-06); quarter (a calendar quarter, YYYY-Qn, e.g. 2026-Q2); year (YYYY, e.g. 2026); range (value the first day and end the last, both YYYY-MM-DD, e.g. 2026-04-01 through 2026-06-30); fiscal (the source's own fiscal-period label as the value, e.g. Q4 FY2025); unknown (value empty). end is null for every kind but range.",
-            "3. followup_question — one further question worth a search of its own, or null; followup_rationale — why, or null.", "RETURN SHAPE",
-            r#""end":"<YYYY-MM-DD|null>""#, r#""followup_question":"<question|null>","followup_rationale":"<why|null>""#,
+            "Write the topic's write-up as plain text — no code fence, no JSON, no heading before the first line.",
+            "It states what EVIDENCE establishes on each question under TOPIC, where pages disagree, and what the evidence leaves unanswered. Each figure is quoted with the date or period its source gives for it, and its source is named: the address of the page under EVIDENCE that states it, or FETCHED VALUES where the figure comes from there.",
+            "Weigh each page by its source tier and extraction quality; a weak source lowers confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect of the source.",
+            "The write-up runs 400 to 900 words.",
         ] {
             assert!(part2.contains(item), "Part 2 lacks {item}: {part2}");
         }
-        assert!(!part2.contains("exact"), "{part2}");
-        assert!(
-            part2.trim_end().ends_with(&findings_return_shape(true, &["S1".to_string()])),
-            "{part2}"
-        );
+        for absent in ["RETURN SHAPE", "JSON object", "claims", "fact_period", "followup_question"] {
+            assert!(!user.contains(absent), "{absent} survives: {user}");
+        }
         for word in [
             "orchestrator", "ledger", "cached", "S-id", "structured feeds", "seeded_by",
             "input budget", "fetch cap", "turn cap", "GATHERING WAS PARTIAL",
         ] {
             assert!(!user.contains(word), "{word} leaked: {user}");
         }
-        assert!(!synthesis_system_prompt(true).contains("orchestrator"));
+        let system = synthesis_system_prompt();
+        assert!(!system.contains("orchestrator") && !system.to_lowercase().contains("json"), "{system}");
+        // A brief with no FETCHED VALUES block names no such heading in the task.
+        let bare = brief_of(WID_HEADER);
+        let bare_ctx = pass_ctx(&bare, &agenda[0]);
+        let bare_user = synthesis_brief(&bare_ctx, &fetched, &Default::default(), &pages, &meta, &mut vec![], &mut Default::default());
+        assert!(!bare_user.contains("FETCHED VALUES"), "{bare_user}");
+        assert!(bare_user.contains("and its source is named: the address of the page under EVIDENCE that states it. Weigh each page"), "{bare_user}");
     }
 
     #[test]
-    fn synthesis_orientation_preserves_assertions_without_gathering_instructions() {
+    fn synthesis_orientation_carries_the_pass_text_and_nothing_else() {
         let agenda = one_topic_agenda();
-        let seeds = seeds();
-        let claims = vec![EvidenceClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-            claim: "Prior proposition to test".into(), source_url: "https://prior.example/claim".into(),
-            retrieved_at: String::new(), surfaced_by: None, annotation: None
-        }];
+        let brief = brief_with_leads();
+        let write_ups = vec![
+            ("Competitive position".to_string(), "Prior write-up to test.".to_string()),
+            ("Results".to_string(), "Results write-up.".to_string()),
+        ];
+        let disc = disconfirming_topic();
         let ctx = PassContext {
-            holding_brief: "HOLDING: WID", topic: &agenda[0], seed: None,
-            seeds: &seeds, followup: None, prior_claims: &claims, disconfirming: true, depth: 0
+            brief: &brief,
+            topic: &disc,
+            followup: None,
+            write_up_so_far: None,
+            write_ups_so_far: &write_ups,
+            disconfirming: true,
+            depth: 0,
         };
         let orientation = synthesis_orientation(&ctx);
-        assert!(orientation.contains("\nCLAIMS SO FAR\n"), "{orientation}");
-        assert!(orientation.contains("Prior proposition to test"));
+        assert!(
+            orientation.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n\nCompetitive position\nPrior write-up to test.\n\nResults\nResults write-up.\n"),
+            "{orientation}"
+        );
         // No news lead, no URL roster, no search instruction on the synthesis.
         assert!(!orientation.contains("Widget beats"), "{orientation}");
         assert!(!orientation.contains("https://"));
-        assert!(!orientation.contains("search specifically"));
+        assert!(!orientation.contains("search"));
         let fetched = vec![("a".into(), "now".into(), None), ("empty".into(), "now".into(), None),
             ("a".into(), "later".into(), None), ("b".into(), "now".into(), None)];
         let pages = [("a".into(), "first".into()), ("empty".into(), String::new()),
             ("b".into(), "second".into())].into();
         let mut ids = std::collections::HashMap::new();
-        let brief = synthesis_brief(&ctx, &fetched, &Default::default(), &pages, &Default::default(), &mut vec![], &mut ids);
+        let rendered = synthesis_brief(&ctx, &fetched, &Default::default(), &pages, &Default::default(), &mut vec![], &mut ids);
         assert_eq!(ids.len(), 2);
         assert_eq!(ids["a"], "S1");
         assert_eq!(ids["b"], "S2");
-        assert_eq!(brief.matches("\n=== S").count(), 2);
+        assert_eq!(rendered.matches("\n=== S").count(), 2);
+        assert!(rendered.contains("It states how EVIDENCE bears on the write-ups under WRITE-UPS SO FAR: which it contradicts or weakens and how, which it leaves standing, and any contrary evidence that stands on its own"), "{rendered}");
+        // The follow-up pass: the question and the write-up so far, capped,
+        // and the rewrite-whole task.
+        let question = "é".repeat(FOLLOWUP_CAP_CHARS + 1);
+        let so_far = "w".repeat(WRITE_UP_CAP_CHARS + 1);
+        let fu = PassContext {
+            brief: &brief,
+            topic: &agenda[0],
+            followup: Some(&question),
+            write_up_so_far: Some(&so_far),
+            write_ups_so_far: &[],
+            disconfirming: false,
+            depth: 1,
+        };
+        let orientation = synthesis_orientation(&fu);
+        assert!(orientation.contains(&format!("\nFOLLOW-UP\nThe question this pass pursues.\n{}…\n", "é".repeat(FOLLOWUP_CAP_CHARS))), "{orientation}");
+        assert!(orientation.contains(&format!("\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\n{}{}", "w".repeat(WRITE_UP_CAP_CHARS), INPUTS_CONTINUE_MARKER)), "{orientation}");
+        let task = synthesis_task(&fu);
+        assert!(task.contains("Rewrite the write-up under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading before the first line, folding in what EVIDENCE shows on the question under FOLLOW-UP, so the topic has one write-up:"), "{task}");
+        // An empty disconfirming subject renders its heading with None.
+        let none = PassContext { write_ups_so_far: &[], ..ctx };
+        assert!(synthesis_orientation(&none).contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\nNone.\n"));
     }
 
     #[test]
-    fn synthesis_orientation_handles_absent_assertions_and_marks_followup_cuts() {
-        let agenda = one_topic_agenda();
-        let followup = FollowupProposal {
-            question: "é".repeat(FOLLOWUP_CAP_CHARS + 1),
-            rationale: " ".into(),
-        };
-        let render = |followup| synthesis_orientation(&PassContext {
-            holding_brief: "HOLDING: WID", topic: &agenda[0], seed: None,
-            seeds: &[], followup: Some(followup), prior_claims: &[], disconfirming: true, depth: 0
-        });
-        let orientation = render(&followup);
-        assert!(
-            orientation.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim carries: the publication date the search or lead reported; and the period the fact applies to.\nNone.\n"),
-            "{orientation}"
-        );
-        assert!(!orientation.contains("Because:"));
-        assert!(orientation.contains(&format!("\nFOLLOW-UP\nThe question this pass pursues, and why it was proposed.\n{}…\n", "é".repeat(FOLLOWUP_CAP_CHARS))));
-        let followup = FollowupProposal {
-            question: "q".repeat(FOLLOWUP_CAP_CHARS),
-            rationale: "r".repeat(FOLLOWUP_CAP_CHARS + 1),
-        };
-        let orientation = render(&followup);
-        assert!(orientation.contains(&format!("\n{}\n", followup.question)));
-        assert!(orientation.contains(&format!("Because: {}…\n", "r".repeat(FOLLOWUP_CAP_CHARS))));
-        assert_eq!(orientation.matches('…').count(), 1);
-    }
-
-    #[test]
-    fn synthesis_ids_are_contiguous_after_middle_omissions_and_resolve_the_rendered_map() {
+    fn synthesis_ids_are_contiguous_after_middle_omissions_and_the_write_up_is_read_as_text() {
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -6971,18 +5980,16 @@ mod tests {
             .map(|(url, _, _)| (url.clone(), "usable evidence".into())).collect();
         pages.insert("https://example.com/empty".into(), String::new());
         let agenda = one_topic_agenda();
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID", topic: &agenda[0], seed: None,
-            seeds: &[], followup: None, prior_claims: &[], disconfirming: false, depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &agenda[0]);
         let mut shown = std::collections::HashMap::new();
         let mut gaps = vec![];
-        let brief = synthesis_brief(&ctx, &fetched, &Default::default(), &pages, &Default::default(), &mut gaps, &mut shown);
-        assert!(brief.chars().count() <= budget);
+        let rendered = synthesis_brief(&ctx, &fetched, &Default::default(), &pages, &Default::default(), &mut gaps, &mut shown);
+        assert!(rendered.chars().count() <= budget);
         assert_eq!(shown.len(), 11);
         assert!(!shown.contains_key(&oversized));
         assert!(!shown.contains_key("https://example.com/empty"));
-        let headers: Vec<_> = brief.lines().filter(|line| line.starts_with("=== S")).collect();
+        let headers: Vec<_> = rendered.lines().filter(|line| line.starts_with("=== S")).collect();
         assert_eq!(headers.len(), shown.len());
         for (i, header) in headers.iter().enumerate() {
             assert!(header.starts_with(&format!("=== S{}:", i + 1)), "{header}");
@@ -6990,69 +5997,29 @@ mod tests {
         assert_eq!(shown["https://example.com/a"], "S1");
         assert_eq!(shown["https://example.com/b1"], "S2");
         assert_eq!(shown["https://example.com/b10"], "S11");
-        let model = ScriptModel::new(vec![findings_turn(json!({
-            "findings": "findings",
-            "claims": [
-                {"claim": "first", "source_id": "S1"},
-                {"claim": "second", "source_id": "S2"},
-                // A source-worded quarter against the `YYYY-Qn` format: kept
-                // as unknown, with the rejected pair named on the gap
-                // (attempt-8 Finding 2).
-                {"claim": "quartered", "source_id": "S2",
-                 "fact_period": {"kind": "quarter", "value": "Q1 2026", "end": null}},
-                {"claim": "last", "source_id": "S11"},
-                {"claim": "unknown", "source_id": "S12"},
-                {"claim": "URL is not an ID", "source_id": "https://example.com/a"}
-            ]
-        }))]);
+        assert!(gaps.iter().any(|gap| gap.contains("omitted entirely")));
+        // The write-up is read as text and validated by nothing: whatever the
+        // model returns is the pass's write-up, and the follow-up reply is the
+        // question verbatim.
+        let model = ScriptModel::new(vec![
+            prose("{\"findings\": \"a stray object is still just the write-up\"}"),
+            prose("  Is the b10 figure a calendar quarter?  "),
+        ]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let progress = RunContext::noop();
         let runner = runner(&model, &web, &clock, &progress, 10);
-        let (wire, resolved) = runner.synthesize_findings(
+        let out = runner.synthesize_write_up(
             &ctx, &fetched, &Default::default(), &pages, &Default::default(), &mut gaps,
         ).unwrap();
-        assert_eq!(resolved, shown);
-        let allowed: Vec<_> = fetched.into_iter().filter(|(url, _, _)| resolved.contains_key(url)).collect();
-        let findings = runner.validate_findings(wire, &ctx, &allowed, &Default::default(), &Default::default(), &mut gaps);
-        let urls: Vec<_> = findings.claims.iter().map(|claim| claim.source_url.as_str()).collect();
-        assert_eq!(urls, ["https://example.com/a", "https://example.com/b1", "https://example.com/b1", "https://example.com/b10"]);
-        assert_eq!(findings.claims[2].fact_period, FactPeriod::default());
-        assert!(
-            gaps.iter().any(|gap| gap
-                == "topic competitive-position: invalid fact period retained as unknown (kind quarter, value \"Q1 2026\")"),
-            "{gaps:?}"
-        );
-        assert!(gaps.iter().any(|gap| gap.contains("unresolved source ID")));
-        assert!(gaps.iter().any(|gap| gap.contains("omitted entirely")));
-    }
-
-    #[test]
-    fn a_body_snippet_keeps_the_head_and_the_tail() {
-        // Attempt-8 Finding 1: a claims-first body carries the field that
-        // failed its guard at the very end, so the snippet keeps both ends.
-        let short = "{\"findings\":\"ok\",\"claims\":[]}";
-        assert_eq!(body_snippet(short), short);
-        let body = format!("{{\"claims\":[{}],\"findings\":\"\"}}", "x".repeat(2_000));
-        let snippet = body_snippet(&body);
-        assert!(snippet.starts_with("{\"claims\":[xxx"), "{snippet}");
-        assert!(snippet.ends_with("],\"findings\":\"\"}"), "{snippet}");
-        assert!(snippet.contains(&format!("chars elided, {} chars total", body.chars().count())), "{snippet}");
-        assert!(snippet.chars().count() < 700, "{}", snippet.chars().count());
-        // Multi-byte content: the tail starts on a char boundary and both
-        // ends keep whole characters.
-        let wide = format!("{}{}", "é".repeat(700), "ü".repeat(100));
-        let snippet = body_snippet(&wide);
-        assert!(snippet.starts_with(&"é".repeat(400)), "{snippet}");
-        assert!(snippet.ends_with(&format!("{}{}", "é".repeat(100), "ü".repeat(100))), "{snippet}");
-        assert!(snippet.contains("200 chars elided, 800 chars total"), "{snippet}");
+        assert_eq!(out.write_up.as_deref(), Some("{\"findings\": \"a stray object is still just the write-up\"}"));
+        assert_eq!(out.followup.as_deref(), Some("Is the b10 figure a calendar quarter?"));
     }
 
     #[test]
     fn the_synthesis_system_prompt_stays_a_small_fixed_cost_above_the_brief_budget() {
         // The brief is sized to `input_budget_chars`; the system prompt rides the
-        // slack above it, unmeasured. Showing the shape (Finding 5) grew it, so
-        // cap it far below that slack — it must never eat into the evidence packet.
+        // slack above it, unmeasured — it must never eat into the evidence packet.
         const SYSTEM_PROMPT_CAP_CHARS: usize = 4_096;
         let num_ctx = crate::portfolio::pipeline::NUM_CTX_INTERPRET;
         let context_chars =
@@ -7062,12 +6029,12 @@ mod tests {
             SYSTEM_PROMPT_CAP_CHARS * 10 <= slack,
             "cap {SYSTEM_PROMPT_CAP_CHARS} vs slack {slack}"
         );
-        let prompt_chars = synthesis_system_prompt(true).chars().count();
+        let prompt_chars = synthesis_system_prompt().chars().count();
         assert!(prompt_chars <= SYSTEM_PROMPT_CAP_CHARS, "{prompt_chars} chars");
     }
 
     #[test]
-    fn a_pass_round_trips_search_fetch_findings_with_claim_validation_and_lineage() {
+    fn a_pass_round_trips_search_fetch_and_write_up_with_the_roster() {
         let model = ScriptModel::new(vec![
             turn_with_tools(json!([
                 {"function": {"name": "web_search", "arguments": {"query": "widget co earnings"}}}
@@ -7075,40 +6042,49 @@ mod tests {
             turn_with_tools(json!([
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
             ])),
-            // Gathering ends (model stops calling tools), then synthesis writes
-            // up the findings from a fresh conversation (fix B).
+            // Gathering ends (model stops calling tools), then the synthesis
+            // writes the pass up from a fresh conversation and asks for the
+            // follow-up.
             gather_done(),
-            findings_turn(simple_findings()),
-            // The disconfirming pass: no tools — gather ends, then synthesis.
+            write_up(),
+            no_followup(),
+            // The disconfirming pass: a fetch, then its own write-up and no ask.
+            turn_with_tools(json!([
+                {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/contrary"}}}
+            ])),
             gather_done(),
-            findings_turn(json!({
-                "findings": "No credible disconfirming evidence surfaced.",
-                "claims": []
-            })),
+            prose("No credible disconfirming evidence surfaced."),
         ]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &seeds(), &|_| None)
-            .unwrap();
+        let brief = brief_with_leads();
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
 
         assert_eq!(out.topics.len(), 1);
-        let pass = &out.topics[0].passes[0];
-        // The fabricated citation dropped; the real one kept, with the
-        // deterministic surfaced_by lineage (its URL is seed-1's URL).
-        assert_eq!(pass.claims.len(), 1);
-        assert_eq!(pass.claims[0].claim, "Q3 revenue was $1.2B");
-        assert_eq!(pass.claims[0].surfaced_by.as_deref(), Some("seed-1"));
-        assert_eq!(pass.claims[0].retrieved_at, "2026-08-22T10:00:00+00:00");
-        assert_eq!(pass.claims[0].annotation.as_ref().unwrap().source_tier, 2);
-        assert!(out.gaps.iter().any(|g| g.contains("claim(s) dropped")));
-        // The disconfirming pass ran and the budget counted one live fetch.
-        assert!(out.disconfirming.is_some());
-        assert_eq!(out.fetches_spent, 1);
-        assert_eq!(web.fetch_count(), 1);
-        assert_eq!(out.seed_decisions, vec!["competitive-position: cold"]);
+        assert_eq!(out.topics[0].write_up.as_deref(), Some(WRITE_UP));
+        assert_eq!(out.topics[0].passes, 1);
+        assert_eq!(
+            out.disconfirming.as_deref(),
+            Some("No credible disconfirming evidence surfaced.")
+        );
+        // The roster: every page shown, in first-retrieval order, with the
+        // tier the fetch annotated and never the page text.
+        assert_eq!(out.roster.len(), 2);
+        assert_eq!(out.roster[0].url, "https://reuters.com/widget");
+        assert_eq!(out.roster[0].title, "Widget beats");
+        assert_eq!(out.roster[0].published.as_deref(), Some("2026-08-20"));
+        assert_eq!(out.roster[0].retrieved_at, "2026-08-22T10:00:00+00:00");
+        assert_eq!(out.roster[0].source_tier, Some(2));
+        assert_eq!(out.roster[1].url, "https://reuters.com/contrary");
+        assert_eq!(out.fetches_spent, 2);
+        assert_eq!(web.fetch_count(), 2);
+        assert!(model.turns.lock().unwrap().borrow().is_empty(), "every scripted turn was consumed");
+        let record = ResearchAuditRecord::from_research(&out);
+        assert_eq!(record.write_ups, out.topics);
+        assert_eq!(record.roster, out.roster);
+        assert_eq!(record.disconfirming, out.disconfirming);
     }
 
     #[test]
@@ -7128,20 +6104,17 @@ mod tests {
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
             ])),
             gather_done(),
-            findings_turn(simple_findings()),
+            write_up(),
+            no_followup(),
             gather_done(),
-            findings_turn(json!({
-                "findings": "No credible disconfirming evidence surfaced.",
-                "claims": []
-            })),
         ]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-t", rec.clone(), Arc::new(AtomicBool::new(false)));
         let r = runner(&model, &web, &clock, &ctx, 10);
-        r.run_holding("HOLDING: WID", &one_topic_agenda(), &seeds(), &|_| None)
-            .unwrap();
+        let brief = brief_with_leads();
+        r.run_holding(&brief, &one_topic_agenda()).unwrap();
 
         let expected = [
             ("search: widget co earnings", "search", "widget co earnings"),
@@ -7190,21 +6163,13 @@ mod tests {
                 FetchAttempt::scripted(Err(anyhow::anyhow!("fetch of {url} returned HTTP 404")))
             }
         }
+        // No page lands, so no synthesis issues and no disconfirming pass runs.
         let model = ScriptModel::new(vec![
             turn_with_tools(json!([
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/a"}}},
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/b"}}}
             ])),
             gather_done(),
-            findings_turn(json!({
-                "findings": "Nothing retrievable.",
-                "claims": []
-            })),
-            gather_done(),
-            findings_turn(json!({
-                "findings": "No disconfirming evidence retrievable.",
-                "claims": []
-            })),
         ]);
         let failing = FailingWeb;
         let clock = FrozenClock(Duration::from_secs(10));
@@ -7220,10 +6185,10 @@ mod tests {
             progress: &ctx,
             step_label: "research TEST".into()
         };
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
         assert_eq!(out.fetches_spent, 2, "both failed attempts spend budget");
+        assert!(out.topics[0].write_up.is_none() && out.disconfirming.is_none());
     }
 
     /// [`ScriptModel`] with the bounded retry-once gate opened — permits any
@@ -7247,19 +6212,13 @@ mod tests {
         }
     }
 
-    fn disconfirm_findings() -> ChatResponse {
-        findings_turn(json!({
-            "findings": "No disconfirming evidence retrievable.",
-            "claims": []
-        }))
-    }
-
     #[test]
-    fn the_synthesis_call_is_a_fresh_two_message_conversation_with_the_grammar_and_no_tools() {
-        // Fix B's core contract: gathering carries tools and NO grammar; the
-        // separate synthesis call carries the grammar, NO tools, and a fresh
-        // two-message conversation (system + user) with no tool-call history —
-        // the interleaving that produced empty/fenced bodies is gone.
+    fn the_synthesis_is_a_fresh_conversation_with_no_grammar_and_no_tools() {
+        // The gathering turns carry tools and no grammar; the synthesis
+        // conversation carries neither — a fresh two-message conversation
+        // (system + user) with no tool-call history for the write-up, then the
+        // same conversation's fourth message for the follow-up ask; the
+        // disconfirming pass's synthesis asks nothing.
         struct RecordingModel {
             inner: ScriptModel,
             // per issued call: (message count, tools present, grammar present)
@@ -7287,12 +6246,13 @@ mod tests {
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
                 ])),
                 gather_done(),
-                findings_turn(simple_findings()),
+                write_up(),
+                no_followup(),
                 turn_with_tools(json!([
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
                 ])),
                 gather_done(),
-                disconfirm_findings(),
+                prose("No disconfirming evidence retrievable."),
             ]),
             calls: Mutex::new(RefCell::new(Vec::new()))
         };
@@ -7310,32 +6270,25 @@ mod tests {
             progress: &ctx,
             step_label: "research TEST".into()
         };
-        r.run_holding("HOLDING: WID", &one_topic_agenda(), &seeds(), &|_| None)
-            .unwrap();
+        let brief = brief_with_leads();
+        r.run_holding(&brief, &one_topic_agenda()).unwrap();
 
         let recorded = model.calls.lock().unwrap();
         let calls = recorded.borrow();
-        // Every call carries tools XOR grammar — never both (the retired
-        // failure mode), never neither.
+        assert!(calls.iter().all(|&(_, _, grammar)| !grammar), "no call carries a grammar: {calls:?}");
         assert!(
-            calls.iter().all(|&(_, tools, grammar)| tools ^ grammar),
-            "each call carries tools XOR grammar: {calls:?}"
+            calls.iter().any(|&(_, tools, _)| tools),
+            "gathering carries tools: {calls:?}"
         );
-        // A gathering call carries tools and no grammar.
-        assert!(
-            calls.iter().any(|&(_, tools, grammar)| tools && !grammar),
-            "gathering carries tools, no grammar: {calls:?}"
-        );
-        // The synthesis calls (grammar on, no tools) are fresh two-message
-        // conversations — one per pass (topic + disconfirm), each system + user.
-        let synth: Vec<_> = calls
+        let synth: Vec<usize> = calls
             .iter()
-            .filter(|&&(_, tools, grammar)| !tools && grammar)
+            .filter(|&&(_, tools, _)| !tools)
+            .map(|&(n, _, _)| n)
             .collect();
-        assert_eq!(synth.len(), 2, "one synthesis call per pass: {calls:?}");
-        assert!(
-            synth.iter().all(|&&(n, _, _)| n == 2),
-            "synthesis is a fresh two-message conversation (no tool history): {calls:?}"
+        assert_eq!(
+            synth,
+            vec![2, 4, 2],
+            "the topic's write-up, its follow-up ask, the disconfirming write-up: {calls:?}"
         );
     }
 
@@ -7353,20 +6306,16 @@ mod tests {
             .collect();
         let model = ScriptModel::new(vec![
             turn_with_tools(Value::Array(calls)),
-            findings_turn(json!({
-                "findings": "Bounded batch reviewed.",
-                "claims": []
-            })),
+            prose("Bounded batch reviewed."),
+            no_followup(),
             gather_done(),
-            disconfirm_findings(),
         ]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 20);
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
 
         assert_eq!(
             web.fetch_count() as usize,
@@ -7381,6 +6330,7 @@ mod tests {
             "the omitted tail is a typed partial-coverage gap: {:?}",
             out.gaps
         );
+        assert_eq!(out.topics[0].write_up.as_deref(), Some("Bounded batch reviewed."));
     }
 
     #[test]
@@ -7449,12 +6399,9 @@ mod tests {
                 turn_with_tools(batch(0)),
                 turn_with_tools(batch(MAX_TOOL_CALLS_PER_TURN)),
                 turn_with_tools(batch(MAX_TOOL_CALLS_PER_TURN * 2)),
-                findings_turn(json!({
-                    "findings": "The bounded evidence was synthesized.",
-                    "claims": []
-                })),
+                prose("The bounded evidence was synthesized."),
+                no_followup(),
                 gather_done(),
-                disconfirm_findings(),
             ]),
             gathering_sizes: Mutex::new(RefCell::new(Vec::new()))
         };
@@ -7474,9 +6421,8 @@ mod tests {
             progress: &ctx,
             step_label: "research TEST".into()
         };
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
 
         let fetches = *web.fetches.lock().unwrap().borrow();
         assert!(
@@ -7543,7 +6489,7 @@ mod tests {
     }
 
     #[test]
-    fn the_release_guard_never_admits_a_dropped_plan_to_the_allow_set() {
+    fn the_release_guard_never_shows_a_dropped_plan() {
         let dropped = PagePlan {
             text: 0,
             marker: false,
@@ -7565,7 +6511,7 @@ mod tests {
             "https://example.com/dropped",
             &mut shown
         ));
-        assert!(shown.is_empty(), "a dropped URL never becomes citable");
+        assert!(shown.is_empty(), "a dropped URL is never shown");
         assert!(!admit_planned_source(
             bodyless_but_not_flagged,
             "https://example.com/bodyless",
@@ -7586,10 +6532,10 @@ mod tests {
     }
 
     #[test]
-    fn dropped_pages_are_excluded_from_the_shown_allow_set() {
+    fn dropped_pages_are_never_shown() {
         // One source whose header alone cannot fit is omitted; its URL must not
-        // enter the shown-set, so claim validation later rejects a claim citing
-        // evidence the synthesis never saw (round-8).
+        // be shown, so the write-up can never name evidence the synthesis
+        // never saw (round-8).
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -7602,16 +6548,8 @@ mod tests {
         let mut page_texts = std::collections::HashMap::new();
         page_texts.insert(url, "x".repeat(50));
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
         let _ = synthesis_brief(
@@ -7625,7 +6563,7 @@ mod tests {
         );
         assert!(
             shown.is_empty(),
-            "the individually unrenderable page never enters the validator's allow-set"
+            "the individually unrenderable page is never shown"
         );
         assert!(
             gaps.iter().any(|g| g.contains("omitted")),
@@ -7656,19 +6594,11 @@ mod tests {
             page_titles.insert(url, PageMeta { title: "T".repeat(5_000), published: None });
         }
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &Default::default(),
@@ -7677,12 +6607,12 @@ mod tests {
             &mut gaps,
             &mut shown,
         );
-        let rendered = brief.chars().count();
-        assert!(rendered <= budget, "rendered {rendered} exceeds {budget}");
+        let count = rendered.chars().count();
+        assert!(count <= budget, "rendered {count} exceeds {budget}");
         assert!(!shown.is_empty(), "a usable evidence subset must survive");
         assert!(
-            rendered > budget / 2,
-            "reclaimed space should carry useful evidence: {rendered}/{budget}"
+            count > budget / 2,
+            "reclaimed space should carry useful evidence: {count}/{budget}"
         );
         assert!(
             gaps.iter().any(|gap| gap.contains("omitted entirely")),
@@ -7707,19 +6637,11 @@ mod tests {
             page_texts.insert(url, "x".repeat(PAGE_TEXT_CAP_CHARS));
         }
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &Default::default(),
@@ -7729,9 +6651,9 @@ mod tests {
             &mut shown,
         );
         assert!(
-            brief.chars().count() <= budget,
+            rendered.chars().count() <= budget,
             "rendered {} exceeds budget {budget}",
-            brief.chars().count()
+            rendered.chars().count()
         );
         assert!(
             gaps.iter().any(|g| g.contains("truncated to fit")),
@@ -7753,19 +6675,11 @@ mod tests {
             page_texts.insert(url, format!("PAGE{i}-body-").repeat(300));
         }
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &Default::default(),
@@ -7779,13 +6693,13 @@ mod tests {
             "a fitting packet records no truncation gap: {gaps:?}"
         );
         assert!(
-            !brief.contains("[the page continues beyond what is shown]"),
+            !rendered.contains("[the page continues beyond what is shown]"),
             "a fitting packet carries no continuation marker"
         );
         // Every page's full text is present.
         for i in 0..30 {
             let full = format!("PAGE{i}-body-").repeat(300);
-            assert!(brief.contains(&full), "page {i} rendered whole");
+            assert!(rendered.contains(&full), "page {i} rendered whole");
         }
     }
 
@@ -7807,19 +6721,11 @@ mod tests {
             page_texts.insert(url, body);
         }
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &Default::default(),
@@ -7829,16 +6735,16 @@ mod tests {
             &mut shown,
         );
         assert!(
-            brief.chars().count() <= budget,
+            rendered.chars().count() <= budget,
             "rendered {} exceeds budget {budget}",
-            brief.chars().count()
+            rendered.chars().count()
         );
         assert!(
-            brief.contains(&"S".repeat(2000)),
+            rendered.contains(&"S".repeat(2000)),
             "a short page is preserved whole in a mixed overflow"
         );
         assert!(
-            !brief.contains(&"L".repeat(11000)),
+            !rendered.contains(&"L".repeat(11000)),
             "the long pages are truncated"
         );
         assert!(
@@ -7850,11 +6756,10 @@ mod tests {
     #[test]
     fn synthesis_brief_renders_the_title_and_drops_every_body_less_page() {
         // Three fetched pages: one with title + body, one title-only (a headline
-        // but no body), one wholly empty. Only the body-bearing page is citable
+        // but no body), one wholly empty. Only the body-bearing page is shown
         // and renders its title; both body-less pages are dropped, their URLs
-        // never entering the allow-set, with the drop recorded as a gap — a
-        // headline alone never makes a URL citable (attempt-4 review, Findings 1
-        // and 3).
+        // never shown, with the drop recorded as a gap — a headline alone never
+        // makes a URL a source (attempt-4 review, Findings 1 and 3).
         let mut fetched = Vec::new();
         let mut page_texts = std::collections::HashMap::new();
         let mut page_titles = std::collections::HashMap::new();
@@ -7871,19 +6776,11 @@ mod tests {
         page_titles.insert(title_only.clone(), PageMeta { title: "Headline Only".into(), published: None });
         page_titles.insert(empty.clone(), PageMeta::default());
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &Default::default(),
@@ -7893,19 +6790,16 @@ mod tests {
             &mut shown,
         );
         assert!(
-            brief.contains("TITLE: Rich Headline"),
-            "the body-bearing page renders its extracted title: {brief}"
+            rendered.contains("TITLE: Rich Headline"),
+            "the body-bearing page renders its extracted title: {rendered}"
         );
-        assert!(
-            shown.contains_key(&rich),
-            "the body-bearing page is citable"
-        );
+        assert!(shown.contains_key(&rich), "the body-bearing page is shown");
         assert!(
             !shown.contains_key(&title_only) && !shown.contains_key(&empty),
-            "neither body-less page enters the validator's allow-set"
+            "neither body-less page is shown"
         );
         assert!(
-            !brief.contains("example.com/title-only") && !brief.contains("example.com/empty"),
+            !rendered.contains("example.com/title-only") && !rendered.contains("example.com/empty"),
             "no body-less page's URL or headline is rendered"
         );
         assert!(
@@ -7936,19 +6830,11 @@ mod tests {
             page_titles.insert(url, PageMeta { title: "T".repeat(5000), published: None });
         }
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &Default::default(),
@@ -7958,12 +6844,12 @@ mod tests {
             &mut shown,
         );
         assert!(
-            brief.chars().count() <= budget,
+            rendered.chars().count() <= budget,
             "the rendered brief {} stays within the input guard {budget}",
-            brief.chars().count()
+            rendered.chars().count()
         );
         assert!(
-            !brief.contains(&"T".repeat(TITLE_CAP_CHARS + 1)),
+            !rendered.contains(&"T".repeat(TITLE_CAP_CHARS + 1)),
             "no title renders past the headline cap"
         );
         assert!(
@@ -7973,31 +6859,20 @@ mod tests {
     }
 
     #[test]
-    fn synthesis_brief_surfaces_the_gathering_degradation_note() {
-        // A partial-gathering note (the failures the discarded tool-call history
-        // carried) is rendered into the synthesis brief as a plain fact so the
-        // sole findings author can weigh partial coverage itself — the brief
-        // states the loss, it never prescribes the conclusion (attempt-4 review,
-        // Finding 2).
+    fn synthesis_brief_carries_no_degradation_note() {
+        // The gathering degradation is a persisted gap only (`portfolio-v59`):
+        // the brief states no loss and never prescribes how to weigh it.
         let mut fetched = Vec::new();
         let mut page_texts = std::collections::HashMap::new();
         let url = "https://example.com/only".to_string();
         fetched.push((url.clone(), "2026-08-22T10:00:00+00:00".to_string(), None));
         page_texts.insert(url, "some body".to_string());
         let t = topic("competitive-position", "Competitive position", &["q1"]);
-        let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let ctx = pass_ctx(&brief, &t);
         let mut gaps = Vec::new();
         let mut shown = std::collections::HashMap::new();
-        let brief = synthesis_brief(
+        let rendered = synthesis_brief(
             &ctx,
             &fetched,
             &Default::default(),
@@ -8006,16 +6881,11 @@ mod tests {
             &mut gaps,
             &mut shown,
         );
-        // `portfolio-v59`: the degradation is a persisted gap only; the brief
-        // carries no SEARCHING section.
-        assert!(!brief.contains("SEARCHING"), "{brief}");
+        assert!(!rendered.contains("SEARCHING"), "{rendered}");
+        assert!(!rendered.contains("treat coverage"), "{rendered}");
         assert!(
-            !brief.contains("treat coverage"),
-            "the note states the loss and nothing more: {brief}"
-        );
-        assert!(
-            !brief.contains("temper conviction") && !brief.contains("do not mark the topic"),
-            "the note never prescribes how the model should weigh the evidence: {brief}"
+            !rendered.contains("temper conviction") && !rendered.contains("do not mark the topic"),
+            "{rendered}"
         );
     }
 
@@ -8023,7 +6893,7 @@ mod tests {
     fn degradation_summary_covers_the_turn_cap_and_malformed_calls() {
         // Finding 3(a)/(b): the turn-cap cut-off and malformed tool calls — which
         // live only in the discarded gathering history — reach the summary the
-        // synthesis and data-health read; a clean pass yields no summary.
+        // data-health read; a clean pass yields no summary.
         assert_eq!(PassDegradation::default().summary(), None);
         let d = PassDegradation {
             malformed_calls: 2,
@@ -8079,12 +6949,9 @@ mod tests {
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/sized"}}}
                 ])),
                 gather_done(),
-                findings_turn(json!({
-                    "findings": "The bounded page was reviewed.",
-                    "claims": []
-                })),
+                prose("The bounded page was reviewed."),
+                no_followup(),
                 gather_done(),
-                disconfirm_findings(),
             ]);
             let web = SizedPageWeb { body_chars };
             let clock = FrozenClock(Duration::from_secs(10));
@@ -8100,9 +6967,8 @@ mod tests {
                 progress: &ctx,
                 step_label: "research TEST".into()
             };
-            let out = runner
-                .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-                .unwrap();
+            let brief = brief_of(WID_HEADER);
+            let out = runner.run_holding(&brief, &one_topic_agenda()).unwrap();
             let has_fetch_cap_gap = out.gaps.iter().any(|gap| {
                 gap.contains("gathering degraded")
                     && gap.contains("1 fetched page(s) truncated at the 12000-character fetch cap")
@@ -8116,46 +6982,40 @@ mod tests {
     }
 
     #[test]
-    fn pass_brief_bounds_a_huge_prior_claims_ledger() {
-        // Finding 1: the prefix — prior claims and follow-up — is accumulated,
-        // unbounded model output, so a huge ledger must not push pass_brief (the
-        // gathering request's whole user message, and the synthesis prefix) past
-        // the input guard before any evidence is sized.
+    fn pass_brief_bounds_huge_write_ups() {
+        // Finding 1: the prefix — the write-ups so far and the follow-up — is
+        // model output with no grammar bound, so a run of huge write-ups must
+        // not push pass_brief (the gathering request's whole user message, and
+        // the synthesis prefix) past the input guard before any evidence is
+        // sized: each write-up is capped with the continuation line.
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
-        let claims: Vec<EvidenceClaim> = (0..40)
-            .map(|i| EvidenceClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-                claim: "x".repeat(20_000),
-                source_url: format!("https://example.com/{i}"),
-                retrieved_at: "2026-08-22T10:00:00+00:00".to_string(),
-                surfaced_by: None,
-                annotation: None
-            })
+        let write_ups: Vec<(String, String)> = (0..40)
+            .map(|i| (format!("Topic {i}"), "x".repeat(20_000)))
             .collect();
-        let t = topic("competitive-position", "Competitive position", &["q1"]);
+        let disc = disconfirming_topic();
+        let brief = brief_of(WID_HEADER);
         let ctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &t,
-            seed: None,
-            seeds: &[],
+            brief: &brief,
+            topic: &disc,
             followup: None,
-            prior_claims: &claims,
+            write_up_so_far: None,
+            write_ups_so_far: &write_ups,
             disconfirming: true,
-            depth: 0
+            depth: 0,
         };
-        let brief = pass_brief(&ctx);
+        let rendered = pass_brief(&ctx);
         assert!(
-            brief.chars().count() <= budget,
+            rendered.chars().count() <= budget,
             "pass_brief {} stays within the input guard {budget}",
-            brief.chars().count()
+            rendered.chars().count()
         );
         assert!(
-            brief.contains("more claims not shown"),
-            "the claims block is capped with an omitted count"
+            rendered.contains(INPUTS_CONTINUE_MARKER.trim()),
+            "a write-up past its cap carries the continuation line"
         );
+        assert!(!rendered.contains(&"x".repeat(WRITE_UP_CAP_CHARS + 1)));
         // The synthesis prefix built on the same ctx, plus evidence, still fits.
         let mut fetched = Vec::new();
         let mut page_texts = std::collections::HashMap::new();
@@ -8184,30 +7044,29 @@ mod tests {
     fn a_budget_exhausted_gathering_pass_records_the_stop() {
         // Finding 2: the fetch budget is exhausted exactly at a turn boundary (one
         // fetch, ceiling of one), with no later in-turn call to trigger the
-        // mid-turn skip — the synthesis and data-health still learn gathering was
-        // forcibly stopped.
+        // mid-turn skip — the synthesis still runs over what landed and the
+        // data-health read learns gathering was forcibly stopped.
         let model = ScriptModel::new(vec![
             turn_with_tools(json!([
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/a"}}}
             ])),
-            findings_turn(json!({
-                "findings": "Partial coverage.",
-                "claims": []
-            })),
+            prose("Partial coverage."),
+            no_followup(),
         ]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 1);
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
         assert!(
             out.gaps.iter().any(|g| g.contains("gathering degraded")
                 && g.contains("budget was exhausted")),
             "the exact-ceiling stop is a persisted degradation gap: {:?}",
             out.gaps
         );
+        assert_eq!(out.topics[0].write_up.as_deref(), Some("Partial coverage."));
+        assert!(out.gaps.iter().any(|g| g.contains("disconfirming-fetch pass not spent")));
     }
 
     #[test]
@@ -8215,28 +7074,14 @@ mod tests {
         // Finding (fourth review): a present-but-non-array `tool_calls` (an object
         // here) is malformed model output — the decoder already collapsed empty
         // arrays and null to None — so it must be counted as degradation and reach
-        // the synthesis and data-health, not vanish silently.
-        let model = ScriptModel::new(vec![
-            turn_with_tools(json!({ "not": "an array" })),
-            // Gathering ends on the malformed turn; synthesis writes up nothing.
-            findings_turn(json!({
-                "findings": "No usable gathering.",
-                "claims": []
-            })),
-            // The disconfirming pass then gathers cleanly and stops.
-            gather_done(),
-            findings_turn(json!({
-                "findings": "No disconfirming evidence.",
-                "claims": []
-            })),
-        ]);
+        // data-health, not vanish silently. No page landed, so no synthesis.
+        let model = ScriptModel::new(vec![turn_with_tools(json!({ "not": "an array" }))]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
         assert!(
             out.gaps.iter().any(|g| g.contains("gathering degraded")
                 && g.contains("malformed/unknown tool call")),
@@ -8248,9 +7093,9 @@ mod tests {
     #[test]
     fn a_degraded_gathering_pass_records_a_gap() {
         // End-to-end through run_holding: a pass whose search and fetch both fail
-        // must record the degradation as a persisted gap, so data-health and the
-        // synthesis (via run_pass's note) both see the partial coverage the
-        // discarded gathering transcript carried (attempt-4 review, Finding 2).
+        // must record the degradation as a persisted gap, so data-health sees the
+        // partial coverage the discarded gathering transcript carried (attempt-4
+        // review, Finding 2).
         struct DegradedWeb;
         impl ResearchWeb for DegradedWeb {
             fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
@@ -8260,27 +7105,16 @@ mod tests {
                 FetchAttempt::scripted(Err(anyhow::anyhow!("fetch of {url} returned HTTP 404")))
             }
         }
-        let empty_findings = || {
-            findings_turn(json!({
-                "findings": "Nothing retrievable.",
-                "claims": []
-            }))
-        };
         let model = ScriptModel::new(vec![
             turn_with_tools(json!([
                 {"function": {"name": "web_search", "arguments": {"query": "collapse risk"}}},
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/a"}}}
             ])),
             gather_done(),
-            empty_findings(),
-            gather_done(),
-            empty_findings(),
         ]);
         let web = DegradedWeb;
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
-        // The `runner` helper is typed to `ScriptWeb`, so build the runner inline
-        // for the custom web (as `a_failed_fetch_attempt_still_spends_budget` does).
         let r = ResearchRunner {
             model: &model,
             web: &web,
@@ -8292,9 +7126,8 @@ mod tests {
             progress: &ctx,
             step_label: "research TEST".into()
         };
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
         assert!(
             out.gaps.iter().any(|g| g.contains("gathering degraded")
                 && g.contains("search(es) failed")
@@ -8305,10 +7138,10 @@ mod tests {
     }
 
     #[test]
-    fn a_transient_findings_parse_failure_retries_the_turn_once() {
-        // A page lands, gathering ends (gather_done), then the first synthesis
-        // call's content is not a findings object; the re-issued synthesis
-        // (same messages) serves the valid one, so the pass completes instead
+    fn a_blank_write_up_retries_the_synthesis_once() {
+        // A page lands, gathering ends, then the first synthesis reply is blank
+        // — the adapter's empty-completion class; the re-issued synthesis
+        // (same messages) serves the write-up, so the pass completes instead
         // of failing the run.
         let model = RetryingModel {
             inner: ScriptModel::new(vec![
@@ -8316,12 +7149,10 @@ mod tests {
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
                 ])),
                 gather_done(),
-                // A syntactically valid object that omits the grammar-required
-                // keys must take the same parse-leg re-issue as malformed JSON.
-                findings_turn(json!({})),
-                findings_turn(simple_findings()),
+                prose("   "),
+                write_up(),
+                no_followup(),
                 gather_done(),
-                disconfirm_findings(),
             ])
         };
         let web = ScriptWeb::new();
@@ -8338,11 +7169,11 @@ mod tests {
             progress: &ctx,
             step_label: "research TEST".into()
         };
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
         assert_eq!(out.topics.len(), 1);
-        assert_eq!(out.topics[0].passes.len(), 1);
+        assert_eq!(out.topics[0].passes, 1);
+        assert_eq!(out.topics[0].write_up.as_deref(), Some(WRITE_UP));
     }
 
     #[test]
@@ -8382,9 +7213,9 @@ mod tests {
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
                 ])),
                 gather_done(),
-                findings_turn(simple_findings()),
+                write_up(),
+                no_followup(),
                 gather_done(),
-                disconfirm_findings(),
             ]),
             fail_first: Mutex::new(RefCell::new(true))
         };
@@ -8402,18 +7233,17 @@ mod tests {
             progress: &ctx,
             step_label: "research TEST".into()
         };
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
         assert_eq!(out.topics.len(), 1, "the retried turn completed the pass");
     }
 
     #[test]
     fn a_fired_research_retry_names_its_topic_and_leg() {
         // Attempt-5 Finding 5: the retry gate must be handed a stage naming the
-        // topic and the leg — a gathering turn or the synthesis call — so a
-        // persisted "content failed its parse" event correlates with the topic
-        // that dropped at reconciliation, not only with the holding.
+        // topic and the leg — a gathering turn, the synthesis call or its
+        // follow-up ask — so a persisted retry event correlates with the topic
+        // it fired on, not only with the holding.
         struct StageRecorder {
             inner: ScriptModel,
             fail_first: Mutex<RefCell<bool>>,
@@ -8452,16 +7282,17 @@ mod tests {
         let model = StageRecorder {
             inner: ScriptModel::new(vec![
                 // The first gathering turn fails transient (re-issued) and
-                // lands a page, then the first synthesis body fails its parse
-                // (re-issued).
+                // lands a page, then the first write-up is blank (re-issued),
+                // then the follow-up reply is blank (re-issued).
                 turn_with_tools(json!([
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
                 ])),
                 gather_done(),
-                findings_turn(json!({})),
-                findings_turn(simple_findings()),
+                prose(""),
+                write_up(),
+                prose(""),
+                no_followup(),
                 gather_done(),
-                disconfirm_findings(),
             ]),
             fail_first: Mutex::new(RefCell::new(true)),
             stages: Mutex::new(RefCell::new(Vec::new()))
@@ -8480,16 +7311,17 @@ mod tests {
             progress: &ctx,
             step_label: "holding-WID".into()
         };
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
-        assert_eq!(out.topics.len(), 1, "both retries recovered the pass");
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
+        assert_eq!(out.topics.len(), 1, "every retry recovered the pass");
+        assert_eq!(out.topics[0].write_up.as_deref(), Some(WRITE_UP));
         let stages = model.stages.lock().unwrap().borrow().clone();
         assert_eq!(
             stages,
             vec![
                 "holding-WID research competitive-position gathering",
                 "holding-WID research competitive-position synthesis",
+                "holding-WID research competitive-position synthesis follow-up",
             ],
             "the holding step, then the topic and the leg"
         );
@@ -8546,104 +7378,89 @@ mod tests {
             progress: &ctx,
             step_label: "research TEST".into()
         };
-        r.run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+        let brief = brief_of(WID_HEADER);
+        r.run_holding(&brief, &one_topic_agenda())
     }
 
     #[test]
-    fn combined_call_and_parse_failures_stay_bounded_within_one_pass() {
-        // Under fix B findings come from a separate synthesis call. Calls 1
-        // and 2 are the topic's gathering turns (a fetch lands, then the model
-        // reports it is done). The synthesis then exercises the full compound
-        // worst case: call 3 fails (call-leg retry), call 4 returns an
-        // unparseable body (parse-leg re-issues the synthesis), call 5 fails
-        // (the re-issued call's own call-leg retry), call 6 succeeds — the
-        // documented four-call bound on the synthesis. Call 7 is the
-        // disconfirming pass's gather, which retrieves no page and is
-        // recorded by the app without a synthesis call (`portfolio-v43`).
+    fn a_transient_synthesis_failure_retries_once_and_a_second_failure_is_hard() {
+        // Calls 1 and 2 are the topic's gathering turns (a fetch lands, then
+        // the model reports it is done). Call 3, the write-up, fails transient
+        // and call 4 serves it (the one re-attempt); call 5 is the follow-up
+        // ask; call 6 is the disconfirming gather.
         let model = FlakyModel {
             inner: ScriptModel::new(vec![
                 turn_with_tools(json!([
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
                 ])),
                 gather_done(),
-                findings_turn(json!("not a findings object")),
-                findings_turn(simple_findings()),
+                write_up(),
+                no_followup(),
                 gather_done(),
             ]),
-            fail_on: vec![3, 5],
+            fail_on: vec![3],
             calls: Mutex::new(RefCell::new(0))
         };
         let out = flaky_runner_out(&model).unwrap();
-        assert_eq!(out.topics.len(), 1);
-        assert_eq!(out.topics[0].passes.len(), 1);
-        assert_eq!(*model.calls.lock().unwrap().borrow(), 7);
-    }
+        assert_eq!(out.topics[0].write_up.as_deref(), Some(WRITE_UP));
+        assert_eq!(*model.calls.lock().unwrap().borrow(), 6);
 
-    #[test]
-    fn the_four_call_turn_bound_is_a_hard_ceiling() {
-        // One failure past the compound worst case on the synthesis: calls 1
-        // and 2 are the gathering turns (a fetch lands, then done); then
-        // synthesis call 3 fails (call-leg retry), call 4 returns an
-        // unparseable body (parse-leg re-issue), call 5 fails (call-leg
-        // retry), call 6 also fails — the pass dies hard with the retry
-        // annotation, and no seventh call exists (the synthesis made its
-        // four-call maximum, calls 3–6).
+        // One failure past the bound: calls 3 and 4 both fail — the pass dies
+        // hard with the retry annotation, and no fifth call exists.
         let model = FlakyModel {
             inner: ScriptModel::new(vec![
                 turn_with_tools(json!([
                     {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
                 ])),
                 gather_done(),
-                findings_turn(json!("not a findings object")),
             ]),
-            fail_on: vec![3, 5, 6],
+            fail_on: vec![3, 4],
             calls: Mutex::new(RefCell::new(0))
         };
         let err = flaky_runner_out(&model).unwrap_err();
-        assert_eq!(
-            *model.calls.lock().unwrap().borrow(),
-            6,
-            "the bound is hard: the synthesis makes at most four calls (3–6)"
-        );
+        assert_eq!(*model.calls.lock().unwrap().borrow(), 4, "the bound is hard");
         let rendered = format!("{err:#}");
         assert!(
             rendered.contains("failed again after one retry (daemon error status on the first attempt)"),
             "{rendered}"
         );
-        assert!(rendered.contains("synthesizing findings failed"), "{rendered}");
+        assert!(rendered.contains("writing the pass's write-up failed"), "{rendered}");
     }
 
     #[test]
-    fn the_default_gate_keeps_a_findings_parse_failure_hard() {
+    fn the_default_gate_keeps_a_blank_write_up_hard() {
         let model = ScriptModel::new(vec![
             turn_with_tools(json!([
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
             ])),
             gather_done(),
-            findings_turn(json!("not a findings object")),
+            prose("\n\n"),
         ]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);
-        let err = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap_err();
-        assert!(
-            format!("{err:#}").contains("failed its schema parse"),
-            "{err:#}"
+        let brief = brief_of(WID_HEADER);
+        let err = r.run_holding(&brief, &one_topic_agenda()).unwrap_err();
+        let rendered = format!("{err:#}");
+        assert!(rendered.contains("empty completion body"), "{rendered}");
+        assert_eq!(
+            crate::local_model::retry_class(&err),
+            Some(crate::local_model::RetryClass::EmptyCompletion),
+            "{rendered}"
         );
     }
 
     #[test]
-    fn a_spent_budget_skips_remaining_topics_but_still_takes_the_findings_turn() {
+    fn a_spent_budget_skips_remaining_topics_but_still_takes_the_synthesis() {
         // Budget of 1 fetch: topic 1 spends it; topic 2 must be skipped as a
         // recorded gap, and the disconfirming pass must record its gap too.
         let model = ScriptModel::new(vec![
             turn_with_tools(json!([
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
             ])),
-            findings_turn(simple_findings()),
+            write_up(),
+            no_followup(),
         ]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
@@ -8653,17 +7470,18 @@ mod tests {
             topic("competitive-position", "Competitive position", &["q1"]),
             topic("results-revisions", "Results", &["q2"]),
         ];
-        let out = r
-            .run_holding("HOLDING: WID", &agenda, &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &agenda).unwrap();
         assert_eq!(out.topics.len(), 2);
-        assert_eq!(out.topics[0].passes.len(), 1, "worked topic keeps findings");
+        assert_eq!(out.topics[0].passes, 1, "worked topic keeps its write-up");
+        assert!(out.topics[0].write_up.is_some());
         assert_eq!(
             out.topics[1].skipped.as_deref(),
             Some("budget-exhausted"),
             "{:?}",
             out.topics[1]
         );
+        assert_eq!(out.topics[1].passes, 0);
         assert!(out.disconfirming.is_none());
         assert!(out
             .gaps
@@ -8673,68 +7491,53 @@ mod tests {
 
     #[test]
     fn followups_stop_at_depth_and_cannot_activate_technology() {
-        let findings_with_followup = || {
-            findings_turn(json!({
-                "findings": "partial",
-                "claims": [],
-                "followup_question": "dig into the supplier note",
-                "followup_rationale": "a thread worth one more pass",
-                "followup_technology_event": true
-            }))
-        };
-        let done = || {
-            findings_turn(json!({
-                "findings": "done",
-                "claims": []
-            }))
-        };
         let fetch = || {
             turn_with_tools(json!([
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
             ]))
         };
         let model = ScriptModel::new(vec![
-            // Each pass gathers a page, ends (gather_done), then synthesizes
-            // (fix B). Even an obsolete flag returned by the model cannot
-            // activate technology. Ordinary follow-ups retain their depth cap.
+            // Each pass gathers a page, ends (gather_done), then synthesizes.
+            // A question answered on every ask spends both follow-ups; the
+            // last pass under the cap asks nothing. A question naming the
+            // technology cannot activate that topic.
             fetch(),
             gather_done(),
-            findings_with_followup(),
+            prose("partial"),
+            prose("What about the technology event? dig into the supplier note"),
             fetch(),
             gather_done(),
-            findings_with_followup(),
+            prose("partial, rewritten"),
+            prose("one more pass"),
             fetch(),
             gather_done(),
-            done(),
+            prose("done"),
             // The disconfirming pass.
             fetch(),
             gather_done(),
-            done(),
+            prose("contrary: nothing found"),
         ]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(1));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
         assert_eq!(out.topics.len(), 1, "{:?}", out.topics);
-        assert_eq!(
-            out.topics[0].passes.len(),
-            MAX_PASSES_PER_TOPIC,
-            "root + two follow-ups"
-        );
-        assert!(out.disconfirming.is_some());
+        assert_eq!(out.topics[0].passes, MAX_PASSES_PER_TOPIC, "root + two follow-ups");
+        assert_eq!(out.topics[0].write_up.as_deref(), Some("done"));
+        assert_eq!(out.disconfirming.as_deref(), Some("contrary: nothing found"));
+        assert!(model.turns.lock().unwrap().borrow().is_empty());
     }
 
     /// A topic's last pass under the depth cap asks for no follow-up and keeps
-    /// none, even where the model returns one, as the disconfirming pass
-    /// (`portfolio-v60`, ruled 2026-09-29): its proposal could never be spent.
+    /// none, as the disconfirming pass (`portfolio-v60`, ruled 2026-09-29): its
+    /// question could never be spent.
     #[test]
     fn the_last_pass_under_the_depth_cap_asks_for_no_followup() {
         struct Recording {
-            // Each synthesis: its system message, grammar and user message.
-            syntheses: Mutex<Vec<(String, Value, String)>>,
+            // Each synthesis-leg call: its stage and its message count.
+            syntheses: Mutex<Vec<(String, usize, Vec<ChatMessage>)>>,
         }
         impl ResearchModel for Recording {
             fn research_turn(
@@ -8744,6 +7547,7 @@ mod tests {
                 tools: Option<&Value>,
                 format: Option<&Value>,
             ) -> Result<ChatResponse> {
+                assert!(format.is_none());
                 if tools.is_some() {
                     if stage.ends_with("turn 1") {
                         return Ok(turn_with_tools(json!([
@@ -8752,17 +7556,12 @@ mod tests {
                     }
                     return Ok(gather_done());
                 }
-                self.syntheses.lock().unwrap().push((
-                    messages[0].content.clone(),
-                    format.cloned().expect("a synthesis grammar"),
-                    messages[1].content.clone(),
-                ));
-                Ok(findings_turn(json!({
-                    "findings": "partial",
-                    "claims": [],
-                    "followup_question": "dig into the supplier note",
-                    "followup_rationale": "a thread worth one more pass"
-                })))
+                self.syntheses.lock().unwrap().push((stage.into(), messages.len(), messages.to_vec()));
+                Ok(if messages.len() == 2 {
+                    prose("partial")
+                } else {
+                    prose("dig into the supplier note")
+                })
             }
         }
         let model = Recording { syntheses: Mutex::new(Vec::new()) };
@@ -8776,24 +7575,30 @@ mod tests {
             progress: &progress,
             step_label: "research TEST".into(),
         };
-        let out = runner
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap();
-        let passes = &out.topics[0].passes;
-        assert_eq!(passes.len(), MAX_PASSES_PER_TOPIC);
-        assert!(passes[..MAX_PASSES_PER_TOPIC - 1].iter().all(|p| p.followup.is_some()));
-        assert!(passes[MAX_PASSES_PER_TOPIC - 1].followup.is_none());
+        let brief = brief_of(WID_HEADER);
+        let out = runner.run_holding(&brief, &one_topic_agenda()).unwrap();
+        assert_eq!(out.topics[0].passes, MAX_PASSES_PER_TOPIC);
         let syntheses = model.syntheses.lock().unwrap();
-        // The topic's three passes, then the disconfirming pass.
-        assert_eq!(syntheses.len(), MAX_PASSES_PER_TOPIC + 1);
-        for (depth, (system, format, user)) in syntheses.iter().enumerate() {
-            let offers = depth + 1 < MAX_PASSES_PER_TOPIC;
-            assert_eq!(system.contains("followup_question"), offers, "pass {depth}: {system}");
-            assert_eq!(format["properties"].get("followup_question").is_some(), offers, "pass {depth}");
-            assert_eq!(user.contains("3. followup_question"), offers, "pass {depth}: {user}");
-            assert_eq!(user.contains(r#""followup_question":"#), offers, "pass {depth}: {user}");
-        }
-        assert!(syntheses[MAX_PASSES_PER_TOPIC - 1].0.contains("You will return findings and claims, as one JSON object. Part 1"));
+        // The topic's three passes — the first two with an ask — then the
+        // disconfirming pass's write-up alone.
+        let shape: Vec<(&str, usize)> = syntheses.iter().map(|(s, n, _)| (s.as_str(), *n)).collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("research TEST research competitive-position synthesis", 2),
+                ("research TEST research competitive-position synthesis follow-up", 4),
+                ("research TEST research competitive-position synthesis", 2),
+                ("research TEST research competitive-position synthesis follow-up", 4),
+                ("research TEST research competitive-position synthesis", 2),
+                ("research TEST research disconfirming synthesis", 2),
+            ]
+        );
+        // The ask: the write-up echoed as the assistant's turn, then the ask.
+        let ask = &syntheses[1].2;
+        assert_eq!(ask[2].role, "assistant");
+        assert_eq!(ask[2].content, "partial");
+        assert_eq!(ask[3].role, "user");
+        assert_eq!(ask[3].content, followup_ask());
     }
 
     #[derive(Default)]
@@ -8806,7 +7611,7 @@ mod tests {
     }
 
     /// Exercises the real pass loop, including fetched evidence and synthesis.
-    /// Each synthesis consumes one second on the injected clock; no wall sleeps.
+    /// Each write-up consumes one second on the injected clock; no wall sleeps.
     struct SchedulingModel<'a> {
         clock: &'a SchedulingClock,
         calls: Mutex<Vec<(String, usize, Vec<ChatMessage>)>>,
@@ -8822,7 +7627,7 @@ mod tests {
             tools: Option<&Value>,
             format: Option<&Value>,
         ) -> Result<ChatResponse> {
-            assert_ne!(tools.is_some(), format.is_some());
+            assert!(format.is_none());
             let key = stage.split(" research ").nth(1).unwrap()
                 .split_whitespace().next().unwrap();
             if tools.is_some() {
@@ -8838,21 +7643,21 @@ mod tests {
             }
             let calls = self.calls.lock().unwrap();
             let depth = calls.last().unwrap().1;
+            if messages.len() > 2 {
+                // The follow-up ask.
+                return Ok(if self.propose && key != "disconfirming" {
+                    prose(&format!("follow-{key}-{depth}"))
+                } else {
+                    no_followup()
+                });
+            }
             self.clock.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if let Some((after, cancel)) = &self.cancel_after {
                 if calls.len() == *after {
                     cancel.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
             }
-            let mut findings = json!({
-                "findings": format!("findings-{key}-{depth}"),
-                "claims": [{"claim": format!("claim-{key}-{depth}"), "source_id": "S1"}],
-            });
-            if self.propose && key != "disconfirming" {
-                findings["followup_question"] = json!(format!("follow-{key}-{depth}"));
-                findings["followup_rationale"] = json!("Check the remaining evidence");
-            }
-            Ok(findings_turn(findings))
+            Ok(prose(&format!("write-up-{key}-{depth}")))
         }
     }
 
@@ -8873,11 +7678,8 @@ mod tests {
             };
             let mut agenda: Vec<_> = ["a", "b", "c"].iter().map(|key| topic(key, key, &["q"])).collect();
             if with_technology { agenda.push(technology_topic()); }
-            let seed_reads = std::cell::RefCell::new(Vec::new());
-            let out = runner.run_holding("HOLDING: WID", &agenda, &[], &|key| {
-                seed_reads.borrow_mut().push(key.to_owned());
-                Some((TopicSeed { findings: vec![format!("finding-{key}")] }, "vintage".into()))
-            }).unwrap();
+            let brief = brief_of(WID_HEADER);
+            let out = runner.run_holding(&brief, &agenda).unwrap();
             let calls = model.calls.lock().unwrap();
             let mut expected = vec![("a", 0), ("b", 0), ("c", 0)];
             if with_technology { expected.push(("technology-event", 0)); }
@@ -8888,29 +7690,37 @@ mod tests {
             let actual: Vec<_> = calls.iter().map(|(k, d, _)| (k.as_str(), *d)).collect();
             assert_eq!(actual, expected);
             let keys: Vec<_> = out.topics.iter().map(|t| t.topic_key.clone()).collect();
-            assert_eq!(*seed_reads.borrow(), keys);
-            assert_eq!(out.seed_decisions.len(), keys.len());
-            assert!(out.topics.iter().all(|t| t.passes.len() == 3 && t.seeded_vintage.as_deref() == Some("vintage")));
+            assert!(out.topics.iter().all(|t| t.passes == 3));
+            for t in &out.topics {
+                assert_eq!(t.write_up.as_deref(), Some(format!("write-up-{}-2", t.topic_key).as_str()));
+            }
             for (key, depth, messages) in calls.iter().filter(|(k, _, _)| k != "disconfirming") {
                 let brief = &messages[1].content;
-                assert!(brief.contains(&format!("finding-{key}")), "{brief}");
                 assert_eq!(brief.contains("\nFOLLOW-UP\n"), *depth > 0);
+                assert_eq!(brief.contains("\nWRITE-UP SO FAR\n"), *depth > 0);
                 for other in &keys {
                     if other != key {
-                        assert!(!brief.contains(&format!("claim-{other}-")));
-                        assert!(!brief.contains(&format!("finding-{other}")));
+                        assert!(!brief.contains(&format!("write-up-{other}-")));
                     }
                 }
-                for previous in 0..*depth {
-                    assert!(brief.contains(&format!("claim-{key}-{previous}")));
+                // The follow-up pass carries the latest write-up alone (the
+                // topic has one write-up at any time) and its own question.
+                if *depth > 0 {
+                    assert!(brief.contains(&format!("write-up-{key}-{}", depth - 1)), "{brief}");
+                    assert!(brief.contains(&format!("follow-{key}-{}", depth - 1)), "{brief}");
+                    for previous in 0..depth - 1 {
+                        assert!(!brief.contains(&format!("write-up-{key}-{previous}")));
+                    }
                 }
             }
             let disconfirm = &calls.last().unwrap().2[1].content;
             assert!(!disconfirm.contains("PAGES ALREADY RETRIEVED"));
-            for key in keys {
-                for depth in 0..3 { assert!(disconfirm.contains(&format!("claim-{key}-{depth}"))); }
+            // Every topic's latest write-up under its title, and no earlier one.
+            for t in &out.topics {
+                assert!(disconfirm.contains(&format!("\n{}\nwrite-up-{}-2\n", t.title, t.topic_key)), "{disconfirm}");
+                for depth in 0..2 { assert!(!disconfirm.contains(&format!("write-up-{}-{depth}", t.topic_key))); }
             }
-            assert!(out.disconfirming.is_some());
+            assert_eq!(out.disconfirming.as_deref(), Some("write-up-disconfirming-0"));
         }
     }
 
@@ -8929,16 +7739,17 @@ mod tests {
             progress: &progress, step_label: "TEST".into(),
         };
         let agenda: Vec<_> = ["a", "b", "c"].iter().map(|key| topic(key, key, &["q"])).collect();
-        let out = runner.run_holding("HOLDING: WID", &agenda, &[], &|_| None).unwrap();
+        let brief = brief_of(WID_HEADER);
+        let out = runner.run_holding(&brief, &agenda).unwrap();
         assert_eq!(model.calls.lock().unwrap().len(), 3);
-        assert!(out.topics.iter().all(|t| t.skipped.is_none() && t.passes.len() == 1));
+        assert!(out.topics.iter().all(|t| t.skipped.is_none() && t.passes == 1));
         assert_eq!(out.gaps.iter().filter(|g| g.contains("follow-up not spent")).count(), 3);
         assert!(out.gaps.iter().any(|g| g.contains("disconfirming-fetch pass not spent")));
         assert!(out.disconfirming.is_none());
     }
 
     #[test]
-    fn scheduler_honors_absent_proposals_and_cancellation_between_phases() {
+    fn scheduler_honors_absent_questions_and_cancellation_between_phases() {
         use std::sync::{atomic::AtomicBool, Arc};
         for cancel_after in [None, Some(2)] {
             let cancel = Arc::new(AtomicBool::new(false));
@@ -8955,13 +7766,14 @@ mod tests {
                 progress: &progress, step_label: "TEST".into(),
             };
             let agenda = vec![topic("a", "A", &["q"]), topic("b", "B", &["q"])];
-            let result = runner.run_holding("HOLDING: WID", &agenda, &[], &|_| None);
+            let brief = brief_of(WID_HEADER);
+            let result = runner.run_holding(&brief, &agenda);
             if cancel_after.is_some() {
                 assert!(result.unwrap_err().to_string().contains("cancelled"));
                 assert_eq!(model.calls.lock().unwrap().len(), 2);
             } else {
                 let out = result.unwrap();
-                assert!(out.topics.iter().all(|t| t.passes.len() == 1));
+                assert!(out.topics.iter().all(|t| t.passes == 1));
                 assert!(out.disconfirming.is_some());
                 assert_eq!(model.calls.lock().unwrap().len(), 3);
             }
@@ -8991,20 +7803,17 @@ mod tests {
     }
 
     #[test]
-    fn a_redirecting_seed_url_keeps_its_surfaced_by_lineage() {
-        // The seed stores the requested URL; the fetch redirects and the claim
-        // cites the final URL — the requested-URL alias preserves lineage.
+    fn a_redirected_fetch_enters_the_roster_under_its_final_address() {
+        // The lead stores the requested URL; the fetch redirects and the roster
+        // records the page under the address it was served from.
         let model = ScriptModel::new(vec![
             turn_with_tools(json!([
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/widget"}}}
             ])),
             gather_done(),
-            findings_turn(json!({
-                "findings": "found",
-                "claims": [{"claim": "c", "source_id": "S1"}]
-            })),
+            prose("found"),
+            no_followup(),
             gather_done(),
-            findings_turn(json!({"findings": "d", "claims": []})),
         ]);
         let web = RedirectWeb;
         let clock = FrozenClock(Duration::from_secs(1));
@@ -9020,12 +7829,11 @@ mod tests {
             progress: &ctx,
             step_label: "research TEST".into()
         };
-        let out = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &seeds(), &|_| None)
-            .unwrap();
-        let claim = &out.topics[0].passes[0].claims[0];
-        assert_eq!(claim.source_url, "https://www.reuters.com/widget-final");
-        assert_eq!(claim.surfaced_by.as_deref(), Some("seed-1"));
+        let brief = brief_with_leads();
+        let out = r.run_holding(&brief, &one_topic_agenda()).unwrap();
+        assert_eq!(out.roster.len(), 1);
+        assert_eq!(out.roster[0].url, "https://www.reuters.com/widget-final");
+        assert_eq!(out.roster[0].published.as_deref(), Some("2026-08-20"), "the lead's date follows the page through the redirect");
     }
 
     #[test]
@@ -9035,13 +7843,12 @@ mod tests {
         let clock = FrozenClock(Duration::from_secs(1));
         let ctx = RunContext::noop();
         let r = runner(&model, &web, &clock, &ctx, 10);
-        let err = r
-            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
-            .unwrap_err();
+        let brief = brief_of(WID_HEADER);
+        let err = r.run_holding(&brief, &one_topic_agenda()).unwrap_err();
         assert!(err.to_string().contains("research turn failed"), "{err}");
     }
 
-    // ---- Agenda -----------------------------------------------------------
+    // ---- The tool results and the gathering message -----------------------
 
     #[test]
     fn quoted_page_text_is_framed_as_untrusted_data() {
@@ -9091,43 +7898,37 @@ mod tests {
 
     #[test]
     fn the_gathering_message_is_two_parts_with_no_app_concept() {
-        // `portfolio-v43`: Part 1 the inputs — the holding header, TOPIC, on a
-        // continuity run PRIOR FINDINGS, NEWS LEADS without ids (the tier scale
-        // rides the tool descriptions since v50) — and no instruction; Part 2
-        // the task with the weighing clause, the per-reply bound and the
-        // stopping rule; no app word anywhere. The ledger's STANDING
-        // CONDITIONS left the brief with the ledger.
+        // Part 1 the inputs — the holding header, FETCHED VALUES, NEWS LEADS
+        // without ids, on a continuity run the prior documents, then TOPIC
+        // (the tier scale rides the tool descriptions since v50) — and no
+        // instruction; Part 2 the task with the weighing clause, the per-reply
+        // bound and the stopping rule; no app word anywhere.
         let agenda = one_topic_agenda();
-        let seed = TopicSeed {
-            findings: vec!["2026-08-01: Widget Co held 40% share. [https://example.com/share]".into()]
+        let brief = HoldingBrief {
+            header: WID_HEADER.into(),
+            fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
+            leads: leads(),
+            prior_documents: "\nPRIOR THESIS (written 2026-08-01)\nThesis: hold for the share gain.\n".into(),
         };
-        let s = seeds();
-        let ctx = PassContext {
-            holding_brief: "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n",
-            topic: &agenda[0],
-            seed: Some(&seed),
-            seeds: &s,
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let ctx = pass_ctx(&brief, &agenda[0]);
         let user = pass_brief(&ctx);
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").expect("two parts");
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
-        for section in ["\nTOPIC\n", "\nPRIOR FINDINGS\n", "\nNEWS LEADS\n"] {
+        for section in ["\nFETCHED VALUES\n", "\nNEWS LEADS\n", "\nPRIOR THESIS (written 2026-08-01)\n", "\nTOPIC\n"] {
             assert!(part1.contains(section), "Part 1 lacks {section}: {part1}");
         }
-        assert!(!part1.contains("STANDING CONDITIONS"), "{part1}");
-        // `portfolio-v49` (attempt-8 Finding 4): the holding-constant blocks
-        // lead — the header, the leads, the tool-results gloss — and the
-        // topic's own text follows them.
+        for gone in ["PRIOR FINDINGS", "CLAIMS SO FAR", "STANDING CONDITIONS"] {
+            assert!(!part1.contains(gone), "{gone} survives: {part1}");
+        }
+        // The holding-constant blocks lead in the docs' order and the topic's
+        // own text follows them.
         let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{section}"));
         assert!(
-            at("\nNEWS LEADS\n") < at("\nTOPIC\n") && at("\nTOPIC\n") < at("\nPRIOR FINDINGS\n"),
+            at("\nFETCHED VALUES\n") < at("\nNEWS LEADS\n")
+                && at("\nNEWS LEADS\n") < at("\nPRIOR THESIS")
+                && at("\nPRIOR THESIS") < at("\nTOPIC\n"),
             "{part1}"
         );
-        assert!(part1.contains("- 2026-08-01: Widget Co held 40% share. [https://example.com/share]\n"), "{part1}");
         assert!(part1.contains("- Widget beats — https://reuters.com/widget (fmp-news, 2026-08-20)\n"), "{part1}");
         assert!(!part1.contains("[seed-1]"), "{part1}");
         // `portfolio-v50`: Part 1 carries no TOOL RESULTS legend; the tier scale
@@ -9138,9 +7939,6 @@ mod tests {
             tools.contains("The source tier runs from 0 to 5: 0 is a primary source") && tools.contains("extraction quality"),
             "{tools}"
         );
-        // `portfolio-v52`: the value is `source tier` on every surface and the
-        // description carries no subject-tier bracket; since `portfolio-v53` the
-        // relation is stated nowhere — the header's two fields carry it.
         assert!(!tools.contains("tier holds"), "{tools}");
         assert!(!user.contains("applies to the subjects"), "{user}");
         assert!(tools.contains("its source tier (0 to 5, as on a search result); the subjects its source is trusted on; and its extraction quality"), "{tools}");
@@ -9152,12 +7950,12 @@ mod tests {
         for item in [
             "1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS most likely to answer them.",
             "a weak source lowers confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect of the source.",
-            "Where a finding under PRIOR FINDINGS bears on a question, look for whether it still holds and for what is newer.",
             "2. At most 8 tool calls in one reply.",
             "3. Stop when the questions are answered",
         ] {
             assert!(part2.contains(item), "Part 2 lacks {item}: {part2}");
         }
+        assert!(!part2.contains("PRIOR"), "Part 2 points at no prior block: {part2}");
         for word in [
             "orchestrator", "ledger", "cached", "bounded", "citable", "budget", "GATHER",
             "FALSIFIER", "STRUCTURED SEEDS", "PRIOR RESEARCH SEED", "EVIDENCE LEDGER",
@@ -9172,39 +7970,28 @@ mod tests {
             assert!(hits.is_empty(), "banned {hits:?} in {text}");
         }
         // The pass kinds change the opening and the sections, never the frame.
-        let claims = vec![EvidenceClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-            claim: "Widget Co held 40% share.".into(),
-            source_url: "https://example.com/share".into(),
-            retrieved_at: String::new(),
-            surfaced_by: None,
-            annotation: None
-        }];
-        let followup = FollowupProposal {
-            question: "Did share hold in Q3?".into(),
-            rationale: "Q2 was the peak.".into(),
-        };
+        let bare = brief_of("HOLDING\nWID.\n");
+        let question = "Did share hold in Q3?".to_string();
+        let so_far = "Widget Co held 40% share (https://example.com/share).".to_string();
         let fu = pass_brief(&PassContext {
-            holding_brief: "HOLDING\nWID.\n",
+            brief: &bare,
             topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: Some(&followup),
-            prior_claims: &claims,
+            followup: Some(&question),
+            write_up_so_far: Some(&so_far),
+            write_ups_so_far: &[],
             disconfirming: false,
-            depth: 0
+            depth: 1,
         });
         assert!(
-            fu.contains("\nFOLLOW-UP\nThe question this pass pursues, and why it was proposed.\nDid share hold in Q3?\nBecause: Q2 was the peak.\n"),
+            fu.contains("\nFOLLOW-UP\nThe question this pass pursues.\nDid share hold in Q3?\n"),
             "{fu}"
         );
         assert!(
-            fu.contains("\nCLAIMS SO FAR\nWhat this topic's earlier searching established. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n- Widget Co held 40% share. [https://example.com/share]\n  published: unknown; fact period: unknown\n"),
+            fu.contains("\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\nWidget Co held 40% share (https://example.com/share).\n"),
             "{fu}"
         );
         assert!(
-            fu.contains("Find what the web shows on the question under FOLLOW-UP for this holding, as of the date under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them, and the claims under CLAIMS SO FAR need no second search."),
+            fu.contains("Find what the web shows on the question under FOLLOW-UP for this holding, as of the date under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.\n"),
             "{fu}"
         );
         // `portfolio-v51`: the items name the one question the pass pursues;
@@ -9217,40 +8004,23 @@ mod tests {
         assert!(!fu.contains("the questions"), "{fu}");
         assert!(!fu.contains("FOLLOW-UP question") && !fu.contains("TOPIC questions"), "{fu}");
         assert!(!fu.contains("NEWS LEADS") && !fu.contains("A lead under"), "{fu}");
-        // A follow-up whose root established no claim renders no CLAIMS SO FAR
-        // and its opening ends at the sentence about the questions under TOPIC.
-        let fu_none = pass_brief(&PassContext {
-            holding_brief: "HOLDING\nWID.\n",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: Some(&followup),
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        });
-        assert!(!fu_none.contains("CLAIMS SO FAR"), "{fu_none}");
-        assert!(
-            fu_none.contains("under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.\n"),
-            "{fu_none}"
-        );
         let disc = disconfirming_topic();
+        let write_ups = vec![("Competitive position".to_string(), so_far.clone())];
         let dc = pass_brief(&PassContext {
-            holding_brief: "HOLDING\nWID.\n",
+            brief: &bare,
             topic: &disc,
-            seed: None,
-            seeds: &[],
             followup: None,
-            prior_claims: &claims,
+            write_up_so_far: None,
+            write_ups_so_far: &write_ups,
             disconfirming: true,
-            depth: 0
+            depth: 0,
         });
         assert!(
-            dc.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n"),
+            dc.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n\nCompetitive position\nWidget Co held 40% share (https://example.com/share).\n"),
             "{dc}"
         );
         assert!(
-            dc.contains("Find what the web shows on the question under TOPIC for this holding, as of the date under HOLDING. The claims under CLAIMS SO FAR are what that question tests: search for evidence against them, not for more evidence for them."),
+            dc.contains("Find what the web shows on the question under TOPIC for this holding, as of the date under HOLDING. The write-ups under WRITE-UPS SO FAR are what that question tests: search for evidence against them, not for more evidence for them."),
             "{dc}"
         );
         // `portfolio-v55`: the disconfirming items use the singular, as the brief carries one question.
@@ -9261,14 +8031,15 @@ mod tests {
             "{dc}"
         );
         assert!(!dc.contains("DISCONFIRMING") && !dc.contains("emerging thesis"), "{dc}");
+        assert!(dc.contains("What contradicts the write-ups under WRITE-UPS SO FAR"), "{dc}");
     }
 
     #[test]
     fn the_model_note_is_plain_words_and_the_summary_keeps_the_mechanism() {
         // `portfolio-v43` (ruled 2026-09-17): two renderings from one record —
-        // the plain sentence (the app-recorded no-page findings since
-        // `portfolio-v59`) names no cap, bound or budget; the persisted
-        // summary still does.
+        // the plain sentence (the no-page gap's parenthetical since the
+        // research chain) names no cap, bound or budget; the persisted summary
+        // still does.
         assert_eq!(PassDegradation::default().model_note(), None);
         let d = PassDegradation {
             searches_empty: 1,
@@ -9295,13 +8066,12 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_with_no_page_body_is_recorded_by_the_app_without_a_synthesis_call() {
-        // Fix list 4.3 (ruled 2026-09-17): the search returns nothing and both
-        // fetches fail, so no page carries body text — the pass is assembled
-        // by the app (the fixed sentence plus the searching note, no claims,
-        // no follow-up) and the model receives no synthesis request: the
-        // script holds the two gathering turns only, and a synthesis request
-        // would have exhausted it.
+    fn a_pass_with_no_page_body_spends_no_synthesis_and_leaves_no_write_up() {
+        // The search returns nothing and both fetches fail, so no page carries
+        // body text — the pass spends no synthesis conversation (the script
+        // holds the two gathering turns only, and a synthesis request would
+        // have exhausted it), writes no write-up, and its losses persist as
+        // gaps (`docs/web-research.md §The research loop and context management`).
         struct FailingWeb;
         impl ResearchWeb for FailingWeb {
             fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
@@ -9334,16 +8104,8 @@ mod tests {
             step_label: "research TEST".into()
         };
         let agenda = one_topic_agenda();
-        let pctx = PassContext {
-            holding_brief: "HOLDING: WID",
-            topic: &agenda[0],
-            seed: None,
-            seeds: &[],
-            followup: None,
-            prior_claims: &[],
-            disconfirming: false,
-            depth: 0
-        };
+        let brief = brief_of(WID_HEADER);
+        let pctx = pass_ctx(&brief, &agenda[0]);
         let mut gaps = Vec::new();
         let mut spent = 0u32;
         let mut texts = std::collections::HashMap::new();
@@ -9352,23 +8114,50 @@ mod tests {
         let pass = r
             .run_pass(&pctx, &mut spent, &mut gaps, &mut texts, &mut meta, &mut published, &mut Vec::new(), &mut EarningsRecovery::default())
             .unwrap();
-        assert_eq!(
-            pass.findings,
-            "No page could be retrieved for this topic; nothing was established. Searching for this topic was incomplete: 1 search returned nothing, and 2 pages could not be retrieved."
-        );
-        assert!(pass.claims.is_empty() && pass.followup.is_none());
+        assert_eq!(pass, PassOutcome::default());
         assert!(gaps.iter().any(|g| g.contains("gathering degraded")), "{gaps:?}");
+        assert!(
+            gaps.contains(&"topic competitive-position: no page with body text was retrieved; the pass wrote no write-up (Searching for this topic was incomplete: 1 search returned nothing, and 2 pages could not be retrieved.)".to_string()),
+            "{gaps:?}"
+        );
         assert_eq!(spent, 2, "failed live attempts still spend the budget");
     }
 
+    #[test]
+    fn the_offline_stub_writes_no_write_up_and_the_audit_record_mirrors_the_loop() {
+        let plan = ResearchPlan {
+            agenda: vec![topic("a", "A", &["q"]), topic("b", "B", &["q"])],
+            brief: brief_of(WID_HEADER),
+            step_label: "holding-WID".into(),
+        };
+        let out = offline_stub(&plan);
+        assert_eq!(out.topics.len(), 2);
+        for t in &out.topics {
+            assert_eq!((t.write_up.as_deref(), t.passes, t.skipped.as_deref()), (None, 0, Some("offline analyst")));
+        }
+        assert!(out.disconfirming.is_none() && out.roster.is_empty());
+        assert_eq!(
+            crate::portfolio::distill::bridge_analysis(&out),
+            "No research write-up this run.",
+            "the bridge renders the stub's absence as its one sentence, under no topic title"
+        );
+        let record = ResearchAuditRecord::from_research(&out);
+        assert_eq!(record.write_ups, out.topics);
+        assert_eq!(record.gaps, vec!["research: offline analyst (no web tool)".to_string()]);
+        // The record round-trips as JSON with its typed roster and no legacy field.
+        let json = serde_json::to_value(&record).unwrap();
+        assert!(json.get("combined").is_none() && json.get("seed_layer").is_none());
+        assert_eq!(serde_json::from_value::<ResearchAuditRecord>(json).unwrap(), record);
+    }
 }
 
 /// Rendered samples of the research messages for the fixed-evidence
-/// harness's pins and prompt dump (`portfolio-v43`): the gathering passes
-/// (root, follow-up, continuity, disconfirming) and the synthesis passes
-/// (root on a degraded gathering, follow-up, disconfirming) on hand-written
-/// leads, claims, conditions and pages — the prompts' shape on a holding,
-/// never a run's research. The live harness issues no research call.
+/// harness's pins and prompt dump: the gathering passes (root, follow-up,
+/// continuity, disconfirming, a later topic with reused pages) and the
+/// synthesis conversation (the root write-up on a later topic, the follow-up
+/// pass, the disconfirming pass, and the follow-up ask) on hand-written
+/// leads, write-ups and pages — the prompts' shape on a holding, never a run's
+/// research. The live harness issues no research call.
 #[cfg(test)]
 pub(crate) mod samples {
     use super::*;
@@ -9378,8 +8167,8 @@ pub(crate) mod samples {
 
     /// One rendered research call: the two messages, what the loop appends
     /// before issue, and the request's protocol half — the tools on a
-    /// gathering turn, the findings grammar on a synthesis call — under the
-    /// stage label the run gives it.
+    /// gathering turn, nothing on a synthesis call — under the stage label the
+    /// run gives it.
     pub(crate) struct Sample {
         pub label: String,
         pub stage: String,
@@ -9440,65 +8229,61 @@ pub(crate) mod samples {
         ]
     }
 
-    pub(crate) fn claims(stub: bool) -> Vec<EvidenceClaim> {
+    /// Two hand-written headlines for a bond-fund holding, so the fund sample
+    /// reads as one.
+    pub(crate) fn fund_leads(stub: bool) -> Vec<ResearchSeed> {
         vec![
-            EvidenceClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-                claim: prose(stub, "claim 1 — one dated fact from its source", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%, down from 17.2% a year earlier, on price cuts and Cybertruck mix."),
-                source_url: "https://ir.tesla.com/press-release/tesla-second-quarter-2026-results".into(),
-                retrieved_at: "2026-09-16T02:11:40Z".into(),
-                surfaced_by: None,
-                annotation: None
+            ResearchSeed {
+                id: "seed-1".into(),
+                headline: prose(stub, "headline of lead 1", "Vanguard trims expense ratios across its bond index lineup"),
+                url: "https://www.reuters.com/markets/funds/vanguard-bond-index-fee-cut-2026-09-08/".into(),
+                source: "reuters.com".into(),
+                published: Some("2026-09-08 13:10:00".into())
             },
-            EvidenceClaim {
-            publication: crate::portfolio::research::PublicationDate::default(),
-            fact_period: crate::portfolio::research::FactPeriod::default(),
-                claim: prose(stub, "claim 2 — one dated fact from its source", "BYD outsold Tesla in Europe for the fourth consecutive month in August 2026 (ACEA registrations)."),
-                source_url: "https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/".into(),
-                retrieved_at: "2026-09-16T02:14:05Z".into(),
-                surfaced_by: None,
-                annotation: None
+            ResearchSeed {
+                id: "seed-2".into(),
+                headline: prose(stub, "headline of lead 2", "Treasury curve steepens as the ten-year yield climbs past 4.4%"),
+                url: "https://www.ft.com/content/treasury-curve-steepens-2026-09-11".into(),
+                source: "ft.com".into(),
+                published: Some("2026-09-11 16:45:00".into())
             },
         ]
     }
 
-    /// The continuity seed: the prior claims through `seed_finding_line` so
-    /// the example carries the running app's shape (`portfolio-v54`).
-    fn seed(stub: bool) -> TopicSeed {
-        let prior_claim = |text: String, url: &str, published: &str, kind: PeriodPrecision, period: &str| DistilledClaim {
-            claim: text,
-            source_url: url.into(),
-            retrieved_at: "2026-09-01T14:00:00Z".into(),
-            publication: PublicationDate::from_reported(Some(published)),
-            fact_period: FactPeriod { kind, value: period.into(), end: None },
-            cached: false,
-        };
-        TopicSeed {
-            findings: vec![
-                seed_finding_line(&prior_claim(
-                    prose(stub, "prior finding 1 — a claim the prior run kept", "Tesla's Q2 2026 automotive gross margin ex-credits was 14.6%."),
-                    "https://ir.tesla.com/press-release/tesla-second-quarter-2026-results",
-                    "2026-07-22",
-                    PeriodPrecision::Quarter,
-                    "2026-Q2",
-                )),
-                seed_finding_line(&prior_claim(
-                    prose(stub, "prior finding 2 — a claim the prior run kept", "BYD outsold Tesla in Europe in July 2026 for the third consecutive month."),
-                    "https://www.acea.auto/pc-registrations/new-car-registrations-july-2026/",
-                    "2026-08-26",
-                    PeriodPrecision::Month,
-                    "2026-07",
-                )),
-            ]
-        }
+    /// The topic's write-up from its root pass — what a follow-up pass
+    /// rewrites whole.
+    pub(crate) fn write_up_so_far(stub: bool) -> String {
+        prose(
+            stub,
+            "the topic's write-up so far — the root pass's account",
+            "Tesla's competitive position weakened in Europe over the summer: BYD outsold Tesla for the fourth consecutive month in August 2026 (ACEA registrations, https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/, published 2026-09-03), while Tesla's Q2 2026 automotive gross margin ex-credits fell to 14.6% from 17.2% a year earlier on price cuts and Cybertruck mix (https://ir.tesla.com/press-release/tesla-second-quarter-2026-results, Q2 2026). Pricing power is the open question: no page states Model Y refresh pricing for September.",
+        )
     }
 
-    fn followup(stub: bool) -> FollowupProposal {
-        FollowupProposal {
-            question: prose(stub, "the approved follow-up question from the root pass's synthesis", "Has BYD's European share gain continued into September, and is Tesla's Model Y refresh pricing responding?"),
-            rationale: prose(stub, "why the question matters to the thesis", "The ACEA August print showed the fourth consecutive month of BYD outselling Tesla; the September run-rate decides whether the share loss is structural."),
-        }
+    /// The follow-up question the root pass's synthesis answered its second
+    /// message with.
+    pub(crate) fn followup_question(stub: bool) -> String {
+        prose(
+            stub,
+            "the follow-up question the root pass's synthesis returned",
+            "Has BYD's European share gain continued into September, and is Tesla's Model Y refresh pricing responding?",
+        )
+    }
+
+    /// This run's write-ups so far, each under its topic — the disconfirming
+    /// pass's subject.
+    pub(crate) fn write_ups_so_far(stub: bool) -> Vec<(String, String)> {
+        vec![
+            ("Competitive / business position".to_string(), write_up_so_far(stub)),
+            (
+                "Recent results and estimate revisions".to_string(),
+                prose(
+                    stub,
+                    "the results topic's write-up",
+                    "Q2 2026 revenue was $25.5B, up 3% year over year, with energy storage revenue up 41% to $4.2B and free cash flow of $0.9B (https://ir.tesla.com/press-release/tesla-second-quarter-2026-results, Q2 2026). Management expects 2026 deliveries roughly flat against 2025 and capital expenditures above $12B for 2026 (the same release). No page states a consensus revision since the release.",
+                ),
+            ),
+        ]
     }
 
     pub(crate) const IR_URL: &str = "https://ir.tesla.com/press-release/tesla-second-quarter-2026-results";
@@ -9545,54 +8330,42 @@ pub(crate) mod samples {
     }
 
     fn ctx<'a>(
-        holding_brief: &'a str,
+        brief: &'a HoldingBrief,
         topic: &'a AgendaTopic,
-        seed: Option<&'a TopicSeed>,
-        seeds: &'a [ResearchSeed],
-        followup: Option<&'a FollowupProposal>,
-        prior_claims: &'a [EvidenceClaim],
+        followup: Option<&'a str>,
+        write_up_so_far: Option<&'a str>,
+        write_ups_so_far: &'a [(String, String)],
         disconfirming: bool,
     ) -> PassContext<'a> {
-        PassContext { holding_brief, topic, seed, seeds, followup, prior_claims, disconfirming, depth: 0 }
-    }
-
-    /// Two hand-written headlines for a bond-fund holding, so the fund sample
-    /// reads as one.
-    pub(crate) fn fund_leads(stub: bool) -> Vec<ResearchSeed> {
-        vec![
-            ResearchSeed {
-                id: "seed-1".into(),
-                headline: prose(stub, "headline of lead 1", "Vanguard trims expense ratios across its bond index lineup"),
-                url: "https://www.reuters.com/markets/funds/vanguard-bond-index-fee-cut-2026-09-08/".into(),
-                source: "reuters.com".into(),
-                published: Some("2026-09-08 13:10:00".into())
-            },
-            ResearchSeed {
-                id: "seed-2".into(),
-                headline: prose(stub, "headline of lead 2", "Treasury curve steepens as the ten-year yield climbs past 4.4%"),
-                url: "https://www.ft.com/content/treasury-curve-steepens-2026-09-11".into(),
-                source: "ft.com".into(),
-                published: Some("2026-09-11 16:45:00".into())
-            },
-        ]
+        PassContext {
+            brief,
+            topic,
+            followup,
+            write_up_so_far,
+            write_ups_so_far,
+            disconfirming,
+            depth: usize::from(followup.is_some()),
+        }
     }
 
     fn stage_of(symbol: &str, topic_key: &str, leg: &str) -> String {
         research_retry_stage(&crate::portfolio::holding_step_key(symbol), topic_key, leg)
     }
 
-    /// Gathering samples, including a later topic with already retrieved text.
+    /// Gathering samples: the root pass on a first analysis, the follow-up
+    /// pass, the root pass on a continuity run (over `continuity`, the brief
+    /// carrying the prior documents), the disconfirming pass, and a later
+    /// topic with already retrieved text.
     pub(crate) fn gathering_messages(
         symbol: &str,
-        holding_brief: &str,
+        brief: &HoldingBrief,
+        continuity: &HoldingBrief,
         topic: &AgendaTopic,
-        leads: &[ResearchSeed],
         stub: bool,
     ) -> Vec<Sample> {
-        let leads = leads.to_vec();
-        let claims = claims(stub);
-        let seed = seed(stub);
-        let fu = followup(stub);
+        let so_far = write_up_so_far(stub);
+        let question = followup_question(stub);
+        let write_ups = write_ups_so_far(stub);
         let disc = disconfirming_topic();
         let system = research_system_prompt();
         let sample = |label: &str, topic_key: &str, user: String| Sample {
@@ -9604,7 +8377,7 @@ pub(crate) mod samples {
             tools: Some(research_tools()),
             format: None,
         };
-        let reuse_ctx = ctx(holding_brief, topic, None, &leads, None, &[], false);
+        let reuse_ctx = ctx(brief, topic, None, None, &[], false);
         let source = ReusablePage {
             page: page(IR_URL, &ir_title(stub), &ir_text(stub), 0.92, false),
             requested_urls: vec![IR_URL.into()], published: Some("2026-07-22".into()),
@@ -9613,28 +8386,71 @@ pub(crate) mod samples {
         };
         let (reuse, reused) = reuse_pages(&reuse_ctx, &[source], &mut Vec::new());
         vec![
-            sample("root pass, first analysis, two news leads", &topic.key, pass_brief(&ctx(holding_brief, topic, None, &leads, None, &[], false))),
-            sample("follow-up pass, the approved question and the topic's claims so far", &topic.key, pass_brief(&ctx(holding_brief, topic, None, &leads, Some(&fu), &claims, false))),
-            sample("root pass on a continuity run, the prior findings", &topic.key, pass_brief(&ctx(holding_brief, topic, Some(&seed), &leads, None, &[], false))),
-            sample("the disconfirming pass, the run's claims so far", &disc.key, pass_brief(&ctx(holding_brief, &disc, None, &leads, None, &claims, true))),
+            sample("root pass, first analysis, two news leads", &topic.key, pass_brief(&ctx(brief, topic, None, None, &[], false))),
+            sample("follow-up pass, the question and the topic's write-up so far", &topic.key, pass_brief(&ctx(brief, topic, Some(&question), Some(&so_far), &[], false))),
+            sample("root pass on a continuity run, the prior thesis document", &topic.key, pass_brief(&ctx(continuity, topic, None, None, &[], false))),
+            sample("the disconfirming pass, the run's write-ups so far", &disc.key, pass_brief(&ctx(brief, &disc, None, None, &write_ups, true))),
             sample("later topic, previously retrieved pages", &topic.key, pass_brief_with_reuse(&reuse_ctx, &reuse, !reused.is_empty())),
         ]
     }
 
-    /// The synthesis passes on one topic, over two hand-written pages — the
-    /// first reused from an earlier topic, the second fetched by this pass
-    /// (`portfolio-v49`: reused pages lead, in first-retrieval order): the root,
-    /// a follow-up, the disconfirming pass, and the follow-up at the topic's
-    /// depth cap, which asks for no proposal (`portfolio-v60`).
+    /// The synthesis conversation's first message on one topic, over two
+    /// hand-written pages — the first reused from an earlier topic, the second
+    /// fetched by this pass (`portfolio-v49`: reused pages lead, in
+    /// first-retrieval order): the root, a follow-up, and the disconfirming
+    /// pass.
     pub(crate) fn synthesis_messages(
         symbol: &str,
-        holding_brief: &str,
+        brief: &HoldingBrief,
         topic: &AgendaTopic,
         stub: bool,
     ) -> Vec<Sample> {
-        let claims = claims(stub);
-        let fu = followup(stub);
+        let so_far = write_up_so_far(stub);
+        let question = followup_question(stub);
+        let write_ups = write_ups_so_far(stub);
         let disc = disconfirming_topic();
+        let render = |label: &str, c: &PassContext<'_>| Sample {
+            label: format!("synthesis — {label}"),
+            stage: stage_of(symbol, &c.topic.key, "synthesis"),
+            system: synthesis_system_prompt(),
+            user: synthesis_user(c, stub),
+            appended: Vec::new(),
+            tools: None,
+            format: None,
+        };
+        vec![
+            render("root pass on a later topic — a page reused from an earlier topic, then this pass's fetch", &ctx(brief, topic, None, None, &[], false)),
+            render("follow-up pass", &ctx(brief, topic, Some(&question), Some(&so_far), &[], false)),
+            render("the disconfirming pass", &ctx(brief, &disc, None, None, &write_ups, true)),
+        ]
+    }
+
+    /// The synthesis conversation's second message on a root pass: the first
+    /// message, the write-up echoed as the assistant's turn, then the
+    /// follow-up ask — the reply the question verbatim or the one word `none`.
+    pub(crate) fn followup_ask_sample(
+        symbol: &str,
+        brief: &HoldingBrief,
+        topic: &AgendaTopic,
+        stub: bool,
+    ) -> Sample {
+        let c = ctx(brief, topic, None, None, &[], false);
+        Sample {
+            label: "synthesis — the follow-up ask, the conversation's second message".into(),
+            stage: format!("{} follow-up", stage_of(symbol, &topic.key, "synthesis")),
+            system: synthesis_system_prompt(),
+            user: synthesis_user(&c, stub),
+            appended: vec![
+                ChatMessage::assistant(prose(stub, "the write-up the model returned on the first message", &write_up_so_far(false))),
+                ChatMessage::user(followup_ask()),
+            ],
+            tools: None,
+            format: None,
+        }
+    }
+
+    /// The synthesis message over the two sample pages.
+    fn synthesis_user(c: &PassContext<'_>, stub: bool) -> String {
         let ir = page(IR_URL, &ir_title(stub), &ir_text(stub), 0.92, false);
         let wsj = page(WSJ_URL, &wsj_title(stub), &wsj_text(stub), 0.04, true);
         let fetched = vec![
@@ -9649,28 +8465,9 @@ pub(crate) mod samples {
             (WSJ_URL.to_string(), PageMeta { title: wsj.title.clone(), published: Some("2026-09-03".into()) }),
         ]
         .into();
-        let render = |label: &str, c: &PassContext<'_>| {
-            let mut gaps = Vec::new();
-            let mut shown = std::collections::HashMap::new();
-            Sample {
-                label: format!("synthesis — {label}"),
-                stage: stage_of(symbol, &c.topic.key, "synthesis"),
-                system: synthesis_system_prompt(c.offers_followup()),
-                user: synthesis_brief(c, &fetched, &explicit, &texts, &meta, &mut gaps, &mut shown),
-                appended: Vec::new(),
-                tools: None,
-                format: Some(findings_schema(c.offers_followup())),
-            }
-        };
-        vec![
-            render("root pass on a later topic — a page reused from an earlier topic, then this pass's fetch", &ctx(holding_brief, topic, None, &[], None, &[], false)),
-            render("follow-up pass", &ctx(holding_brief, topic, None, &[], Some(&fu), &claims, false)),
-            render("the disconfirming pass", &ctx(holding_brief, &disc, None, &[], None, &claims, true)),
-            render(
-                "follow-up pass, the topic's last under the depth cap",
-                &PassContext { depth: MAX_PASSES_PER_TOPIC - 1, ..ctx(holding_brief, topic, None, &[], Some(&fu), &claims, false) },
-            ),
-        ]
+        let mut gaps = Vec::new();
+        let mut shown = std::collections::HashMap::new();
+        synthesis_brief(c, &fetched, &explicit, &texts, &meta, &mut gaps, &mut shown)
     }
 
     /// What a gathering turn gets back: a search result set, an empty one, a

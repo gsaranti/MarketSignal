@@ -2439,6 +2439,9 @@ fn normalized_assumption_value(
 /// downgrade. The true leg revives only if the channel is promoted and the
 /// feed gains an as-of date. `Err` carries the failed condition for the
 /// audit; the structured targets stand.
+/// Parks for the removal sweep (ruled 2026-10-08): the forward-assumption
+/// channel that fed it left with the distillation grammar, so only its tests
+/// call it.
 pub fn refine_targets_with_assumption(
     fin: &CompanyFinancials,
     rates: &RateAnchors,

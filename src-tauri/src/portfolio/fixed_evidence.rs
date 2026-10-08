@@ -1296,14 +1296,19 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
     assert_eq!(keys, declared);
 }
 
-/// The research messages the harness renders (`portfolio-v43`): the gathering
-/// and synthesis passes on TSLA's first stock topic and the synthetic fund's
-/// exposure-profile topic, over hand-written leads, claims, conditions and
-/// pages (`research::samples`) — the prompts' shape, never a run's research.
+/// The research messages the harness renders: the gathering and synthesis
+/// passes on TSLA's first stock topic and the synthetic fund's
+/// exposure-profile topic, over the pipeline's own holding-constant brief
+/// (`pipeline::research_brief`) and hand-written leads, write-ups and pages
+/// (`research::samples`) — the prompts' shape, never a run's research.
 fn research_samples() -> Vec<super::research::samples::Sample> {
+    use super::research::samples;
     let f = fixtures().into_iter().find(|f| f.symbol == "TSLA").expect("TSLA");
     let d = dossier_of(&f, true);
-    let brief = pipeline::holding_header(&d);
+    let mut brief = pipeline::research_brief(&d, rates(), None);
+    brief.leads = samples::stock_leads(false);
+    let mut continuity = pipeline::research_brief(&prompt_examples::continuity_dossier(&f), rates(), None);
+    continuity.leads = samples::stock_leads(false);
     let agenda = super::research::build_agenda(&d, &super::research::AgendaTriggers::default());
     let fx = synthetic_role_risk_fixture();
     let fund_agenda =
@@ -1312,23 +1317,13 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
         .iter()
         .find(|t| t.key == "fund-exposure-profile")
         .expect("the retitled fund exposure topic (fix list 4.4)");
-    let mut samples = super::research::samples::gathering_messages(
-        "TSLA",
-        &brief,
-        &agenda[0],
-        &super::research::samples::stock_leads(false),
-        false,
-    );
-    samples.extend(super::research::samples::synthesis_messages("TSLA", &brief, &agenda[0], false));
-    let fund_brief = pipeline::holding_header(&fx.dossier);
-    samples.extend(
-        super::research::samples::gathering_messages(
-            "BND",
-            &fund_brief,
-            exposure,
-            &super::research::samples::fund_leads(false),
-            false,
-        )
+    let mut out = samples::gathering_messages("TSLA", &brief, &continuity, &agenda[0], false);
+    out.extend(samples::synthesis_messages("TSLA", &brief, &agenda[0], false));
+    out.push(samples::followup_ask_sample("TSLA", &brief, &agenda[0], false));
+    let mut fund_brief = pipeline::research_brief(&fx.dossier, rates(), None);
+    fund_brief.leads = samples::fund_leads(false);
+    out.extend(
+        samples::gathering_messages("BND", &fund_brief, &fund_brief, exposure, false)
             .into_iter()
             .take(1)
             .map(|mut s| {
@@ -1336,22 +1331,39 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
                 s
             }),
     );
-    samples
+    out
 }
 
 /// Every research message on the sample passes is two marked parts in order
-/// with no app concept (`portfolio-v43`): Part 1 the input sections with the
-/// dated holding header, the tier scale stated on a synthesis pass (on a
-/// gathering pass it rides the tool descriptions) and no instruction; Part 2 the
-/// task — on a gathering pass the per-reply bound and the stopping rule, on a
-/// synthesis pass the numbered items and a shape whose keys carry the
-/// follow-up on a topic pass and not on the disconfirming pass or a topic's
-/// last pass under the depth cap (`portfolio-v60`) — and neither
-/// part, nor the system prompt, carries a banned word or a routing word.
+/// with no app concept: Part 1 the input sections — the dated holding header,
+/// FETCHED VALUES, on a gathering pass the leads and on a continuity run the
+/// prior thesis document, the tier scale stated on a synthesis pass (on a
+/// gathering pass it rides the tool descriptions) — and no instruction; Part
+/// 2 the task — on a gathering pass the per-reply bound and the stopping
+/// rule, on a synthesis pass the write-up with its length band and no return
+/// shape — and neither part, nor the system prompt, carries a banned word or
+/// a routing word; the follow-up ask is the one word `none` or the question.
+/// The gathering brief less its PRIOR THESIS block: the prior document is the
+/// model's own text, rendered verbatim by contract, so the lexicon checks read
+/// the app's text around it.
+fn without_prior_document(user: &str) -> String {
+    let Some(start) = user.find("\nPRIOR THESIS") else {
+        return user.to_string();
+    };
+    let rest = &user[start + 1..];
+    let end = ["\nPAGES ALREADY RETRIEVED\n", "\nTOPIC\n"]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    format!("{}{}", &user[..start], &rest[end..])
+}
+
 #[test]
 fn research_messages_are_two_parts_with_no_app_concept() {
     let samples = research_samples();
-    assert_eq!(samples.len(), 10, "five gathering, four synthesis, one fund gathering");
+    assert_eq!(samples.len(), 10, "five gathering, three synthesis, the ask, one fund gathering");
     // The tool descriptions are prompt text too (`portfolio-v50`): they state
     // the tier scale and the page header's fields, and carry no banned word.
     let tools = super::research::research_tools().to_string();
@@ -1360,11 +1372,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         "{tools}"
     );
     assert!(banned_hits(&tools).is_empty(), "tools carry {:?}\n{tools}", banned_hits(&tools));
-    // The descriptions state the extraction-quality range and carry no weighing
-    // or safety instruction (`portfolio-v50`): the frame rides the page marker.
     assert!(tools.contains("extraction quality (0 to 1"), "{tools}");
-    // `portfolio-v52`: the subject field carries no bracket; since `portfolio-v53`
-    // the subject-tier relation is stated nowhere — the header's fields carry it.
     assert!(tools.contains("the subjects its source is trusted on; and its extraction quality"), "{tools}");
     assert!(!tools.contains("tier holds"), "{tools}");
     assert!(!tools.contains("quoted material") && !tools.contains("defect of the source"), "{tools}");
@@ -1376,7 +1384,12 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{}", s.label, s.user));
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{}: {part1}", s.label);
         assert!(part1.contains("\nDate: 2026-09-16.\n"), "{}: no date line\n{part1}", s.label);
+        assert!(part1.contains("\nFETCHED VALUES\n"), "{}: no FETCHED VALUES\n{part1}", s.label);
         assert!(part1.contains("\nTOPIC\n"), "{}: no TOPIC\n{part1}", s.label);
+        assert!(s.format.is_none(), "{}: no research call carries a grammar", s.label);
+        for gone in ["PRIOR FINDINGS", "CLAIMS SO FAR", "RETURN SHAPE", "followup_question", "fact_period"] {
+            assert!(!s.user.contains(gone), "{}: {gone} survives\n{}", s.label, s.user);
+        }
         if s.label.starts_with("gathering") {
             // `portfolio-v50`: Part 1 is inputs only — the tool results' fields are
             // glossed on the tool descriptions, not under a heading in Part 1.
@@ -1385,12 +1398,14 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 "{}: a tool-results legend in Part 1\n{part1}",
                 s.label
             );
+            assert!(s.tools.is_some(), "{}", s.label);
+            // The holding-constant blocks lead: FETCHED VALUES before NEWS LEADS,
+            // and the topic's own text after them.
+            let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{}: {section}", s.label));
+            assert!(at("\nFETCHED VALUES\n") < at("\nNEWS LEADS\n") && at("\nNEWS LEADS\n") < at("\nTOPIC\n"), "{}: {part1}", s.label);
         } else {
             assert!(part1.contains("0 is a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
-            // `portfolio-v59`: the gloss names the TOPIC heading, states the fields in
-            // the fetch description's shape, and carries no weighing clause.
             assert!(part1.contains("source tier (0 to 5: 0 is a primary source"), "{}: the tier scale's range is unstated\n{part1}", s.label);
-            // `portfolio-v60`: the disconfirming pass's gloss names its one question.
             let questions = if s.label.contains("disconfirming") { "the question" } else { "the questions" };
             assert!(
                 part1.contains(&format!("\nEVIDENCE\nThe pages retrieved for {questions} under TOPIC, each under a header of: its id; its address; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:")),
@@ -1401,21 +1416,30 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(!part1.contains("defect of the source") && !part1.contains("pages shown"), "{}: {part1}", s.label);
             assert!(part2.contains("it does not exclude it, and a figure that cannot be right is a defect of the source."), "{}: {part2}", s.label);
             assert!(!part1.contains("tier holds"), "{}: {part1}", s.label);
-            // `portfolio-v52`: the synthesis task weighs by source tier; `portfolio-v53`:
-            // no subject-tier sentence.
             assert!(
                 part2.contains("Weigh each page by its source tier and extraction quality") && !part2.contains("applies to the subjects"),
                 "{}: {part2}",
                 s.label
             );
+            assert!(part1.contains("=== S1: "), "{}: {part1}", s.label);
+            assert!(!part1.contains("\nNEWS LEADS\n"), "{}: a synthesis carries no leads", s.label);
+            // The write-up task: plain text, the length band, and the source
+            // clause naming FETCHED VALUES since the brief carries it.
+            assert!(part2.contains("as plain text — no code fence, no JSON, no heading before the first line"), "{}: {part2}", s.label);
+            assert!(part2.contains("The write-up runs 400 to 900 words."), "{}: {part2}", s.label);
+            assert!(part2.contains("or FETCHED VALUES where the figure comes from there"), "{}: {part2}", s.label);
+            assert!(s.tools.is_none(), "{}", s.label);
+            assert!(!s.system.to_lowercase().contains("json") && s.system.contains("Part 2 says what the write-up covers"), "{}: {}", s.label, s.system);
         }
         assert!(!part1.contains("recency"), "{}: recency rendered\n{part1}", s.label);
+        let app_text = without_prior_document(&s.user);
+        let app_part1 = app_text.split("======== PART 2: TASK ========").next().unwrap_or("");
         assert!(
-            !part1.contains("Return ") && !part1.to_lowercase().contains("your "),
-            "{}: Part 1 instructs\n{part1}",
+            !app_part1.contains("Return ") && !app_part1.to_lowercase().contains("your "),
+            "{}: Part 1 instructs\n{app_part1}",
             s.label
         );
-        for (label, text) in [("system", s.system.as_str()), ("user", s.user.as_str())] {
+        for (label, text) in [("system", s.system.as_str()), ("user", app_text.as_str())] {
             let hits = banned_hits(text);
             assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", s.label);
             assert_no_routing_words(&format!("{} {label}", s.label), text);
@@ -1426,17 +1450,16 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             "topic_answered", "material_forward_fact", "[seed-",
         ] {
             assert!(
-                !s.user.contains(word) && !s.system.contains(word),
+                !app_text.contains(word) && !s.system.contains(word),
                 "{}: {word} leaked\n{}",
                 s.label,
-                s.user
+                app_text
             );
         }
         if s.label.starts_with("gathering") {
             assert!(!s.user.contains("Replies remaining"), "{}: {}", s.label, s.user);
             assert_eq!(s.appended.len(), 1);
             assert_eq!(s.appended[0].role, "user");
-            // `portfolio-v51`: the countdown says a last-reply fetch still lands.
             assert_eq!(
                 s.appended[0].content,
                 "SEARCHING\nReplies remaining, including this one: 8.\nPages fetched on the last reply are kept.\n"
@@ -1445,26 +1468,18 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert_no_routing_words(&s.label, &s.appended[0].content);
             if s.label.contains("previously retrieved pages") {
                 assert!(part1.contains("PAGES ALREADY RETRIEVED") && part1.contains("BEGIN PAGE TEXT"));
-                // `portfolio-v56`: the gloss names web_fetch as each page's shape.
                 assert!(
                     part1.contains("\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding, each as web_fetch returns it.\n"),
                     "{}: {part1}",
                     s.label
                 );
-                // The sample's retrieval stamp sits on the analysis date, never after it.
                 assert!(part1.contains("retrieved 2026-09-16T") && !part1.contains("retrieved 2026-09-17"), "{}: {part1}", s.label);
-            }
-            // `portfolio-v50`: item 1 reads the shown pages only where one is shown,
-            // naming the block; a brief with none asks to search first.
-            if s.label.contains("previously retrieved pages") {
                 assert!(
                     part2.contains("1. Read the pages under PAGES ALREADY RETRIEVED against the questions. Search for what remains unanswered"),
                     "{}: {part2}",
                     s.label
                 );
             } else if s.label.contains("follow-up pass") {
-                // `portfolio-v51`: the follow-up pass's items name its one question;
-                // `portfolio-v60`: by the heading it sits under.
                 assert!(
                     part2.contains("1. Search for what the question under FOLLOW-UP asks") && !part2.contains("Read the pages"),
                     "{}: {part2}",
@@ -1472,12 +1487,12 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 );
                 assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
                 assert!(
-                    part2.contains("under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them, and the claims under CLAIMS SO FAR need no second search."),
+                    part2.contains("under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.\n"),
                     "{}: {part2}",
                     s.label
                 );
-                assert!(part1.contains(". Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n"), "{}: {part1}", s.label);
-                assert!(part1.contains("\n  published: "), "{}: {part1}", s.label);
+                assert!(part1.contains("\nFOLLOW-UP\nThe question this pass pursues.\n"), "{}: {part1}", s.label);
+                assert!(part1.contains("\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\n"), "{}: {part1}", s.label);
             } else if !s.label.contains("disconfirming") {
                 assert!(
                     part2.contains("1. Search for what the questions ask") && !part2.contains("Read the pages"),
@@ -1485,11 +1500,8 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     s.label
                 );
             } else {
-                // `portfolio-v55`: the disconfirming opening names TOPIC as the question
-                // and CLAIMS SO FAR as what it tests; the items use the singular, and
-                // the gloss names the two provenance fields.
                 assert!(
-                    part2.contains("Find what the web shows on the question under TOPIC for this holding, as of the date under HOLDING. The claims under CLAIMS SO FAR are what that question tests: search for evidence against them, not for more evidence for them."),
+                    part2.contains("Find what the web shows on the question under TOPIC for this holding, as of the date under HOLDING. The write-ups under WRITE-UPS SO FAR are what that question tests: search for evidence against them, not for more evidence for them."),
                     "{}: {part2}",
                     s.label
                 );
@@ -1500,12 +1512,11 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 );
                 assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
                 assert!(
-                    part1.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n"),
+                    part1.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n"),
                     "{}: {part1}",
                     s.label
                 );
             }
-            // `portfolio-v50`: the leads ride the fetch clause, not a sentence of their own.
             assert!(!part2.contains("worth fetching"), "{}: {part2}", s.label);
             assert!(part2.contains("2. At most 8 tool calls in one reply."), "{}: {part2}", s.label);
             if s.label.contains("follow-up pass") {
@@ -1516,76 +1527,55 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 assert!(part2.contains("3. Stop when the questions are answered"), "{}: {part2}", s.label);
             }
             assert!(part2.contains("a weak source lowers confidence"), "{}: {part2}", s.label);
-            // `portfolio-v52`: the preference by the scales' endpoints; `portfolio-v53`:
-            // no subject-tier sentence — the header's fields carry the relation.
             assert!(
                 part2.contains("Prefer a source tier nearer 0 and an extraction quality nearer 1 where") && !part2.contains("lower tier number"),
                 "{}: {part2}",
                 s.label
             );
             assert!(!part2.contains("applies to the subjects"), "{}: {part2}", s.label);
-            // `portfolio-v50`: the fallible-source clause rides the weighing sentence.
             assert!(part2.contains("a figure that cannot be right is a defect of the source"), "{}: {part2}", s.label);
-        } else {
-            let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
-            let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
-            let keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
-            let offers = !s.label.contains("disconfirming") && !s.label.contains("depth cap");
-            assert_eq!(keys.contains(&"followup_question"), offers, "{}", s.label);
-            assert_eq!(part2.contains("3. followup_question"), offers, "{}", s.label);
-            assert!(part2.contains("1. findings") && part2.contains("2. claims"), "{}: {part2}", s.label);
-            assert!(part1.contains("\nEVIDENCE\n") && part1.contains("=== S1: "), "{}: {part1}", s.label);
-            assert_eq!(s.system.contains("followup_question and followup_rationale"), offers, "{}", s.label);
-            // `portfolio-v62`: the output names precede the shared frame, which
-            // closes the system message.
-            assert!(
-                s.system.contains(", as one JSON object. Part 1 of the message gives the inputs.")
-                    && s.system.ends_with(crate::portfolio::TWO_PART_FRAME),
-                "{}: {}",
-                s.label,
-                s.system
-            );
+            assert!(!part2.contains("PRIOR"), "{}: Part 2 points at a prior block\n{part2}", s.label);
         }
         if s.label.contains("continuity") {
-            assert!(part1.contains("\nPRIOR FINDINGS\n") && !part1.contains("STANDING CONDITIONS"), "{}", s.label);
-            // `portfolio-v54`: the clause names the heading it draws on, and
-            // PRIOR FINDINGS carries the CLAIMS SO FAR shape and gloss.
-            assert!(
-                part2.contains("Where a finding under PRIOR FINDINGS bears on a question, look for whether it still holds and for what is newer."),
-                "{}: {part2}",
-                s.label
-            );
-            assert!(
-                part1.contains("\nPRIOR FINDINGS\nFindings from an earlier analysis of this topic. Each claim carries: its source; the publication date the search or lead reported; and the period the fact applies to.\n- "),
-                "{}: {part1}",
-                s.label
-            );
-            assert!(part1.contains("]\n  published: 2026-07-22; fact period: 2026-Q2\n"), "{}: {part1}", s.label);
+            assert!(part1.contains("\nPRIOR THESIS (written 2026-09-02)\n") && !part1.contains("STANDING CONDITIONS"), "{}: {part1}", s.label);
+            let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{}: {section}", s.label));
+            assert!(at("\nNEWS LEADS\n") < at("\nPRIOR THESIS") && at("\nPRIOR THESIS") < at("\nTOPIC\n"), "{}: {part1}", s.label);
+        } else {
+            assert!(!part1.contains("PRIOR THESIS"), "{}: a debut carries no prior\n{part1}", s.label);
         }
-        if s.label.contains("disconfirming") {
-            assert!(part1.contains("\nCLAIMS SO FAR\n"), "{}", s.label);
-        }
-        // `portfolio-v60`: the synthesis CLAIMS SO FAR gloss names the two
-        // provenance fields its lines carry, in the gathering brief's words.
-        if s.label.starts_with("synthesis") && s.label.contains("disconfirming") {
-            assert!(
-                part1.contains("\nCLAIMS SO FAR\nWhat this run's research established on the holding. Each claim carries: the publication date the search or lead reported; and the period the fact applies to.\n"),
-                "{}: {part1}",
-                s.label
-            );
-        }
-        // `portfolio-v59`: no synthesis message carries a SEARCHING note.
         if s.label.starts_with("synthesis") {
             assert!(!part1.contains("SEARCHING") && !part2.contains("SEARCHING"), "{}", s.label);
         }
-        // `portfolio-v60`: the follow-up synthesis states its subject in the topic
-        // pass's construction, and no message uses a heading as an adjective.
         if s.label.starts_with("synthesis") && s.label.contains("follow-up pass") {
             assert!(
-                part2.contains("1. findings — write this first and never leave it empty. For the question under FOLLOW-UP, state what EVIDENCE shows. Where a page gives a figure,"),
+                part2.contains("Rewrite the write-up under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading before the first line, folding in what EVIDENCE shows on the question under FOLLOW-UP, so the topic has one write-up:"),
                 "{}: {part2}",
                 s.label
             );
+            assert!(part1.contains("\nFOLLOW-UP\n") && part1.contains("\nWRITE-UP SO FAR\n"), "{}: {part1}", s.label);
+        }
+        if s.label.starts_with("synthesis") && s.label.contains("disconfirming") {
+            assert!(
+                part2.contains("It states how EVIDENCE bears on the write-ups under WRITE-UPS SO FAR: which it contradicts or weakens and how, which it leaves standing, and any contrary evidence that stands on its own"),
+                "{}: {part2}",
+                s.label
+            );
+            assert!(part1.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n"), "{}: {part1}", s.label);
+        }
+        if s.label.contains("the follow-up ask") {
+            // The conversation's second message: the write-up echoed as the
+            // assistant's turn, then the ask; the reply is read as `none` or
+            // the question, and the ask names no app concept.
+            assert_eq!(s.appended.len(), 2, "{}", s.label);
+            assert_eq!(s.appended[0].role, "assistant");
+            assert_eq!(s.appended[1].role, "user");
+            assert_eq!(s.appended[1].content, super::research::followup_ask());
+            assert!(s.appended[1].content.contains("or the one word none"), "{}", s.appended[1].content);
+            assert!(banned_hits(&s.appended[1].content).is_empty());
+            assert_no_routing_words(&s.label, &s.appended[1].content);
+            assert!(s.stage.ends_with(" synthesis follow-up"), "{}", s.stage);
+        } else if s.label.starts_with("synthesis") {
+            assert!(s.appended.is_empty(), "{}", s.label);
         }
         assert!(
             !s.user.contains("FOLLOW-UP question") && !s.user.contains("TOPIC questions"),
@@ -1604,208 +1594,11 @@ fn research_messages_are_two_parts_with_no_app_concept() {
     }
 }
 
-/// The distillation messages the harness renders (`portfolio-v44`): the seven
-/// calls over hand-written research (`distill::samples`) on TSLA's header and
-/// the synthetic fund's — the prompts' shape, never a run's research.
-fn distillation_samples() -> Vec<super::distill::samples::Sample> {
-    let f = fixtures().into_iter().find(|f| f.symbol == "TSLA").expect("TSLA");
-    let d = dossier_of(&f, true);
-    let fx = synthetic_role_risk_fixture();
-    super::distill::samples::messages(
-        &pipeline::holding_header(&d),
-        &pipeline::holding_header(&fx.dossier),
-        false,
-    )
-}
-
-/// Every distillation message is two marked parts in order behind a role-line
-/// system prompt, Part 1 carrying the input sections and no instruction, Part
-/// 2 the numbered task and the return shape — and neither part, nor the system
-/// prompt, carries a banned word, a routing word or a retrieval timestamp; a
-/// field nothing can fill on the call is asked for nowhere (`portfolio-v44`).
-#[test]
-fn distillation_messages_are_two_parts_with_no_app_concept() {
-    let samples = distillation_samples();
-    assert_eq!(samples.len(), 7, "three reduces, tier-1, pass, tree-level, hierarchical");
-    for s in &samples {
-        let (part1, part2) = s
-            .user
-            .split_once("======== PART 2: TASK ========")
-            .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{}", s.label, s.user));
-        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{}: {part1}", s.label);
-        assert!(part1.contains("\nDate: 2026-09-16.\n"), "{}: no date line\n{part1}", s.label);
-        assert!(part1.contains("\nTOPICS\n"), "{}: no TOPICS\n{part1}", s.label);
-        assert!(!part1.contains("2026-09-16T"), "{}: a retrieval timestamp rendered\n{part1}", s.label);
-        assert!(
-            !part1.contains("Return ") && !part1.to_lowercase().contains("your "),
-            "{}: Part 1 instructs\n{part1}",
-            s.label
-        );
-        for (label, text) in [("system", s.system.as_str()), ("user", s.user.as_str())] {
-            let hits = banned_hits(text);
-            assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", s.label);
-            assert_no_routing_words(&format!("{} {label}", s.label), text);
-        }
-        for word in [
-            "cached", "structured feeds", "the analysis reads", "reconciliation", "per-topic layer",
-            "ADVISORY", "tier-0", "merge per the rule", "orchestrator", "MERGE RULE", "LEDGER",
-            "DORMANT", "DISCONFIRMING", "Response shape template", "Field alternatives",
-            "conflict_handling", "untrusted", "retrieval date", "the feeds", "hard trigger",
-            "machine-read", "reaches no", "(condition ",
-        ] {
-            assert!(
-                !s.user.contains(word) && !s.system.contains(word),
-                "{}: {word} leaked\n{}",
-                s.label,
-                s.user
-            );
-        }
-        assert!(s.system.starts_with("You are an investment analyst consolidating "), "{}", s.system);
-        assert!(
-            s.system.contains(", as one JSON object. Part 1 of the message gives the inputs.")
-                && s.system.ends_with(crate::portfolio::TWO_PART_FRAME),
-            "{}",
-            s.system
-        );
-        // `portfolio-v62`: the preamble in the synthesis's words, and the claim rules
-        // under their own heading, pointed at by name; the gloss names the claim
-        // line's fields; "one statement per claim".
-        assert!(part2.starts_with("\nDetermine the following from the inputs and return them as one JSON object in the shape under RETURN SHAPE, with no code fence and no surrounding text; the names below are its fields.\n"), "{}: {part2}", s.label);
-        assert!(part2.contains("\nCLAIM RULES\nKeep each claim to one fact and period") && !part2.contains("as described below") && !part2.contains("one per item"), "{}: {part2}", s.label);
-        // A task that reconciles points at the rules by their heading; since
-        // `portfolio-v67` every distillation task reconciles, the single search
-        // included (one search fetches several pages).
-        assert!(part2.contains("where two claims cover the same fact, reconcile them by the rules under CLAIM RULES;"), "{}: {part2}", s.label);
-        // `portfolio-v66`: the gloss opens on the call's scope — one topic on the
-        // tier-1, pass-level and tree-level calls, "one topic at a time" on the
-        // reduce — and CLAIM RULES closes on the call's own outputs.
-        let reduce = s.label.starts_with("reduce");
-        let gloss_scope = if reduce {
-            "\nTOPICS\nThe research on this holding, one topic at a time, each headed by its key and its title: what its searches established, then its claims. Each claim carries: "
-        } else if s.label.starts_with("pass") {
-            // `portfolio-v67`: the pass-level call shows one of the topic's searches.
-            "\nTOPICS\nThe research on one topic of this holding, headed by its key and its title: what one of its searches established, then its claims. Each claim carries: "
-        } else {
-            "\nTOPICS\nThe research on one topic of this holding, headed by its key and its title: what its searches established, then its claims. Each claim carries: "
-        };
-        assert!(part1.contains(gloss_scope), "{}: {part1}", s.label);
-        assert!(part1.contains("Each claim carries: its id; the address of the page that states it; the publication date the search or lead reported; and the period the fact applies to."), "{}: {part1}", s.label);
-        let rules_close = if reduce {
-            "Apply the same resolution in the combined findings, summaries, and every topic's claims.\n"
-        } else {
-            "Apply the same resolution in the summary and the claims.\n"
-        };
-        assert!(part2.contains(rules_close), "{}: {part2}", s.label);
-        assert!(reduce || (!part1.contains("one topic at a time") && !part2.contains("every topic's claims")), "{}: {}", s.label, s.user);
-        // The list constructions are gone; the single-field "each with its id." on
-        // STANDING CONDITIONS and KEY DRIVERS stays.
-        assert!(!s.user.contains("each with its id, ") && !s.user.contains("each with its source"), "{}: an each-with list survives\n{}", s.label, s.user);
-        // `portfolio-v63`: every claim line opens on its pass-local id, no evidence
-        // reference renders anywhere, item 2 asks for the id, and the shape lists
-        // the ids the message showed.
-        assert!(part1.contains("\n- C1: "), "{}: {part1}", s.label);
-        assert!(!s.user.contains("evidence_ref") && !s.system.contains("evidence_ref"), "{}: {}", s.label, s.user);
-        // `portfolio-v64`: evidence_id defined in its own sentence; no "the key
-        // as shown" (item 2 points at the heading's key the gloss names).
-        assert!(part2.contains("evidence_id is the id of the claim under TOPICS") && !part2.contains("each with evidence_id") && !part2.contains("the key as shown"), "{}: {part2}", s.label);
-        // `portfolio-v65`: no "this time" anywhere — the current analysis's side is
-        // "the searches" (bare, the gloss's word for the Search blocks) and "in this
-        // analysis", pairing with the gloss's "an earlier analysis".
-        assert!(!s.user.contains("this time") && !s.system.contains("this time"), "{}: {}", s.label, s.user);
-        if part2.contains("The statements come from") {
-            assert!(part2.contains("The statements come from the searches and the prior findings"), "{}: {part2}", s.label);
-        }
-        // `portfolio-v65`: item 1 no longer restates that prior findings take the
-        // rules — item 2 binds every statement to CLAIM RULES.
-        assert!(!part2.contains("assessed by the same rules"), "{}: {part2}", s.label);
-        assert!(part2.contains(r#""evidence_id":"<C1"#), "{}: {part2}", s.label);
-        assert!(!part2.contains("source_url the address shown beside it"), "{}: {part2}", s.label);
-        let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
-        let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
-        let keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
-        if s.label.starts_with("reduce") {
-            assert!(part2.contains("\n1. combined_findings — ") && part2.contains("\n2. topics — exactly one object per topic under TOPICS, in that order"), "{}: {part2}", s.label);
-            assert!(part2.contains("topic_key is the topic's key under TOPICS. summary is what "), "{}: {part2}", s.label);
-            assert!(s.system.contains("You will return combined_findings") && s.system.contains("topics"), "{}", s.system);
-            assert!(keys.contains(&"combined_findings") && keys.contains(&"topics"), "{}", s.label);
-        } else {
-            assert!(part2.contains("\n1. summary — ") && part2.contains("\n2. claims — "), "{}: {part2}", s.label);
-            assert!(s.system.contains("You will return summary and claims, as one JSON object."), "{}", s.system);
-            assert_eq!(keys, ["claims", "summary"], "{}", s.label);
-        }
-        if s.label.contains("continuity") {
-            for section in ["Prior findings (analysis of 2026-09-01):\n", "\nTOPIC catalysts-risks (not searched in this analysis)\n", "\nCONTRARY EVIDENCE\n", "\nSOURCE TEXT\n", " (published 2026-07-22) ===\n"] {
-                assert!(part1.contains(section), "{}: no {section:?}\n{part1}", s.label);
-            }
-            // The ledger's STANDING CONDITIONS and KEY DRIVERS left every
-            // distillation message with the ledger: no claim carries a tie and
-            // the leading indicator — which needed a driver to confirm — is
-            // never asked for, so the typed items renumber.
-            for absent in ["STANDING CONDITIONS", "KEY DRIVERS", "— bears on", "leading_indicator", "related_condition_id"] {
-                assert!(!s.user.contains(absent), "{}: {absent} survives\n{}", s.label, s.user);
-            }
-            for item in ["\n3. forward_assumption — ", "\n4. forensic_event — ", "\n5. pre_profit_observations — ", "\n6. backfill — "] {
-                assert!(part2.contains(item), "{}: no {item:?}\n{part2}", s.label);
-            }
-            assert!(shape_line.contains(r#""topic_key":"<competitive-position|results-revisions|catalysts-risks>""#), "{shape_line}");
-            // `portfolio-v64`: the continuity claims item names where its statements
-            // come from; the prior findings carry their dates and periods.
-            assert!(part2.contains("one statement per claim. The statements come from the searches and the prior findings, whichever topic they came under, reconciled by the rules under CLAIM RULES. evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two searched topics state is one claim, under the topic it belongs to."), "{}: {part2}", s.label);
-            // `portfolio-v65`: the dormant topic is "not searched in this analysis" on the
-            // gloss, the heading and both item-2 sentences.
-            assert!(part1.contains("Prior findings are from an earlier analysis of the topic, dated. A topic not searched in this analysis carries its prior findings only.\n"), "{}: {part1}", s.label);
-            assert!(part2.contains(", in that order, the topics not searched in this analysis included. topic_key is the topic's key under TOPICS."), "{}: {part2}", s.label);
-            assert!(part2.contains(" A topic not searched in this analysis keeps its prior findings, changed only where a claim under another topic supersedes one, with nothing added."), "{}: {part2}", s.label);
-            // `portfolio-v65`: item 4 says "confirms" as the field and the cap rule do, and
-            // asks for the driver's id alone; metric_name carries a gloss; item 6 glosses
-            // confidence's referent; item 7 states coverage's denominator and the periods'
-            // date form.
-            assert!(part2.contains("confidence, 0 to 1, that the excerpt states that metric, value and period."), "{}: {part2}", s.label);
-            assert!(part2.contains("each as its end date, YYYY-MM-DD;") && part2.contains("complete where all four periods are found, partial where fewer, unscorable where"), "{}: {part2}", s.label);
-            assert!(part1.contains("published: 2026-08-26; fact period: 2026-07\n"), "{}: {part1}", s.label);
-            assert!(shape_line.contains(r#""numeric_value":0,"stated_low":"<0|null>","stated_high":"<0|null>""#), "{shape_line}");
-            assert!(s.system.contains("You will return combined_findings, topics, forward_assumption, forensic_event, pre_profit_observations and backfill, as one JSON object."), "{}", s.system);
-        }
-        if s.label.contains("first analysis") {
-            assert!(!part1.contains("STANDING CONDITIONS") && !part1.contains("KEY DRIVERS") && !part1.contains("Prior findings"), "{}: {part1}", s.label);
-            assert!(part2.contains("\n3. forward_assumption — ") && part2.contains("\n4. forensic_event — "), "{}: {part2}", s.label);
-            // `portfolio-v64`: the serial comma on the typed items' lists, the
-            // nullable numbers' both halves in the shape, one sentence per rule
-            // on the claims item, and claim lines carrying the dates and
-            // periods a run renders (quarter, month, year and unknown forms).
-            assert!(part2.contains("issued guidance, a signed contract, or a filed figure, or null") && part2.contains("a US court, the OCC, or the FDIC)"), "{}: {part2}", s.label);
-            assert!(shape_line.contains(r#""numeric_value":0,"stated_low":"<0|null>","stated_high":"<0|null>""#), "{shape_line}");
-            assert!(part2.contains("one statement per claim. evidence_id is the id of the claim under TOPICS or CONTRARY EVIDENCE the statement rests on. A fact two topics state is one claim, under the topic it belongs to.\n"), "{}: {part2}", s.label);
-            for line in ["published: 2026-07-22; fact period: 2026-Q2\n", "published: 2026-09-03; fact period: 2026-08\n", "published: 2026-07-22; fact period: 2026\n", "published: unknown; fact period: unknown\n"] {
-                assert!(part1.contains(line), "{}: no {line:?}\n{part1}", s.label);
-            }
-            assert!(!s.user.contains("leading_indicator") && !s.user.contains("related_condition_id") && !s.user.contains("backfill"), "{}: {}", s.label, s.user);
-            assert!(part1.contains("\nSOURCE TEXT\n"), "{}", s.label);
-        }
-        if s.label.contains("fund") {
-            assert_eq!(keys, ["combined_findings", "topics"], "{}", s.label);
-            assert!(!s.user.contains("SOURCE TEXT") && !s.user.contains("forward_assumption"), "{}: {}", s.label, s.user);
-            assert!(!part1.contains("STANDING CONDITIONS") && !shape_line.contains("related_condition_id"), "{}", s.label);
-        }
-        if s.label.contains("hierarchical") {
-            assert!(part1.contains("\nSummary:\n"), "{}: {part1}", s.label);
-            assert!(part2.contains("the claims shown under the topic"), "{}: {part2}", s.label);
-        }
-        if s.label.starts_with("tree") {
-            assert!(part1.contains("\nSearch 1 (summary):\n") && part1.contains("\nSearch 2 (summary):\n"), "{}: {part1}", s.label);
-        }
-        if s.label.starts_with("pass") {
-            assert!(part2.contains("\n1. summary — what this search established, as of the date under HOLDING: the figures with their dates and periods as the claims state them; where two claims cover the same fact, reconcile them by the rules under CLAIM RULES; and what it left unanswered.\n"), "{}: {part2}", s.label);
-            assert!(!part1.contains("what its searches established"), "{}: {part1}", s.label);
-        }
-    }
-}
-
 /// Every rendered fixed-set prompt to one Markdown file for a human read
 /// (`MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP=<file>`): the system prompts once,
 /// then per holding the thesis-document message, the appendix ask, the action
 /// message, and the lines the tax and cost variants change, then the synthetic
-/// role/risk case, then the research messages (`portfolio-v43`).
+/// role/risk case, then the research messages.
 #[test]
 #[ignore = "writes the rendered fixed-set prompts to MARKET_SIGNAL_LOCAL_EVAL_PROMPT_DUMP"]
 fn fixed_evidence_prompt_dump() {
@@ -1885,13 +1678,13 @@ fn fixed_evidence_prompt_dump() {
     out.push_str(&fence(&cont));
     out.push_str(&format!("### {n}d. Action message on the stub's verdict ({} chars)\n\n", action.len()));
     out.push_str(&fence(&action));
-    // The research messages (`portfolio-v43`): the gathering and synthesis
-    // passes rendered on TSLA's first stock topic and the synthetic fund's
-    // exposure-profile topic over hand-written leads, claims and pages, then
-    // what a gathering turn gets back.
+    // The research messages: the gathering and synthesis passes rendered on
+    // TSLA's first stock topic and the synthetic fund's exposure-profile topic
+    // over hand-written leads, write-ups and pages, then what a gathering
+    // turn gets back.
     let n = n + 1;
     out.push_str(&format!(
-        "## {n}. Research messages (TSLA's competitive-position topic and the SYNTHETIC fund's exposure-profile topic; hand-written leads, claims and pages)\n\n"
+        "## {n}. Research messages (TSLA's competitive-position topic and the SYNTHETIC fund's exposure-profile topic; hand-written leads, write-ups and pages)\n\n"
     ));
     let mut letter = b'a';
     for s in research_samples() {
@@ -1909,20 +1702,6 @@ fn fixed_evidence_prompt_dump() {
     for (label, text) in super::research::samples::tool_results(false) {
         out.push_str(&format!("### {n}{}. Tool result — {label}\n\n", letter as char));
         out.push_str(&fence(&text));
-        letter += 1;
-    }
-    // The distillation messages (`portfolio-v44`) over hand-written research.
-    let n = n + 1;
-    out.push_str(&format!(
-        "## {n}. Distillation messages (hand-written TSLA research: two topics, a follow-up search, the contrary-evidence pass, one prior topic object, one dormant prior, three fetched pages; and the SYNTHETIC fund's one topic)\n\n"
-    ));
-    let mut letter = b'a';
-    for s in distillation_samples() {
-        out.push_str(&format!("### {n}{}. {} — system prompt\n\n", letter as char, s.label));
-        out.push_str(&fence(&s.system));
-        letter += 1;
-        out.push_str(&format!("### {n}{}. {} — message ({} chars)\n\n", letter as char, s.label, s.user.chars().count()));
-        out.push_str(&fence(&s.user));
         letter += 1;
     }
     std::fs::write(&path, out).expect("write prompt dump");

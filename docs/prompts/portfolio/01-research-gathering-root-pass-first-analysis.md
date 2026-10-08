@@ -1,10 +1,10 @@
 # Research gathering — root pass, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v53`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v72`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The first gathering turn of a holding's first research topic on a first analysis.
-Part 1 carries the holding header, the topic and the two news leads; Part 2 the search task and its stopping rule.
+Part 1 leads with the holding-constant block — the header, FETCHED VALUES as the thesis-document message renders it, the two news leads — then the topic; Part 2 the search task and its stopping rule.
 The loop appends the reply countdown before every turn, so the third message is part of the first request.
 The model answers with tool calls and writes nothing up; the orchestrator runs each call and feeds the result back as a tool message (the tool-turn file shows the second request).
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
@@ -20,7 +20,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 2838 chars — the messages and tools as serialized |
+| Prompt material | 3207 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (1360 chars)
+## User message (1723 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -38,6 +38,14 @@ HOLDING
 TSLA (name unavailable).
 Price: $358.97 per share.
 Date: 2026-09-16.
+
+FETCHED VALUES
+The holding's data as its providers return it, each figure as reported (USD; B is billions, M is
+millions); none is computed.
+Quote: 358.97 per share (the live print, undated).
+Daily closes: 1 sessions from 2026-09-14 to 2026-09-14, 52-week low 358.97 on 2026-09-14, high
+358.97 on 2026-09-14.
+Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
 
 NEWS LEADS
 Recent headlines about the holding, each with its source and date. A headline is a lead, not

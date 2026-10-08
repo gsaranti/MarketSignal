@@ -1,8 +1,8 @@
 # Portfolio Analysis prompts — contents
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v72`; regenerate rather than edit (`docs/prompts/README.md`).*
 
-One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then the thesis document, its appendix and the action call (Step 6f).
+One file per call shape, in pipeline order: the research loop (Step 6c), then the thesis document, its appendix and the action call (Step 6f); consolidation's files (Step 6d) land with the analysis call.
 Each file carries the request envelope, every message as sent, and the tools or the response schema.
 
 | File | Call | Step |
@@ -17,13 +17,7 @@ Each file carries the request envelope, every message as sent, and the tools or 
 | [08-research-synthesis-root-pass-later-topic](08-research-synthesis-root-pass-later-topic.md) | Research synthesis — root pass on a later topic | 6c |
 | [09-research-synthesis-follow-up-pass](09-research-synthesis-follow-up-pass.md) | Research synthesis — follow-up pass | 6c |
 | [10-research-synthesis-disconfirming-pass](10-research-synthesis-disconfirming-pass.md) | Research synthesis — the disconfirming pass | 6c |
-| [11-distillation-single-pass-stock-first-analysis](11-distillation-single-pass-stock-first-analysis.md) | Distillation — single pass, stock, first analysis | 6d |
-| [12-distillation-single-pass-stock-continuity](12-distillation-single-pass-stock-continuity.md) | Distillation — single pass, stock, continuity run with the overlay and the backfill obligation | 6d |
-| [13-distillation-single-pass-fund](13-distillation-single-pass-fund.md) | Distillation — single pass, fund | 6d |
-| [14-distillation-tier-1-topic-tree](14-distillation-tier-1-topic-tree.md) | Distillation — tier-1 call over one topic tree | 6d |
-| [15-distillation-pass-level](15-distillation-pass-level.md) | Distillation — pass-level sub-distillation | 6d |
-| [16-distillation-tree-level-reduce](16-distillation-tree-level-reduce.md) | Distillation — tree-level reduce over the pass outputs | 6d |
-| [17-distillation-hierarchical-reduce](17-distillation-hierarchical-reduce.md) | Distillation — the final reduce over the tier-1 outputs | 6d |
+| [11-research-synthesis-follow-up-ask](11-research-synthesis-follow-up-ask.md) | Research synthesis — the follow-up ask, the conversation's second message | 6c |
 | [18-thesis-document-stock-first-analysis](18-thesis-document-stock-first-analysis.md) | Thesis document — stock, first analysis | 6f |
 | [19-thesis-document-stock-continuity](19-thesis-document-stock-continuity.md) | Thesis document — stock, continuity run | 6f |
 | [20-thesis-document-fund-first-analysis](20-thesis-document-fund-first-analysis.md) | Thesis document — priced fund, first analysis | 6f |

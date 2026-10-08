@@ -1,11 +1,11 @@
-# Research synthesis — root pass on a later topic
+# Research synthesis — the follow-up ask, the conversation's second message
 
 *Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v72`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
-The synthesis conversation closes a pass: no tools, no grammar, no history — the evidence packet is rebuilt from the run's store behind the holding header and FETCHED VALUES, and the reply is the pass's write-up as prose, read as text and validated by nothing.
-The packet lists the reused page first and this pass's fetch after it (portfolio-v49); what gathering lost is a persisted data-health gap and reaches no model (portfolio-v59).
-On a root pass the conversation continues with the follow-up ask (file 11).
+The synthesis conversation's second message on a pass that offers a follow-up: the first message, the write-up the model returned echoed as the assistant's turn, then the ask.
+The reply is the follow-up question as plain text, which becomes the next pass's question under the depth cap and the budget, or the one word none — the only reply the app interprets.
+The message is not sent on a topic's last pass under the depth cap nor on the disconfirming pass.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 
 ## Request
@@ -13,13 +13,13 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Field | Value |
 | --- | --- |
 | Workflow step | `docs/portfolio-workflow.md` §Step 6c |
-| Stage label | `holding-TSLA research competitive-position synthesis` |
+| Stage label | `holding-TSLA research competitive-position synthesis follow-up` |
 | Model | the roster's resident reasoner |
 | Thinking | on (`think: true`) |
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 2917 chars — the messages and tools as serialized |
+| Prompt material | 3240 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -83,4 +83,18 @@ source lowers confidence in what it says, it does not exclude it, and a figure t
 is a defect of the source.
 
 The write-up runs 400 to 900 words.
+~~~~
+
+## Assistant message (the model's reply, echoed back; 60 chars)
+
+~~~~text
+[stub: the write-up the model returned on the first message]
+~~~~
+
+## Appended user message (200 chars)
+
+~~~~text
+Does the research have a follow-up question — one further question on the questions under TOPIC
+worth a search of its own? Reply with the question as plain text and nothing else, or the one word
+none.
 ~~~~

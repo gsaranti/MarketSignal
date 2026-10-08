@@ -90,7 +90,11 @@ use crate::storage;
 /// document and its typed appendix as the model arm, no ledger, no
 /// what-changed audit and no stand-in model view, and an abstention carries
 /// its retained prior document (checkpoint-v20).
-pub const FORMAT_VERSION: u32 = 16;
+/// v17: the `portfolio_research_seeds` table leaves the archive with the seed
+/// store, and the audit inside `portfolio_runs.run_json` carries the research
+/// write-ups and the page roster in place of the combined findings, the seed
+/// layer and the typed channels (checkpoint-v21).
+pub const FORMAT_VERSION: u32 = 17;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -100,9 +104,9 @@ const ENC_MAGIC: &[u8; 8] = b"MSDPENC1";
 /// machine, which is what makes report vectors portable at all.
 const REPORT_EMBEDDER_ID: &str = "text-embedding-3-large";
 
-/// The eleven exported tables, in insert dependency order (reports first, so
+/// The ten exported tables, in insert dependency order (reports first, so
 /// the vector summaries and snapshots that join on `report_id` land after them).
-const TABLES: [&str; 11] = [
+const TABLES: [&str; 10] = [
     "reports",
     "baseline_snapshots",
     "vector_memory",
@@ -113,12 +117,11 @@ const TABLES: [&str; 11] = [
     "price_bars",
     "web_documents",
     "web_source_state",
-    "portfolio_research_seeds",
 ];
 
 /// The tables' zip entry names, same order — what export writes and import
 /// consumes, shared so the two sides can never drift.
-const DB_ENTRY_NAMES: [&str; 11] = [
+const DB_ENTRY_NAMES: [&str; 10] = [
     "db/reports.ndjson",
     "db/baseline_snapshots.ndjson",
     "db/vector_memory.ndjson",
@@ -129,7 +132,6 @@ const DB_ENTRY_NAMES: [&str; 11] = [
     "db/price_bars.ndjson",
     "db/web_documents.ndjson",
     "db/web_source_state.ndjson",
-    "db/portfolio_research_seeds.ndjson",
 ];
 
 /// The db entries an archive's own format version requires — the versioned
@@ -297,17 +299,6 @@ struct WebSourceStateRow {
     updated_at: String,
 }
 
-/// One per-topic research-seed row on the wire (`docs/portfolio-analysis.md`
-/// §Starting parameters — Research reuse): a holding's distilled topic object,
-/// durable analytical state that outlives run retention.
-#[derive(Debug, Serialize, Deserialize)]
-struct ResearchSeedRow {
-    symbol: String,
-    topic_key: String,
-    vintage: String,
-    seed_json: String,
-}
-
 // ---------------------------------------------------------------------------
 // Command-facing results
 // ---------------------------------------------------------------------------
@@ -384,7 +375,6 @@ pub fn export_archive(
     let price_bars = read_price_bar_rows(&conn)?;
     let web_documents = read_web_document_rows(&conn)?;
     let web_source_states = read_web_source_state_rows(&conn)?;
-    let research_seeds = read_research_seed_rows(&conn)?;
     let learnings = vectors.iter().filter(|v| v.kind == "learning").count() as u64;
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -415,10 +405,6 @@ pub fn export_archive(
         "web_source_state".to_string(),
         web_source_states.len() as u64,
     );
-    row_counts.insert(
-        "portfolio_research_seeds".to_string(),
-        research_seeds.len() as u64,
-    );
 
     let mut embedders = BTreeMap::new();
     embedders.insert("report".to_string(), REPORT_EMBEDDER_ID.to_string());
@@ -436,7 +422,7 @@ pub fn export_archive(
     // The db/*.ndjson entries join the manifest's checksum inventory alongside
     // the store files, so import can verify every entry — table rows included —
     // before its destructive phase.
-    let db_payloads: [Vec<u8>; 11] = [
+    let db_payloads: [Vec<u8>; 10] = [
         ndjson(&reports)?,
         ndjson(&snapshots)?,
         ndjson(&vectors)?,
@@ -447,7 +433,6 @@ pub fn export_archive(
         ndjson(&price_bars)?,
         ndjson(&web_documents)?,
         ndjson(&web_source_states)?,
-        ndjson(&research_seeds)?,
     ];
 
     let manifest = Manifest {
@@ -635,8 +620,6 @@ pub fn import_archive(
     let web_document_rows: Vec<WebDocumentRow> = parse_ndjson(&entries, "db/web_documents.ndjson")?;
     let web_source_state_rows: Vec<WebSourceStateRow> =
         parse_ndjson(&entries, "db/web_source_state.ndjson")?;
-    let research_seed_rows: Vec<ResearchSeedRow> =
-        parse_ndjson(&entries, "db/portfolio_research_seeds.ndjson")?;
 
     // Everything the load will need is decoded and checked HERE, before the
     // destructive phase, so a malformed row can only ever abort an import while
@@ -714,16 +697,6 @@ pub fn import_archive(
     for row in &web_source_state_rows {
         if !seen_state_hosts.insert(row.host.as_str()) {
             bail!("archive carries a duplicate source state for {:?}", row.host);
-        }
-    }
-    let mut seen_seed_keys = BTreeSet::new();
-    for row in &research_seed_rows {
-        if !seen_seed_keys.insert((row.symbol.as_str(), row.topic_key.as_str())) {
-            bail!(
-                "archive carries a duplicate research seed for {} / {}",
-                row.symbol,
-                row.topic_key
-            );
         }
     }
     let mut seen_summary_ids = BTreeSet::new();
@@ -928,13 +901,6 @@ pub fn import_archive(
             ],
         )?;
     }
-    for row in &research_seed_rows {
-        tx.execute(
-            "INSERT INTO portfolio_research_seeds (symbol, topic_key, vintage, seed_json)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![row.symbol, row.topic_key, row.vintage, row.seed_json],
-        )?;
-    }
     tx.commit()?;
 
     Ok(ImportSummary {
@@ -1132,24 +1098,6 @@ fn read_web_source_state_rows(conn: &Connection) -> Result<Vec<WebSourceStateRow
                 profile: r.get(5)?,
                 render_first: r.get::<_, i64>(6)? != 0,
                 updated_at: r.get(7)?,
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(rows)
-}
-
-fn read_research_seed_rows(conn: &Connection) -> Result<Vec<ResearchSeedRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT symbol, topic_key, vintage, seed_json
-         FROM portfolio_research_seeds ORDER BY symbol, topic_key",
-    )?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(ResearchSeedRow {
-                symbol: r.get(0)?,
-                topic_key: r.get(1)?,
-                vintage: r.get(2)?,
-                seed_json: r.get(3)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1563,13 +1511,6 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO portfolio_research_seeds (symbol, topic_key, vintage, seed_json)
-             VALUES ('AAPL', 'competitive-position', '2026-07-06T10:00:00+00:00',
-                     '{\"topic_key\":\"competitive-position\",\"vintage\":\"2026-07-06T10:00:00+00:00\",\"summary\":\"s\",\"claims\":[]}')",
-            [],
-        )
-        .unwrap();
         std::fs::write(paths.archive_dir.join("filed-note.md"), "archived research\n").unwrap();
         std::fs::write(paths.inbox_dir.join("pending-note.txt"), "inbox research\n").unwrap();
         conn.execute(
@@ -1661,17 +1602,10 @@ mod tests {
     }
 
     #[test]
-    fn entry3_archive_round_trip_preserves_dates_in_seeds_and_run_audits() {
+    fn entry3_archive_round_trip_preserves_the_run_audits_research_record() {
         let (_a, source) = temp_store();
         seed_store(&source);
         let conn = storage::open(&source.db_path).unwrap();
-        let layer = crate::portfolio::research::entry3_fixture_layer();
-        crate::portfolio::store::save_topic_distillates(
-            &conn,
-            "ARKF",
-            std::slice::from_ref(&layer),
-        )
-        .unwrap();
         let run = crate::portfolio::store::entry3_test_run();
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let dest = source.db_path.parent().unwrap().join("dates.zip");
@@ -1679,18 +1613,14 @@ mod tests {
         let (_b, target) = temp_store();
         import_archive(&target, &dest, None, false).unwrap();
         let conn = storage::open(&target.db_path).unwrap();
-        assert_eq!(
-            crate::portfolio::store::load_topic_distillates(&conn, "ARKF").unwrap(),
-            vec![layer.clone()]
-        );
         let restored = crate::portfolio::store::run_by_id(&conn, &run.run_id)
             .unwrap()
             .unwrap();
         assert_eq!(restored, run);
-        assert_eq!(
-            restored.audit[0].research.as_ref().unwrap().seed_layer,
-            vec![layer]
-        );
+        let research = restored.audit[0].research.as_ref().unwrap();
+        assert_eq!(research.write_ups.len(), 1);
+        assert_eq!(research.roster[0].published.as_deref(), Some("2025-03-27"));
+        assert_eq!(research.roster[0].retrieved_at, "2026-09-16T12:00:00Z");
     }
 
     #[test]
@@ -1826,15 +1756,6 @@ mod tests {
         assert_eq!(profile, "js_required");
         assert_eq!(render_first, 1);
         assert_eq!((failed, denied), (2, 1), "the v6 attempt counters round-trip");
-        let seed_vintage: String = conn
-            .query_row(
-                "SELECT vintage FROM portfolio_research_seeds
-                 WHERE symbol = 'AAPL' AND topic_key = 'competitive-position'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(seed_vintage, "2026-07-06T10:00:00+00:00");
         // markdown_path re-derived against the target's own reports dir, and
         // the body readable through it.
         let markdown_path: String = conn
@@ -2342,22 +2263,15 @@ mod tests {
         // Drop the entries introduced in v4 and their listings. Under the
         // archive's own current (v7) version that is truncation and must refuse…
         let mut entries = read_archive_entries(&dest);
-        for name in [
-            "db/web_documents.ndjson",
-            "db/web_source_state.ndjson",
-            "db/portfolio_research_seeds.ndjson",
-        ] {
+        for name in ["db/web_documents.ndjson", "db/web_source_state.ndjson"] {
             entries.remove(name);
         }
         let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
         manifest.files.retain(|f| {
-            f.path != "db/web_documents.ndjson"
-                && f.path != "db/web_source_state.ndjson"
-                && f.path != "db/portfolio_research_seeds.ndjson"
+            f.path != "db/web_documents.ndjson" && f.path != "db/web_source_state.ndjson"
         });
         manifest.row_counts.remove("web_documents");
         manifest.row_counts.remove("web_source_state");
-        manifest.row_counts.remove("portfolio_research_seeds");
         entries.insert(
             "manifest.json".to_string(),
             serde_json::to_vec_pretty(&manifest).unwrap(),

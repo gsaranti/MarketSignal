@@ -27,13 +27,12 @@ use super::*;
 use crate::local_model::{prompt_material_chars, ChatMessage, ChatRequest};
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::research::{self, samples as research_samples};
-use crate::portfolio::{distill, ActionSource, HoldingVerdict, PositionChange, PositionDelta, ROLE_RISK_ACTIONS};
+use crate::portfolio::{ActionSource, HoldingVerdict, PositionChange, PositionDelta, ROLE_RISK_ACTIONS};
 use std::collections::HashSet;
 use serde_json::Value;
 use std::cell::RefCell;
 
 const REASONER: &str = "reasoner";
-const FAST: &str = "fast";
 const PRIOR_VINTAGE: &str = "2026-09-02T14:00:00Z";
 const PRIOR_SESSION: &str = "2026-09-02";
 const STUB_DISTILLED_STOCK: &str =
@@ -79,7 +78,7 @@ fn fixture(symbol: &str) -> Fixture {
 }
 
 /// A first-analysis dossier over the fixture, the report's sections stubbed.
-fn debut_dossier(f: &Fixture) -> HoldingDossier {
+pub(super) fn debut_dossier(f: &Fixture) -> HoldingDossier {
     let mut d = dossier_of(f, true);
     stub_house_view(&mut d);
     d
@@ -96,7 +95,7 @@ fn graded_of(f: &Fixture) -> &crate::portfolio::GradedVerdict {
 /// the prior (its thesis document and appendix as re-shaped by hand), the
 /// hand-written prior spot and anchor bar, and the prior's engine stamps so
 /// the pipeline reads it as a same-vintage prior.
-fn continuity_dossier(f: &Fixture) -> HoldingDossier {
+pub(super) fn continuity_dossier(f: &Fixture) -> HoldingDossier {
     let mut d = debut_dossier(f);
     let prior_spot = (f.spot * 0.97 * 100.0).round() / 100.0;
     let anchor = engine::DatedValue { date: PRIOR_SESSION.into(), value: prior_spot };
@@ -158,7 +157,7 @@ impl HoldingAnalyst for RequestCapture {
         pipeline::StubAnalyst.decide_action(input)
     }
     fn fast_id(&self) -> String {
-        FAST.into()
+        "fast".into()
     }
     fn reasoner_id(&self) -> String {
         REASONER.into()
@@ -186,16 +185,6 @@ fn research_request(s: &research_samples::Sample) -> ChatRequest {
     let mut messages = vec![ChatMessage::system(s.system.clone()), ChatMessage::user(s.user.clone())];
     messages.extend(s.appended.iter().cloned());
     pipeline::research_turn_request(REASONER, messages, s.tools.as_ref(), s.format.as_ref())
-}
-
-fn distill_request(s: &distill::samples::Sample) -> ChatRequest {
-    pipeline::distill_request(
-        FAST,
-        pipeline::distill_num_ctx(FAST, REASONER),
-        pipeline::NUM_PREDICT_DISTILL,
-        &distill::DistillPrompt { system: s.system.clone(), user: s.user.clone(), claims: Default::default() },
-        &s.schema,
-    )
 }
 
 fn diff_lines(base: &str, variant: &str) -> String {
@@ -226,31 +215,25 @@ fn examples() -> Vec<Example> {
     let mut fx = synthetic_role_risk_fixture();
     stub_house_view(&mut fx.dossier);
     let tsla_debut = debut_dossier(&tsla);
-    let brief = pipeline::holding_header(&tsla_debut);
-    let fund_brief = pipeline::holding_header(&fx.dossier);
+    // The holding-constant brief as the pipeline assembles it, the leads
+    // replaced by the hand-written sample leads (stubbed).
+    let mut brief = pipeline::research_brief(&tsla_debut, rates(), None);
+    brief.leads = research_samples::stock_leads(true);
+    let mut continuity = pipeline::research_brief(&continuity_dossier(&tsla), rates(), None);
+    continuity.leads = research_samples::stock_leads(true);
+    let mut fund_brief = pipeline::research_brief(&fx.dossier, rates(), None);
+    fund_brief.leads = research_samples::fund_leads(true);
     let agenda = research::build_agenda(&tsla_debut, &research::AgendaTriggers::default());
     let fund_agenda = research::build_agenda(&fx.dossier, &research::AgendaTriggers::default());
     let exposure = fund_agenda
         .iter()
         .find(|t| t.key == "fund-exposure-profile")
         .expect("the fund exposure topic");
-    let stock_gathering = research_samples::gathering_messages(
-        "TSLA",
-        &brief,
-        &agenda[0],
-        &research_samples::stock_leads(true),
-        true,
-    );
+    let stock_gathering = research_samples::gathering_messages("TSLA", &brief, &continuity, &agenda[0], true);
     let stock_synthesis = research_samples::synthesis_messages("TSLA", &brief, &agenda[0], true);
-    let fund_gathering = research_samples::gathering_messages(
-        "BND",
-        &fund_brief,
-        exposure,
-        &research_samples::fund_leads(true),
-        true,
-    );
+    let followup_ask = research_samples::followup_ask_sample("TSLA", &brief, &agenda[0], true);
+    let fund_gathering = research_samples::gathering_messages("BND", &fund_brief, &fund_brief, exposure, true);
     let tool_results = research_samples::tool_results(true);
-    let distillation = distill::samples::messages(&brief, &fund_brief, true);
     let tsla_holding = "TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis";
     let bnd_holding = "BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch";
 
@@ -269,7 +252,7 @@ fn examples() -> Vec<Example> {
         holding: tsla_holding,
         sentences: lines(&[
             "The first gathering turn of a holding's first research topic on a first analysis.",
-            "Part 1 carries the holding header, the topic and the two news leads; Part 2 the search task and its stopping rule.",
+            "Part 1 leads with the holding-constant block — the header, FETCHED VALUES as the thesis-document message renders it, the two news leads — then the topic; Part 2 the search task and its stopping rule.",
             gathering_common[0],
             gathering_common[1],
         ]),
@@ -284,8 +267,8 @@ fn examples() -> Vec<Example> {
         step: "6c",
         holding: tsla_holding,
         sentences: lines(&[
-            "The follow-up pass on the same topic, taken when the root pass's synthesis proposed a question worth one more pass.",
-            "The approved question and the topic's claims so far ride in Part 1, so the search starts from what the root pass established.",
+            "The follow-up pass on the same topic, taken when the root pass's synthesis answered the follow-up ask with a question.",
+            "The question and the topic's write-up so far ride in Part 1 after the holding-constant block, so the search starts from what the root pass established and the pass rewrites the write-up whole.",
             gathering_common[0],
         ]),
         stage: g(1).stage.clone(),
@@ -297,10 +280,10 @@ fn examples() -> Vec<Example> {
         file: "03-research-gathering-root-pass-continuity",
         title: "Research gathering — root pass on a continuity run",
         step: "6c",
-        holding: "TSLA, on a continuity run over a prior analysis of 2026-09-01",
+        holding: "TSLA, on a continuity run over a prior analysis of 2026-09-02",
         sentences: lines(&[
-            "A root pass on a continuity run: the prior run's kept findings ride as the seed.",
-            "The seed is app-assembled from the prior claims, never a model call, so the search starts from what is already known and tests it.",
+            "A root pass on a continuity run: the prior run's thesis document rides the holding-constant block verbatim under its date, so research knows what the falsifiers and triggers are and tests them.",
+            "The prior analysis joins the block with consolidation; until then the document is the one prior the brief carries.",
             gathering_common[0],
         ]),
         stage: g(2).stage.clone(),
@@ -314,8 +297,8 @@ fn examples() -> Vec<Example> {
         step: "6c",
         holding: tsla_holding,
         sentences: lines(&[
-            "The disconfirming pass, run once per holding after its topics: the run's claims so far are the target and the task is to find what contradicts them.",
-            "It carries no follow-up proposal by contract, and its synthesis shape (file 10) drops that key.",
+            "The disconfirming pass, run once per holding after its topics: the run's write-ups so far are the target and the task is to find what contradicts them.",
+            "Its synthesis (file 10) writes its own write-up and asks no follow-up.",
             gathering_common[0],
         ]),
         stage: g(3).stage.clone(),
@@ -344,7 +327,7 @@ fn examples() -> Vec<Example> {
         step: "6c",
         holding: bnd_holding,
         sentences: lines(&[
-            "The root-pass shape on a fund: the agenda's fund topics replace the stock topics, and the header names the fund.",
+            "The root-pass shape on a fund: the agenda's fund topics replace the stock topics, and the header and FETCHED VALUES name the fund's reported lines.",
             "Everything else — the leads, the countdown, the tools, the stopping rule — is the stock shape.",
         ]),
         stage: fund_gathering[0].stage.clone(),
@@ -382,7 +365,7 @@ fn examples() -> Vec<Example> {
     }
     let s = |i: usize| &stock_synthesis[i];
     let synthesis_common =
-        "The synthesis call closes a pass: no tools, the findings grammar as the format, no history — the evidence packet is rebuilt from the run's store, and the model cites sources by the pass-local id the packet shows.";
+        "The synthesis conversation closes a pass: no tools, no grammar, no history — the evidence packet is rebuilt from the run's store behind the holding header and FETCHED VALUES, and the reply is the pass's write-up as prose, read as text and validated by nothing.";
     out.push(Example {
         file: "08-research-synthesis-root-pass-later-topic",
         title: "Research synthesis — root pass on a later topic",
@@ -391,6 +374,7 @@ fn examples() -> Vec<Example> {
         sentences: lines(&[
             synthesis_common,
             "The packet lists the reused page first and this pass's fetch after it (portfolio-v49); what gathering lost is a persisted data-health gap and reaches no model (portfolio-v59).",
+            "On a root pass the conversation continues with the follow-up ask (file 11).",
         ]),
         stage: s(0).stage.clone(),
         request: research_request(s(0)),
@@ -404,21 +388,12 @@ fn examples() -> Vec<Example> {
         holding: tsla_holding,
         sentences: lines(&[
             synthesis_common,
-            "On a follow-up pass the approved question joins the packet under FOLLOW-UP, and the shape still offers a follow-up proposal unless the pass is the topic's last under the depth cap (the variant below).",
+            "On a follow-up pass the question joins the packet under FOLLOW-UP with the topic's write-up so far under WRITE-UP SO FAR, and the task is to rewrite that write-up whole with the new evidence folded in, so a topic has one write-up at any time.",
+            "The conversation asks for a follow-up afterwards unless the pass is the topic's last under the depth cap, whose question no pass could take up (portfolio-v60).",
         ]),
         stage: s(1).stage.clone(),
         request: research_request(s(1)),
-        variants: vec![Variant {
-            heading: "Variant — the topic's last pass under the depth cap",
-            sentences: lines(&[
-                "The lines that differ from the system and user messages above on a topic's third pass, the last its depth cap allows (portfolio-v60).",
-                "A proposal there could never be spent, so the call asks for none, and the response schema drops `followup_question` and `followup_rationale`.",
-            ]),
-            diff: diff_lines(
-                &format!("{}\n{}", s(1).system, s(1).user),
-                &format!("{}\n{}", s(3).system, s(3).user),
-            ),
-        }],
+        variants: vec![],
         extras: vec![],
     });
     out.push(Example {
@@ -428,123 +403,25 @@ fn examples() -> Vec<Example> {
         holding: tsla_holding,
         sentences: lines(&[
             synthesis_common,
-            "The disconfirming pass's shape carries no follow-up proposal; its findings and claims join the holding's research as the contrary-evidence pass.",
+            "The disconfirming pass's write-up states how the evidence bears on the run's write-ups under WRITE-UPS SO FAR; the conversation asks no follow-up, and the write-up joins the holding's research as the contrary-evidence pass.",
         ]),
         stage: s(2).stage.clone(),
         request: research_request(s(2)),
         variants: vec![],
         extras: vec![],
     });
-
-    // ---- Step 6d: distillation ----
-    let distill_common = [
-        "Distillation is explicitly non-thinking, grammar-constrained, and issued on the fast tier where the roster has one.".to_string(),
-        format!(
-            "On the default roster, where the fast tier is the reasoner, the call issues on the reasoner at `num_ctx` {} and the rendered prompt is measured against that budget instead.",
-            pipeline::NUM_CTX_INTERPRET
-        ),
-        format!(
-            "A reply that stops exactly at the {}-token reservation is re-issued once on the reasoner with `num_predict` {}, its stage label suffixed `(expanded)`.",
-            pipeline::NUM_PREDICT_DISTILL,
-            pipeline::NUM_PREDICT_DISTILL_RETRY
-        ),
-    ];
-    let with_common = |own: &[&str]| -> Vec<String> {
-        let mut v = lines(own);
-        v.extend(distill_common.iter().cloned());
-        v
-    };
-    let d = |i: usize| &distillation[i];
     out.push(Example {
-        file: "11-distillation-single-pass-stock-first-analysis",
-        title: "Distillation — single pass, stock, first analysis",
-        step: "6d",
+        file: "11-research-synthesis-follow-up-ask",
+        title: "Research synthesis — the follow-up ask, the conversation's second message",
+        step: "6c",
         holding: tsla_holding,
-        sentences: with_common(&[
-            "The reduce over every topic's searches at once — the single-pass route, taken when the whole input fits the budget.",
-            "On a first analysis there are no prior topic objects; the typed fields asked for are the forward assumption and the forensic event, read from SOURCE TEXT.",
+        sentences: lines(&[
+            "The synthesis conversation's second message on a pass that offers a follow-up: the first message, the write-up the model returned echoed as the assistant's turn, then the ask.",
+            "The reply is the follow-up question as plain text, which becomes the next pass's question under the depth cap and the budget, or the one word none — the only reply the app interprets.",
+            "The message is not sent on a topic's last pass under the depth cap nor on the disconfirming pass.",
         ]),
-        stage: d(1).stage.clone(),
-        request: distill_request(d(1)),
-        variants: vec![],
-        extras: vec![],
-    });
-    out.push(Example {
-        file: "12-distillation-single-pass-stock-continuity",
-        title: "Distillation — single pass, stock, continuity run with the overlay and the backfill obligation",
-        step: "6d",
-        holding: "TSLA, on a continuity run over a prior analysis of 2026-09-01, overlay-eligible",
-        sentences: with_common(&[
-            "The single-pass reduce on a continuity run: the prior topic objects merge at their topic, a prior topic not searched in this analysis rides as dormant, and the contrary-evidence pass follows the topics.",
-            "The overlay-eligible stock with the backfill obligation asks for every typed field: the forward assumption, the forensic event, the pre-profit observation rows and the backfill record.",
-        ]),
-        stage: d(0).stage.clone(),
-        request: distill_request(d(0)),
-        variants: vec![],
-        extras: vec![],
-    });
-    out.push(Example {
-        file: "13-distillation-single-pass-fund",
-        title: "Distillation — single pass, fund",
-        step: "6d",
-        holding: bnd_holding,
-        sentences: with_common(&[
-            "A fund's reduce is consolidation only: the combined findings and the topic layer, and no source text or typed field.",
-        ]),
-        stage: d(2).stage.clone(),
-        request: distill_request(d(2)),
-        variants: vec![],
-        extras: vec![],
-    });
-    out.push(Example {
-        file: "14-distillation-tier-1-topic-tree",
-        title: "Distillation — tier-1 call over one topic tree",
-        step: "6d",
-        holding: "TSLA, on a continuity run, the hierarchical route",
-        sentences: with_common(&[
-            "The hierarchical route's tier-1 call, taken per topic when the single-pass prompt outgrows the budget: one topic's searches with its prior, returning that topic's summary and claims.",
-        ]),
-        stage: d(3).stage.clone(),
-        request: distill_request(d(3)),
-        variants: vec![],
-        extras: vec![],
-    });
-    out.push(Example {
-        file: "15-distillation-pass-level",
-        title: "Distillation — pass-level sub-distillation",
-        step: "6d",
-        holding: "TSLA, on a continuity run, the hierarchical route",
-        sentences: with_common(&[
-            "The pass-level sub-distillation, taken when a topic tree itself outgrows the tier-1 budget: one search of one topic, returning its summary and claims.",
-        ]),
-        stage: d(4).stage.clone(),
-        request: distill_request(d(4)),
-        variants: vec![],
-        extras: vec![],
-    });
-    out.push(Example {
-        file: "16-distillation-tree-level-reduce",
-        title: "Distillation — tree-level reduce over the pass outputs",
-        step: "6d",
-        holding: "TSLA, on a continuity run, the hierarchical route",
-        sentences: with_common(&[
-            "The tree-level reduce that follows the pass-level calls: each pass output renders as its summary and claims, the prior merges here, and the call returns the topic's summary and claims.",
-        ]),
-        stage: d(5).stage.clone(),
-        request: distill_request(d(5)),
-        variants: vec![],
-        extras: vec![],
-    });
-    out.push(Example {
-        file: "17-distillation-hierarchical-reduce",
-        title: "Distillation — the final reduce over the tier-1 outputs",
-        step: "6d",
-        holding: "TSLA, on a continuity run, the hierarchical route",
-        sentences: with_common(&[
-            "The hierarchical route's final reduce: the tier-1 outputs stand in for the searches, with the dormant prior and the contrary-evidence pass, returning the combined findings and the topic layer.",
-        ]),
-        stage: d(6).stage.clone(),
-        request: distill_request(d(6)),
+        stage: followup_ask.stage.clone(),
+        request: research_request(&followup_ask),
         variants: vec![],
         extras: vec![],
     });
@@ -660,7 +537,7 @@ fn examples() -> Vec<Example> {
             holding: "BND, on a continuity run over a stub first run of 2026-09-03",
             sentences: lines(&[
                 "The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.",
-                "The analysis is the offline stub's, since the stub run issues no research call.",
+                "The analysis is the bridge's one no-write-up sentence, since the stub run issues no research call and writes nothing.",
             ]),
             stage: "thesis BND".into(),
             request: role_risk_continuity_request(&fx),
@@ -886,7 +763,6 @@ fn pretty(v: &Value) -> String {
 fn model_label(id: &str) -> &'static str {
     match id {
         REASONER => "the roster's resident reasoner",
-        FAST => "the roster's fast tier where one is configured, else the reasoner (the default roster)",
         _ => "the configured model",
     }
 }
@@ -1014,7 +890,7 @@ fn render_contents(examples: &[Example]) -> String {
         "*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `{}`; regenerate rather than edit (`docs/prompts/README.md`).*\n\n",
         crate::portfolio::PROMPT_VERSION
     ));
-    out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), distillation (Step 6d), then the thesis document, its appendix and the action call (Step 6f).\n");
+    out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), then the thesis document, its appendix and the action call (Step 6f); consolidation's files (Step 6d) land with the analysis call.\n");
     out.push_str("Each file carries the request envelope, every message as sent, and the tools or the response schema.\n\n");
     out.push_str("| File | Call | Step |\n| --- | --- | --- |\n");
     for ex in examples {
@@ -1102,7 +978,7 @@ fn portfolio_prompt_examples_write() {
 #[test]
 fn portfolio_prompt_examples_render() {
     let examples = examples();
-    assert_eq!(examples.len(), 27);
+    assert_eq!(examples.len(), 21);
     // The header names the stamp this file last changed at, and the writer's
     // comparison sets that stamp aside and nothing else.
     let first = render(&examples[0]);

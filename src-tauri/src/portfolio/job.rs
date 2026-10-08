@@ -1948,13 +1948,6 @@ fn run_analysis(
             } else {
                 Vec::new()
             };
-        // The persisted per-topic layer (the research-reuse priors). A read
-        // failure degrades to a cold loop, never a failed run.
-        let research_priors = if !skip_retrieval {
-            store::load_topic_distillates(conn, &position.symbol).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
         let mut dossier: HoldingDossier = dossier::assemble(
             position.clone(),
             holdings_diff.delta_for(&position.symbol),
@@ -1996,7 +1989,6 @@ fn run_analysis(
             sector_benchmark,
             semantic_recall,
             news_seeds,
-            research_priors,
             run_session_date.clone(),
         );
         if is_stock && !skip_retrieval {
@@ -2093,37 +2085,6 @@ fn run_analysis(
             verdict.analyzed_at = prior_vintage;
         }
         ctx.step_finished(step_key, "ok", None);
-        // Persist the holding's fresh per-topic distilled-findings layer — the
-        // next run's research seeds, surviving independently of run retention
-        // (`docs/portfolio-analysis.md` §Starting parameters). Fail-soft: a
-        // lost write costs the next run's warm seeds, never this run.
-        if let Some(research) = &audit.research {
-            if !research.seed_layer.is_empty() {
-                if let Err(e) =
-                    store::save_topic_distillates(conn, &position.symbol, &research.seed_layer)
-                {
-                    eprintln!(
-                        "research seed layer: write failed for {} ({e})",
-                        position.symbol
-                    );
-                }
-            }
-            // A topic the distillation failed to re-emit reconciled loses its
-            // stored row — a stale seed must not survive the run that should
-            // have rewritten it (each is also a recorded gap).
-            if !research.unreconciled_topics.is_empty() {
-                if let Err(e) = store::delete_topic_distillates(
-                    conn,
-                    &position.symbol,
-                    &research.unreconciled_topics,
-                ) {
-                    eprintln!(
-                        "research seed layer: stale-row delete failed for {} ({e})",
-                        position.symbol
-                    );
-                }
-            }
-        }
         verdicts.push(verdict);
         audits.push(audit);
 
@@ -2324,6 +2285,7 @@ fn run_analysis(
         &verdicts,
         &holdings_diff.exited,
         &audits,
+        &carried_symbols,
         health.deep_history_failures,
         rates.history_gap.is_some(),
         house_view_omitted,
@@ -2543,6 +2505,7 @@ fn build_roll_up(
     verdicts: &[HoldingVerdict],
     exited: &[ExitedPosition],
     audits: &[HoldingAudit],
+    carried: &std::collections::HashSet<String>,
     deep_history_failures: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
@@ -2608,6 +2571,7 @@ fn build_roll_up(
         exited: exited.to_vec(),
         data_health: build_data_health(
             audits,
+            carried,
             deep_history_failures,
             dgs10_history_gap,
             house_view_omitted,
@@ -2630,8 +2594,10 @@ fn build_roll_up(
 /// (a failed deep-history source, a target on the current-multiple carry, a failed
 /// DGS10 history request); raw-percentile fallback and additive research degradation
 /// are counted in the line but are honest fail-soft states, not attention triggers.
+#[allow(clippy::too_many_arguments)] // the run-level inputs the roll-up folds, each one source's outcome
 fn build_data_health(
     audits: &[HoldingAudit],
+    carried: &std::collections::HashSet<String>,
     deep_history_failures: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
@@ -2646,8 +2612,13 @@ fn build_data_health(
     let carry = metas.iter().filter(|m| m.current_multiple_carry).count();
     let raw_fallback = targets_total - rate_anchored - carry;
     let floored = metas.iter().filter(|m| m.dispersion_floor_applied).count();
+    // The research counts read this run's audits alone: a carried holding's
+    // prior row rides the run whole, and its prior run's retrieval outcomes
+    // stay out of this run's counts (`docs/portfolio-analysis.md`
+    // §Portfolio roll-up).
     let (research_degraded_holdings, research_gap_count) = audits
         .iter()
+        .filter(|audit| !carried.contains(&audit.symbol.to_ascii_uppercase()))
         .filter_map(|audit| audit.research.as_ref())
         .map(|research| research.gaps.len())
         .fold((0usize, 0usize), |(holdings, gaps), count| {
@@ -2959,6 +2930,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &std::collections::HashSet::new(),
             0,
             false,
             false,
@@ -3081,6 +3053,7 @@ mod tests {
     fn data_health_counts_feed_gaps_without_raising_attention() {
         let dh = build_data_health(
             &[],
+            &std::collections::HashSet::new(),
             0,
             false,
             false,
@@ -3106,13 +3079,13 @@ mod tests {
         assert!(dh.summary.contains("FINRA short interest unavailable"), "{}", dh.summary);
         assert!(dh.summary.contains("sector benchmark series failed on 1 symbol(s)"), "{}", dh.summary);
         // Clean feeds leave the line untouched.
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], vec![]);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), vec![], vec![]);
         assert!(!dh.summary.contains("commodity"), "{}", dh.summary);
     }
 
-    #[test]
-    fn data_health_rolls_persisted_research_gaps_to_the_visible_summary() {
-        let audit = |symbol: &str, gaps: Vec<String>| HoldingAudit {
+    /// A holding audit carrying only a research record with the given gaps.
+    fn audit_with_research_gaps(symbol: &str, gaps: Vec<String>) -> HoldingAudit {
+        HoldingAudit {
             symbol: symbol.into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3135,26 +3108,23 @@ mod tests {
             implied_expectations: None,
             narrative: None,
             option_overlay: None,
-            research: Some(crate::portfolio::distill::ResearchAuditRecord {
-                combined: "research".into(),
-                seed_layer: vec![],
-                shape: crate::portfolio::distill::DistillShape::SinglePass,
+            research: Some(crate::portfolio::research::ResearchAuditRecord {
+                write_ups: vec![],
+                disconfirming: None,
+                roster: vec![],
                 fetches_spent: 0,
                 elapsed_secs: 0,
-                seed_decisions: vec![],
-                sources: vec![],
                 gaps,
-                unreconciled_topics: vec![],
-                forward_assumption: None,
-                leading_indicator: None,
-                forensic_event: None,
-                forward_assumption_resolution: None,
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn data_health_rolls_persisted_research_gaps_to_the_visible_summary() {
         let audits = vec![
-            audit("DEG1", vec!["gathering partial".into(), "page omitted".into()]),
-            audit("CLEAN", vec![]),
-            audit(
+            audit_with_research_gaps("DEG1", vec!["gathering partial".into(), "page omitted".into()]),
+            audit_with_research_gaps("CLEAN", vec![]),
+            audit_with_research_gaps(
                 "DEG2",
                 vec![
                     "topic competitive-position: gathering degraded — 1 fetched page(s) \
@@ -3165,6 +3135,7 @@ mod tests {
         ];
         let dh = build_data_health(
             &audits,
+            &std::collections::HashSet::new(),
             0,
             false,
             false,
@@ -3182,6 +3153,53 @@ mod tests {
             dh.summary
         );
         assert!(!dh.attention, "research remains additive and fail-soft");
+    }
+
+    /// On a selective run a carried holding's prior audit rides the run whole,
+    /// and its prior run's retrieval outcomes stay out of this run's research
+    /// counts (`docs/portfolio-analysis.md` §Portfolio roll-up); the carried
+    /// set is keyed by upper-cased symbol, as the loop keys it, so the join
+    /// does not turn on the audit row's case.
+    #[test]
+    fn data_health_keeps_a_carried_holdings_prior_research_gaps_out_of_the_counts() {
+        let audits = vec![
+            audit_with_research_gaps("FRESH", vec!["gathering partial".into()]),
+            audit_with_research_gaps(
+                "Crrd",
+                vec!["page omitted".into(), "gathering partial".into()],
+            ),
+        ];
+        let carried: std::collections::HashSet<String> = ["CRRD".to_string()].into_iter().collect();
+        let dh = build_data_health(
+            &audits,
+            &carried,
+            0,
+            false,
+            false,
+            FeedGaps::default(),
+            vec![],
+            vec![],
+        );
+        assert_eq!(dh.research_degraded_holdings, 1);
+        assert_eq!(dh.research_gap_count, 1);
+        assert!(
+            dh.summary
+                .contains("research coverage degraded on 1 holding (1 recorded gap)"),
+            "{}",
+            dh.summary
+        );
+        // Nothing carried: both rows count.
+        let dh = build_data_health(
+            &audits,
+            &std::collections::HashSet::new(),
+            0,
+            false,
+            false,
+            FeedGaps::default(),
+            vec![],
+            vec![],
+        );
+        assert_eq!((dh.research_degraded_holdings, dh.research_gap_count), (2, 3));
     }
 
     #[test]
@@ -3204,7 +3222,7 @@ mod tests {
             stage: "interpret WID".into(),
             cause: "daemon error status".into(),
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], retries);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), vec![], retries);
         assert!(dh.attention, "an absorbed transient is infrastructure degradation");
         assert_eq!(dh.model_retries.len(), 1);
         assert!(
@@ -3222,7 +3240,7 @@ mod tests {
             stage: "research WID synthesis".into(),
             cause: long_cause.clone(),
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], retries);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), vec![], retries);
         let line = dh
             .summary
             .split("; ")
@@ -3232,7 +3250,7 @@ mod tests {
         assert!(line.chars().count() < 300, "{}", line.chars().count());
         assert_eq!(dh.model_retries[0].cause, long_cause);
         // No fired retries: no line, no attention from this trigger.
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], vec![]);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), vec![], vec![]);
         assert!(!dh.attention);
         assert!(!dh.summary.contains("bounded retry"), "{}", dh.summary);
     }
@@ -3279,6 +3297,7 @@ mod tests {
         let rows = vec![ordinary, phase_limited.clone(), failed];
         let dh = build_data_health(
             &[],
+            &std::collections::HashSet::new(),
             0,
             false,
             false,
@@ -3301,6 +3320,7 @@ mod tests {
         };
         let dh = build_data_health(
             &[],
+            &std::collections::HashSet::new(),
             0,
             false,
             false,
@@ -3342,7 +3362,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), usage, vec![]);
         assert_eq!(dh.context_pressure.len(), 1);
         assert_eq!(dh.context_pressure[0].stage, "construction");
         assert_eq!(dh.peak_prompt.as_ref().unwrap().stage, "construction");
@@ -3367,7 +3387,7 @@ mod tests {
             },
             ..Default::default()
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.context_pressure.is_empty());
         let peak = dh
             .peak_prompt
@@ -3395,7 +3415,7 @@ mod tests {
             },
             ..Default::default()
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.attention, "{}", dh.summary);
         let expected =
             "generation length-stopped on 1 local call (largest returned eval_count: construction API eval_count 65536 of \
@@ -3422,7 +3442,7 @@ mod tests {
             },
             ..Default::default()
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.attention, "{}", dh.summary);
         let expected = "generation length-stopped on 1 local call (largest returned eval_count: construction \
                         API eval_count unreported of 65536 reserved — counts incomplete or phase-limited; stop \
@@ -3454,7 +3474,7 @@ mod tests {
             },
             ..Default::default()
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
+        let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), usage, vec![]);
         assert_eq!(dh.context_pressure.len(), 1);
         assert!(dh.attention, "{}", dh.summary);
         let expected =
@@ -5323,7 +5343,7 @@ mod tests {
 
     /// A stub analyst that fails hard on one symbol — the mid-book model failure
     /// — or on none ([`FailOn::recording`], the resumed process's analyst).
-    /// Instrumented like `LocalAnalyst`: every `distill_research` records one
+    /// Instrumented like `LocalAnalyst`: every `research` records one
     /// prompt-usage row (the failing symbol's *before* it bails — the abandoned
     /// call a resume must not carry), and every `interpret` records one usage
     /// row at `interpret_tokens` plus one fired-retry event; both drain through
@@ -5377,15 +5397,17 @@ mod tests {
     }
 
     impl crate::portfolio::pipeline::HoldingAnalyst for FailOn {
-        fn distill_research(
+        fn research(
             &self,
-            inputs: &crate::portfolio::distill::DistillInputs,
-        ) -> Result<crate::portfolio::distill::DistilledResearch> {
-            self.record_usage(format!("distill {}", inputs.symbol), 20_000);
-            if self.symbol.is_some_and(|s| s == inputs.symbol) {
-                anyhow::bail!("injected model failure on {}", inputs.symbol);
+            dossier: &crate::portfolio::dossier::HoldingDossier,
+            plan: &crate::portfolio::research::ResearchPlan,
+        ) -> Result<crate::portfolio::research::HoldingResearch> {
+            let symbol = &dossier.position.symbol;
+            self.record_usage(format!("research {symbol}"), 20_000);
+            if self.symbol.is_some_and(|s| s == symbol) {
+                anyhow::bail!("injected model failure on {symbol}");
             }
-            Ok(crate::portfolio::distill::offline_consolidate(inputs))
+            Ok(crate::portfolio::research::offline_stub(plan))
         }
         fn interpret(
             &self,
@@ -5437,17 +5459,18 @@ mod tests {
     }
 
     impl crate::portfolio::pipeline::HoldingAnalyst for PanicOn {
-        fn distill_research(
+        fn research(
             &self,
-            inputs: &crate::portfolio::distill::DistillInputs,
-        ) -> Result<crate::portfolio::distill::DistilledResearch> {
-            if inputs.symbol == self.symbol {
+            dossier: &crate::portfolio::dossier::HoldingDossier,
+            plan: &crate::portfolio::research::ResearchPlan,
+        ) -> Result<crate::portfolio::research::HoldingResearch> {
+            if dossier.position.symbol == self.symbol {
                 if let Some(flag) = &self.cancel_first {
                     flag.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
                 panic!("injected panic on {}", self.symbol);
             }
-            Ok(crate::portfolio::distill::offline_consolidate(inputs))
+            Ok(crate::portfolio::research::offline_stub(plan))
         }
         fn interpret(
             &self,
@@ -5605,7 +5628,7 @@ mod tests {
             .iter()
             .map(|u| u.stage.as_str())
             .collect();
-        assert_eq!(stages, ["distill AAPL", "interpret AAPL"], "{stages:?}");
+        assert_eq!(stages, ["research AAPL", "interpret AAPL"], "{stages:?}");
         assert_eq!(cp.holdings[0].model_retries.len(), 1, "{:?}", cp.holdings[0].model_retries);
         assert_eq!(cp.holdings[0].model_retries[0].stage, "interpret AAPL");
 
@@ -5664,9 +5687,9 @@ mod tests {
                 .map(|u| u.stage.as_str())
                 .collect::<Vec<_>>(),
             [
-                "distill AAPL",
+                "research AAPL",
                 "interpret AAPL",
-                "distill MSFT",
+                "research MSFT",
                 "interpret MSFT"
             ]
         );
@@ -5915,11 +5938,11 @@ mod tests {
                 .map(|u| u.stage.as_str())
                 .collect::<Vec<_>>(),
             [
-                "distill GOOG",
+                "research GOOG",
                 "interpret GOOG",
-                "distill AAPL",
+                "research AAPL",
                 "interpret AAPL",
-                "distill MSFT",
+                "research MSFT",
                 "interpret MSFT"
             ]
         );
@@ -6169,7 +6192,7 @@ mod tests {
                 .iter()
                 .map(|u| u.stage.as_str())
                 .collect::<Vec<_>>(),
-            ["distill AAPL", "interpret AAPL", "distill MSFT"]
+            ["research AAPL", "interpret AAPL", "research MSFT"]
         );
         let conn = storage::open(&paths.db_path).unwrap();
         assert!(store::load_checkpoint(&conn).unwrap().is_none());

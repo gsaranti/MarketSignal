@@ -1,10 +1,10 @@
 # Research gathering — follow-up pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v64`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v72`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
-The follow-up pass on the same topic, taken when the root pass's synthesis proposed a question worth one more pass.
-The approved question and the topic's claims so far ride in Part 1, so the search starts from what the root pass established.
+The follow-up pass on the same topic, taken when the root pass's synthesis answered the follow-up ask with a question.
+The question and the topic's write-up so far ride in Part 1 after the holding-constant block, so the search starts from what the root pass established and the pass rewrites the write-up whole.
 The loop appends the reply countdown before every turn, so the third message is part of the first request.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3740 chars — the messages and tools as serialized |
+| Prompt material | 3569 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write nothing up in this conversation.
 ~~~~
 
-## User message (2250 chars)
+## User message (2077 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -37,6 +37,14 @@ HOLDING
 TSLA (name unavailable).
 Price: $358.97 per share.
 Date: 2026-09-16.
+
+FETCHED VALUES
+The holding's data as its providers return it, each figure as reported (USD; B is billions, M is
+millions); none is computed.
+Quote: 358.97 per share (the live print, undated).
+Daily closes: 1 sessions from 2026-09-14 to 2026-09-14, 52-week low 358.97 on 2026-09-14, high
+358.97 on 2026-09-14.
+Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
 
 NEWS LEADS
 Recent headlines about the holding, each with its source and date. A headline is a lead, not
@@ -53,24 +61,16 @@ Competitive / business position
 - Which competitors or substitutes are gaining or losing against it?
 
 FOLLOW-UP
-The question this pass pursues, and why it was proposed.
-[stub: the approved follow-up question from the root pass's synthesis]
-Because: [stub: why the question matters to the thesis]
+The question this pass pursues.
+[stub: the follow-up question the root pass's synthesis returned]
 
-CLAIMS SO FAR
-What this topic's earlier searching established. Each claim carries: its source; the publication
-date the search or lead reported; and the period the fact applies to.
-- [stub: claim 1 — one dated fact from its source]
-[https://ir.tesla.com/press-release/tesla-second-quarter-2026-results]
-  published: unknown; fact period: unknown
-- [stub: claim 2 — one dated fact from its source]
-[https://www.acea.auto/pc-registrations/new-car-registrations-august-2026/]
-  published: unknown; fact period: unknown
+WRITE-UP SO FAR
+The topic's write-up from its earlier passes.
+[stub: the topic's write-up so far — the root pass's account]
 
 ======== PART 2: TASK ========
 Find what the web shows on the question under FOLLOW-UP for this holding, as of the date under
-HOLDING. The questions under TOPIC are what that question serves; this pass does not search them,
-and the claims under CLAIMS SO FAR need no second search.
+HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.
 
 1. Search for what the question under FOLLOW-UP asks, then fetch and read the results and the leads
 under NEWS LEADS most likely to answer it. Prefer a source tier nearer 0 and an extraction quality
