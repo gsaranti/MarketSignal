@@ -80,7 +80,7 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     low_confidence_grade: false,
     fund_class_label: null,
     // The base fixture's engine rung mirrors its top-level action, so no
-    // "≠ engine" divergence tag shows unless a test overrides the arms.
+    // "≠ portfolio action" departure tag shows unless a test overrides the arms.
     engine_rung: "hold",
     authored_band_relation: null,
     ...over,
@@ -370,9 +370,11 @@ describe("PortfolioView historical mode", () => {
 describe("PortfolioView setup tile and thesis document", () => {
   // B10: momentum is the market-setup read, outside the letter — its tile sits
   // set apart behind the divider, never among the three letter inputs.
-  test("momentum renders as the set-apart Setup tile, not a letter input", () => {
+  test("momentum renders as the set-apart Setup tile, not a letter input", async () => {
     const wrapper = mountView({ run });
-    // Both priced fixtures share sub_scores; the first block stands for all.
+    // The tiles sit behind the Engine detail reveal; both priced fixtures
+    // share sub_scores, so the first card's block stands for all.
+    await wrapper.findAll(".holding-card .hc-reveal")[0].trigger("click");
     const scores = wrapper.find(".hc-subscores");
     const labels = scores.findAll(".hc-sub-label").map((l) => l.text());
     expect(labels).toEqual(["quality", "valuation", "risk", "Setup"]);
@@ -393,7 +395,7 @@ describe("PortfolioView setup tile and thesis document", () => {
     const card = wrapper
       .findAll(".card-stack .holding-card")
       .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
-    const anchor = card.find(".hc-thesis");
+    const anchor = card.find(".hc-col-doc .hc-thesis");
     expect(anchor.find(".hc-kicker").text()).toBe("Thesis document");
     expect(anchor.find(".hc-thesis-text").text()).toBe(
       "Compounding platform with durable pricing power."
@@ -491,44 +493,50 @@ describe("PortfolioView verdict cards", () => {
     expect(tags).toContain("Position: Unchanged");
   });
 
-  test("target methodology is a keyboard-operable disclosure", async () => {
+  test("the engine detail is a keyboard-operable disclosure", async () => {
     const wrapper = mountView({ run });
     // Scoped to the card: the selection bar reuses the reveal primitive above the stack.
     const reveal = wrapper.findAll(".holding-card .hc-reveal")[0];
+    expect(reveal.text()).toContain("Engine detail");
     expect(reveal.attributes("aria-expanded")).toBe("false");
+    expect(wrapper.find(".hc-engine-detail").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("v2 spread-anchored multiples");
     expect(wrapper.text()).not.toContain("v7 three-month 2σ band");
     await reveal.trigger("click");
     expect(reveal.attributes("aria-expanded")).toBe("true");
-    // Both displayed horizons' methodology, three-month first (Codex I10).
-    // The model's target rationale is the model arm's since portfolio-v38 and
-    // no longer rides the engine's reveal.
-    const prose = wrapper
-      .findAll(".holding-card .hc-methodology .hc-prose")
-      .map((p) => p.text());
-    expect(prose).toHaveLength(2); // three-month, twelve-month
+    // Every authored horizon's methodology, three-month first, under its
+    // kicker. The model's target rationale is the model arm's since
+    // portfolio-v38 and no longer rides the engine's reveal.
+    const detail = wrapper.find(".holding-card .hc-engine-detail");
+    expect(detail.findAll(".hc-kicker").map((k) => k.text())).toEqual([
+      "Sub-scores",
+      "Band methodology",
+    ]);
+    const prose = detail.findAll(".hc-prose").map((p) => p.text());
+    expect(prose).toHaveLength(3); // three-month, twelve-month, three-year
     expect(prose[0]).toBe("v7 three-month 2σ band");
     expect(prose[1]).toBe("v2 spread-anchored multiples");
+    expect(prose[2]).toBe("v7 three-year extrapolation");
     expect(prose).not.toContain("base case tracks revenue drift");
   });
 
-  test("the model column renders the appendix's conviction and expected prices, a null as none", () => {
+  test("the typed strip renders the appendix's conviction and expected prices, a null as none", () => {
     const wrapper = mountView({ run });
     const card = wrapper
       .findAll(".card-stack .holding-card")
       .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
-    const column = card.findAll(".hc-col").find((c) => c.text().startsWith("Model view"))!;
-    expect(column.find(".conviction").attributes("aria-label")).toBe("Conviction: medium");
-    expect(column.findAll(".conviction i.on")).toHaveLength(2);
-    const rows = column.findAll("dt").map((d) => d.text());
-    expect(rows).toEqual(["Conviction", "3-mo expected", "12-mo expected", "3-yr expected", "Action"]);
-    expect(column.text()).toContain("$205.00");
-    expect(column.text()).toContain("$210.00");
+    const strip = card.find(".hc-col-strip .hc-strip-kv");
+    expect(strip.find(".conviction").attributes("aria-label")).toBe("Conviction: medium");
+    expect(strip.findAll(".conviction i.on")).toHaveLength(2);
+    const rows = strip.findAll("dt").map((d) => d.text());
+    expect(rows).toEqual(["Conviction", "3-mo expected", "12-mo expected", "3-yr expected"]);
+    expect(strip.text()).toContain("$205.00");
+    expect(strip.text()).toContain("$210.00");
     // The three-year field is null on the fixture: it renders as none, never a
     // fabricated number.
-    const values = column.findAll("dd").map((d) => d.text());
+    const values = strip.findAll("dd").map((d) => d.text());
     expect(values[3]).toBe("none");
-    expect(column.find(".hc-none").exists()).toBe(true);
+    expect(strip.find(".hc-none").exists()).toBe(true);
     // No model letter, no outlook, no target rationale survive.
     expect(card.find(".hc-model-letter").exists()).toBe(false);
     expect(card.text()).not.toContain("Outlook");
@@ -556,13 +564,13 @@ describe("PortfolioView verdict cards", () => {
     const card = wrapper
       .findAll(".card-stack .holding-card")
       .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
-    const column = card.findAll(".hc-col").find((c) => c.text().startsWith("Model view"))!;
-    expect(column.find(".conviction").attributes("aria-label")).toBe("Conviction: none");
-    expect(column.findAll(".conviction i.on")).toHaveLength(0);
-    expect(column.findAll(".hc-none").map((n) => n.text())).toEqual(["none", "none", "none", "none"]);
+    const strip = card.find(".hc-col-strip .hc-strip-kv");
+    expect(strip.find(".conviction").attributes("aria-label")).toBe("Conviction: none");
+    expect(strip.findAll(".conviction i.on")).toHaveLength(0);
+    expect(strip.findAll(".hc-none").map((n) => n.text())).toEqual(["none", "none", "none", "none"]);
   });
 
-  test("the methodology reveal omits a three-month paragraph the engine never authored", async () => {
+  test("a band the engine never authored dashes in the engine line and omits its methodology", async () => {
     const noOneMonth: PortfolioRun = {
       ...run,
       verdicts: [
@@ -584,9 +592,18 @@ describe("PortfolioView verdict cards", () => {
       ],
     };
     const wrapper = mountView({ run: noOneMonth });
+    // The engine line keeps all three horizons so they line up; the two the
+    // engine never authored read as dashes, never a fabricated band.
+    const engine = wrapper.find(".holding-card .hc-engine");
+    const rows = engine.findAll("dl > dt").map((d) => d.text());
+    expect(rows).toEqual(["Grade", "Tier", "3-mo band", "12-mo band", "3-yr band", "Hurdle"]);
+    const values = engine.findAll("dl > dd").map((d) => d.text());
+    expect(values[2]).toBe("—");
+    expect(values[3]).toBe("$210.00 ($180.00–$240.00)");
+    expect(values[4]).toBe("—");
     await wrapper.findAll(".holding-card .hc-reveal")[0].trigger("click");
     const prose = wrapper
-      .findAll(".holding-card .hc-methodology .hc-prose")
+      .findAll(".holding-card .hc-engine-detail .hc-prose")
       .map((p) => p.text());
     expect(prose).toHaveLength(1); // twelve-month
     expect(prose[0]).toBe("v2 spread-anchored multiples");
@@ -605,6 +622,10 @@ describe("PortfolioView verdict cards", () => {
     const wrapper = mountView({ run: lowConf });
     const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
     expect(tags).toContain("Low confidence");
+    // The marker rides the grade's own row in the engine line, beside the chip.
+    const gradeRow = wrapper.find(".hc-engine .hc-grade-dd");
+    expect(gradeRow.find(".hc-grade").text()).toBe("B");
+    expect(gradeRow.find(".ana-tag").text()).toBe("Low confidence");
     // The unmarked fixture renders no marker.
     const clean = mountView({ run });
     expect(clean.findAll(".ana-tag").map((t) => t.text())).not.toContain(
@@ -689,17 +710,77 @@ describe("PortfolioView verdict cards", () => {
       roll_up: { ...run.roll_up, graded_count: 0, role_risk_only_count: 1 },
     };
     const wrapper = mountView({ run: roleRun });
-    // The typed branch: role read, classification, exposure, gaps, reduced action.
-    expect(wrapper.text()).toContain("Role & risk");
+    // The typed branch: the document as the body, the strip carrying the
+    // action with its rationale and then the role / risk reads.
+    expect(wrapper.find(".hc-col-doc .hc-thesis-text").text()).toContain(
+      "Core fixed-income sleeve"
+    );
+    const strip = wrapper.find(".hc-col-strip");
+    expect(strip.find(".hc-action-word").text()).toBe("Hold");
+    expect(strip.find(".hc-rationale").text()).toContain("the sleeve does its job");
+    expect(strip.find(".hc-strip-kicker").text()).toBe("Role & risk");
+    expect(strip.findAll(".hc-kv dt").map((d) => d.text())).toEqual([
+      "Exposure",
+      "Expense drag",
+      "Realized vol",
+    ]);
+    expect(strip.text()).toContain("no on-plan duration/credit surface");
     expect(wrapper.text()).toContain("bond fund · role / risk read");
-    expect(wrapper.text()).toContain("Core fixed-income sleeve");
-    expect(wrapper.text()).toContain("no on-plan duration/credit surface");
-    expect(wrapper.text()).toContain("Hold");
-    // No letter, no targets — the branch never renders priced placeholders.
+    // No letter, no bands, no conviction, no engine line — the branch never
+    // renders priced placeholders.
     expect(wrapper.find(".hc-grade").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("12-mo target");
+    expect(wrapper.find(".hc-engine").exists()).toBe(false);
+    expect(wrapper.find(".hc-strip-kv").exists()).toBe(false);
+    // Scoped to the card: the selection bar above the stack reuses the reveal.
+    expect(wrapper.find(".holding-card .hc-reveal").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("band");
+    expect(wrapper.text()).not.toContain("Conviction");
     // The key-figure strip counts the branch in its own tile.
     expect(wrapper.text()).toContain("Role/risk");
+  });
+
+  test("a structurally path-dependent role-risk vehicle carries its tag in the badge row", () => {
+    const leveraged: PortfolioRun = {
+      ...run,
+      holdings: {
+        positions: [
+          position("TQQQ", {
+            asset_class: "etf",
+            cost_basis: 4_000,
+            market_value: 5_000,
+          }),
+        ],
+        cash: 0,
+        account_total: 5_000,
+      },
+      verdicts: [
+        verdict(
+          "TQQQ",
+          {
+            status: "role-risk-only",
+            class_label: "leveraged / inverse vehicle",
+            thesis_document: "Role: a tactical leveraged sleeve.",
+            exposure_tilt: [],
+            expense_drag: 0.0086,
+            observable_risk: 0.52,
+            structural_flag: true,
+            is_cef: false,
+            nav_premium: null,
+            evidence_gaps: [],
+            action: "trim",
+            action_rationale: "Trim — the path dependence erodes a buy-and-hold position.",
+          },
+          { asset_class: "etf" }
+        ),
+      ],
+      roll_up: { ...run.roll_up, graded_count: 0, role_risk_only_count: 1 },
+    };
+    const wrapper = mountView({ run: leveraged });
+    const card = wrapper.find(".card-stack .holding-card");
+    const tags = card.findAll(".hc-idline .ana-tag").map((t) => t.text());
+    expect(tags).toContain("Structurally path-dependent");
+    // The flag is the branch's own: the strip carries no engine line for it.
+    expect(card.find(".hc-engine").exists()).toBe(false);
   });
 
   test("the closed-end price-vs-NAV row renders only when the read exists", () => {
@@ -789,9 +870,15 @@ describe("PortfolioView verdict cards", () => {
     expect(text).toContain("Avg cost");
     expect(text).toContain("Cost basis");
     expect(text).toContain("Unrealized");
+    expect(text).toContain("Weight");
     expect(text).toContain(moneyExact.format(120));
     expect(text).toContain(moneyExact.format(140));
     expect(text).toContain(money.format(14_000));
+    // AAPL: 19,500 of the 60,000 account.
+    expect(text).toContain("32.5%");
+    // The grade no longer leads the header: it rides the engine line.
+    expect(aapl.find(".hc-head .hc-grade").exists()).toBe(false);
+    expect(aapl.find(".hc-engine .hc-grade").text()).toBe("B");
   });
 
   test("option rows withhold cost basis and gain until the multiplier is probed", () => {
@@ -859,7 +946,9 @@ describe("PortfolioView verdict cards", () => {
     };
     const wrapper = mountView({ run: bare });
     const cells = wrapper.findAll(".hc-position dd").map((d) => d.text());
-    expect(cells).toEqual(["—", "—", "—", "—"]);
+    // Price, avg cost, cost basis and the gain dash; the weight is the
+    // position's market value over the account, which the fixture reports.
+    expect(cells).toEqual(["—", "—", "—", "—", "100.0%"]);
   });
 
   test("a net-short position renders the reduced card — never a position block", () => {
@@ -905,7 +994,7 @@ describe("PortfolioView verdict cards", () => {
     expect(wrapper.text()).not.toContain("Est. adj.");
   });
 
-  test("the IV skew row names its put − call convention and keys its sign on the rendered value", () => {
+  test("the IV skew row names its put − call convention and keys its sign on the rendered value", async () => {
     // The row printed the signed skew under a bare "IV skew" label — the same
     // ambiguity the prompt carried (large-scale review 2026-08-24, P1 minor) —
     // and keyed its "+" on the raw fraction, so +0.0003 read "+0.0%".
@@ -925,24 +1014,32 @@ describe("PortfolioView verdict cards", () => {
         }),
       ],
     });
-    const skewValue = (iv_skew: number | null): string | undefined => {
-      const dt = mountView({ run: withSkew(iv_skew) })
-        .findAll(".hc-actionrow .hc-kv dt")
+    // The options signal sits in the engine detail, behind the reveal.
+    const openDetail = async (iv_skew: number | null) => {
+      const wrapper = mountView({ run: withSkew(iv_skew) });
+      await wrapper.findAll(".holding-card .hc-reveal")[0].trigger("click");
+      return wrapper;
+    };
+    const skewValue = async (iv_skew: number | null): Promise<string | undefined> => {
+      const dt = (await openDetail(iv_skew))
+        .findAll(".hc-engine-detail .hc-kv dt")
         .find((d) => d.text().includes("IV skew"));
       if (!dt) return undefined;
       expect(dt.text()).toBe("Put − call IV skew");
       return dt.element.nextElementSibling?.textContent?.trim();
     };
-    expect(skewValue(0.03)).toBe("+3.0%");
-    expect(skewValue(-0.02)).toBe("-2.0%");
+    expect(await skewValue(0.03)).toBe("+3.0%");
+    expect(await skewValue(-0.02)).toBe("-2.0%");
     // A skew that rounds away carries no sign.
-    expect(skewValue(0.0003)).toBe("0.0%");
+    expect(await skewValue(0.0003)).toBe("0.0%");
     // No skew, no row — the other three rows still render.
-    expect(skewValue(null)).toBeUndefined();
-    const siblings = mountView({ run: withSkew(null) }).text();
+    expect(await skewValue(null)).toBeUndefined();
+    const siblings = (await openDetail(null)).text();
     for (const label of ["Put/call vol", "Put/call OI", "ATM IV"]) {
       expect(siblings).toContain(label);
     }
+    // Closed, none of it renders.
+    expect(mountView({ run: withSkew(0.03) }).text()).not.toContain("Put/call vol");
   });
 });
 
@@ -1543,8 +1640,9 @@ describe("PortfolioView per-holding action", () => {
   });
 });
 
-// ---- The two-arm verdict ------------------------------------------------------
-// Engine baseline | model view paired columns and the full-width action strip.
+// ---- The text-first card -------------------------------------------------------
+// The thesis document as the body, the typed strip beside it, one compact engine
+// line beneath the strip (docs/portfolio-analysis.md §Storage and display).
 
 function twoArmGraded(over: Partial<GradedVerdict> = {}): GradedVerdict {
   return graded({
@@ -1561,8 +1659,8 @@ function twoArmGraded(over: Partial<GradedVerdict> = {}): GradedVerdict {
   });
 }
 
-describe("PortfolioView two-arm verdict", () => {
-  test("a card renders the paired arms and the action strip", () => {
+describe("PortfolioView text-first card", () => {
+  test("a priced card renders the document body, the typed strip and the engine line", async () => {
     const wrapper = mountView({
       run: {
         ...run,
@@ -1575,23 +1673,119 @@ describe("PortfolioView two-arm verdict", () => {
     const card = wrapper
       .findAll(".card-stack .holding-card")
       .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
-    const kickers = card.findAll(".hc-kicker").map((k) => k.text());
-    expect(kickers.some((k) => k.startsWith("Engine baseline"))).toBe(true);
-    expect(kickers.some((k) => k.startsWith("Model view"))).toBe(true);
-    expect(kickers).toContain("Portfolio action");
-    expect(kickers).not.toContain("Model retrospective");
-    // The engine column carries the engine's own rung (a computed read); the
-    // model column the appendix's expected prices as transcribed.
-    const engineCol = card.find(".hc-col-intrinsic");
-    expect(engineCol.text()).toContain("Hold");
-    expect(card.text()).toContain("$280.00");
-    expect(card.text()).toContain("$400.00");
-    // Only the model's action diverging from the engine's rung carries the
-    // quiet ≠ engine tag.
-    const tags = card.findAll(".ana-tag").map((t) => t.text());
-    expect(tags.filter((t) => t === "≠ engine").length).toBe(1);
-    // The action strip is full-width beneath the arms.
-    expect(card.find(".hc-actionrow .hc-action-word").exists()).toBe(true);
+    // The body: the document column, then the strip column.
+    const cols = card.findAll(".hc-body > .hc-col");
+    expect(cols.map((c) => c.classes()[1])).toEqual(["hc-col-doc", "hc-col-strip"]);
+    expect(cols[0].find(".hc-kicker").text()).toBe("Thesis document");
+    // The strip: the action with its rationale leads, the appendix rows follow,
+    // then the engine line under its computed kicker — in that order.
+    const strip = cols[1];
+    const kickers = strip.findAll(".hc-kicker").map((k) => k.text());
+    expect(kickers).toEqual(["Portfolio action", "Engine · computed"]);
+    expect(strip.find(".hc-action-word").text()).toBe("Add");
+    expect(strip.find(".hc-rationale").text()).toBe("Hold — the thesis is intact.");
+    expect(strip.findAll(".hc-strip-kv dt").map((d) => d.text())).toEqual([
+      "Conviction",
+      "3-mo expected",
+      "12-mo expected",
+      "3-yr expected",
+    ]);
+    expect(strip.find(".hc-strip-kv").text()).toContain("$280.00");
+    expect(strip.find(".hc-strip-kv").text()).toContain("$400.00");
+    const engine = strip.find(".hc-engine");
+    expect(engine.findAll("dl > dt").map((d) => d.text())).toEqual([
+      "Grade",
+      "Tier",
+      "3-mo band",
+      "12-mo band",
+      "3-yr band",
+      "Hurdle",
+    ]);
+    const reads = engine.findAll("dl > dd").map((d) => d.text());
+    expect(reads[0]).toBe("B");
+    expect(reads[1]).toBe("Medium");
+    expect(reads[2]).toBe("$205.00 ($195.00–$215.00)");
+    expect(reads[3]).toBe("$210.00 ($180.00–$240.00)");
+    expect(reads[4]).toBe("$230.00 ($170.00–$290.00)");
+    expect(reads[5]).toBe("Indeterminate");
+    // No paired-column or action-row residue.
+    expect(card.text()).not.toContain("Engine baseline");
+    expect(card.text()).not.toContain("Model view");
+    expect(card.text()).not.toContain("Model retrospective");
+    // The engine's own rung is a computed read behind the reveal; only there,
+    // and only when it departs from the chosen action, does the quiet tag show.
+    expect(card.findAll(".ana-tag").map((t) => t.text())).not.toContain(
+      "≠ portfolio action"
+    );
+    await strip.find(".hc-reveal").trigger("click");
+    const detail = strip.find(".hc-engine-detail");
+    const rungRow = detail
+      .findAll(".hc-kv dt")
+      .find((d) => d.text() === "Engine action")!;
+    expect(rungRow.element.nextElementSibling?.textContent).toContain("Hold");
+    expect(detail.findAll(".ana-tag").map((t) => t.text())).toEqual(["≠ portfolio action"]);
+    // A rung that matches the action carries no tag.
+    const agreed = mountView({
+      run: {
+        ...run,
+        verdicts: [verdict("AAPL", { status: "priced", ...twoArmGraded({ engine_rung: "add" }) })],
+      },
+    });
+    await agreed.findAll(".holding-card .hc-reveal")[0].trigger("click");
+    expect(agreed.findAll(".ana-tag").map((t) => t.text())).not.toContain("≠ portfolio action");
+  });
+
+  test("the hurdle state renders its word, dead money on fails", () => {
+    const withHurdle = (dead_money: GradedVerdict["dead_money"]) =>
+      mountView({
+        run: {
+          ...run,
+          verdicts: [verdict("AAPL", { status: "priced", ...graded({ dead_money }) })],
+        },
+      });
+    const hurdleOf = (wrapper: ReturnType<typeof mountView>) =>
+      wrapper
+        .find(".hc-engine")
+        .findAll("dl > dt")
+        .find((d) => d.text() === "Hurdle")!.element.nextElementSibling as HTMLElement;
+    const fails = hurdleOf(withHurdle("fails"));
+    expect(fails.textContent?.trim()).toBe("Fails · dead money");
+    expect(fails.classList.contains("hc-hurdle-fails")).toBe(true);
+    const clears = hurdleOf(withHurdle("clears"));
+    expect(clears.textContent?.trim()).toBe("Clears");
+    expect(clears.classList.contains("hc-hurdle-fails")).toBe(false);
+    expect(hurdleOf(withHurdle("unscorable")).textContent?.trim()).toBe("Unscorable");
+  });
+
+  test("an abstained card renders its retained prior document beneath the reason", () => {
+    const retained: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict("XYZ", {
+          status: "insufficient-evidence",
+          reason: "Too few sources to grade.",
+          prior_thesis_document: "Prior: a compounding platform.\n\nTriggers: margin.",
+        }),
+      ],
+    };
+    const wrapper = mountView({ run: retained });
+    const card = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "XYZ")!;
+    expect(card.find(".hc-reason").text()).toBe("Too few sources to grade.");
+    const prior = card.find(".hc-reduced .hc-thesis");
+    expect(prior.find(".hc-kicker").text()).toBe("Prior thesis document · retained");
+    expect(prior.find(".hc-thesis-text").text()).toContain("Prior: a compounding platform.");
+    expect(prior.find(".hc-thesis-text").text()).toContain("Triggers: margin.");
+    // Still the reduced card: no strip, no engine line, no action.
+    expect(card.find(".hc-col-strip").exists()).toBe(false);
+    expect(card.find(".hc-action-word").exists()).toBe(false);
+    // A debut abstention (the base fixture's XYZ) shows the reason alone.
+    const debut = mountView({ run })
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "XYZ")!;
+    expect(debut.find(".hc-thesis").exists()).toBe(false);
+    expect(debut.text()).not.toContain("Prior thesis document");
   });
 });
 

@@ -8,10 +8,14 @@ import type {
   HoldingQuickState,
   HoldingsPull,
   HoldingVerdict,
+  HurdleState,
   PortfolioConviction,
   PortfolioRun,
   Position,
+  PriceTarget,
+  PriceTargets,
   QuickCheckState,
+  RiskTier,
   ThesisAppendix,
 } from "../types";
 
@@ -766,6 +770,20 @@ const CONVICTION_LEVEL: Record<PortfolioConviction, number> = {
   high: 3,
 };
 
+// The engine line's tier and hurdle words. Only `fails` is dead money
+// (docs/portfolio-analysis.md §The holding verdict); the word carries it.
+const TIER_LABELS: Record<RiskTier, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+const HURDLE_LABELS: Record<HurdleState, string> = {
+  clears: "Clears",
+  indeterminate: "Indeterminate",
+  fails: "Fails · dead money",
+  unscorable: "Unscorable",
+};
+
 const CHANGE_LABELS: Record<string, string> = {
   new: "New",
   increased: "Increased",
@@ -785,10 +803,11 @@ const LETTER_SUBSCORES = ["quality", "valuation", "risk"] as const;
 // pointer, keyboard, low-vision, and screen-reader users alike.
 const SETUP_NOTE = "Setup — market-setup read, outside the letter";
 
-// ---- The two-arm verdict --------------------------------------------------
-// The engine baseline beside the model's own view: the thesis document's
-// typed appendix — the conviction and the expected price at each horizon,
-// each null where the document stated none, rendered as "none".
+// ---- The typed strip and the engine line ------------------------------------
+// The strip carries the thesis document's typed appendix — the conviction and
+// the expected price at each horizon, each null where the document stated
+// none, rendered as "none"; the engine line beneath it carries the engine's
+// three bands in the same horizon order, a never-authored band as a dash.
 
 function convictionLevel(c: PortfolioConviction | null): number {
   return c === null ? 0 : CONVICTION_LEVEL[c];
@@ -799,6 +818,16 @@ function expectedPrices(a: ThesisAppendix): [string, number | null][] {
     ["3-mo expected", a.expected_price_3m],
     ["12-mo expected", a.expected_price_12m],
     ["3-yr expected", a.expected_price_3y],
+  ];
+}
+
+// The engine's bands in horizon order with their line labels; null where the
+// engine never authored the horizon (the backend always emits all three).
+function bands(t: PriceTargets): [string, PriceTarget | null][] {
+  return [
+    ["3-mo band", t.three_month],
+    ["12-mo band", t.twelve_month],
+    ["3-yr band", t.three_year],
   ];
 }
 
@@ -821,20 +850,23 @@ function hasOptionsSignal(v: {
   );
 }
 
-// Per-card methodology disclosure (the kit's Reveal, inline rather than a
-// popover so it never overlaps neighboring cards). Keyed per symbol.
-const openMethodology = ref<Set<string>>(new Set());
-function toggleMethodology(symbol: string) {
-  const next = new Set(openMethodology.value);
+// Per-card engine-detail disclosure — the engine's reads beyond the compact
+// line (the kit's Reveal, inline rather than a popover so it never overlaps
+// neighboring cards). Keyed per symbol.
+const openDetail = ref<Set<string>>(new Set());
+function toggleDetail(symbol: string) {
+  const next = new Set(openDetail.value);
   if (next.has(symbol)) next.delete(symbol);
   else next.add(symbol);
-  openMethodology.value = next;
+  openDetail.value = next;
 }
 
-// ---- Standing-thesis anchor (the kit's ThesisAnchor overflow contract) -----------
-// A long model-authored thesis clamps to three lines with an accessible reveal,
-// shown only when the text actually overflows (market-signal-design-system
-// ui_kits Portfolio.jsx). Keyed per symbol, like the methodology disclosure.
+// ---- The thesis-document body (the kit's ThesisAnchor overflow contract) ---------
+// A long model-authored document clamps to twelve lines with an accessible
+// reveal, shown only when the text actually overflows (market-signal-design-
+// system ui_kits Portfolio.jsx, the clamp deepened to roughly the strip's
+// height). Keyed per symbol, like the Engine detail disclosure; the abstained
+// card's retained prior document rides the same machinery.
 
 const openThesis = ref<Set<string>>(new Set());
 const thesisOverflow = ref<Set<string>>(new Set());
@@ -1375,6 +1407,36 @@ const keyFigures = computed(() => {
                     </template>
                   </div>
                   <p class="hc-reason">{{ v.disposition.reason }}</p>
+                  <!-- An abstention retains the holding's prior thesis
+                       document unrewritten (docs/portfolio-analysis.md
+                       §Evidence floor) — rendered beneath the reason under
+                       its own kicker, through the same clamp and reveal; a
+                       debut abstention has none and shows the reason alone. -->
+                  <div
+                    v-if="
+                      v.disposition.status === 'insufficient-evidence' &&
+                      v.disposition.prior_thesis_document
+                    "
+                    class="hc-thesis"
+                  >
+                    <span class="hc-kicker">Prior thesis document · retained</span>
+                    <p
+                      :ref="thesisRef(v.symbol)"
+                      class="hc-thesis-text"
+                      :class="{ clamped: !openThesis.has(v.symbol) }"
+                    >
+                      {{ v.disposition.prior_thesis_document }}
+                    </p>
+                    <button
+                      v-if="thesisOverflow.has(v.symbol) || openThesis.has(v.symbol)"
+                      type="button"
+                      class="hc-thesis-toggle"
+                      :aria-expanded="openThesis.has(v.symbol)"
+                      @click="toggleThesis(v.symbol)"
+                    >
+                      {{ openThesis.has(v.symbol) ? "Show less" : "Read full document" }}
+                    </button>
+                  </div>
                 </div>
                 <div class="hc-reduced-side">
                   <span class="hc-kicker">Weight</span>
@@ -1386,11 +1448,25 @@ const keyFigures = computed(() => {
                 </div>
               </div>
 
-              <!-- Role/risk-only verdict: the union's other branch — an explicit
-                   designed card (role, exposure, risk, expense, gaps beside the
-                   action), never empty priced placeholders
-                   (docs/portfolio-analysis.md §Storage and display). -->
-              <template v-else-if="v.disposition.status === 'role-risk-only'">
+              <!-- Analyzed verdict — the union's two branches share one
+                   text-first card (docs/portfolio-analysis.md §Storage and
+                   display): the thesis document as the body, the typed strip
+                   beside it (the action with its rationale, then on the priced
+                   branch the conviction and the three expected prices; on the
+                   role_risk_only branch the role / risk reads), and on the
+                   priced branch one compact engine line beneath the strip —
+                   the grade with its low-confidence marker, the tier, the
+                   three bands and the hurdle state, each a computed read
+                   labeled as such. Two recorded design-package extensions
+                   (the kit's HoldingCard pairs a 1fr/1fr intrinsic-verdict /
+                   portfolio-action grid under a three-line thesis lead): the
+                   text-first body — document 3fr, strip 2fr, a twelve-line
+                   clamp — and the compact engine line, the key-figure strip's
+                   label / value vocabulary at card density. The engine's
+                   reads beyond the line (sub-scores, its own rung, the band
+                   methodology, the options signal) sit behind the Engine
+                   detail reveal. -->
+              <template v-else>
                 <header class="hc-head">
                   <div class="hc-id">
                     <div class="hc-id-text">
@@ -1430,7 +1506,12 @@ const keyFigures = computed(() => {
                           :title="SIDE_REVERSED_TITLE"
                           >Side reversed</span
                         >
-                        <span v-if="v.disposition.structural_flag" class="ana-tag"
+                        <span
+                          v-if="
+                            v.disposition.status === 'role-risk-only' &&
+                            v.disposition.structural_flag
+                          "
+                          class="ana-tag"
                           >Structurally path-dependent</span
                         >
                         <!-- The over-age rule-demotion is branch-unscoped
@@ -1471,8 +1552,8 @@ const keyFigures = computed(() => {
                   </div>
                   <!-- The position block: the account facts the verdict is
                        read against — price, the across-orders average cost,
-                       the netted cost basis — so the unrealized figure sits
-                       on its base (2026-07-31 run review, F9). -->
+                       the netted cost basis, the unrealized figure on its
+                       base, and the position's weight in the book. -->
                   <dl class="hc-kv hc-position">
                     <dt class="hc-kicker">Price</dt>
                     <dd>
@@ -1514,521 +1595,331 @@ const keyFigures = computed(() => {
                       </span>
                       <span v-else class="ana-num hc-gain-none">—</span>
                     </dd>
+                    <dt class="hc-kicker">Weight</dt>
+                    <dd>
+                      <span class="ana-num">{{
+                        weightOf(positionFor(v.symbol)) !== null
+                          ? fmtPct(weightOf(positionFor(v.symbol))!)
+                          : "—"
+                      }}</span>
+                    </dd>
                   </dl>
                 </header>
 
-                <!-- The card's anchor: the thesis document as the model wrote
-                     it, rendered verbatim — never a separately authored
-                     summary (docs/portfolio-analysis.md §Storage and display).
-                     Long documents follow the kit's ThesisAnchor overflow
-                     contract: a three-line clamp with a reveal shown only on
-                     overflow. -->
-                <div v-if="v.disposition.thesis_document" class="hc-thesis">
-                  <span class="hc-kicker">Thesis document</span>
-                  <p
-                    :ref="thesisRef(v.symbol)"
-                    class="hc-thesis-text"
-                    :class="{ clamped: !openThesis.has(v.symbol) }"
-                  >
-                    {{ v.disposition.thesis_document }}
-                  </p>
-                  <button
-                    v-if="thesisOverflow.has(v.symbol) || openThesis.has(v.symbol)"
-                    type="button"
-                    class="hc-thesis-toggle"
-                    :aria-expanded="openThesis.has(v.symbol)"
-                    @click="toggleThesis(v.symbol)"
-                  >
-                    {{ openThesis.has(v.symbol) ? "Show less" : "Read full document" }}
-                  </button>
-                </div>
-
                 <div class="hc-body">
-                  <div class="hc-col hc-col-intrinsic">
-                    <span class="hc-kicker">Role &amp; risk</span>
-                    <dl class="hc-kv">
-                      <template v-if="v.disposition.exposure_tilt.length > 0">
-                        <dt>Exposure</dt>
+                  <!-- The card's body: the thesis document as the model wrote
+                       it, rendered verbatim — never a separately authored
+                       summary (docs/portfolio-analysis.md §Storage and
+                       display). Long documents follow the kit's ThesisAnchor
+                       overflow contract — a line clamp (twelve lines here,
+                       roughly the strip's height) with a reveal shown only on
+                       overflow. -->
+                  <div class="hc-col hc-col-doc">
+                    <div v-if="v.disposition.thesis_document" class="hc-thesis">
+                      <span class="hc-kicker">Thesis document</span>
+                      <p
+                        :ref="thesisRef(v.symbol)"
+                        class="hc-thesis-text"
+                        :class="{ clamped: !openThesis.has(v.symbol) }"
+                      >
+                        {{ v.disposition.thesis_document }}
+                      </p>
+                      <button
+                        v-if="thesisOverflow.has(v.symbol) || openThesis.has(v.symbol)"
+                        type="button"
+                        class="hc-thesis-toggle"
+                        :aria-expanded="openThesis.has(v.symbol)"
+                        @click="toggleThesis(v.symbol)"
+                      >
+                        {{ openThesis.has(v.symbol) ? "Show less" : "Read full document" }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- The typed strip: the per-holding action call's decision
+                       — rung only, no sizing (the tunnel-vision contract) —
+                       with its rationale, then the branch's typed reads. -->
+                  <div class="hc-col hc-col-strip">
+                    <span class="hc-kicker">Portfolio action</span>
+                    <div class="hc-action">
+                      <span class="hc-action-word">{{
+                        ACTION_LABELS[v.disposition.action]
+                      }}</span>
+                    </div>
+                    <p class="hc-prose hc-rationale">
+                      {{ v.disposition.action_rationale }}
+                    </p>
+
+                    <template v-if="v.disposition.status === 'priced'">
+                      <!-- The thesis document's typed appendix — the conviction
+                           and the expected price at each horizon, persisted
+                           exactly as transcribed; a null field renders as none. -->
+                      <dl class="hc-kv hc-strip-kv">
+                        <dt>Conviction</dt>
                         <dd>
                           <span
-                            v-for="tilt in v.disposition.exposure_tilt.slice(0, 3)"
-                            :key="tilt.label"
-                            class="hc-horizon"
+                            class="conviction"
+                            role="img"
+                            :aria-label="`Conviction: ${v.disposition.appendix.conviction ?? 'none'}`"
                           >
-                            <span class="hc-horizon-label">{{ tilt.label }}</span>
-                            <span class="ana-num">{{ fmtPct(tilt.weight) }}</span>
+                            <i
+                              v-for="i in 3"
+                              :key="i"
+                              :class="{
+                                on: i <= convictionLevel(v.disposition.appendix.conviction),
+                              }"
+                            />
                           </span>
-                        </dd>
-                      </template>
-                      <template v-if="v.disposition.expense_drag !== null">
-                        <dt>Expense drag</dt>
-                        <dd>
-                          <span class="ana-num">{{
-                            (v.disposition.expense_drag * 100).toFixed(2) + "%"
-                          }}</span>
-                        </dd>
-                      </template>
-                      <template v-if="v.disposition.observable_risk !== null">
-                        <dt>Realized vol</dt>
-                        <dd>
-                          <span class="ana-num">{{
-                            fmtPct(v.disposition.observable_risk)
-                          }}</span>
-                        </dd>
-                      </template>
-                      <!-- The closed-end read — rendered only where the vehicle
-                           makes it meaningful; its absence is a named gap in the
-                           evidence-gap line below, never a fabricated number. -->
-                      <template
-                        v-if="v.disposition.is_cef && v.disposition.nav_premium !== null"
-                      >
-                        <dt>Price vs NAV</dt>
-                        <dd>
-                          <span class="ana-num">{{
-                            navPremiumNum(v.disposition.nav_premium)
-                          }}</span>
-                          {{ navPremiumWord(v.disposition.nav_premium) }}
-                        </dd>
-                      </template>
-                    </dl>
-                    <p
-                      v-if="v.disposition.evidence_gaps.length > 0"
-                      class="hc-reason"
-                    >
-                      {{ v.disposition.evidence_gaps.join("; ") }}
-                    </p>
-                  </div>
-
-                  <div class="hc-col">
-                    <span class="hc-kicker">Portfolio action</span>
-                    <div class="hc-action">
-                      <span class="hc-action-word">{{
-                        ACTION_LABELS[v.disposition.action]
-                      }}</span>
-                    </div>
-                    <p class="hc-prose hc-rationale">
-                      {{ v.disposition.action_rationale }}
-                    </p>
-                    <dl class="hc-kv">
-                      <dt>Weight</dt>
-                      <dd>
-                        <span class="ana-num">{{
-                          weightOf(positionFor(v.symbol)) !== null
-                            ? fmtPct(weightOf(positionFor(v.symbol))!)
-                            : "—"
-                        }}</span>
-                      </dd>
-                    </dl>
-                  </div>
-                </div>
-
-                <footer class="hc-foot">
-                  <span class="ana-tag" :title="'Position vs. prior run'"
-                    >Position: {{ CHANGE_LABELS[v.position_change] }}</span
-                  >
-                </footer>
-              </template>
-
-              <!-- Priced verdict -->
-              <template v-else>
-                <header class="hc-head">
-                  <div class="hc-id">
-                    <span
-                      class="grade hc-grade"
-                      :class="gradeClass(v.disposition.grade)"
-                      >{{ v.disposition.grade }}</span
-                    >
-                    <div class="hc-id-text">
-                      <div class="hc-idline">
-                        <label
-                          v-if="!isHistorical"
-                          class="hc-select"
-                          :title="`Select ${v.symbol} for selective re-analysis`"
-                        >
-                          <input
-                            type="checkbox"
-                            class="hc-select-input"
-                            :checked="isSelected(v.symbol)"
-                            :disabled="selectionDisabled"
-                            :aria-label="`Select ${v.symbol} for re-analysis`"
-                            @change="toggleSelect(v.symbol)"
-                          />
-                          <span class="hc-select-box" aria-hidden="true"></span>
-                        </label>
-                        <span class="ana-ticker">{{ v.symbol }}</span>
-                        <span class="hc-class">{{ classLabel(v) }}</span>
-                        <span
-                          v-if="carriedStamp(v)"
-                          class="ana-tag"
-                          :title="carriedStamp(v)!.title"
-                          >{{ carriedStamp(v)!.text }}</span
-                        >
-                        <span
-                          v-if="failureFor(v.symbol)"
-                          class="ana-tag ana-tag-failed"
-                          :title="failedBadgeTitle(v.symbol)"
-                          >Analysis failed</span
-                        >
-                        <span
-                          v-if="v.side_reversed"
-                          class="ana-tag dh-attention-tag"
-                          :title="SIDE_REVERSED_TITLE"
-                          >Side reversed</span
-                        >
-                        <span v-if="demoted(v)" class="ana-tag" :title="DEMOTED_TITLE"
-                          >Add demoted to hold</span
-                        >
-                        <span
-                          v-if="v.disposition.low_confidence_grade"
-                          class="ana-tag"
-                          title="An imputed (neutral) sub-score underlies this letter"
-                          >Low confidence</span
-                        >
-                        <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
-                          >No longer held</span
-                        >
-                        <template v-if="quickFor(v.symbol)">
                           <span
-                            v-if="quickFor(v.symbol)!.flag"
-                            class="ana-tag dh-attention-tag"
-                            :title="flagTitle(quickFor(v.symbol)!)"
-                            >Attention — {{ flagLabel(quickFor(v.symbol)!.flag!.trigger) }}</span
+                            class="hc-conviction-word"
+                            :class="{ 'hc-none': v.disposition.appendix.conviction === null }"
+                            >{{ v.disposition.appendix.conviction ?? "none" }}</span
                           >
-                          <span
-                            v-if="eventBadge(quickFor(v.symbol)!)"
-                            class="ana-tag"
-                            :title="eventBadge(quickFor(v.symbol)!)!.title"
-                            >{{ eventBadge(quickFor(v.symbol)!)!.text }}</span
-                          >
-                          <span
-                            v-if="degradedBadge(quickFor(v.symbol)!)"
-                            class="ana-tag"
-                            :title="degradedBadge(quickFor(v.symbol)!)!.title"
-                            >{{ degradedBadge(quickFor(v.symbol)!)!.text }}</span
-                          >
+                        </dd>
+                        <template
+                          v-for="[label, price] in expectedPrices(v.disposition.appendix)"
+                          :key="label"
+                        >
+                          <dt>{{ label }}</dt>
+                          <dd>
+                            <span v-if="price !== null" class="ana-num">{{
+                              moneyExact.format(price)
+                            }}</span>
+                            <span v-else class="hc-none">none</span>
+                          </dd>
                         </template>
-                      </div>
-                      <div class="hc-name">
-                        {{ positionFor(v.symbol)?.description ?? "" }}
-                      </div>
-                    </div>
-                  </div>
-                  <!-- The position block: the account facts the verdict is
-                       read against — price, the across-orders average cost,
-                       the netted cost basis — so the unrealized figure sits
-                       on its base (2026-07-31 run review, F9). -->
-                  <dl class="hc-kv hc-position">
-                    <dt class="hc-kicker">Price</dt>
-                    <dd>
-                      <span class="ana-num">{{
-                        priceOf(positionFor(v.symbol)) !== null
-                          ? fmtMoney(priceOf(positionFor(v.symbol))!)
-                          : "—"
-                      }}</span>
-                    </dd>
-                    <dt class="hc-kicker">Avg cost</dt>
-                    <dd>
-                      <span class="ana-num">{{
-                        avgCostOf(positionFor(v.symbol)) !== null
-                          ? fmtMoney(avgCostOf(positionFor(v.symbol))!)
-                          : "—"
-                      }}</span>
-                    </dd>
-                    <dt class="hc-kicker">Cost basis</dt>
-                    <dd>
-                      <span class="ana-num">{{
-                        costBasisOf(positionFor(v.symbol)) !== null
-                          ? fmtMoney(costBasisOf(positionFor(v.symbol))!)
-                          : "—"
-                      }}</span>
-                    </dd>
-                    <dt class="hc-kicker">Unrealized</dt>
-                    <dd>
-                      <span
-                        v-if="gainOf(positionFor(v.symbol)) !== null"
-                        class="dir hc-gain"
-                        :class="moneyDir(gainOf(positionFor(v.symbol)))"
-                      >
-                        {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
-                        <!-- A negative netted basis has a defined dollar gain but
-                             no honest percentage — the parenthetical drops. -->
-                        <template v-if="gainPctOf(positionFor(v.symbol)) !== null"
-                          >({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})</template
+                      </dl>
+
+                      <!-- The compact engine line: the engine arm's reads,
+                           app-stamped and never echoed through the model —
+                           every row a computed read, labeled as such by the
+                           kicker. -->
+                      <div class="hc-engine">
+                        <span class="hc-kicker">Engine · computed</span>
+                        <dl class="hc-kv">
+                          <dt>Grade</dt>
+                          <dd class="hc-grade-dd">
+                            <span
+                              class="grade hc-grade"
+                              :class="gradeClass(v.disposition.grade)"
+                              >{{ v.disposition.grade }}</span
+                            >
+                            <span
+                              v-if="v.disposition.low_confidence_grade"
+                              class="ana-tag"
+                              title="An imputed (neutral) sub-score underlies this letter"
+                              >Low confidence</span
+                            >
+                          </dd>
+                          <dt>Tier</dt>
+                          <dd>{{ TIER_LABELS[v.disposition.risk_tier] }}</dd>
+                          <!-- A band the engine never authored renders an em
+                               dash under its label — the position block's
+                               convention — so the three horizons always line
+                               up. -->
+                          <template
+                            v-for="[label, band] in bands(v.disposition.price_targets)"
+                            :key="label"
+                          >
+                            <dt>{{ label }}</dt>
+                            <dd>
+                              <span v-if="band" class="ana-num"
+                                >{{ moneyExact.format(band.base) }}
+                                <span class="hc-band"
+                                  >({{ moneyExact.format(band.bear) }}–{{
+                                    moneyExact.format(band.bull)
+                                  }})</span
+                                ></span
+                              >
+                              <span v-else class="ana-num hc-dash">—</span>
+                            </dd>
+                          </template>
+                          <dt>Hurdle</dt>
+                          <!-- Only `fails` is dead money; its word carries the
+                               meaning, the AA-safe oxblood text reinforces. -->
+                          <dd
+                            :class="{ 'hc-hurdle-fails': v.disposition.dead_money === 'fails' }"
+                          >
+                            {{ HURDLE_LABELS[v.disposition.dead_money] }}
+                          </dd>
+                        </dl>
+                        <!-- Engine detail: the reads beyond the compact line
+                             (a Reveal-style inline disclosure, not a popover). -->
+                        <button
+                          type="button"
+                          class="hc-reveal"
+                          :aria-expanded="openDetail.has(v.symbol)"
+                          @click="toggleDetail(v.symbol)"
                         >
-                      </span>
-                      <span v-else class="ana-num hc-gain-none">—</span>
-                    </dd>
-                  </dl>
-                </header>
-
-                <!-- The card's anchor: the thesis document as the model wrote
-                     it, rendered verbatim — never a separately authored
-                     summary (docs/portfolio-analysis.md §Storage and display).
-                     Long documents follow the kit's ThesisAnchor overflow
-                     contract: a three-line clamp with a reveal shown only on
-                     overflow. -->
-                <div v-if="v.disposition.thesis_document" class="hc-thesis">
-                  <span class="hc-kicker">Thesis document</span>
-                  <p
-                    :ref="thesisRef(v.symbol)"
-                    class="hc-thesis-text"
-                    :class="{ clamped: !openThesis.has(v.symbol) }"
-                  >
-                    {{ v.disposition.thesis_document }}
-                  </p>
-                  <button
-                    v-if="thesisOverflow.has(v.symbol) || openThesis.has(v.symbol)"
-                    type="button"
-                    class="hc-thesis-toggle"
-                    :aria-expanded="openThesis.has(v.symbol)"
-                    @click="toggleThesis(v.symbol)"
-                  >
-                    {{ openThesis.has(v.symbol) ? "Show less" : "Read full document" }}
-                  </button>
-                </div>
-
-                <!-- The two-arm body (portfolio-v7): the engine baseline beside
-                     the model's own view — the same paired 1fr/1fr hairline grid
-                     as the old intrinsic/action split (a recorded design-system
-                     extension: no paired-comparison component exists in the kit;
-                     comparison here is adjacency + kicker, the system's idiom). -->
-                <div class="hc-body">
-                  <div class="hc-col hc-col-intrinsic">
-                    <span class="hc-kicker">Engine baseline</span>
-                    <!-- Letter inputs, then — set apart behind a hairline —
-                         the market-setup read (momentum), which is context
-                         for conviction and never a grade input (B10). -->
-                    <div class="hc-subscores">
-                      <div
-                        v-for="name in LETTER_SUBSCORES"
-                        :key="name"
-                        class="hc-sub"
-                      >
-                        <span class="hc-sub-label">{{ name }}</span>
-                        <span class="ana-num hc-sub-value">{{
-                          Math.round(v.disposition.sub_scores[name])
-                        }}</span>
+                          <span aria-hidden="true" class="hc-reveal-glyph">{{
+                            openDetail.has(v.symbol) ? "▾" : "▸"
+                          }}</span>
+                          Engine detail
+                        </button>
+                        <div v-if="openDetail.has(v.symbol)" class="hc-engine-detail">
+                          <!-- Letter inputs, then — set apart behind a hairline
+                               — the market-setup read (momentum), which is
+                               context for conviction and never a grade input
+                               (B10). -->
+                          <span class="hc-kicker">Sub-scores</span>
+                          <div class="hc-subscores">
+                            <div
+                              v-for="name in LETTER_SUBSCORES"
+                              :key="name"
+                              class="hc-sub"
+                            >
+                              <span class="hc-sub-label">{{ name }}</span>
+                              <span class="ana-num hc-sub-value">{{
+                                Math.round(v.disposition.sub_scores[name])
+                              }}</span>
+                            </div>
+                            <div class="hc-sub hc-sub-setup">
+                              <span class="hc-sub-label">Setup</span>
+                              <span class="ana-num hc-sub-value">{{
+                                Math.round(v.disposition.sub_scores.momentum)
+                              }}</span>
+                            </div>
+                          </div>
+                          <p class="hc-setup-note">{{ SETUP_NOTE }}</p>
+                          <dl class="hc-kv">
+                            <!-- The engine's own rung — a computed read beside
+                                 the chosen action, never a recommendation;
+                                 the tag marks a departure. -->
+                            <dt>Engine action</dt>
+                            <dd>
+                              {{ ACTION_LABELS[v.disposition.engine_rung] }}
+                              <span
+                                v-if="v.disposition.engine_rung !== v.disposition.action"
+                                class="ana-tag"
+                                >≠ portfolio action</span
+                              >
+                            </dd>
+                            <template v-if="hasOptionsSignal(v.disposition.options_signal)">
+                              <template
+                                v-if="v.disposition.options_signal.put_call_volume !== null"
+                              >
+                                <dt>Put/call vol</dt>
+                                <dd>
+                                  <span class="ana-num">{{
+                                    v.disposition.options_signal.put_call_volume.toFixed(2)
+                                  }}</span>
+                                </dd>
+                              </template>
+                              <template
+                                v-if="
+                                  v.disposition.options_signal.put_call_open_interest !==
+                                  null
+                                "
+                              >
+                                <dt>Put/call OI</dt>
+                                <dd>
+                                  <span class="ana-num">{{
+                                    v.disposition.options_signal.put_call_open_interest.toFixed(
+                                      2
+                                    )
+                                  }}</span>
+                                </dd>
+                              </template>
+                              <template
+                                v-if="
+                                  v.disposition.options_signal.implied_volatility !== null
+                                "
+                              >
+                                <dt>ATM IV</dt>
+                                <dd>
+                                  <span class="ana-num">{{
+                                    fmtPct(v.disposition.options_signal.implied_volatility)
+                                  }}</span>
+                                </dd>
+                              </template>
+                              <template
+                                v-if="v.disposition.options_signal.iv_skew !== null"
+                              >
+                                <dt>Put − call IV skew</dt>
+                                <dd>
+                                  <span class="ana-num">{{
+                                    fmtSignedPct(v.disposition.options_signal.iv_skew)
+                                  }}</span>
+                                </dd>
+                              </template>
+                            </template>
+                          </dl>
+                          <!-- Every authored horizon exposes its methodology,
+                               three-month first to match the band order above. -->
+                          <template v-if="bands(v.disposition.price_targets).some(([, b]) => b)">
+                            <span class="hc-kicker">Band methodology</span>
+                            <template
+                              v-for="[label, band] in bands(v.disposition.price_targets)"
+                              :key="label"
+                            >
+                              <p v-if="band" class="hc-prose">
+                                {{ band.methodology }}
+                              </p>
+                            </template>
+                          </template>
+                        </div>
                       </div>
-                      <div class="hc-sub hc-sub-setup">
-                        <span class="hc-sub-label">Setup</span>
-                        <span class="ana-num hc-sub-value">{{
-                          Math.round(v.disposition.sub_scores.momentum)
-                        }}</span>
-                      </div>
-                    </div>
-                    <p class="hc-setup-note">{{ SETUP_NOTE }}</p>
-                    <dl class="hc-kv">
-                      <template v-if="v.disposition.price_targets.three_month">
-                        <dt>3-mo target</dt>
-                        <dd>
-                          <span class="ana-num"
-                            >{{
-                              moneyExact.format(
-                                v.disposition.price_targets.three_month.base
-                              )
-                            }}
-                            <span class="hc-band"
-                              >({{
-                                moneyExact.format(
-                                  v.disposition.price_targets.three_month.bear
-                                )
-                              }}–{{
-                                moneyExact.format(
-                                  v.disposition.price_targets.three_month.bull
-                                )
-                              }})</span
-                            ></span
-                          >
-                        </dd>
-                      </template>
-                      <template v-if="v.disposition.price_targets.twelve_month">
-                        <dt>12-mo target</dt>
-                        <dd>
-                          <span class="ana-num"
-                            >{{
-                              moneyExact.format(
-                                v.disposition.price_targets.twelve_month.base
-                              )
-                            }}
-                            <span class="hc-band"
-                              >({{
-                                moneyExact.format(
-                                  v.disposition.price_targets.twelve_month.bear
-                                )
-                              }}–{{
-                                moneyExact.format(
-                                  v.disposition.price_targets.twelve_month.bull
-                                )
-                              }})</span
-                            ></span
-                          >
-                        </dd>
-                      </template>
-                      <dt>Action</dt>
-                      <dd>
-                        {{ ACTION_LABELS[v.disposition.engine_rung] }}
-                      </dd>
-                    </dl>
-                    <!-- Target methodology: engine-computed figures, exposed
-                         (a Reveal-style inline disclosure, not a popover). -->
-                    <button
-                      type="button"
-                      class="hc-reveal"
-                      :aria-expanded="openMethodology.has(v.symbol)"
-                      @click="toggleMethodology(v.symbol)"
-                    >
-                      <span aria-hidden="true" class="hc-reveal-glyph">{{
-                        openMethodology.has(v.symbol) ? "▾" : "▸"
-                      }}</span>
-                      Target methodology
-                    </button>
-                    <div
-                      v-if="openMethodology.has(v.symbol)"
-                      class="hc-methodology"
-                    >
-                      <!-- Both displayed horizons expose their methodology,
-                           three-month first to match the target order above. -->
+                    </template>
+
+                    <!-- Role/risk-only: the branch's engine-computed reads
+                         beside the action — no prices, no conviction, no
+                         empty priced-field placeholders
+                         (docs/portfolio-analysis.md §Intrinsic verdict). -->
+                    <template v-else>
+                      <span class="hc-kicker hc-strip-kicker">Role &amp; risk</span>
+                      <dl class="hc-kv">
+                        <template v-if="v.disposition.exposure_tilt.length > 0">
+                          <dt>Exposure</dt>
+                          <dd class="hc-tilts">
+                            <span
+                              v-for="tilt in v.disposition.exposure_tilt.slice(0, 3)"
+                              :key="tilt.label"
+                              class="hc-horizon"
+                            >
+                              <span class="hc-horizon-label">{{ tilt.label }}</span>
+                              <span class="ana-num">{{ fmtPct(tilt.weight) }}</span>
+                            </span>
+                          </dd>
+                        </template>
+                        <template v-if="v.disposition.expense_drag !== null">
+                          <dt>Expense drag</dt>
+                          <dd>
+                            <span class="ana-num">{{
+                              (v.disposition.expense_drag * 100).toFixed(2) + "%"
+                            }}</span>
+                          </dd>
+                        </template>
+                        <template v-if="v.disposition.observable_risk !== null">
+                          <dt>Realized vol</dt>
+                          <dd>
+                            <span class="ana-num">{{
+                              fmtPct(v.disposition.observable_risk)
+                            }}</span>
+                          </dd>
+                        </template>
+                        <!-- The closed-end read — rendered only where the vehicle
+                             makes it meaningful; its absence is a named gap in the
+                             evidence-gap line below, never a fabricated number. -->
+                        <template
+                          v-if="v.disposition.is_cef && v.disposition.nav_premium !== null"
+                        >
+                          <dt>Price vs NAV</dt>
+                          <dd>
+                            <span class="ana-num">{{
+                              navPremiumNum(v.disposition.nav_premium)
+                            }}</span>
+                            {{ navPremiumWord(v.disposition.nav_premium) }}
+                          </dd>
+                        </template>
+                      </dl>
                       <p
-                        v-if="v.disposition.price_targets.three_month"
-                        class="hc-prose"
+                        v-if="v.disposition.evidence_gaps.length > 0"
+                        class="hc-reason"
                       >
-                        {{ v.disposition.price_targets.three_month.methodology }}
+                        {{ v.disposition.evidence_gaps.join("; ") }}
                       </p>
-                      <p
-                        v-if="v.disposition.price_targets.twelve_month"
-                        class="hc-prose"
-                      >
-                        {{ v.disposition.price_targets.twelve_month.methodology }}
-                      </p>
-                    </div>
+                    </template>
                   </div>
-
-                  <!-- The model arm: the thesis document's typed appendix —
-                       the conviction and the expected price at each horizon,
-                       persisted exactly as transcribed, beside the engine's
-                       computed reads; a null field renders as none. -->
-                  <div class="hc-col">
-                    <span class="hc-kicker">Model view</span>
-                    <dl class="hc-kv">
-                      <dt>Conviction</dt>
-                      <dd>
-                        <span
-                          class="conviction"
-                          role="img"
-                          :aria-label="`Conviction: ${v.disposition.appendix.conviction ?? 'none'}`"
-                        >
-                          <i
-                            v-for="i in 3"
-                            :key="i"
-                            :class="{
-                              on: i <= convictionLevel(v.disposition.appendix.conviction),
-                            }"
-                          />
-                        </span>
-                        <span
-                          class="hc-conviction-word"
-                          :class="{ 'hc-none': v.disposition.appendix.conviction === null }"
-                          >{{ v.disposition.appendix.conviction ?? "none" }}</span
-                        >
-                      </dd>
-                      <template
-                        v-for="[label, price] in expectedPrices(v.disposition.appendix)"
-                        :key="label"
-                      >
-                        <dt>{{ label }}</dt>
-                        <dd>
-                          <span v-if="price !== null" class="ana-num">{{
-                            moneyExact.format(price)
-                          }}</span>
-                          <span v-else class="hc-none">none</span>
-                        </dd>
-                      </template>
-                      <dt>Action</dt>
-                      <dd>
-                        {{ ACTION_LABELS[v.disposition.action] }}
-                        <span
-                          v-if="v.disposition.action !== v.disposition.engine_rung"
-                          class="ana-tag"
-                          >≠ engine</span
-                        >
-                      </dd>
-                    </dl>
-                  </div>
-                </div>
-
-                <!-- Portfolio action: the per-holding action call's decision —
-                     full-width beneath the arms (the action is the model's
-                     since the v7 contract; the engine's own rung reads as the
-                     baseline row). -->
-                <div class="hc-col hc-actionrow">
-                    <span class="hc-kicker">Portfolio action</span>
-                    <div class="hc-action">
-                      <span class="hc-action-word">{{
-                        ACTION_LABELS[v.disposition.action]
-                      }}</span>
-                    </div>
-                    <p class="hc-prose hc-rationale">
-                      {{ v.disposition.action_rationale }}
-                    </p>
-                    <dl class="hc-kv">
-                      <dt>Weight</dt>
-                      <dd>
-                        <span class="ana-num">{{
-                          weightOf(positionFor(v.symbol)) !== null
-                            ? fmtPct(weightOf(positionFor(v.symbol))!)
-                            : "—"
-                        }}</span>
-                      </dd>
-                      <template v-if="hasOptionsSignal(v.disposition.options_signal)">
-                        <template
-                          v-if="v.disposition.options_signal.put_call_volume !== null"
-                        >
-                          <dt>Put/call vol</dt>
-                          <dd>
-                            <span class="ana-num">{{
-                              v.disposition.options_signal.put_call_volume.toFixed(2)
-                            }}</span>
-                          </dd>
-                        </template>
-                        <template
-                          v-if="
-                            v.disposition.options_signal.put_call_open_interest !==
-                            null
-                          "
-                        >
-                          <dt>Put/call OI</dt>
-                          <dd>
-                            <span class="ana-num">{{
-                              v.disposition.options_signal.put_call_open_interest.toFixed(
-                                2
-                              )
-                            }}</span>
-                          </dd>
-                        </template>
-                        <template
-                          v-if="
-                            v.disposition.options_signal.implied_volatility !== null
-                          "
-                        >
-                          <dt>ATM IV</dt>
-                          <dd>
-                            <span class="ana-num">{{
-                              fmtPct(v.disposition.options_signal.implied_volatility)
-                            }}</span>
-                          </dd>
-                        </template>
-                        <template
-                          v-if="v.disposition.options_signal.iv_skew !== null"
-                        >
-                          <dt>Put − call IV skew</dt>
-                          <dd>
-                            <span class="ana-num">{{
-                              fmtSignedPct(v.disposition.options_signal.iv_skew)
-                            }}</span>
-                          </dd>
-                        </template>
-                      </template>
-                    </dl>
                 </div>
 
                 <!-- The app-computed position delta. -->
@@ -2606,11 +2497,17 @@ const keyFigures = computed(() => {
   min-width: 0;
 }
 
+/* The grade rides the engine line at the chip's base (md) size; its
+   low-confidence marker sits beside it on the same row. */
 .hc-grade {
-  min-width: 34px;
-  height: 30px;
-  font-size: 18px;
   flex-shrink: 0;
+}
+
+.hc-grade-dd {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
 }
 
 .hc-id-text {
@@ -2646,30 +2543,32 @@ const keyFigures = computed(() => {
   color: var(--ink-3);
 }
 
+/* A read the engine never authored — the em dash under its label. */
+.hc-dash {
+  color: var(--ink-3);
+}
+
 /* The appendix's null — the document stated no value at that field. */
 .hc-none {
   color: var(--ink-3);
   text-transform: none;
 }
 
-/* Two linked columns; stack on narrow windows so nothing crushes. Since v7 the
-   pair is engine baseline | model view (a recorded extension of the kit's
-   two-linked-blocks grid — comparison by adjacency + kicker, the system's
-   idiom). */
-.hc-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+/* The text-first body: the thesis document (3fr) beside the typed strip
+   (2fr), one hairline between them — a recorded extension of the kit's
+   1fr/1fr two-linked-blocks grid. The card is the query container (the
+   warning area's precedent): the sidebar is fixed, so the card runs from
+   572px at the 900px minimum window to its 980px cap, a range no viewport
+   query can address. Below 720px of card width — where the strip's value
+   column would fall under the widest unbreakable read — the body stacks:
+   document, then strip, then the engine line within it. */
+.holding-card {
+  container-type: inline-size;
 }
 
-@media (max-width: 760px) {
-  .hc-body {
-    grid-template-columns: 1fr;
-  }
-
-  .hc-col-intrinsic {
-    border-right: 0 !important;
-    border-bottom: 1px solid var(--hairline-soft);
-  }
+.hc-body {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
 }
 
 .hc-col {
@@ -2677,18 +2576,60 @@ const keyFigures = computed(() => {
   min-width: 0;
 }
 
-.hc-col-intrinsic {
+.hc-col-doc {
   border-right: 1px solid var(--hairline-soft);
 }
 
-/* The full-width portfolio-action strip beneath the arms (v7) — the same
-   self-seaming hairline rhythm as the monitor/summary sections. */
-.hc-actionrow {
-  border-top: 1px solid var(--hairline-soft);
+/* After the base column rules, so the stacked override wins at equal
+   specificity. */
+@container (max-width: 719px) {
+  .hc-body {
+    grid-template-columns: 1fr;
+  }
+
+  .hc-col-doc {
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline-soft);
+  }
 }
 
 .hc-col > .hc-kicker {
   margin-bottom: var(--s-3);
+}
+
+/* The strip's label column is shared by every dl in it (the appendix rows,
+   the engine line, the engine detail, the role / risk reads) so their value
+   columns share one left edge. Sized past the longest label at 12px. */
+.hc-col-strip .hc-kv {
+  grid-template-columns: 9.5em minmax(0, 1fr);
+}
+
+/* Compound so it outranks the shared `.hc-kv { margin: 0 }` below. */
+.hc-kv.hc-strip-kv {
+  margin-top: var(--s-5);
+}
+
+.hc-strip-kicker {
+  margin: var(--s-4) 0 var(--s-3);
+}
+
+/* The compact engine line: seamed off the strip by one hairline, the
+   kicker labeling every row beneath it as computed. */
+.hc-engine {
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--hairline-soft);
+}
+
+.hc-engine > .hc-kicker {
+  margin-bottom: var(--s-3);
+}
+
+/* Dead money: the one hurdle state that moves the action rule. Oxblood as
+   TEXT rides --accent-text (AA in both themes at this 12px size; --ana-down
+   is the fill / large-size pair) — the words carry the meaning. */
+.hc-kv dd.hc-hurdle-fails {
+  color: var(--accent-text);
 }
 
 .hc-subscores {
@@ -2769,6 +2710,14 @@ const keyFigures = computed(() => {
   gap: var(--s-2);
 }
 
+/* The exposure weights: a wrapping row of label / weight pairs with a gap
+   between pairs (sibling inline-flex spans would otherwise run together). */
+.hc-tilts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-4);
+}
+
 .hc-horizon-label {
   font-family: var(--font-sans);
   font-size: 10px;
@@ -2815,8 +2764,16 @@ const keyFigures = computed(() => {
   font-size: 11px;
 }
 
-.hc-methodology {
+.hc-engine-detail {
   margin-top: var(--s-3);
+}
+
+.hc-engine-detail > .hc-kicker {
+  margin-bottom: var(--s-2);
+}
+
+.hc-engine-detail .hc-kv + .hc-kicker {
+  margin-top: var(--s-4);
 }
 
 .hc-prose {
@@ -2849,17 +2806,15 @@ const keyFigures = computed(() => {
   color: var(--ink);
 }
 
-/* The card's thesis-document anchor,
-   per the kit's ThesisAnchor + card seams (ui_kits Portfolio.jsx): its own
-   section between the header and the verdict body, closed by a bottom
-   hairline — the header already draws the one above it. */
-.hc-thesis {
-  padding: var(--s-4) var(--s-5);
-  border-bottom: 1px solid var(--hairline-soft);
-}
-
+/* The card's thesis-document body, per the kit's ThesisAnchor (ui_kits
+   Portfolio.jsx): the document column owns its padding and seam; on the
+   abstained card the block sits beneath the reason line. */
 .hc-thesis .hc-kicker {
   margin-bottom: var(--s-2);
+}
+
+.hc-reduced .hc-thesis {
+  margin-top: var(--s-3);
 }
 
 /* The kit's thesis lead: serif at 15px in full ink (a register up from the
@@ -2876,10 +2831,12 @@ const keyFigures = computed(() => {
   overflow-wrap: anywhere;
 }
 
+/* Twelve lines — roughly the strip's height beside it — so the body reads
+   text-first; the reveal opens the rest. */
 .hc-thesis-text.clamped {
   display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
+  -webkit-line-clamp: 12;
+  line-clamp: 12;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
