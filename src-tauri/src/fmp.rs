@@ -4888,8 +4888,9 @@ const FMP_INCOME_QUARTERLY_PATH: &str = "/income-statement";
 /// new-earnings-actual evidence leg (`docs/portfolio-analysis.md` §Starting
 /// parameters; distinct from the report's market-wide `/earnings-calendar`).
 const FMP_SYMBOL_EARNINGS_PATH: &str = "/earnings";
-/// Symbol-scoped stock news — the quick check's qualifying-news-seed leg, pulled
-/// only for holdings carrying a standing technology-class falsifier.
+/// Symbol-scoped stock news — the full run's per-holding news leads, read as
+/// research seeds (`CompanyDataSource::news_items`); the quick check has no
+/// news leg.
 const FMP_NEWS_STOCK_SYMBOL_PATH: &str = "/news/stock";
 /// How many per-symbol earnings rows the quick check reads — enough to cover the
 /// window since the last full pass with room to spare.
@@ -5761,9 +5762,9 @@ impl FmpDataSource {
         }
     }
 
-    /// Symbol-scoped stock news since `from` (ISO date) — the quick check's
-    /// qualifying-news-seed leg, pulled **only** for holdings carrying a standing
-    /// technology-class falsifier. `Err` on a failed retrieval.
+    /// Symbol-scoped stock news since `from` (ISO date) — the full run's
+    /// per-holding news leads (`CompanyDataSource::news_items`, fail-soft at the
+    /// caller); the quick check has no news leg. `Err` on a failed retrieval.
     pub fn fetch_symbol_news_since(
         &self,
         symbol: &str,

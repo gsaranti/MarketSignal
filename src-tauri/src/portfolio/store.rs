@@ -46,9 +46,9 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // The quick check's between-run state (`docs/portfolio-analysis.md §The quick
     // check`): a single latest row, deliberately separate from `portfolio_runs` —
     // a quick check must never surface in the run history or become the next full
-    // run's diff baseline / ledger-carry source. Exported by data portability
-    // (format v2): its flags and breach streaks are durable analytical state that
-    // does not regenerate on the next sweep.
+    // run's diff baseline / carry source. Exported by data portability (format
+    // v2): its flags and evidence events are durable analytical state that does
+    // not regenerate on the next sweep.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS portfolio_quick_checks (
             id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -249,7 +249,11 @@ pub struct CheckpointHeader {
 /// soft forensic flags beside the hard-forensic record, and the overlay's
 /// execution leg is a typed `unscorable` in place of the attainment read — no
 /// v17 row can resume this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v18";
+/// `checkpoint-v19` (`quick-check-v5`): the pinned tail sweep's per-holding
+/// states carry no condition evaluation states and no news-seed family — the
+/// quick check sweeps the two engine monitors alone — so no v18 header can
+/// resume this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v19";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -655,10 +659,10 @@ pub fn latest_quick_check(
     }))
 }
 
-/// Drop the quick-check state — the successful full pass's clear-and-acknowledge
-/// leg (`docs/portfolio-analysis.md §The quick check`: the pass consumes the
-/// triggering observations, so the flags and accumulated evidence events end with
-/// it).
+/// Drop the quick-check state — the successful full pass's clear
+/// (`docs/portfolio-analysis.md §The quick check`: the pass sees the fresh engine
+/// reads in its own prompts, so the flags and accumulated evidence events end
+/// with it).
 pub fn clear_quick_check(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM portfolio_quick_checks", [])?;
     Ok(())

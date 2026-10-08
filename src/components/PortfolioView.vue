@@ -234,8 +234,6 @@ function quickFor(symbol: string): HoldingQuickState | null {
 const SIDE_REVERSED_TITLE =
   "This position's net side flipped since this verdict was written — the carried thesis is for the opposite position; re-run to refresh";
 const FLAG_LABELS: Record<FlagTrigger, string> = {
-  "confirmed-falsifier-breach": "falsifier breached",
-  "fired-trigger": "trigger fired",
   "hurdle-newly-fails": "hurdle newly fails",
   "price-outside-band": "band relation changed",
 };

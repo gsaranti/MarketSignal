@@ -1290,7 +1290,6 @@ describe("PortfolioView quick check", () => {
         families: [],
         flag: null,
         evidence_events: [],
-        condition_states: [],
         last_hurdle_state: null,
         notes: [],
         ...h,
@@ -1301,8 +1300,9 @@ describe("PortfolioView quick check", () => {
     {
       symbol: "AAPL",
       flag: {
-        trigger: "confirmed-falsifier-breach",
-        detail: "confirmed falsifier breach: operating margin below 30%",
+        trigger: "price-outside-band",
+        detail:
+          "price 140.00 outside the computed twelve-month bear–bull band [150.00, 260.00] — the scenario read is stale in a way worth a fresh look",
         raised_at: "2026-08-03T10:00:00Z",
       },
       evidence_events: [
@@ -1349,8 +1349,8 @@ describe("PortfolioView quick check", () => {
       .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
     const attention = card.find(".dh-attention-tag");
     expect(attention.exists()).toBe(true);
-    expect(attention.text()).toContain("falsifier breached");
-    expect(attention.attributes("title")).toContain("operating margin below 30%");
+    expect(attention.text()).toContain("band relation changed");
+    expect(attention.attributes("title")).toContain("outside the computed twelve-month");
     // The quiet informational badges — never the amber treatment.
     const quiet = card
       .findAll(".ana-tag")

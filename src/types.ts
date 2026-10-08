@@ -779,7 +779,6 @@ export type SweepFamily =
   | "filing"
   | "revision"
   | "earnings"
-  | "news-seed"
   | "fund-info"
   | "rate-anchor";
 
@@ -791,11 +790,8 @@ export interface FamilySweep {
   note?: string | null;
 }
 
-export type FlagTrigger =
-  | "confirmed-falsifier-breach"
-  | "fired-trigger"
-  | "hurdle-newly-fails"
-  | "price-outside-band";
+// The two engine monitors — the only triggers the quick check raises.
+export type FlagTrigger = "hurdle-newly-fails" | "price-outside-band";
 
 export interface AttentionFlag {
   trigger: FlagTrigger;
@@ -807,7 +803,6 @@ export type EvidenceEventKind =
   | "earnings-actual"
   | "material-filing"
   | "revision-move"
-  | "news-seed"
   | "fund-info-change"
   | "exposure-shift";
 
@@ -822,9 +817,6 @@ export interface HoldingQuickState {
   families: FamilySweep[];
   flag?: AttentionFlag | null;
   evidence_events: EvidenceEvent[];
-  // Engine evaluation state per condition id — persisted for the next run,
-  // never rendered.
-  condition_states: unknown[];
   last_hurdle_state?: string | null;
   notes: string[];
 }

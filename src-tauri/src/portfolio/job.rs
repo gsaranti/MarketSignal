@@ -667,21 +667,16 @@ fn over_age(vintage: &str, today: chrono::NaiveDate) -> bool {
 /// produce a verdict this pass — an unselected selective carry, or a per-holding
 /// analysis failure the run isolated (`docs/portfolio-analysis.md` §Triggering,
 /// §Failure posture). Clones the prior verdict, stamps its effective vintage,
-/// refreshes the deterministic position delta and the side-reversal badge, overlays
-/// any swept-tail condition states, and applies the one deterministic carry rule (the
-/// over-age add-family demotion to *hold*, stamped `rule-demoted`). Returns the
-/// carried verdict and whether it is over-age; the caller records the carry
-/// (`over_age_carried`, `carried_symbols`) and carries the prior audit, which is not
-/// available at every call site.
+/// refreshes the deterministic position delta and the side-reversal badge, and
+/// applies the one deterministic carry rule (the over-age add-family demotion to
+/// *hold*, stamped `rule-demoted`). Returns the carried verdict and whether it is
+/// over-age; the caller records the carry (`over_age_carried`, `carried_symbols`)
+/// and carries the prior audit, which is not available at every call site.
 fn carry_prior_verdict(
     position: &crate::schwab::Position,
     prior_verdict: &HoldingVerdict,
     prior_created_at: &str,
     holdings_diff: &diff::HoldingsDiff,
-    swept_tail: &std::collections::HashMap<
-        String,
-        crate::portfolio::quick_check::HoldingQuickState,
-    >,
     today: chrono::NaiveDate,
 ) -> (HoldingVerdict, bool) {
     let mut carried = prior_verdict.clone();
@@ -704,9 +699,6 @@ fn carry_prior_verdict(
             crate::portfolio::VerdictDisposition::Priced(_)
                 | crate::portfolio::VerdictDisposition::RoleRiskOnly(_)
         );
-    if let Some(h) = swept_tail.get(&position.symbol.to_ascii_uppercase()) {
-        crate::portfolio::quick_check::overlay_condition_states(&mut carried, h);
-    }
     // The intrinsic *action* carries as-is (rung-only since `portfolio-v9` — no sizing
     // to recompute). The over-age add-family demotion is the one deterministic carry
     // rule.
@@ -1166,13 +1158,13 @@ fn run_analysis(
     let prior_created_at = prior_run.as_ref().map(|r| r.created_at.clone());
     let holdings_diff = diff::diff_holdings(prior_run.as_ref().map(|r| &r.holdings), &holdings);
 
-    // The quick-check store's fresher condition evaluation states — overlaid onto
-    // each prior ledger before this run evaluates it, so the between-run sweeps'
-    // streaks and acknowledgments chain instead of silently resetting
-    // (`docs/portfolio-analysis.md §The quick check`). Only a state swept against
-    // the same prior run applies. Same fail-soft as the prior run: an unreadable
-    // (corrupt — loud-skipped in the store) or unreadable-by-error state reads as
-    // "no quick check since the last pass", logged.
+    // The quick-check store's between-run state — the carried flags, evidence
+    // events and family reads a selective run's tail sweep chains from and the
+    // retention seam carries past this run (`docs/portfolio-analysis.md §The
+    // quick check`); nothing from it is overlaid onto a verdict. Only a state
+    // swept against the same prior run applies. Same fail-soft as the prior run:
+    // an unreadable (corrupt — loud-skipped in the store) or unreadable-by-error
+    // state reads as "no quick check since the last pass", logged.
     let quick_state = prior_state_read("quick-check-state", store::latest_quick_check(conn))
         .filter(|s| Some(&s.swept_run_id) == prior_run_id.as_ref());
 
@@ -1340,11 +1332,10 @@ fn run_analysis(
                 .collect();
             // The engine-only quick check still sweeps the **carried tail** — every
             // unselected holding with a prior verdict to carry — but no longer to
-            // expand the work-list. Its two remaining jobs: refresh each carried
-            // verdict's condition eval-state overlay (so breach streaks and
-            // acknowledgments chain into this run), and persist the attention flags /
-            // evidence-event / degraded notes the card badges render. A position with
-            // no prior verdict is not swept (nothing to check) and stays not analyzed.
+            // expand the work-list. Its one remaining job: persist the attention
+            // flags / evidence-event / degraded notes the card badges render. A
+            // position with no prior verdict is not swept (nothing to check) and
+            // stays not analyzed.
             let prior_symbols: std::collections::HashSet<String> = prior
                 .verdicts
                 .iter()
@@ -1783,7 +1774,7 @@ fn run_analysis(
             Some(None) => dossier::LegOutcome::Empty,
             None => dossier::LegOutcome::NotRun,
         };
-        let mut prior = dossier::prior_verdict_for(prior_run.as_ref(), &position.symbol);
+        let prior = dossier::prior_verdict_for(prior_run.as_ref(), &position.symbol);
         // The prior verdict's effective analysis vintage — preserved on an
         // insufficient-evidence exit below, since an abstention is not a full pass
         // and the evidence-event boundary must not silently advance past events no
@@ -1792,21 +1783,6 @@ fn run_analysis(
             crate::portfolio::effective_vintage(&p.verdict, prior_created_at.as_deref().unwrap_or(""))
                 .to_string()
         });
-        if let Some(verdict) = prior.as_mut().map(|p| &mut p.verdict) {
-            // The freshest condition evaluation states win: a carried
-            // holding's in-run tail sweep already chained from the persisted
-            // store, so its states supersede the store's; a selected holding
-            // (never tail-swept) still overlays the store's.
-            if let Some(h) = swept_tail.get(&position.symbol.to_ascii_uppercase()) {
-                crate::portfolio::quick_check::overlay_condition_states(verdict, h);
-            } else if let Some(h) = quick_state.as_ref().and_then(|qs| {
-                qs.holdings
-                    .iter()
-                    .find(|h| h.symbol.eq_ignore_ascii_case(&position.symbol))
-            }) {
-                crate::portfolio::quick_check::overlay_condition_states(verdict, h);
-            }
-        }
         // This holding's sector-benchmark series — the pre-flag's read-against
         // leg, fetched only where the flag is evaluable at all (a carried stock
         // whose sector resolved to a SPDR benchmark). Its health-row read is
@@ -2244,9 +2220,8 @@ fn run_analysis(
 
     // ---- Carried verdicts (a selective run's unselected tail) ----------------
     // Each carries its prior intrinsic verdict and ledger forward vintage-stamped
-    // (`docs/portfolio-analysis.md` §Triggering), with the tail sweep's fresher
-    // condition evaluation states overlaid so streaks and acknowledgments chain,
-    // its position-change tag refreshed from this run's diff, and its prior audit
+    // (`docs/portfolio-analysis.md` §Triggering), its position-change tag
+    // refreshed from this run's diff, and its prior audit
     // row carried whole — the stored `quick_basis` / `fund_exposure` comparators
     // must survive the carry or the next sweep reads the holding `unknown`. Since
     // the 2026-08-16 badge ruling a carried holding is never force-included, so a
@@ -2278,7 +2253,6 @@ fn run_analysis(
                 prior_verdict,
                 &prior.created_at,
                 &holdings_diff,
-                &swept_tail,
                 today,
             );
             if stale {
@@ -2328,7 +2302,6 @@ fn run_analysis(
                 prior_verdict,
                 &prior.created_at,
                 &holdings_diff,
-                &swept_tail,
                 today,
             );
             if stale {
@@ -5009,9 +4982,10 @@ mod tests {
     }
 
     #[test]
-    fn a_full_run_overlays_quick_check_state_then_consumes_and_clears_it() {
-        use crate::portfolio::quick_check::{HoldingQuickState, QuickCheckState};
-        use crate::portfolio::ConditionEvalState;
+    fn a_full_run_over_a_flagged_holding_clears_its_quick_check_state() {
+        use crate::portfolio::quick_check::{
+            AttentionFlag, FlagTrigger, HoldingQuickState, QuickCheckState,
+        };
 
         let (_dir, paths) = paths();
         let guard = RunGuard::default();
@@ -5036,20 +5010,9 @@ mod tests {
             }
         };
         let first = run_once();
-        let cond_id = first.verdicts[0]
-            .thesis_ledger
-            .as_ref()
-            .and_then(|l| l.conditions.iter().find(|c| c.quant.is_some()))
-            .map(|c| c.condition_id.clone())
-            .expect("the debut ledger carries a quantitative condition");
         let symbol = first.verdicts[0].symbol.clone();
 
-        // A between-run quick check advanced this condition to a confirmed streak
-        // on a NEWER observation than the fixture history the full run re-serves
-        // (the cross-feed lag: the sweep's FMP print leads the run's deep
-        // history by days) with a genuinely breaching recorded value — the
-        // run's older print is a stale non-event, so the overlaid state chains
-        // whole and the crossing keys to the recorded observation.
+        // A between-run quick check flagged the holding on the band monitor.
         let conn = storage::open(&paths.db_path).unwrap();
         store::save_quick_check(
             &conn,
@@ -5062,22 +5025,12 @@ mod tests {
                 holdings: vec![HoldingQuickState {
                     symbol: symbol.clone(),
                     families: vec![],
-                    flag: None,
+                    flag: Some(AttentionFlag {
+                        trigger: FlagTrigger::PriceOutsideBand,
+                        detail: "price crossed outside the monitor band".into(),
+                        raised_at: "2026-08-03T00:00:00Z".into(),
+                    }),
                     evidence_events: vec![],
-                    condition_states: vec![(
-                        cond_id.clone(),
-                        ConditionEvalState {
-                            last_observation_id: Some("2026-07-04".into()),
-                            last_value: Some(-0.45),
-                            last_evaluated_at: Some("2026-08-03".into()),
-                            breach_streak: 5,
-                            first_breach_at: Some("2026-08-02".into()),
-                            confirmed_at: Some("2026-08-03".into()),
-                            acknowledged_observation_id: None,
-                            authored_statement_basis: None,
-                            authored_equity_source: None,
-                        },
-                    )],
                     last_hurdle_state: None,
                     notes: vec![],
                 }],
@@ -5086,24 +5039,16 @@ mod tests {
         .unwrap();
 
         let second = run_once();
-        // The overlaid confirmed streak reached the run's evaluation: the carried
-        // condition emits a confirmed crossing, which the 6g seam consumes and
-        // acknowledges — the ack transition's stamp proves the overlay chained
-        // rather than resetting to the blob's older (empty) state.
-        let carried = second.verdicts[0]
-            .thesis_ledger
-            .as_ref()
-            .and_then(|l| l.conditions.iter().find(|c| c.condition_id == cond_id))
-            .expect("the unchanged core carried its id");
-        let st = carried.eval_state.as_ref().expect("evaluation state persisted");
-        assert!(st.breach_streak >= 5, "the overlaid streak chained: {st:?}");
-        assert_eq!(
-            st.acknowledged_observation_id.as_deref(),
-            Some("2026-07-04"),
-            "the ack stamps the RECORDED (newer) observation, never the run's stale print"
-        );
-        // And the successful pass — every holding analyzed, none abstaining —
-        // left nothing to retain, so the between-run store cleared.
+        // The successful full pass over the holding is the clear: it was
+        // analyzed afresh (its vintage is this run's), and with every holding
+        // analyzed and none abstaining there is nothing to retain, so the
+        // between-run store cleared — the flag does not survive the pass.
+        let fresh = second
+            .verdicts
+            .iter()
+            .find(|v| v.symbol == symbol)
+            .expect("the flagged holding took a fresh pass");
+        assert_eq!(fresh.analyzed_at.as_deref(), Some(second.created_at.as_str()));
         assert!(store::latest_quick_check(&conn).unwrap().is_none());
     }
 
@@ -5154,7 +5099,6 @@ mod tests {
                 raised_at: "2026-08-03T00:00:00Z".into(),
             }),
             evidence_events: vec![],
-            condition_states: vec![],
             last_hurdle_state: None,
             notes: vec![],
         };
@@ -5378,13 +5322,6 @@ mod tests {
                     revenue_actual: None,
                 })
                 .collect())
-        }
-        fn news_since(
-            &self,
-            _symbol: &str,
-            _from: &str,
-        ) -> Result<Vec<crate::fmp::SymbolNewsItem>> {
-            Ok(vec![])
         }
         fn fund_data(&self, _symbol: &str) -> crate::portfolio::fund::FundData {
             Default::default()

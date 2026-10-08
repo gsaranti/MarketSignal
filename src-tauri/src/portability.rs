@@ -83,7 +83,10 @@ use crate::storage;
 /// v14: the audit inside `portfolio_runs.run_json` carries the soft forensic
 /// flags beside the hard-forensic record, and the overlay's execution leg is a
 /// typed `unscorable` (checkpoint-v18).
-pub const FORMAT_VERSION: u32 = 14;
+/// v15: the per-holding states inside `portfolio_quick_checks.state_json` carry
+/// no condition evaluation states and no news-seed family (quick-check-v5,
+/// checkpoint-v19).
+pub const FORMAT_VERSION: u32 = 15;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -226,9 +229,9 @@ struct HoldingsPullRow {
 }
 
 /// The single-row quick-check store on the wire (`docs/portfolio-analysis.md`
-/// §The quick check): the between-run attention flags, evidence events, and
-/// condition evaluation state — durable analytical state (flags and breach
-/// streaks do not regenerate), so it moves with the corpus.
+/// §The quick check): the between-run attention flags, evidence events and
+/// per-family sweep states — durable analytical state (flags and events do not
+/// regenerate on the next sweep), so it moves with the corpus.
 #[derive(Debug, Serialize, Deserialize)]
 struct QuickCheckRow {
     checked_at: String,

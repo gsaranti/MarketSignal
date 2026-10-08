@@ -10025,10 +10025,14 @@ pub(crate) mod tests {
         // Its task 2 (2026-10-07) drops the overlay's guidance-attainment line
         // — the execution leg has no producer — and persists the soft forensic
         // flags on the audit: v69, the trail to checkpoint-v18.
+        // Its task 3 (2026-10-07) sweeps the quick check on the two engine
+        // monitors alone — the ledger-condition evaluation and the news-seed
+        // leg gone; no prompt renders the sweep, so v69 stands, the trail to
+        // checkpoint-v19 (the pinned tail sweep loses its condition states).
         assert_eq!(PROMPT_VERSION, "portfolio-v69");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v18"
+            "checkpoint-v19"
         );
     }
 
