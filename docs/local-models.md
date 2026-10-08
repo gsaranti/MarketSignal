@@ -101,7 +101,7 @@ The expanded attempt is final for that stage: the outer schema/transport gate ca
 The action call's blank-rationale guard keeps its fail-hard posture outside the retry.
 A second failure fails hard as before, annotated with the first attempt's class, so the failure detail stays attributable — the seam is job-agnostic; what a hard failure fails (the report run, or one Portfolio holding isolated) is each job's §Failure posture.
 Every fired retry emits its own tracker row and lands on the run's data-health read as a summary line plus structured events — the big confirmation run's transient-rate measurement.
-Each event names the stage that re-attempted, and a research-loop event names the holding step, the topic, and the leg — a gathering turn or the synthesis call — so a retry is attributable to the topic it fired on, not only to the holding.
+Each event names the stage that re-attempted, and a research-loop event names the holding step, the topic, and the leg — a gathering turn, the synthesis call or its follow-up ask — so a retry is attributable to the topic it fired on, not only to the holding.
 The tracker row's detail and each event's cause carry the class name followed by the failed attempt's full error chain, so a parse failure names its innermost message and a head-and-tail snippet of the body.
 A resumed run's read covers the calls behind the finished run's verdicts — every restored row's and every call of the resumed process — and omits only the superseded calls of holdings the resumed process re-analyzed ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)).
 
