@@ -57,6 +57,13 @@ use crate::data_sources::{
     SectorPe, SectorPerformance, StockMover,
 };
 use crate::cadence::ReportCadence;
+use crate::portfolio::evidence::{
+    Chamber, CompanyEvidence, CongressionalTrade, DividendRow, EnterpriseValueRow, GradesConsensus,
+    InsiderStatistics, InsiderTrade, MaDeal, OwnerEarningsRow, PriceTargetConsensus,
+    PriceTargetTrend, PriceTargetWindow, RatingAction, RatingsSnapshot, RatioLines, SegmentYear,
+    SharesFloat, SplitRow, CONGRESSIONAL_TRADES_COUNT, DIVIDENDS_SHOWN, INSIDER_TRADES_COUNT,
+    MA_PAGE_CAP, RATING_ACTIONS_COUNT, SEGMENT_FISCAL_YEARS,
+};
 use crate::progress::RunContext;
 
 /// Base URL for FMP's stable API. The endpoint paths below are joined onto it in
@@ -1693,6 +1700,8 @@ impl FmpDataSource {
                     fin.current_price = q.price;
                     fin.market_cap = q.market_cap;
                     fin.shares_outstanding = q.shares_outstanding;
+                    fin.year_high = q.year_high;
+                    fin.year_low = q.year_low;
                     match (q.price, q.unusable_price) {
                         (Some(_), _) => Shaped::ok(()),
                         // A served zero or negative print is no price: the gap
@@ -1809,7 +1818,9 @@ impl FmpDataSource {
         fin.short_term_investments = balance.short_term_investments;
         fin.financial_scores = self.fetch_financial_scores(symbol, &mut fin.gaps);
         fin.consensus = self.fetch_analyst_estimates(symbol, &mut fin.gaps);
-        fin.ttm_dividends_per_share = self.fetch_ttm_dividends(symbol, &mut fin.gaps);
+        let dividends = self.fetch_dividend_pull(symbol, &mut fin.gaps);
+        fin.ttm_dividends_per_share = dividends.ttm;
+        fin.recent_dividends = dividends.recent;
         fin
     }
 
@@ -1822,7 +1833,9 @@ impl FmpDataSource {
         symbol: &str,
     ) -> crate::portfolio::engine::CompanyFinancials {
         let mut fin = self.fetch_quote_and_eod(symbol);
-        fin.ttm_dividends_per_share = self.fetch_ttm_dividends(symbol, &mut fin.gaps);
+        let dividends = self.fetch_dividend_pull(symbol, &mut fin.gaps);
+        fin.ttm_dividends_per_share = dividends.ttm;
+        fin.recent_dividends = dividends.recent;
         fin
     }
 }
@@ -1842,6 +1855,10 @@ struct CompanyQuote {
     unusable_price: Option<f64>,
     market_cap: Option<f64>,
     shares_outstanding: Option<f64>,
+    /// The served 52-week high and low (`yearHigh` / `yearLow`) — FETCHED
+    /// VALUES renders the range as served, never a computed min / max.
+    year_high: Option<f64>,
+    year_low: Option<f64>,
 }
 
 /// Shape an FMP `/quote` array body into a [`CompanyQuote`]. `None` only when the body
@@ -1863,6 +1880,14 @@ fn company_quote_from_value(value: &Value) -> Option<CompanyQuote> {
         unusable_price: served.filter(|_| price.is_none()),
         market_cap: first.get("marketCap").and_then(Value::as_f64),
         shares_outstanding: first.get("sharesOutstanding").and_then(Value::as_f64),
+        year_high: first
+            .get("yearHigh")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite()),
+        year_low: first
+            .get("yearLow")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite()),
     })
 }
 
@@ -4950,6 +4975,43 @@ const FMP_ETF_COUNTRY_WEIGHTS_PATH: &str = "/etf/country-weightings";
 const FMP_SECTOR_PE_SNAPSHOT_PATH: &str = "/sector-pe-snapshot";
 const FMP_HISTORICAL_SECTOR_PE_PATH: &str = "/historical-sector-pe";
 
+// The per-holding **evidence surface** (`docs/data-sources.md` §Portfolio
+// Analysis — endpoint surface; `crate::portfolio::evidence`): the rows FETCHED
+// VALUES renders as the providers return them and the engine never reads.
+// Only the paths the block renders are pulled (ruled 2026-10-08): the TTM
+// pair, not the period key-metrics / ratios rows; `grades` and
+// `grades-consensus`, not `grades-historical`; `ratings-snapshot`, not
+// `ratings-historical`.
+const FMP_RATIOS_TTM_PATH: &str = "/ratios-ttm";
+const FMP_KEY_METRICS_TTM_PATH: &str = "/key-metrics-ttm";
+const FMP_OWNER_EARNINGS_PATH: &str = "/owner-earnings";
+const FMP_ENTERPRISE_VALUES_PATH: &str = "/enterprise-values";
+const FMP_PRICE_TARGET_CONSENSUS_PATH: &str = "/price-target-consensus";
+const FMP_PRICE_TARGET_SUMMARY_PATH: &str = "/price-target-summary";
+const FMP_GRADES_PATH: &str = "/grades";
+const FMP_GRADES_CONSENSUS_PATH: &str = "/grades-consensus";
+const FMP_RATINGS_SNAPSHOT_PATH: &str = "/ratings-snapshot";
+const FMP_INSIDER_SEARCH_PATH: &str = "/insider-trading/search";
+const FMP_INSIDER_STATISTICS_PATH: &str = "/insider-trading/statistics";
+const FMP_SENATE_TRADES_PATH: &str = "/senate-trades";
+const FMP_HOUSE_TRADES_PATH: &str = "/house-trades";
+const FMP_SHARES_FLOAT_PATH: &str = "/shares-float";
+const FMP_PRODUCT_SEGMENTATION_PATH: &str = "/revenue-product-segmentation";
+const FMP_GEOGRAPHIC_SEGMENTATION_PATH: &str = "/revenue-geographic-segmentation";
+const FMP_SPLITS_PATH: &str = "/splits";
+/// The run-level M&A feed (`mergers-acquisitions-latest`), walked newest
+/// first by page ([`FmpDataSource::fetch_recent_mergers`]).
+const FMP_MERGERS_LATEST_PATH: &str = "/mergers-acquisitions-latest";
+/// Rows requested from the dated list feeds (grades, insider, congressional)
+/// before the window filter and the ruled count cap — one page each.
+const EVIDENCE_LIST_LIMIT: &str = "100";
+/// Earnings rows requested for the surprise history — the ruled eight
+/// reported quarters plus a year of room for the upcoming announcement rows
+/// the feed leads with (reviewer nit, ruled 2026-10-08).
+const EVIDENCE_EARNINGS_LIMIT: &str = "16";
+/// Owner-earnings and enterprise-value rows requested — the latest renders.
+const EVIDENCE_LATEST_ROW_LIMIT: &str = "4";
+
 /// Quarters of income-statement history requested — the v2 anchor window (12) plus
 /// the four extra quarters its oldest TTM print needs.
 const INCOME_QUARTERS_LIMIT: &str = "16";
@@ -5474,6 +5536,15 @@ impl FmpDataSource {
     /// proxy the twelve-month total return adds, not a forward estimate. `None`
     /// (with no gap) for a non-payer; a failed call records the gap.
     pub fn fetch_ttm_dividends(&self, symbol: &str, gaps: &mut Vec<String>) -> Option<f64> {
+        self.fetch_dividend_pull(symbol, gaps).ttm
+    }
+
+    /// The one `dividends` read, both of its yields ([`DividendPull`]): the
+    /// trailing-twelve-month sum the engine's payout leg adds and the latest
+    /// payments as reported for FETCHED VALUES (`docs/portfolio-workflow.md`
+    /// §Step 6c). Fail-soft to the empty pull with a tagged gap; a confirmed
+    /// non-payer is the empty pull with no gap.
+    pub fn fetch_dividend_pull(&self, symbol: &str, gaps: &mut Vec<String>) -> DividendPull {
         // The **ET session** date, not the UTC date: the window is bounded on both
         // sides against dividend rows dated by market day, so an evening-ET run
         // rolling `today` forward both admits a next-session declaration and slides
@@ -5490,22 +5561,22 @@ impl FmpDataSource {
             // with a non-numeric amount — must record the gap: `None` with no
             // gap is the confirmed-non-payer contract, and a drifted body must
             // never read as a dividend elimination downstream.
-            |value| match ttm_dividends_from_value(value, today) {
-                Ok(Some(v)) => Shaped::ok(Some(v)),
-                // The confirmed non-payer: parsed fine, no in-window payments,
-                // deliberately no gap.
-                Ok(None) => Shaped::empty(None),
+            |value| match dividends_from_value(value, today) {
+                Ok(pull) if pull.ttm.is_some() || !pull.recent.is_empty() => Shaped::ok(pull),
+                // The confirmed non-payer: parsed fine, no payment on or before
+                // today, deliberately no gap.
+                Ok(pull) => Shaped::empty(pull),
                 Err(e) => {
                     let detail = format!("{e:#}");
                     gaps.push(format!("{DIVIDENDS_GAP_PREFIX} ({e})"));
-                    Shaped::malformed(None).with_detail(detail)
+                    Shaped::malformed(DividendPull::default()).with_detail(detail)
                 }
             },
         ) {
-            Ok(v) => v,
+            Ok(pull) => pull,
             Err(reason) => {
                 gaps.push(format!("{DIVIDENDS_GAP_PREFIX} ({})", reason.as_str()));
-                None
+                DividendPull::default()
             }
         }
     }
@@ -5734,12 +5805,24 @@ impl FmpDataSource {
     /// new-earnings-actual evidence leg. `Err` on a failed retrieval (the caller
     /// types the family `unknown`); an empty list is an honest no-rows read.
     pub fn fetch_symbol_earnings(&self, symbol: &str) -> Result<Vec<SymbolEarningsRow>> {
+        self.fetch_symbol_earnings_as("quick-earnings", symbol, SYMBOL_EARNINGS_LIMIT)
+    }
+
+    /// The earnings rows under the caller's tracker kind and row limit — the
+    /// quick check's new-earnings-actual leg and the full run's surprise
+    /// history ([`Self::fetch_company_evidence`]) share the read.
+    fn fetch_symbol_earnings_as(
+        &self,
+        kind: &str,
+        symbol: &str,
+        limit: &str,
+    ) -> Result<Vec<SymbolEarningsRow>> {
         match self.suite_get_shaped(
-            "quick-earnings",
+            kind,
             symbol,
             "Earnings rows",
             FMP_SYMBOL_EARNINGS_PATH,
-            &[("symbol", symbol), ("limit", SYMBOL_EARNINGS_LIMIT)],
+            &[("symbol", symbol), ("limit", limit)],
             |value| match symbol_earnings_from_value(value) {
                 Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
                 // Drift, not emptiness: rows were served but none carried a
@@ -6610,10 +6693,25 @@ fn consensus_from_value(
 /// paid and a future declaration would inflate the trailing-return leg. `None` when
 /// no row lands in the window (a non-payer, or a stale record) — the total-return
 /// leg then adds nothing rather than a fabricated yield.
-fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<Option<f64>> {
+/// What one `dividends` read yields ([`FmpDataSource::fetch_dividend_pull`]):
+/// the trailing-twelve-month per-share sum (the engine's payout leg) and the
+/// latest payments as reported, newest first, on or before the session —
+/// at most [`DIVIDENDS_SHOWN`] — for FETCHED VALUES.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DividendPull {
+    pub ttm: Option<f64>,
+    pub recent: Vec<DividendRow>,
+}
+
+/// Shape a `dividends` body into [`DividendPull`]: the trailing sum under the
+/// strict contract above, and the latest payments on or before `today` — an
+/// older payment whose amount is unreadable is left out of the list (the
+/// trailing leg's contract is what bails, and only inside its window).
+fn dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<DividendPull> {
     let Some(rows) = value.as_array() else {
         anyhow::bail!("non-array body — malformed or drifted response");
     };
+    let mut recent: Vec<DividendRow> = Vec::new();
     // Exclusive lower bound: the window is the 365 days ending today. Inclusive
     // on both ends it would span 366 distinct days, and a payment dated exactly
     // `today − 365` would ride beside today's — a fifth quarterly (or second
@@ -6635,18 +6733,29 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
                 "a dividend row carried a non-ISO date {date:?} — malformed or drifted response"
             );
         };
-        // Window on the PARSED date, never the source text: chrono accepts
-        // non-zero-padded fields ("2026-5-10"), which compare lexicographically
-        // outside the window and would silently drop an in-window payment.
-        if parsed <= cutoff || parsed > today {
-            continue;
-        }
         // Numeric-first per key: a present-but-null `adjDividend` beside a numeric
         // `dividend` must read the amount, not take the unreadable-row bail path.
         let amount = row
             .get("adjDividend")
             .and_then(Value::as_f64)
             .or_else(|| row.get("dividend").and_then(Value::as_f64));
+        // The reported payments: every row on or before today with a readable
+        // amount, whatever its age (an annual payer's last four span years).
+        if parsed <= today {
+            if let Some(a) = amount.filter(|a| a.is_finite()) {
+                recent.push(DividendRow {
+                    date: parsed.format("%Y-%m-%d").to_string(),
+                    amount: a,
+                    payment_date: served_date(row, "paymentDate"),
+                });
+            }
+        }
+        // Window on the PARSED date, never the source text: chrono accepts
+        // non-zero-padded fields ("2026-5-10"), which compare lexicographically
+        // outside the window and would silently drop an in-window payment.
+        if parsed <= cutoff || parsed > today {
+            continue;
+        }
         let Some(a) = amount else {
             anyhow::bail!(
                 "an in-window dividend row carried no numeric amount — malformed or drifted response"
@@ -6666,7 +6775,819 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
             "the in-window dividend amounts overflowed — malformed or drifted response"
         );
     }
-    Ok(any.then_some(sum))
+    recent.sort_by(|a, b| b.date.cmp(&a.date));
+    recent.truncate(DIVIDENDS_SHOWN);
+    Ok(DividendPull {
+        ttm: any.then_some(sum),
+        recent,
+    })
+}
+
+// ---- The per-holding evidence surface (`crate::portfolio::evidence`) ------
+
+/// A served date-ish string's calendar-date prefix, canonical (`2026-06-05
+/// 08:13:10` → `2026-06-05`); `None` where no datable token leads it.
+fn canonical_date_prefix(s: &str) -> Option<String> {
+    let token = s.trim().split([' ', 'T']).next()?;
+    canonical_date(token)
+}
+
+/// A non-blank served string field, trimmed.
+fn served_str(row: &Value, key: &str) -> Option<String> {
+    row.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// A finite served number.
+fn served_f64(row: &Value, key: &str) -> Option<f64> {
+    row.get(key)
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+}
+
+/// A served non-negative whole number (integers and whole floats alike).
+fn served_u64(row: &Value, key: &str) -> Option<u64> {
+    served_f64(row, key)
+        .filter(|v| *v >= 0.0 && v.fract() == 0.0)
+        .map(|v| v as u64)
+}
+
+/// A served whole number.
+fn served_i64(row: &Value, key: &str) -> Option<i64> {
+    served_f64(row, key)
+        .filter(|v| v.fract() == 0.0)
+        .map(|v| v as i64)
+}
+
+/// A served year, whether the feed stamps it as a string or a number.
+fn served_year(row: &Value, key: &str) -> Option<String> {
+    served_str(row, key).or_else(|| served_i64(row, key).map(|y| y.to_string()))
+}
+
+/// A served date field's canonical calendar date.
+fn served_date(row: &Value, key: &str) -> Option<String> {
+    served_str(row, key).and_then(|s| canonical_date_prefix(&s))
+}
+
+/// The rows of an array body — `Err` on any other shape (drift, never an
+/// empty success).
+fn evidence_rows<'a>(value: &'a Value, what: &str) -> Result<&'a [Value]> {
+    value.as_array().map(Vec::as_slice).ok_or_else(|| {
+        anyhow::anyhow!("FMP {what} returned a non-array body — malformed or drifted response")
+    })
+}
+
+/// The readable rows of an array body under `row`; a non-empty body with no
+/// readable row is drift, never an honest empty.
+fn readable_rows<T>(
+    value: &Value,
+    what: &str,
+    row: impl Fn(&Value) -> Option<T>,
+) -> Result<Vec<T>> {
+    let rows = evidence_rows(value, what)?;
+    let out: Vec<T> = rows.iter().filter_map(row).collect();
+    if out.is_empty() && !rows.is_empty() {
+        anyhow::bail!("FMP {what}: no served row was readable — malformed or drifted response");
+    }
+    Ok(out)
+}
+
+/// The one object of an array-of-one body (FMP's single-row shape) or a bare
+/// object; an empty array is the honest empty (`Ok(None)`), anything else
+/// drift.
+fn evidence_object<'a>(value: &'a Value, what: &str) -> Result<Option<&'a Value>> {
+    if let Some(rows) = value.as_array() {
+        return match rows.first() {
+            None => Ok(None),
+            Some(row) if row.is_object() => Ok(Some(row)),
+            Some(_) => anyhow::bail!(
+                "FMP {what}: the served row was not an object — malformed or drifted response"
+            ),
+        };
+    }
+    if value.is_object() {
+        return Ok(Some(value));
+    }
+    anyhow::bail!("FMP {what} returned a non-array body — malformed or drifted response")
+}
+
+/// `ratios-ttm` → the P/E and P/B lines.
+fn ttm_ratios_from_value(value: &Value) -> Result<Option<RatioLines>> {
+    Ok(evidence_object(value, "ratios-ttm")?.map(|o| RatioLines {
+        pe: served_f64(o, "priceToEarningsRatioTTM"),
+        pb: served_f64(o, "priceToBookRatioTTM"),
+        ..Default::default()
+    }))
+}
+
+/// `key-metrics-ttm` → the EV/EBITDA, EV/sales, FCF yield, ROIC, ROE and net
+/// debt/EBITDA lines.
+fn ttm_key_metrics_from_value(value: &Value) -> Result<Option<RatioLines>> {
+    Ok(
+        evidence_object(value, "key-metrics-ttm")?.map(|o| RatioLines {
+            ev_to_ebitda: served_f64(o, "evToEBITDATTM"),
+            ev_to_sales: served_f64(o, "evToSalesTTM"),
+            fcf_yield: served_f64(o, "freeCashFlowYieldTTM"),
+            roic: served_f64(o, "returnOnInvestedCapitalTTM"),
+            roe: served_f64(o, "returnOnEquityTTM"),
+            net_debt_to_ebitda: served_f64(o, "netDebtToEBITDATTM"),
+            ..Default::default()
+        }),
+    )
+}
+
+/// The eight lines off the two pulls — each half from its own feed.
+fn merge_ratio_lines(ratios: Option<RatioLines>, metrics: Option<RatioLines>) -> RatioLines {
+    let r = ratios.unwrap_or_default();
+    let m = metrics.unwrap_or_default();
+    RatioLines {
+        pe: r.pe,
+        pb: r.pb,
+        ev_to_ebitda: m.ev_to_ebitda,
+        ev_to_sales: m.ev_to_sales,
+        fcf_yield: m.fcf_yield,
+        roic: m.roic,
+        roe: m.roe,
+        net_debt_to_ebitda: m.net_debt_to_ebitda,
+    }
+}
+
+/// `owner-earnings` → the latest row by period end.
+fn owner_earnings_from_value(value: &Value) -> Result<Option<OwnerEarningsRow>> {
+    let rows = readable_rows(value, "owner-earnings", |row| {
+        let period_end = served_date(row, "date")?;
+        let period = match (served_year(row, "fiscalYear"), served_str(row, "period")) {
+            (Some(year), Some(period)) => Some(format!("FY{year} {period}")),
+            _ => None,
+        };
+        Some(OwnerEarningsRow {
+            period_end,
+            period,
+            owners_earnings: served_f64(row, "ownersEarnings"),
+            per_share: served_f64(row, "ownersEarningsPerShare"),
+        })
+    })?;
+    Ok(rows
+        .into_iter()
+        .max_by(|a, b| a.period_end.cmp(&b.period_end)))
+}
+
+/// `enterprise-values` → the latest row by date.
+fn enterprise_value_from_value(value: &Value) -> Result<Option<EnterpriseValueRow>> {
+    let rows = readable_rows(value, "enterprise-values", |row| {
+        Some(EnterpriseValueRow {
+            date: served_date(row, "date")?,
+            enterprise_value: served_f64(row, "enterpriseValue"),
+            market_cap: served_f64(row, "marketCapitalization"),
+            total_debt: served_f64(row, "addTotalDebt"),
+            cash: served_f64(row, "minusCashAndCashEquivalents"),
+        })
+    })?;
+    Ok(rows.into_iter().max_by(|a, b| a.date.cmp(&b.date)))
+}
+
+/// `price-target-consensus`.
+fn price_target_consensus_from_value(value: &Value) -> Result<Option<PriceTargetConsensus>> {
+    Ok(
+        evidence_object(value, "price-target-consensus")?.map(|o| PriceTargetConsensus {
+            high: served_f64(o, "targetHigh"),
+            low: served_f64(o, "targetLow"),
+            median: served_f64(o, "targetMedian"),
+            consensus: served_f64(o, "targetConsensus"),
+        }),
+    )
+}
+
+/// `price-target-summary` → the month, quarter and year windows.
+fn price_target_trend_from_value(value: &Value) -> Result<Option<PriceTargetTrend>> {
+    let window = |o: &Value, count: &str, average: &str| PriceTargetWindow {
+        count: served_u64(o, count),
+        average: served_f64(o, average),
+    };
+    Ok(
+        evidence_object(value, "price-target-summary")?.map(|o| PriceTargetTrend {
+            last_month: window(o, "lastMonthCount", "lastMonthAvgPriceTarget"),
+            last_quarter: window(o, "lastQuarterCount", "lastQuarterAvgPriceTarget"),
+            last_year: window(o, "lastYearCount", "lastYearAvgPriceTarget"),
+        }),
+    )
+}
+
+/// `grades-consensus`.
+fn grades_consensus_from_value(value: &Value) -> Result<Option<GradesConsensus>> {
+    Ok(
+        evidence_object(value, "grades-consensus")?.map(|o| GradesConsensus {
+            strong_buy: served_u64(o, "strongBuy"),
+            buy: served_u64(o, "buy"),
+            hold: served_u64(o, "hold"),
+            sell: served_u64(o, "sell"),
+            strong_sell: served_u64(o, "strongSell"),
+            consensus: served_str(o, "consensus"),
+        }),
+    )
+}
+
+/// `grades` → the rating actions dated on or after `since`, newest first, at
+/// most [`RATING_ACTIONS_COUNT`]. A row needs a date and a firm to be read.
+fn rating_actions_from_value(value: &Value, since: &str) -> Result<Vec<RatingAction>> {
+    let mut rows = readable_rows(value, "grades", |row| {
+        Some(RatingAction {
+            date: served_date(row, "date")?,
+            firm: served_str(row, "gradingCompany")?,
+            previous_grade: served_str(row, "previousGrade"),
+            new_grade: served_str(row, "newGrade"),
+            action: served_str(row, "action"),
+        })
+    })?;
+    rows.retain(|r| r.date.as_str() >= since);
+    rows.sort_by(|a, b| b.date.cmp(&a.date));
+    rows.truncate(RATING_ACTIONS_COUNT);
+    Ok(rows)
+}
+
+/// `ratings-snapshot`.
+fn ratings_snapshot_from_value(value: &Value) -> Result<Option<RatingsSnapshot>> {
+    Ok(
+        evidence_object(value, "ratings-snapshot")?.map(|o| RatingsSnapshot {
+            rating: served_str(o, "rating"),
+            overall: served_i64(o, "overallScore"),
+            discounted_cash_flow: served_i64(o, "discountedCashFlowScore"),
+            return_on_equity: served_i64(o, "returnOnEquityScore"),
+            return_on_assets: served_i64(o, "returnOnAssetsScore"),
+            debt_to_equity: served_i64(o, "debtToEquityScore"),
+            price_to_earnings: served_i64(o, "priceToEarningsScore"),
+            price_to_book: served_i64(o, "priceToBookScore"),
+        }),
+    )
+}
+
+/// `insider-trading/search` → the trades transacted on or after `since`,
+/// newest first, at most [`INSIDER_TRADES_COUNT`]. A row needs a transaction
+/// date and a reporting name to be read.
+fn insider_trades_from_value(value: &Value, since: &str) -> Result<Vec<InsiderTrade>> {
+    let mut rows = readable_rows(value, "insider-trading/search", |row| {
+        Some(InsiderTrade {
+            transaction_date: served_date(row, "transactionDate")?,
+            filing_date: served_date(row, "filingDate"),
+            name: served_str(row, "reportingName")?,
+            owner_type: served_str(row, "typeOfOwner"),
+            transaction_type: served_str(row, "transactionType"),
+            shares: served_f64(row, "securitiesTransacted"),
+            price: served_f64(row, "price"),
+        })
+    })?;
+    rows.retain(|r| r.transaction_date.as_str() >= since);
+    rows.sort_by(|a, b| b.transaction_date.cmp(&a.transaction_date));
+    rows.truncate(INSIDER_TRADES_COUNT);
+    Ok(rows)
+}
+
+/// `insider-trading/statistics` → the latest quarter's row.
+fn insider_statistics_from_value(value: &Value) -> Result<Option<InsiderStatistics>> {
+    let rows = readable_rows(value, "insider-trading/statistics", |row| {
+        let year = served_i64(row, "year")?;
+        Some(InsiderStatistics {
+            year: Some(year),
+            quarter: served_i64(row, "quarter"),
+            acquired_transactions: served_u64(row, "acquiredTransactions"),
+            disposed_transactions: served_u64(row, "disposedTransactions"),
+            total_acquired: served_f64(row, "totalAcquired"),
+            total_disposed: served_f64(row, "totalDisposed"),
+        })
+    })?;
+    Ok(rows.into_iter().max_by_key(|r| (r.year, r.quarter)))
+}
+
+/// `senate-trades` / `house-trades` → every readable row of one chamber (the
+/// merge, the window and the cap are [`merge_congressional_trades`]'s). A row
+/// needs a transaction date and a name — the first and last names, else the
+/// office — to be read.
+fn congressional_trades_from_value(
+    value: &Value,
+    chamber: Chamber,
+) -> Result<Vec<CongressionalTrade>> {
+    let what = match chamber {
+        Chamber::Senate => "senate-trades",
+        Chamber::House => "house-trades",
+    };
+    readable_rows(value, what, |row| {
+        let name = match (served_str(row, "firstName"), served_str(row, "lastName")) {
+            (Some(first), Some(last)) => format!("{first} {last}"),
+            (Some(one), None) | (None, Some(one)) => one,
+            (None, None) => served_str(row, "office")?,
+        };
+        Some(CongressionalTrade {
+            chamber,
+            transaction_date: served_date(row, "transactionDate")?,
+            disclosure_date: served_date(row, "disclosureDate"),
+            name,
+            owner: served_str(row, "owner"),
+            kind: served_str(row, "type"),
+            amount: served_str(row, "amount"),
+        })
+    })
+}
+
+/// Both chambers merged: transacted on or after `since`, newest first (the
+/// Senate ahead of the House on one date), at most
+/// [`CONGRESSIONAL_TRADES_COUNT`].
+fn merge_congressional_trades(
+    senate: Vec<CongressionalTrade>,
+    house: Vec<CongressionalTrade>,
+    since: &str,
+) -> Vec<CongressionalTrade> {
+    let mut rows: Vec<CongressionalTrade> = senate
+        .into_iter()
+        .chain(house)
+        .filter(|r| r.transaction_date.as_str() >= since)
+        .collect();
+    rows.sort_by(|a, b| {
+        b.transaction_date
+            .cmp(&a.transaction_date)
+            .then_with(|| a.chamber.label().cmp(b.chamber.label()).reverse())
+    });
+    rows.truncate(CONGRESSIONAL_TRADES_COUNT);
+    rows
+}
+
+/// `shares-float`.
+fn shares_float_from_value(value: &Value) -> Result<Option<SharesFloat>> {
+    Ok(
+        evidence_object(value, "shares-float")?.map(|o| SharesFloat {
+            date: served_str(o, "date"),
+            free_float_percent: served_f64(o, "freeFloat"),
+            float_shares: served_f64(o, "floatShares"),
+            outstanding_shares: served_f64(o, "outstandingShares"),
+        }),
+    )
+}
+
+/// A revenue segmentation feed (`period=annual`) → the latest
+/// [`SEGMENT_FISCAL_YEARS`] fiscal years, newest first, each year's segments
+/// largest first. A row needs a date and a `data` object to be read.
+fn segment_years_from_value(value: &Value, what: &str) -> Result<Vec<SegmentYear>> {
+    let mut rows = readable_rows(value, what, |row| {
+        let period_end = served_date(row, "date")?;
+        let data = row.get("data")?.as_object()?;
+        let mut segments: Vec<(String, f64)> = data
+            .iter()
+            .filter_map(|(name, v)| {
+                v.as_f64()
+                    .filter(|x| x.is_finite())
+                    .map(|x| (name.clone(), x))
+            })
+            .collect();
+        segments.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Some(SegmentYear {
+            fiscal_year: served_i64(row, "fiscalYear"),
+            period_end,
+            segments,
+        })
+    })?;
+    rows.sort_by(|a, b| b.period_end.cmp(&a.period_end));
+    rows.truncate(SEGMENT_FISCAL_YEARS);
+    Ok(rows)
+}
+
+/// `splits` → the rows newest first. A row needs a date and a positive
+/// numerator and denominator to be read.
+fn splits_from_value(value: &Value) -> Result<Vec<SplitRow>> {
+    let mut rows = readable_rows(value, "splits", |row| {
+        Some(SplitRow {
+            date: served_date(row, "date")?,
+            numerator: served_f64(row, "numerator").filter(|n| *n > 0.0)?,
+            denominator: served_f64(row, "denominator").filter(|d| *d > 0.0)?,
+        })
+    })?;
+    rows.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(rows)
+}
+
+/// One page of `mergers-acquisitions-latest` → its deals. A row needs a
+/// transaction date to be read.
+fn ma_deals_from_value(value: &Value) -> Result<Vec<MaDeal>> {
+    readable_rows(value, "mergers-acquisitions-latest", |row| {
+        Some(MaDeal {
+            acquirer_symbol: served_str(row, "symbol"),
+            acquirer_name: served_str(row, "companyName"),
+            target_symbol: served_str(row, "targetedSymbol"),
+            target_name: served_str(row, "targetedCompanyName"),
+            transaction_date: served_date(row, "transactionDate")?,
+            link: served_str(row, "link"),
+        })
+    })
+}
+
+/// One evidence leg's identity ([`FmpDataSource::evidence_leg`]): the tracker
+/// row's kind and label, the endpoint path, and the name its gaps carry.
+struct EvidenceLeg {
+    kind: &'static str,
+    label: &'static str,
+    path: &'static str,
+    name: &'static str,
+}
+
+impl FmpDataSource {
+    /// One evidence leg under the shaped-row contract: a parse that lands
+    /// data is `ok`, an honest empty is `empty` with no gap, a malformed body
+    /// and an HTTP-level gap each tag `gaps` with the leg's name. A cancel
+    /// already requested skips the request (no row, a skipped gap).
+    fn evidence_leg<T>(
+        &self,
+        leg: EvidenceLeg,
+        symbol: &str,
+        extra: &[(&str, &str)],
+        gaps: &mut Vec<String>,
+        parse: impl FnOnce(&Value) -> Result<Option<T>>,
+    ) -> Option<T> {
+        let EvidenceLeg {
+            kind,
+            label,
+            path,
+            name,
+        } = leg;
+        if self.progress.is_cancelled() {
+            gaps.push(format!("FMP {name} skipped (run cancelled)"));
+            return None;
+        }
+        match self.suite_get_shaped(kind, symbol, label, path, extra, |value| {
+            match parse(value) {
+                Ok(Some(v)) => Shaped::ok(Some(v)),
+                Ok(None) => Shaped::empty(None),
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    gaps.push(format!("FMP {name} malformed ({e})"));
+                    Shaped::malformed(None).with_detail(detail)
+                }
+            }
+        }) {
+            Ok(v) => v,
+            Err(reason) => {
+                gaps.push(format!("FMP {name} unavailable ({})", reason.as_str()));
+                None
+            }
+        }
+    }
+
+    /// The per-holding **evidence surface** for a graded stock
+    /// (`crate::portfolio::evidence`): the TTM ratio pair, owner earnings,
+    /// enterprise value, the price-target consensus and summary, the grades
+    /// and their consensus, the ratings snapshot, the insider trades and
+    /// statistics, the Senate and House trades, the float, the two revenue
+    /// segmentations, the splits and the earnings rows — in that order, one
+    /// tracker row each, every leg fail-soft to a tagged gap on the record.
+    /// `session` is the run's ET session date: the windows count back from it.
+    pub fn fetch_company_evidence(&self, symbol: &str, session: NaiveDate) -> CompanyEvidence {
+        use crate::portfolio::evidence::{
+            window_start, CONGRESSIONAL_TRADES_WINDOW_MONTHS, INSIDER_TRADES_WINDOW_MONTHS,
+            RATING_ACTIONS_WINDOW_MONTHS,
+        };
+        let mut e = CompanyEvidence::empty(symbol);
+        if self.progress.is_cancelled() {
+            e.gaps
+                .push("company evidence skipped (run cancelled)".to_string());
+            return e;
+        }
+        let by_symbol = [("symbol", symbol)];
+        let listed = [("symbol", symbol), ("limit", EVIDENCE_LIST_LIMIT)];
+        let latest = [("symbol", symbol), ("limit", EVIDENCE_LATEST_ROW_LIMIT)];
+        let annual = [("symbol", symbol), ("period", "annual")];
+        let ratios = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-ratios-ttm",
+                label: "TTM ratios",
+                path: FMP_RATIOS_TTM_PATH,
+                name: "ratios-ttm",
+            },
+            symbol,
+            &by_symbol,
+            &mut e.gaps,
+            ttm_ratios_from_value,
+        );
+        let metrics = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-key-metrics-ttm",
+                label: "TTM key metrics",
+                path: FMP_KEY_METRICS_TTM_PATH,
+                name: "key-metrics-ttm",
+            },
+            symbol,
+            &by_symbol,
+            &mut e.gaps,
+            ttm_key_metrics_from_value,
+        );
+        e.ratios = merge_ratio_lines(ratios, metrics);
+        e.owner_earnings = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-owner-earnings",
+                label: "Owner earnings",
+                path: FMP_OWNER_EARNINGS_PATH,
+                name: "owner-earnings",
+            },
+            symbol,
+            &latest,
+            &mut e.gaps,
+            owner_earnings_from_value,
+        );
+        e.enterprise_value = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-enterprise-value",
+                label: "Enterprise value",
+                path: FMP_ENTERPRISE_VALUES_PATH,
+                name: "enterprise-values",
+            },
+            symbol,
+            &latest,
+            &mut e.gaps,
+            enterprise_value_from_value,
+        );
+        e.price_target = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-price-target",
+                label: "Price-target consensus",
+                path: FMP_PRICE_TARGET_CONSENSUS_PATH,
+                name: "price-target-consensus",
+            },
+            symbol,
+            &by_symbol,
+            &mut e.gaps,
+            price_target_consensus_from_value,
+        );
+        e.price_target_trend = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-price-target-trend",
+                label: "Price-target summary",
+                path: FMP_PRICE_TARGET_SUMMARY_PATH,
+                name: "price-target-summary",
+            },
+            symbol,
+            &by_symbol,
+            &mut e.gaps,
+            price_target_trend_from_value,
+        );
+        let rating_since = window_start(session, RATING_ACTIONS_WINDOW_MONTHS);
+        e.rating_actions = self
+            .evidence_leg(
+                EvidenceLeg {
+                    kind: "company-grades",
+                    label: "Rating actions",
+                    path: FMP_GRADES_PATH,
+                    name: "grades",
+                },
+                symbol,
+                &listed,
+                &mut e.gaps,
+                |v| {
+                    rating_actions_from_value(v, &rating_since)
+                        .map(|rows| (!rows.is_empty()).then_some(rows))
+                },
+            )
+            .unwrap_or_default();
+        e.grades_consensus = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-grades-consensus",
+                label: "Grades consensus",
+                path: FMP_GRADES_CONSENSUS_PATH,
+                name: "grades-consensus",
+            },
+            symbol,
+            &by_symbol,
+            &mut e.gaps,
+            grades_consensus_from_value,
+        );
+        e.ratings_snapshot = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-ratings-snapshot",
+                label: "Ratings snapshot",
+                path: FMP_RATINGS_SNAPSHOT_PATH,
+                name: "ratings-snapshot",
+            },
+            symbol,
+            &by_symbol,
+            &mut e.gaps,
+            ratings_snapshot_from_value,
+        );
+        let insider_since = window_start(session, INSIDER_TRADES_WINDOW_MONTHS);
+        e.insider_trades = self
+            .evidence_leg(
+                EvidenceLeg {
+                    kind: "company-insider-trades",
+                    label: "Insider trades",
+                    path: FMP_INSIDER_SEARCH_PATH,
+                    name: "insider-trading/search",
+                },
+                symbol,
+                &listed,
+                &mut e.gaps,
+                |v| {
+                    insider_trades_from_value(v, &insider_since)
+                        .map(|rows| (!rows.is_empty()).then_some(rows))
+                },
+            )
+            .unwrap_or_default();
+        e.insider_statistics = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-insider-statistics",
+                label: "Insider statistics",
+                path: FMP_INSIDER_STATISTICS_PATH,
+                name: "insider-trading/statistics",
+            },
+            symbol,
+            &by_symbol,
+            &mut e.gaps,
+            insider_statistics_from_value,
+        );
+        let senate = self
+            .evidence_leg(
+                EvidenceLeg {
+                    kind: "company-senate-trades",
+                    label: "Senate trades",
+                    path: FMP_SENATE_TRADES_PATH,
+                    name: "senate-trades",
+                },
+                symbol,
+                &listed,
+                &mut e.gaps,
+                |v| {
+                    congressional_trades_from_value(v, Chamber::Senate)
+                        .map(|rows| (!rows.is_empty()).then_some(rows))
+                },
+            )
+            .unwrap_or_default();
+        let house = self
+            .evidence_leg(
+                EvidenceLeg {
+                    kind: "company-house-trades",
+                    label: "House trades",
+                    path: FMP_HOUSE_TRADES_PATH,
+                    name: "house-trades",
+                },
+                symbol,
+                &listed,
+                &mut e.gaps,
+                |v| {
+                    congressional_trades_from_value(v, Chamber::House)
+                        .map(|rows| (!rows.is_empty()).then_some(rows))
+                },
+            )
+            .unwrap_or_default();
+        e.congressional_trades = merge_congressional_trades(
+            senate,
+            house,
+            &window_start(session, CONGRESSIONAL_TRADES_WINDOW_MONTHS),
+        );
+        e.float = self.evidence_leg(
+            EvidenceLeg {
+                kind: "company-float",
+                label: "Shares float",
+                path: FMP_SHARES_FLOAT_PATH,
+                name: "shares-float",
+            },
+            symbol,
+            &by_symbol,
+            &mut e.gaps,
+            shares_float_from_value,
+        );
+        e.product_segments = self
+            .evidence_leg(
+                EvidenceLeg {
+                    kind: "company-product-segments",
+                    label: "Revenue by product",
+                    path: FMP_PRODUCT_SEGMENTATION_PATH,
+                    name: "revenue-product-segmentation",
+                },
+                symbol,
+                &annual,
+                &mut e.gaps,
+                |v| {
+                    segment_years_from_value(v, "revenue-product-segmentation")
+                        .map(|rows| (!rows.is_empty()).then_some(rows))
+                },
+            )
+            .unwrap_or_default();
+        e.geographic_segments = self
+            .evidence_leg(
+                EvidenceLeg {
+                    kind: "company-geographic-segments",
+                    label: "Revenue by geography",
+                    path: FMP_GEOGRAPHIC_SEGMENTATION_PATH,
+                    name: "revenue-geographic-segmentation",
+                },
+                symbol,
+                &annual,
+                &mut e.gaps,
+                |v| {
+                    segment_years_from_value(v, "revenue-geographic-segmentation")
+                        .map(|rows| (!rows.is_empty()).then_some(rows))
+                },
+            )
+            .unwrap_or_default();
+        e.splits = self
+            .evidence_leg(
+                EvidenceLeg {
+                    kind: "company-splits",
+                    label: "Splits",
+                    path: FMP_SPLITS_PATH,
+                    name: "splits",
+                },
+                symbol,
+                &by_symbol,
+                &mut e.gaps,
+                |v| splits_from_value(v).map(|rows| (!rows.is_empty()).then_some(rows)),
+            )
+            .unwrap_or_default();
+        if self.progress.is_cancelled() {
+            e.gaps
+                .push("FMP earnings skipped (run cancelled)".to_string());
+            return e;
+        }
+        match self.fetch_symbol_earnings_as("earnings-surprises", symbol, EVIDENCE_EARNINGS_LIMIT) {
+            Ok(rows) => e.earnings = rows,
+            Err(err) => e.gaps.push(format!("{err}")),
+        }
+        e
+    }
+
+    /// The run-level M&A feed walked newest first, page by page, until a row
+    /// leaves the trailing window, a page served short of the limit ends the
+    /// feed (measured on the rows served, not the rows read), or the page cap
+    /// is spent ([`MA_PAGE_CAP`]) — the deals inside the window and the
+    /// walk's gap: a first-page failure leaves no feed; a later page's
+    /// failure or the cap leaves the rows gathered with the gap saying so.
+    /// Wholly fail-soft.
+    pub fn fetch_recent_mergers(&self, session: NaiveDate) -> (Vec<MaDeal>, Option<String>) {
+        use crate::portfolio::evidence::{window_start, MA_PAGE_LIMIT, MA_WINDOW_MONTHS};
+        let since = window_start(session, MA_WINDOW_MONTHS);
+        let mut deals: Vec<MaDeal> = Vec::new();
+        for page in 0..MA_PAGE_CAP {
+            if self.progress.is_cancelled() {
+                return (
+                    deals,
+                    Some("FMP M&A feed walk skipped (run cancelled)".to_string()),
+                );
+            }
+            let page_param = page.to_string();
+            let limit_param = MA_PAGE_LIMIT.to_string();
+            let served = self.suite_get_shaped(
+                "mergers-latest",
+                "market",
+                "M&A feed",
+                FMP_MERGERS_LATEST_PATH,
+                &[("page", &page_param), ("limit", &limit_param)],
+                |value| match ma_deals_from_value(value) {
+                    // The page's row count is the SERVED count: a dropped
+                    // unreadable row must not read as a short page and end
+                    // the walk (Codex, 2026-10-08).
+                    Ok(rows) if rows.is_empty() => Shaped::empty(Ok((rows, served_row_count(value)))),
+                    Ok(rows) => Shaped::ok(Ok((rows, served_row_count(value)))),
+                    Err(e) => {
+                        let detail = format!("{e:#}");
+                        Shaped::malformed(Err(detail.clone())).with_detail(detail)
+                    }
+                },
+            );
+            let (rows, served_rows) = match served {
+                Ok(Ok(page)) => page,
+                Ok(Err(detail)) => return (deals, Some(ma_walk_gap(page, &detail))),
+                Err(reason) => return (deals, Some(ma_walk_gap(page, reason.as_str()))),
+            };
+            let mut left_the_window = false;
+            for row in rows {
+                if row.transaction_date.as_str() >= since.as_str() {
+                    deals.push(row);
+                } else {
+                    left_the_window = true;
+                }
+            }
+            if left_the_window || served_rows < MA_PAGE_LIMIT {
+                return (deals, None);
+            }
+        }
+        (
+            deals,
+            Some(format!(
+                "FMP M&A feed walk reached its {MA_PAGE_CAP}-page cap before the window's boundary"
+            )),
+        )
+    }
+}
+
+/// The rows a feed page served, readable or not — the walk's page measure.
+fn served_row_count(value: &Value) -> usize {
+    value.as_array().map(Vec::len).unwrap_or(0)
+}
+
+/// The M&A walk's gap sentence: no feed at all off the first page, a
+/// truncated feed off a later one.
+fn ma_walk_gap(page: usize, detail: &str) -> String {
+    if page == 0 {
+        format!("FMP M&A feed unavailable ({detail})")
+    } else {
+        format!("FMP M&A feed truncated at page {page} ({detail})")
+    }
 }
 
 /// Shape a `/profile` body (array-of-one or bare object) into the guard's lookup.
@@ -6710,7 +7631,7 @@ fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::Prof
 }
 
 /// Shape a `/dividends` body into dated per-share amounts within `[from, to]`,
-/// oldest first. Strict like [`ttm_dividends_from_value`]: an unreadable row is
+/// oldest first. Strict like [`dividends_from_value`]: an unreadable row is
 /// `Err`, never a silent skip — a dropped in-window payment would understate the
 /// total-return label without a trace. Pure.
 fn dividend_history_from_value(
@@ -7447,14 +8368,17 @@ mod suite_tests {
         ]"#;
         let value: Value = serde_json::from_str(body).unwrap();
         let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
-        let ttm = ttm_dividends_from_value(&value, today).unwrap().unwrap();
+        let ttm = dividends_from_value(&value, today)
+            .map(|pull| pull.ttm)
+            .unwrap()
+            .unwrap();
         assert!(
             (ttm - 0.51).abs() < 1e-9,
             "{ttm}: the 2024 row is outside the window and the future row is excluded"
         );
         // No rows in the window → None, never a fabricated yield.
         let stale: Value = serde_json::from_str(r#"[{"date":"2020-01-01","dividend":1.0}]"#).unwrap();
-        assert!(ttm_dividends_from_value(&stale, today).unwrap().is_none());
+        assert!(dividends_from_value(&stale, today).map(|pull| pull.ttm).unwrap().is_none());
     }
 
     #[test]
@@ -7472,7 +8396,10 @@ mod suite_tests {
           {"date":"2025-08-12","adjDividend":0.25}
         ]"#;
         let value: Value = serde_json::from_str(body).unwrap();
-        let ttm = ttm_dividends_from_value(&value, today).unwrap().unwrap();
+        let ttm = dividends_from_value(&value, today)
+            .map(|pull| pull.ttm)
+            .unwrap()
+            .unwrap();
         assert!(
             (ttm - 1.0).abs() < 1e-9,
             "{ttm}: the 2025-08-12 boundary row (today − 365) must be excluded"
@@ -7487,28 +8414,49 @@ mod suite_tests {
         // dividend elimination).
         let v: Value =
             serde_json::from_str(r#"[{"date":"2026-05-10","adjDividend":"0.26"}]"#).unwrap();
-        assert!(ttm_dividends_from_value(&v, today).is_err());
+        assert!(dividends_from_value(&v, today)
+            .map(|pull| pull.ttm)
+            .is_err());
         // A dateless row cannot be windowed — likewise.
         let v: Value = serde_json::from_str(r#"[{"adjDividend":0.26}]"#).unwrap();
-        assert!(ttm_dividends_from_value(&v, today).is_err());
+        assert!(dividends_from_value(&v, today)
+            .map(|pull| pull.ttm)
+            .is_err());
         // A non-ISO date compares lexicographically as out-of-window — it must
         // error, never slide into a false non-payer.
         let v: Value =
             serde_json::from_str(r#"[{"date":"not-a-date","adjDividend":0.26}]"#).unwrap();
-        assert!(ttm_dividends_from_value(&v, today).is_err());
+        assert!(dividends_from_value(&v, today)
+            .map(|pull| pull.ttm)
+            .is_err());
         // A non-zero-padded (but real) date parses and windows on the PARSED
         // value — as text it sorts after today and would silently drop the
         // in-window payment.
         let v: Value =
             serde_json::from_str(r#"[{"date":"2026-5-10","adjDividend":0.26}]"#).unwrap();
-        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), Some(0.26));
+        assert_eq!(
+            dividends_from_value(&v, today)
+                .map(|pull| pull.ttm)
+                .unwrap(),
+            Some(0.26)
+        );
         // An affirmatively empty body is the real non-payer…
         let v: Value = serde_json::from_str("[]").unwrap();
-        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), None);
+        assert_eq!(
+            dividends_from_value(&v, today)
+                .map(|pull| pull.ttm)
+                .unwrap(),
+            None
+        );
         // …and junk on an out-of-window row is irrelevant, not a failure.
         let v: Value =
             serde_json::from_str(r#"[{"date":"2020-01-10","adjDividend":"junk"}]"#).unwrap();
-        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), None);
+        assert_eq!(
+            dividends_from_value(&v, today)
+                .map(|pull| pull.ttm)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -7524,13 +8472,21 @@ mod suite_tests {
         let body = r#"[{"date":"2026-05-10","adjDividend":1.7976931348623157e308},
                        {"date":"2026-02-10","adjDividend":1.7976931348623157e308}]"#;
         let v: Value = serde_json::from_str(body).unwrap();
-        let err = ttm_dividends_from_value(&v, today).unwrap_err().to_string();
+        let err = dividends_from_value(&v, today)
+            .map(|pull| pull.ttm)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("overflowed"), "{err}");
         // One extreme print alone is a finite (if absurd) sum — not this guard's case.
         let v: Value =
             serde_json::from_str(r#"[{"date":"2026-05-10","adjDividend":1.7976931348623157e308}]"#)
                 .unwrap();
-        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), Some(f64::MAX));
+        assert_eq!(
+            dividends_from_value(&v, today)
+                .map(|pull| pull.ttm)
+                .unwrap(),
+            Some(f64::MAX)
+        );
 
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
@@ -7607,7 +8563,12 @@ mod suite_tests {
         let v: Value =
             serde_json::from_str(r#"[{"date":"2026-05-10","adjDividend":null,"dividend":0.26}]"#)
                 .unwrap();
-        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), Some(0.26));
+        assert_eq!(
+            dividends_from_value(&v, today)
+                .map(|pull| pull.ttm)
+                .unwrap(),
+            Some(0.26)
+        );
     }
 
     #[test]
@@ -8252,5 +9213,503 @@ mod suite_tests {
                 .is_empty());
             assert_eq!(issues.len(), 2);
         }
+    }
+
+    // ---- The per-holding evidence surface (`crate::portfolio::evidence`) ----
+
+    fn body(json: &str) -> Value {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn the_ttm_ratio_pair_merges_into_the_eight_lines() {
+        let ratios = ttm_ratios_from_value(&body(
+            r#"[{"symbol":"AAPL","priceToEarningsRatioTTM":32.89,"priceToBookRatioTTM":47.37}]"#,
+        ))
+        .unwrap();
+        let metrics = ttm_key_metrics_from_value(&body(
+            r#"[{"evToEBITDATTM":23.42,"evToSalesTTM":8.13,"freeCashFlowYieldTTM":0.0312,
+                "returnOnInvestedCapitalTTM":0.452,"returnOnEquityTTM":1.453,"netDebtToEBITDATTM":0.484}]"#,
+        ))
+        .unwrap();
+        let lines = merge_ratio_lines(ratios, metrics);
+        assert_eq!(lines.pe, Some(32.89));
+        assert_eq!(lines.pb, Some(47.37));
+        assert_eq!(lines.ev_to_ebitda, Some(23.42));
+        assert_eq!(lines.fcf_yield, Some(0.0312));
+        assert_eq!(lines.net_debt_to_ebitda, Some(0.484));
+        // One pull gapped: its half stays None, the other half lands.
+        let half = merge_ratio_lines(
+            None,
+            ttm_key_metrics_from_value(&body(r#"[{"evToSalesTTM":8.13}]"#)).unwrap(),
+        );
+        assert_eq!(half.pe, None);
+        assert_eq!(half.ev_to_sales, Some(8.13));
+        assert!(!half.is_empty());
+        // An empty array is the honest empty; a non-object row and a bare
+        // string are drift.
+        assert_eq!(ttm_ratios_from_value(&body("[]")).unwrap(), None);
+        assert!(ttm_ratios_from_value(&body(r#""nope""#)).is_err());
+        assert!(ttm_ratios_from_value(&body("[1]")).is_err());
+    }
+
+    #[test]
+    fn the_latest_row_wins_for_owner_earnings_enterprise_value_and_insider_statistics() {
+        let oe = owner_earnings_from_value(&body(
+            r#"[{"fiscalYear":"2024","period":"Q4","date":"2024-09-28","ownersEarnings":2.0e10,"ownersEarningsPerShare":1.3},
+                {"fiscalYear":2025,"period":"Q1","date":"2024-12-28","ownersEarnings":27655035250,"ownersEarningsPerShare":1.83}]"#,
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(oe.period_end, "2024-12-28");
+        assert_eq!(
+            oe.period.as_deref(),
+            Some("FY2025 Q1"),
+            "a numeric fiscal year reads too"
+        );
+        assert_eq!(oe.per_share, Some(1.83));
+        let ev = enterprise_value_from_value(&body(
+            r#"[{"date":"2024-09-28","enterpriseValue":3571846329570,"marketCapitalization":3495160329570,
+                "addTotalDebt":106629000000,"minusCashAndCashEquivalents":29943000000}]"#,
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(ev.date, "2024-09-28");
+        assert_eq!(ev.total_debt, Some(106_629_000_000.0));
+        let st = insider_statistics_from_value(&body(
+            r#"[{"year":2026,"quarter":1,"acquiredTransactions":2,"disposedTransactions":9},
+                {"year":2026,"quarter":2,"acquiredTransactions":5,"disposedTransactions":35,"totalAcquired":272855,"totalDisposed":880558}]"#,
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!((st.year, st.quarter), (Some(2026), Some(2)));
+        assert_eq!(st.disposed_transactions, Some(35));
+        // A body of only unreadable rows is drift, never an honest empty.
+        assert!(owner_earnings_from_value(&body(r#"[{"ownersEarnings":1.0}]"#)).is_err());
+        assert!(enterprise_value_from_value(&body("[]")).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_street_rows_read_the_reference_bodies() {
+        let t = price_target_consensus_from_value(&body(
+            r#"[{"symbol":"AAPL","targetHigh":400,"targetLow":253,"targetConsensus":323.82,"targetMedian":325}]"#,
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (t.high, t.low, t.median, t.consensus),
+            (Some(400.0), Some(253.0), Some(325.0), Some(323.82))
+        );
+        let tr = price_target_trend_from_value(&body(
+            r#"[{"lastMonthCount":3,"lastMonthAvgPriceTarget":380,"lastQuarterCount":10,"lastQuarterAvgPriceTarget":322.6,
+                "lastYearCount":58,"lastYearAvgPriceTarget":293.43}]"#,
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(tr.last_month.count, Some(3));
+        assert_eq!(tr.last_year.average, Some(293.43));
+        let g = grades_consensus_from_value(&body(
+            r#"[{"strongBuy":1,"buy":69,"hold":33,"sell":7,"strongSell":0,"consensus":"Buy"}]"#,
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(g.buy, Some(69));
+        assert_eq!(g.strong_sell, Some(0));
+        assert_eq!(g.consensus.as_deref(), Some("Buy"));
+        let r = ratings_snapshot_from_value(&body(
+            r#"[{"rating":"B","overallScore":3,"discountedCashFlowScore":3,"returnOnEquityScore":5,"returnOnAssetsScore":5,
+                "debtToEquityScore":1,"priceToEarningsScore":2,"priceToBookScore":1}]"#,
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(r.rating.as_deref(), Some("B"));
+        assert_eq!(r.price_to_book, Some(1));
+        let f = shares_float_from_value(&body(
+            r#"[{"date":"2026-06-05 08:13:10","freeFloat":99.83,"floatShares":14662534368,"outstandingShares":14687356000}]"#,
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(f.free_float_percent, Some(99.83));
+        assert_eq!(f.date.as_deref(), Some("2026-06-05 08:13:10"));
+        assert_eq!(f.float_shares, Some(14_662_534_368.0));
+    }
+
+    #[test]
+    fn the_dated_lists_window_sort_and_cap_at_the_ruled_counts() {
+        // Rating actions: eleven in-window rows served oldest first plus one
+        // outside the window — ten kept, newest first.
+        let mut rows: Vec<String> = (1..=11)
+            .map(|m| format!(r#"{{"date":"2026-{m:02}-01","gradingCompany":"Firm {m}","newGrade":"Buy","action":"upgrade"}}"#))
+            .collect();
+        rows.push(r#"{"date":"2025-01-15","gradingCompany":"Old","newGrade":"Sell","action":"downgrade"}"#.into());
+        rows.push(r#"{"gradingCompany":"Dateless"}"#.into());
+        let actions =
+            rating_actions_from_value(&body(&format!("[{}]", rows.join(","))), "2025-10-08")
+                .unwrap();
+        assert_eq!(actions.len(), RATING_ACTIONS_COUNT);
+        assert_eq!(actions[0].date, "2026-11-01");
+        assert_eq!(actions[9].date, "2026-02-01");
+        assert!(actions
+            .iter()
+            .all(|a| a.firm != "Old" && a.firm != "Dateless"));
+        // Insider trades: the window keys on the transaction date; a row
+        // without a reporting name is unreadable.
+        let trades = insider_trades_from_value(
+            &body(
+                r#"[{"transactionDate":"2026-03-01","reportingName":"EARLY","transactionType":"S-Sale"},
+                    {"transactionDate":"2026-06-05","filingDate":"2026-06-06","reportingName":"BOLDUC JOHN","typeOfOwner":"director",
+                     "transactionType":"P-Purchase","securitiesTransacted":3570,"price":6.77},
+                    {"transactionDate":"2026-09-01","reportingName":"LATE","transactionType":"A-Award"},
+                    {"transactionDate":"2026-09-02"}]"#,
+            ),
+            "2026-04-08",
+        )
+        .unwrap();
+        assert_eq!(
+            trades.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["LATE", "BOLDUC JOHN"]
+        );
+        assert_eq!(trades[1].shares, Some(3570.0));
+        assert_eq!(trades[1].filing_date.as_deref(), Some("2026-06-06"));
+        // Congressional: both chambers merged newest first, the Senate ahead
+        // on one date, the window on the transaction date, the cap at ten.
+        let senate = congressional_trades_from_value(
+            &body(
+                r#"[{"transactionDate":"2026-04-17","disclosureDate":"2026-05-07","firstName":"Shelley","lastName":"Moore Capito",
+                     "owner":"Spouse","type":"Sale","amount":"$1,001 - $15,000"},
+                    {"transactionDate":"2025-02-01","office":"Someone Old","type":"Purchase"}]"#,
+            ),
+            Chamber::Senate,
+        )
+        .unwrap();
+        let house = congressional_trades_from_value(
+            &body(r#"[{"transactionDate":"2026-04-17","office":"Tim Walberg","owner":"Joint","type":"Purchase","amount":"$15,001 - $50,000"}]"#),
+            Chamber::House,
+        )
+        .unwrap();
+        assert_eq!(
+            senate.len(),
+            2,
+            "the chamber parser keeps every readable row"
+        );
+        let merged = merge_congressional_trades(senate, house, "2025-10-08");
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            (merged[0].chamber, merged[0].name.as_str()),
+            (Chamber::Senate, "Shelley Moore Capito")
+        );
+        assert_eq!(
+            (merged[1].chamber, merged[1].name.as_str()),
+            (Chamber::House, "Tim Walberg")
+        );
+        // Segments: the latest two fiscal years, each year's segments largest
+        // first; a row without a `data` object is unreadable.
+        let years = segment_years_from_value(
+            &body(
+                r#"[{"fiscalYear":2022,"period":"FY","date":"2022-09-24","data":{"Mac":40.0e9}},
+                    {"fiscalYear":2024,"period":"FY","date":"2024-09-28","data":{"Mac":29984000000,"iPhone":201183000000,"Service":96169000000}},
+                    {"fiscalYear":2023,"period":"FY","date":"2023-09-30","data":{"Mac":29.4e9,"iPhone":200.6e9}},
+                    {"fiscalYear":2021,"period":"FY","date":"2021-09-25"}]"#,
+            ),
+            "revenue-product-segmentation",
+        )
+        .unwrap();
+        assert_eq!(
+            years.iter().map(|y| y.fiscal_year).collect::<Vec<_>>(),
+            [Some(2024), Some(2023)]
+        );
+        assert_eq!(
+            years[0]
+                .segments
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>(),
+            ["iPhone", "Service", "Mac"]
+        );
+        // Splits: newest first; a zero leg is unreadable.
+        let splits = splits_from_value(&body(
+            r#"[{"date":"2014-06-09","numerator":7,"denominator":1},{"date":"2020-08-31","numerator":4,"denominator":1},
+                {"date":"2000-06-21","numerator":2,"denominator":0}]"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            splits.iter().map(|s| s.date.as_str()).collect::<Vec<_>>(),
+            ["2020-08-31", "2014-06-09"]
+        );
+        // M&A rows: the transaction date keys the row; the names and symbols
+        // ride as served.
+        let deals = ma_deals_from_value(&body(
+            r#"[{"symbol":"GNL-PE","companyName":"Global Net Lease, Inc.","targetedCompanyName":"Modiv Industrial, Inc.",
+                 "targetedSymbol":"MDV","transactionDate":"2026-06-01","link":"https://www.sec.gov/x"},{"symbol":"NODATE"}]"#,
+        ))
+        .unwrap();
+        assert_eq!(deals.len(), 1);
+        assert_eq!(deals[0].target_symbol.as_deref(), Some("MDV"));
+        assert_eq!(
+            deals[0].acquirer_name.as_deref(),
+            Some("Global Net Lease, Inc.")
+        );
+    }
+
+    #[test]
+    fn the_dividend_read_keeps_the_latest_payments_beside_the_trailing_sum() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        let pull = dividends_from_value(
+            &body(
+                r#"[{"date":"2026-11-10","dividend":0.27,"paymentDate":"2026-11-13"},
+                    {"date":"2026-08-11","dividend":0.26,"adjDividend":0.26,"paymentDate":"2026-08-14"},
+                    {"date":"2026-05-12","dividend":0.26},
+                    {"date":"2026-02-10","dividend":0.25},
+                    {"date":"2025-11-11","dividend":0.25},
+                    {"date":"2025-08-12","dividend":0.25},
+                    {"date":"2024-08-12","dividend":null}]"#,
+            ),
+            today,
+        )
+        .unwrap();
+        // The trailing sum: the four in-window payments (the future
+        // declaration and the year-old one out).
+        assert!((pull.ttm.unwrap() - 1.02).abs() < 1e-9, "{:?}", pull.ttm);
+        // The latest four on or before today, newest first, the payment date
+        // where served; the older amount-less row simply does not list.
+        assert_eq!(
+            pull.recent
+                .iter()
+                .map(|r| (r.date.as_str(), r.amount))
+                .collect::<Vec<_>>(),
+            [
+                ("2026-08-11", 0.26),
+                ("2026-05-12", 0.26),
+                ("2026-02-10", 0.25),
+                ("2025-11-11", 0.25)
+            ]
+        );
+        assert_eq!(pull.recent[0].payment_date.as_deref(), Some("2026-08-14"));
+        assert_eq!(pull.recent[1].payment_date, None);
+        // A non-payer: no payment at all, no sum, no rows, no error.
+        let none = dividends_from_value(&body("[]"), today).unwrap();
+        assert_eq!(none, DividendPull::default());
+    }
+
+    #[test]
+    fn company_evidence_rides_one_tracker_row_per_leg_and_degrades_leg_by_leg() {
+        // The eighteen requests in issue order; two degrade (a premium gate on
+        // the key metrics, an unreadable price-target body) and tag the record
+        // while every other leg lands.
+        let ok = |body: &'static str| Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body,
+        };
+        let server = MockHttp::serve(vec![
+            ok(r#"[{"priceToEarningsRatioTTM":32.89,"priceToBookRatioTTM":47.37}]"#),
+            Canned::Reply {
+                status: 402,
+                headers: vec![],
+                body: "Payment Required",
+            },
+            ok(
+                r#"[{"fiscalYear":"2025","period":"Q1","date":"2024-12-28","ownersEarnings":27655035250,"ownersEarningsPerShare":1.83}]"#,
+            ),
+            ok("[]"),
+            ok(r#""nope""#),
+            ok(r#"[{"lastMonthCount":3,"lastMonthAvgPriceTarget":380}]"#),
+            ok(
+                r#"[{"date":"2026-05-26","gradingCompany":"B of A Securities","previousGrade":"Buy","newGrade":"Buy","action":"maintain"}]"#,
+            ),
+            ok(r#"[{"strongBuy":1,"buy":69,"hold":33,"sell":7,"strongSell":0,"consensus":"Buy"}]"#),
+            ok(r#"[{"rating":"B","overallScore":3}]"#),
+            ok(
+                r#"[{"transactionDate":"2026-06-05","filingDate":"2026-06-05","reportingName":"BOLDUC JOHN","typeOfOwner":"director","transactionType":"P-Purchase","securitiesTransacted":3570,"price":6.77}]"#,
+            ),
+            ok(r#"[{"year":2026,"quarter":2,"acquiredTransactions":5,"disposedTransactions":35}]"#),
+            ok(
+                r#"[{"transactionDate":"2026-04-17","disclosureDate":"2026-05-07","firstName":"Shelley","lastName":"Moore Capito","owner":"Spouse","type":"Sale","amount":"$1,001 - $15,000"}]"#,
+            ),
+            ok("[]"),
+            ok(
+                r#"[{"date":"2026-06-05 08:13:10","freeFloat":99.83,"floatShares":14662534368,"outstandingShares":14687356000}]"#,
+            ),
+            ok(
+                r#"[{"fiscalYear":2024,"period":"FY","date":"2024-09-28","data":{"Mac":29984000000,"iPhone":201183000000}}]"#,
+            ),
+            ok(
+                r#"[{"fiscalYear":2024,"period":"FY","date":"2024-09-28","data":{"Americas Segment":167045000000}}]"#,
+            ),
+            ok(r#"[{"date":"2020-08-31","numerator":4,"denominator":1}]"#),
+            ok(
+                r#"[{"date":"2026-07-22","epsActual":1.1,"epsEstimated":1.0,"revenueActual":9.0e10}]"#,
+            ),
+        ]);
+        let src = source(&server.base_url);
+        let session = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        let e = src.fetch_company_evidence("AAPL", session);
+        assert_eq!(e.symbol, "AAPL");
+        assert_eq!(e.ratios.pe, Some(32.89));
+        assert_eq!(e.ratios.ev_to_ebitda, None, "the gated half stays empty");
+        assert_eq!(
+            e.owner_earnings.as_ref().map(|o| o.period_end.as_str()),
+            Some("2024-12-28")
+        );
+        assert!(e.enterprise_value.is_none(), "an honest empty");
+        assert!(e.price_target.is_none(), "an unreadable body");
+        assert_eq!(
+            e.price_target_trend
+                .as_ref()
+                .and_then(|t| t.last_month.count),
+            Some(3)
+        );
+        assert_eq!(e.rating_actions.len(), 1);
+        assert_eq!(e.grades_consensus.as_ref().and_then(|g| g.buy), Some(69));
+        assert_eq!(
+            e.ratings_snapshot
+                .as_ref()
+                .and_then(|r| r.rating.as_deref()),
+            Some("B")
+        );
+        assert_eq!(e.insider_trades.len(), 1);
+        assert_eq!(
+            e.insider_statistics.as_ref().and_then(|s| s.quarter),
+            Some(2)
+        );
+        assert_eq!(e.congressional_trades.len(), 1);
+        assert_eq!(e.congressional_trades[0].name, "Shelley Moore Capito");
+        assert_eq!(
+            e.float.as_ref().and_then(|f| f.free_float_percent),
+            Some(99.83)
+        );
+        assert_eq!(e.product_segments[0].segments[0].0, "iPhone");
+        assert_eq!(e.geographic_segments.len(), 1);
+        assert_eq!(e.splits[0].numerator, 4.0);
+        assert_eq!(e.earnings.len(), 1);
+        assert_eq!(e.gaps.len(), 2, "{:?}", e.gaps);
+        assert!(
+            e.gaps[0].contains("key-metrics-ttm unavailable"),
+            "{:?}",
+            e.gaps
+        );
+        assert!(
+            e.gaps[1].contains("price-target-consensus malformed"),
+            "{:?}",
+            e.gaps
+        );
+        assert_eq!(
+            server.request_paths(),
+            vec![
+                "/ratios-ttm",
+                "/key-metrics-ttm",
+                "/owner-earnings",
+                "/enterprise-values",
+                "/price-target-consensus",
+                "/price-target-summary",
+                "/grades",
+                "/grades-consensus",
+                "/ratings-snapshot",
+                "/insider-trading/search",
+                "/insider-trading/statistics",
+                "/senate-trades",
+                "/house-trades",
+                "/shares-float",
+                "/revenue-product-segmentation",
+                "/revenue-geographic-segmentation",
+                "/splits",
+                "/earnings",
+            ]
+        );
+    }
+
+    /// A full M&A feed page of `n` rows on one transaction date.
+    fn ma_page(n: usize, date: &str) -> &'static str {
+        let rows: Vec<String> = (0..n)
+            .map(|i| {
+                format!(r#"{{"symbol":"S{i}","targetedSymbol":"T{i}","transactionDate":"{date}"}}"#)
+            })
+            .collect();
+        Box::leak(format!("[{}]", rows.join(",")).into_boxed_str())
+    }
+
+    #[test]
+    fn the_ma_walk_stops_at_a_short_page_the_window_boundary_a_failure_and_the_cap() {
+        use crate::portfolio::evidence::{MA_PAGE_CAP, MA_PAGE_LIMIT};
+        let ok = |body: &'static str| Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body,
+        };
+        let session = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        let full = ma_page(MA_PAGE_LIMIT, "2026-09-01");
+        // A short first page ends the walk: one request, no gap.
+        let server = MockHttp::serve(vec![ok(
+            r#"[{"symbol":"GNL-PE","companyName":"Global Net Lease, Inc.","targetedSymbol":"MDV","targetedCompanyName":"Modiv Industrial, Inc.","transactionDate":"2026-06-01","link":"https://sec.gov/x"}]"#,
+        )]);
+        let (deals, gap) = source(&server.base_url).fetch_recent_mergers(session);
+        assert_eq!(deals.len(), 1);
+        assert_eq!(gap, None);
+        assert_eq!(server.request_paths(), vec!["/mergers-acquisitions-latest"]);
+        // A full page, then a page whose rows leave the window: two requests,
+        // the in-window rows kept, the old row dropped, no gap.
+        let server = MockHttp::serve(vec![
+            ok(full),
+            ok(
+                r#"[{"symbol":"A","targetedSymbol":"B","transactionDate":"2026-01-02"},{"symbol":"C","targetedSymbol":"D","transactionDate":"2025-01-02"}]"#,
+            ),
+        ]);
+        let (deals, gap) = source(&server.base_url).fetch_recent_mergers(session);
+        assert_eq!(deals.len(), MA_PAGE_LIMIT + 1);
+        assert_eq!(gap, None);
+        assert_eq!(server.request_paths().len(), 2);
+        // A full page with one unreadable (dateless) row is still a full
+        // page: the walk continues to the next page rather than ending on
+        // the 99 rows it could read (Codex, 2026-10-08).
+        let full99 = ma_page(MA_PAGE_LIMIT - 1, "2026-09-01");
+        let mixed: &'static str = Box::leak(
+            format!("{},{{\"symbol\":\"NODATE\"}}]", &full99[..full99.len() - 1]).into_boxed_str(),
+        );
+        let server = MockHttp::serve(vec![
+            ok(mixed),
+            ok(r#"[{"symbol":"A","targetedSymbol":"B","transactionDate":"2026-01-02"}]"#),
+        ]);
+        let (deals, gap) = source(&server.base_url).fetch_recent_mergers(session);
+        assert_eq!(deals.len(), MA_PAGE_LIMIT, "99 readable rows plus the second page's one");
+        assert_eq!(gap, None);
+        assert_eq!(server.request_paths().len(), 2, "the mixed page did not end the walk");
+        // A failure on a later page keeps the rows gathered and says so; on
+        // the first page there is no feed.
+        let server = MockHttp::serve(vec![
+            ok(full),
+            Canned::Reply {
+                status: 402,
+                headers: vec![],
+                body: "Payment Required",
+            },
+        ]);
+        let (deals, gap) = source(&server.base_url).fetch_recent_mergers(session);
+        assert_eq!(deals.len(), MA_PAGE_LIMIT);
+        assert!(
+            gap.as_deref()
+                .is_some_and(|g| g.contains("truncated at page 1")),
+            "{gap:?}"
+        );
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 402,
+            headers: vec![],
+            body: "Payment Required",
+        }]);
+        let (deals, gap) = source(&server.base_url).fetch_recent_mergers(session);
+        assert!(deals.is_empty());
+        assert!(
+            gap.as_deref().is_some_and(|g| g.contains("unavailable")),
+            "{gap:?}"
+        );
+        // The cap: full in-window pages to the cap — the rows gathered and a
+        // gap naming the cap.
+        let server = MockHttp::serve((0..MA_PAGE_CAP).map(|_| ok(full)).collect());
+        let (deals, gap) = source(&server.base_url).fetch_recent_mergers(session);
+        assert_eq!(deals.len(), MA_PAGE_CAP * MA_PAGE_LIMIT);
+        assert!(
+            gap.as_deref().is_some_and(|g| g.contains("page cap")),
+            "{gap:?}"
+        );
+        assert_eq!(server.request_paths().len(), MA_PAGE_CAP);
     }
 }

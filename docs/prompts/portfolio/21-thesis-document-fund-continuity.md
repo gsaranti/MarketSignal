@@ -1,6 +1,6 @@
 # Thesis document — priced fund, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v73`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, on a continuity run over the prior document of 2026-09-02; the fixture carries no fund context, so the FUND block does not render.
 The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7581 chars — the messages and tools as serialized |
+| Prompt material | 7605 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ Part 1 of the message gives the inputs. Part 2 says what the document covers, in
 return it.
 ~~~~
 
-## User message (7219 chars)
+## User message (7243 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -40,10 +40,11 @@ Date: 2026-09-16.
 
 FETCHED VALUES
 The holding's data as its providers return it, each figure as reported (USD; B is billions, M is
-millions); none is computed.
+millions; a yield or a return as a percentage); none is computed, and a cell the provider left empty
+reads (gap).
 Quote: 144.19 per share (the live print, undated).
-Daily closes: 2 sessions from 2026-09-02 to 2026-09-14, 52-week low 139.86 on 2026-09-02, high
-144.19 on 2026-09-14; close on the prior analysis date 2026-09-02: 139.86 (2026-09-02).
+Daily closes: 2 sessions from 2026-09-02 to 2026-09-14; close on the prior analysis date 2026-09-02:
+139.86 (2026-09-02).
 Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
 
 COMPUTED

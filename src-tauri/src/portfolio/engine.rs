@@ -703,6 +703,12 @@ pub struct CompanyFinancials {
     pub current_price: Option<f64>,
     pub market_cap: Option<f64>,
     pub shares_outstanding: Option<f64>,
+    /// The quote's served 52-week high and low — FETCHED VALUES renders the
+    /// range as the provider states it, never a computed min / max over the
+    /// fetched closes (`docs/portfolio-workflow.md` §Step 6c; ruled
+    /// 2026-10-08). `None` where the quote gapped or omitted them.
+    pub year_high: Option<f64>,
+    pub year_low: Option<f64>,
     /// Most-recent and prior-period revenue (the growth numerator/denominator).
     pub revenue: Option<f64>,
     pub revenue_prior: Option<f64>,
@@ -746,6 +752,12 @@ pub struct CompanyFinancials {
     /// proxy the twelve-month total return adds (a sustainable basis, never a
     /// raw special or a forward estimate).
     pub ttm_dividends_per_share: Option<f64>,
+    /// The latest dividend payments on or before the session, newest first, off
+    /// the same `dividends` read as the trailing sum — FETCHED VALUES renders
+    /// these as reported and the sum stays an engine computation
+    /// (`docs/portfolio-workflow.md` §Step 6c; ruled 2026-10-08). Empty on a
+    /// non-payer, a gapped read, and every offline stub.
+    pub recent_dividends: Vec<crate::portfolio::evidence::DividendRow>,
     /// Tagged inputs a source could not resolve, carried into the prompt so the model
     /// reasons over what is absent rather than inferring it.
     pub gaps: Vec<String>,
@@ -4071,6 +4083,9 @@ mod tests {
                 ..ConsensusEstimate::default()
             }),
             ttm_dividends_per_share: Some(1.0),
+            recent_dividends: vec![],
+            year_high: None,
+            year_low: None,
             gaps: vec![],
         }
     }

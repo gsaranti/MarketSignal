@@ -98,7 +98,9 @@ use crate::storage;
 /// analysis record (its text, its date and its anchor bar) beside its
 /// research record, and the record carries the consolidation's distillation
 /// shape with its call count (checkpoint-v22).
-pub const FORMAT_VERSION: u32 = 18;
+/// v19: the run's data health inside `portfolio_runs.run_json` counts the
+/// run-level M&A feed walk's gap beside the FINRA one (checkpoint-v23).
+pub const FORMAT_VERSION: u32 = 19;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.

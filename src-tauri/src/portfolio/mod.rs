@@ -56,6 +56,7 @@ macro_rules! forward_stub_verdict_calls {
 pub mod distill;
 pub mod dossier;
 pub mod engine;
+pub mod evidence;
 pub mod fund;
 pub mod job;
 pub mod listing;
@@ -1013,6 +1014,9 @@ pub struct DataHealth {
     /// The FINRA consolidated short-interest file was unavailable this run — same
     /// posture.
     pub finra_gap: bool,
+    /// The run-level M&A feed walk failed or truncated this run — same posture
+    /// (the deals gathered before the failure still matched).
+    pub ma_gap: bool,
     /// Distinct sector-benchmark series a completed holding read as unavailable (each
     /// starves the technology-event pre-flag for its holdings) — same counted-only
     /// posture; rebuilt from the holdings' rows, so a resumed run counts a benchmark
@@ -1094,6 +1098,56 @@ pub struct PortfolioRollUp {
     pub data_health: DataHealth,
     /// A short deterministic synthesis line.
     pub overview: String,
+}
+
+/// The full-run pass's read of a stock's submissions feed
+/// (`CompanyDataSource::filing_events`): the item-classified sweep's state and,
+/// beside it, the 8-K and 8-K/A rows inside the same lookback — date and
+/// filer-declared items — that FETCHED VALUES renders off the one read
+/// (`docs/data-sources.md` §Portfolio Analysis — endpoint surface, the
+/// submissions row; ruled 2026-10-08). An `Unknown` sweep carries no rows: a
+/// read that could not classify is not a read the prompt may list from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilingSweepRead {
+    pub state: ForensicFilingState,
+    pub filings_8k: Vec<crate::sec::RecentFiling>,
+}
+
+impl FilingSweepRead {
+    /// Classify an already-fetched submissions sweep for `symbol` and keep its
+    /// 8-K and 8-K/A rows filed on or after `since` (ISO, inclusive), newest
+    /// first — the one read serving both the hard-forensic producer and the
+    /// FETCHED VALUES list. An unclassifiable sweep is `Unknown` with no rows.
+    pub fn from_filings(symbol: &str, filings: &[crate::sec::RecentFiling], since: &str) -> Self {
+        match crate::sec::forensic_events_from_filings(symbol, filings, since) {
+            Ok(events) => {
+                let mut filings_8k: Vec<crate::sec::RecentFiling> = filings
+                    .iter()
+                    .filter(|f| {
+                        (f.form == "8-K" || f.form == "8-K/A") && f.filing_date.as_str() >= since
+                    })
+                    .cloned()
+                    .collect();
+                filings_8k.sort_by(|a, b| b.filing_date.cmp(&a.filing_date));
+                let state = if events.is_empty() {
+                    ForensicFilingState::Clear
+                } else {
+                    ForensicFilingState::Events { events }
+                };
+                Self { state, filings_8k }
+            }
+            // An in-lookback 8-K with no readable items column: the sweep ran
+            // but cannot classify — unknown, never a fabricated clear, and no
+            // row list off a read that could not be classified.
+            Err(reason) => Self {
+                state: ForensicFilingState::Unknown {
+                    reason,
+                    queried: true,
+                },
+                filings_8k: Vec::new(),
+            },
+        }
+    }
 }
 
 /// How far back a filing-classified hard-forensic event binds the hard rule, in
@@ -2267,7 +2321,22 @@ pub struct HoldingAudit {
 /// audit — the analysis record (its text, its date and its anchor bar) beside
 /// the research record, the distillation shape with its call count on the
 /// record — moves the trail to `checkpoint-v22` and the archive to format 18.
-pub const PROMPT_VERSION: &str = "portfolio-v73";
+/// `portfolio-v74` (the research chain, task 3 — the endpoint table's
+/// remaining pulls): FETCHED VALUES carries the full Step 6c block — the
+/// profile line with the exchange, sector and industry, the last four
+/// dividend payments in place of the trailing sum, the quote's served 52-week
+/// range in place of the computed one, the 8-K filings of the lookback by
+/// date and item, the short-interest print, the street price-target
+/// consensus with its trend, the grades consensus with the rating actions,
+/// the ratings snapshot, the insider and congressional trades, the
+/// earnings-surprise history, the eight TTM ratio lines, owner earnings,
+/// enterprise value, the float, any M&A match and the revenue segments; a
+/// fund renders every sector weighting and its ten largest countries; the
+/// split-context line names the split's date and ratio where the splits
+/// feed carries one. The run-level M&A feed pinned on the checkpoint header
+/// moves the trail to `checkpoint-v23`, and data health's count of the walk's
+/// gap moves the archive to format 19.
+pub const PROMPT_VERSION: &str = "portfolio-v74";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2688,6 +2757,57 @@ pub fn action_decision_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_filings_read_keeps_the_lookbacks_eight_ks_beside_the_sweep_state() {
+        let filing = |form: &str, date: &str, items: Option<&[&str]>| crate::sec::RecentFiling {
+            form: form.into(),
+            filing_date: date.into(),
+            items: items.map(|i| i.iter().map(|s| s.to_string()).collect()),
+            accession: String::new(),
+        };
+        let filings = vec![
+            filing("10-Q", "2026-08-01", Some(&[])),
+            filing("8-K", "2026-07-23", Some(&["2.02", "9.01"])),
+            filing("8-K/A", "2026-09-01", Some(&["5.02"])),
+            filing("8-K", "2025-01-15", Some(&["8.01"])),
+        ];
+        let read = FilingSweepRead::from_filings("AAPL", &filings, "2025-10-08");
+        assert!(
+            matches!(read.state, ForensicFilingState::Clear),
+            "{:?}",
+            read.state
+        );
+        assert_eq!(
+            read.filings_8k
+                .iter()
+                .map(|f| f.filing_date.as_str())
+                .collect::<Vec<_>>(),
+            ["2026-09-01", "2026-07-23"],
+            "8-K and 8-K/A rows inside the lookback, newest first; the 10-Q and the old 8-K out"
+        );
+        // A 4.01 item classifies an event, and the rows still ride beside it.
+        let events = vec![filing("8-K", "2026-06-10", Some(&["4.01"]))];
+        let read = FilingSweepRead::from_filings("AAPL", &events, "2025-10-08");
+        assert!(
+            matches!(read.state, ForensicFilingState::Events { .. }),
+            "{:?}",
+            read.state
+        );
+        assert_eq!(read.filings_8k.len(), 1);
+        // An unclassifiable row types the sweep unknown and lists nothing.
+        let unknown = vec![filing("8-K", "2026-06-10", None)];
+        let read = FilingSweepRead::from_filings("AAPL", &unknown, "2025-10-08");
+        assert!(
+            matches!(
+                read.state,
+                ForensicFilingState::Unknown { queried: true, .. }
+            ),
+            "{:?}",
+            read.state
+        );
+        assert!(read.filings_8k.is_empty());
+    }
 
     #[test]
     fn the_appendix_shape_is_four_nullable_keys_in_the_message_order() {

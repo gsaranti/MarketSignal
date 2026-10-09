@@ -467,6 +467,24 @@ pub struct HoldingDossier {
     pub analysis_date: String,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
+    /// The profile lookup's exchange, sector and industry — the FETCHED
+    /// VALUES profile line beside `company_name`. `None` on a fund, a skipped
+    /// retrieval and an unresolved or unverified lookup.
+    pub issuer: Option<IssuerProfile>,
+    /// The per-holding evidence surface (`crate::portfolio::evidence`) — the
+    /// endpoint table's rows FETCHED VALUES renders and the engine never
+    /// reads. `None` on a fund, a skipped retrieval and every offline stub
+    /// whose source is not wired.
+    pub evidence: Option<crate::portfolio::evidence::CompanyEvidence>,
+    /// The 8-K and 8-K/A rows of the forensic lookback off the same
+    /// submissions read as `filing_events`, newest first — the FETCHED VALUES
+    /// filings list (`docs/portfolio-workflow.md` §Step 6c). Empty on a fund,
+    /// a skipped retrieval, an `Unknown` sweep and every offline stub.
+    pub filings_8k: Vec<crate::sec::RecentFiling>,
+    /// The holding's matches against the run-level M&A feed, as acquirer or
+    /// target ([`ma_matches_for_holding`]). Empty where the feed named it on
+    /// neither side, on a fund, and where the feed never loaded.
+    pub ma_matches: Vec<crate::portfolio::evidence::MaMatch>,
 }
 
 /// The Step-6a semantic continuity retrieval's outcome
@@ -767,6 +785,74 @@ impl<'a, T> LegOutcome<'a, T> {
     }
 }
 
+/// The profile lookup's identity fields beyond the name — the FETCHED VALUES
+/// profile line (`docs/portfolio-workflow.md` §Step 6c). `None` on a fund, a
+/// skipped retrieval and an unresolved or unverified lookup.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct IssuerProfile {
+    pub exchange: Option<String>,
+    pub sector: Option<String>,
+    pub industry: Option<String>,
+}
+
+/// The stock-only evidence legs the gather hands [`assemble`]: the issuer
+/// line, the per-holding evidence record, the lookback's 8-K rows off the
+/// filings read, and the holding's matches against the run-level M&A feed.
+/// Every field is its default on a fund, a guard-terminal stock and an
+/// offline stub.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StockEvidenceLegs {
+    pub issuer: Option<IssuerProfile>,
+    pub evidence: Option<crate::portfolio::evidence::CompanyEvidence>,
+    pub filings_8k: Vec<crate::sec::RecentFiling>,
+    pub ma_matches: Vec<crate::portfolio::evidence::MaMatch>,
+}
+
+/// A holding's matches against the run-level M&A feed — every deal naming the
+/// symbol as acquirer or target (case-insensitive on the served symbol), in
+/// feed order (newest first). A local lookup, never a request.
+pub fn ma_matches_for_holding(
+    symbol: &str,
+    deals: &[crate::portfolio::evidence::MaDeal],
+) -> Vec<crate::portfolio::evidence::MaMatch> {
+    use crate::portfolio::evidence::{MaMatch, MaRole};
+    let wanted = symbol.trim().to_ascii_uppercase();
+    let is_symbol = |served: &Option<String>| {
+        served
+            .as_deref()
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case(&wanted))
+    };
+    let named = |name: &Option<String>, symbol: &Option<String>| {
+        name.clone()
+            .or_else(|| symbol.clone())
+            .unwrap_or_else(|| "(counterparty unnamed)".to_string())
+    };
+    deals
+        .iter()
+        .filter_map(|deal| {
+            let (role, counterparty) = if is_symbol(&deal.acquirer_symbol) {
+                (
+                    MaRole::Acquirer,
+                    named(&deal.target_name, &deal.target_symbol),
+                )
+            } else if is_symbol(&deal.target_symbol) {
+                (
+                    MaRole::Target,
+                    named(&deal.acquirer_name, &deal.acquirer_symbol),
+                )
+            } else {
+                return None;
+            };
+            Some(MaMatch {
+                role,
+                counterparty,
+                date: deal.transaction_date.clone(),
+                link: deal.link.clone(),
+            })
+        })
+        .collect()
+}
+
 /// Assemble the dossier from already-fetched pieces. Pure: the network fetches (FMP,
 /// SEC, the Schwab chain) happen in the job, which hands the results here so this
 /// assembly stays deterministic and testable. The options signal is computed from the
@@ -800,6 +886,7 @@ pub fn assemble(
     semantic_recall: SemanticRecall,
     news_seeds: Vec<crate::portfolio::research::ResearchSeed>,
     analysis_date: String,
+    legs: StockEvidenceLegs,
 ) -> HoldingDossier {
     let (
         prior_verdict,
@@ -979,6 +1066,19 @@ pub fn assemble(
                 .to_string(),
         );
     }
+    // The evidence surface labels wherever its pulls were issued — a record
+    // present on the dossier means the gather requested the legs, whatever
+    // each returned (its gaps ride the manifest). The M&A match is a local
+    // lookup over the run-level feed, labeled by the interpretation paths
+    // where it renders, like the FINRA read.
+    if legs.evidence.is_some() {
+        sources.push(
+            "FMP company evidence (ratios, owner earnings, enterprise value, street targets \
+             and grades, ratings snapshot, insider and congressional trades, float, \
+             segments, splits, earnings surprises)"
+                .to_string(),
+        );
+    }
     // The house view is deliberately **not** listed here, even though it is loaded once
     // per run and rides every dossier: whether a holding's verdict actually consulted
     // it is not knowable at assembly. Many routes through
@@ -1023,6 +1123,10 @@ pub fn assemble(
         news_seeds,
         analysis_date,
         sources,
+        issuer: legs.issuer,
+        evidence: legs.evidence,
+        filings_8k: legs.filings_8k,
+        ma_matches: legs.ma_matches,
     }
 }
 
@@ -1250,6 +1354,97 @@ mod tests {
     use crate::portfolio::engine::{QuarterlyCashFlowRow, QuarterlyIncomeRow};
     use crate::portfolio::{AssetClass, PositionChange, VerdictDisposition};
     use crate::schwab::{Holdings, Position};
+
+    #[test]
+    fn the_ma_match_names_the_holding_on_either_side_and_ignores_the_rest() {
+        use crate::portfolio::evidence::{MaDeal, MaRole};
+        let deal = |acq: &str, tgt: &str, date: &str| MaDeal {
+            acquirer_symbol: Some(acq.into()),
+            acquirer_name: Some(format!("{acq} Inc.")),
+            target_symbol: Some(tgt.into()),
+            target_name: Some(format!("{tgt} Corp.")),
+            transaction_date: date.into(),
+            link: Some("https://sec.gov/x".into()),
+        };
+        let deals = vec![
+            deal("AAPL", "MDV", "2026-06-01"),
+            deal("gnl-pe", "aapl", "2026-05-01"),
+            deal("X", "Y", "2026-04-01"),
+            MaDeal {
+                acquirer_symbol: Some("AAPL".into()),
+                target_symbol: Some("Z".into()),
+                transaction_date: "2026-03-01".into(),
+                ..Default::default()
+            },
+        ];
+        let m = ma_matches_for_holding("aapl", &deals);
+        assert_eq!(m.len(), 3, "{m:?}");
+        assert_eq!(m[0].role, MaRole::Acquirer);
+        assert_eq!(m[0].counterparty, "MDV Corp.");
+        assert_eq!(m[0].link.as_deref(), Some("https://sec.gov/x"));
+        assert_eq!(m[1].role, MaRole::Target);
+        assert_eq!(m[1].counterparty, "gnl-pe Inc.");
+        assert_eq!(
+            m[2].counterparty, "Z",
+            "the symbol stands in for an unnamed counterparty"
+        );
+        assert!(ma_matches_for_holding("Q", &deals).is_empty());
+        assert!(ma_matches_for_holding("AAPL", &[]).is_empty());
+    }
+
+    #[test]
+    fn assembly_labels_the_evidence_surface_where_its_pulls_issued() {
+        let sources_with = |legs: StockEvidenceLegs| {
+            assemble(
+                Position {
+                    symbol: "AAPL".into(),
+                    description: "Apple Inc".into(),
+                    asset_class: AssetClass::Stock,
+                    quantity: 10.0,
+                    cost_basis: 1_500.0,
+                    market_value: 1_950.0,
+                    current_price: Some(195.0),
+                },
+                PositionDelta::new_position(),
+                fmp_only(),
+                LegOutcome::<CompanyFacts>::NotRun,
+                LegOutcome::<OptionChain>::NotRun,
+                InvestorProfile::default_fixture(),
+                HouseView::default(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                SemanticRecall::default(),
+                Vec::new(),
+                "2026-07-28".to_string(),
+                legs,
+            )
+            .sources
+        };
+        assert!(
+            !sources_with(StockEvidenceLegs::default())
+                .iter()
+                .any(|s| s.contains("company evidence")),
+            "no record, no label"
+        );
+        let legs = StockEvidenceLegs {
+            evidence: Some(crate::portfolio::evidence::CompanyEvidence::empty("AAPL")),
+            ..Default::default()
+        };
+        assert!(
+            sources_with(legs)
+                .iter()
+                .any(|s| s.starts_with("FMP company evidence")),
+            "an issued surface labels, whatever it returned"
+        );
+    }
 
     /// A minimal persisted report for the house-view freshness tests.
     fn insert_house_view_report(conn: &Connection, id: &str, created_at: &str) {
@@ -1878,6 +2073,7 @@ Sources and footnotes.
             SemanticRecall::default(),
             Vec::new(),
             "2026-07-28".to_string(),
+            StockEvidenceLegs::default(),
         );
         assert!(dossier.sources.iter().any(|s| s.contains("FMP")));
         assert!(dossier.sources.iter().any(|s| s.contains("SEC")));
@@ -1962,6 +2158,7 @@ Sources and footnotes.
             SemanticRecall::default(),
             Vec::new(),
             "2026-07-28".to_string(),
+            StockEvidenceLegs::default(),
         )
         .sources;
         assert_eq!(
@@ -2017,6 +2214,7 @@ Sources and footnotes.
                 SemanticRecall::default(),
                 Vec::new(),
                 "2026-07-28".to_string(),
+                StockEvidenceLegs::default(),
             )
             .sources
         };
@@ -2087,6 +2285,7 @@ Sources and footnotes.
             SemanticRecall::default(),
             Vec::new(),
             "2026-07-28".to_string(),
+            StockEvidenceLegs::default(),
         )
         .sources
     }

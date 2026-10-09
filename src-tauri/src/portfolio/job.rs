@@ -132,8 +132,22 @@ pub trait CompanyDataSource {
         &self,
         _symbol: &str,
         _since: &str,
-    ) -> Option<crate::portfolio::ForensicFilingState> {
+    ) -> Option<crate::portfolio::FilingSweepRead> {
         None
+    }
+    /// The per-holding **evidence surface** for a graded stock
+    /// (`crate::portfolio::evidence`; `docs/portfolio-workflow.md` §Step 6c) —
+    /// the endpoint table's rows FETCHED VALUES renders and the engine never
+    /// reads, each leg fail-soft to a tagged gap on the record. `session` is
+    /// the run's pinned ET session date the windows count back from. The
+    /// empty default means the leg is not wired (a stub) — no gap, since an
+    /// unwired stub is not a degraded live input.
+    fn evidence(
+        &self,
+        symbol: &str,
+        _session: chrono::NaiveDate,
+    ) -> crate::portfolio::evidence::CompanyEvidence {
+        crate::portfolio::evidence::CompanyEvidence::empty(symbol)
     }
     /// Symbol-scoped `news/stock` items since `from` (ISO date) — the research
     /// loop's structured seeds (leads, never evidence — `docs/web-research.md`).
@@ -198,6 +212,20 @@ pub trait MarketContextSource {
     /// its typed gap.
     fn short_interest(&self) -> (Option<crate::finra::ShortInterestFile>, Option<String>) {
         (None, None)
+    }
+
+    /// The run-level M&A feed (`mergers-acquisitions-latest` —
+    /// `docs/data-sources.md` §Portfolio Analysis — endpoint surface) walked
+    /// newest first over the trailing window, fetched **once per run** and
+    /// pinned on the checkpoint header; each held stock matches against it as
+    /// acquirer or target at dossier assembly. Wholly fail-soft: the deals
+    /// gathered and the walk's gap. `session` is the run's pinned ET session.
+    /// The default (no deals, no gap) means the leg is not wired — a stub.
+    fn mergers_acquisitions(
+        &self,
+        _session: chrono::NaiveDate,
+    ) -> (Vec<crate::portfolio::evidence::MaDeal>, Option<String>) {
+        (Vec::new(), None)
     }
 }
 
@@ -357,6 +385,19 @@ impl MarketContextSource for LiveMarketContext {
                 Err(e) => (None, Some(format!("FINRA short interest unavailable: {e}"))),
             },
             None => (None, Some("FINRA source not wired".to_string())),
+        }
+    }
+
+    fn mergers_acquisitions(
+        &self,
+        session: chrono::NaiveDate,
+    ) -> (Vec<crate::portfolio::evidence::MaDeal>, Option<String>) {
+        match &self.fmp {
+            Some(fmp) => fmp.fetch_recent_mergers(session),
+            None => (
+                Vec::new(),
+                Some("FMP source not wired (M&A feed)".to_string()),
+            ),
         }
     }
 }
@@ -585,35 +626,31 @@ impl CompanyDataSource for LiveCompanyData {
         &self,
         symbol: &str,
         since: &str,
-    ) -> Option<crate::portfolio::ForensicFilingState> {
-        use crate::portfolio::ForensicFilingState;
+    ) -> Option<crate::portfolio::FilingSweepRead> {
+        use crate::portfolio::{FilingSweepRead, ForensicFilingState};
+        let unknown = |reason: String, queried: bool| FilingSweepRead {
+            state: ForensicFilingState::Unknown { reason, queried },
+            filings_8k: Vec::new(),
+        };
         Some(match self.cik.resolve(&self.sec, symbol) {
             // No EDGAR mapping: the submissions endpoint was never queried —
             // a typed unknown, never a clean no-event.
-            None => ForensicFilingState::Unknown {
-                reason: format!("no CIK mapping for {symbol}"),
-                queried: false,
-            },
+            None => unknown(format!("no CIK mapping for {symbol}"), false),
+            // One submissions read serves both the item-classified sweep and
+            // the FETCHED VALUES 8-K list (ruled 2026-10-08).
             Some(cik) => match self.sec.fetch_recent_filings(cik) {
-                Ok(filings) => {
-                    match crate::sec::forensic_events_from_filings(symbol, &filings, since) {
-                        Ok(events) if events.is_empty() => ForensicFilingState::Clear,
-                        Ok(events) => ForensicFilingState::Events { events },
-                        // An in-lookback 8-K with no readable items column: the
-                        // sweep ran but cannot classify — unknown, never a
-                        // fabricated clear.
-                        Err(reason) => ForensicFilingState::Unknown {
-                            reason,
-                            queried: true,
-                        },
-                    }
-                }
-                Err(e) => ForensicFilingState::Unknown {
-                    reason: format!("SEC filings sweep unavailable: {e}"),
-                    queried: true,
-                },
+                Ok(filings) => FilingSweepRead::from_filings(symbol, &filings, since),
+                Err(e) => unknown(format!("SEC filings sweep unavailable: {e}"), true),
             },
         })
+    }
+
+    fn evidence(
+        &self,
+        symbol: &str,
+        session: chrono::NaiveDate,
+    ) -> crate::portfolio::evidence::CompanyEvidence {
+        self.fmp.fetch_company_evidence(symbol, session)
     }
 }
 
@@ -1270,6 +1307,17 @@ fn run_analysis(
     };
     ctx.step_finished("short-interest", "ok", finra_gap.clone());
 
+    // The run-level M&A feed — one fail-soft walk per run over the trailing
+    // window; each held stock matches against it as acquirer or target at
+    // dossier assembly (`docs/data-sources.md` §Portfolio Analysis — endpoint
+    // surface). Pinned on the header so a resume matches the same feed.
+    ctx.step_started("mergers", "Load M&A feed");
+    let (ma_deals, ma_gap) = match &resume {
+        Some(cp) => (cp.header.ma_deals.clone(), cp.header.ma_gap.clone()),
+        None => market.mergers_acquisitions(today),
+    };
+    ctx.step_finished("mergers", "ok", ma_gap.clone());
+
     // ---- Selective work-list (`docs/portfolio-analysis.md` §Triggering) ------
     // A selective run analyzes **strictly the user's selection** (ruled
     // 2026-08-16, `docs/verification/2026-08-16-selective-badges-ruling.md`). The
@@ -1382,6 +1430,8 @@ fn run_analysis(
             cboe_gap: cboe_gap.clone(),
             short_interest_file: short_interest_file.clone(),
             finra_gap: finra_gap.clone(),
+            ma_deals: ma_deals.clone(),
+            ma_gap: ma_gap.clone(),
             work_list: work_list
                 .as_ref()
                 .map(|w| w.iter().cloned().collect()),
@@ -1543,10 +1593,18 @@ fn run_analysis(
         // and the entry-stamped sector identity; a fund is a multi-sector vehicle by
         // construction, typed `sector-unscorable` without a profile call.
         let mut research_website = None;
+        // The same lookup's exchange, sector and industry — the FETCHED
+        // VALUES profile line (`docs/portfolio-workflow.md` §Step 6c).
+        let mut issuer: Option<dossier::IssuerProfile> = None;
         let listing = if is_stock {
             let lookup = company_data.profile_identity(&position.symbol);
             if let crate::portfolio::listing::ProfileLookup::Resolved(p) = &lookup {
                 research_website = p.website.clone();
+                issuer = Some(dossier::IssuerProfile {
+                    exchange: p.exchange.clone(),
+                    sector: p.sector.clone(),
+                    industry: p.industry.clone(),
+                });
             }
             let (sector, name, industry) = match &lookup {
                 crate::portfolio::listing::ProfileLookup::Resolved(p) => {
@@ -1631,14 +1689,19 @@ fn run_analysis(
         // producer, stocks only (a fund wrapper has no issuer-level filing to
         // classify). An `Unknown` sweep rides the gap manifest as a degraded
         // input; it never trips the hard rule.
-        let filing_events = if is_fund || skip_retrieval {
-            None
+        // The same read keeps the lookback's 8-K rows for FETCHED VALUES
+        // (`docs/portfolio-workflow.md` §Step 6c; ruled 2026-10-08).
+        let (filing_events, filings_8k) = if is_fund || skip_retrieval {
+            (None, Vec::new())
         } else {
             let since = (today
                 - chrono::Duration::days(crate::portfolio::FORENSIC_EVENT_LOOKBACK_DAYS))
             .format("%Y-%m-%d")
             .to_string();
-            company_data.filing_events(&position.symbol, &since)
+            match company_data.filing_events(&position.symbol, &since) {
+                Some(read) => (Some(read.state), read.filings_8k),
+                None => (None, Vec::new()),
+            }
         };
         if let Some(crate::portfolio::ForensicFilingState::Unknown { reason, .. }) =
             &filing_events
@@ -1647,6 +1710,23 @@ fn run_analysis(
                 .gaps
                 .push(format!("SEC filings sweep degraded: {reason}"));
         }
+        // The per-holding evidence surface (`crate::portfolio::evidence`) —
+        // stocks only, the gaps joining the financials' manifest like the SEC
+        // and deep-history gaps so they reach the audit and data health.
+        let evidence = if is_stock && !skip_retrieval {
+            let record = company_data.evidence(&position.symbol, today);
+            fmp_financials.gaps.extend(record.gaps.iter().cloned());
+            Some(record)
+        } else {
+            None
+        };
+        // The holding's match against the run-level M&A feed, as acquirer or
+        // target — a local lookup, never a request.
+        let ma_matches = if is_stock && !skip_retrieval {
+            dossier::ma_matches_for_holding(&position.symbol, &ma_deals)
+        } else {
+            Vec::new()
+        };
         // Deep dated history (FMP dated EOD) for the anchor join and drawdown reads.
         let (deep_closes, deep_gaps) = if skip_retrieval {
             (vec![], vec![])
@@ -1990,6 +2070,12 @@ fn run_analysis(
             semantic_recall,
             news_seeds,
             run_session_date.clone(),
+            dossier::StockEvidenceLegs {
+                issuer,
+                evidence,
+                filings_8k,
+                ma_matches,
+            },
         );
         if is_stock && !skip_retrieval {
             dossier.earnings_issuer = research_website.as_deref().and_then(|website| {
@@ -2294,6 +2380,7 @@ fn run_analysis(
             positioning: cot_gaps.len(),
             cboe: cboe_gap.is_some(),
             finra: finra_gap.is_some(),
+            ma: ma_gap.is_some(),
             benchmark: health.benchmark_gaps.len(),
         },
         prompt_usage,
@@ -2467,6 +2554,8 @@ pub(crate) struct FeedGaps {
     pub positioning: usize,
     pub cboe: bool,
     pub finra: bool,
+    /// The M&A feed walk failed or truncated.
+    pub ma: bool,
     pub benchmark: usize,
 }
 
@@ -2667,6 +2756,9 @@ fn build_data_health(
     if feed_gaps.finra {
         parts.push("FINRA short interest unavailable".to_string());
     }
+    if feed_gaps.ma {
+        parts.push("M&A feed unavailable or truncated".to_string());
+    }
     if research_gap_count > 0 {
         parts.push(format!(
             "research coverage degraded on {research_degraded_holdings} holding{} \
@@ -2850,6 +2942,7 @@ fn build_data_health(
         positioning_gaps: feed_gaps.positioning,
         cboe_gap: feed_gaps.cboe,
         finra_gap: feed_gaps.finra,
+        ma_gap: feed_gaps.ma,
         benchmark_gaps: feed_gaps.benchmark,
         research_degraded_holdings,
         research_gap_count,
@@ -2900,6 +2993,82 @@ mod tests {
     use crate::portfolio::pipeline::StubAnalyst;
     use crate::portfolio::{AssetClass, PositionChange};
     use crate::schwab::{FixtureHoldingsSource, Position};
+
+    /// The stub market plus a run-level M&A feed naming the fixture's stock
+    /// as a target — the Step-5 fetch, the per-holding match and the audit
+    /// label end to end.
+    struct DealMarket;
+    impl MarketContextSource for DealMarket {
+        fn rates(&self) -> Result<crate::portfolio::engine::RateAnchors> {
+            StubMarket.rates()
+        }
+        fn mergers_acquisitions(
+            &self,
+            _session: chrono::NaiveDate,
+        ) -> (Vec<crate::portfolio::evidence::MaDeal>, Option<String>) {
+            (
+                vec![crate::portfolio::evidence::MaDeal {
+                    acquirer_symbol: Some("GNL".into()),
+                    acquirer_name: Some("Global Net Lease, Inc.".into()),
+                    target_symbol: Some("AAPL".into()),
+                    target_name: None,
+                    transaction_date: "2026-06-01".into(),
+                    link: None,
+                }],
+                Some("FMP M&A feed truncated at page 1 (test)".into()),
+            )
+        }
+    }
+
+    #[test]
+    fn a_holding_the_ma_feed_names_is_matched_at_assembly_and_the_audit_says_so() {
+        let (_dir, paths) = paths();
+        let holdings = holdings_of(vec![
+            stock("AAPL", 20.0, 3_900.0),
+            stock("MSFT", 10.0, 4_000.0),
+        ]);
+        let run = match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings),
+            &StubCompanyData,
+            &DealMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        let sources = |symbol: &str| {
+            run.audit
+                .iter()
+                .find(|a| a.symbol == symbol)
+                .unwrap_or_else(|| panic!("{symbol} audit"))
+                .sources
+                .clone()
+        };
+        assert!(
+            sources("AAPL").iter().any(|s| s.contains("M&A feed")),
+            "{:?}",
+            sources("AAPL")
+        );
+        assert!(
+            !sources("MSFT").iter().any(|s| s.contains("M&A feed")),
+            "{:?}",
+            sources("MSFT")
+        );
+        // The walk's gap is counted on data health, never attention.
+        let dh = &run.roll_up.data_health;
+        assert!(dh.ma_gap);
+        assert!(dh.summary.contains("M&A feed unavailable or truncated"), "{}", dh.summary);
+        assert!(!dh.attention, "an enriching-feed gap never trips attention");
+    }
 
     /// The sector-P/E snapshot is date-keyed, so an evening-ET run must ask for the
     /// session that traded, not the UTC calendar day it has already rolled into —
@@ -3062,6 +3231,7 @@ mod tests {
                 positioning: 1,
                 cboe: true,
                 finra: true,
+                ma: true,
                 benchmark: 1,
             },
             vec![],
@@ -3071,12 +3241,14 @@ mod tests {
         assert_eq!(dh.positioning_gaps, 1);
         assert!(dh.cboe_gap);
         assert!(dh.finra_gap);
+        assert!(dh.ma_gap);
         assert_eq!(dh.benchmark_gaps, 1);
         assert!(!dh.attention, "enriching-feed gaps never trip attention");
         assert!(dh.summary.contains("commodity context: 2 series gap(s)"), "{}", dh.summary);
         assert!(dh.summary.contains("CFTC positioning: 1 contract gap(s)"), "{}", dh.summary);
         assert!(dh.summary.contains("CBOE put/call backdrop unavailable"), "{}", dh.summary);
         assert!(dh.summary.contains("FINRA short interest unavailable"), "{}", dh.summary);
+        assert!(dh.summary.contains("M&A feed unavailable or truncated"), "{}", dh.summary);
         assert!(dh.summary.contains("sector benchmark series failed on 1 symbol(s)"), "{}", dh.summary);
         // Clean feeds leave the line untouched.
         let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), vec![], vec![]);
@@ -7077,12 +7249,21 @@ mod tests {
         financials: std::cell::RefCell<Vec<String>>,
         facts: std::cell::RefCell<Vec<String>>,
         deep_history: std::cell::RefCell<Vec<String>>,
+        evidence: std::cell::RefCell<Vec<String>>,
     }
 
     impl CompanyDataSource for CountingCompanyData {
         fn financials(&self, symbol: &str) -> CompanyFinancials {
             self.financials.borrow_mut().push(symbol.to_string());
             StubCompanyData.financials(symbol)
+        }
+        fn evidence(
+            &self,
+            symbol: &str,
+            _session: chrono::NaiveDate,
+        ) -> crate::portfolio::evidence::CompanyEvidence {
+            self.evidence.borrow_mut().push(symbol.to_string());
+            crate::portfolio::evidence::CompanyEvidence::empty(symbol)
         }
         fn facts(&self, symbol: &str) -> SecData {
             self.facts.borrow_mut().push(symbol.to_string());
@@ -7133,6 +7314,11 @@ mod tests {
         );
         assert_eq!(*company.facts.borrow(), vec!["AAPL".to_string()]);
         assert_eq!(*company.deep_history.borrow(), vec!["AAPL".to_string()]);
+        assert_eq!(
+            *company.evidence.borrow(),
+            vec!["AAPL".to_string()],
+            "the evidence surface is a graded stock's alone"
+        );
 
         // The audit says what it actually consulted, rather than naming a financials
         // pull the gate skipped.

@@ -8,7 +8,15 @@
 //! parsed article or research field is a shape-preserving `[stub: …]`
 //! placeholder, and the latest report's sections under MARKET ANALYSIS are
 //! stubbed the same way; ids, dates, URLs, hosts and section headers stay, so
-//! the tiers and the glosses that read them render as on a run. The
+//! the tiers and the glosses that read them render as on a run. The FETCHED
+//! VALUES rows the fixed set does not carry — the issuer line, the served
+//! 52-week range, the 8-K list, the short-interest print, the street, the
+//! insider and congressional trades, the surprises, the ratio lines, owner
+//! earnings, enterprise value, the float, the M&A match and the segments —
+//! are synthetic values layered onto the stock shapes here alone
+//! ([`layer_synthetic_evidence`]; ruled 2026-10-08), their names stubbed, so
+//! every row renders in the docs while the fixture JSON and the live
+//! admission harness stay untouched. The
 //! continuity shapes carry a hand-written prior — attempt 6's persisted
 //! verdict, its model arm re-shaped by hand into a thesis document and an
 //! appendix, re-dated two weeks before the run, with a prior spot 3% under
@@ -80,11 +88,289 @@ fn fixture(symbol: &str) -> Fixture {
         .unwrap_or_else(|| panic!("the {symbol} fixture"))
 }
 
-/// A first-analysis dossier over the fixture, the report's sections stubbed.
+/// A first-analysis dossier over the fixture, the report's sections stubbed
+/// and, on a stock, the synthetic evidence rows layered on.
 pub(super) fn debut_dossier(f: &Fixture) -> HoldingDossier {
     let mut d = dossier_of(f, true);
     stub_house_view(&mut d);
+    if f.asset_class == crate::portfolio::AssetClass::Stock {
+        layer_synthetic_evidence(&mut d, f.spot);
+    }
     d
+}
+
+/// The synthetic FETCHED VALUES rows for the stock shapes (the module docs):
+/// round figures sized off the fixture's spot and dated against its
+/// 2026-09-16 session, every name a `[stub: …]`, no fabricated URL. The
+/// splits are the issuer's real ones, dated before the prior session, so no
+/// split-context line renders off them.
+fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
+    use crate::portfolio::evidence::*;
+    let round = |x: f64| (x * 100.0).round() / 100.0;
+    // The issuer identity — the name the fixture never carried (attempt 6's
+    // persisted row held none, so the header read "name unavailable") beside
+    // the exchange, sector and industry: identity, not economics, keyed on
+    // the one stock the examples render (ruled 2026-10-08).
+    if d.position.symbol == "TSLA" {
+        d.company_name = Some("Tesla, Inc.".into());
+        d.issuer = Some(crate::portfolio::dossier::IssuerProfile {
+            exchange: Some("NASDAQ".into()),
+            sector: Some("Consumer Cyclical".into()),
+            industry: Some("Auto - Manufacturers".into()),
+        });
+    }
+    d.financials.year_high = Some(round(spot * 1.2));
+    d.financials.year_low = Some(round(spot * 0.6));
+    let filing = |form: &str, date: &str, items: &[&str]| crate::sec::RecentFiling {
+        form: form.into(),
+        filing_date: date.into(),
+        items: Some(items.iter().map(|s| s.to_string()).collect()),
+        accession: String::new(),
+    };
+    d.filings_8k = vec![
+        filing("8-K", "2026-07-23", &["2.02", "9.01"]),
+        filing("8-K/A", "2026-05-15", &["5.02"]),
+        filing("8-K", "2026-04-22", &["2.02", "9.01"]),
+    ];
+    d.short_interest = Some(crate::finra::ShortInterestRead {
+        settlement_date: "2026-08-31".into(),
+        current_short_interest: 80_000_000.0,
+        previous_short_interest: Some(76_000_000.0),
+        average_daily_volume: Some(95_000_000.0),
+        days_to_cover: Some(0.84),
+    });
+    let earnings = |date: &str, actual: Option<f64>, estimate: f64, revenue: Option<f64>| {
+        crate::fmp::SymbolEarningsRow {
+            date: date.into(),
+            eps_actual: actual,
+            eps_estimated: Some(estimate),
+            revenue_actual: revenue,
+        }
+    };
+    let segments = |fy: i64, end: &str, rows: &[(&str, f64)]| SegmentYear {
+        fiscal_year: Some(fy),
+        period_end: end.into(),
+        segments: rows.iter().map(|(n, v)| (n.to_string(), *v)).collect(),
+    };
+    d.evidence = Some(CompanyEvidence {
+        symbol: d.position.symbol.clone(),
+        ratios: RatioLines {
+            pe: Some(95.0),
+            pb: Some(12.5),
+            ev_to_ebitda: Some(55.0),
+            ev_to_sales: Some(8.0),
+            fcf_yield: Some(0.006),
+            roic: Some(0.07),
+            roe: Some(0.11),
+            net_debt_to_ebitda: Some(-1.2),
+        },
+        owner_earnings: Some(OwnerEarningsRow {
+            period_end: "2026-06-30".into(),
+            period: Some("FY2026 Q2".into()),
+            owners_earnings: Some(2.1e9),
+            per_share: Some(0.62),
+        }),
+        enterprise_value: Some(EnterpriseValueRow {
+            date: "2026-06-30".into(),
+            enterprise_value: Some(7.9e11),
+            market_cap: Some(7.8e11),
+            total_debt: Some(1.3e10),
+            cash: Some(3.3e10),
+        }),
+        price_target: Some(PriceTargetConsensus {
+            high: Some(round(spot * 2.0)),
+            low: Some(round(spot * 0.5)),
+            median: Some(round(spot * 1.1)),
+            consensus: Some(round(spot * 1.08)),
+        }),
+        price_target_trend: Some(PriceTargetTrend {
+            last_month: PriceTargetWindow {
+                count: Some(4),
+                average: Some(round(spot * 1.15)),
+            },
+            last_quarter: PriceTargetWindow {
+                count: Some(15),
+                average: Some(round(spot * 1.07)),
+            },
+            last_year: PriceTargetWindow {
+                count: Some(48),
+                average: Some(round(spot * 1.0)),
+            },
+        }),
+        grades_consensus: Some(GradesConsensus {
+            strong_buy: Some(3),
+            buy: Some(14),
+            hold: Some(18),
+            sell: Some(7),
+            strong_sell: Some(2),
+            consensus: Some("Hold".into()),
+        }),
+        rating_actions: vec![
+            RatingAction {
+                date: "2026-09-10".into(),
+                firm: "[stub: grading firm]".into(),
+                previous_grade: Some("Hold".into()),
+                new_grade: Some("Buy".into()),
+                action: Some("upgrade".into()),
+            },
+            RatingAction {
+                date: "2026-07-24".into(),
+                firm: "[stub: grading firm]".into(),
+                previous_grade: Some("Buy".into()),
+                new_grade: Some("Buy".into()),
+                action: Some("maintain".into()),
+            },
+            // A coverage initiation: no previous grade, so the row shows the
+            // provider's empty cell (the lexicon scan reads every served word
+            // as app prose, so the synthetic actions stay off its list).
+            RatingAction {
+                date: "2026-04-23".into(),
+                firm: "[stub: grading firm]".into(),
+                previous_grade: None,
+                new_grade: Some("Hold".into()),
+                action: Some("initiate".into()),
+            },
+        ],
+        ratings_snapshot: Some(RatingsSnapshot {
+            rating: Some("C".into()),
+            overall: Some(3),
+            discounted_cash_flow: Some(2),
+            return_on_equity: Some(3),
+            return_on_assets: Some(3),
+            debt_to_equity: Some(4),
+            price_to_earnings: Some(1),
+            price_to_book: Some(1),
+        }),
+        insider_trades: vec![
+            InsiderTrade {
+                transaction_date: "2026-09-05".into(),
+                filing_date: Some("2026-09-08".into()),
+                name: "[stub: insider name]".into(),
+                owner_type: Some("officer".into()),
+                transaction_type: Some("S-Sale".into()),
+                shares: Some(10_000.0),
+                price: Some(round(spot * 0.98)),
+            },
+            InsiderTrade {
+                transaction_date: "2026-08-20".into(),
+                filing_date: Some("2026-08-21".into()),
+                name: "[stub: insider name]".into(),
+                owner_type: Some("director".into()),
+                transaction_type: Some("A-Award".into()),
+                shares: Some(2_500.0),
+                price: Some(0.0),
+            },
+            InsiderTrade {
+                transaction_date: "2026-07-30".into(),
+                filing_date: Some("2026-08-01".into()),
+                name: "[stub: insider name]".into(),
+                owner_type: Some("10 percent owner".into()),
+                transaction_type: Some("S-Sale".into()),
+                shares: Some(50_000.0),
+                price: Some(round(spot * 0.94)),
+            },
+        ],
+        insider_statistics: Some(InsiderStatistics {
+            year: Some(2026),
+            quarter: Some(3),
+            acquired_transactions: Some(1),
+            disposed_transactions: Some(9),
+            total_acquired: Some(2_500.0),
+            total_disposed: Some(310_000.0),
+        }),
+        congressional_trades: vec![
+            CongressionalTrade {
+                chamber: Chamber::House,
+                transaction_date: "2026-08-14".into(),
+                disclosure_date: Some("2026-09-02".into()),
+                name: "[stub: member]".into(),
+                owner: Some("Joint".into()),
+                kind: Some("Purchase".into()),
+                amount: Some("$1,001 - $15,000".into()),
+            },
+            CongressionalTrade {
+                chamber: Chamber::Senate,
+                transaction_date: "2026-06-03".into(),
+                disclosure_date: Some("2026-07-01".into()),
+                name: "[stub: member]".into(),
+                owner: Some("Spouse".into()),
+                kind: Some("Sale".into()),
+                amount: Some("$15,001 - $50,000".into()),
+            },
+        ],
+        float: Some(SharesFloat {
+            date: Some("2026-09-01".into()),
+            free_float_percent: Some(86.9),
+            float_shares: Some(2.8e9),
+            outstanding_shares: Some(3.22e9),
+        }),
+        product_segments: vec![
+            segments(
+                2025,
+                "2025-12-31",
+                &[
+                    ("Automotive", 7.2e10),
+                    ("Services and other", 1.1e10),
+                    ("Energy generation and storage", 1.0e10),
+                ],
+            ),
+            segments(
+                2024,
+                "2024-12-31",
+                &[
+                    ("Automotive", 7.7e10),
+                    ("Services and other", 1.05e10),
+                    ("Energy generation and storage", 1.0e10),
+                ],
+            ),
+        ],
+        geographic_segments: vec![
+            segments(
+                2025,
+                "2025-12-31",
+                &[
+                    ("United States", 4.4e10),
+                    ("Other", 2.8e10),
+                    ("China", 2.1e10),
+                ],
+            ),
+            segments(
+                2024,
+                "2024-12-31",
+                &[
+                    ("United States", 4.7e10),
+                    ("Other", 2.9e10),
+                    ("China", 2.15e10),
+                ],
+            ),
+        ],
+        splits: vec![
+            SplitRow {
+                date: "2022-08-25".into(),
+                numerator: 3.0,
+                denominator: 1.0,
+            },
+            SplitRow {
+                date: "2020-08-31".into(),
+                numerator: 5.0,
+                denominator: 1.0,
+            },
+        ],
+        earnings: vec![
+            earnings("2026-10-21", None, 0.55, None),
+            earnings("2026-07-22", Some(0.40), 0.43, Some(2.25e10)),
+            earnings("2026-04-22", Some(0.27), 0.42, Some(1.93e10)),
+            earnings("2026-01-29", Some(0.73), 0.77, Some(2.57e10)),
+            earnings("2025-10-22", Some(0.72), 0.60, Some(2.52e10)),
+        ],
+        gaps: vec![],
+    });
+    d.ma_matches = vec![MaMatch {
+        role: MaRole::Acquirer,
+        counterparty: "[stub: counterparty]".into(),
+        date: "2026-05-20".into(),
+        link: None,
+    }];
 }
 
 fn graded_of(f: &Fixture) -> &crate::portfolio::GradedVerdict {
@@ -1002,6 +1288,14 @@ fn render(ex: &Example) -> String {
     } else {
         out.push_str("This packet renders no article or research text, so it carries no stub.\n");
     }
+    if ex
+        .request
+        .messages
+        .iter()
+        .any(|m| m.content.contains("Street price targets:"))
+    {
+        out.push_str("Under FETCHED VALUES, the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the statements, the quote and the closes are the fixed set's.\n");
+    }
     out.push('\n');
     out.push_str("## Request\n\n");
     out.push_str(&request_table(ex));
@@ -1038,7 +1332,8 @@ fn render_contents(examples: &[Example]) -> String {
         crate::portfolio::PROMPT_VERSION
     ));
     out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), consolidation — the distillation shapes and the analysis call (Step 6d) — then the thesis document, its appendix and the action call (Step 6f).\n");
-    out.push_str("Each file carries the request envelope, every message as sent, and the tools or the response schema.\n\n");
+    out.push_str("Each file carries the request envelope, every message as sent, and the tools or the response schema.\n");
+    out.push_str("On the stock shapes, the FETCHED VALUES rows the fixed set does not carry — the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments — are synthetic values layered on for the examples alone, their names stubbed (`docs/prompts/README.md`).\n\n");
     out.push_str("| File | Call | Step |\n| --- | --- | --- |\n");
     for ex in examples {
         out.push_str(&format!("| [{0}]({0}.md) | {1} | {2} |\n", ex.file, ex.title, ex.step));

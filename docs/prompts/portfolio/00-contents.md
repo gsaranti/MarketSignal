@@ -1,9 +1,10 @@
 # Portfolio Analysis prompts — contents
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v73`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 One file per call shape, in pipeline order: the research loop (Step 6c), consolidation — the distillation shapes and the analysis call (Step 6d) — then the thesis document, its appendix and the action call (Step 6f).
 Each file carries the request envelope, every message as sent, and the tools or the response schema.
+On the stock shapes, the FETCHED VALUES rows the fixed set does not carry — the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments — are synthetic values layered on for the examples alone, their names stubbed (`docs/prompts/README.md`).
 
 | File | Call | Step |
 | --- | --- | --- |

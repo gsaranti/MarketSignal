@@ -603,6 +603,7 @@ export interface DataHealth {
   positioning_gaps: number;
   cboe_gap: boolean;
   finra_gap: boolean;
+  ma_gap: boolean;
   benchmark_gaps: number;
   // Persisted research coverage gaps, folded from per-holding research audits
   // without matching their human-readable gap strings. Counted and named in

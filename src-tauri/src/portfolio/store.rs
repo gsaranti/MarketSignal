@@ -154,6 +154,11 @@ pub struct CheckpointHeader {
     pub cboe_gap: Option<String>,
     pub short_interest_file: Option<crate::finra::ShortInterestFile>,
     pub finra_gap: Option<String>,
+    /// The run-level M&A feed (`mergers-acquisitions-latest`, the trailing
+    /// window, newest first) each held stock matches against at dossier
+    /// assembly, and the walk's gap where it failed or truncated.
+    pub ma_deals: Vec<crate::portfolio::evidence::MaDeal>,
+    pub ma_gap: Option<String>,
     /// A selective run's work-list (uppercased); `None` = the whole book. A
     /// selective re-analysis checkpoints identically.
     pub work_list: Option<Vec<String>>,
@@ -251,7 +256,11 @@ pub struct CheckpointHeader {
 /// analysis record (its text, its date and its anchor bar) beside its
 /// research record, and the record carries the consolidation's distillation
 /// shape with its call count — so no v21 row can resume this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v22";
+/// `checkpoint-v23` (`portfolio-v74`): the header pins the run-level M&A feed
+/// (the deals of the trailing window and the walk's gap) beside the FINRA
+/// file, so a resumed run matches its holdings against the same feed — so no
+/// v22 header can resume this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v23";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1027,6 +1036,32 @@ mod tests {
     };
     use crate::schwab::{Holdings, Position};
 
+    #[test]
+    fn the_header_pins_the_ma_feed_and_a_v22_header_without_it_does_not_read() {
+        let conn = mem();
+        let run = sample_run("ma-feed", "2026-10-08T12:00:00Z");
+        let mut header = checkpoint_header(&run);
+        header.ma_deals = vec![crate::portfolio::evidence::MaDeal {
+            acquirer_symbol: Some("AAPL".into()),
+            target_symbol: Some("MDV".into()),
+            transaction_date: "2026-06-01".into(),
+            ..Default::default()
+        }];
+        header.ma_gap = Some("FMP M&A feed truncated at page 3 (rate-limited)".into());
+        save_checkpoint_header(&conn, &header).unwrap();
+        let cp = load_checkpoint(&conn).unwrap().expect("the header loads");
+        assert_eq!(cp.header.ma_deals, header.ma_deals);
+        assert_eq!(cp.header.ma_gap, header.ma_gap);
+        // The pre-release posture: the two fields are required and always
+        // written, so a header persisted before them is unreadable, never
+        // defaulted to an empty feed.
+        let mut json = serde_json::to_value(&header).unwrap();
+        let obj = json.as_object_mut().unwrap();
+        obj.remove("ma_deals");
+        obj.remove("ma_gap");
+        assert!(serde_json::from_value::<CheckpointHeader>(json).is_err());
+    }
+
     fn mem() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         crate::storage::init_schema(&conn).unwrap();
@@ -1050,6 +1085,8 @@ mod tests {
             cboe_gap: None,
             short_interest_file: None,
             finra_gap: None,
+            ma_deals: vec![],
+            ma_gap: None,
             work_list: None,
             swept_tail: vec![],
             prompt_version: crate::portfolio::PROMPT_VERSION.into(),
