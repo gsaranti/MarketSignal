@@ -295,6 +295,8 @@ Part 2 asks for the **analysis**: one document consolidating what this run's res
 **Returns.**
 The holding's **analysis** as prose, read as text and validated by nothing.
 It is the only research artifact the next run reads; the write-ups persist on the audit record as written, never as distilled, and no typed research field exists.
+A holding whose loop wrote no write-up this run spends no analysis call: the prior analysis stands as its analysis, carried whole with the date it was written and its own anchor bar.
+It then renders under ANALYSIS and PRIOR ANALYSIS with that date and the split-context line that bar yields ([§Step 6b](#step-6b-deterministic-financial-analysis)).
 
 ### Step 6e: Self-Review
 

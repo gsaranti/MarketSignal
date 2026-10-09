@@ -1,6 +1,6 @@
 # Role/risk thesis document — first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v70`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v73`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 The role/risk branch of the intrinsic verdict, taken for a vehicle class the engine cannot price: the fund readout stands where the computed scores would, and the document states no expected price and no conviction, so the conversation has no appendix message.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3249 chars — the messages and tools as serialized |
+| Prompt material | 3259 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ review. Part 1 of the message gives the inputs. Part 2 says what the document co
 how to return it.
 ~~~~
 
-## User message (2894 chars)
+## User message (2904 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -92,8 +92,8 @@ A market-level analysis dated 2026-09-16, followed by the stance of the 3 most r
 - 2026-08-25: thesis mixed, risk posture mixed
 
 ANALYSIS
-[stub: the distilled research — the fund's exposure profile and holdings news, as the reduce call
-returned them]
+[stub: this run's analysis — the fund's exposure profile and holdings news consolidated, as the
+analysis call returned it]
 
 ======== PART 2: TASK ========
 

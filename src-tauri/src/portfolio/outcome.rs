@@ -2450,6 +2450,7 @@ mod tests {
             narrative: None,
             option_overlay: None,
             research: None,
+            analysis: None,
         }
     }
 

@@ -86,6 +86,17 @@ fn rates() -> &'static engine::RateAnchors {
     pipeline::tests::rates_static()
 }
 
+/// An analysis record written this session over the dossier's own date, with
+/// no anchor — the harness's "this run's analysis", so ANALYSIS renders
+/// undated with no split line.
+pub(crate) fn analysis_of(d: &super::dossier::HoldingDossier, text: &str) -> super::AnalysisRecord {
+    super::AnalysisRecord {
+        text: text.into(),
+        written: d.analysis_date.clone(),
+        anchor: None,
+    }
+}
+
 /// The thesis-document input over a fixture on a first analysis: the engine
 /// output and the distilled research as the run persisted them, no overlay,
 /// no soft flags (the reconstructed financials carry no balance rows or
@@ -95,7 +106,7 @@ fn thesis_input<'a>(f: &'a Fixture, d: &'a super::dossier::HoldingDossier) -> Th
         dossier: d,
         engine: &f.engine_output,
         rates: rates(),
-        analysis: &f.research_combined,
+        analysis: analysis_of(d, &f.research_combined),
         pre_profit: None,
         soft_forensic: None,
         tech_pre_flag: None,
@@ -276,7 +287,7 @@ fn synthetic_role_risk_input(fx: &SyntheticRoleRisk) -> RoleRiskInput<'_> {
         dossier: &fx.dossier,
         readout: &fx.readout,
         rates: rates(),
-        analysis: fx.research,
+        analysis: analysis_of(&fx.dossier, fx.research),
         prior_split: None,
     }
 }
@@ -550,7 +561,7 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
             dossier: d,
             readout: &readout,
             rates: rates(),
-            analysis: "No research findings.",
+            analysis: analysis_of(d, "No research findings."),
             prior_split: None,
         })
     };

@@ -113,6 +113,8 @@ One over it but within the reasoner's issues on the resident reasoner at its int
 The fast tier co-resides by the roster's own precondition ([§The model roster and per-task routing](#the-model-roster-and-per-task-routing)), so a route-up costs no swap.
 A prompt over the widest budget is refused before issue as an unclassified failure — never retried, since the outcome is deterministic — and fails hard under the job's hard model-call posture (the report run, or one Portfolio holding isolated — each job's §Failure posture).
 The guard covers every distillation call — the merge distillation and each per-write-up distillation — closing the daemon's silent front-truncation off from distillation as far as a chars-per-token estimate can close it.
+The analysis call is sized the same way once the distillate is in: a prompt still over its budget is refused before issue the same way, since the prior analysis is never distilled and no smaller shape remains.
+A prompt that would not fit with no write-up at all is refused before any distillation call is spent.
 The budget is that estimate — the chars-per-token constant is rough and the guard counts characters — so token-dense input can fit the threshold and still overflow the context.
 The data-health likely-front-truncation read therefore stays the runtime witness for every stage, distillation included.
 A merge distillation that outgrows the widest issuable budget once rendered — the reasoner's on a distinct roster — takes the next smaller shape before it reaches the guard: each write-up distilled first, then the merge of those outputs ([web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).

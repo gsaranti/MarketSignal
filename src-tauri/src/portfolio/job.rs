@@ -3115,7 +3115,9 @@ mod tests {
                 fetches_spent: 0,
                 elapsed_secs: 0,
                 gaps,
+                distillation: crate::portfolio::distill::DistillationRecord::none(),
             }),
+            analysis: None,
         }
     }
 
@@ -4976,6 +4978,20 @@ mod tests {
             "run 2's document is the continuity read: {d2}"
         );
         assert!(!d1.contains("Since the prior analysis"), "{d1}");
+        // The analysis carries run to run by identity: the stub's research
+        // writes no write-up, so run 1's analysis is the one sentence and run
+        // 2 keeps the prior analysis verbatim with no distillation and no
+        // analysis call (`docs/portfolio-workflow.md` §Step 6d).
+        let first_record = first.audit[0].analysis.as_ref().expect("run 1 writes the sentence");
+        assert_eq!(first_record.text, crate::portfolio::distill::NO_WRITE_UP_SENTENCE);
+        assert_eq!(first_record.anchor, first.audit[0].authoring_close);
+        // Carried whole: run 2's record keeps run 1's text, date and anchor
+        // bar, never re-stamped with run 2's.
+        assert_eq!(second.audit[0].analysis.as_ref(), Some(first_record));
+        assert_eq!(
+            second.audit[0].research.as_ref().expect("run 2 ran the loop").distillation,
+            crate::portfolio::distill::DistillationRecord::none()
+        );
     }
 
     #[test]

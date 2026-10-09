@@ -54,11 +54,13 @@ pub struct ThesisInput<'a> {
     pub engine: &'a EngineOutput,
     /// The run-level Treasury prints FETCHED VALUES states.
     pub rates: &'a RateAnchors,
-    /// This run's analysis, rendered under ANALYSIS. Until consolidation
-    /// lands (the research chain, task 2) it is the bridge: this run's
-    /// write-ups as written under their topic headings
-    /// ([`distill::bridge_analysis`]).
-    pub analysis: &'a str,
+    /// This run's analysis record, rendered under ANALYSIS — the document
+    /// Step 6d's analysis call wrote over the write-ups, or the prior record
+    /// carried whole where the loop produced no write-up
+    /// ([`distill::consolidate`]); a carried one renders under the date it
+    /// was written with its own anchor bar's split-context line
+    /// ([`analysis_section`]).
+    pub analysis: crate::portfolio::AnalysisRecord,
     /// The finalized pre-profit execution / financing overlay — present only
     /// when the stock actually entered it.
     pub pre_profit: Option<&'a PreProfitOverlay>,
@@ -98,9 +100,11 @@ pub struct RoleRiskInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub readout: &'a RoleRiskReadout,
     pub rates: &'a RateAnchors,
-    /// This run's analysis — the fund agenda's write-ups through the bridge
-    /// until consolidation lands.
-    pub analysis: &'a str,
+    /// This run's analysis record — the fund agenda's write-ups consolidated
+    /// by Step 6d's analysis call, or the prior record carried whole
+    /// ([`distill::consolidate`]), rendered as on the priced message
+    /// ([`analysis_section`]).
+    pub analysis: crate::portfolio::AnalysisRecord,
     pub prior_split: Option<SplitContext>,
 }
 
@@ -246,11 +250,23 @@ fn ensure_action_rationale(
 }
 
 /// The model-backed stages of the pipeline, behind a trait so the orchestration is
-/// stub-driven offline and daemon-driven live. Research (6c) and distillation
-/// (6d) carry **defaulted offline implementations** — pipeline-shaped, no web
-/// tool, no model call — so deterministic stubs stay small; the live analyst
-/// overrides both.
+/// stub-driven offline and daemon-driven live. Research (6c) carries a
+/// **defaulted offline implementation** — pipeline-shaped, no web tool, no
+/// model call — so deterministic stubs stay small; consolidation's two calls
+/// (6d) default to a refusal naming the stage, since a stub with no write-up
+/// is never asked to consolidate, and the offline [`StubAnalyst`] renders
+/// them deterministically; the live analyst overrides all three.
 pub trait HoldingAnalyst {
+    /// Step 6d — one distillation call over the write-ups
+    /// ([`distill::distillation_prompt`]): non-thinking, no grammar, prose.
+    fn distill(&self, input: &distill::DistillInput<'_>) -> Result<String> {
+        anyhow::bail!("{}: this analyst issues no distillation call", input.stage)
+    }
+    /// Step 6d — the analysis call ([`distill::analysis_prompt`]): thinking,
+    /// no grammar, prose.
+    fn analyze(&self, input: &distill::AnalysisInput<'_>) -> Result<String> {
+        anyhow::bail!("{}: this analyst issues no analysis call", input.stage())
+    }
     /// Step 6c — the bounded per-topic research loop
     /// (`docs/portfolio-workflow.md` §Step 6c). Defaults to the offline stub
     /// (a deterministic research-unavailable note plus recorded gaps).
@@ -315,9 +331,10 @@ pub trait HoldingAnalyst {
 /// with (`docs/portfolio-workflow.md` §Step 6c): the holding header, FETCHED
 /// VALUES as the thesis-document message renders it — the same bytes, so the
 /// three messages share one rendering — the news leads, and on a continuity
-/// run PRIOR THESIS with its date and any split-context line, the prior run's
-/// thesis document verbatim. The prior analysis joins the block with
-/// consolidation (the research chain, task 2).
+/// run PRIOR ANALYSIS then PRIOR THESIS, each with its date and any
+/// split-context line, the prior run's analysis and thesis document verbatim.
+/// The thesis document's split line is the verdict bridge's (`prior_split`);
+/// the analysis's comes from its own record's anchor bar.
 pub(crate) fn research_brief(
     dossier: &HoldingDossier,
     rates: &RateAnchors,
@@ -327,22 +344,57 @@ pub(crate) fn research_brief(
         header: holding_header(dossier),
         fetched_values: fetched_values_section(dossier, rates),
         leads: dossier.news_seeds.clone(),
-        prior_documents: prior_thesis_section(dossier, prior_split),
+        prior_documents: format!(
+            "{}{}",
+            prior_analysis_section(dossier),
+            prior_thesis_section(dossier, prior_split)
+        ),
     }
 }
 
-/// Run Step 6c for one holding: assemble the deterministic research plan (the
-/// agenda and the holding-constant brief), run the analyst's research loop,
-/// and return the bridge ANALYSIS beside the audit record the run persists.
-/// Consolidation — the budget check, the distillation shapes and the analysis
-/// call — lands with the research chain's task 2.
+/// The split-bridge anchor bar a run stamps on what it writes
+/// (`docs/portfolio-analysis.md` §Starting parameters): the newest settled
+/// close strictly before the run's ET session, from this run's own fetched
+/// dated-EOD series. A later pass re-reads the same bar date from its fresh
+/// fetch, and the close ratio is exactly the cumulative split re-basis
+/// between the two fetch times ([`engine::split_bridge_factor`]).
+fn authoring_close_of(d: &HoldingDossier, run_date: &str) -> Option<engine::DatedValue> {
+    d.financials
+        .daily_closes
+        .iter()
+        .rev()
+        .find(|c| c.date.as_str() < run_date)
+        .cloned()
+}
+
+/// A prior document's split context from its bridge factor
+/// (`docs/portfolio-workflow.md` §Step 6b): re-based where the factor moved
+/// off one, none where it is exactly one, unverifiable where the anchor's bar
+/// is missing from the fresh window.
+fn split_context_of(bridge: Option<f64>) -> Option<SplitContext> {
+    match bridge {
+        Some(f) if f != 1.0 => Some(SplitContext::Rebased { factor: f }),
+        Some(_) => None,
+        None => Some(SplitContext::Unverifiable),
+    }
+}
+
+/// Run Steps 6c and 6d for one holding: assemble the deterministic research
+/// plan (the agenda and the holding-constant brief), run the analyst's
+/// research loop, then consolidate — the budget check, a distillation where
+/// the analysis prompt is over budget, and the analysis call
+/// ([`distill::consolidate`]) — returning the holding's analysis record
+/// beside the audit record the run persists. An analysis written this run is
+/// stamped with this run's session date and anchor bar; a carried one keeps
+/// the prior record whole.
 fn run_research(
     analyst: &dyn HoldingAnalyst,
     dossier: &HoldingDossier,
     triggers: &research::AgendaTriggers,
     rates: &RateAnchors,
     prior_split: Option<SplitContext>,
-) -> Result<(String, ResearchAuditRecord)> {
+    run_date: &str,
+) -> Result<(crate::portfolio::AnalysisRecord, ResearchAuditRecord)> {
     let plan = ResearchPlan {
         agenda: research::build_agenda(dossier, triggers),
         brief: research_brief(dossier, rates, prior_split),
@@ -353,8 +405,28 @@ fn run_research(
     let research_out = analyst
         .research(dossier, &plan)
         .context("researching the holding")?;
-    let analysis = distill::bridge_analysis(&research_out);
-    Ok((analysis, ResearchAuditRecord::from_research(&research_out)))
+    let consolidated = distill::consolidate(
+        analyst,
+        &dossier.position.symbol,
+        &plan.brief,
+        &research_out,
+        dossier.prior_analysis.as_ref(),
+        &prior_analysis_section(dossier),
+        &distill::ConsolidationBudgets::live(),
+    )
+    .context("consolidating the holding's research")?;
+    let analysis = match consolidated.analysis {
+        distill::Consolidated::Written(text) => crate::portfolio::AnalysisRecord {
+            text,
+            written: dossier.analysis_date.clone(),
+            anchor: authoring_close_of(dossier, run_date),
+        },
+        distill::Consolidated::Carried(record) => record,
+    };
+    Ok((
+        analysis,
+        ResearchAuditRecord::from_research(&research_out, consolidated.distillation),
+    ))
 }
 
 /// Run one holding through the pipeline end to end, returning its verdict and audit
@@ -423,11 +495,7 @@ pub fn analyze_holding(
     // (`docs/portfolio-workflow.md` §Step 6b): the document is never rewritten;
     // the line states the factor where a split re-based the series since it
     // was written, or that the basis could not be verified this run.
-    let prior_split = match price_bridge {
-        Some(f) if f != 1.0 => Some(SplitContext::Rebased { factor: f }),
-        Some(_) => None,
-        None => Some(SplitContext::Unverifiable),
-    };
+    let prior_split = split_context_of(price_bridge);
     // The prior read's per-share comparators on this run's basis: the spot and
     // every raw consensus-EPS period scale TOGETHER (their ratio — the prior
     // matched-period multiple — is basis-free and must stay so). `None` factor
@@ -545,13 +613,7 @@ pub fn analyze_holding(
     // onto its row. Only an abstention carries an anchor forward — the retained
     // document's (`abstain` below) — since its row persists no value on the
     // run's basis (`docs/portfolio-analysis.md` §Starting parameters).
-    let authoring_close = dossier
-        .financials
-        .daily_closes
-        .iter()
-        .rev()
-        .find(|d| d.date.as_str() < run_date)
-        .cloned();
+    let authoring_close = authoring_close_of(dossier, run_date);
     let audit = |metrics, target_meta, pre_profit, soft_forensic| HoldingAudit {
         symbol: symbol.clone(),
         metrics,
@@ -594,6 +656,9 @@ pub fn analyze_holding(
         // Recorded only where the research loop ran; every no-research exit
         // records none.
         research: None,
+        // Written where consolidation ran; an abstention retains the prior
+        // run's below, every other no-research exit records none.
+        analysis: None,
     };
     let abstain = |reason: String, metrics, meta, pre_profit, soft_forensic| {
         // A below-floor exit retains the prior thesis document unrewritten —
@@ -630,6 +695,13 @@ pub fn analyze_holding(
         if retained.is_some() {
             record.authoring_close = dossier.prior_authoring_close.clone();
         }
+        // The prior analysis is retained unrewritten the same way — the
+        // holding's research memory survives the exit, so the next continuity
+        // run still loads it by identity (`docs/portfolio-analysis.md`
+        // §Evidence floor). Unconditionally, unlike the anchor bar above: the
+        // analysis has no price basis to certify, so it carries whether or
+        // not a document was retained beside it.
+        record.analysis = dossier.prior_analysis.clone();
         Ok((verdict, record))
     };
     let not_rated = |reason: String| {
@@ -790,6 +862,7 @@ pub fn analyze_holding(
                     &research::AgendaTriggers::default(),
                     rates,
                     prior_split,
+                    run_date,
                 )?;
                 record_stage_models(analyst.reasoner_id());
                 let thesis_document = analyst
@@ -797,7 +870,7 @@ pub fn analyze_holding(
                         dossier,
                         readout: &readout,
                         rates,
-                        analysis: &rr_analysis,
+                        analysis: rr_analysis.clone(),
                         prior_split,
                     })
                     .context("writing the role/risk holding's thesis document")?;
@@ -828,6 +901,7 @@ pub fn analyze_holding(
                 // (M3 of the 2026-08-18 audit).
                 let mut audit_record = audit(fund_metrics, None, None, None);
                 audit_record.research = Some(rr_research_record);
+                audit_record.analysis = Some(rr_analysis);
                 audit_record
                     .degraded_inputs
                     .extend(dossier.semantic_recall.gap.clone());
@@ -982,7 +1056,7 @@ pub fn analyze_holding(
         overlay_eligible: pre_profit_overlay.as_ref().is_some_and(|o| o.is_eligible()),
     };
     let (analysis, research_record) =
-        run_research(analyst, dossier, &triggers, rates, prior_split)?;
+        run_research(analyst, dossier, &triggers, rates, prior_split, run_date)?;
     record_stage_models(analyst.reasoner_id());
 
     // The hard-forensic state trips from the item-classified filing kinds
@@ -1013,7 +1087,7 @@ pub fn analyze_holding(
             dossier,
             engine: &engine_output,
             rates,
-            analysis: &analysis,
+            analysis: analysis.clone(),
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
             soft_forensic: soft_forensic_flags.as_ref(),
             tech_pre_flag: tech_pre_flag.as_ref(),
@@ -1126,6 +1200,7 @@ pub fn analyze_holding(
         narrative,
         option_overlay: dossier.option_overlay.clone(),
         research: Some(research_record),
+        analysis: Some(analysis),
     };
     Ok((verdict, audit_record))
 }
@@ -1354,9 +1429,10 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     // MARKET ANALYSIS
     p.push_str(&market_analysis_section(d));
 
-    // ANALYSIS: this run's analysis — the bridge render of the fund agenda's
-    // write-ups until consolidation lands (the research chain, task 2).
-    p.push_str(&format!("\nANALYSIS\n{}\n", input.analysis));
+    // ANALYSIS: this run's analysis — the fund agenda's write-ups consolidated
+    // by Step 6d's analysis call, or the prior record carried, dated and
+    // bridged.
+    p.push_str(&analysis_section(d, &input.analysis));
 
     // PRIOR THESIS, on a continuity run.
     let has_prior = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).is_some();
@@ -1942,8 +2018,9 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     // MARKET ANALYSIS
     p.push_str(&market_analysis_section(d));
 
-    // ANALYSIS — this run's analysis.
-    p.push_str(&format!("\nANALYSIS\n{}\n", input.analysis));
+    // ANALYSIS — this run's analysis, Step 6d's consolidation of the
+    // write-ups, or the prior record carried, dated and bridged.
+    p.push_str(&analysis_section(d, &input.analysis));
 
     // PRIOR THESIS, on a continuity run.
     let has_prior = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).is_some();
@@ -2044,9 +2121,66 @@ fn prior_thesis_section(d: &HoldingDossier, split: Option<SplitContext>) -> Stri
             .map(|day| day.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| v.to_string())
     });
+    document_section("PRIOR THESIS", written.as_deref(), split, doc)
+}
+
+/// PRIOR ANALYSIS on a continuity run: the prior analysis verbatim under the
+/// date its record carries, with the split-context line its own anchor bar
+/// yields against this run's series (`docs/portfolio-workflow.md` §Step 6c,
+/// §Step 6d) — the holding's research memory, never rewritten and never
+/// distilled, so a carried analysis keeps its basis whatever the verdict's.
+/// Empty on a debut, and on a prior that carries none.
+pub(crate) fn prior_analysis_section(d: &HoldingDossier) -> String {
+    let Some(record) = &d.prior_analysis else {
+        return String::new();
+    };
+    document_section(
+        "PRIOR ANALYSIS",
+        Some(&record.written),
+        record_split_context(d, record),
+        &record.text,
+    )
+}
+
+/// ANALYSIS on both thesis-document messages (`docs/portfolio-workflow.md`
+/// §Step 6d, §Step 6f): this run's analysis — written this session on this
+/// run's basis, so undated and with no line — or, where the loop wrote
+/// nothing and the prior record stands as this run's, that record under the
+/// date it was written with the split-context line its own anchor bar
+/// yields, so the model never reads pre-split figures as today's.
+fn analysis_section(d: &HoldingDossier, record: &crate::portfolio::AnalysisRecord) -> String {
+    let written = (record.written != d.analysis_date).then_some(record.written.as_str());
+    document_section("ANALYSIS", written, record_split_context(d, record), &record.text)
+}
+
+/// An analysis record's split context against this run's series — its own
+/// anchor bar's bridge, read the way the verdict's is: no anchor —
+/// comparisons run as stored, no line; an anchor whose bar is missing from
+/// the fresh window — unverifiable, the line says so.
+fn record_split_context(
+    d: &HoldingDossier,
+    record: &crate::portfolio::AnalysisRecord,
+) -> Option<SplitContext> {
+    let bridge = match &record.anchor {
+        None => Some(1.0),
+        Some(anchor) => engine::split_bridge_factor(&d.financials.daily_closes, anchor),
+    };
+    split_context_of(bridge)
+}
+
+/// One document rendered verbatim under its heading and, where given, the
+/// date it was written, the split-context line above it where a split
+/// re-based the price series since it was written, or where its basis could
+/// not be verified this run (`docs/portfolio-workflow.md` §Step 6b).
+fn document_section(
+    heading: &str,
+    written: Option<&str>,
+    split: Option<SplitContext>,
+    doc: &str,
+) -> String {
     let mut p = match written {
-        Some(date) => format!("\nPRIOR THESIS (written {date})\n"),
-        None => "\nPRIOR THESIS\n".to_string(),
+        Some(date) => format!("\n{heading} (written {date})\n"),
+        None => format!("\n{heading}\n"),
     };
     match split {
         Some(SplitContext::Rebased { factor }) => p.push_str(&format!(
@@ -3370,7 +3504,17 @@ pub(crate) fn authored_band_relation(
 pub struct StubAnalyst;
 
 impl HoldingAnalyst for StubAnalyst {
-    // Research + distillation ride the trait's offline defaults.
+    // Research rides the trait's offline default (no write-up, so consolidation
+    // spends no call on a demo or test run); the two consolidation renders
+    // below serve a scripted research run deterministically.
+
+    fn distill(&self, input: &distill::DistillInput<'_>) -> Result<String> {
+        Ok(distill::stub_distillate(input))
+    }
+
+    fn analyze(&self, input: &distill::AnalysisInput<'_>) -> Result<String> {
+        Ok(distill::stub_analysis(input))
+    }
 
     fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
         let e = input.engine;
@@ -3553,6 +3697,14 @@ impl LocalAnalyst {
     /// a recorded gap — never a failed run).
     pub fn with_research(mut self, ctx: LiveResearchCtx) -> Self {
         self.research_ctx = Some(ctx);
+        self
+    }
+
+    /// Test seam: the retry-once gate without its pause, so a retry test
+    /// against a daemon stand-in does not sleep.
+    #[cfg(test)]
+    fn without_retry_delay(mut self) -> Self {
+        self.retry = crate::local_model::RetryOnce::without_delay();
         self
     }
 
@@ -3757,9 +3909,7 @@ pub(super) fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
 /// unclassified so the retry gate never re-issues a deterministic outcome,
 /// and the run fails legibly. On the default roster (fast = reasoner) the two
 /// rungs are one budget and only the refusal is live. Pure, so the routing is
-/// pinned offline. Parked until consolidation issues a call (the research
-/// chain, task 2).
-#[allow(dead_code)] // parked for consolidation (the research chain, task 2)
+/// pinned offline.
 fn distill_route<'a>(
     stage: &str,
     prompt_chars: usize,
@@ -3785,10 +3935,8 @@ fn distill_route<'a>(
 /// (`Some(false)` — an omitted flag rides Qwen's thinking-on default and cost
 /// the first live run ~45 minutes, F3), non-thinking sampling, **no grammar**
 /// (`docs/portfolio-workflow.md` §Step 6d: a distillation returns prose), the
-/// caller-routed model and context size ([`distill_route`]). Parked until
-/// consolidation issues a call (the research chain, task 2). Pure, so the
+/// caller-routed model and context size ([`distill_route`]). Pure, so the
 /// per-stage wiring is asserted offline.
-#[allow(dead_code)] // parked for consolidation (the research chain, task 2)
 pub(super) fn distill_request(
     model: &str,
     num_ctx: u32,
@@ -3814,7 +3962,6 @@ pub(super) fn distill_request(
 /// request declared the normal ceiling and the daemon reports that it generated
 /// exactly that many tokens. A stop below it is context-bound or unattributable
 /// and keeps the existing hard-failure posture.
-#[allow(dead_code)] // parked for consolidation (the research chain, task 2)
 fn hit_normal_distill_reservation(
     req: &ChatRequest,
     resp: &crate::local_model::ChatResponse,
@@ -3824,20 +3971,20 @@ fn hit_normal_distill_reservation(
         && resp.eval_count == Some(u64::from(NUM_PREDICT_DISTILL))
 }
 
-/// One distillation call on the live adapter, parked until consolidation
-/// issues one (the research chain, task 2): the issue guard sizes the
-/// rendered prompt — both messages — against its model's budget before any
-/// request exists ([`distill_route`]); a reply that stops exactly at the
-/// normal reservation takes the one expanded re-attempt on the reasoner
-/// (`docs/local-models.md §The local-model adapter seam`). Returns the stage
-/// whose single re-attempt was spent beside the prose, so the outer
-/// transport retry gate never adds a third call after it.
-#[allow(dead_code)] // parked for consolidation (the research chain, task 2)
+/// One distillation call on the live adapter — the [`HoldingAnalyst::distill`]
+/// seam: the issue guard sizes the rendered prompt — both messages — against
+/// its model's budget before any request exists ([`distill_route`]); a reply
+/// that stops exactly at the normal reservation takes the one expanded
+/// re-attempt on the reasoner (`docs/local-models.md §The local-model adapter
+/// seam`). `expanded_spent` is set the moment that re-attempt issues — on the
+/// error path too — so the transport retry gate above never layers a third
+/// request after it: the expanded attempt is final for the stage.
 fn distill_prose_call(
     analyst: &LocalAnalyst,
     stage: &str,
     prompt: &distill::DistillPrompt,
-) -> Result<(String, bool)> {
+    expanded_spent: &std::cell::Cell<bool>,
+) -> Result<String> {
     let (model, num_ctx) = distill_route(
         stage,
         prompt.chars(),
@@ -3855,6 +4002,7 @@ fn distill_prose_call(
         // Route the one evidence-triggered re-attempt there even when the
         // normal call used a 32 K fast tier, whose shared context could not
         // hold both.
+        expanded_spent.set(true);
         let mut expanded_req = distill_request(
             &analyst.reasoner_model,
             NUM_CTX_INTERPRET,
@@ -3872,11 +4020,11 @@ fn distill_prose_call(
             )
         })?;
         ensure_nonempty_completion(stage, &expanded_resp)?;
-        return Ok((expanded_resp.content, true));
+        return Ok(expanded_resp.content);
     }
     ensure_not_output_limited(stage, &req, &resp)?;
     ensure_nonempty_completion(stage, &resp)?;
-    Ok((resp.content, false))
+    Ok(resp.content)
 }
 
 /// Build one research-loop turn's request: thinking on, the shared interpret
@@ -3892,6 +4040,22 @@ pub(super) fn research_turn_request(
     let mut req = ChatRequest::new(reasoner_model, messages);
     req.tools = tools.cloned();
     req.format_schema = format.cloned();
+    req.think = Some(true);
+    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
+    req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
+    req
+}
+
+/// Build the analysis request (`docs/portfolio-workflow.md` §Step 6d): the
+/// resident reasoner, thinking on, **no grammar** — the analysis is prose —
+/// thinking sampling, the interpret-sized context, resident.
+pub(super) fn analysis_request(reasoner_model: &str, input: &distill::AnalysisInput<'_>) -> ChatRequest {
+    let prompt = distill::analysis_prompt(input);
+    let mut req = ChatRequest::new(
+        reasoner_model,
+        vec![ChatMessage::system(prompt.system), ChatMessage::user(prompt.user)],
+    );
+    req.format_schema = None;
     req.think = Some(true);
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
@@ -3983,6 +4147,54 @@ pub(super) fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatR
 }
 
 impl HoldingAnalyst for LocalAnalyst {
+    fn distill(&self, input: &distill::DistillInput<'_>) -> Result<String> {
+        // Non-streaming and non-thinking: the issue guard, the expanded
+        // re-attempt and the completion checks live in the call. The bounded
+        // retry-once gate wraps the issued call like every chat call
+        // (`docs/local-models.md §The local-model adapter seam`): a transient
+        // first failure re-issues the identical request exactly once, a
+        // second failure fails hard annotated with the first attempt's class,
+        // and once the expanded re-attempt has issued the stage is final —
+        // no third request after it.
+        let prompt = distill::distillation_prompt(input);
+        let stage = input.stage.as_str();
+        let expanded_spent = std::cell::Cell::new(false);
+        match distill_prose_call(self, stage, &prompt, &expanded_spent) {
+            Ok(text) => Ok(text),
+            Err(first) => {
+                if expanded_spent.get()
+                    || !self.retry.permit(self.client.progress(), stage, &first)
+                {
+                    return Err(first);
+                }
+                distill_prose_call(self, stage, &prompt, &expanded_spent).map_err(|second| {
+                    second.context(crate::local_model::retried_once_annotation(&first))
+                })
+            }
+        }
+    }
+
+    fn analyze(&self, input: &distill::AnalysisInput<'_>) -> Result<String> {
+        // Stream step-scoped like the thesis document: the chain lands on this
+        // holding's own "Analyze {SYM}" step. The retry gate re-issues the
+        // identical request once on a transient class; a length stop is not
+        // re-issued.
+        let step_key = crate::portfolio::holding_step_key(input.symbol);
+        let mut req = analysis_request(&self.reasoner_model, input);
+        let stage = input.stage();
+        req.stage = Some(stage.clone());
+        self.retry.run(self.client.progress(), &stage, || {
+            self.record_model_call(&req);
+            let resp = self
+                .client
+                .chat_streaming(&req, StreamRole::Step(&step_key))?;
+
+            ensure_not_output_limited(&stage, &req, &resp)?;
+            ensure_nonempty_completion(&stage, &resp)?;
+            Ok(resp.content)
+        })
+    }
+
     fn research(
         &self,
         dossier: &HoldingDossier,
@@ -4410,6 +4622,7 @@ pub(crate) mod tests {
             prior_authoring_close: None,
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
+            prior_analysis: None,
             listing: None,
             filing_events: None,
             short_interest: None,
@@ -5133,8 +5346,16 @@ pub(crate) mod tests {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.position.quantity = -100.0;
         d.position.market_value = -19_500.0;
-        let (verdict, _audit) =
+        d.prior_analysis = Some(crate::portfolio::AnalysisRecord {
+            text: "A prior analysis.".into(),
+            written: "2026-07-20".into(),
+            anchor: None,
+        });
+        let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        // A no-research exit outside the floor retains nothing: no research
+        // record and no analysis, the prior's included.
+        assert!(audit.research.is_none() && audit.analysis.is_none());
         match verdict.disposition {
             VerdictDisposition::NotRated { reason } => {
                 assert!(reason.contains("short"), "{reason}");
@@ -5258,7 +5479,12 @@ pub(crate) mod tests {
             action_source: Default::default(),
             side_reversed: false,
         });
-        let (verdict, _audit) =
+        d.prior_analysis = Some(crate::portfolio::AnalysisRecord {
+            text: "The prior analysis, retained.".into(),
+            written: "2026-07-20".into(),
+            anchor: Some(crate::portfolio::engine::DatedValue { date: "2026-07-17".into(), value: 90.0 }),
+        });
+        let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
         match &verdict.disposition {
             VerdictDisposition::InsufficientEvidence { reason, .. } => {
@@ -5270,6 +5496,12 @@ pub(crate) mod tests {
             other => panic!("expected insufficient-evidence, got {other:?}"),
         }
         assert_eq!(verdict.thesis_document(), Some("The prior document, verbatim."));
+        // The prior analysis record is retained whole on the abstention's
+        // audit — its own date and anchor with it — the way the anchor bar
+        // is, with no research record of its own, so the next continuity run
+        // loads it by identity.
+        assert_eq!(audit.analysis, d.prior_analysis);
+        assert!(audit.research.is_none());
     }
 
     /// A stub that keeps the thesis-document message the pipeline renders.
@@ -5471,6 +5703,229 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_research_brief_carries_prior_analysis_before_prior_thesis_each_dated() {
+        // The holding-constant block on a continuity run
+        // (`docs/portfolio-workflow.md` §Step 6c): PRIOR ANALYSIS then PRIOR
+        // THESIS, each verbatim under the prior vintage's ET session date with
+        // the same split-context line; a debut carries neither; the analysis
+        // message's PRIOR ANALYSIS section is the same bytes.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        assert_eq!(research_brief(&d, rates_static(), None).prior_documents, "");
+        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        d.prior_verdict = Some(v);
+        d.prior_vintage = Some("2026-08-03T20:00:00Z".into());
+        // The analysis record carries its own date and its own anchor bar: an
+        // anchor stored at twice this run's close on the same bar date reads
+        // as a 2-for-1 re-basis of the analysis alone, while the verdict's
+        // bridge (the thesis document's line) is this run's own.
+        let bar = d.financials.daily_closes[0].clone();
+        d.prior_analysis = Some(crate::portfolio::AnalysisRecord {
+            text: "The prior analysis, verbatim.".into(),
+            written: "2026-08-01".into(),
+            anchor: Some(crate::portfolio::engine::DatedValue {
+                date: bar.date.clone(),
+                value: bar.value * 2.0,
+            }),
+        });
+        let docs = research_brief(&d, rates_static(), None).prior_documents;
+        assert!(
+            docs.starts_with(
+                "\nPRIOR ANALYSIS (written 2026-08-01)\nA share split since this document was \
+                 written re-based the price series by a factor of 0.5000: "
+            ),
+            "{docs}"
+        );
+        let thesis_at = docs.find("\nPRIOR THESIS (written 2026-08-03)\n").expect("PRIOR THESIS follows");
+        assert!(docs[..thesis_at].ends_with("The prior analysis, verbatim.\n"), "{docs}");
+        assert!(!docs[thesis_at..].contains("re-based the price series"), "the thesis line is the verdict's own: {docs}");
+        assert!(docs[thesis_at..].contains("Thesis: hold AAPL "), "{docs}");
+        let section = prior_analysis_section(&d);
+        assert!(docs.starts_with(&section) && section.ends_with("The prior analysis, verbatim.\n"), "{section}");
+        // An anchor whose bar is missing from the fetched window: the basis is
+        // unverifiable and the line says so; no anchor at all: no line.
+        d.prior_analysis.as_mut().unwrap().anchor = Some(crate::portfolio::engine::DatedValue {
+            date: "1999-01-04".into(),
+            value: 1.0,
+        });
+        assert!(prior_analysis_section(&d).contains("could not be verified this run"), "{}", prior_analysis_section(&d));
+        d.prior_analysis.as_mut().unwrap().anchor = None;
+        let bare = prior_analysis_section(&d);
+        assert!(bare.starts_with("\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis, verbatim.\n"), "{bare}");
+        // The thesis-document message never carries PRIOR ANALYSIS — it reads
+        // this run's analysis under ANALYSIS and the prior document under
+        // PRIOR THESIS (`docs/portfolio-workflow.md` §Step 6f).
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let thesis = thesis_user_prompt(&ThesisInput {
+            dossier: &d,
+            engine: &engine_output,
+            rates: rates_static(),
+            analysis: analysis_record("This run's analysis."),
+            pre_profit: None,
+            soft_forensic: None,
+            tech_pre_flag: None,
+            narrative: None,
+            prior_split: None,
+        });
+        assert!(!thesis.contains("PRIOR ANALYSIS"), "{thesis}");
+        assert!(thesis.contains("\nANALYSIS\nThis run's analysis.\n") && thesis.contains("\nPRIOR THESIS (written 2026-08-03)\n"), "{thesis}");
+        // A prior carrying no analysis renders PRIOR THESIS alone.
+        d.prior_analysis = None;
+        let docs = research_brief(&d, rates_static(), None).prior_documents;
+        assert!(docs.starts_with("\nPRIOR THESIS (written 2026-08-03)\n") && !docs.contains("PRIOR ANALYSIS"), "{docs}");
+    }
+
+    /// An analysis record written this session on the test fixture's date,
+    /// with no anchor — the tests' shorthand for "this run's analysis".
+    fn analysis_record(text: &str) -> crate::portfolio::AnalysisRecord {
+        crate::portfolio::AnalysisRecord {
+            text: text.into(),
+            written: "2026-07-28".into(),
+            anchor: None,
+        }
+    }
+
+    #[test]
+    fn a_carried_analysis_renders_dated_and_bridged_under_analysis_on_both_thesis_messages() {
+        // A holding whose loop wrote nothing carries the prior analysis as
+        // this run's (Step 6d): under ANALYSIS it renders with the date it was
+        // written and the split-context line its own anchor bar yields, so
+        // the model never reads pre-split figures as today's; a fresh
+        // analysis renders undated with no line.
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let carried_on = |series: &HoldingDossier| {
+            let bar = series.financials.daily_closes[0].clone();
+            crate::portfolio::AnalysisRecord {
+                text: "The carried analysis.".into(),
+                written: "2026-07-01".into(),
+                anchor: Some(crate::portfolio::engine::DatedValue {
+                    date: bar.date.clone(),
+                    value: bar.value * 2.0,
+                }),
+            }
+        };
+        let input = |analysis: crate::portfolio::AnalysisRecord| ThesisInput {
+            dossier: &d,
+            engine: &engine_output,
+            rates: rates_static(),
+            analysis,
+            pre_profit: None,
+            soft_forensic: None,
+            tech_pre_flag: None,
+            narrative: None,
+            prior_split: None,
+        };
+        let thesis = thesis_user_prompt(&input(carried_on(&d)));
+        assert!(
+            thesis.contains(
+                "\nANALYSIS (written 2026-07-01)\nA share split since this document was written \
+                 re-based the price series by a factor of 0.5000: multiply the prices it states \
+                 by that factor to read them on today's basis. The document is as written.\nThe \
+                 carried analysis.\n"
+            ),
+            "{thesis}"
+        );
+        assert!(!thesis.contains("\nANALYSIS\n"), "{thesis}");
+        let fresh = thesis_user_prompt(&input(analysis_record("This run's analysis.")));
+        assert!(fresh.contains("\nANALYSIS\nThis run's analysis.\n"), "{fresh}");
+        assert!(!fresh.contains("re-based the price series") && !fresh.contains("ANALYSIS (written"), "{fresh}");
+        // The role/risk message takes the same render.
+        let fund = fund_dossier(bond_fund());
+        let role = role_risk_user_prompt(&RoleRiskInput {
+            dossier: &fund,
+            readout: &RoleRiskReadout::default(),
+            rates: rates_static(),
+            analysis: carried_on(&fund),
+            prior_split: None,
+        });
+        assert!(
+            role.contains("\nANALYSIS (written 2026-07-01)\nA share split since this document was written re-based the price series by a factor of 0.5000: "),
+            "{role}"
+        );
+        assert!(role.contains("The document is as written.\nThe carried analysis.\n"), "{role}");
+    }
+
+    #[test]
+    fn a_scripted_research_run_persists_the_analysis_and_the_thesis_message_reads_it() {
+        // Steps 6c → 6d → 6f end to end on the offline seam: a research loop
+        // that writes two write-ups yields an analysis — the stub's render of
+        // the write-ups under their titles, within budget so no distillation —
+        // persisted on the audit beside the research record, and the
+        // thesis-document message carries it under ANALYSIS.
+        #[derive(Default)]
+        struct Scripted(std::cell::RefCell<Option<String>>);
+        impl HoldingAnalyst for Scripted {
+            fn research(&self, _: &HoldingDossier, plan: &ResearchPlan) -> Result<HoldingResearch> {
+                let mut out = research::offline_stub(plan);
+                for (i, t) in out.topics.iter_mut().enumerate().take(2) {
+                    t.write_up = Some(format!("Write-up {i} on {}.", t.title));
+                    t.passes = 1;
+                    t.skipped = None;
+                }
+                out.disconfirming = Some("Nothing contrary.".into());
+                Ok(out)
+            }
+            fn analyze(&self, input: &distill::AnalysisInput<'_>) -> Result<String> {
+                StubAnalyst.analyze(input)
+            }
+            fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
+                *self.0.borrow_mut() = Some(thesis_user_prompt(input));
+                StubAnalyst.interpret(input)
+            }
+            forward_stub_verdict_calls!();
+        }
+        let analyst = Scripted::default();
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let (verdict, audit) = analyze_holding(&analyst, &d, &rates(), "2026-08-03").unwrap();
+        assert!(matches!(verdict.disposition, VerdictDisposition::Priced(_)), "{verdict:?}");
+        let written = audit.analysis.as_ref().expect("the analysis persists on the audit");
+        // Written this run: stamped with this run's session date and anchor bar.
+        assert_eq!(written.written, d.analysis_date);
+        assert_eq!(written.anchor, audit.authoring_close);
+        assert!(written.anchor.is_some());
+        let analysis = written.text.as_str();
+        let record = audit.research.as_ref().expect("the research record persists");
+        let titles: Vec<&str> = record.write_ups.iter().take(2).map(|t| t.title.as_str()).collect();
+        assert!(
+            analysis.starts_with(&format!(
+                "{}\nWrite-up 0 on {}.\n\n{}\nWrite-up 1 on {}.",
+                titles[0], titles[0], titles[1], titles[1]
+            )),
+            "{analysis}"
+        );
+        assert!(analysis.ends_with("\n\nContrary evidence\nNothing contrary."), "{analysis}");
+        assert_eq!(record.distillation, distill::DistillationRecord::none());
+        let message = analyst.0.take().expect("the thesis message was captured");
+        assert!(message.contains(&format!("\nANALYSIS\n{analysis}\n")), "{message}");
+        // The default seam refuses a stub that never scripted the call, naming
+        // the stage, so a double with write-ups must implement it.
+        struct Bare;
+        impl HoldingAnalyst for Bare {
+            fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
+                StubAnalyst.interpret(input)
+            }
+            forward_stub_verdict_calls!();
+        }
+        let brief = research_brief(&d, rates_static(), None);
+        let write_ups = [distill::WriteUp { key: "k".into(), title: "T".into(), text: "t".into() }];
+        let err = Bare
+            .analyze(&distill::AnalysisInput {
+                symbol: "AAPL",
+                brief: &brief,
+                prior_analysis: "",
+                write_ups: distill::WriteUps::AsWritten(&write_ups),
+            })
+            .unwrap_err();
+        assert!(format!("{err:#}").starts_with("analysis AAPL: "), "{err:#}");
+    }
+
+    #[test]
     fn commodity_context_renders_as_dated_levels_in_both_prompts() {
         use crate::portfolio::dossier::{CommodityGroup, CommodityPrint};
         let mut d = dossier(AssetClass::Stock, strong_financials());
@@ -5497,7 +5952,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "findings",
+            analysis: analysis_record("findings"),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -5528,7 +5983,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &bare,
             engine: &engine_output,
-            analysis: "findings",
+            analysis: analysis_record("findings"),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -5579,7 +6034,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "findings",
+            analysis: analysis_record("findings"),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -5593,7 +6048,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &fd,
             readout: &RoleRiskReadout::default(),
-            analysis: "No research findings.",
+            analysis: analysis_record("No research findings."),
         });
         assert!(role.contains(block.as_str()), "{role}");
     }
@@ -5619,7 +6074,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: &d,
                 engine: &engine_output,
-                analysis: "findings",
+                analysis: analysis_record("findings"),
                 pre_profit: None,
                 tech_pre_flag: f,
                 narrative: None,
@@ -5818,7 +6273,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "findings",
+            analysis: analysis_record("findings"),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -5835,7 +6290,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &fd,
             readout: &RoleRiskReadout::default(),
-            analysis: "No research findings.",
+            analysis: analysis_record("No research findings."),
         });
         assert!(role.contains(LINE), "{role}");
         // Absent, neither prompt claims it.
@@ -5846,7 +6301,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &bare,
             engine: &engine_output,
-            analysis: "findings",
+            analysis: analysis_record("findings"),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -5892,7 +6347,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "findings",
+            analysis: analysis_record("findings"),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -5966,7 +6421,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &unknown,
             engine: &engine_output,
-            analysis: "findings",
+            analysis: analysis_record("findings"),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -6346,7 +6801,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: d,
                 engine: &engine_output,
-                analysis: "findings",
+                analysis: analysis_record("findings"),
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative,
@@ -6594,10 +7049,17 @@ pub(crate) mod tests {
         // grammar with its typed channels gone — v72, the trail to
         // checkpoint-v21 (the audit's research record: the write-ups and the
         // typed roster).
-        assert_eq!(PROMPT_VERSION, "portfolio-v72");
+        // Its task 2 (2026-10-08): consolidation — the analysis call writes
+        // the holding's analysis over the write-ups (thinking, no grammar),
+        // a distillation first (non-thinking, no grammar) only where that
+        // prompt is over budget, in the merged or the per-write-up shape; the
+        // brief carries PRIOR ANALYSIS before PRIOR THESIS; ANALYSIS is the
+        // analysis — v73, the trail to checkpoint-v22 (the audit's analysis
+        // and the record's distillation shape with its call count).
+        assert_eq!(PROMPT_VERSION, "portfolio-v73");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v21"
+            "checkpoint-v22"
         );
     }
 
@@ -6756,7 +7218,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -6789,7 +7251,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -6810,7 +7272,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -6839,7 +7301,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -6863,7 +7325,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &bare,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -6888,7 +7350,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             readout: &readout,
-            analysis: "No research findings.",
+            analysis: analysis_record("No research findings."),
         });
         assert!(
             role.contains("\nMARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
@@ -6914,7 +7376,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: &d,
                 readout: &readout,
-                analysis: "No research findings.",
+                analysis: analysis_record("No research findings."),
             })
         };
 
@@ -6967,7 +7429,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: &d,
                 readout: r,
-                analysis: "No research findings.",
+                analysis: analysis_record("No research findings."),
             })
         };
         let discount = prompt(&readout(true, Some(-0.072)));
@@ -7082,7 +7544,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: d,
                 engine: e,
-                analysis: "",
+                analysis: analysis_record(""),
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
@@ -7137,7 +7599,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: d,
                 engine: &engine_output,
-                analysis: "",
+                analysis: analysis_record(""),
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
@@ -7217,7 +7679,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: &d,
                 engine: &engine_output,
-                analysis: "",
+                analysis: analysis_record(""),
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
@@ -7277,7 +7739,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             readout: &readout,
-            analysis: "No research findings.",
+            analysis: analysis_record("No research findings."),
         });
         // The role/risk message renders the ratio once, as the fund's reported
         // line under FETCHED VALUES; the computed lines never restate it.
@@ -7299,7 +7761,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -7379,7 +7841,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             readout: &readout,
-            analysis: "No research findings.",
+            analysis: analysis_record("No research findings."),
         });
         const SECTION: &str = "\nUNDERLYING POSITIONING (CFTC weekly, as of 2026-08-11)\nGold — \
                                speculator net +200000 contracts (50.0% of OI long), w/w +4000\n";
@@ -7399,7 +7861,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -7416,7 +7878,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &bare,
             readout: &readout,
-            analysis: "No research findings.",
+            analysis: analysis_record("No research findings."),
         });
         assert!(!role.contains("UNDERLYING POSITIONING"), "{role}");
     }
@@ -7498,7 +7960,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: &d,
                 engine: &engine_output,
-                analysis: "distilled findings",
+                analysis: analysis_record("distilled findings"),
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
@@ -7519,7 +7981,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "distilled findings",
+            analysis: analysis_record("distilled findings"),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -7549,7 +8011,7 @@ pub(crate) mod tests {
             prior_split: None,
                 dossier: &d,
                 readout: &readout,
-                analysis: "No research findings.",
+                analysis: analysis_record("No research findings."),
             },
         );
         assert_eq!(role_risk.think, Some(true));
@@ -7772,6 +8234,78 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_analysis_request_is_a_thinking_prose_call_on_the_reasoner() {
+        // Step 6d's analysis call: the resident reasoner at the interpretation
+        // context, thinking on, no tools, no grammar, resident — the thesis
+        // call's wiring over the analysis prompt — under the `analysis {SYM}`
+        // stage; the distillation request keeps the seam's non-thinking,
+        // grammar-free wiring; the offline stub renders both deterministically.
+        let brief = HoldingBrief {
+            header: "HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n".into(),
+            fetched_values: "\nFETCHED VALUES\nQuote: 195.00.\n".into(),
+            leads: vec![],
+            prior_documents: String::new(),
+        };
+        let write_ups = [distill::WriteUp {
+            key: "competitive-position".into(),
+            title: "Competitive / business position".into(),
+            text: "Share held.".into(),
+        }];
+        let input = distill::AnalysisInput {
+            symbol: "AAPL",
+            brief: &brief,
+            prior_analysis: "",
+            write_ups: distill::WriteUps::AsWritten(&write_ups),
+        };
+        assert_eq!(input.stage(), "analysis AAPL");
+        let req = analysis_request("qwen3.5:122b", &input);
+        assert_eq!(req.model_id, "qwen3.5:122b");
+        assert_eq!(req.think, Some(true));
+        assert!(req.tools.is_none() && req.format_schema.is_none());
+        assert_eq!(req.keep_alive, Some(KEEP_ALIVE_RESIDENT));
+        let opts = req.options.as_ref().unwrap();
+        assert_eq!(opts["num_ctx"], serde_json::json!(NUM_CTX_INTERPRET));
+        assert_eq!(opts["num_predict"], serde_json::json!(NUM_PREDICT_THINKING));
+        assert_eq!(req.messages.len(), 2);
+        assert_eq!(req.messages[0].role, "system");
+        assert!(
+            req.messages[0].content.starts_with("You are an investment analyst consolidating one holding's research"),
+            "{}",
+            req.messages[0].content
+        );
+        assert!(
+            req.messages[1].content.starts_with("======== PART 1: INPUTS ========\nHOLDING\nAAPL (Apple).\n"),
+            "{}",
+            req.messages[1].content
+        );
+        assert!(req.messages[1].content.contains("\nWRITE-UPS\n"), "{}", req.messages[1].content);
+        assert_eq!(StubAnalyst.analyze(&input).unwrap(), "Competitive / business position\nShare held.");
+
+        let d_input = distill::DistillInput {
+            header: &brief.header,
+            subject: distill::DistillSubject::Merged(&write_ups),
+            stage: "distill AAPL".into(),
+        };
+        let d_req = distill_request(
+            "qwen3.5:35b",
+            NUM_CTX_DISTILL,
+            NUM_PREDICT_DISTILL,
+            &distill::distillation_prompt(&d_input),
+        );
+        assert_eq!(d_req.think, Some(false));
+        assert!(d_req.tools.is_none() && d_req.format_schema.is_none());
+        assert!(
+            d_req.messages[1].content.contains(
+                "\nWRITE-UPS\nThis run's write-ups on the holding, each under its topic, the \
+                 contrary-evidence pass last.\n"
+            ),
+            "{}",
+            d_req.messages[1].content
+        );
+        assert_eq!(StubAnalyst.distill(&d_input).unwrap(), "Competitive / business position\nShare");
+    }
+
+    #[test]
     fn distill_calls_are_sized_at_issue_and_route_up_before_they_refuse() {
         // The issue guard (the 2026-08-24 review's reduce-prompt minor, ruled
         // 2026-08-28): the rendered prompt is measured against its model's
@@ -7824,9 +8358,7 @@ pub(crate) mod tests {
     fn an_over_budget_distillation_prompt_never_reaches_the_daemon() {
         // The refusal happens before a request exists: a listener standing in
         // for the daemon accepts nothing, and the failure names the refusal —
-        // the run fails legibly instead of the daemon front-truncating. The
-        // guard is parked until consolidation issues a call (the research
-        // chain, task 2); the test pins it as the seam it stays.
+        // the run fails legibly instead of the daemon front-truncating.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -7838,7 +8370,8 @@ pub(crate) mod tests {
         // One rendered prompt that outgrows even the reasoner's budget.
         let over = distill::input_budget_chars(NUM_CTX_INTERPRET) + 1;
         let prompt = distill::DistillPrompt { system: "s".into(), user: "x".repeat(over) };
-        let err = distill_prose_call(&analyst, "distill TEST", &prompt).unwrap_err();
+        let err = distill_prose_call(&analyst, "distill TEST", &prompt, &std::cell::Cell::new(false))
+            .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("refused before issue"), "{msg}");
         assert!(msg.contains("distill TEST"), "{msg}");
@@ -7846,6 +8379,103 @@ pub(crate) mod tests {
         assert!(
             matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
             "the daemon stand-in must have accepted nothing"
+        );
+    }
+
+    /// One merged-shape distillation input over a one-line header, for the
+    /// daemon stand-in tests below.
+    fn stand_in_distill_input(write_ups: &[distill::WriteUp]) -> distill::DistillInput<'_> {
+        distill::DistillInput {
+            header: "HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n",
+            subject: distill::DistillSubject::Merged(write_ups),
+            stage: "distill AAPL".into(),
+        }
+    }
+
+    fn stand_in_analyst(base_url: &str) -> LocalAnalyst {
+        LocalAnalyst::new(
+            LocalModelClient::new(base_url).unwrap(),
+            "qwen3.5:122b".into(),
+            "qwen3.5:122b".into(),
+        )
+        .without_retry_delay()
+    }
+
+    #[test]
+    fn a_transient_distillation_failure_re_issues_once_and_a_second_fails_hard() {
+        use crate::test_http::{Canned, MockHttp};
+        // The retry-once gate on the live distillation call
+        // (`docs/local-models.md §The local-model adapter seam`): a daemon
+        // error status on the first attempt re-issues the identical request
+        // exactly once and records the retry; a second failure fails hard,
+        // annotated with the first attempt's class, with no third request.
+        let write_ups = [distill::WriteUp { key: "k".into(), title: "T".into(), text: "t".into() }];
+        let input = stand_in_distill_input(&write_ups);
+        let recovered = MockHttp::serve(vec![
+            Canned::Reply { status: 500, headers: vec![], body: "boom" },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"message":{"content":"shortened"},"eval_count":3,"done_reason":"stop"}"#,
+            },
+        ]);
+        let analyst = stand_in_analyst(&recovered.base_url);
+        assert_eq!(analyst.distill(&input).unwrap(), "shortened");
+        assert_eq!(recovered.attempts(), 2, "one re-issue");
+        let events = analyst.take_retry_events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].stage, "distill AAPL");
+        assert_eq!(
+            analyst.take_model_calls(),
+            Some(vec!["qwen3.5:122b".to_string(), "qwen3.5:122b".to_string()]),
+            "both issued calls are recorded"
+        );
+
+        let failing = MockHttp::serve(vec![
+            Canned::Reply { status: 500, headers: vec![], body: "boom" },
+            Canned::Reply { status: 500, headers: vec![], body: "boom again" },
+        ]);
+        let analyst = stand_in_analyst(&failing.base_url);
+        let err = analyst.distill(&input).unwrap_err();
+        assert_eq!(failing.attempts(), 2, "never a third request");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed again after one retry"), "{msg}");
+        assert_eq!(analyst.take_retry_events().len(), 1);
+    }
+
+    #[test]
+    fn an_expanded_distillation_attempt_is_final_for_the_stage() {
+        use crate::test_http::{Canned, MockHttp};
+        // A stop at exactly the normal reservation spends the one expanded
+        // re-attempt; when that attempt then fails on a transient class, the
+        // gate refuses a third request — the expanded attempt is final for
+        // the stage, and no transport retry fires past it.
+        let write_ups = [distill::WriteUp { key: "k".into(), title: "T".into(), text: "t".into() }];
+        let input = stand_in_distill_input(&write_ups);
+        let length_stop: &'static str = Box::leak(
+            format!(
+                r#"{{"message":{{"content":"cut"}},"eval_count":{NUM_PREDICT_DISTILL},"done_reason":"length"}}"#
+            )
+            .into_boxed_str(),
+        );
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: length_stop },
+            Canned::Reply { status: 500, headers: vec![], body: "boom" },
+        ]);
+        let analyst = stand_in_analyst(&server.base_url);
+        let err = analyst.distill(&input).unwrap_err();
+        assert_eq!(
+            server.attempts(),
+            2,
+            "the normal call and its expanded re-attempt, nothing after: {err:#}"
+        );
+        assert!(
+            analyst.take_retry_events().is_empty(),
+            "no transport retry fires past the expanded attempt"
+        );
+        assert_eq!(
+            analyst.take_model_calls(),
+            Some(vec!["qwen3.5:122b".to_string(), "qwen3.5:122b".to_string()])
         );
     }
 
@@ -8131,7 +8761,7 @@ pub(crate) mod tests {
                 dossier: d,
                 engine,
                 rates: rates_static(),
-                analysis: "",
+                analysis: analysis_record(""),
                 pre_profit: None,
                 soft_forensic: None,
                 tech_pre_flag: None,
@@ -8259,7 +8889,7 @@ pub(crate) mod tests {
             dossier: &stock,
             readout: &RoleRiskReadout::default(),
             rates: rates_static(),
-            analysis: "",
+            analysis: analysis_record(""),
             prior_split: None,
         });
         assert!(role_req.format_schema.is_none() && role_req.think == Some(true));
@@ -8343,7 +8973,7 @@ pub(crate) mod tests {
                 dossier: d,
                 engine,
                 rates: rates_static(),
-                analysis: "",
+                analysis: analysis_record(""),
                 pre_profit: None,
                 soft_forensic: soft,
                 tech_pre_flag: None,
@@ -8528,7 +9158,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "none",
+            analysis: analysis_record("none"),
             pre_profit: Some(&overlay),
             tech_pre_flag: None,
             narrative: None,
@@ -8649,7 +9279,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "none",
+            analysis: analysis_record("none"),
             pre_profit: Some(&overlay),
             tech_pre_flag: None,
             narrative: None,
@@ -8858,7 +9488,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
@@ -8996,7 +9626,7 @@ pub(crate) mod tests {
             prior_split: None,
             dossier: &d,
             engine: &engine_output,
-            analysis: "",
+            analysis: analysis_record(""),
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,

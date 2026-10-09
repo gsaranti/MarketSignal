@@ -1,8 +1,8 @@
 # Portfolio Analysis prompts — contents
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v72`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v73`; regenerate rather than edit (`docs/prompts/README.md`).*
 
-One file per call shape, in pipeline order: the research loop (Step 6c), then the thesis document, its appendix and the action call (Step 6f); consolidation's files (Step 6d) land with the analysis call.
+One file per call shape, in pipeline order: the research loop (Step 6c), consolidation — the distillation shapes and the analysis call (Step 6d) — then the thesis document, its appendix and the action call (Step 6f).
 Each file carries the request envelope, every message as sent, and the tools or the response schema.
 
 | File | Call | Step |
@@ -18,6 +18,12 @@ Each file carries the request envelope, every message as sent, and the tools or 
 | [09-research-synthesis-follow-up-pass](09-research-synthesis-follow-up-pass.md) | Research synthesis — follow-up pass | 6c |
 | [10-research-synthesis-disconfirming-pass](10-research-synthesis-disconfirming-pass.md) | Research synthesis — the disconfirming pass | 6c |
 | [11-research-synthesis-follow-up-ask](11-research-synthesis-follow-up-ask.md) | Research synthesis — the follow-up ask, the conversation's second message | 6c |
+| [12-distillation-merged-write-ups](12-distillation-merged-write-ups.md) | Distillation — the merged write-ups | 6d |
+| [13-distillation-one-write-up](13-distillation-one-write-up.md) | Distillation — one write-up of the per-write-up shape | 6d |
+| [14-distillation-merge-of-outputs](14-distillation-merge-of-outputs.md) | Distillation — the merge of the per-write-up outputs | 6d |
+| [15-analysis-stock-first-analysis](15-analysis-stock-first-analysis.md) | Analysis — stock, first analysis | 6d |
+| [16-analysis-stock-continuity](16-analysis-stock-continuity.md) | Analysis — stock, continuity run | 6d |
+| [17-analysis-fund](17-analysis-fund.md) | Analysis — fund, first analysis | 6d |
 | [18-thesis-document-stock-first-analysis](18-thesis-document-stock-first-analysis.md) | Thesis document — stock, first analysis | 6f |
 | [19-thesis-document-stock-continuity](19-thesis-document-stock-continuity.md) | Thesis document — stock, continuity run | 6f |
 | [20-thesis-document-fund-first-analysis](20-thesis-document-fund-first-analysis.md) | Thesis document — priced fund, first analysis | 6f |

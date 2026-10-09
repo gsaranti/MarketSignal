@@ -24,6 +24,35 @@
 pub mod diff;
 #[cfg(test)]
 mod fixed_evidence;
+/// The verdict-stage methods a test double forwards to the offline
+/// [`pipeline::StubAnalyst`] when it scripts research or consolidation alone
+/// — the role/risk document, the action call and the roster ids. A double
+/// writes `interpret` itself, since that is the call most doubles capture.
+/// One expansion per double, so the seam's shape changes in one place.
+#[cfg(test)]
+macro_rules! forward_stub_verdict_calls {
+    () => {
+        fn interpret_role_risk(
+            &self,
+            input: &$crate::portfolio::pipeline::RoleRiskInput,
+        ) -> anyhow::Result<String> {
+            $crate::portfolio::pipeline::StubAnalyst.interpret_role_risk(input)
+        }
+        fn decide_action(
+            &self,
+            input: &$crate::portfolio::pipeline::ActionInput,
+        ) -> anyhow::Result<$crate::portfolio::ActionDecision> {
+            $crate::portfolio::pipeline::StubAnalyst.decide_action(input)
+        }
+        fn fast_id(&self) -> String {
+            "fast".into()
+        }
+        fn reasoner_id(&self) -> String {
+            "reasoner".into()
+        }
+    };
+}
+
 pub mod distill;
 pub mod dossier;
 pub mod engine;
@@ -1282,6 +1311,24 @@ pub struct ForensicRead {
     pub matched_rule: Option<String>,
 }
 
+/// The holding's **analysis** as the audit carries it (`docs/portfolio-workflow.md`
+/// §Step 6d): the document with its own authoring date and its own
+/// split-bridge anchor bar, so a carried analysis — the prior one standing
+/// where a run's loop wrote nothing — keeps the date it was written and the
+/// price basis it was written on, independently of the verdict's vintage and
+/// anchor that a successful pass stamps afresh. PRIOR ANALYSIS renders the
+/// record's date and computes its split-context line from the record's anchor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnalysisRecord {
+    pub text: String,
+    /// The ET session date of the run that wrote the text.
+    pub written: String,
+    /// That run's split-bridge anchor bar (its audit's `authoring_close`):
+    /// the newest settled close before its session from its own fetched
+    /// series. `None` where that run's window held no such bar.
+    pub anchor: Option<engine::DatedValue>,
+}
+
 /// One holding's audit record (`docs/storage.md §Local Analysis Suite Storage`):
 /// what the verdict was based on, so a run is traceable and reviewable — the
 /// computed metrics and price-target methodology behind the numbers, the sources
@@ -1410,6 +1457,15 @@ pub struct HoldingAudit {
     /// and the gaps. `None` on every no-research exit (not-rated, the listing
     /// guard, an evidence-floor abstention).
     pub research: Option<research::ResearchAuditRecord>,
+    /// The holding's **analysis** record ([`AnalysisRecord`]): the document the
+    /// analysis call wrote this run over the write-ups under this run's date
+    /// and anchor bar — or, with no write-up this run, the prior record carried
+    /// whole, else the one no-write-up sentence — the only research artifact
+    /// the next run reads. An evidence-floor abstention retains the prior
+    /// run's unrewritten (the `authoring_close` carry-forward), so continuity
+    /// survives the exit; `None` on a not-rated row, the listing guard and a
+    /// debut abstention.
+    pub analysis: Option<AnalysisRecord>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -2200,7 +2256,18 @@ pub struct HoldingAudit {
 /// lands. The persisted audit — the write-ups, the disconfirming write-up,
 /// the page roster — moves the trail to `checkpoint-v21`, and the seed table
 /// leaves the archive at format 17.
-pub const PROMPT_VERSION: &str = "portfolio-v72";
+/// `portfolio-v73` (the research chain, task 2 — consolidation): the analysis
+/// call writes the holding's analysis over this run's write-ups — a thinking
+/// call under no grammar over HOLDING, FETCHED VALUES, on a continuity run
+/// PRIOR ANALYSIS, then WRITE-UPS — and the write-ups are distilled first,
+/// non-thinking under no grammar, only where that prompt is over budget, in
+/// the merged shape or each write-up first and then the merge of those
+/// outputs; the gathering brief carries PRIOR ANALYSIS before PRIOR THESIS;
+/// ANALYSIS on the thesis-document message is the analysis. The persisted
+/// audit — the analysis record (its text, its date and its anchor bar) beside
+/// the research record, the distillation shape with its call count on the
+/// record — moves the trail to `checkpoint-v22` and the archive to format 18.
+pub const PROMPT_VERSION: &str = "portfolio-v73";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

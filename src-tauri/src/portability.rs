@@ -94,7 +94,11 @@ use crate::storage;
 /// store, and the audit inside `portfolio_runs.run_json` carries the research
 /// write-ups and the page roster in place of the combined findings, the seed
 /// layer and the typed channels (checkpoint-v21).
-pub const FORMAT_VERSION: u32 = 17;
+/// v18: the audit inside `portfolio_runs.run_json` carries the holding's
+/// analysis record (its text, its date and its anchor bar) beside its
+/// research record, and the record carries the consolidation's distillation
+/// shape with its call count (checkpoint-v22).
+pub const FORMAT_VERSION: u32 = 18;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -1621,6 +1625,14 @@ mod tests {
         assert_eq!(research.write_ups.len(), 1);
         assert_eq!(research.roster[0].published.as_deref(), Some("2025-03-27"));
         assert_eq!(research.roster[0].retrieved_at, "2026-09-16T12:00:00Z");
+        // The consolidation record and the analysis ride the audit through
+        // the archive (format 18).
+        assert_eq!(research.distillation.shape, crate::portfolio::distill::DistillationShape::Merged);
+        assert_eq!(research.distillation.calls, 1);
+        let analysis = restored.audit[0].analysis.as_ref().expect("the analysis record");
+        assert_eq!(analysis.text, "The venue change of 2025-03-31 is the one dated fact.");
+        assert_eq!(analysis.written, "2026-09-18");
+        assert_eq!(analysis.anchor.as_ref().map(|a| a.date.as_str()), Some("2026-09-17"));
     }
 
     #[test]

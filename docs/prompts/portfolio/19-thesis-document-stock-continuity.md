@@ -1,6 +1,6 @@
 # Thesis document — stock, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v71`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v73`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior document of 2026-09-02.
 The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8536 chars — the messages and tools as serialized |
+| Prompt material | 8537 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ of the message gives the inputs. Part 2 says what the document covers, in order,
 it.
 ~~~~
 
-## User message (8170 chars)
+## User message (8171 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -112,8 +112,8 @@ A market-level analysis dated 2026-09-16, followed by the stance of the 3 most r
 - 2026-08-25: thesis mixed, risk posture mixed
 
 ANALYSIS
-[stub: the distilled research — the combined findings across the topics, as the reduce call returned
-them]
+[stub: this run's analysis — the research consolidated across the topics, as the analysis call
+returned it]
 
 PRIOR THESIS (written 2026-09-02)
 Thesis: Investment thesis rests on Robotaxi monetization within 12-24 months justifying premium

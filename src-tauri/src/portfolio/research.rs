@@ -520,10 +520,11 @@ pub struct ResearchSeed {
 /// (`docs/portfolio-workflow.md` §Step 6c): the holding header, FETCHED VALUES
 /// as the thesis-document message renders it — the same bytes, so the three
 /// messages share one rendering — the news leads, and on a continuity run the
-/// prior documents block: PRIOR THESIS with its date and any split-context
-/// line, the prior run's thesis document verbatim. The pipeline assembles it;
-/// the loop renders it in this order on every gathering brief, and the
-/// synthesis message leads with the header and FETCHED VALUES alone.
+/// prior documents block: PRIOR ANALYSIS then PRIOR THESIS, each with its
+/// date and any split-context line, the prior run's analysis and thesis
+/// document verbatim. The pipeline assembles it; the loop renders it in this
+/// order on every gathering brief, and the synthesis message leads with the
+/// header and FETCHED VALUES alone.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct HoldingBrief {
     /// The HOLDING block (`pipeline::holding_header`).
@@ -533,9 +534,9 @@ pub struct HoldingBrief {
     pub fetched_values: String,
     /// The news leads (NEWS LEADS).
     pub leads: Vec<ResearchSeed>,
-    /// The prior documents on a continuity run, rendered as the thesis message
-    /// renders them (PRIOR THESIS under its date with any split-context line);
-    /// empty on a debut.
+    /// The prior documents on a continuity run, rendered as the analysis and
+    /// thesis messages render them (PRIOR ANALYSIS, then PRIOR THESIS, each
+    /// under its date with any split-context line); empty on a debut.
     pub prior_documents: String,
 }
 
@@ -600,9 +601,10 @@ pub struct HoldingResearch {
 
 /// The per-holding research audit record (`docs/storage.md §Local Analysis
 /// Suite Storage` — the research-derived artifacts): the write-ups as written,
-/// the disconfirming pass's write-up, the page roster, the budget spend and the
-/// degraded gaps. The distillation shape with its call count and the analysis
-/// join the record with consolidation (`docs/portfolio-workflow.md` §Step 6d).
+/// the disconfirming pass's write-up, the page roster, the budget spend, the
+/// degraded gaps, and the consolidation's distillation shape with its call
+/// count (`docs/portfolio-workflow.md` §Step 6d). The analysis itself rides
+/// the audit beside this record ([`crate::portfolio::HoldingAudit::analysis`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResearchAuditRecord {
     pub write_ups: Vec<TopicWriteUp>,
@@ -611,11 +613,19 @@ pub struct ResearchAuditRecord {
     pub fetches_spent: u32,
     pub elapsed_secs: u64,
     pub gaps: Vec<String>,
+    /// The shape consolidation chose for this holding and the distillation
+    /// calls it spent — `none` with no call where the analysis prompt fit its
+    /// budget, so a distillation is never silent.
+    pub distillation: crate::portfolio::distill::DistillationRecord,
 }
 
 impl ResearchAuditRecord {
-    /// The record the loop's output persists as.
-    pub fn from_research(research: &HoldingResearch) -> Self {
+    /// The record the loop's output persists as, with the consolidation's
+    /// distillation record beside it.
+    pub fn from_research(
+        research: &HoldingResearch,
+        distillation: crate::portfolio::distill::DistillationRecord,
+    ) -> Self {
         Self {
             write_ups: research.topics.clone(),
             disconfirming: research.disconfirming.clone(),
@@ -623,6 +633,7 @@ impl ResearchAuditRecord {
             fetches_spent: research.fetches_spent,
             elapsed_secs: research.elapsed_secs,
             gaps: research.gaps.clone(),
+            distillation,
         }
     }
 }
@@ -6081,7 +6092,8 @@ mod tests {
         assert_eq!(out.fetches_spent, 2);
         assert_eq!(web.fetch_count(), 2);
         assert!(model.turns.lock().unwrap().borrow().is_empty(), "every scripted turn was consumed");
-        let record = ResearchAuditRecord::from_research(&out);
+        let record =
+            ResearchAuditRecord::from_research(&out, crate::portfolio::distill::DistillationRecord::none());
         assert_eq!(record.write_ups, out.topics);
         assert_eq!(record.roster, out.roster);
         assert_eq!(record.disconfirming, out.disconfirming);
@@ -8136,12 +8148,12 @@ mod tests {
             assert_eq!((t.write_up.as_deref(), t.passes, t.skipped.as_deref()), (None, 0, Some("offline analyst")));
         }
         assert!(out.disconfirming.is_none() && out.roster.is_empty());
-        assert_eq!(
-            crate::portfolio::distill::bridge_analysis(&out),
-            "No research write-up this run.",
-            "the bridge renders the stub's absence as its one sentence, under no topic title"
+        assert!(
+            crate::portfolio::distill::write_ups_of(&out).is_empty(),
+            "the stub's absence leaves consolidation no write-up, so no analysis call issues"
         );
-        let record = ResearchAuditRecord::from_research(&out);
+        let record =
+            ResearchAuditRecord::from_research(&out, crate::portfolio::distill::DistillationRecord::none());
         assert_eq!(record.write_ups, out.topics);
         assert_eq!(record.gaps, vec!["research: offline analyst (no web tool)".to_string()]);
         // The record round-trips as JSON with its typed roster and no legacy field.

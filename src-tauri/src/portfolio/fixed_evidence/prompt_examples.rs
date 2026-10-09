@@ -25,6 +25,7 @@
 
 use super::*;
 use crate::local_model::{prompt_material_chars, ChatMessage, ChatRequest};
+use crate::portfolio::distill::{self, AnalysisInput, DistillInput, DistillSubject, WriteUp, WriteUps};
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::research::{self, samples as research_samples};
 use crate::portfolio::{ActionSource, HoldingVerdict, PositionChange, PositionDelta, ROLE_RISK_ACTIONS};
@@ -35,10 +36,12 @@ use std::cell::RefCell;
 const REASONER: &str = "reasoner";
 const PRIOR_VINTAGE: &str = "2026-09-02T14:00:00Z";
 const PRIOR_SESSION: &str = "2026-09-02";
-const STUB_DISTILLED_STOCK: &str =
-    "[stub: the distilled research — the combined findings across the topics, as the reduce call returned them]";
-const STUB_DISTILLED_FUND: &str =
-    "[stub: the distilled research — the fund's exposure profile and holdings news, as the reduce call returned them]";
+const STUB_ANALYSIS_STOCK: &str =
+    "[stub: this run's analysis — the research consolidated across the topics, as the analysis call returned it]";
+const STUB_ANALYSIS_FUND: &str =
+    "[stub: this run's analysis — the fund's exposure profile and holdings news consolidated, as the analysis call returned it]";
+const STUB_PRIOR_ANALYSIS: &str =
+    "[stub: the prior run's analysis — the holding's research memory, as the analysis call returned it on 2026-09-02]";
 const STUB_SECTIONS: &str = "## Market Signal Thesis\n\n[stub: the latest report's Market Signal Thesis section]\n\n## Investment Strategy\n\n[stub: the latest report's Investment Strategy section]\n";
 
 /// One rendered call: what the file says about it, and the request as the
@@ -111,6 +114,13 @@ pub(super) fn continuity_dossier(f: &Fixture) -> HoldingDossier {
     });
     d.prior_vintage = Some(PRIOR_VINTAGE.into());
     d.prior_spot = Some(prior_spot);
+    // The prior analysis was written by the same run as the prior document,
+    // on the same anchor bar.
+    d.prior_analysis = Some(crate::portfolio::AnalysisRecord {
+        text: STUB_PRIOR_ANALYSIS.into(),
+        written: PRIOR_SESSION.into(),
+        anchor: Some(anchor.clone()),
+    });
     d.prior_authoring_close = Some(anchor);
     d.prior_metrics = Some(f.engine_output.metrics.clone());
     d.prior_grade_parameter_version = Some(engine::GRADE_PARAMETER_VERSION.into());
@@ -129,7 +139,7 @@ fn thesis_input<'a>(f: &'a Fixture, d: &'a HoldingDossier) -> ThesisInput<'a> {
         dossier: d,
         engine: &f.engine_output,
         rates: rates(),
-        analysis: STUB_DISTILLED_STOCK,
+        analysis: analysis_of(d, STUB_ANALYSIS_STOCK),
         pre_profit: None,
         soft_forensic: None,
         tech_pre_flag: None,
@@ -282,8 +292,7 @@ fn examples() -> Vec<Example> {
         step: "6c",
         holding: "TSLA, on a continuity run over a prior analysis of 2026-09-02",
         sentences: lines(&[
-            "A root pass on a continuity run: the prior run's thesis document rides the holding-constant block verbatim under its date, so research knows what the falsifiers and triggers are and tests them.",
-            "The prior analysis joins the block with consolidation; until then the document is the one prior the brief carries.",
+            "A root pass on a continuity run: the prior run's analysis and thesis document ride the holding-constant block verbatim under their dates — PRIOR ANALYSIS, the holding's research memory, then PRIOR THESIS — so research knows what was established and what the falsifiers and triggers are, and tests them.",
             gathering_common[0],
         ]),
         stage: g(2).stage.clone(),
@@ -426,6 +435,144 @@ fn examples() -> Vec<Example> {
         extras: vec![],
     });
 
+    // ---- Step 6d: consolidation ----
+    let stock_write_ups: Vec<WriteUp> = research_samples::write_ups_so_far(true)
+        .into_iter()
+        .zip(["competitive-position", "results-revisions"])
+        .map(|((title, text), key)| WriteUp { key: key.into(), title, text })
+        .chain(std::iter::once(WriteUp {
+            key: distill::CONTRARY_KEY.into(),
+            title: distill::CONTRARY_TITLE.into(),
+            text: research_samples::prose(
+                true,
+                "the disconfirming pass's write-up — how the contrary evidence bears on the run's write-ups",
+                "",
+            ),
+        }))
+        .collect();
+    let stock_distillates: Vec<WriteUp> = stock_write_ups
+        .iter()
+        .map(|w| WriteUp {
+            key: w.key.clone(),
+            title: w.title.clone(),
+            text: research_samples::prose(true, "the write-up shortened by its own distillation call", ""),
+        })
+        .collect();
+    let fund_write_ups = vec![WriteUp {
+        key: exposure.key.clone(),
+        title: exposure.title.clone(),
+        text: research_samples::prose(true, "the fund's exposure-profile write-up", ""),
+    }];
+    let distill_req = |input: &DistillInput<'_>| {
+        pipeline::distill_request(
+            REASONER,
+            pipeline::distill_num_ctx(REASONER, REASONER),
+            pipeline::NUM_PREDICT_DISTILL,
+            &distill::distillation_prompt(input),
+        )
+    };
+    let distill_common = "A distillation is a non-thinking call with no grammar on the resident reasoner (the fast tier where the roster has one), issued only where the analysis prompt is over budget; the shape is the orchestrator's choice from size, never the model's, and the write-ups persist on the audit as written.";
+    for (file, title, subject, stage, own) in [
+        (
+            "12-distillation-merged-write-ups",
+            "Distillation — the merged write-ups",
+            DistillSubject::Merged(&stock_write_ups),
+            "distill TSLA".to_string(),
+            "The merged shape: every write-up of the run under its topic, the contrary-evidence pass last, shortened in one call; taken where the analysis prompt is over budget and this prompt fits the widest issuable budget.",
+        ),
+        (
+            "13-distillation-one-write-up",
+            "Distillation — one write-up of the per-write-up shape",
+            DistillSubject::Single(&stock_write_ups[0]),
+            "distill TSLA competitive-position".to_string(),
+            "The per-write-up shape's first calls, one per write-up, taken where the merged prompt outgrows the widest issuable budget; the stage label names the topic.",
+        ),
+        (
+            "14-distillation-merge-of-outputs",
+            "Distillation — the merge of the per-write-up outputs",
+            DistillSubject::MergedDistillates(&stock_distillates),
+            "distill TSLA merge".to_string(),
+            "The per-write-up shape's last call, over the shortened write-ups under their topics; it runs whenever that shape is taken, so the shape spends the write-ups plus one call.",
+        ),
+    ] {
+        let input = DistillInput { header: &brief.header, subject, stage: stage.clone() };
+        out.push(Example {
+            file,
+            title,
+            step: "6d",
+            holding: tsla_holding,
+            sentences: lines(&[distill_common, own]),
+            stage,
+            request: distill_req(&input),
+            variants: vec![],
+            extras: vec![],
+        });
+    }
+    let analysis_common = "The analysis call is a thinking call with no grammar: Part 1 the holding header and FETCHED VALUES as the brief carries them, on a continuity run PRIOR ANALYSIS, then WRITE-UPS; Part 2 what the analysis consolidates and its length band. The analysis is the only research artifact the next run reads.";
+    {
+        let input = AnalysisInput {
+            symbol: "TSLA",
+            brief: &brief,
+            prior_analysis: "",
+            write_ups: WriteUps::AsWritten(&stock_write_ups),
+        };
+        out.push(Example {
+            file: "15-analysis-stock-first-analysis",
+            title: "Analysis — stock, first analysis",
+            step: "6d",
+            holding: tsla_holding,
+            sentences: lines(&[
+                analysis_common,
+                "On a first analysis there is no PRIOR ANALYSIS and no continuity clause; the write-ups go in as written, since the prompt fit its budget.",
+            ]),
+            stage: "analysis TSLA".into(),
+            request: pipeline::analysis_request(REASONER, &input),
+            variants: vec![],
+            extras: vec![],
+        });
+        let prior_analysis = pipeline::prior_analysis_section(&continuity_dossier(&tsla));
+        let input = AnalysisInput {
+            symbol: "TSLA",
+            brief: &continuity,
+            prior_analysis: &prior_analysis,
+            write_ups: WriteUps::AsWritten(&stock_write_ups),
+        };
+        out.push(Example {
+            file: "16-analysis-stock-continuity",
+            title: "Analysis — stock, continuity run",
+            step: "6d",
+            holding: "TSLA, on a continuity run over the prior analysis of 2026-09-02",
+            sentences: lines(&[
+                analysis_common,
+                "On a continuity run the prior analysis renders verbatim as PRIOR ANALYSIS under its date, never distilled, and the task asks what it said that this run confirms, revises or leaves untouched; a topic with no write-up this run keeps what it says.",
+            ]),
+            stage: "analysis TSLA".into(),
+            request: pipeline::analysis_request(REASONER, &input),
+            variants: vec![],
+            extras: vec![],
+        });
+        let input = AnalysisInput {
+            symbol: "BND",
+            brief: &fund_brief,
+            prior_analysis: "",
+            write_ups: WriteUps::AsWritten(&fund_write_ups),
+        };
+        out.push(Example {
+            file: "17-analysis-fund",
+            title: "Analysis — fund, first analysis",
+            step: "6d",
+            holding: bnd_holding,
+            sentences: lines(&[
+                analysis_common,
+                "A fund takes the same call over its agenda's write-ups — here the exposure-profile topic's — with the fund's FETCHED VALUES.",
+            ]),
+            stage: "analysis BND".into(),
+            request: pipeline::analysis_request(REASONER, &input),
+            variants: vec![],
+            extras: vec![],
+        });
+    }
+
     // ---- Step 6f: the thesis document and its appendix ----
     let thesis_common =
         "The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.";
@@ -513,7 +660,7 @@ fn examples() -> Vec<Example> {
             dossier: &fx.dossier,
             readout: &fx.readout,
             rates: rates(),
-            analysis: STUB_DISTILLED_FUND,
+            analysis: analysis_of(&fx.dossier, STUB_ANALYSIS_FUND),
             prior_split: None,
         };
         out.push(Example {
@@ -537,7 +684,7 @@ fn examples() -> Vec<Example> {
             holding: "BND, on a continuity run over a stub first run of 2026-09-03",
             sentences: lines(&[
                 "The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.",
-                "The analysis is the bridge's one no-write-up sentence, since the stub run issues no research call and writes nothing.",
+                "The analysis is the one no-write-up sentence: the stub run issues no research call and writes nothing, so consolidation spends no analysis call.",
             ]),
             stage: "thesis BND".into(),
             request: role_risk_continuity_request(&fx),
@@ -890,7 +1037,7 @@ fn render_contents(examples: &[Example]) -> String {
         "*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `{}`; regenerate rather than edit (`docs/prompts/README.md`).*\n\n",
         crate::portfolio::PROMPT_VERSION
     ));
-    out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), then the thesis document, its appendix and the action call (Step 6f); consolidation's files (Step 6d) land with the analysis call.\n");
+    out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), consolidation — the distillation shapes and the analysis call (Step 6d) — then the thesis document, its appendix and the action call (Step 6f).\n");
     out.push_str("Each file carries the request envelope, every message as sent, and the tools or the response schema.\n\n");
     out.push_str("| File | Call | Step |\n| --- | --- | --- |\n");
     for ex in examples {
@@ -978,7 +1125,7 @@ fn portfolio_prompt_examples_write() {
 #[test]
 fn portfolio_prompt_examples_render() {
     let examples = examples();
-    assert_eq!(examples.len(), 21);
+    assert_eq!(examples.len(), 27);
     // The header names the stamp this file last changed at, and the writer's
     // comparison sets that stamp aside and nothing else.
     let first = render(&examples[0]);

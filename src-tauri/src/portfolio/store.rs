@@ -247,7 +247,11 @@ pub struct CheckpointHeader {
 /// and the gaps — the combined findings, the seed layer, the seed decisions,
 /// the claim-derived sources, the distillation shape and the typed channels
 /// leave it — so no v20 row can resume this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v21";
+/// `checkpoint-v22` (`portfolio-v73`): the audit carries the holding's
+/// analysis record (its text, its date and its anchor bar) beside its
+/// research record, and the record carries the consolidation's distillation
+/// shape with its call count — so no v21 row can resume this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v22";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1001,6 +1005,15 @@ pub(crate) fn entry3_test_run() -> PortfolioRun {
         fetches_spent: 2,
         elapsed_secs: 0,
         gaps: vec![],
+        distillation: crate::portfolio::distill::DistillationRecord {
+            shape: crate::portfolio::distill::DistillationShape::Merged,
+            calls: 1,
+        },
+    });
+    run.audit[0].analysis = Some(crate::portfolio::AnalysisRecord {
+        text: "The venue change of 2025-03-31 is the one dated fact.".into(),
+        written: "2026-09-18".into(),
+        anchor: Some(crate::portfolio::engine::DatedValue { date: "2026-09-17".into(), value: 48.2 }),
     });
     run
 }
@@ -1248,6 +1261,7 @@ mod tests {
             },
             audit: vec![HoldingAudit {
                 research: None,
+                analysis: None,
                 target_meta: None,
                 symbol: "AAPL".into(),
                 metrics: ComputedMetrics::default(),
@@ -1313,6 +1327,18 @@ mod tests {
         conn.execute(
             "UPDATE portfolio_runs SET run_json=?1",
             [legacy_run.to_string()],
+        )
+        .unwrap();
+        assert!(latest_run(&conn).unwrap().is_none());
+        // A v21 research record — the write-ups and the roster with no
+        // distillation shape — is the same loud skip: the shape is required,
+        // never defaulted to `none`.
+        let mut v21_run = serde_json::to_value(&run).unwrap();
+        let research = v21_run["audit"][0]["research"].as_object_mut().unwrap();
+        assert!(research.remove("distillation").is_some());
+        conn.execute(
+            "UPDATE portfolio_runs SET run_json=?1",
+            [v21_run.to_string()],
         )
         .unwrap();
         assert!(latest_run(&conn).unwrap().is_none());

@@ -405,6 +405,13 @@ pub struct HoldingDossier {
     /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut or a
     /// fund.
     pub prior_pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
+    /// The prior run's **analysis** record (from the audit row) — the holding's
+    /// whole research memory, rendered verbatim as PRIOR ANALYSIS on every
+    /// gathering brief and the analysis message under its own date and with
+    /// the split-context line its own anchor bar yields, whatever its age
+    /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut or
+    /// a prior row carrying none.
+    pub prior_analysis: Option<crate::portfolio::AnalysisRecord>,
     /// The loop-time listing-resolution guard's outcome for a stock
     /// (`docs/portfolio-analysis.md` §Asset eligibility) — computed at gather time,
     /// routed by `analyze_holding` beside the eligibility gates. `None` on a fund
@@ -509,6 +516,11 @@ pub struct PriorHolding {
     /// run's fresh series it yields the exact re-basis factor since the prior
     /// pass. `None` on a no-price exit's row (those comparisons run as stored).
     pub authoring_close: Option<crate::portfolio::engine::DatedValue>,
+    /// The prior run's analysis record (its audit row's `analysis`) — the
+    /// research memory the continuity brief and the analysis call read, with
+    /// its own date and anchor bar. `None` without an audit row or on a row
+    /// carrying none.
+    pub analysis: Option<crate::portfolio::AnalysisRecord>,
 }
 
 
@@ -799,6 +811,7 @@ pub fn assemble(
         prior_consensus_eps_periods,
         prior_metrics,
         prior_authoring_close,
+        prior_analysis,
     ) = match prior {
         Some(p) => (
             Some(p.verdict),
@@ -810,6 +823,7 @@ pub fn assemble(
             p.consensus_eps_periods,
             p.metrics,
             p.authoring_close,
+            p.analysis,
         ),
         None => (
             None,
@@ -819,6 +833,7 @@ pub fn assemble(
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
         ),
@@ -996,6 +1011,7 @@ pub fn assemble(
         prior_target_parameter_version,
         prior_authoring_close,
         prior_pre_profit,
+        prior_analysis,
         listing,
         filing_events,
         short_interest,
@@ -1187,6 +1203,7 @@ pub fn prior_verdict_for(
         consensus_eps_periods,
         metrics,
         authoring_close,
+        analysis,
     ) = match audit_row {
         Some(a) => {
             let spot = a.quick_basis.as_ref().map(|b| b.spot);
@@ -1205,9 +1222,13 @@ pub fn prior_verdict_for(
                 periods,
                 Some(a.metrics.clone()),
                 a.authoring_close.clone(),
+                // The analysis by identity: the row's own, or the prior one an
+                // abstention carried forward — a selective carry re-persists
+                // the audit whole, so a carried row reads the same.
+                a.analysis.clone(),
             )
         }
-        None => (None, None, None, None, Vec::new(), None, None),
+        None => (None, None, None, None, Vec::new(), None, None, None),
     };
     Some(PriorHolding {
         verdict,
@@ -1219,6 +1240,7 @@ pub fn prior_verdict_for(
         consensus_eps_periods,
         metrics,
         authoring_close,
+        analysis,
     })
 }
 
@@ -2410,6 +2432,11 @@ Sources and footnotes.
             },
             audit: vec![crate::portfolio::HoldingAudit {
                 research: None,
+                analysis: Some(crate::portfolio::AnalysisRecord {
+                    text: "The analysis.".into(),
+                    written: "2026-08-03".into(),
+                    anchor: None,
+                }),
                 symbol: "AAPL".into(),
                 metrics: Default::default(),
                 sources: vec![],
@@ -2445,6 +2472,10 @@ Sources and footnotes.
         let prior = prior_verdict_for(latest.as_ref(), "AAPL").expect("verdict present");
         assert_eq!(prior.grade_parameter_version.as_deref(), Some("grade-v2"));
         assert_eq!(prior.target_parameter_version.as_deref(), Some("targets-v4"));
+        // The analysis record loads by identity off the same audit row, its
+        // own date with it.
+        let analysis = prior.analysis.as_ref().expect("the analysis record");
+        assert_eq!((analysis.text.as_str(), analysis.written.as_str()), ("The analysis.", "2026-08-03"));
         // No `analyzed_at` on the verdict -> the vintage falls back to the
         // container run's `created_at`.
         assert_eq!(prior.vintage, "2026-08-03T00:00:00Z");
