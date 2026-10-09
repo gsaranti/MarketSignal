@@ -2,26 +2,29 @@
 
 ## Active task
 
-The removal sweep and the final stamps — next up; nothing started.
+Keychain fail-soft on the local-config report — next up; nothing started.
 
 ## What happened
 
-The self-review landed in one task (`c75566d`, pushed), and the item is complete.
-On a continuity run (a prior thesis document exists, an abstention's retained one included), the review call runs between consolidation and the thesis document, on both branches; the new `portfolio/review.rs` holds PRIOR POSITION, REALIZED and the prompt.
-The accuracy pass hands each holding its slice of the store (`outcome::SubjectAccuracy`); the audit carries the review and `accuracy_read_through` — the store's highest check id the review saw, the prior mark kept on an unreadable store and carried on an abstention, none on a debut or a role read.
-REVIEW renders on both thesis messages; `FundExposureBasis` carries the NAV; `realized_engine_data` is wired in production.
-Stamps: portfolio-v75, checkpoint-v24, archive 21.
-The Metis reviewer rejected once (an abstention reason rendered verbatim, a storage.md sentence against the mark's carry rule, bands at a fixed precision), then approved with nits; Codex approved with one finding (the precision cap), taken.
-Every ruling is in the commit message.
+The removal sweep landed in one task (`1fcca5c`, pushed), and the item is complete.
+The pre-profit observation history, the forward-assumption refiner and the other dead code went; `LedgerSeries` is `MetricSeries` and `ResearchSeed` / `news_seeds` are `NewsLead` / `news_leads`.
+The local embedding path went: vector memory is the report's alone, and import refuses a row in any other namespace.
+The `web_documents` migration went, and the distillation retries through `RetryOnce::run_unless`.
+The card carries the basis read (`HoldingVerdict.basis_move`, on an increase alone) and each stated price's horizon date through `market_clock::add_calendar_months` and its `etDate.ts` mirror.
+Stamps: checkpoint-v25 and archive 22, the Portfolio-final shapes; the archive refuses v0 and v2–v21; portfolio-v75 unchanged.
+The round trip compares every column of all eleven archived tables.
+The Metis reviewer approved with seven nits, all taken; Codex approved with no findings.
+Every ruling is in the commit message, whose test total reads 1415 where the true total is 1417.
 
 ## Current state
 
 Nothing in flight.
-The self-review is under Built; the removal sweep is next and unplanned.
-The prompt examples renumbered: the review is 18–20, the thesis, appendix, role/risk and action files 21–30.
-The dev-run batch (every Portfolio item's dev run) waits behind the removal sweep, ahead of the big run, which is the user's call.
-Residue carried (do not re-raise): `embedding::LocalEmbedder` has no production caller and goes with the sweep's embedding path (the namespaces, `prune_runs`' vector cleanup, the Settings embedder-change wipe, the roster field, the archive's embedders manifest); `ResearchSeed` / `news_seeds` name the leads until the sweep; `engine::refine_targets_with_assumption` and pre_profit's evidenced overlay path park for the sweep; the hand-rolled retry gate in `LocalAnalyst::distill` mirrors `RetryOnce::run` by shape and must move with it; the harness fixtures carry no quarterly, balance, score or target-stamp rows, and the live harness's TSLA header still reads "(name unavailable)" until the fixed-evidence set is rebuilt from a post-redesign run, after the dev-run batch; the fixed-evidence lexicon scan reads provider-served words as app prose; data-portability.md §Import flow says v2–v10 are refused where the code refuses v2–v11; a role/risk prior that abstained reads its NAV, expense and exposure "then" from the abstaining run's basis (carrying the prior basis would change the quick check's comparator); the review's wording — "computed base none stated", no date line on the role/risk PRIOR POSITION, the bridge gloss doubled on a role/risk abstention across a split — waits for the prompt review; the examples' continuity fixture anchors on the prior session itself, so the review examples layer a 2026-09-01 close.
-Every stamp bump touches `prompt_version_is_stamped_for_the_model_arm_domain_gate` in `portfolio/pipeline.rs`.
+The removal sweep is under Built; every Portfolio item is built.
+The dev-run batch (every Portfolio item's dev run) is no longer blocked; it and the big run are the user's call.
+The prompt review, paused until the Portfolio items landed, can resume at file 18 (the review examples are 18–20, the thesis, appendix, role/risk and action files 21–30).
+Residue carried (do not re-raise): the harness fixtures carry no quarterly, balance, score or target-stamp rows, and the live harness's TSLA header still reads "(name unavailable)" until the fixed-evidence set is rebuilt from a post-redesign run, after the dev-run batch; the fixed-evidence lexicon scan reads provider-served words as app prose; a role/risk prior that abstained reads its NAV, expense and exposure "then" from the abstaining run's basis (carrying the prior basis would change the quick check's comparator); the examples' continuity fixture anchors on the prior session itself, so the review examples layer a 2026-09-01 close.
+For the prompt review: the review's wording ("computed base none stated", no date line on the role/risk PRIOR POSITION, the bridge gloss doubled on a role/risk abstention across a split), and the statement-basis line's ledger-era "not evaluable here".
+Every stamp bump touches the pins in `prompt_version_is_stamped_for_the_model_arm_domain_gate` (`portfolio/pipeline.rs`), which now include the archive's `FORMAT_VERSION`.
 The offscreen card-render recipe lives in session memory, not the repo.
 
 ## Open questions
@@ -30,5 +33,5 @@ None.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` for the removal sweep: read its BUILD entry and storage.md §Local Analysis Suite Storage, data-portability.md §What moves and §The archive, portfolio-analysis.md §Storage and display, interface.md §Persistent Warning Area and portfolio-workflow.md §Step 8 first; the residue's sweep lines are its inventory; every flag and assumption through the selector.
+`/metis-session-start`, then `/metis-plan-task` for the Keychain fail-soft: read its BUILD entry, `schwab-integration.md`, `interface.md §Persistent Warning Area` and `configuration.md §Charles Schwab Connection` first; the rule is undocumented today, so the plan names where it is written; every flag and assumption through the selector.
 Never propose the run.
