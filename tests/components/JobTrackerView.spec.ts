@@ -113,7 +113,7 @@ test("a quick-check tracker carries its own labels and returns to the portfolio"
     label: "Quick check",
     terminal: null,
     unattributed: [],
-    steps: [{ key: "sweep", label: "Sweep ledgers", status: "pending", detail: null, agentText: "", agentThinking: "", requests: [] }],
+    steps: [{ key: "sweep-prices", label: "Refresh prices (sweep)", status: "pending", detail: null, agentText: "", agentThinking: "", requests: [] }],
   });
   const active = mount(JobTrackerView, {
     props: { trace: pending, active: true, cancelRequested: false, kind: "portfolio-quick-check" },

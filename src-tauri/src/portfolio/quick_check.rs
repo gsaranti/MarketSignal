@@ -1653,6 +1653,7 @@ mod tests {
             symbol: symbol.into(),
             asset_class: AssetClass::Stock,
             position_change: Default::default(),
+            basis_move: None,
             disposition: VerdictDisposition::Priced(Box::new(GradedVerdict {
                 grade: Grade::B,
                 sub_scores: SubScores { quality: 70.0, valuation: 60.0, momentum: 50.0, risk: 65.0 },
@@ -2559,6 +2560,7 @@ mod tests {
             symbol: "BONDX".into(),
             asset_class: AssetClass::MutualFund,
             position_change: Default::default(),
+            basis_move: None,
             disposition: VerdictDisposition::RoleRiskOnly(Box::new(
                 crate::portfolio::RoleRiskVerdict {
                     class_label: "US equity fund".into(),

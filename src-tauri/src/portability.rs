@@ -2,9 +2,8 @@
 //! durable analytical stores into one structured, versioned zip archive, and
 //! import such an archive back into a store. The load-bearing line is that
 //! durable analytical data moves while secrets and machine-local operational
-//! state stay behind: the five exported tables (`reports`,
-//! `baseline_snapshots`, `vector_memory`, `portfolio_runs`, `holdings_pulls`)
-//! plus the report/research files are serialized row-by-row, and `app_settings`
+//! state stay behind: the eleven exported tables ([`TABLES`]) plus the
+//! report/research files are serialized row-by-row, and `app_settings`
 //! (every plaintext credential), the Keychain, `job_runs`, and the telemetry
 //! tables are never read — so nothing sensitive can enter the archive.
 //!
@@ -70,9 +69,9 @@ use crate::storage;
 /// statement (`checkpoint-v12`), so a v7 archive's runs would not decode under
 /// the current condition shape.
 /// v9: complete physical-attempt telemetry in run data health (checkpoint-v13).
-/// Every pre-release shape below the current one — v2 through v11, none of which
-/// a shipped build wrote — is refused outright (`check_format_version`, the
-/// 2026-08-29 no-compat ruling).
+/// Every pre-release shape below the current one — v2 through v21, none of which
+/// a shipped build wrote — is refused outright, as is a v0 stamp no build wrote
+/// (`check_format_version`, the 2026-08-29 no-compat ruling).
 /// v10: explicit dates in persisted research claims, including topic seeds.
 /// v11: calendar-quarter values in persisted claim fact periods.
 /// v12: the persisted leading indicator inside `portfolio_runs.run_json` loses
@@ -109,15 +108,16 @@ use crate::storage;
 /// v21: the audit inside `portfolio_runs.run_json` carries the self-review's
 /// review and the accuracy read-through mark, and the fund exposure basis
 /// carries the fund's NAV (checkpoint-v24).
-pub const FORMAT_VERSION: u32 = 21;
+/// v22: the Portfolio format's final shape — the verdict inside
+/// `portfolio_runs.run_json` carries the basis read beside its position
+/// change, the audit's pre-profit overlay carries no observation history, and
+/// every `vector_memory` row is the report's; every earlier pre-release format
+/// is refused (checkpoint-v25).
+pub const FORMAT_VERSION: u32 = 22;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
 const ENC_MAGIC: &[u8; 8] = b"MSDPENC1";
-
-/// The report namespace's embedder is a fixed cloud model — identical on every
-/// machine, which is what makes report vectors portable at all.
-const REPORT_EMBEDDER_ID: &str = "text-embedding-3-large";
 
 /// The eleven exported tables, in insert dependency order (reports first, so
 /// the vector summaries and snapshots that join on `report_id` land after them;
@@ -152,35 +152,18 @@ const DB_ENTRY_NAMES: [&str; 11] = [
     "db/web_source_state.ndjson",
 ];
 
-/// The v4–v19 entry set — the retired decision-episode file in the episode
-/// store's place; only v12–v19 reach it, [`check_format_version`] refusing
-/// the earlier pre-release formats. Required (verified) like any entry of its
-/// format, and never parsed: the import starts the episode store fresh.
-const V4_TO_V19_DB_ENTRY_NAMES: [&str; 10] = [
-    "db/reports.ndjson",
-    "db/baseline_snapshots.ndjson",
-    "db/vector_memory.ndjson",
-    "db/portfolio_runs.ndjson",
-    "db/holdings_pulls.ndjson",
-    "db/portfolio_quick_checks.ndjson",
-    "db/portfolio_outcome_episodes.ndjson",
-    "db/price_bars.ndjson",
-    "db/web_documents.ndjson",
-    "db/web_source_state.ndjson",
-];
-
 /// The db entries an archive's own format version requires — the versioned
 /// closed set (`docs/data-portability.md` §Import flow): a v1 archive — the
 /// shipped build's format — predates the quick-check store, so it is complete
 /// at five entries; requiring the current format's entries of it would refuse
-/// it as truncated. The v2 through v6 shapes were pre-release dev formats no
-/// shipped build wrote and are refused at [`check_format_version`] (ruled
-/// 2026-08-29 — no data compat pre-release).
+/// it as truncated. The v2 through v21 shapes were pre-release dev formats no
+/// shipped build wrote and are refused at [`check_format_version`] with a v0
+/// stamp (ruled 2026-08-29 — no data compat pre-release).
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
-    match format_version {
-        v if v >= 20 => &DB_ENTRY_NAMES,
-        v if v >= 4 => &V4_TO_V19_DB_ENTRY_NAMES,
-        _ => &DB_ENTRY_NAMES[..5],
+    if format_version >= FORMAT_VERSION {
+        &DB_ENTRY_NAMES
+    } else {
+        &DB_ENTRY_NAMES[..5]
     }
 }
 
@@ -201,10 +184,10 @@ pub struct Manifest {
     /// Durable-learning rows within `vector_memory` — surfaced separately
     /// because the success copy reports learnings, not raw vector rows.
     pub learnings: u64,
-    /// Embedder identity per vector-memory namespace, so a future import can
-    /// detect a local-embedder mismatch (`docs/data-portability.md §Vector
-    /// memory is embedder-bound`). The report namespace is always the fixed
-    /// cloud model.
+    /// The vector rows' embedder identity, keyed by their `report` namespace —
+    /// the report's fixed cloud model, identical on every machine, which is
+    /// what makes the vectors portable (`docs/data-portability.md §Vector
+    /// memory is embedder-bound`).
     pub embedders: BTreeMap<String, String>,
     /// Inventory of the file entries (report Markdown + research documents),
     /// checksummed so import can verify against corruption.
@@ -399,14 +382,10 @@ pub struct ArchiveInfo {
 // ---------------------------------------------------------------------------
 
 /// Build the archive from the store at `paths` and write it to `dest`.
-/// `local_embedder_id` stamps the manifest's embedder identity for any
-/// local-suite vector namespaces present (the report namespace is always the
-/// fixed cloud model); `None` when no local embedder is configured.
 pub fn export_archive(
     paths: &ReportPaths,
     dest: &Path,
     passphrase: Option<&str>,
-    local_embedder_id: Option<&str>,
 ) -> Result<ExportSummary> {
     let conn = storage::open(&paths.db_path)?;
     storage::init_schema(&conn)?;
@@ -455,17 +434,10 @@ pub fn export_archive(
     );
 
     let mut embedders = BTreeMap::new();
-    embedders.insert("report".to_string(), REPORT_EMBEDDER_ID.to_string());
-    let local_namespaces: BTreeSet<&str> = vectors
-        .iter()
-        .map(|v| v.namespace.as_str())
-        .filter(|ns| *ns != "report")
-        .collect();
-    for ns in local_namespaces {
-        if let Some(id) = local_embedder_id {
-            embedders.insert(ns.to_string(), id.to_string());
-        }
-    }
+    embedders.insert(
+        "report".to_string(),
+        crate::embedding::EMBEDDING_MODEL.to_string(),
+    );
 
     // The db/*.ndjson entries join the manifest's checksum inventory alongside
     // the store files, so import can verify every entry — table rows included —
@@ -607,7 +579,7 @@ pub fn store_is_empty(conn: &Connection) -> Result<bool> {
 /// Load the archive at `src` into the store at `paths`.
 ///
 /// Fresh-load or replace-all only (merge is deliberately deferred): a non-empty
-/// store without `replace` is a refusal, and `replace` clears the five exported
+/// store without `replace` is a refusal, and `replace` clears the exported
 /// tables and the three file stores before loading. `app_settings` is never
 /// read or written. The archive is fully validated (format version; every
 /// consumed entry manifest-listed with size + checksum verified; every row
@@ -663,9 +635,6 @@ pub fn import_archive(
     let run_rows: Vec<PortfolioRunRow> = parse_ndjson(&entries, "db/portfolio_runs.ndjson")?;
     let pull_rows: Vec<HoldingsPullRow> = parse_ndjson(&entries, "db/holdings_pulls.ndjson")?;
     let quick_rows: Vec<QuickCheckRow> = parse_ndjson(&entries, "db/portfolio_quick_checks.ndjson")?;
-    // A v12–v19 archive's `portfolio_outcome_episodes` file is verified above
-    // and deliberately never read; these entries are absent there, so the
-    // episode store imports empty.
     let episode_rows: Vec<EpisodeRow> = parse_ndjson(&entries, "db/portfolio_episodes.ndjson")?;
     let episode_check_rows: Vec<EpisodeCheckRow> =
         parse_ndjson(&entries, "db/portfolio_episode_checks.ndjson")?;
@@ -677,6 +646,14 @@ pub fn import_archive(
     // Everything the load will need is decoded and checked HERE, before the
     // destructive phase, so a malformed row can only ever abort an import while
     // the target store is still untouched.
+    // Every vector row is the report's (`docs/storage.md §Local Vector Memory`).
+    if let Some(row) = vector_rows.iter().find(|r| r.namespace != "report") {
+        bail!(
+            "archive carries a vector-memory row in the {:?} namespace — only the \
+             report's rows are portable",
+            row.namespace
+        );
+    }
     let embeddings: Vec<Vec<u8>> = vector_rows
         .iter()
         .map(|row| {
@@ -1063,7 +1040,7 @@ fn read_snapshot_rows(conn: &Connection) -> Result<Vec<SnapshotRow>> {
 fn read_vector_rows(conn: &Connection) -> Result<Vec<VectorRow>> {
     let mut stmt = conn.prepare(
         "SELECT kind, namespace, report_id, content, embedding, created_at
-         FROM vector_memory ORDER BY id",
+         FROM vector_memory WHERE namespace = 'report' ORDER BY id",
     )?;
     let rows = stmt
         .query_map([], |r| {
@@ -1276,7 +1253,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 2..=11) {
+    if matches!(manifest.format_version, 0 | 2..=21) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -1542,7 +1519,7 @@ mod tests {
         for (kind, namespace, report_id, content, v) in [
             ("summary", "report", Some("report-one"), "Issue one summary.", [0.1f32, 0.2, 0.3]),
             ("learning", "report", None, "Breadth divergences preceded the pullback.", [0.4, 0.5, 0.6]),
-            ("learning", "portfolio", None, "A local-suite learning.", [0.7, 0.8, 0.9]),
+            ("learning", "report", None, "Price-led rallies faded into the print.", [0.7, 0.8, 0.9]),
         ] {
             conn.execute(
                 "INSERT INTO vector_memory (kind, namespace, report_id, content, embedding, created_at)
@@ -1551,47 +1528,52 @@ mod tests {
             )
             .unwrap();
         }
-        conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json)
-             VALUES ('run-one', '2026-07-06T12:00:00Z', '{\"verdicts\":[]}')",
-            [],
+        // Every row typed and decodable: the runs carry every field the later
+        // formats added (the review and its mark, the fund basis's NAV, the
+        // overlay, the accuracy record, the basis read).
+        for (run_id, created_at) in [
+            ("run-one", "2026-07-06T12:00:00Z"),
+            ("run-two", "2026-07-06T14:00:00Z"),
+        ] {
+            crate::portfolio::store::insert_run(
+                &conn,
+                &crate::portfolio::store::archive_test_run(run_id, created_at),
+            )
+            .unwrap();
+        }
+        crate::portfolio::store::save_pull(
+            &conn,
+            &crate::portfolio::store::HoldingsPull {
+                pulled_at: "2026-07-06T13:00:00Z".into(),
+                holdings: crate::portfolio::store::archive_test_run("pull", "x").holdings,
+            },
         )
         .unwrap();
-        // A second decodable run — both import and round-trip.
-        conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json)
-             VALUES ('run-two', '2026-07-06T14:00:00Z',
-                     '{\"run_id\":\"run-two\",\"created_at\":\"2026-07-06T14:00:00Z\",
-                       \"holdings\":{\"positions\":[],\"cash\":0.0,\"account_total\":0.0,\"source_rows\":[]},
-                       \"verdicts\":[],
-                       \"roll_up\":{\"graded_count\":0,\"not_rated_count\":0,\"insufficient_evidence_count\":0,\"top_position_weight\":0.0,\"cash_weight\":0.0,\"overview\":\"x\"},
-                       \"audit\":[]}')",
-            [],
+        crate::portfolio::store::save_quick_check(
+            &conn,
+            &crate::portfolio::quick_check::QuickCheckState {
+                parameter_version: crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION
+                    .into(),
+                swept_run_id: "run-one".into(),
+                last_checked_at: "2026-07-07T09:00:00Z".into(),
+                rate_cache: None,
+                holdings: vec![],
+            },
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO holdings_pulls (id, pulled_at, holdings_json)
-             VALUES (1, '2026-07-06T13:00:00Z', '{\"positions\":[]}')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO portfolio_quick_checks (id, checked_at, state_json)
-             VALUES (1, '2026-07-07T09:00:00Z',
-                     '{\"swept_run_id\":\"run-one\",\"last_checked_at\":\"2026-07-07T09:00:00Z\",\"holdings\":[]}')",
-            [],
-        )
-        .unwrap();
+        // The episode and its check under ids the store never assigned, so
+        // the round trip shows they travel with the rows.
+        let (record, check) = crate::portfolio::store::archive_test_episode();
         conn.execute(
             "INSERT INTO portfolio_episodes (id, symbol, created_on, episode_json)
-             VALUES (7, 'AAPL', '2026-07-06', '{\"marker\":\"ep-seven\"}')",
-            [],
+             VALUES (7, ?1, ?2, ?3)",
+            params![record.symbol, record.created_on, serde_json::to_string(&record).unwrap()],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO portfolio_episode_checks (id, episode_id, horizon, run_id, check_json)
-             VALUES (3, 7, 'three_month', 'run-two', '{\"marker\":\"check-three\"}')",
-            [],
+             VALUES (3, 7, ?1, ?2, ?3)",
+            params![check.horizon.key(), check.run_id, serde_json::to_string(&check).unwrap()],
         )
         .unwrap();
         conn.execute(
@@ -1624,6 +1606,40 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    /// Every row of `table`, every column but `except`, in column order — the
+    /// round trip's full-row parity read.
+    fn table_rows(
+        paths: &ReportPaths,
+        table: &str,
+        except: &[&str],
+    ) -> Vec<Vec<rusqlite::types::Value>> {
+        let conn = storage::open(&paths.db_path).unwrap();
+        let columns: Vec<String> = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|c| !except.contains(&c.as_str()))
+            .collect();
+        let order: Vec<String> = (1..=columns.len()).map(|i| i.to_string()).collect();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM {table} ORDER BY {}",
+                columns.join(", "),
+                order.join(", ")
+            ))
+            .unwrap();
+        stmt.query_map([], |r| {
+            (0..columns.len())
+                .map(|i| r.get::<_, rusqlite::types::Value>(i))
+                .collect()
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
     }
 
     fn table_count(paths: &ReportPaths, table: &str) -> i64 {
@@ -1715,7 +1731,7 @@ mod tests {
         let run = crate::portfolio::store::entry3_test_run();
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let dest = source.db_path.parent().unwrap().join("dates.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
         let (_b, target) = temp_store();
         import_archive(&target, &dest, None, false).unwrap();
         let conn = storage::open(&target.db_path).unwrap();
@@ -1779,7 +1795,7 @@ mod tests {
         )
         .unwrap();
         let dest = source.db_path.parent().unwrap().join("telemetry.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
         let (_b, target) = temp_store();
         import_archive(&target, &dest, None, false).unwrap();
         let conn = storage::open(&target.db_path).unwrap();
@@ -1802,7 +1818,7 @@ mod tests {
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
         let summary =
-            export_archive(&source, &dest, None, Some("local-embedder-x")).unwrap();
+            export_archive(&source, &dest, None).unwrap();
         assert_eq!(summary.path, dest.to_string_lossy());
         assert_eq!(summary.reports, 2);
         assert_eq!(summary.learnings, 2);
@@ -1818,68 +1834,28 @@ mod tests {
         assert_eq!(loaded.holdings_pulls, 1);
         assert_eq!(loaded.skipped_reports, 0);
 
+        // Full-row parity on every archived table: every column of every row,
+        // the re-derived `markdown_path` and the vector rows' local ids alone
+        // excepted (the episode store's ids travel with its rows).
+        for table in TABLES {
+            let except: &[&str] = match table {
+                "reports" => &["markdown_path"],
+                "vector_memory" => &["id"],
+                _ => &[],
+            };
+            let rows = table_rows(&source, table, except);
+            assert!(!rows.is_empty(), "{table} is seeded");
+            assert_eq!(rows, table_rows(&target, table, except), "{table}");
+        }
+        // The restored runs decode whole, every later format's field with them.
         let conn = storage::open(&target.db_path).unwrap();
-        // The quick-check between-run state rides the archive (format v2).
-        let state_json: String = conn
-            .query_row(
-                "SELECT state_json FROM portfolio_quick_checks WHERE id = 1",
-                [],
-                |r| r.get(0),
-            )
+        let restored = crate::portfolio::store::run_by_id(&conn, "run-one")
+            .unwrap()
             .unwrap();
-        assert!(state_json.contains("run-one"));
-        // The episode store rides it under its ids (format v20) — the check
-        // still references its episode — and the price-bar cache (format v3),
-        // the close surviving the REAL column exactly.
-        let episode_json: String = conn
-            .query_row(
-                "SELECT episode_json FROM portfolio_episodes WHERE id = 7",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(episode_json.contains("ep-seven"));
-        let (check_episode, check_json): (i64, String) = conn
-            .query_row(
-                "SELECT episode_id, check_json FROM portfolio_episode_checks WHERE id = 3",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(check_episode, 7);
-        assert!(check_json.contains("check-three"));
-        let close: f64 = conn
-            .query_row(
-                "SELECT close FROM price_bars WHERE symbol = 'AAPL' AND date = '2026-07-03'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(close.to_bits(), 195.25f64.to_bits());
-        // The web-research stores ride it too (format v4): the cached document
-        // with its original retrieval vintage, and the learned source state.
-        let (final_url, retrieved_at, thin): (String, String, i64) = conn
-            .query_row(
-                "SELECT final_url, retrieved_at, thin_stub FROM web_documents
-                 WHERE url = 'https://reuters.com/go-widget'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(final_url, "https://reuters.com/widget");
-        assert_eq!(retrieved_at, "2026-07-06T10:00:00+00:00");
-        assert_eq!(thin, 0);
-        let (profile, render_first, failed, denied): (String, i64, i64, i64) = conn
-            .query_row(
-                "SELECT profile, render_first, failed_count, denied_count
-                 FROM web_source_state WHERE host = 'bloomberg.com'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(profile, "js_required");
-        assert_eq!(render_first, 1);
-        assert_eq!((failed, denied), (2, 1), "the v6 attempt counters round-trip");
+        assert_eq!(
+            restored,
+            crate::portfolio::store::archive_test_run("run-one", "2026-07-06T12:00:00Z")
+        );
         // markdown_path re-derived against the target's own reports dir, and
         // the body readable through it.
         let markdown_path: String = conn
@@ -1900,15 +1876,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(blob, embedding_to_blob(&[0.1, 0.2, 0.3]));
-        // The local-suite namespace row rides along.
-        let portfolio_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM vector_memory WHERE namespace = 'portfolio'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(portfolio_rows, 1);
         // Research files land in the target's folders.
         assert_eq!(
             std::fs::read_to_string(target.archive_dir.join("filed-note.md")).unwrap(),
@@ -1927,7 +1894,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         let bytes = std::fs::read(&dest).unwrap();
         let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
@@ -1948,7 +1915,13 @@ mod tests {
         let manifest: Manifest =
             serde_json::from_slice(entries.get("manifest.json").unwrap()).unwrap();
         assert!(!manifest.row_counts.contains_key("app_settings"));
-        assert_eq!(manifest.embedders.get("report").unwrap(), REPORT_EMBEDDER_ID);
+        assert_eq!(
+            manifest.embedders,
+            BTreeMap::from([(
+                "report".to_string(),
+                crate::embedding::EMBEDDING_MODEL.to_string()
+            )])
+        );
         // The db/*.ndjson entries ride the checksum inventory too, so import
         // verifies table rows before its destructive phase.
         for name in [
@@ -1968,7 +1941,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export-enc.zip");
-        let summary = export_archive(&source, &dest, Some("hunter2"), None).unwrap();
+        let summary = export_archive(&source, &dest, Some("hunter2")).unwrap();
         assert!(summary.encrypted);
         assert!(std::fs::read(&dest).unwrap().starts_with(ENC_MAGIC));
 
@@ -1992,7 +1965,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         let (_b, target) = temp_store();
         seed_old_report(&target);
@@ -2027,7 +2000,7 @@ mod tests {
         )
         .unwrap();
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         let (_b, target) = temp_store();
         let loaded = import_archive(&target, &dest, None, false).unwrap();
@@ -2062,7 +2035,7 @@ mod tests {
         )
         .unwrap();
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         let (_b, target) = temp_store();
         let loaded = import_archive(&target, &dest, None, false).unwrap();
@@ -2087,7 +2060,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // Tamper one embedding into JSON-valid but undecodable base64, with a
         // RE-STAMPED manifest listing — so only the pre-destructive decode
@@ -2122,11 +2095,47 @@ mod tests {
     }
 
     #[test]
+    fn a_vector_row_outside_the_report_namespace_is_refused() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None).unwrap();
+
+        // Every vector row is the report's, so a row in another namespace is
+        // refused before the destructive phase.
+        let mut entries = read_archive_entries(&dest);
+        let vectors_name = "db/vector_memory.ndjson";
+        let tampered_rows: Vec<u8> = {
+            let text = String::from_utf8(entries[vectors_name].clone()).unwrap();
+            let mut out = Vec::new();
+            for (i, line) in text.lines().enumerate() {
+                let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+                if i == 0 {
+                    v["namespace"] = "portfolio".into();
+                }
+                serde_json::to_writer(&mut out, &v).unwrap();
+                out.push(b'\n');
+            }
+            out
+        };
+        replace_entry_rechecksummed(&mut entries, vectors_name, tampered_rows);
+        let tampered_path = source.db_path.parent().unwrap().join("tampered.zip");
+        rebuild_zip(&entries, &tampered_path);
+
+        let (_b, target) = temp_store();
+        seed_old_report(&target);
+        let err = import_archive(&target, &tampered_path, None, true).unwrap_err();
+        assert!(err.to_string().contains("\"portfolio\" namespace"), "{err}");
+        assert_eq!(table_count(&target, "reports"), 1);
+        assert!(target.reports_dir.join("old-report.md").exists());
+    }
+
+    #[test]
     fn an_entry_the_manifest_does_not_list_is_never_consumed() {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
         let (_b, target) = temp_store();
 
         // (a) An extra store file smuggled in without a manifest listing.
@@ -2161,7 +2170,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // Duplicate the first report row, re-stamped so it survives checksum
         // verification — only the uniqueness pre-check can catch it (the INSERT
@@ -2197,7 +2206,7 @@ mod tests {
             assert!(!store_is_empty(&conn).unwrap());
         }
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
         let info = inspect_archive(&dest, None).unwrap();
         assert!(!info.encrypted);
         assert_eq!(info.format_version, FORMAT_VERSION);
@@ -2214,7 +2223,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // Rebuild the zip with one report body tampered, manifest untouched.
         let mut entries = read_archive_entries(&dest);
@@ -2239,7 +2248,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // Stamp a future format version (the manifest itself carries no
         // checksum, so a plain rewrite suffices).
@@ -2267,7 +2276,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // Drop BOTH the entry and its manifest listing — without the
         // required-tables check this would import vector_memory as silently
@@ -2295,7 +2304,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // Drop the v2-only quick-check entry and its listing. Under the
         // archive's own (v2) version that is truncation and must refuse…
@@ -2338,7 +2347,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // Drop the episode-store and price-bar entries and their listings.
         // Under the archive's own version that is truncation and must refuse…
@@ -2386,7 +2395,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // Drop the entries introduced in v4 and their listings. Under the
         // archive's own current (v7) version that is truncation and must refuse…
@@ -2426,20 +2435,18 @@ mod tests {
     }
 
     #[test]
-    fn v2_through_v9_stamps_are_refused_as_pre_release_formats() {
-        // The single-URL (v4), pre-counter (v5), pre-rename (v6, the priced
-        // verdict's `price_target_rationale`) and pre-label (v7, the ledger
-        // condition's `label` and app-rendered statement) shapes were
-        // pre-release formats no shipped build wrote (ruled 2026-08-29): a
-        // complete current export re-stamped any of these ways is refused
-        // outright, never read through a compat rung.
+    fn every_pre_release_format_stamp_is_refused() {
+        // v2 through v21 were pre-release formats no shipped build wrote
+        // (ruled 2026-08-29), and no build wrote v0: a complete current export
+        // re-stamped any of these ways is refused outright, never read through
+        // a compat rung.
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
         let mut entries = read_archive_entries(&dest);
         let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        for version in 2..=11 {
+        for version in std::iter::once(0).chain(2..FORMAT_VERSION) {
             manifest.format_version = version;
             entries.insert(
                 "manifest.json".to_string(),
@@ -2455,64 +2462,11 @@ mod tests {
     }
 
     #[test]
-    fn a_v19_archive_imports_with_the_episode_store_started_fresh() {
-        let (_a, source) = temp_store();
-        seed_store(&source);
-        let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
-
-        // Re-shape the archive as a v19 export: the two episode-store entries
-        // out, the retired decision-episode file in, listed and checksummed.
-        let mut entries = read_archive_entries(&dest);
-        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        for name in ["db/portfolio_episodes.ndjson", "db/portfolio_episode_checks.ndjson"] {
-            entries.remove(name);
-            manifest.files.retain(|f| f.path != name);
-        }
-        manifest.row_counts.remove("portfolio_episodes");
-        manifest.row_counts.remove("portfolio_episode_checks");
-        manifest.format_version = 19;
-        entries.insert(
-            "manifest.json".to_string(),
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        );
-        // A row the importer would refuse if it ever read it.
-        add_entry_rechecksummed(
-            &mut entries,
-            "db/portfolio_outcome_episodes.ndjson",
-            b"{not a row}\n".to_vec(),
-        );
-        let v19_path = source.db_path.parent().unwrap().join("v19.zip");
-        rebuild_zip(&entries, &v19_path);
-        let (_b, target) = temp_store();
-        let loaded = import_archive(&target, &v19_path, None, false).unwrap();
-        assert_eq!(loaded.reports, 2, "everything else imports");
-        assert_eq!(table_count(&target, "portfolio_episodes"), 0);
-        assert_eq!(table_count(&target, "portfolio_episode_checks"), 0);
-        assert_eq!(table_count(&target, "price_bars"), 1);
-
-        // The retired file is still a required entry of its format.
-        let mut entries = read_archive_entries(&v19_path);
-        entries.remove("db/portfolio_outcome_episodes.ndjson");
-        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        manifest.files.retain(|f| f.path != "db/portfolio_outcome_episodes.ndjson");
-        entries.insert(
-            "manifest.json".to_string(),
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        );
-        let truncated = source.db_path.parent().unwrap().join("v19-truncated.zip");
-        rebuild_zip(&entries, &truncated);
-        let (_c, target) = temp_store();
-        let err = import_archive(&target, &truncated, None, false).unwrap_err();
-        assert!(err.to_string().contains("missing or not listed"), "{err}");
-    }
-
-    #[test]
     fn duplicate_outcome_rows_are_refused_pre_destructively() {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
 
         // A duplicated episode id — the primary-key mirror.
         let mut entries = read_archive_entries(&dest);
@@ -2574,7 +2528,7 @@ mod tests {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
-        export_archive(&source, &dest, None, None).unwrap();
+        export_archive(&source, &dest, None).unwrap();
         let (_b, target) = temp_store();
 
         // (a) A `..` component — the zip-slip guard rejects it at read time,

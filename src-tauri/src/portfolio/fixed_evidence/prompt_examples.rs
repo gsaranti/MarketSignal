@@ -395,6 +395,7 @@ pub(super) fn continuity_dossier(f: &Fixture) -> HoldingDossier {
         symbol: f.symbol.clone(),
         asset_class: f.asset_class,
         position_change: PositionChange::New,
+        basis_move: None,
         disposition: f.disposition.clone(),
         analyzed_at: Some(PRIOR_VINTAGE.into()),
         action_source: ActionSource::ModelChosen,

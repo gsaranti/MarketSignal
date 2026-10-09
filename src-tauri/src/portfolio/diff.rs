@@ -15,14 +15,19 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::portfolio::{ExitedPosition, PositionChange, PositionDelta};
-use crate::schwab::Holdings;
+use crate::portfolio::{BasisDirection, BasisMove, ExitedPosition, PositionChange, PositionDelta};
+use crate::schwab::{Holdings, Position};
 
 /// Relative tolerance (against the larger of the prior quantity and 1.0) for treating
 /// two quantities as unchanged, so fractional-share and unit-quantity noise doesn't
 /// masquerade as an add/trim. A calibratable starting value, like the engine's
 /// constants — pinned here rather than frozen.
 pub const QUANTITY_EPSILON: f64 = 1e-6;
+
+/// Relative tolerance (against the prior average cost) inside which an increase
+/// leaves the average cost per share unmoved, so a buy at the prior average
+/// reads as no basis move rather than a rounding-noise direction.
+pub const BASIS_EPSILON: f64 = 1e-9;
 
 /// The result of diffing the current holdings against the prior run's snapshot: a
 /// per-current-position delta (keyed by uppercased symbol) plus the exited positions.
@@ -124,6 +129,37 @@ fn classify(prior_qty: f64, current_qty: f64) -> PositionChange {
     } else {
         PositionChange::Decreased
     }
+}
+
+/// The paid-up-versus-averaged-down read (`docs/portfolio-analysis.md` §Holdings
+/// change tracking): on an **increase** alone, whether the average cost per share
+/// — cost basis ÷ quantity — rose (paid up) or fell (averaged down) between the
+/// prior pull and this one. `None` on every other change, on a short or a zero or
+/// negative basis on either pull, inside [`BASIS_EPSILON`], and on a class whose
+/// derived basis leaves a contract or par multiplier unapplied (only a stock or a
+/// fund reads).
+pub fn basis_move(delta: &PositionDelta, current: &Position) -> Option<BasisMove> {
+    if delta.change != PositionChange::Increased || !current.asset_class.is_gradeable() {
+        return None;
+    }
+    let average = |basis: f64, quantity: f64| {
+        (basis.is_finite() && quantity.is_finite() && basis > 0.0 && quantity > 0.0)
+            .then(|| basis / quantity)
+    };
+    let prior = average(delta.prior_cost_basis?, delta.prior_quantity?)?;
+    let now = average(current.cost_basis, current.quantity)?;
+    let direction = if now > prior * (1.0 + BASIS_EPSILON) {
+        BasisDirection::PaidUp
+    } else if now < prior * (1.0 - BASIS_EPSILON) {
+        BasisDirection::AveragedDown
+    } else {
+        return None;
+    };
+    Some(BasisMove {
+        direction,
+        prior_average_cost: prior,
+        average_cost: now,
+    })
 }
 
 #[cfg(test)]
@@ -243,24 +279,67 @@ mod tests {
         );
     }
 
+    fn at(symbol: &str, quantity: f64, cost_basis: f64) -> Position {
+        Position {
+            cost_basis,
+            ..pos(symbol, quantity)
+        }
+    }
+
     #[test]
-    fn side_reversal_predicate_reads_the_sign_flip_at_any_magnitude() {
-        // The outcome-alignment read uses this predicate off the diff's
-        // delta (`docs/portfolio-analysis.md` §Triggering) — a flip must register
-        // at equal magnitude too, where the size-based classification alone
-        // could miss it.
-        let prior = holdings(vec![pos("XYZ", 100.0), pos("AAPL", 100.0)]);
-        let current = holdings(vec![pos("XYZ", -100.0), pos("AAPL", 140.0)]);
+    fn an_increase_reads_paid_up_or_averaged_down_by_the_average_cost() {
+        let prior = holdings(vec![
+            at("UP", 100.0, 10_000.0),
+            at("DOWN", 100.0, 10_000.0),
+            at("FLAT", 100.0, 10_000.0),
+        ]);
+        let current = holdings(vec![
+            at("UP", 150.0, 16_000.0),
+            at("DOWN", 150.0, 14_000.0),
+            at("FLAT", 150.0, 15_000.0),
+        ]);
         let diff = diff_holdings(Some(&prior), &current);
-        assert!(diff.delta_for("XYZ").side_reversed(-100.0), "long → short at equal magnitude");
-        assert!(!diff.delta_for("AAPL").side_reversed(140.0), "a same-side add is no reversal");
-        let short_to_long = diff_holdings(
-            Some(&holdings(vec![pos("XYZ", -50.0)])),
-            &holdings(vec![pos("XYZ", 10.0)]),
-        );
-        assert!(short_to_long.delta_for("XYZ").side_reversed(10.0), "short → long at unequal magnitude");
-        // No prior counterpart: nothing to reverse from.
-        assert!(!diff_holdings(None, &current).delta_for("XYZ").side_reversed(-100.0));
+        let read = |i: usize| {
+            let p = &current.positions[i];
+            basis_move(&diff.delta_for(&p.symbol), p)
+        };
+        let up = read(0).expect("the average rose");
+        assert_eq!(up.direction, BasisDirection::PaidUp);
+        assert_eq!(up.prior_average_cost, 100.0);
+        assert!((up.average_cost - 16_000.0 / 150.0).abs() < 1e-9);
+        let down = read(1).expect("the average fell");
+        assert_eq!(down.direction, BasisDirection::AveragedDown);
+        assert!((down.average_cost - 14_000.0 / 150.0).abs() < 1e-9);
+        assert_eq!(read(2), None, "a buy at the prior average moves nothing");
+    }
+
+    #[test]
+    fn the_basis_read_needs_an_increase_and_a_defined_average_on_both_pulls() {
+        let prior = holdings(vec![
+            at("TRIM", 100.0, 10_000.0),
+            pos("SHORT", -50.0),
+            at("ZERO", 100.0, 0.0),
+            Position {
+                asset_class: AssetClass::OptionContract,
+                ..at("OPT", 1.0, 500.0)
+            },
+        ]);
+        let current = holdings(vec![
+            at("TRIM", 50.0, 4_000.0),
+            pos("SHORT", -100.0),
+            at("ZERO", 150.0, 6_000.0),
+            Position {
+                asset_class: AssetClass::OptionContract,
+                ..at("OPT", 2.0, 1_400.0)
+            },
+            at("FRESH", 10.0, 1_000.0),
+        ]);
+        let diff = diff_holdings(Some(&prior), &current);
+        for p in &current.positions {
+            assert_eq!(basis_move(&diff.delta_for(&p.symbol), p), None, "{}", p.symbol);
+        }
+        assert_eq!(diff.delta_for("SHORT").change, PositionChange::Increased);
+        assert_eq!(diff.delta_for("OPT").change, PositionChange::Increased);
     }
 
     #[test]

@@ -146,7 +146,6 @@ const localModels = ref<LocalModelSettings>({
   daemon_endpoint: "",
   reasoner_model: "",
   fast_model: "",
-  embedder_model: "",
 });
 const webResearch = ref<WebResearchSettings>({ searxng_endpoint: "" });
 const justSaved = ref(false);
@@ -209,7 +208,6 @@ watch(
         daemon_endpoint: localModels.value.daemon_endpoint.trim(),
         reasoner_model: localModels.value.reasoner_model.trim(),
         fast_model: localModels.value.fast_model.trim(),
-        embedder_model: localModels.value.embedder_model.trim(),
       };
     }
   }
@@ -347,8 +345,7 @@ const localDirty = computed(() => {
   return (
     m.daemon_endpoint !== s.daemon_endpoint ||
     m.reasoner_model !== s.reasoner_model ||
-    m.fast_model !== s.fast_model ||
-    m.embedder_model !== s.embedder_model
+    m.fast_model !== s.fast_model
   );
 });
 
@@ -363,13 +360,6 @@ const showLocalSaved = computed(
     !props.savingLocal &&
     props.localError === null
 );
-
-// Whether the *saved* embedder id would change — the save clears the suite's
-// local memory in that case, so the form says so up front rather than silently.
-const embedderChanging = computed(() => {
-  const saved = props.settings?.local_models.embedder_model.trim() ?? "";
-  return saved !== "" && localModels.value.embedder_model.trim() !== saved;
-});
 
 function onSaveLocal() {
   if (!canSaveLocal.value) return;
@@ -998,19 +988,6 @@ const importDataLabel = computed(() =>
               />
             </div>
             <div class="field">
-              <label class="label" for="local-embedder">Embedder model (optional)</label>
-              <input
-                id="local-embedder"
-                v-model="localModels.embedder_model"
-                class="input mono"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                :disabled="savingLocal"
-                placeholder="Not set"
-              />
-            </div>
-            <div class="field">
               <label class="label" for="local-fast">Fast model (optional)</label>
               <input
                 id="local-fast"
@@ -1052,11 +1029,6 @@ const importDataLabel = computed(() =>
                 {{ localStatus.text }}
               </span>
             </div>
-
-            <p v-if="embedderChanging" class="section-note local-caution">
-              Changing the embedder resets the local suite's run memory — past
-              runs' recall is re-built by later runs. Report memory is untouched.
-            </p>
 
             <div v-if="localError" class="settings-error" role="alert">
               <div class="settings-error-label">Couldn't save</div>
@@ -1742,12 +1714,6 @@ const importDataLabel = computed(() =>
 
 .cred-status--err {
   color: var(--accent-text);
-}
-
-/* The embedder-change heads-up sits after the test row, so it trades the note's
-   bottom rhythm for a tight top one (the data-caution idiom). */
-.local-caution {
-  margin: var(--s-3) 0 0;
 }
 
 /* The passphrase caution reads in the section-note voice but sits *after* its

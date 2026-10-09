@@ -32,8 +32,8 @@ pub const HOUSE_VIEW_SOURCE: &str = "Market Signal Report (house view)";
 /// The Market Signal house view loaded as a read-only shared input
 /// (`docs/portfolio-analysis.md`). It enters deterministically — recent report
 /// summaries plus the latest report's relevant prose sections — never via the
-/// report's vector memory (which a local job cannot read anyway: different namespace
-/// and embedder, see `crate::vector_memory::MemoryNamespace`).
+/// report's vector memory, which no local job reads (`docs/storage.md §Local Vector
+/// Memory`).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct HouseView {
     pub recent_summaries: Vec<ReportSummary>,
@@ -400,11 +400,6 @@ pub struct HoldingDossier {
     /// stored leg ([`crate::portfolio::HoldingAudit::authoring_close`]). `None`
     /// on a debut or a prior row from a no-price exit.
     pub prior_authoring_close: Option<crate::portfolio::engine::DatedValue>,
-    /// The prior run's pre-profit overlay record (from the audit row) — the
-    /// period-keyed observation history accumulates through it
-    /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut or a
-    /// fund.
-    pub prior_pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
     /// The prior run's **analysis** record (from the audit row) — the holding's
     /// whole research memory, rendered verbatim as PRIOR ANALYSIS on every
     /// gathering brief and the analysis message under its own date and with
@@ -467,10 +462,10 @@ pub struct HoldingDossier {
     /// fetched it; the technology-event pre-flag's read-against leg.
     pub sector_benchmark: Option<BenchmarkSeries>,
     /// The symbol-scoped `news/stock` headlines fetched at dossier assembly as
-    /// research-loop **seeds** — leads, never evidence (`docs/web-research.md`
+    /// the research loop's **news leads** — leads, never evidence (`docs/web-research.md`
     /// §The research loop and context management). Empty on a fund, a failed
     /// or skipped fetch (fail-soft), and every offline stub.
-    pub news_seeds: Vec<crate::portfolio::research::ResearchSeed>,
+    pub news_leads: Vec<crate::portfolio::research::NewsLead>,
     /// The run's session date (`YYYY-MM-DD`) — the "Date:" line of the shared
     /// holding header, so every model-facing packet anchors its period labels
     /// to the analysis date rather than the model's training horizon
@@ -510,8 +505,6 @@ pub struct PriorHolding {
     /// (`None` when the run carries no audit row for the symbol or the audit
     /// carries no target record).
     pub target_parameter_version: Option<String>,
-    /// The prior pre-profit overlay record — the observation history's carry path.
-    pub pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
     /// The verdict's **effective analysis vintage** (`analyzed_at`, else the
     /// prior run's `created_at`) — the retrospective's "since" anchor. A
     /// selective carry keeps the original vintage, so this date stays paired
@@ -564,8 +557,8 @@ pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
     let adopted = adopt_ttm_statement_basis(fin);
     // Stamp WHICH basis the values now stand on, at the shared choke point every
     // statement-consuming path already passes through, so no producer can set the
-    // levels without recording their basis. The ledger evaluation reads it to detect
-    // a basis change; it alters no value.
+    // levels without recording their basis. The prompt's statement-basis line and
+    // the audit's sources line read it; it alters no value.
     //
     // No quarterly rows at all means FMP alone supports no statement basis, which is
     // distinct from a resolved fallback: `Annual` asserts a same-concept annual window
@@ -574,8 +567,8 @@ pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
     // This is what FMP's own pull supports. Where a SEC merge follows
     // ([`merge_financials`]) it **refines** this: a zero-row quarterly response whose
     // levels are then filled from SEC annual facts is on the annual basis, and saying
-    // `None` there would exempt it from the ledger's basis-continuity gate — the exact
-    // fabricated crossing that gate exists to stop. The refinement lives at the merge
+    // `None` there would present annual levels as standing on no basis. The
+    // refinement lives at the merge
     // because only the merge knows what finally supplied the levels; a caller with no
     // merge (the quick check's `statements_refresh`) is correctly described here.
     fin.statement_basis = if adopted {
@@ -672,7 +665,7 @@ pub fn merge_financials(
     // fills — the annual basis is a flow-window basis, so `Annual` asserts that
     // SEC's full-year flow lines are what the flows stand on; the equity fill is
     // a balance-sheet instant outside the flow-basis rule and stamps nothing
-    // (Codex round 2 on the ledger-basis slice: an equity-only SEC fill had still
+    // (Codex round 2: an equity-only SEC fill had still
     // stamped `Annual`, so the prompt called flows that never reached the engine
     // "SEC annual").
     let fill = |dst: &mut Option<f64>, src: Option<i64>| -> bool {
@@ -716,8 +709,8 @@ pub fn merge_financials(
     // own beside thin quarters, or an equity-only SEC fill). Those instant-only
     // shapes used to stamp `Annual` ("however it arrived"), which the audit's
     // sources line and the prompt's basis label then read as an SEC annual flow
-    // basis for flows that never reached the engine (Codex rounds 1–2 on the
-    // ledger-basis slice). Equity-SOURCE continuity — a D/E or P/B step when the
+    // basis for flows that never reached the engine (Codex rounds 1–2).
+    // Equity-SOURCE continuity — a D/E or P/B step when the
     // equity leg moves between FMP's quarterly instant and SEC's annual one — is
     // not this stamp's (an FMP balance-sheet gap flips the source under an
     // unchanged TTM basis); it rides `equity_source` above, the instants' own.
@@ -888,7 +881,7 @@ pub fn assemble(
     put_call_backdrop: Option<crate::cboe::PutCallBackdrop>,
     commodity_context: Vec<CommodityPrint>,
     sector_benchmark: Option<BenchmarkSeries>,
-    news_seeds: Vec<crate::portfolio::research::ResearchSeed>,
+    news_leads: Vec<crate::portfolio::research::NewsLead>,
     analysis_date: String,
     legs: StockEvidenceLegs,
 ) -> HoldingDossier {
@@ -896,7 +889,6 @@ pub fn assemble(
         prior_verdict,
         prior_grade_parameter_version,
         prior_target_parameter_version,
-        prior_pre_profit,
         prior_vintage,
         prior_spot,
         prior_consensus_eps_periods,
@@ -910,7 +902,6 @@ pub fn assemble(
             Some(p.verdict),
             p.grade_parameter_version,
             p.target_parameter_version,
-            p.pre_profit,
             Some(p.vintage),
             p.spot,
             p.consensus_eps_periods,
@@ -921,7 +912,6 @@ pub fn assemble(
             p.fund_exposure,
         ),
         None => (
-            None,
             None,
             None,
             None,
@@ -1120,7 +1110,6 @@ pub fn assemble(
         prior_grade_parameter_version,
         prior_target_parameter_version,
         prior_authoring_close,
-        prior_pre_profit,
         prior_analysis,
         prior_accuracy_read_through,
         prior_fund_exposure,
@@ -1132,7 +1121,7 @@ pub fn assemble(
         put_call_backdrop,
         commodity_context,
         sector_benchmark,
-        news_seeds,
+        news_leads,
         analysis_date,
         sources,
         issuer: legs.issuer,
@@ -1286,8 +1275,8 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
 
 /// Look up the prior run's carry-over for one holding (the continuity input): the
 /// verdict plus the audit-row legs — the grade-parameter version its letter and
-/// sub-scores were computed under (`None` when the run carries no audit row) and the
-/// pre-profit overlay record whose observation history accumulates. Reads the
+/// sub-scores were computed under (`None` when the run carries no audit row), the
+/// prior analysis and the accuracy read-through mark. Reads the
 /// job's **already-loaded** prior run — the job loads `store::latest_run` once
 /// per run and threads it here, rather than this lookup re-reading (and
 /// re-parsing) the store once per holding — and finds the matching symbol;
@@ -1314,7 +1303,6 @@ pub fn prior_verdict_for(
     let (
         grade_parameter_version,
         target_parameter_version,
-        pre_profit,
         spot,
         consensus_eps_periods,
         metrics,
@@ -1335,7 +1323,6 @@ pub fn prior_verdict_for(
                 // The target stamp rides the typed target record, so a prior with
                 // no target record (never priced) carries none — silent downstream.
                 a.target_meta.as_ref().map(|t| t.parameter_version.clone()),
-                a.pre_profit.clone(),
                 spot,
                 periods,
                 Some(a.metrics.clone()),
@@ -1350,13 +1337,12 @@ pub fn prior_verdict_for(
                 a.fund_exposure.clone(),
             )
         }
-        None => (None, None, None, None, Vec::new(), None, None, None, None, None),
+        None => (None, None, None, Vec::new(), None, None, None, None, None),
     };
     Some(PriorHolding {
         verdict,
         grade_parameter_version,
         target_parameter_version,
-        pre_profit,
         vintage,
         spot,
         consensus_eps_periods,
@@ -1743,10 +1729,8 @@ mod tests {
         // quarterly set (the same empty-200 pattern the sector-P/E snapshot serves),
         // so no TTM window can be adopted and the SEC same-concept annual facts fill
         // the levels instead. Stamped `None` — "no statement basis applies" — those
-        // annual levels slipped past the ledger's basis-continuity gate entirely,
-        // because the gate only acts on a `Some` basis: a TTM-authored P/S threshold
-        // would then be compared against an annual-basis ratio and could confirm, on
-        // a market cadence, the fabricated crossing the gate exists to stop.
+        // annual levels read as standing on no basis, so the prompt and the
+        // sources line named none for levels SEC's annual facts supplied.
         //
         // The multiples are the reachable half: they key their observation on the
         // marks' trading day, not on a statement print, so they resolve normally even
@@ -1799,7 +1783,7 @@ mod tests {
     #[test]
     fn an_equity_instant_alone_carries_no_flow_basis_and_a_sec_flow_fill_is_annual() {
         use crate::portfolio::StatementBasis;
-        // Codex round 1 on the ledger-basis slice: thin quarters beside FMP's own
+        // Codex round 1: thin quarters beside FMP's own
         // balance sheet, with the SEC leg never run (no CIK), used to stamp
         // `Annual` off the equity instant alone — SEC provenance for a level SEC
         // never supplied. An instant on no flow basis is `None`.
@@ -2320,8 +2304,8 @@ Sources and footnotes.
         stock_sources_full(LegOutcome::NotRun, chain, None)
     }
 
-    /// The 2026-08-24 large-scale review's Priority-1 minor (the ledger TTM
-    /// vocabulary slice, folded): the sources line recorded the basis only when
+    /// The 2026-08-24 large-scale review's Priority-1 minor: the sources line
+    /// recorded the basis only when
     /// TTM was adopted, so an annual-fallback holding's audit named no basis while
     /// `portfolio-analysis.md` §Starting parameters says the adopted basis is
     /// recorded there.
@@ -2575,6 +2559,7 @@ Sources and footnotes.
                 symbol: "AAPL".into(),
                 asset_class: AssetClass::Stock,
                 position_change: PositionChange::New,
+                basis_move: None,
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
@@ -2606,7 +2591,6 @@ Sources and footnotes.
         // No audit row for the symbol -> no stamp to read, on either axis.
         assert_eq!(prior.grade_parameter_version, None);
         assert_eq!(prior.target_parameter_version, None);
-        assert!(prior.pre_profit.is_none());
     }
 
     #[test]
@@ -2626,6 +2610,7 @@ Sources and footnotes.
                 symbol: "AAPL".into(),
                 asset_class: AssetClass::Stock,
                 position_change: PositionChange::New,
+                basis_move: None,
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
@@ -2731,6 +2716,7 @@ Sources and footnotes.
                 symbol: "AAPL".into(),
                 asset_class: AssetClass::Stock,
                 position_change: PositionChange::Unchanged,
+                basis_move: None,
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },

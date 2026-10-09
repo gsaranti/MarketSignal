@@ -1145,13 +1145,9 @@ fn per_period_volatility(fin: &CompanyFinancials) -> Option<f64> {
 ///
 /// The two price legs come from [`engine::compute_metrics`] — the 180-day
 /// `price_history` — **not** the ~1,600-day dated `daily_closes` the volatility
-/// helper above prefers. `TrailingReturn` and `ReturnVolatility` are both
-/// fund-computable ledger series, and the quick check evaluates them off
-/// `price_history` (`quick_check.rs`, the sweep's own EOD pull). Authoring them
-/// here on the deep history would author a condition on one window and evaluate it
-/// on another, so a fund's falsifier could confirm a breach with no change in the
-/// thesis. This mirrors the role-risk branch, which was pointed at
-/// `compute_metrics` for exactly this reason (`pipeline.rs`).
+/// helper above prefers. A stock's computed metric lines and the role-risk
+/// branch's read the same window, so every holding's trailing return and
+/// volatility lines stand on one window.
 ///
 /// The momentum sub-score reads the same `trailing_return` leg through
 /// `engine::momentum_score` (`analyze_fund`). The deep history backs the volatility
@@ -1325,15 +1321,13 @@ mod tests {
         assert_eq!(code("", ""), None);
     }
 
-    /// A fund's `TrailingReturn` / `ReturnVolatility` ledger conditions are authored
-    /// on the full pass and evaluated by the quick check, which reads the 180-day
-    /// `price_history`. Authoring them on the ~1,600-day `daily_closes` put the two
-    /// on different windows, so a falsifier could confirm a breach with the thesis
-    /// intact. The full pass's ledger surface must match the sweep's.
+    /// A fund's trailing-return and volatility metric lines read the 180-day
+    /// `price_history`, the window every holding's metric lines read — never the
+    /// ~1,600-day `daily_closes`.
     #[test]
-    fn base_metrics_price_legs_match_the_window_the_quick_check_evaluates() {
+    fn base_metrics_price_legs_read_the_180_day_window() {
         // The two histories disagree sharply: the deep series has tripled, the
-        // 180-day window is flat. The ledger must see the flat one.
+        // 180-day window is flat. The metric lines must read the flat one.
         let fin = CompanyFinancials {
             symbol: "VTI".to_string(),
             current_price: Some(300.0),

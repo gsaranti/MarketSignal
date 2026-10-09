@@ -1009,7 +1009,7 @@ fn portfolio_resume_status(app: tauri::AppHandle) -> Result<PortfolioResumeStatu
 }
 
 /// Run the engine-only Portfolio **quick check** (`docs/portfolio-analysis.md §The
-/// quick check`): the between-run ledger-liveness pass — no model call, no web
+/// quick check`): the between-run engine pass — no model call, no web
 /// research, no Schwab call. The gate is **presence-only**: the local-suite config
 /// presence (which carries the FMP / FRED credential presence) plus the Schwab
 /// connection precondition — the daemon-connectivity probe is deliberately skipped,
@@ -1336,15 +1336,9 @@ async fn export_data(
     let dest = chosen.into_path().map_err(|e| e.to_string())?;
 
     let paths = report_paths(&app)?;
-    // The manifest stamps the local embedder identity for any local-suite
-    // vector namespaces (the report namespace is the fixed cloud model).
-    let local_embedder = {
-        let conn = open_app_db(&app)?;
-        AppConfig::load(&conn).local_embedder_model
-    };
     let passphrase = normalized_passphrase(passphrase);
     tauri::async_runtime::spawn_blocking(move || {
-        portability::export_archive(&paths, &dest, passphrase.as_deref(), local_embedder.as_deref())
+        portability::export_archive(&paths, &dest, passphrase.as_deref())
             .map(Some)
             .map_err(|e| e.to_string())
     })
@@ -1504,9 +1498,8 @@ fn save_provider_credentials(
 /// Persist the local-analysis-models config — daemon endpoint + roster ids
 /// (`docs/configuration.md §Local Models`) — **ungated**: presence of these
 /// fields is the in-app clear path for the *local models not configured*
-/// warning, so the frontend re-runs `check_local_configuration` afterward. A
-/// changed embedder identity clears the stale local vector namespaces
-/// (`settings::save_local_models`). Sync: local SQLite writes, no network — the
+/// warning, so the frontend re-runs `check_local_configuration` afterward.
+/// Sync: local SQLite writes, no network — the
 /// save never probes the daemon (presence, not connectivity).
 #[tauri::command]
 fn save_local_model_settings(

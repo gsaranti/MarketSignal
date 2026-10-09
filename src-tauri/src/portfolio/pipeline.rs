@@ -361,7 +361,7 @@ pub(crate) fn research_brief(
     HoldingBrief {
         header: holding_header(dossier),
         fetched_values: fetched_values_section(dossier, rates),
-        leads: dossier.news_seeds.clone(),
+        leads: dossier.news_leads.clone(),
         prior_documents: format!(
             "{}{}",
             prior_analysis_section(dossier),
@@ -497,8 +497,10 @@ pub fn analyze_holding(
         crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
     );
     // App-set from the deterministic holdings diff, never the model — carried on every
-    // verdict (graded or not) as the structured what-changed position tag.
+    // verdict (graded or not) as the structured position tag, with the basis read
+    // beside an increase.
     let position_change = dossier.position_delta.change;
+    let basis_move = crate::portfolio::diff::basis_move(&dossier.position_delta, &dossier.position);
     let mut degraded = dossier.financials.gaps.clone();
     if let Some(f) = &dossier.fund {
         degraded.extend(f.fund.gaps.iter().cloned());
@@ -747,6 +749,7 @@ pub fn analyze_holding(
             symbol: symbol.clone(),
             asset_class,
             position_change,
+            basis_move: basis_move.clone(),
             disposition: VerdictDisposition::InsufficientEvidence {
                 reason,
                 prior_thesis_document: retained.clone(),
@@ -757,10 +760,8 @@ pub fn analyze_holding(
             action_source: ActionSource::ModelChosen,
             side_reversed: false,
         };
-        // An abstaining stock still records its overlay (fresh statement leg +
-        // carried observation history) and its soft forensic flags — engine-only
-        // state, no model dependency, so the history survives an abstention like
-        // the retained document does.
+        // An abstaining stock still records its overlay (the fresh statement leg)
+        // and its soft forensic flags — engine-only state, no model dependency.
         let mut record = audit(metrics, meta, pre_profit, soft_forensic);
         // The retained document stays on the basis it was written, so the row
         // carries the document's own anchor bar: the next continuity run's
@@ -788,6 +789,7 @@ pub fn analyze_holding(
             symbol: symbol.clone(),
             asset_class,
             position_change,
+            basis_move: basis_move.clone(),
             disposition: VerdictDisposition::NotRated { reason },
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
@@ -854,15 +856,9 @@ pub fn analyze_holding(
         {
             // The floor exit's overlay-survival semantics hold at the guard
             // too: the guard-terminal skip fetched no statements, so the
-            // record reads eligibility-unscorable with its input gaps — but
-            // the period-keyed observation history carries forward, so one
-            // conflicted (possibly transient) run can never reset it
+            // record reads eligibility-unscorable with its input gaps
             // (`docs/storage.md` §Local Analysis Suite Storage).
-            let pre_profit = crate::portfolio::pre_profit::compute_overlay(
-                &dossier.financials,
-                dossier.prior_pre_profit.as_ref(),
-                Vec::new(),
-            );
+            let pre_profit = crate::portfolio::pre_profit::compute_overlay(&dossier.financials);
             let soft_forensic = crate::portfolio::soft_forensic::compute(&dossier.financials);
             return abstain(
                 format!(
@@ -1011,6 +1007,7 @@ pub fn analyze_holding(
                     symbol: symbol.clone(),
                     asset_class,
                     position_change,
+                    basis_move: basis_move.clone(),
                     disposition: VerdictDisposition::RoleRiskOnly(Box::new(rr)),
                     analyzed_at: None,
                     action_source: ActionSource::ModelChosen,
@@ -1020,16 +1017,11 @@ pub fn analyze_holding(
             }
         }
     } else {
-        // The pre-profit overlay's statement legs over the carried observation
-        // history (`docs/portfolio-workflow.md` §Step 6b) — no research-fed
-        // rows exist: the execution read has no producer. Computed for every
+        // The pre-profit overlay's statement legs (`docs/portfolio-workflow.md`
+        // §Step 6b) — the execution read has no producer. Computed for every
         // stock: the eligibility result persists even when the stock does not
         // enter.
-        pre_profit_overlay = Some(pre_profit::compute_overlay(
-            &dossier.financials,
-            dossier.prior_pre_profit.as_ref(),
-            Vec::new(),
-        ));
+        pre_profit_overlay = Some(pre_profit::compute_overlay(&dossier.financials));
         soft_forensic_flags = Some(crate::portfolio::soft_forensic::compute(&dossier.financials));
         match engine::analyze(&dossier.financials, rates) {
             EngineVerdict::Analyzed(out) => out,
@@ -1106,8 +1098,8 @@ pub fn analyze_holding(
     // comparator (a fund has neither consensus nor statements to read). An
     // unreadable pace on a *carried* holding records its typed reason; a debut
     // has no comparator and records nothing (the debut-null convention). A
-    // tripped hype read is the suite's shared soft Medium ceiling on the
-    // engine arm — annotation-recorded, never a clamp on the model's value.
+    // tripped hype read records its matched rule — evidence the model weighs,
+    // never a clamp on either arm.
     let (narrative, narrative_gap) = if is_fund {
         (None, None)
     } else {
@@ -1149,7 +1141,7 @@ pub fn analyze_holding(
     // The conditional topics' deterministic triggers (`docs/portfolio-workflow.md`
     // §Step 6c): the technology-event pre-flag is the technology topic's only
     // trigger, decided when the agenda is assembled; the symbol-scoped news
-    // seeds ride the pass brief as leads and trigger nothing.
+    // leads ride the pass brief and trigger nothing.
     let triggers = research::AgendaTriggers {
         tech_pre_flag_fired: tech_pre_flag.as_ref().is_some_and(|f| f.fired),
         overlay_eligible: pre_profit_overlay.as_ref().is_some_and(|o| o.is_eligible()),
@@ -1277,6 +1269,7 @@ pub fn analyze_holding(
         symbol: symbol.clone(),
         asset_class,
         position_change,
+        basis_move,
         disposition: VerdictDisposition::Priced(Box::new(graded)),
         analyzed_at: None,
         action_source: ActionSource::ModelChosen,
@@ -1309,9 +1302,9 @@ pub fn analyze_holding(
         fund_exposure: fund_exposure.clone(),
         pre_profit: pre_profit_overlay,
         soft_forensic: soft_forensic_flags,
-        // The full hurdle read persists so a decision episode's calibration
-        // snapshot can freeze the hurdle inputs (`docs/portfolio-analysis.md`
-        // §Outcome learning).
+        // The full hurdle read persists on the audit, the hurdle basis behind
+        // the verdict's dead-money state (`docs/storage.md` §Local Analysis
+        // Suite Storage).
         hurdle: Some(engine_output.hurdle.clone()),
         forensic: filing_state
             .clone()
@@ -1780,8 +1773,8 @@ fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
 
 /// The narrative-vs-reality read (`docs/portfolio-analysis.md` §Starting
 /// parameters): the conviction-layer red-flag ratio, rendered as layer-(b)
-/// evidence — a tripped hype cap names its engine-matched rule (an engine-arm
-/// bound, never a clamp on the model's own values), and the letter grade is
+/// evidence — a tripped hype read names its matched rule (evidence, never a
+/// clamp on either arm), and the letter grade is
 /// untouched either way. Empty where the read was uncomputable (the audit's
 /// gap manifest carries the reason). A hype read with no persisted ratio is
 /// one of two states the render must not conflate: a non-positive reality leg
@@ -3205,11 +3198,10 @@ fn consensus_blend_line(fin: &engine::CompanyFinancials) -> String {
 /// neither renders here.
 pub(crate) fn computed_metrics_lines(is_fund: bool, metrics: &engine::ComputedMetrics) -> String {
     let mut p = String::new();
-    for s in engine::LedgerSeries::ALL
+    for s in engine::MetricSeries::ALL
         .iter()
         .copied()
         .filter(|s| s.computable_for(is_fund))
-        .filter(|s| !matches!(s, engine::LedgerSeries::Price | engine::LedgerSeries::ExpenseRatio))
     {
         let value = match s.metric_value(metrics) {
             Some(v) => format!("{v:.4}"),
@@ -3226,10 +3218,9 @@ fn opt(v: Option<f64>) -> String {
 
 /// The expense-ratio prompt render — one shared formatter so the role-risk,
 /// interpretation, and action prompts state the value identically. The decimal
-/// fraction stays primary because it is the ledger's unit
-/// (`LedgerSeries::ExpenseRatio` is declared to the model as a decimal, and the
-/// debut falsifier's threshold is authored in it); the percent reading rides
-/// beside it so the number is legible without the legend's arithmetic. Four
+/// fraction stays primary, matching the computed metric lines' fractions; the
+/// percent reading rides beside it so the number is legible without the
+/// legend's arithmetic. Four
 /// places is one basis point — the resolution expense ratios are usually
 /// quoted at — and a nonzero ratio that would round to zero extends its
 /// precision instead, up to ten places, so a ratio prints as free only below
@@ -3247,7 +3238,7 @@ fn fmt_expense_ratio(v: Option<f64>) -> String {
 /// The decimal places a prompt-rendered value takes: four (one basis point),
 /// extended up to ten where a nonzero value would otherwise round to zero —
 /// the expense-ratio render's own rule, shared so every site that prints a
-/// ledger-unit value states it at the same precision.
+/// fraction-unit value states it at the same precision.
 fn render_places(x: f64) -> usize {
     if x == 0.0 {
         4
@@ -3905,13 +3896,10 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
     p
 }
 
-/// The ledger section's statement-basis line — the one place the prompt says
-/// which basis the flow series stand on this run, so a flow-series threshold is
-/// authored on the basis it will be evaluated against. The flow family is read off
-/// `LedgerSeries::flow_basis` and the balance-sheet instants off
-/// `statement_derived` less it — never a second list — and the instants are named
-/// as instants, since debt / equity and price / book read the latest balance sheet
-/// on either basis (Codex round 1). The basis is the holding's `statement_basis`,
+/// The statement-basis line — the one place the prompt says which basis the
+/// flow metrics stand on this run. The instants are named as instants, since
+/// debt / equity and price / book read the latest balance sheet on either basis
+/// (Codex round 1). The basis is the holding's `statement_basis`,
 /// stamped at `dossier::apply_ttm_statement_basis` and settled by the SEC merge.
 /// `None` — no flow lines this run (a fund, a stock whose statement surface
 /// resolved to nothing, or a balance-sheet instant standing alone, FMP's or an
@@ -3921,9 +3909,8 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
 /// (`docs/portfolio-analysis.md` §Starting parameters; large-scale review
 /// 2026-08-24, Priority-1 minor). The instants' sentence names which balance
 /// sheet supplied their equity this run (`equity_source`, stamped at the SEC
-/// merge — Codex I13, `portfolio-v23`): the source is the instants' own
-/// continuity stamp, so the model reads what the evaluation gates on; `None` —
-/// no equity line reached the engine — says the instants are unevaluable here.
+/// merge — Codex I13, `portfolio-v23`); `None` — no equity line reached the
+/// engine — says the instants are unevaluable here.
 fn statement_basis_line(
     basis: Option<crate::portfolio::StatementBasis>,
     equity_source: Option<crate::portfolio::EquitySource>,
@@ -4205,7 +4192,7 @@ pub struct LiveResearchCtx {
 /// (`docs/configuration.md §Local Analysis Suite Configuration`), and the
 /// documented roster default runs distillation on the resident reasoner anyway
 /// (`docs/local-models.md §The model roster and per-task routing`) — so a
-/// reasoner+embedder-only setup runs rather than failing mid-run on an empty id.
+/// reasoner-only setup runs rather than failing mid-run on an empty id.
 /// The single home for the rule: [`LocalAnalyst::new`] and the resume-status
 /// roster check both read it, so the two cannot drift.
 pub fn effective_fast_model(reasoner_model: &str, fast_model: &str) -> String {
@@ -4379,7 +4366,7 @@ pub(super) const NUM_CTX_DISTILL: u32 = 32_768;
 /// the KV cost of this a few GB (`docs/local-model-operations.md §Context window`).
 pub(crate) const NUM_CTX_INTERPRET: u32 = 131_072;
 /// Ollama `keep_alive: -1` — never idle-unload. The roster's documented posture:
-/// the reasoner (and embedder) stay resident between calls and runs
+/// the reasoner stays resident between calls and runs
 /// (`docs/local-models.md §The model roster and per-task routing`).
 const KEEP_ALIVE_RESIDENT: i64 = -1;
 
@@ -4393,15 +4380,15 @@ const KEEP_ALIVE_RESIDENT: i64 = -1;
 // parse failure. Generation shares `num_ctx` with the prompt, so a large prompt
 // can exhaust the context before the ceiling binds — that stop reports the same
 // `done_reason: "length"` and lands in the same typed guard.
-/// Thinking stages (interpretation, role-risk, construction): chains run tens
-/// of thousands of tokens and count against the same budget as the answer.
+/// Thinking stages (the research turns, the analysis, the review, the thesis
+/// document, the role/risk read and the action call): chains run tens of
+/// thousands of tokens and count against the same budget as the answer.
 pub(super) const NUM_PREDICT_THINKING: u32 = 65_536;
 /// The appendix message's ceiling: four short fields under the grammar, so a
 /// stop at this reservation is a runaway, never a legitimate transcription.
 pub(super) const NUM_PREDICT_APPENDIX: u32 = 1_024;
-/// Normal distillation ceiling. The response is a potentially wide structured
-/// object: combined narrative, per-topic claims and URLs, typed side channels,
-/// and bounded observation excerpts. A reservation-bound stop gets one larger
+/// Normal distillation ceiling. The response is the distilled write-ups as
+/// prose, one per topic. A reservation-bound stop gets one larger
 /// retry below; this first ceiling remains the runaway/latency guardrail.
 /// Raised from 8,192 after attempt 8 (Finding 3, ruled 2026-09-27): a
 /// six-topic stock's ordinary distillation ran to 8,055 tokens, so the old
@@ -4713,19 +4700,12 @@ impl HoldingAnalyst for LocalAnalyst {
         let prompt = distill::distillation_prompt(input);
         let stage = input.stage.as_str();
         let expanded_spent = std::cell::Cell::new(false);
-        match distill_prose_call(self, stage, &prompt, &expanded_spent) {
-            Ok(text) => Ok(text),
-            Err(first) => {
-                if expanded_spent.get()
-                    || !self.retry.permit(self.client.progress(), stage, &first)
-                {
-                    return Err(first);
-                }
-                distill_prose_call(self, stage, &prompt, &expanded_spent).map_err(|second| {
-                    second.context(crate::local_model::retried_once_annotation(&first))
-                })
-            }
-        }
+        self.retry.run_unless(
+            self.client.progress(),
+            stage,
+            || expanded_spent.get(),
+            || distill_prose_call(self, stage, &prompt, &expanded_spent),
+        )
     }
 
     fn analyze(&self, input: &distill::AnalysisInput<'_>) -> Result<String> {
@@ -4975,7 +4955,7 @@ pub(crate) mod tests {
     use crate::schwab::Position;
     use std::collections::HashMap;
 
-    // ---- The 6g what-changed attribution validator ----
+    // ---- The local analyst's recorded attempts ----
 
     #[test]
     fn local_analyst_records_and_drains_failed_physical_attempts() {
@@ -5172,7 +5152,7 @@ pub(crate) mod tests {
         HoldingDossier {
             earnings_issuer: None,
             prior_metrics: None,
-            news_seeds: Vec::new(),
+            news_leads: Vec::new(),
             analysis_date: "2026-07-28".into(),
             company_name: None,
             position: position(asset_class),
@@ -5195,7 +5175,6 @@ pub(crate) mod tests {
             prior_target_parameter_version: None,
             prior_authoring_close: None,
             sources: vec!["FMP".into()],
-            prior_pre_profit: None,
             prior_analysis: None,
             prior_accuracy_read_through: None,
             prior_fund_exposure: None,
@@ -5217,12 +5196,11 @@ pub(crate) mod tests {
     #[test]
     fn the_technology_topic_fires_from_the_pre_flag_alone_and_only_once() {
         // The pre-flag is the topic's only trigger (`docs/portfolio-analysis.md`
-        // §The per-holding pipeline): a fresh news seed fires nothing on its
-        // own — the seed is a lead in the pass brief — and the fired flag adds
+        // §The per-holding pipeline): a fresh news lead fires nothing on its
+        // own — it rides the pass brief — and the fired flag adds
         // the topic once.
         let mut d = dossier(AssetClass::Stock, strong_financials());
-        d.news_seeds = vec![research::ResearchSeed {
-            id: "seed-1".into(),
+        d.news_leads = vec![research::NewsLead {
             headline: "Rival unveils a competing chip".into(),
             url: "https://reuters.com/rival-chip".into(),
             source: "reuters.com".into(),
@@ -5234,7 +5212,7 @@ pub(crate) mod tests {
                 .filter(|t| t.key == "technology-event")
                 .count()
         };
-        // A seed with nothing standing behind it fires nothing.
+        // A lead with nothing standing behind it fires nothing.
         assert_eq!(tech_topics(research::AgendaTriggers::default()), 0);
         assert_eq!(
             tech_topics(research::AgendaTriggers {
@@ -5683,7 +5661,7 @@ pub(crate) mod tests {
     #[test]
     fn role_risk_audit_persists_the_branch_computed_metrics() {
         // The role/risk branch computes the expense ratio plus the price-derived
-        // legs (the surface its ledger evaluation reads); the audit row must carry
+        // legs; the audit row must carry
         // them, not the empty default it used to persist (M3, 2026-08-18).
         let (verdict, audit) = analyze_holding(
             &StubAnalyst,
@@ -5702,8 +5680,7 @@ pub(crate) mod tests {
         assert!(audit.metrics.revenue_growth.is_none());
         assert_eq!(audit.metrics.nav_premium, None);
 
-        // The CEF variant threads the closed-end read into the audit metrics,
-        // so a premium move can seed its own input-delta row across runs
+        // The CEF variant threads the closed-end read into the audit metrics
         // (Codex 2026-08-21 round 3, finding 3).
         let mut cef = bond_fund();
         cef.profile_is_fund = Some(true);
@@ -6052,6 +6029,7 @@ pub(crate) mod tests {
             symbol: "AAPL".into(),
             asset_class: AssetClass::Stock,
             position_change: PositionChange::Unchanged,
+            basis_move: None,
             disposition: VerdictDisposition::InsufficientEvidence {
                 reason: "fixture".into(),
                 prior_thesis_document: Some("The prior document, verbatim.".into()),
@@ -8075,11 +8053,16 @@ pub(crate) mod tests {
         // REVIEW on both thesis-document messages — v75, the trail to
         // checkpoint-v24 (the audit's review and read-through mark, the fund
         // basis's NAV) and the archive to format 21.
+        // The removal sweep (2026-10-09): no prompt moves; the verdict's basis
+        // read and the overlay's dropped observation history set the trail's
+        // final Portfolio shape at checkpoint-v25 and the archive's at format
+        // 22, which refuses every earlier pre-release format.
         assert_eq!(PROMPT_VERSION, "portfolio-v75");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v24"
+            "checkpoint-v25"
         );
+        assert_eq!(crate::portability::FORMAT_VERSION, 22);
     }
 
     #[test]
@@ -10045,6 +10028,7 @@ pub(crate) mod tests {
             symbol: "AAPL".into(),
             asset_class: AssetClass::Stock,
             position_change: PositionChange::Unchanged,
+            basis_move: None,
             disposition,
             analyzed_at: Some("2026-08-03T20:00:00Z".into()),
             action_source: Default::default(),
@@ -10212,10 +10196,6 @@ pub(crate) mod tests {
 
     // ---- The pre-profit execution / financing overlay ----------------------------
 
-    use crate::portfolio::pre_profit::{
-        MetricKind, ObservationPolarity, ObservationRole, PreProfitObservation,
-    };
-
     /// An overlay-eligible stock: the strong fixture with negative TTM operating
     /// income, quarterly cash-flow prints, and balance-sheet cash lines.
     fn pre_profit_financials() -> CompanyFinancials {
@@ -10238,58 +10218,6 @@ pub(crate) mod tests {
         fin.cash_and_equivalents = Some(6.0e9);
         fin.short_term_investments = Some(4.0e9);
         fin
-    }
-
-    /// A well-formed row whose period normalizes to its ISO period end and
-    /// whose publication date is role-aware under the guidance vintage policy
-    /// (Codex I4) — guidance sixty days before the period end, an actual
-    /// thirty days after — so a fixture pair is ex ante by construction.
-    fn pre_profit_observation(
-        role: ObservationRole,
-        value: f64,
-        period: &str,
-    ) -> PreProfitObservation {
-        let period = crate::portfolio::pre_profit::normalize_period(period);
-        let end = chrono::NaiveDate::parse_from_str(&period, "%Y-%m-%d")
-            .expect("the fixture period normalizes");
-        let days = if role == ObservationRole::Actual {
-            30
-        } else {
-            -60
-        };
-        let published_at = (end + chrono::Duration::days(days))
-            .format("%Y-%m-%d")
-            .to_string();
-        PreProfitObservation {
-            metric_kind: MetricKind::Deliveries,
-            observation_role: role,
-            polarity: ObservationPolarity::HigherIsBetter,
-            numeric_value: value,
-            units: "units".into(),
-            period,
-            period_span: crate::portfolio::pre_profit::PeriodSpan::Quarter,
-            issuer_scope: "company".into(),
-            source_url: "https://example.com/ir".into(),
-            source_excerpt: format!("reported deliveries of {value} units"),
-            published_at,
-            confidence: 0.9,
-            admitted_under: crate::portfolio::PROMPT_VERSION.into(),
-        }
-    }
-
-    /// A prior overlay whose history carries guidance/actual pairs in two
-    /// distinct periods for one metric — carried history, no read derives
-    /// from it.
-    fn prior_overlay_with_guidance_history() -> crate::portfolio::pre_profit::PreProfitOverlay {
-        let mut prior =
-            crate::portfolio::pre_profit::compute_overlay(&pre_profit_financials(), None, vec![]);
-        prior.observations = vec![
-            pre_profit_observation(ObservationRole::GuidanceLow, 100.0, "2026-Q1"),
-            pre_profit_observation(ObservationRole::Actual, 90.0, "2026-Q1"),
-            pre_profit_observation(ObservationRole::GuidanceLow, 100.0, "2026-Q2"),
-            pre_profit_observation(ObservationRole::Actual, 92.0, "2026-Q2"),
-        ];
-        prior
     }
 
     #[test]
@@ -10331,24 +10259,20 @@ pub(crate) mod tests {
 
     #[test]
     fn eligible_overlay_renders_its_states_and_persists() {
-        let mut d = dossier(AssetClass::Stock, pre_profit_financials());
-        d.prior_pre_profit = Some(prior_overlay_with_guidance_history());
+        let d = dossier(AssetClass::Stock, pre_profit_financials());
         let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
 
         let overlay = audit.pre_profit.expect("overlay rides the audit");
         assert!(overlay.is_eligible());
         assert_eq!(overlay.execution, crate::portfolio::pre_profit::ExecutionLeg::Unscorable);
-        // The carried history binds nothing: the execution leg has no producer,
-        // the engine caps no conviction, and the model's High persists as
-        // authored.
+        // The execution leg has no producer, the engine caps no conviction,
+        // and the model's High persists as authored.
         assert!(overlay.consequences.matched_rules.is_empty());
         let VerdictDisposition::Priced(g) = verdict.disposition else {
             panic!("expected a priced verdict");
         };
         assert_eq!(g.appendix.conviction, Some(Conviction::High));
-        // The observation history carried through the run.
-        assert_eq!(overlay.observations.len(), 4);
 
         // The prompt renders the overlay block under the same input the live
         // call builds.
@@ -10389,7 +10313,7 @@ pub(crate) mod tests {
         let mut fin = pre_profit_financials();
         fin.cash_and_equivalents = Some(1.0e9);
         fin.short_term_investments = None;
-        let overlay = pre_profit::compute_overlay(&fin, None, vec![]);
+        let overlay = pre_profit::compute_overlay(&fin);
         assert!(overlay.consequences.bar_add_family);
         assert!(!overlay.consequences.exit_family_only);
 
@@ -10453,8 +10377,7 @@ pub(crate) mod tests {
             let revenue = row.revenue.expect("the fixture carries revenue");
             row.gross_profit = Some(if i < 2 { -0.1 * revenue } else { 0.2 * revenue });
         }
-        let mut d = dossier(AssetClass::Stock, fin);
-        d.prior_pre_profit = Some(prior_overlay_with_guidance_history());
+        let d = dossier(AssetClass::Stock, fin);
         let (verdict, audit) =
             analyze_holding(&DefiantAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let overlay = audit.pre_profit.expect("overlay rides the audit");
@@ -10551,12 +10474,10 @@ pub(crate) mod tests {
     #[test]
     fn abstaining_stock_still_records_the_overlay() {
         // No consensus at all: the engine abstains (no-admissible-driver), but the
-        // overlay record — statement leg + carried history — persists with the
-        // abstention, like the standing ledger does.
+        // overlay record persists with the abstention.
         let mut fin = pre_profit_financials();
         fin.consensus = None;
-        let mut d = dossier(AssetClass::Stock, fin);
-        d.prior_pre_profit = Some(prior_overlay_with_guidance_history());
+        let d = dossier(AssetClass::Stock, fin);
         let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         assert!(matches!(
@@ -10565,19 +10486,16 @@ pub(crate) mod tests {
         ));
         let overlay = audit.pre_profit.expect("overlay survives an abstention");
         assert!(overlay.is_eligible());
-        assert_eq!(overlay.observations.len(), 4, "history carried");
         assert!(audit.soft_forensic.is_some(), "the soft flags persist with the abstention");
     }
 
     #[test]
-    fn a_guard_conflict_abstention_records_a_carrying_overlay() {
+    fn a_guard_conflict_abstention_records_the_overlay() {
         use crate::portfolio::listing::ListingResolution;
         use crate::portfolio::pre_profit::PreProfitEligibility;
         // The conflicting-identity exit takes the floor exit's full overlay
         // semantics: the guard-terminal skip fetched no statements, so the
-        // record reads eligibility-unscorable with its input gaps — but the
-        // period-keyed observation history carries, so one conflicted
-        // (possibly transient) run can never reset it.
+        // record reads eligibility-unscorable with its input gaps.
         let mut d = dossier(
             AssetClass::Stock,
             CompanyFinancials { symbol: "X".into(), ..CompanyFinancials::default() },
@@ -10585,7 +10503,6 @@ pub(crate) mod tests {
         d.listing = Some(ListingResolution::Conflict {
             fmp_name: "Wrong Issuer Inc.".into(),
         });
-        d.prior_pre_profit = Some(prior_overlay_with_guidance_history());
         let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-05").unwrap();
         assert!(matches!(
@@ -10598,7 +10515,6 @@ pub(crate) mod tests {
             "no statement was fetched — the read is unscorable, never inferred: {:?}",
             overlay.eligibility
         );
-        assert_eq!(overlay.observations.len(), 4, "history carried, not reset");
         // The flags take the same posture: recorded, every input missing,
         // nothing inferred clear.
         let flags = audit.soft_forensic.expect("the flags survive the guard exit");

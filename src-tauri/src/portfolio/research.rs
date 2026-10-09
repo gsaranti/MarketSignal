@@ -348,8 +348,8 @@ fn topic(key: &str, title: &str, questions: &[&str]) -> AgendaTopic {
 pub struct AgendaTriggers {
     /// The engine's Step-6b technology-event pre-flag fired — the technology
     /// topic's only trigger (`docs/portfolio-analysis.md` §The per-holding
-    /// pipeline). The symbol-scoped `news/stock` seeds are no trigger of their
-    /// own: they ride the pass brief as leads.
+    /// pipeline). The symbol-scoped `news/stock` leads are no trigger of their
+    /// own: they ride the pass brief.
     pub tech_pre_flag_fired: bool,
     /// The stock entered the pre-profit overlay (eligible read).
     pub overlay_eligible: bool
@@ -505,11 +505,9 @@ pub(crate) fn disconfirming_topic() -> AgendaTopic {
 /// One news lead fed to the loop — a lead, never evidence
 /// (`docs/web-research.md §The research loop and context management`): a
 /// dated headline with its address, rendered under NEWS LEADS as a fetch
-/// candidate beside the search results. The app assigns the stable `id` for
-/// the audit's trace; no prompt renders it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResearchSeed {
-    pub id: String,
+/// candidate beside the search results.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewsLead {
     pub headline: String,
     pub url: String,
     pub source: String,
@@ -533,7 +531,7 @@ pub struct HoldingBrief {
     /// where the brief carries none.
     pub fetched_values: String,
     /// The news leads (NEWS LEADS).
-    pub leads: Vec<ResearchSeed>,
+    pub leads: Vec<NewsLead>,
     /// The prior documents on a continuity run, rendered as the analysis and
     /// thesis messages render them (PRIOR ANALYSIS, then PRIOR THESIS, each
     /// under its date with any split-context line); empty on a debut.
@@ -1343,7 +1341,7 @@ fn research_retry_stage(step_label: &str, topic_key: &str, leg: &str) -> String 
 }
 
 /// What the fetch layer recorded about a served page beside its text: the
-/// extracted title and the publication date the search result (or the seed)
+/// extracted title and the publication date the search result (or the lead)
 /// reported for its URL, when one did (`portfolio-v43`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PageMeta {
@@ -2427,7 +2425,7 @@ impl ResearchRunner<'_> {
                     .get(&normalized)
                     .or_else(|| published_by_url.get(&requested))
                     // A later explicit read may use the final URL rather than
-                    // the alias whose search/seed supplied the publication date.
+                    // the alias whose search/lead supplied the publication date.
                     .or_else(|| page_meta.get(&normalized).and_then(|meta| meta.published.as_ref()))
                     .cloned() };
                 page_meta.insert(
@@ -4684,9 +4682,8 @@ mod tests {
         vec![topic("competitive-position", "Competitive position", &["q1"])]
     }
 
-    fn leads() -> Vec<ResearchSeed> {
-        vec![ResearchSeed {
-            id: "seed-1".into(),
+    fn leads() -> Vec<NewsLead> {
+        vec![NewsLead {
             headline: "Widget beats".into(),
             url: "https://reuters.com/widget".into(),
             source: "fmp-news".into(),
@@ -5716,8 +5713,7 @@ mod tests {
         ) / 3;
         let brief = HoldingBrief {
             header: WID_HEADER.into(),
-            leads: vec![ResearchSeed {
-                id: "seed-flood".into(),
+            leads: vec![NewsLead {
                 headline: "h".repeat(prefix_cap),
                 url: "https://example.com/flood".into(),
                 source: "example.com".into(),
@@ -8222,17 +8218,15 @@ pub(crate) mod samples {
     }
 
     /// Two hand-written headlines for the stock sample.
-    pub(crate) fn stock_leads(stub: bool) -> Vec<ResearchSeed> {
+    pub(crate) fn stock_leads(stub: bool) -> Vec<NewsLead> {
         vec![
-            ResearchSeed {
-                id: "seed-1".into(),
+            NewsLead {
                 headline: prose(stub, "headline of lead 1", "Tesla begins Cybercab production at Giga Texas ahead of Q4 launch"),
                 url: "https://www.reuters.com/business/autos-transportation/tesla-cybercab-production-2026-09-10/".into(),
                 source: "reuters.com".into(),
                 published: Some("2026-09-10 14:02:00".into())
             },
-            ResearchSeed {
-                id: "seed-2".into(),
+            NewsLead {
                 headline: prose(stub, "headline of lead 2", "NHTSA opens preliminary evaluation into FSD v14 intersection crashes"),
                 url: "https://www.nhtsa.gov/press-releases/nhtsa-opens-pe-fsd-v14".into(),
                 source: "nhtsa.gov".into(),
@@ -8243,17 +8237,15 @@ pub(crate) mod samples {
 
     /// Two hand-written headlines for a bond-fund holding, so the fund sample
     /// reads as one.
-    pub(crate) fn fund_leads(stub: bool) -> Vec<ResearchSeed> {
+    pub(crate) fn fund_leads(stub: bool) -> Vec<NewsLead> {
         vec![
-            ResearchSeed {
-                id: "seed-1".into(),
+            NewsLead {
                 headline: prose(stub, "headline of lead 1", "Vanguard trims expense ratios across its bond index lineup"),
                 url: "https://www.reuters.com/markets/funds/vanguard-bond-index-fee-cut-2026-09-08/".into(),
                 source: "reuters.com".into(),
                 published: Some("2026-09-08 13:10:00".into())
             },
-            ResearchSeed {
-                id: "seed-2".into(),
+            NewsLead {
                 headline: prose(stub, "headline of lead 2", "Treasury curve steepens as the ten-year yield climbs past 4.4%"),
                 url: "https://www.ft.com/content/treasury-curve-steepens-2026-09-11".into(),
                 source: "ft.com".into(),

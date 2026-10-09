@@ -57,9 +57,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // The retired decision-episode table: its rows are no price records, so the
-    // episode store starts fresh beside it.
-    conn.execute("DROP TABLE IF EXISTS portfolio_outcome_episodes", [])?;
     // The episode store (`docs/portfolio-analysis.md §Outcome learning`) —
     // append-only price records, persisted **independent of the run retention**
     // (a three-year horizon outlives any count-based window), and the checks
@@ -281,7 +278,11 @@ pub struct CheckpointHeader {
 /// review and the accuracy read-through mark its thesis document read, and
 /// the fund exposure basis carries the fund's NAV — so no v23 row can resume
 /// this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v24";
+/// `checkpoint-v25` (`portfolio-v75`): the Portfolio trail's final shape — the
+/// verdict carries the basis read beside its position change and the audit's
+/// pre-profit overlay carries no observation history — so no v24 row can
+/// resume this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v25";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -979,19 +980,6 @@ pub fn prune_runs(conn: &Connection, keep: u32) -> Result<()> {
          )",
         [keep],
     )?;
-    // The evicted runs' per-holding continuity summaries go with them: a
-    // Portfolio-namespace `summary` row is keyed `{run_id}:{SYMBOL}`, and
-    // run-summary vector rows follow run retention (`docs/storage.md §Local
-    // Vector Memory`) — durable `learning` rows are untouched. Matching on the
-    // id prefix against the *surviving* runs also sweeps any orphan row whose
-    // run never persisted.
-    conn.execute(
-        "DELETE FROM vector_memory
-         WHERE kind = 'summary' AND namespace = 'portfolio'
-           AND substr(report_id, 1, instr(report_id, ':') - 1)
-               NOT IN (SELECT run_id FROM portfolio_runs)",
-        [],
-    )?;
     Ok(())
 }
 
@@ -1039,6 +1027,100 @@ pub(crate) fn entry3_test_run() -> PortfolioRun {
         written: "2026-09-18".into(),
         anchor: Some(crate::portfolio::engine::DatedValue { date: "2026-09-17".into(), value: 48.2 }),
     });
+    run
+}
+
+/// A price record and a check written onto it — the episode-store fixture the
+/// archive round trip and [`archive_test_run`]'s accuracy record share.
+#[cfg(test)]
+pub(crate) fn archive_test_episode() -> (
+    crate::portfolio::outcome::PriceRecord,
+    crate::portfolio::outcome::Check,
+) {
+    use crate::portfolio::engine::DatedValue;
+    use crate::portfolio::outcome::*;
+    let record = PriceRecord {
+        symbol: "AAPL".into(),
+        created_on: "2026-04-01".into(),
+        spot: 180.0,
+        anchor: Some(DatedValue { date: "2026-03-31".into(), value: 179.5 }),
+        model: HorizonPrices {
+            three_month: Some(190.0),
+            twelve_month: Some(205.0),
+            three_year: None,
+        },
+        engine: HorizonPrices {
+            three_month: Some(186.0),
+            twelve_month: None,
+            three_year: Some(240.0),
+        },
+    };
+    let check = Check {
+        horizon: Horizon::ThreeMonth,
+        checked_on: "2026-07-06".into(),
+        run_id: "run-one".into(),
+        outcome: CheckOutcome::Scored {
+            close: DatedValue { date: "2026-07-01".into(), value: 195.25 },
+            bridge_factor: 1.0,
+            model: Some(LegScore { expected: 190.0, score: 97.31 }),
+            engine: Some(LegScore { expected: 186.0, score: 95.26 }),
+        },
+    };
+    (record, check)
+}
+
+/// The archive round trip's run: [`entry3_test_run`] with every field the
+/// later formats carry set — the verdict's basis read, the audit's review and
+/// read-through mark, a fund exposure basis with its NAV, a pre-profit
+/// overlay, and the run's accuracy record with an opened episode and a
+/// written check.
+#[cfg(test)]
+pub(crate) fn archive_test_run(run_id: &str, created_at: &str) -> PortfolioRun {
+    use crate::portfolio::outcome::*;
+    let mut run = entry3_test_run();
+    run.run_id = run_id.into();
+    run.created_at = created_at.into();
+    run.verdicts[0].position_change = crate::portfolio::PositionChange::Increased;
+    run.verdicts[0].basis_move = Some(crate::portfolio::BasisMove {
+        direction: crate::portfolio::BasisDirection::PaidUp,
+        prior_average_cost: 140.0,
+        average_cost: 150.0,
+    });
+    let audit = &mut run.audit[0];
+    audit.review = Some("The prior read held: the twelve-month price is on its path.".into());
+    audit.accuracy_read_through = Some(3);
+    audit.fund_exposure = Some(crate::portfolio::fund::FundExposureBasis {
+        class_label: "US equity fund".into(),
+        expense_ratio: Some(0.0009),
+        us_share: Some(0.98),
+        top_sector: Some(("Technology".into(), 0.31)),
+        structural_flag: false,
+        nav: Some(512.34),
+    });
+    audit.pre_profit = Some(crate::portfolio::pre_profit::compute_overlay(
+        &crate::portfolio::engine::CompanyFinancials::default(),
+    ));
+    let (record, check) = archive_test_episode();
+    let arm = |score: f64| ArmScore {
+        score,
+        checks: 1,
+        last_moved_on: "2026-07-06".into(),
+        last_moved_check: 3,
+    };
+    run.accuracy = AccuracyRecord {
+        scores: Some(std::collections::BTreeMap::from([(
+            "AAPL".to_string(),
+            AccuracyScores {
+                three_month: HorizonAccuracy {
+                    model: Some(arm(97.31)),
+                    engine: Some(arm(95.26)),
+                },
+                ..Default::default()
+            },
+        )])),
+        opened: vec![StoredEpisode { id: 7, record }],
+        checks: vec![StoredCheck { id: 3, episode_id: 7, check }],
+    };
     run
 }
 
@@ -1292,6 +1374,7 @@ mod tests {
                 symbol: "AAPL".into(),
                 asset_class: AssetClass::Stock,
                 position_change: PositionChange::New,
+                basis_move: None,
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
@@ -1439,6 +1522,7 @@ mod tests {
             symbol: "BND".into(),
             asset_class: AssetClass::Etf,
             position_change: PositionChange::New,
+            basis_move: None,
             disposition: VerdictDisposition::RoleRiskOnly(Box::new(
                 pipeline::role_risk_verdict_from_model_arm(
                     &crate::portfolio::fund::RoleRiskReadout {
@@ -1456,6 +1540,7 @@ mod tests {
             symbol: "XYZ".into(),
             asset_class: AssetClass::Stock,
             position_change: PositionChange::Unchanged,
+            basis_move: None,
             disposition: VerdictDisposition::InsufficientEvidence {
                 reason: "inconclusive re-read".into(),
                 prior_thesis_document: Some("The prior document.".into()),
@@ -1602,57 +1687,16 @@ mod tests {
     }
 
     #[test]
-    fn an_observation_row_round_trips_its_source_excerpt_through_the_run() {
-        // The pre-profit row's quoted excerpt persists on accepted and
-        // rejected rows alike, through the run record's JSON (the large-scale
-        // review's I3, Codex round 1), and an accepted row's admission stamp
-        // rides with it — whatever stamp it was admitted under (Codex I20).
-        use crate::portfolio::pre_profit::{
-            compute_overlay, MetricKind, ObservationCandidate, ObservationPolarity,
-            ObservationRole, PeriodSpan, RejectedObservation,
-        };
-        let row = |value: f64, excerpt: &str| ObservationCandidate {
-            metric_kind: MetricKind::Deliveries,
-            observation_role: ObservationRole::Actual,
-            polarity: ObservationPolarity::HigherIsBetter,
-            numeric_value: value,
-            units: "units".into(),
-            period: "2026-06-30".into(),
-            period_span: PeriodSpan::Quarter,
-            issuer_scope: "company".into(),
-            source_url: "https://example.com/report".into(),
-            source_excerpt: excerpt.into(),
-            published_at: "2026-08-01".into(),
-            confidence: 0.9,
-        };
-        let mut overlay = compute_overlay(
+    fn a_pre_profit_overlay_round_trips_through_the_run() {
+        let overlay = crate::portfolio::pre_profit::compute_overlay(
             &crate::portfolio::engine::CompanyFinancials::default(),
-            None,
-            vec![],
         );
-        overlay
-            .observations
-            .push(row(141.0, "deliveries reached 141 units").admit("portfolio-v17"));
-        overlay.rejected.push(RejectedObservation {
-            observation: row(41.0, "revenue was 41 million"),
-            reason: "metric-context check failed".into(),
-        });
         let conn = mem();
         let mut run = sample_run("run-1", "2026-06-25T12:00:00Z");
         run.audit[0].pre_profit = Some(overlay);
         insert_run(&conn, &run).unwrap();
         let back = latest_run(&conn).unwrap().unwrap();
-        assert_eq!(back, run, "the run with its overlay rows round-trips");
-        let overlay = back.audit[0].pre_profit.as_ref().expect("overlay persisted");
-        assert_eq!(
-            overlay.observations[0].source_excerpt,
-            "deliveries reached 141 units"
-        );
-        assert_eq!(overlay.observations[0].admitted_under, "portfolio-v17");
-        assert_eq!(
-            overlay.rejected[0].observation.source_excerpt,
-            "revenue was 41 million"
-        );
+        assert_eq!(back, run, "the run with its overlay round-trips");
     }
 
     #[test]
@@ -2028,26 +2072,6 @@ mod tests {
         );
         insert_check(&conn, ep.id, &sample_check(Horizon::TwelveMonth)).unwrap();
         assert_eq!(load_episode_store(&conn).unwrap().checks.len(), 2);
-    }
-
-    #[test]
-    fn the_retired_decision_episode_table_is_dropped_at_init() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE portfolio_outcome_episodes (id INTEGER PRIMARY KEY, episode_json TEXT)",
-            [],
-        )
-        .unwrap();
-        init_schema(&conn).unwrap();
-        let left: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'portfolio_outcome_episodes'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(left, 0);
-        assert!(load_episode_store(&conn).unwrap().episodes.is_empty());
     }
 
     #[test]

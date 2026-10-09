@@ -52,6 +52,15 @@ pub fn et_date_of(stamp: &str) -> Option<NaiveDate> {
         .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
 }
 
+/// The calendar-month rule: `date` plus `months` calendar months, a day past
+/// the target month's end clamping to its last day (`docs/portfolio-analysis.md`
+/// §Outcome learning — the horizon dates). Mirrored by `addCalendarMonths` in
+/// `src/etDate.ts` on [`tests::CALENDAR_MONTH_CASES`], the case table both
+/// sides pin.
+pub fn add_calendar_months(date: NaiveDate, months: u32) -> Option<NaiveDate> {
+    date.checked_add_months(chrono::Months::new(months))
+}
+
 /// Regular-session open, minutes since ET midnight (9:30 AM).
 const SESSION_OPEN_MINUTES: u32 = 9 * 60 + 30;
 /// Regular-session close, minutes since ET midnight (4:00 PM).
@@ -341,6 +350,30 @@ mod tests {
         assert_eq!(et("2026-08-06T01:60:00+00:00").as_deref(), Some("2026-08-06"));
         assert_eq!(et("2026-08-06T01:30:61+00:00").as_deref(), Some("2026-08-06"));
         assert_eq!(et("2026-08-06T01:30:00+0000").as_deref(), Some("2026-08-06"));
+    }
+
+    /// The calendar-month rule's pinned cases — the same table
+    /// `tests/etDate.test.ts` pins on the frontend mirror: a plain add at each
+    /// horizon, month-end clamps into a short month, a leap day both ways, and
+    /// a year rollover.
+    pub(super) const CALENDAR_MONTH_CASES: [(&str, u32, &str); 9] = [
+        ("2026-01-05", 3, "2026-04-05"),
+        ("2026-01-05", 12, "2027-01-05"),
+        ("2026-01-05", 36, "2029-01-05"),
+        ("2025-11-30", 3, "2026-02-28"),
+        ("2026-01-31", 1, "2026-02-28"),
+        ("2027-11-30", 3, "2028-02-29"),
+        ("2024-02-29", 12, "2025-02-28"),
+        ("2026-08-31", 3, "2026-11-30"),
+        ("2026-12-15", 3, "2027-03-15"),
+    ];
+
+    #[test]
+    fn calendar_months_add_and_clamp_on_the_pinned_cases() {
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        for (from, months, to) in CALENDAR_MONTH_CASES {
+            assert_eq!(add_calendar_months(d(from), months), Some(d(to)), "{from} + {months}");
+        }
     }
 
     #[test]

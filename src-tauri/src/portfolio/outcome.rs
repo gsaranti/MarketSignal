@@ -192,9 +192,10 @@ pub struct StoredCheck {
 }
 
 /// A horizon's date: the creation date plus the horizon's calendar months (a
-/// month-end creation clamps to the target month's last day).
+/// month-end creation clamps to the target month's last day —
+/// [`crate::market_clock::add_calendar_months`]).
 pub fn horizon_date(created_on: NaiveDate, horizon: Horizon) -> Option<NaiveDate> {
-    created_on.checked_add_months(Months::new(horizon.months()))
+    crate::market_clock::add_calendar_months(created_on, horizon.months())
 }
 
 /// Every due horizon — one whose date is **strictly before** the run's session

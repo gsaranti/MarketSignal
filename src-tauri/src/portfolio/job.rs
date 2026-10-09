@@ -150,9 +150,9 @@ pub trait CompanyDataSource {
         crate::portfolio::evidence::CompanyEvidence::empty(symbol)
     }
     /// Symbol-scoped `news/stock` items since `from` (ISO date) — the research
-    /// loop's structured seeds (leads, never evidence — `docs/web-research.md`).
+    /// loop's news leads (leads, never evidence — `docs/web-research.md`).
     /// Fail-soft: the empty default (stubs, and any failed live fetch) just
-    /// runs the loop unseeded.
+    /// runs the loop with no leads.
     fn news_items(&self, _symbol: &str, _from: &str) -> Vec<crate::fmp::SymbolNewsItem> {
         Vec::new()
     }
@@ -495,8 +495,8 @@ impl CompanyDataSource for LiveCompanyData {
     }
 
     fn news_items(&self, symbol: &str, from: &str) -> Vec<crate::fmp::SymbolNewsItem> {
-        // Fail-soft: a failed news fetch runs the research loop unseeded — a
-        // seed is a lead, never load-bearing evidence.
+        // Fail-soft: a failed news fetch runs the research loop with no leads
+        // — a lead is never load-bearing evidence.
         self.fmp
             .fetch_symbol_news_since(symbol, from)
             .unwrap_or_default()
@@ -720,7 +720,9 @@ fn carry_prior_verdict(
     let vintage =
         crate::portfolio::effective_vintage(prior_verdict, prior_created_at).to_string();
     carried.analyzed_at = Some(vintage.clone());
-    carried.position_change = holdings_diff.delta_for(&position.symbol).change;
+    let delta = holdings_diff.delta_for(&position.symbol);
+    carried.position_change = delta.change;
+    carried.basis_move = diff::basis_move(&delta, position);
     // A carried directional verdict (priced or role/risk) is "side-reversed" when it
     // now describes the opposite position — marked for the card badge
     // (`docs/portfolio-analysis.md` §Triggering); no longer force-included. A
@@ -1858,12 +1860,12 @@ fn run_analysis(
         } else {
             None
         };
-        // The dossier's research-loop seed leg (`docs/portfolio-workflow.md`
-        // §Step 6a): symbol-scoped news since the shared research-freshness
-        // window, as typed seeds with stable app-assigned IDs — leads, never
-        // evidence. Stocks only (the endpoint is company-scoped); a row the
-        // wire served without a URL cannot be deep-read and is dropped.
-        let news_seeds: Vec<crate::portfolio::research::ResearchSeed> =
+        // The dossier's news leads (`docs/portfolio-workflow.md` §Step 6a):
+        // symbol-scoped news since the shared research-freshness window —
+        // leads, never evidence. Stocks only (the endpoint is company-scoped);
+        // a row the wire served without a URL cannot be deep-read and is
+        // dropped.
+        let news_leads: Vec<crate::portfolio::research::NewsLead> =
             if is_stock && !skip_retrieval {
                 let from = (today
                     - chrono::Duration::days(crate::portfolio::research::RESEARCH_FRESHNESS_DAYS))
@@ -1872,11 +1874,9 @@ fn run_analysis(
                 company_data
                     .news_items(&position.symbol, &from)
                     .into_iter()
-                    .enumerate()
-                    .filter_map(|(i, n)| {
+                    .filter_map(|n| {
                         let url = n.url?;
-                        Some(crate::portfolio::research::ResearchSeed {
-                            id: format!("seed-{}", i + 1),
+                        Some(crate::portfolio::research::NewsLead {
                             headline: n.title,
                             url,
                             source: n.site.unwrap_or_else(|| "fmp-news".to_string()),
@@ -1926,7 +1926,7 @@ fn run_analysis(
                 Vec::new()
             },
             sector_benchmark,
-            news_seeds,
+            news_leads,
             run_session_date.clone(),
             dossier::StockEvidenceLegs {
                 issuer,
@@ -1961,14 +1961,13 @@ fn run_analysis(
         // in `failed_holdings`, the prior verdict carried after the loop, the run
         // continuing — rather than failing the whole run. The run fails outright only
         // when every attempted holding fails (the post-loop guard).
-        // The run date keys the ledger evaluation's observation identities and
-        // timestamps (deterministic under test — injected, never re-derived inside
-        // the engine). It is the run's **ET session date**, taken from the run's
-        // one instant rather than re-derived per holding: the values it stamps —
-        // `first_breach_at`, `last_evaluated_at`, and the `confirmed_at` the
-        // falsifier lead-time read positions against bar dates — are all session
-        // quantities, and re-deriving per holding let a midnight-crossing run
-        // stamp one book across two days.
+        // The run date dates the holding's analysis — its anchor bar, its
+        // research and its horizon reads (deterministic under test — injected,
+        // never re-derived inside the engine). It is the run's **ET session
+        // date**, taken from the run's one instant rather than re-derived per
+        // holding: the values it dates are all session quantities, and
+        // re-deriving per holding let a midnight-crossing run date one book
+        // across two days.
         let run_date = run_session_date.clone();
         let (mut verdict, audit) = match analyze_holding(analyst, &dossier, &rates, &run_date) {
             Ok(pair) => pair,
@@ -2114,7 +2113,7 @@ fn run_analysis(
     }
 
     // ---- Carried verdicts (a selective run's unselected tail) ----------------
-    // Each carries its prior intrinsic verdict and ledger forward vintage-stamped
+    // Each carries its prior intrinsic verdict and thesis document forward vintage-stamped
     // (`docs/portfolio-analysis.md` §Triggering), its position-change tag
     // refreshed from this run's diff, and its prior audit
     // row carried whole — the stored `quick_basis` / `fund_exposure` comparators
@@ -4291,9 +4290,9 @@ mod tests {
     }
 
     #[test]
-    fn a_conflict_abstention_preserves_the_prior_vintage_and_ledger() {
+    fn a_conflict_abstention_preserves_the_prior_vintage_and_document() {
         // Run 1 grades MSFT fully; run 2's profile read resolves the symbol to a
-        // different issuer — the conflict abstains, retains the standing ledger,
+        // different issuer — the conflict abstains, retains the prior document,
         // and keeps the prior full pass's vintage (an abstention is not a pass).
         struct ConflictData;
         impl CompanyDataSource for ConflictData {
@@ -5529,7 +5528,7 @@ mod tests {
     /// The tail sweep's retrieval stub for selective-run tests: quiet by default
     /// (every leg succeeds, nothing fires — the stub's 195 price matches the
     /// authoring-time marks, so spot's relationship to the stored bear–bull band
-    /// is unchanged since the ledger was authored and the transition-only band
+    /// is unchanged since the pass and the transition-only band
     /// flag stays silent), with per-symbol overrides exercising the sweep's
     /// badge legs. Its `rates` leg is deliberately unreachable: the in-run sweep reads
     /// the run's own fresh prints, never a second FRED call.
@@ -5624,8 +5623,7 @@ mod tests {
         }
     }
 
-    /// Two small equity positions whose weights stay under the stub ledger's 25%
-    /// trim trigger at both the persisted marks and the sweep's quiet price.
+    /// Two small equity positions at the stub's quiet price.
     fn two_stocks() -> Holdings {
         holdings_of(vec![stock("AAPL", 20.0, 3_900.0), stock("MSFT", 20.0, 3_900.0)])
     }
@@ -7175,7 +7173,7 @@ mod tests {
         }
         // The carried audit row rides along — the stored re-anchor basis must
         // survive the carry or the next sweep reads the holding `unknown`, and the
-        // pre-profit overlay record (the observation history's home) rides with it.
+        // pre-profit overlay record rides with it.
         let msft_audit = second
             .audit
             .iter()
@@ -7428,6 +7426,37 @@ mod tests {
             }
             other => panic!("expected a priced carry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn fresh_and_carried_verdicts_read_the_basis_move_on_an_increase() {
+        let (_dir, paths) = paths();
+        // Both names start at 20 shares on a 3,120 basis — 156 a share.
+        full_run(&paths, two_stocks());
+        // AAPL is added to above its average and re-analyzed; MSFT is added to
+        // below its average and carried. Both read today's diff.
+        let added = holdings_of(vec![
+            Position {
+                cost_basis: 6_000.0,
+                ..stock("AAPL", 30.0, 6_500.0)
+            },
+            Position {
+                cost_basis: 3_900.0,
+                ..stock("MSFT", 30.0, 5_850.0)
+            },
+        ]);
+        let second = selective_run(&paths, added, &["AAPL"], &SelectiveQuickData::default());
+        let aapl = verdict(&second, "AAPL");
+        assert_eq!(aapl.analyzed_at.as_deref(), Some(second.created_at.as_str()));
+        let read = aapl.basis_move.as_ref().expect("the fresh verdict reads the move");
+        assert_eq!(read.direction, crate::portfolio::BasisDirection::PaidUp);
+        assert!((read.prior_average_cost - 156.0).abs() < 1e-9);
+        assert!((read.average_cost - 200.0).abs() < 1e-9);
+        let msft = verdict(&second, "MSFT");
+        assert_ne!(msft.analyzed_at.as_deref(), Some(second.created_at.as_str()));
+        let read = msft.basis_move.as_ref().expect("the carried verdict reads the move");
+        assert_eq!(read.direction, crate::portfolio::BasisDirection::AveragedDown);
+        assert!((read.average_cost - 130.0).abs() < 1e-9);
     }
 
     #[test]

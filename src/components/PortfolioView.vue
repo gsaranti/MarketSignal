@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { etDayDiff } from "../etDate";
+import { addCalendarMonths, etDateOf, etDayDiff } from "../etDate";
 import { localDate, localDateTime } from "../format";
 import type {
   AccuracyScores,
+  BasisDirection,
   FlagTrigger,
   HoldingFailure,
   HoldingQuickState,
@@ -208,12 +209,12 @@ const quickTitle = computed(() => {
   if (props.runBlocked)
     return props.runBlockedReason ?? "Local-suite configuration is incomplete";
   if (props.busy) return "Another job is running";
-  // A corrupt-only history: a run exists but no readable ledger does — never
+  // A corrupt-only history: a run exists but no readable run does — never
   // "run first", which claims nothing ever ran (audit L3).
   if (props.run === null && props.unreadableHistory)
-    return "The latest run couldn't be read — run a fresh analysis to rebuild the thesis ledger before checking it";
-  if (props.run === null) return "Run an analysis first — there is no thesis ledger to check yet";
-  return "Re-check every standing thesis ledger against fresh data — engine-only, no model call";
+    return "The latest run couldn't be read — run a fresh analysis before checking it";
+  if (props.run === null) return "Run an analysis first — there are no engine reads to check yet";
+  return "Re-check every analyzed holding's engine reads against fresh prices and evidence — engine-only, no model call";
 });
 
 // ---- Quick-check card overlay -------------------------------------------------
@@ -791,6 +792,12 @@ const CHANGE_LABELS: Record<string, string> = {
   decreased: "Decreased",
   unchanged: "Unchanged",
 };
+// The basis read beside an increase (docs/portfolio-analysis.md §Holdings
+// change tracking): which way the average cost per share moved.
+const BASIS_LABELS: Record<BasisDirection, string> = {
+  "paid-up": "Paid up",
+  "averaged-down": "Averaged down",
+};
 
 // The three grade inputs, in tile order. Momentum is deliberately not here:
 // it is the market-setup read in the conviction context, outside the letter
@@ -815,11 +822,20 @@ function convictionLevel(c: PortfolioConviction | null): number {
   return c === null ? 0 : CONVICTION_LEVEL[c];
 }
 
-function expectedPrices(a: ThesisAppendix): [string, number | null][] {
+// Each stated price carries its horizon date: the verdict's analysis vintage
+// (its ET session) plus three, twelve or thirty-six calendar months
+// (docs/portfolio-analysis.md §Storage and display; the calendar-month rule
+// in etDate.ts mirrors market_clock's).
+function expectedPrices(
+  v: HoldingVerdict,
+  a: ThesisAppendix
+): { label: string; price: number | null; by: string | null }[] {
+  const vintage = props.run ? etDateOf(v.analyzed_at ?? props.run.created_at) : null;
+  const by = (months: number) => (vintage ? addCalendarMonths(vintage, months) : null);
   return [
-    ["3-mo expected", a.expected_price_3m],
-    ["12-mo expected", a.expected_price_12m],
-    ["3-yr expected", a.expected_price_3y],
+    { label: "3-mo expected", price: a.expected_price_3m, by: by(3) },
+    { label: "12-mo expected", price: a.expected_price_12m, by: by(12) },
+    { label: "3-yr expected", price: a.expected_price_3y, by: by(36) },
   ];
 }
 
@@ -1706,14 +1722,17 @@ const keyFigures = computed(() => {
                           >
                         </dd>
                         <template
-                          v-for="[label, price] in expectedPrices(v.disposition.appendix)"
-                          :key="label"
+                          v-for="row in expectedPrices(v, v.disposition.appendix)"
+                          :key="row.label"
                         >
-                          <dt>{{ label }}</dt>
+                          <dt>{{ row.label }}</dt>
                           <dd>
-                            <span v-if="price !== null" class="ana-num">{{
-                              moneyExact.format(price)
-                            }}</span>
+                            <template v-if="row.price !== null">
+                              <span class="ana-num">{{ moneyExact.format(row.price) }}</span>
+                              <span v-if="row.by" class="hc-horizon-date">
+                                · by {{ row.by }}</span
+                              >
+                            </template>
                             <span v-else class="hc-none">none</span>
                           </dd>
                         </template>
@@ -1974,7 +1993,12 @@ const keyFigures = computed(() => {
                 <!-- The app-computed position delta. -->
                 <footer class="hc-foot">
                   <span class="ana-tag" :title="'Position vs. prior run'"
-                    >Position: {{ CHANGE_LABELS[v.position_change] }}</span
+                    >Position: {{ CHANGE_LABELS[v.position_change]
+                    }}<template v-if="v.basis_move">
+                      · {{ BASIS_LABELS[v.basis_move.direction] }} · avg cost
+                      {{ fmtMoney(v.basis_move.prior_average_cost) }} →
+                      {{ fmtMoney(v.basis_move.average_cost) }}</template
+                    ></span
                   >
                 </footer>
               </template>
@@ -2601,6 +2625,13 @@ const keyFigures = computed(() => {
 .hc-none {
   color: var(--ink-3);
   text-transform: none;
+}
+
+/* An expected price's horizon date, quiet beside the price; it wraps as one
+   unit when the strip is narrow. */
+.hc-horizon-date {
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
 /* The text-first body: the thesis document (3fr) beside the typed strip

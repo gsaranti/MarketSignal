@@ -12,7 +12,7 @@ A **2026-07-07 adversarially-verified web survey** (primary sources: Ollama rele
 
 ## Why this model (compact)
 
-`Qwen3.5-122B-A10B` is the default because it is the open-weight model that best satisfies the suite's hard constraints simultaneously: **open / keyless** (Apache 2.0), **fits a 128 GB Apple-Silicon machine** with the embedder co-resident, a **262 K context window**, a real **thinking mode**, and — the load-bearing property for a schema-validated pipeline — **reliable grammar-constrained JSON** on the Qwen family (the alternatives that fit either gave up structured-output reliability on Ollama or didn't fit cleanly).
+`Qwen3.5-122B-A10B` is the default because it is the open-weight model that best satisfies the suite's hard constraints simultaneously: **open / keyless** (Apache 2.0), **fits a 128 GB Apple-Silicon machine**, a **262 K context window**, a real **thinking mode**, and — the load-bearing property for a schema-validated pipeline — **reliable grammar-constrained JSON** on the Qwen family (the alternatives that fit either gave up structured-output reliability on Ollama or didn't fit cleanly).
 This choice is worth revisiting after v2 ships; it is not permanent.
 
 **Re-validated 2026-07-07:** a fresh adversarially-verified field survey surfaced no challenger in the ~80–130B class.
@@ -142,7 +142,7 @@ Default-on MLX doesn't help a model with no MLX build: our 122B runs on Ollama's
 - **Throughput.**
   ~**65–79 tok/s** on a 128 GB Mac — strong for the size (only 10 B params activate per token) — but **path-dependent**: the MLX backend is materially faster than the llama.cpp Metal fallback the 122B currently uses, so treat this as an optimistic estimate until the serving path is pinned.
   **[community — verify on M5]**
-- **Memory budget is a three-way split: model weights + KV cache + the resident embedder, all inside 128 GB.**
+- **Memory budget is a two-way split: model weights + KV cache, both inside 128 GB.**
   The KV cache grows **linearly with context length**, so quant level and working-context size trade against each other — you cannot run both the highest quant *and* the full 262 K window.
   Budget the context you actually need (see [§Context window](#context-window)), not the max.
 - **`OLLAMA_FLASH_ATTENTION=1`** cuts KV-cache memory **30–50 %** — set it.
@@ -170,7 +170,7 @@ Default-on MLX doesn't help a model with no MLX build: our 122B runs on Ollama's
 ### The `num_ctx` trap (critical)
 
 Ollama now **auto-sizes** the default context from detected memory (current docs: < 24 GiB → 4 K, 24–48 GiB → 32 K, **≥ 48 GiB → 256 K**), so on our 128 GB M5 the default lands near **256 K** — close to the native max, *not* tiny.
-That sounds safe but cuts the other way: a 256 K window pre-allocates a **huge KV cache** that competes with the model weights and the resident embedder for the 128 GB, and the auto-value depends on the version and detected memory.
+That sounds safe but cuts the other way: a 256 K window pre-allocates a **huge KV cache** that competes with the model weights for the 128 GB, and the auto-value depends on the version and detected memory.
 Both extremes hurt — too small silently drops prompt content, too large starves memory.
 **Front-truncation is confirmed live** (M5, v0.32.5, 2026-07-28): a marker test at `num_ctx` 2048 with a ~4.6 K-token prompt kept the end marker and dropped the start marker — and the model then **confidently hallucinated** an answer over the missing head rather than flagging the gap, so the failure is silent *and* misleading.
 

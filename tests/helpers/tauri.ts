@@ -58,7 +58,6 @@ export const defaultSettings: SettingsView = {
     daemon_endpoint: "",
     reasoner_model: "",
     fast_model: "",
-    embedder_model: "",
   },
   web_research: { searxng_endpoint: "" },
   available_models: [],
@@ -107,6 +106,7 @@ export const samplePortfolioRun: PortfolioRun = {
       symbol: "AAPL",
       asset_class: "stock",
       position_change: "unchanged",
+      basis_move: null,
       disposition: {
         status: "priced",
         grade: "B",

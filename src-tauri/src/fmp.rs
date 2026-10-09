@@ -4953,8 +4953,8 @@ pub const DIVIDENDS_GAP_PREFIX: &str = "FMP dividends unavailable";
 
 /// Stable prefixes of the fund-weightings gap messages
 /// ([`FmpDataSource::fetch_fund_data`]): the quick check treats these legs as
-/// bearing on **equity** funds alone — no series in the closed ledger surface
-/// reads exposure, so a non-equity fund's empty equity weightings are the
+/// bearing on **equity** funds alone — no engine read takes a non-equity
+/// fund's exposure from them, so its empty equity weightings are the
 /// expected shape, never a failed leg
 /// (`docs/portfolio-analysis.md` §Evidence floor, §The quick check).
 pub const FUND_SECTOR_WEIGHTS_GAP_PREFIX: &str = "FMP sector weightings";
@@ -5732,8 +5732,8 @@ impl FmpDataSource {
                 Some(q) => match (q.price, q.unusable_price) {
                     (Some(p), _) => Shaped::ok(Ok(p)),
                     // A served zero or negative print is a failed refresh (the
-                    // family types `unknown`), never a price the ledger's band
-                    // test could read as a crossing (Codex I1).
+                    // family types `unknown`), never a price the band monitor
+                    // could read as a crossing (Codex I1).
                     (None, Some(served)) => {
                         let msg = format!(
                             "FMP quote carried no usable price for {symbol} (served {served})"
@@ -6264,7 +6264,7 @@ pub struct SymbolNewsItem {
     pub published_date: String,
     pub title: String,
     pub site: Option<String>,
-    /// The item's article URL — the research loop's seed link (a lead the
+    /// The item's article URL — the research loop's news-lead link (a lead the
     /// loop may deep-read, never evidence). `None` on rows the wire served
     /// without one, and on rows persisted before the field existed.
     #[serde(default)]

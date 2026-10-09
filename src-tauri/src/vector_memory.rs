@@ -52,36 +52,6 @@ impl MemoryKind {
     }
 }
 
-/// Which job's continuity partition a memory row belongs to (`docs/storage.md
-/// §Local Vector Memory`): the Market Signal Report, Portfolio Analysis, or Trade
-/// Opportunities. A partition dimension *orthogonal* to [`MemoryKind`] (summary /
-/// learning) — every retrieval is scoped to the calling job's namespace, so no job
-/// ever reads another's learnings (holding-grading calibration is not
-/// opportunity-discovery context). The report keeps the historical `report`
-/// namespace, which is what `storage::init_schema` backfills existing rows to when
-/// the column is added.
-///
-/// Isolation here is by partition, not dimensionality: the two local jobs share an
-/// embedder (and so a vector space), while the report embeds with a different model
-/// — so the namespace is what separates the local pair from each other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryNamespace {
-    Report,
-    Portfolio,
-    Opportunities,
-}
-
-impl MemoryNamespace {
-    /// The canonical label persisted in the `vector_memory.namespace` column.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            MemoryNamespace::Report => "report",
-            MemoryNamespace::Portfolio => "portfolio",
-            MemoryNamespace::Opportunities => "opportunities",
-        }
-    }
-}
-
 /// One retrieval result: the stored content plus its cosine similarity to the
 /// query (higher is closer; 1.0 is identical direction).
 #[derive(Debug, Clone)]
@@ -115,16 +85,16 @@ impl MemoryHit {
 /// error: it would poison cosine scores downstream, and the one legitimate
 /// writer (a model embedding) never produces one — so it marks a bad response,
 /// not data to keep. A `summary` row without a `report_id` is likewise a typed
-/// error: a summary is definitionally *some* record's summary — the report
-/// namespace keys one per report, and the Portfolio namespace keys its
-/// per-holding continuity rows `{run_id}:{SYMBOL}` — and the summary-kind
-/// unique index, `delete_report_summary`'s cascade, and the portfolio
-/// run-retention prune all key on the id, so an orphan row would be invisible
-/// to every one of them.
+/// error: a summary is definitionally one report's summary, and the
+/// summary-kind unique index and `delete_report_summary`'s cascade both key on
+/// the id, so an orphan row would be invisible to both.
+///
+/// Every row is the report's: the `namespace` column holds `report` on every
+/// row (`docs/storage.md §Local Vector Memory` — neither local job writes or
+/// reads a row), and every query reads that partition alone.
 pub fn insert_memory(
     conn: &Connection,
     kind: MemoryKind,
-    namespace: MemoryNamespace,
     report_id: Option<&str>,
     content: &str,
     embedding: &[f32],
@@ -138,10 +108,9 @@ pub fn insert_memory(
     }
     conn.execute(
         "INSERT INTO vector_memory (kind, namespace, report_id, content, embedding, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+         VALUES (?1, 'report', ?2, ?3, ?4, ?5)",
         rusqlite::params![
             kind.as_str(),
-            namespace.as_str(),
             report_id,
             content,
             embedding_to_blob(embedding),
@@ -151,27 +120,24 @@ pub fn insert_memory(
     Ok(())
 }
 
-/// Exact top-k retrieval: brute-force cosine over every stored row in the given
-/// `namespace` (optionally one kind), descending by similarity. The namespace
-/// scope is what enforces per-job isolation — a Portfolio retrieval never sees the
-/// report's or Trade Opportunities' rows (`docs/storage.md §Local Vector Memory`).
-/// Brute force is the deliberate choice at this scale — see the module header.
-/// Rows that cannot participate — an unknown kind label, an undecodable blob, a
-/// dimension mismatch with the query — are skipped with a stderr note rather than
-/// failing the search, so one bad row never blanks retrieval.
+/// Exact top-k retrieval: brute-force cosine over every stored row (optionally
+/// one kind), descending by similarity. Brute force is the deliberate choice at
+/// this scale — see the module header. Rows that cannot participate — an
+/// unknown kind label, an undecodable blob, a dimension mismatch with the
+/// query — are skipped with a stderr note rather than failing the search, so
+/// one bad row never blanks retrieval.
 pub fn search_memory(
     conn: &Connection,
     query: &[f32],
     kind: Option<MemoryKind>,
-    namespace: MemoryNamespace,
     top_k: usize,
 ) -> Result<Vec<MemoryHit>> {
     let mut stmt = conn.prepare(
         "SELECT kind, report_id, content, embedding, created_at FROM vector_memory
-         WHERE namespace = ?1 AND (?2 IS NULL OR kind = ?2)",
+         WHERE namespace = 'report' AND (?1 IS NULL OR kind = ?1)",
     )?;
     let rows = stmt.query_map(
-        rusqlite::params![namespace.as_str(), kind.map(|k| k.as_str())],
+        rusqlite::params![kind.map(|k| k.as_str())],
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -242,51 +208,13 @@ pub fn delete_report_summary(conn: &Connection, report_id: &str) -> Result<usize
     Ok(deleted)
 }
 
-/// Delete every row in the two **local** namespaces (portfolio + opportunities)
-/// — the stale-cohort clear the Settings save runs when the configured local
-/// embedder identity changes (`docs/storage.md §Local Vector Memory`: identity,
-/// never dimension, is the compatibility key, so vectors from the old embedder
-/// must never be cosine-compared under the new one). The report namespace is
-/// embedded by the fixed cloud model and is never touched. Returns how many rows
-/// were deleted. Re-embedding the cohort from retained content instead of
-/// clearing it is deliberately deferred: it needs a reachable daemon, which the
-/// presence-only save path must not require, and no production local rows can
-/// predate this write path (the local jobs were gate-locked without it).
-pub fn clear_local_namespaces(conn: &Connection) -> Result<usize> {
-    let deleted = conn.execute(
-        "DELETE FROM vector_memory WHERE namespace IN (?1, ?2)",
-        [
-            MemoryNamespace::Portfolio.as_str(),
-            MemoryNamespace::Opportunities.as_str(),
-        ],
-    )?;
-    Ok(deleted)
-}
-
-/// Total rows in `namespace` — the cheap guard the retrieval pulls use to skip a
-/// paid embedding call when there is nothing to search (an empty partition on
-/// early runs). Scoped per namespace so a populated partition (e.g. the report's)
-/// never makes another job's empty partition look non-empty.
-pub fn count_memory(conn: &Connection, namespace: MemoryNamespace) -> Result<i64> {
+/// Total rows — the cheap guard the retrieval pull uses to skip a paid
+/// embedding call when there is nothing to search (an empty store on early
+/// runs).
+pub fn count_memory(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row(
-        "SELECT COUNT(*) FROM vector_memory WHERE namespace = ?1",
-        [namespace.as_str()],
-        |r| r.get(0),
-    )?)
-}
-
-/// [`count_memory`] restricted to one `kind` — the guard for a retrieval that
-/// searches a single kind (the Step-6a semantic recall reads only `summary`
-/// rows), so a partition holding nothing but the *other* kind still skips the
-/// query embedding rather than spending it on a search that cannot hit.
-pub fn count_memory_kind(
-    conn: &Connection,
-    kind: MemoryKind,
-    namespace: MemoryNamespace,
-) -> Result<i64> {
-    Ok(conn.query_row(
-        "SELECT COUNT(*) FROM vector_memory WHERE kind = ?1 AND namespace = ?2",
-        [kind.as_str(), namespace.as_str()],
+        "SELECT COUNT(*) FROM vector_memory WHERE namespace = 'report'",
+        [],
         |r| r.get(0),
     )?)
 }
@@ -305,10 +233,9 @@ pub fn count_memory_kind(
 /// summary.
 pub fn nearest_learning_similarity(
     conn: &Connection,
-    namespace: MemoryNamespace,
     embedding: &[f32],
 ) -> Result<Option<f64>> {
-    let hits = search_memory(conn, embedding, Some(MemoryKind::Learning), namespace, 1)?;
+    let hits = search_memory(conn, embedding, Some(MemoryKind::Learning), 1)?;
     Ok(hits.first().map(|h| h.score))
 }
 
@@ -583,11 +510,11 @@ mod tests {
     fn search_orders_by_similarity_and_caps_at_top_k() {
         let conn = mem();
         // Against query [1,0]: a≈1.0, b≈0.6, c≈0.0.
-        insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("a"), "a", &[1.0, 0.0], "t").unwrap();
-        insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("b"), "b", &[0.6, 0.8], "t").unwrap();
-        insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("c"), "c", &[0.0, 1.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Summary, Some("a"), "a", &[1.0, 0.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Summary, Some("b"), "b", &[0.6, 0.8], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Summary, Some("c"), "c", &[0.0, 1.0], "t").unwrap();
 
-        let hits = search_memory(&conn, &[1.0, 0.0], None, MemoryNamespace::Report, 2).unwrap();
+        let hits = search_memory(&conn, &[1.0, 0.0], None, 2).unwrap();
         assert_eq!(hits.len(), 2, "capped at top_k");
         assert_eq!(hits[0].content, "a");
         assert_eq!(hits[1].content, "b");
@@ -601,7 +528,6 @@ mod tests {
         insert_memory(
             &conn,
             MemoryKind::Summary,
-            MemoryNamespace::Report,
             Some("r"),
             "the summary",
             &[1.0, 0.0],
@@ -611,7 +537,6 @@ mod tests {
         insert_memory(
             &conn,
             MemoryKind::Learning,
-            MemoryNamespace::Report,
             None,
             "the learning",
             &[1.0, 0.0],
@@ -619,13 +544,13 @@ mod tests {
         )
         .unwrap();
 
-        let learnings = search_memory(&conn, &[1.0, 0.0], Some(MemoryKind::Learning), MemoryNamespace::Report, 10).unwrap();
+        let learnings = search_memory(&conn, &[1.0, 0.0], Some(MemoryKind::Learning), 10).unwrap();
         assert_eq!(learnings.len(), 1);
         assert_eq!(learnings[0].content, "the learning");
         assert_eq!(learnings[0].kind, MemoryKind::Learning);
         assert!(learnings[0].report_id.is_none());
 
-        let both = search_memory(&conn, &[1.0, 0.0], None, MemoryNamespace::Report, 10).unwrap();
+        let both = search_memory(&conn, &[1.0, 0.0], None, 10).unwrap();
         assert_eq!(both.len(), 2, "no kind filter spans both kinds");
     }
 
@@ -638,7 +563,7 @@ mod tests {
             vec![f32::NEG_INFINITY, 0.5],
         ] {
             let err =
-                insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("r"), "c", &bad, "t").unwrap_err();
+                insert_memory(&conn, MemoryKind::Summary, Some("r"), "c", &bad, "t").unwrap_err();
             assert!(err.to_string().contains("non-finite"), "{err}");
         }
         let count: i64 = conn
@@ -653,7 +578,6 @@ mod tests {
         insert_memory(
             &conn,
             MemoryKind::Summary,
-            MemoryNamespace::Report,
             Some("ok"),
             "finite",
             &[1.0, 0.0],
@@ -669,7 +593,7 @@ mod tests {
         )
         .unwrap();
 
-        let hits = search_memory(&conn, &[1.0, 0.0], None, MemoryNamespace::Report, 10).unwrap();
+        let hits = search_memory(&conn, &[1.0, 0.0], None, 10).unwrap();
         assert_eq!(hits.len(), 1, "the NaN-scoring row is skipped, not ranked");
         assert_eq!(hits[0].content, "finite");
     }
@@ -677,17 +601,16 @@ mod tests {
     #[test]
     fn duplicate_summary_for_a_report_is_rejected_but_learnings_are_not() {
         let conn = mem();
-        insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("rep-1"), "s", &[1.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Summary, Some("rep-1"), "s", &[1.0], "t").unwrap();
         // Second summary for the same report violates the partial unique index.
         assert!(
-            insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("rep-1"), "s2", &[1.0], "t").is_err(),
+            insert_memory(&conn, MemoryKind::Summary, Some("rep-1"), "s2", &[1.0], "t").is_err(),
             "one embedding per report summary is schema-enforced"
         );
         // Learnings are outside the partial index: same report_id, and several of them.
         insert_memory(
             &conn,
             MemoryKind::Learning,
-            MemoryNamespace::Report,
             Some("rep-1"),
             "l1",
             &[1.0],
@@ -697,7 +620,6 @@ mod tests {
         insert_memory(
             &conn,
             MemoryKind::Learning,
-            MemoryNamespace::Report,
             Some("rep-1"),
             "l2",
             &[1.0],
@@ -705,7 +627,7 @@ mod tests {
         )
         .unwrap();
         // A different report's summary is fine.
-        insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("rep-2"), "s", &[1.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Summary, Some("rep-2"), "s", &[1.0], "t").unwrap();
     }
 
     #[test]
@@ -714,10 +636,10 @@ mod tests {
         // SQLite unique indexes treat NULLs as distinct, so the one-per-report index
         // can't catch NULL-id summaries — the API guard is what closes that hole.
         let err =
-            insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, None, "orphan", &[1.0], "t").unwrap_err();
+            insert_memory(&conn, MemoryKind::Summary, None, "orphan", &[1.0], "t").unwrap_err();
         assert!(err.to_string().contains("without a report_id"), "{err}");
         // Learnings legitimately carry no report_id.
-        insert_memory(&conn, MemoryKind::Learning, MemoryNamespace::Report, None, "learning", &[1.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Learning, None, "learning", &[1.0], "t").unwrap();
     }
 
     #[test]
@@ -726,7 +648,6 @@ mod tests {
         insert_memory(
             &conn,
             MemoryKind::Summary,
-            MemoryNamespace::Report,
             Some("ok"),
             "fits",
             &[1.0, 0.0],
@@ -736,14 +657,13 @@ mod tests {
         insert_memory(
             &conn,
             MemoryKind::Summary,
-            MemoryNamespace::Report,
             Some("old"),
             "stale dims",
             &[1.0, 0.0, 0.0],
             "t",
         )
         .unwrap();
-        let hits = search_memory(&conn, &[1.0, 0.0], None, MemoryNamespace::Report, 10).unwrap();
+        let hits = search_memory(&conn, &[1.0, 0.0], None, 10).unwrap();
         assert_eq!(hits.len(), 1, "the 3-dim row is skipped, not an error");
         assert_eq!(hits[0].content, "fits");
     }
@@ -751,14 +671,13 @@ mod tests {
     #[test]
     fn delete_report_summary_preserves_learnings_and_other_reports() {
         let conn = mem();
-        insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("rep-1"), "s1", &[1.0], "t").unwrap();
-        insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("rep-2"), "s2", &[1.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Summary, Some("rep-1"), "s1", &[1.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Summary, Some("rep-2"), "s2", &[1.0], "t").unwrap();
         // A learning tagged with the same report id must still survive the cascade —
         // the kind filter, not the report_id, is what protects durable learnings.
         insert_memory(
             &conn,
             MemoryKind::Learning,
-            MemoryNamespace::Report,
             Some("rep-1"),
             "l1",
             &[1.0],
@@ -768,7 +687,7 @@ mod tests {
 
         assert_eq!(delete_report_summary(&conn, "rep-1").unwrap(), 1);
 
-        let remaining = search_memory(&conn, &[1.0], None, MemoryNamespace::Report, 10).unwrap();
+        let remaining = search_memory(&conn, &[1.0], None, 10).unwrap();
         let contents: Vec<&str> = remaining.iter().map(|h| h.content.as_str()).collect();
         assert_eq!(remaining.len(), 2);
         assert!(contents.contains(&"s2"), "other reports' summaries survive");
@@ -802,55 +721,9 @@ mod tests {
     #[test]
     fn count_memory_reflects_inserts() {
         let conn = mem();
-        assert_eq!(count_memory(&conn, MemoryNamespace::Report).unwrap(), 0);
-        insert_memory(&conn, MemoryKind::Learning, MemoryNamespace::Report, None, "l", &[1.0], "t").unwrap();
-        assert_eq!(count_memory(&conn, MemoryNamespace::Report).unwrap(), 1);
-    }
-
-    #[test]
-    fn namespace_scopes_search_count_and_dedup_so_jobs_stay_isolated() {
-        let conn = mem();
-        // The same vector lands in two partitions; neither job may see the other's row
-        // (`docs/storage.md §Local Vector Memory` — isolation is by partition, since the
-        // two local jobs share an embedder and so a vector space).
-        insert_memory(
-            &conn,
-            MemoryKind::Learning,
-            MemoryNamespace::Report,
-            None,
-            "report learning",
-            &[1.0, 0.0],
-            "t",
-        )
-        .unwrap();
-        insert_memory(
-            &conn,
-            MemoryKind::Learning,
-            MemoryNamespace::Portfolio,
-            None,
-            "portfolio learning",
-            &[1.0, 0.0],
-            "t",
-        )
-        .unwrap();
-
-        // count is per-namespace: a populated report partition never makes the
-        // Opportunities partition look non-empty.
-        assert_eq!(count_memory(&conn, MemoryNamespace::Report).unwrap(), 1);
-        assert_eq!(count_memory(&conn, MemoryNamespace::Portfolio).unwrap(), 1);
-        assert_eq!(count_memory(&conn, MemoryNamespace::Opportunities).unwrap(), 0);
-
-        // search is scoped: a Portfolio query sees only the Portfolio row, even though
-        // the report row is an identical-direction match.
-        let hits = search_memory(&conn, &[1.0, 0.0], None, MemoryNamespace::Portfolio, 10).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].content, "portfolio learning");
-
-        // dedup is scoped too: the report row is not a near-duplicate for the
-        // Opportunities corpus (which is empty), so it returns None.
-        assert!(nearest_learning_similarity(&conn, MemoryNamespace::Opportunities, &[1.0, 0.0])
-            .unwrap()
-            .is_none());
+        assert_eq!(count_memory(&conn).unwrap(), 0);
+        insert_memory(&conn, MemoryKind::Learning, None, "l", &[1.0], "t").unwrap();
+        assert_eq!(count_memory(&conn).unwrap(), 1);
     }
 
     #[test]
@@ -858,20 +731,20 @@ mod tests {
         let conn = mem();
         // Nothing to be near yet: an empty learning corpus returns None, never 0.0
         // (the call site must be able to tell "no neighbor" from "an orthogonal one").
-        assert!(nearest_learning_similarity(&conn, MemoryNamespace::Report, &[1.0, 0.0])
+        assert!(nearest_learning_similarity(&conn, &[1.0, 0.0])
             .unwrap()
             .is_none());
 
-        insert_memory(&conn, MemoryKind::Learning, MemoryNamespace::Report, None, "l", &[1.0, 0.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Learning, None, "l", &[1.0, 0.0], "t").unwrap();
         // An identical direction scores ~1.0 (a duplicate); an orthogonal one ~0.0.
-        let same = nearest_learning_similarity(&conn, MemoryNamespace::Report, &[1.0, 0.0])
+        let same = nearest_learning_similarity(&conn, &[1.0, 0.0])
             .unwrap()
             .unwrap();
         assert!(
             (same - 1.0).abs() < 1e-9,
             "identical embedding scores ~1.0: {same}"
         );
-        let orthogonal = nearest_learning_similarity(&conn, MemoryNamespace::Report, &[0.0, 1.0])
+        let orthogonal = nearest_learning_similarity(&conn, &[0.0, 1.0])
             .unwrap()
             .unwrap();
         assert!(
@@ -881,8 +754,8 @@ mod tests {
 
         // The *closest* learning wins: a second row aligned with a new query
         // direction is returned over the now-orthogonal first row (top-1, not first).
-        insert_memory(&conn, MemoryKind::Learning, MemoryNamespace::Report, None, "l2", &[0.0, 1.0], "t").unwrap();
-        let best = nearest_learning_similarity(&conn, MemoryNamespace::Report, &[0.0, 1.0])
+        insert_memory(&conn, MemoryKind::Learning, None, "l2", &[0.0, 1.0], "t").unwrap();
+        let best = nearest_learning_similarity(&conn, &[0.0, 1.0])
             .unwrap()
             .unwrap();
         assert!(
@@ -896,9 +769,9 @@ mod tests {
         let conn = mem();
         // A summary identical to the query must not register as a near-duplicate
         // learning — dedup is within the learning corpus only.
-        insert_memory(&conn, MemoryKind::Summary, MemoryNamespace::Report, Some("r"), "s", &[1.0, 0.0], "t").unwrap();
+        insert_memory(&conn, MemoryKind::Summary, Some("r"), "s", &[1.0, 0.0], "t").unwrap();
         assert!(
-            nearest_learning_similarity(&conn, MemoryNamespace::Report, &[1.0, 0.0])
+            nearest_learning_similarity(&conn, &[1.0, 0.0])
                 .unwrap()
                 .is_none(),
             "a summary is not a learning"

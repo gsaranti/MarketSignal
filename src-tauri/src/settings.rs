@@ -24,12 +24,11 @@ use serde::{Deserialize, Serialize};
 use crate::config::{
     AppConfig, KEY_ANTHROPIC_API_KEY, KEY_BALANCED_AGENT_MODEL, KEY_BEAR_AGENT_MODEL,
     KEY_BULL_AGENT_MODEL, KEY_FMP_API_KEY, KEY_FRED_API_KEY, KEY_LOCAL_DAEMON_ENDPOINT,
-    KEY_LOCAL_EMBEDDER_MODEL, KEY_LOCAL_FAST_MODEL, KEY_LOCAL_REASONER_MODEL,
+    KEY_LOCAL_FAST_MODEL, KEY_LOCAL_REASONER_MODEL,
     KEY_MAIN_AGENT_MODEL, KEY_OPENAI_API_KEY, KEY_SEARXNG_ENDPOINT, KEY_TAVILY_API_KEY,
 };
 use crate::model_agent::AgentModel;
 use crate::storage;
-use crate::vector_memory;
 
 /// One selectable model for the Settings dropdown: the slug persisted in
 /// `app_settings`, a display name, and the provider it groups under.
@@ -63,16 +62,15 @@ pub struct CredentialStatus {
 }
 
 /// The local-analysis-models values (`docs/configuration.md §Local Models`):
-/// the Ollama daemon endpoint plus the roster ids — reasoner and embedder
-/// required for the presence gate, the fast tier optional. None of these is a
-/// secret, so unlike credentials they round-trip in full: the view carries the
-/// stored values ("" when unset) and the save submits all four verbatim.
+/// the Ollama daemon endpoint plus the roster ids — the reasoner required for
+/// the presence gate, the fast tier optional. None of these is a secret, so
+/// unlike credentials they round-trip in full: the view carries the stored
+/// values ("" when unset) and the save submits all three verbatim.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LocalModelSettings {
     pub daemon_endpoint: String,
     pub reasoner_model: String,
     pub fast_model: String,
-    pub embedder_model: String,
 }
 
 /// The web-research settings (`docs/configuration.md §Web Research`): the
@@ -160,7 +158,6 @@ pub fn view_from_config(cfg: &AppConfig) -> SettingsView {
             daemon_endpoint: cfg.local_daemon_endpoint.clone().unwrap_or_default(),
             reasoner_model: cfg.local_reasoner_model.clone().unwrap_or_default(),
             fast_model: cfg.local_fast_model.clone().unwrap_or_default(),
-            embedder_model: cfg.local_embedder_model.clone().unwrap_or_default(),
         },
         web_research: WebResearchSettings {
             searxng_endpoint: cfg.searxng_endpoint.clone().unwrap_or_default(),
@@ -268,51 +265,13 @@ pub fn save_provider_credentials(
 /// Models`) — **ungated**, like the provider credentials: presence of these
 /// fields is what clears the proactive *local models not configured* warning,
 /// so the save must never depend on a cloud token or on daemon connectivity.
-/// All four values are written verbatim (trimmed; "" persists as a cleared
+/// All three values are written verbatim (trimmed; "" persists as a cleared
 /// field, exactly like a cleared agent-model slug — these are not secrets, so
 /// there is no leave-unchanged blank semantics).
-///
-/// One side effect guards the vector store: when the **embedder identity**
-/// changes away from a previously configured value, the two local vector-memory
-/// namespaces are cleared (`vector_memory::clear_local_namespaces`) — identity,
-/// never dimension, is the compatibility key (`docs/storage.md §Local Vector
-/// Memory`), so rows embedded under the old identity must never be searched
-/// under the new one. Re-embedding from retained content is deferred (it needs
-/// a reachable daemon, which this presence-only path must not require).
 pub fn save_local_models(conn: &Connection, values: &LocalModelSettings) -> Result<()> {
-    // The previously *effective* embedder identity (saved value, env fallback) —
-    // compared against the new value before any write.
-    let prior = AppConfig::load(conn);
-    let prior_embedder = prior
-        .local_embedder_model
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let new_embedder = values.embedder_model.trim();
-    let identity_changed = prior_embedder.is_some_and(|old| old != new_embedder);
-
-    // One transaction: the stale-cohort clear and the identity write commit (or
-    // roll back) together. Committing the new id before the clear would let a
-    // failed clear strand incompatible vectors permanently — a retry would read
-    // the new id as unchanged and skip the cleanup forever.
-    let tx = conn.unchecked_transaction()?;
-    let cleared = if identity_changed {
-        vector_memory::clear_local_namespaces(&tx)?
-    } else {
-        0
-    };
-    storage::set_setting(&tx, KEY_LOCAL_DAEMON_ENDPOINT, values.daemon_endpoint.trim())?;
-    storage::set_setting(&tx, KEY_LOCAL_REASONER_MODEL, values.reasoner_model.trim())?;
-    storage::set_setting(&tx, KEY_LOCAL_FAST_MODEL, values.fast_model.trim())?;
-    storage::set_setting(&tx, KEY_LOCAL_EMBEDDER_MODEL, values.embedder_model.trim())?;
-    tx.commit()?;
-
-    if cleared > 0 {
-        eprintln!(
-            "local embedder changed ({} -> {new_embedder:?}): cleared {cleared} stale local vector-memory rows",
-            prior_embedder.unwrap_or_default()
-        );
-    }
+    storage::set_setting(conn, KEY_LOCAL_DAEMON_ENDPOINT, values.daemon_endpoint.trim())?;
+    storage::set_setting(conn, KEY_LOCAL_REASONER_MODEL, values.reasoner_model.trim())?;
+    storage::set_setting(conn, KEY_LOCAL_FAST_MODEL, values.fast_model.trim())?;
     Ok(())
 }
 
@@ -541,7 +500,6 @@ mod tests {
                 daemon_endpoint: " http://127.0.0.1:11434 ".into(),
                 reasoner_model: "qwen3.5:122b".into(),
                 fast_model: String::new(),
-                embedder_model: "qwen3-embedding:4b".into(),
             },
         )
         .unwrap();
@@ -550,7 +508,6 @@ mod tests {
         assert_eq!(view.local_models.daemon_endpoint, "http://127.0.0.1:11434");
         assert_eq!(view.local_models.reasoner_model, "qwen3.5:122b");
         assert_eq!(view.local_models.fast_model, "");
-        assert_eq!(view.local_models.embedder_model, "qwen3-embedding:4b");
         // The presence gate clears on these fields alone (fast tier optional) —
         // provider credentials still warn separately until FMP/FRED are saved.
         let report = crate::local_model::local_presence_gate(&AppConfig::load(&conn));
@@ -558,98 +515,6 @@ mod tests {
             .categories
             .iter()
             .all(|c| c.kind != crate::config::WarningKind::LocalModels));
-    }
-
-    #[test]
-    fn changing_the_embedder_identity_clears_only_the_local_namespaces() {
-        use crate::vector_memory::{insert_memory, MemoryKind, MemoryNamespace};
-        let conn = mem();
-        let values = |embedder: &str| LocalModelSettings {
-            daemon_endpoint: "http://127.0.0.1:11434".into(),
-            reasoner_model: "r".into(),
-            fast_model: String::new(),
-            embedder_model: embedder.into(),
-        };
-        save_local_models(&conn, &values("embed-a")).unwrap();
-        for ns in [MemoryNamespace::Portfolio, MemoryNamespace::Opportunities] {
-            insert_memory(&conn, MemoryKind::Learning, ns, None, "local", &[1.0], "2026-01-01")
-                .unwrap();
-        }
-        insert_memory(
-            &conn,
-            MemoryKind::Learning,
-            MemoryNamespace::Report,
-            None,
-            "report",
-            &[1.0],
-            "2026-01-01",
-        )
-        .unwrap();
-
-        // Re-saving the same identity is not a change — nothing is cleared.
-        save_local_models(&conn, &values("embed-a")).unwrap();
-        let count = |ns| crate::vector_memory::count_memory(&conn, ns).unwrap();
-        assert_eq!(count(MemoryNamespace::Portfolio), 1);
-
-        // A changed identity clears both local namespaces, never the report's.
-        save_local_models(&conn, &values("embed-b")).unwrap();
-        assert_eq!(count(MemoryNamespace::Portfolio), 0);
-        assert_eq!(count(MemoryNamespace::Opportunities), 0);
-        assert_eq!(count(MemoryNamespace::Report), 1);
-    }
-
-    #[test]
-    fn a_failed_stale_cohort_clear_rolls_back_the_identity_write() {
-        use crate::vector_memory::{count_memory, insert_memory, MemoryKind, MemoryNamespace};
-        let conn = mem();
-        let values = |embedder: &str| LocalModelSettings {
-            daemon_endpoint: "http://127.0.0.1:11434".into(),
-            reasoner_model: "r".into(),
-            fast_model: String::new(),
-            embedder_model: embedder.into(),
-        };
-        save_local_models(&conn, &values("embed-a")).unwrap();
-        insert_memory(
-            &conn,
-            MemoryKind::Learning,
-            MemoryNamespace::Portfolio,
-            None,
-            "local",
-            &[1.0],
-            "2026-01-01",
-        )
-        .unwrap();
-
-        // Force the clear to fail mid-transaction.
-        conn.execute_batch(
-            "CREATE TRIGGER vm_no_delete BEFORE DELETE ON vector_memory
-             BEGIN SELECT RAISE(ABORT, 'delete blocked'); END",
-        )
-        .unwrap();
-        let err = save_local_models(&conn, &values("embed-b")).unwrap_err();
-        assert!(err.to_string().contains("delete blocked"), "{err}");
-        // The rollback held: the OLD identity is still stored — a later retry
-        // still reads the change and re-attempts the clear (committing the new
-        // id here would make the retry skip the cleanup forever) — and the
-        // stale rows are still present, never half-cleared.
-        assert_eq!(
-            storage::get_setting(&conn, KEY_LOCAL_EMBEDDER_MODEL)
-                .unwrap()
-                .as_deref(),
-            Some("embed-a")
-        );
-        assert_eq!(count_memory(&conn, MemoryNamespace::Portfolio).unwrap(), 1);
-
-        // Once the fault clears, the retry lands the clear and the write together.
-        conn.execute("DROP TRIGGER vm_no_delete", []).unwrap();
-        save_local_models(&conn, &values("embed-b")).unwrap();
-        assert_eq!(
-            storage::get_setting(&conn, KEY_LOCAL_EMBEDDER_MODEL)
-                .unwrap()
-                .as_deref(),
-            Some("embed-b")
-        );
-        assert_eq!(count_memory(&conn, MemoryNamespace::Portfolio).unwrap(), 0);
     }
 
     #[test]

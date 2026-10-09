@@ -6,6 +6,8 @@
 // dates it one session late. The stale/carried card tag compares whole ET
 // days (date-diff), matching the engine's `over_age` boundary exactly —
 // a fractional-milliseconds age would disagree with it around the boundary.
+// It also mirrors the calendar-month rule (`market_clock::add_calendar_months`)
+// the expected prices' horizon dates read, on the same pinned case table.
 
 // en-CA formats as YYYY-MM-DD; the IANA zone handles DST like chrono-tz does.
 const ET_DAY = new Intl.DateTimeFormat("en-CA", {
@@ -73,4 +75,20 @@ export function etDayDiff(from: string, to: string): number | null {
   if (a === null || b === null) return null;
   // Both are YYYY-MM-DD; UTC-midnight parses make the difference exact.
   return Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000);
+}
+
+/** `ymd` plus `months` calendar months, a day past the target month's end
+ * clamping to its last day — the backend's `market_clock::add_calendar_months`
+ * on the case table both sides pin (tests/etDate.test.ts). `null` when `ymd`
+ * is not a real calendar date. */
+export function addCalendarMonths(ymd: string, months: number): string | null {
+  if (!validDate(ymd)) return null;
+  const [year, month, day] = ymd.split("-").map(Number);
+  const index = year * 12 + (month - 1) + months;
+  const y = Math.floor(index / 12);
+  const m = index % 12;
+  // Day 0 of the following month is the target month's last day.
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const pad = (n: number, w: number) => String(n).padStart(w, "0");
+  return `${pad(y, 4)}-${pad(m + 1, 2)}-${pad(Math.min(day, last), 2)}`;
 }

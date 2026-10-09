@@ -96,6 +96,7 @@ function verdict(
     symbol,
     asset_class: "stock",
     position_change: "unchanged",
+    basis_move: null,
     disposition,
     ...over,
   };
@@ -510,6 +511,33 @@ describe("PortfolioView verdict cards", () => {
     expect(tags).toContain("Position: Unchanged");
   });
 
+  test("an increase carries its basis read beside the position tag", () => {
+    const moved = (direction: "paid-up" | "averaged-down", prior: number, now: number) =>
+      verdict(
+        "AAPL",
+        { status: "priced", ...graded() },
+        {
+          position_change: "increased",
+          basis_move: { direction, prior_average_cost: prior, average_cost: now },
+        }
+      );
+    const tagOf = (v: HoldingVerdict) =>
+      mountView({ run: { ...run, verdicts: [v] } })
+        .find(".hc-foot .ana-tag")
+        .text()
+        .replace(/\s+/g, " ");
+    expect(tagOf(moved("paid-up", 182.4, 191.1))).toBe(
+      "Position: Increased · Paid up · avg cost $182.40 → $191.10"
+    );
+    expect(tagOf(moved("averaged-down", 64.2, 58.75))).toBe(
+      "Position: Increased · Averaged down · avg cost $64.20 → $58.75"
+    );
+    // No read where the backend computed none.
+    expect(
+      tagOf(verdict("AAPL", { status: "priced", ...graded() }, { position_change: "increased" }))
+    ).toBe("Position: Increased");
+  });
+
   test("the engine detail is a keyboard-operable disclosure", async () => {
     const wrapper = mountView({ run });
     // Scoped to the card: the selection bar reuses the reveal primitive above the stack.
@@ -557,9 +585,13 @@ describe("PortfolioView verdict cards", () => {
     ]);
     expect(strip.text()).toContain("$205.00");
     expect(strip.text()).toContain("$210.00");
+    // Each stated price carries its horizon date: the verdict's vintage (the
+    // run's 2026-07-01 session here) plus three and twelve calendar months.
     // The three-year field is null on the fixture: it renders as none, never a
-    // fabricated number.
-    const values = strip.findAll("dd").map((d) => d.text());
+    // fabricated number, and no date.
+    const values = strip.findAll("dd").map((d) => d.text().replace(/\s+/g, " "));
+    expect(values[1]).toBe("$205.00 · by 2026-10-01");
+    expect(values[2]).toBe("$210.00 · by 2027-07-01");
     expect(values[3]).toBe("none");
     expect(strip.find(".hc-none").exists()).toBe(true);
     // No model letter, no outlook, no target rationale survive.
@@ -1396,7 +1428,7 @@ describe("PortfolioView quick check", () => {
     expect(quickBtn().attributes("disabled")).toBeDefined();
     expect(quickBtn().attributes("title")).toContain("Run an analysis first");
 
-    // A corrupt-only history (audit L3): a run exists but no readable ledger
+    // A corrupt-only history (audit L3): a run exists but no readable run
     // does — the lock explains unreadable, never "run first".
     const unreadable = mountView({ unreadableHistory: true });
     const unreadableBtn = unreadable.findAll(".toolbar-actions button").at(1)!;

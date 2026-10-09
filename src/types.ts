@@ -191,15 +191,13 @@ export interface ConnectionTestResult {
 
 // The local-analysis-models values (docs/configuration.md §Local Models):
 // daemon endpoint + roster ids. Not secrets, so unlike credentials they
-// round-trip in full ("" when unset) and the form submits all four verbatim to
-// `save_local_model_settings`. The reasoner is the one presence-gated slot;
-// the fast tier is optional and never gates, and the embedder slot — no local
-// job makes an embedding call — gates nothing.
+// round-trip in full ("" when unset) and the form submits all three verbatim
+// to `save_local_model_settings`. The reasoner is the one presence-gated slot;
+// the fast tier is optional and never gates.
 export interface LocalModelSettings {
   daemon_endpoint: string;
   reasoner_model: string;
   fast_model: string;
-  embedder_model: string;
 }
 
 // The web-research settings (docs/configuration.md §Web Research): the local
@@ -548,10 +546,22 @@ export type VerdictDisposition =
 // add-family action demoted to hold at the roll-up — §Triggering).
 export type ActionSource = "model-chosen" | "rule-demoted";
 
+// Which way an increase moved the average cost per share, with the average
+// on the prior pull and on this one (docs/portfolio-analysis.md §Holdings
+// change tracking). Null on every other change and wherever an average is
+// undefined on either pull.
+export type BasisDirection = "paid-up" | "averaged-down";
+export interface BasisMove {
+  direction: BasisDirection;
+  prior_average_cost: number;
+  average_cost: number;
+}
+
 export interface HoldingVerdict {
   symbol: string;
   asset_class: AssetClass;
   position_change: PositionChange;
+  basis_move: BasisMove | null;
   disposition: VerdictDisposition;
   // The analysis vintage (UTC RFC3339) of the full pass that produced this
   // verdict — differs from the run's created_at on a verdict a selective run

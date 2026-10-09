@@ -2,12 +2,12 @@
 //! per-holding pipeline, step 2; `docs/local-models.md §Context-memory discipline` —
 //! "Compute, don't guess"). Every **engine-arm** number in a holding's verdict
 //! originates here: the four sub-scores, the composite grade they roll up to, the
-//! scenario price targets with their methodology, the options-activity signal, and
-//! the mechanical stand-ins. The engine never guesses — a missing input becomes a
-//! gap, never a fabricated level. Since `portfolio-v7` the model authors its own
-//! arm's numbers beside these (sub-scores, target bands — typed model-authored),
-//! and model-arm judgment values never alter or bind the engine baseline (the
-//! boundary statement: `docs/portfolio-analysis.md` §The holding verdict).
+//! bear / base / bull bands at three horizons with their methodology, the
+//! options-activity signal, the forensic reads and the engine's own rung. The
+//! engine never guesses — a missing input becomes a gap, never a fabricated
+//! level. The model authors its own arm beside these — the thesis document and
+//! its typed appendix — and model-arm values never alter or bind the engine arm
+//! (the boundary statement: `docs/portfolio-analysis.md` §The holding verdict).
 //!
 //! All formulas are simple, bounded, and **calibratable** — the grade-weight
 //! formula, the risk-tier thresholds, and the options-signal parameters are the
@@ -86,8 +86,8 @@ const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 /// The grade-parameter version, stamped on each run's audit
 /// (`HoldingAudit.grade_parameter_version`) so a parameter boundary — a band
 /// recalibration moving letters with no input change, or a stamped sub-score's
-/// input re-homing — is recognizable to the what-changed audit and
-/// outcome-learning cohorts for what it changed ([`grade_parameter_change`]).
+/// input re-homing — is recognizable to the self-review's computed reads for
+/// what it changed ([`grade_parameter_change`]).
 /// v2 (the 2026-08-03 shadow-tune against run
 /// `3b21ae85`, certified v1-exact first): the recentered-growth bands above plus
 /// the negative-D/E → 0 guard.
@@ -764,8 +764,8 @@ pub struct CompanyFinancials {
     /// producer that adopts or falls back. `None` where no statement basis applies
     /// (a fund) or was resolved.
     ///
-    /// Read by the ledger evaluation to detect a basis change: it does not alter any
-    /// value, only whether a statement-derived condition is comparable this pass.
+    /// Read by the prompt's statement-basis line and the audit's sources line: it
+    /// alters no value, only names the window the levels stand on.
     pub statement_basis: Option<crate::portfolio::StatementBasis>,
     /// Which balance sheet supplied `total_equity` — the denominator of debt/equity
     /// and price/book — stamped at the SEC merge (`dossier::merge_financials`), the
@@ -773,8 +773,8 @@ pub struct CompanyFinancials {
     /// reached the engine (a fund, or both legs empty) and on the quick check's
     /// sweep surface, which is not the authority on it.
     ///
-    /// Read by the ledger evaluation beside `statement_basis`, on the two
-    /// balance-sheet instants alone: a fail-soft gap on the FMP balance-sheet leg
+    /// Read by the prompt's statement-basis line beside `statement_basis`, on the
+    /// two balance-sheet instants alone: a fail-soft gap on the FMP balance-sheet leg
     /// flips the equity leg between a quarter-end instant and a year-end one under
     /// an unchanged flow basis, and both series step with nothing having happened
     /// ([`crate::portfolio::EquitySource`]). It alters no value.
@@ -1203,23 +1203,14 @@ pub enum EngineVerdict {
     InsufficientEvidence(String),
 }
 
-// ---- Thesis-ledger series resolution & condition evaluation --------------------
-//
-// The executability surface (`docs/portfolio-analysis.md` §The position thesis
-// ledger): a quantitative ledger condition must resolve to a series the engine
-// actually computes and refreshes — the suite's shared resolution contract
-// (`docs/trade-opportunities-workflow.md` §Step 3c), applied at Portfolio's seam.
-// This closed enum IS that surface: the 6g validation parses a draft's series
-// claim against it, and the evaluation below resolves each series to a value plus
-// a distinct observation identity.
+// ---- The computed metric series ------------------------------------------------
 
-/// The closed set of engine-resolvable ledger series. Each maps to a value the
-/// engine computes every run ([`ComputedMetrics`], the live price, the position's
-/// book weight) and carries a derived cadence — statement-derived series advance on
-/// filing cadence, price-derived ones on market-data cadence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LedgerSeries {
+/// The metrics the engine computes for a holding — the vocabulary of the
+/// COMPUTED block's metric lines ([`crate::portfolio::pipeline`]'s
+/// `computed_metrics_lines`), each with its value on [`ComputedMetrics`], its
+/// description and its unit gloss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricSeries {
     NetMargin,
     GrossMargin,
     RevenueGrowth,
@@ -1229,193 +1220,83 @@ pub enum LedgerSeries {
     PeRatio,
     PsRatio,
     PbRatio,
-    ExpenseRatio,
-    Price,
 }
 
-impl LedgerSeries {
-    /// Every resolvable series — the vocabulary the ledger schema advertises and the
-    /// interpretation prompt lists.
-    pub const ALL: [LedgerSeries; 11] = [
-        LedgerSeries::NetMargin,
-        LedgerSeries::GrossMargin,
-        LedgerSeries::RevenueGrowth,
-        LedgerSeries::DebtToEquity,
-        LedgerSeries::ReturnVolatility,
-        LedgerSeries::TrailingReturn,
-        LedgerSeries::PeRatio,
-        LedgerSeries::PsRatio,
-        LedgerSeries::PbRatio,
-        LedgerSeries::ExpenseRatio,
-        LedgerSeries::Price,
+impl MetricSeries {
+    /// Every series, in the order the COMPUTED block lists them.
+    pub const ALL: [MetricSeries; 9] = [
+        MetricSeries::NetMargin,
+        MetricSeries::GrossMargin,
+        MetricSeries::RevenueGrowth,
+        MetricSeries::DebtToEquity,
+        MetricSeries::ReturnVolatility,
+        MetricSeries::TrailingReturn,
+        MetricSeries::PeRatio,
+        MetricSeries::PsRatio,
+        MetricSeries::PbRatio,
     ];
 
-    /// The kebab label serde uses — for schema enums and claim parsing.
-    pub fn as_kebab(&self) -> &'static str {
-        match self {
-            LedgerSeries::NetMargin => "net-margin",
-            LedgerSeries::GrossMargin => "gross-margin",
-            LedgerSeries::RevenueGrowth => "revenue-growth",
-            LedgerSeries::DebtToEquity => "debt-to-equity",
-            LedgerSeries::ReturnVolatility => "return-volatility",
-            LedgerSeries::TrailingReturn => "trailing-return",
-            LedgerSeries::PeRatio => "pe-ratio",
-            LedgerSeries::PsRatio => "ps-ratio",
-            LedgerSeries::PbRatio => "pb-ratio",
-            LedgerSeries::ExpenseRatio => "expense-ratio",
-            LedgerSeries::Price => "price",
-        }
-    }
-
-    /// Whether the engine ever computes this series for the holding's vehicle
-    /// kind. The executability surface is class-shaped: statement and multiple
-    /// series exist only for stocks (the fund path skips the facts call and
-    /// carries no statement lines), the expense ratio only for funds. A series
-    /// the class can never resolve must downgrade at 6g — admitted, it would
-    /// type unevaluable on every sweep, permanently un-clear its family, and
-    /// badge the holding on every selective run.
+    /// Whether the engine computes this series for the holding's vehicle kind:
+    /// the statement and multiple series exist only for stocks (the fund path
+    /// skips the facts call and carries no statement lines), the market series
+    /// for both.
     pub fn computable_for(self, is_fund: bool) -> bool {
-        if is_fund {
-            matches!(
+        !is_fund
+            || matches!(
                 self,
-                LedgerSeries::ExpenseRatio
-                    | LedgerSeries::Price
-                    | LedgerSeries::ReturnVolatility
-                    | LedgerSeries::TrailingReturn
+                MetricSeries::ReturnVolatility | MetricSeries::TrailingReturn
             )
-        } else {
-            !matches!(self, LedgerSeries::ExpenseRatio)
-        }
     }
 
-    /// Whether this series' VALUE comes off the statement window — and so moves when
-    /// the statement basis changes, independently of the business
-    /// ([`crate::portfolio::StatementBasis`]).
-    ///
-    /// Deliberately wider than the filing *cadence*: the three multiples are keyed to
-    /// the marks' trading day (market cadence) but their denominators are statement
-    /// lines, so a TTM → annual flip steps them exactly as it steps the margins. That
-    /// is the dangerous combination — a market-cadence series confirms in two
-    /// distinct observations, so a basis step can confirm within days.
-    ///
-    /// The expense ratio rides the fund's own print and funds carry no statement
-    /// lines at all; the price-derived series are untouched by a basis change.
-    pub fn statement_derived(&self) -> bool {
-        matches!(
-            self,
-            LedgerSeries::NetMargin
-                | LedgerSeries::GrossMargin
-                | LedgerSeries::RevenueGrowth
-                | LedgerSeries::DebtToEquity
-                | LedgerSeries::PeRatio
-                | LedgerSeries::PsRatio
-                | LedgerSeries::PbRatio
-        )
-    }
-
-    /// The statement-derived series whose value is a **flow** on the holding's
-    /// statement basis — a TTM sum or an annual print — as opposed to the two that
-    /// read a balance-sheet **instant** (debt / equity and price / book take the
-    /// latest balance sheet on either basis, outside the flow-basis rule —
-    /// `docs/portfolio-analysis.md` §Starting parameters). The prompt's basis line
-    /// states the basis for these and names the instants as instants; the
-    /// continuity gate stays over the whole [`Self::statement_derived`] family
-    /// (Codex round 1 on the ledger-basis slice).
-    pub fn flow_basis(&self) -> bool {
-        matches!(
-            self,
-            LedgerSeries::NetMargin
-                | LedgerSeries::GrossMargin
-                | LedgerSeries::RevenueGrowth
-                | LedgerSeries::PeRatio
-                | LedgerSeries::PsRatio
-        )
-    }
-
-    /// Whether this series' comparator is denominated in price per share — and so
-    /// moves with a retroactive split re-basis while every ratio-valued series
-    /// (multiples, margins, volatility, trailing return, the expense ratio) is
-    /// basis-free. A price-denominated condition's threshold must cross the
-    /// split-adjustment bridge before an evaluation against fresh marks
-    /// (`docs/portfolio-analysis.md` §Starting parameters). Exhaustive so a new
-    /// series variant forces the classification.
-    pub fn price_denominated(&self) -> bool {
-        match self {
-            LedgerSeries::Price => true,
-            LedgerSeries::NetMargin
-            | LedgerSeries::GrossMargin
-            | LedgerSeries::RevenueGrowth
-            | LedgerSeries::DebtToEquity
-            | LedgerSeries::ReturnVolatility
-            | LedgerSeries::TrailingReturn
-            | LedgerSeries::PeRatio
-            | LedgerSeries::PsRatio
-            | LedgerSeries::PbRatio
-            | LedgerSeries::ExpenseRatio => false,
-        }
-    }
-
-    /// The unit sentence the ledger-authoring contract renders beside each series
-    /// (attempt-6 Finding 2: "(decimal)" alone left a stated 3% authored as 3.0).
+    /// The unit sentence the metric line renders beside the value
+    /// (attempt-6 Finding 2: "(decimal)" alone left a stated 3% read as 3.0).
     pub fn unit_note(&self) -> &'static str {
         match self {
-            LedgerSeries::NetMargin
-            | LedgerSeries::GrossMargin
-            | LedgerSeries::RevenueGrowth
-            | LedgerSeries::TrailingReturn => "a fraction, never a percent (0.16 means 16%)",
-            LedgerSeries::ReturnVolatility => {
+            MetricSeries::NetMargin
+            | MetricSeries::GrossMargin
+            | MetricSeries::RevenueGrowth
+            | MetricSeries::TrailingReturn => "a fraction, never a percent (0.16 means 16%)",
+            MetricSeries::ReturnVolatility => {
                 "a daily fraction, never a percent (0.02 means 2% per day)"
             }
-            LedgerSeries::ExpenseRatio => {
-                "a fraction of assets per year, never a percent (0.0075 means 0.75%)"
-            }
-            LedgerSeries::DebtToEquity => "a ratio (1.5 means debt is 1.5 times equity)",
-            LedgerSeries::PeRatio | LedgerSeries::PsRatio | LedgerSeries::PbRatio => {
+            MetricSeries::DebtToEquity => "a ratio (1.5 means debt is 1.5 times equity)",
+            MetricSeries::PeRatio | MetricSeries::PsRatio | MetricSeries::PbRatio => {
                 "a multiple (25 means 25x)"
             }
-            LedgerSeries::Price => "dollars per share",
         }
     }
 
-    /// A short human description for the interpretation prompt's vocabulary list
-    /// (the unit rides beside it — [`Self::unit_note`]).
-    /// The statement-derived family names no basis: the holding's statement basis
-    /// is per holding and per run (`docs/portfolio-analysis.md` §Starting
-    /// parameters), so the prompt states it once beside this list rather than a
-    /// label asserting a TTM the engine may have fallen back from (large-scale
-    /// review 2026-08-24, Priority-1 minor).
     /// The series' computed value on this run's metrics surface — the number
-    /// the interpretation message prints on the metric line. The price is not a
-    /// computed metric and reads from the financials instead.
+    /// the metric line prints.
     pub fn metric_value(&self, m: &ComputedMetrics) -> Option<f64> {
         match self {
-            LedgerSeries::NetMargin => m.net_margin,
-            LedgerSeries::GrossMargin => m.gross_margin,
-            LedgerSeries::RevenueGrowth => m.revenue_growth,
-            LedgerSeries::DebtToEquity => m.debt_to_equity,
-            LedgerSeries::ReturnVolatility => m.return_volatility,
-            LedgerSeries::TrailingReturn => m.trailing_return,
-            LedgerSeries::PeRatio => m.pe_ratio,
-            LedgerSeries::PsRatio => m.ps_ratio,
-            LedgerSeries::PbRatio => m.pb_ratio,
-            LedgerSeries::ExpenseRatio => m.expense_ratio,
-            LedgerSeries::Price => None,
+            MetricSeries::NetMargin => m.net_margin,
+            MetricSeries::GrossMargin => m.gross_margin,
+            MetricSeries::RevenueGrowth => m.revenue_growth,
+            MetricSeries::DebtToEquity => m.debt_to_equity,
+            MetricSeries::ReturnVolatility => m.return_volatility,
+            MetricSeries::TrailingReturn => m.trailing_return,
+            MetricSeries::PeRatio => m.pe_ratio,
+            MetricSeries::PsRatio => m.ps_ratio,
+            MetricSeries::PbRatio => m.pb_ratio,
         }
     }
 
+    /// A short human description for the metric line. The statement-derived
+    /// series name no basis: the holding's statement basis is per holding and
+    /// per run (`docs/portfolio-analysis.md` §Starting parameters), so the
+    /// prompt states it once beside the lines.
     pub fn describe(&self) -> &'static str {
         match self {
-            LedgerSeries::NetMargin => "net margin",
-            LedgerSeries::GrossMargin => "gross margin",
-            LedgerSeries::RevenueGrowth => "year-over-year revenue growth",
-            LedgerSeries::DebtToEquity => "debt / equity ratio",
-            LedgerSeries::ReturnVolatility => "daily realized return volatility",
-            LedgerSeries::TrailingReturn => "trailing price return",
-            LedgerSeries::PeRatio => "price / earnings multiple",
-            LedgerSeries::PsRatio => "price / sales multiple",
-            LedgerSeries::PbRatio => "price / book multiple",
-            LedgerSeries::ExpenseRatio => "fund expense ratio",
-            LedgerSeries::Price => "the holding's price (account currency)",
+            MetricSeries::NetMargin => "net margin",
+            MetricSeries::GrossMargin => "gross margin",
+            MetricSeries::RevenueGrowth => "year-over-year revenue growth",
+            MetricSeries::DebtToEquity => "debt / equity ratio",
+            MetricSeries::ReturnVolatility => "daily realized return volatility",
+            MetricSeries::TrailingReturn => "trailing price return",
+            MetricSeries::PeRatio => "price / earnings multiple",
+            MetricSeries::PsRatio => "price / sales multiple",
+            MetricSeries::PbRatio => "price / book multiple",
         }
     }
 }
@@ -2223,372 +2104,11 @@ pub fn implied_expectations(
     })
 }
 
-// ---- Step-6e forward-assumption refinement ---------------------------------------
-
-/// Which target driver a validated forward assumption addresses — the
-/// pipeline's deterministic mapping of the distilled `affects` field (drafted:
-/// EPS / revenue, the two ladder rungs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssumptionMetric {
-    ForwardEps,
-    ForwardRevenue,
-}
-
-/// The Step-6e forward-assumption input, after the pipeline mapped the
-/// distilled claim's fields (`docs/portfolio-workflow.md` §Step 6e).
-#[derive(Debug, Clone)]
-pub struct ForwardAssumptionInput {
-    pub metric: AssumptionMetric,
-    pub value: f64,
-    /// The claim's stated units — validated and magnitude-normalized before
-    /// the value may fill a driver (a bare `4.5` for "$4.5 billion" must never
-    /// ride into `revenue_mid` unscaled).
-    pub units: String,
-    /// Whether the fact claims to supersede a present feed value. App-set
-    /// `false` since `portfolio-v44` (ruled 2026-09-17): the model declares no
-    /// conflict handling, every fact enters as a supplement, and this leg
-    /// stays dormant until the channel is promoted and the feed gains an
-    /// as-of date.
-    pub supersede: bool,
-    pub fact_type: String,
-    pub as_of: String,
-    pub source_url: String,
-}
-
-/// The target-side fields a successful refinement replaces on the engine
-/// output — the backward-looking sub-scores are untouched by contract.
-#[derive(Debug, Clone)]
-pub struct RefinedTargets {
-    pub price_targets: crate::portfolio::PriceTargets,
-    pub target_meta: TargetMeta,
-    pub hurdle: HurdleRead,
-    pub implied_expectations: Option<ImpliedExpectations>,
-    pub quick_basis: Option<QuickCheckBasis>,
-    /// The policy rule the engine matched — the audit's resolution log.
-    pub matched_rule: String,
-}
-
-/// The primary-source fact-type whitelist a `supersede` requires (drafted —
-/// issued company guidance, a signed contract, a filed figure). A supplement
-/// holds the same bar: an assumption that moves a target is always a
-/// primary-class fact. Matching is **whole-token**, never substring — an
-/// `"unfiled rumor"` must not satisfy `filed` — and any negating or
-/// hedging token disqualifies the whole label (`"not guidance"`,
-/// `"withdrawn guidance"`, `"rumored contract"` are non-facts by their own
-/// words).
-fn assumption_fact_whitelisted(fact_type: &str) -> bool {
-    let mut whitelisted = false;
-    for t in fact_type
-        .to_ascii_lowercase()
-        .split(|c: char| !c.is_ascii_alphanumeric())
-    {
-        if matches!(
-            t,
-            "not" | "no" | "non" | "never" | "without" | "rumor" | "rumored" | "unconfirmed"
-                | "speculative" | "withdrawn" | "denied" | "retracted"
-        ) {
-            return false;
-        }
-        if matches!(t, "guidance" | "contract" | "filed" | "filing" | "filings") {
-            whitelisted = true;
-        }
-    }
-    whitelisted
-}
-
-/// Deterministic unit validation + magnitude normalization for the driver fill
-/// (drafted): the units must read **monetary** for either driver — an EPS fact
-/// accepts only per-share / account-currency vocabulary (so `"vehicles"` can
-/// never fill an EPS driver), scales USD cents to dollars, rejects any
-/// magnitude token (an EPS "in millions" is malformed), and rejects a named
-/// foreign currency because this seam has no dated FX conversion. A revenue
-/// fact must carry account-currency or a magnitude token; magnitude words scale
-/// the value (trillion / billion / million / thousand, plus tn / bn / mn / mm)
-/// and a bare sub-1e6 value rejects as unit-ambiguous. Single-letter suffixes
-/// ("B", "M") are deliberately not recognized — too ambiguous to scale on.
-/// Rejection is fail-soft: the structured targets stand.
-fn normalized_assumption_value(
-    metric: AssumptionMetric,
-    value: f64,
-    units: &str,
-) -> Result<f64, String> {
-    const ACCOUNT_CURRENCY_TOKENS: &[&str] = &["usd", "dollar", "dollars"];
-    const CENT_TOKENS: &[&str] = &["cent", "cents"];
-    const FOREIGN_CURRENCY_TOKENS: &[&str] = &[
-        "eur", "euro", "euros", "gbp", "pound", "pounds", "sterling", "jpy", "yen", "cad",
-        "aud", "chf", "cny", "rmb", "hkd", "nzd", "inr", "krw", "sek", "nok", "dkk",
-    ];
-    // Descriptive vocabulary the unit may carry beside its denomination. These
-    // words never supply a currency or magnitude by themselves.
-    const UNIT_CONTEXT_TOKENS: &[&str] = &[
-        "us", "per", "share", "shares", "eps", "diluted", "basic", "revenue", "revenues",
-        "sales", "total", "annual", "annualized", "forward", "forecast", "forecasts",
-        "estimated", "estimate", "estimates", "in", "of", "account", "currency",
-    ];
-    const FOREIGN_CURRENCY_SYMBOLS: &[char] = &[
-        '€', '£', '¥', '￥', '₹', '₩', '₽', '₺', '₫', '฿', '₪', '₴', '₦', '₱', '₲', '₵', '₡',
-    ];
-    if units.trim().is_empty() {
-        return Err("rejected: the assumption carries no units".to_string());
-    }
-    if let Some(symbol) = units
-        .chars()
-        .find(|symbol| FOREIGN_CURRENCY_SYMBOLS.contains(symbol))
-    {
-        return Err(format!(
-            "rejected: units {units:?} name foreign-currency symbol {symbol:?}, but no dated \
-             FX conversion exists for target refinement"
-        ));
-    }
-    let lowered = units
-        .replace('$', " usd ")
-        .replace('¢', " cents ")
-        .to_ascii_lowercase();
-    let tokens: Vec<&str> = lowered
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .collect();
-    let mut magnitude: Option<f64> = None;
-    let mut account_currency = false;
-    let mut cents = false;
-    let mut foreign_currency: Option<&str> = None;
-    let mut unsupported: Vec<&str> = Vec::new();
-    for token in &tokens {
-        let m = match *token {
-            "trillion" | "trillions" | "tn" => Some(1e12),
-            "billion" | "billions" | "bn" => Some(1e9),
-            "million" | "millions" | "mn" | "mm" => Some(1e6),
-            "thousand" | "thousands" => Some(1e3),
-            _ => None,
-        };
-        if let Some(m) = m {
-            if magnitude.is_some_and(|prev| prev != m) {
-                return Err(format!(
-                    "rejected: units {units:?} carry conflicting magnitude tokens"
-                ));
-            }
-            magnitude = Some(m);
-            continue;
-        }
-        if ACCOUNT_CURRENCY_TOKENS.contains(token) {
-            account_currency = true;
-        } else if CENT_TOKENS.contains(token) {
-            account_currency = true;
-            cents = true;
-        } else if FOREIGN_CURRENCY_TOKENS.contains(token) {
-            foreign_currency.get_or_insert(token);
-        } else if !UNIT_CONTEXT_TOKENS.contains(token) {
-            unsupported.push(token);
-        }
-    }
-    if let Some(currency) = foreign_currency {
-        return Err(format!(
-            "rejected: units {units:?} name foreign currency {currency:?}, but no dated FX \
-             conversion exists for target refinement"
-        ));
-    }
-    if !unsupported.is_empty() {
-        return Err(format!(
-            "rejected: units {units:?} carry unsupported unit token(s): {}",
-            unsupported.join(", ")
-        ));
-    }
-    let denomination_scale = if cents { 0.01 } else { 1.0 };
-    match metric {
-        AssumptionMetric::ForwardEps => {
-            if magnitude.is_some() {
-                return Err(format!(
-                    "rejected: a per-share fact cannot carry a magnitude in its units ({units:?})"
-                ));
-            }
-            let normalized = value * denomination_scale;
-            if !normalized.is_finite() {
-                return Err("rejected: the normalized EPS assumption is non-finite".to_string());
-            }
-            Ok(normalized)
-        }
-        AssumptionMetric::ForwardRevenue => {
-            if !account_currency && magnitude.is_none() {
-                return Err(format!(
-                    "rejected: revenue units {units:?} carry no account-currency or magnitude \
-                     token"
-                ));
-            }
-            let normalized = value * magnitude.unwrap_or(1.0) * denomination_scale;
-            if !normalized.is_finite() {
-                return Err(
-                    "rejected: the normalized revenue assumption is non-finite".to_string(),
-                );
-            }
-            if magnitude.is_some() || normalized >= 1e6 {
-                Ok(normalized)
-            } else {
-                Err(format!(
-                    "rejected: revenue value {value} with units {units:?} is unit-ambiguous \
-                     (no magnitude token and below the 1e6 absolute-dollar floor — drafted)"
-                ))
-            }
-        }
-    }
-}
-
-/// The **app-owned Step-6e conflict policy** and target recompute
-/// (`docs/portfolio-workflow.md` §Step 6e): a validated forward assumption may
-/// move a scenario target — the engine, never the model, recomputes it as an
-/// explicit, logged assumption. The primary-source whitelist, the ISO as-of,
-/// and the units normalization bind both declarations. A `supplement` may
-/// only fill a driver value the structured feeds don't carry (it never
-/// displaces a present feed value — and *present* means the feed carries a
-/// value on any of the driver's legs, whatever its sign: a loss forecast is a
-/// value, not an absence, and a low/high bracket without a midpoint is a
-/// present feed, so the ladder's rung admissibility is never feed absence).
-/// The `supersede` leg is dormant by design (ruled 2026-08-27): against any
-/// present feed value it rejects, because the consensus feed carries **no
-/// as-of date** to verify it as newer (structured-wins is the default), and
-/// declared against an absent value it has nothing to contradict, so it is
-/// downgraded to the supplement fill and the matched rule names the
-/// downgrade. The true leg revives only if the channel is promoted and the
-/// feed gains an as-of date. `Err` carries the failed condition for the
-/// audit; the structured targets stand.
-/// Parks for the removal sweep (ruled 2026-10-08): the forward-assumption
-/// channel that fed it left with the distillation grammar, so only its tests
-/// call it.
-pub fn refine_targets_with_assumption(
-    fin: &CompanyFinancials,
-    rates: &RateAnchors,
-    input: &ForwardAssumptionInput,
-) -> Result<RefinedTargets, String> {
-    if !input.value.is_finite() || input.value <= 0.0 {
-        return Err("rejected: non-positive or non-finite assumption value".to_string());
-    }
-    if !assumption_fact_whitelisted(&input.fact_type) {
-        return Err(format!(
-            "rejected: fact type {:?} is outside the primary-source whitelist \
-             (issued guidance / signed contract / filed figure)",
-            input.fact_type
-        ));
-    }
-    if chrono::NaiveDate::parse_from_str(input.as_of.trim(), "%Y-%m-%d").is_err() {
-        return Err(format!(
-            "rejected: as-of {:?} is not an ISO date",
-            input.as_of
-        ));
-    }
-    let normalized_value = normalized_assumption_value(input.metric, input.value, &input.units)?;
-    // Present means the feed carries a value on *any* of the driver's three
-    // legs, whatever its sign: a published loss forecast is a value, not an
-    // absence, and a low/high bracket without a midpoint is still a present
-    // feed (the FMP builder shapes every leg independently). The ladder's
-    // rung admissibility (`> 0.0` on the mid) is never feed absence, so a
-    // positive fact can't ride in over a loss forecast as a wrong-sign fill,
-    // and the three-leg fill below can't overwrite a bracket.
-    let legs = fin
-        .consensus
-        .as_ref()
-        .map(|c| match input.metric {
-            AssumptionMetric::ForwardEps => [c.eps_low, c.eps_mid, c.eps_high],
-            AssumptionMetric::ForwardRevenue => [c.revenue_low, c.revenue_mid, c.revenue_high],
-        })
-        .unwrap_or([None; 3]);
-    let present: Vec<String> = ["low", "mid", "high"]
-        .iter()
-        .zip(legs)
-        .filter_map(|(leg, v)| v.map(|v| format!("{leg} {v}")))
-        .collect();
-    if !present.is_empty() {
-        if input.supersede {
-            return Err(
-                "rejected: supersede unverifiable — the structured consensus carries no \
-                 as-of date to compare the fact against (structured-wins default)"
-                    .to_string(),
-            );
-        }
-        return Err(format!(
-            "rejected: supplement may not displace a present structured value — the \
-             feed's value ({}) stands",
-            present.join(", ")
-        ));
-    }
-
-    // The supplement applies: fill the absent driver and re-run the analysis,
-    // splicing only the target-side outputs (grade inputs are untouched — the
-    // statements did not change).
-    let mut refined_fin = fin.clone();
-    let consensus = refined_fin.consensus.get_or_insert_with(|| ConsensusEstimate {
-        period_end: input.as_of.trim().to_string(),
-        eps_low: None,
-        eps_mid: None,
-        eps_high: None,
-        revenue_low: None,
-        revenue_mid: None,
-        revenue_high: None,
-        periods_used: 1,
-        near_weight: 1.0,
-        eps_mid_rows: 0,
-        revenue_mid_rows: 0,
-        // A research supplement is a sourced point, not a provider fiscal-row
-        // snapshot, so it cannot become a constant-period revision comparator.
-        eps_periods: Vec::new(),
-        // Nor a second fiscal-year row: the three-year leg holds growth flat.
-        eps_growth_rows: ConsensusGrowthRows::default(),
-        revenue_growth_rows: ConsensusGrowthRows::default(),
-    });
-    match input.metric {
-        AssumptionMetric::ForwardEps => {
-            // A single sourced figure carries no spread: the driver rides flat
-            // (the function records flat-driver on the meta) and never counts
-            // as consensus corroboration (rows stay 0 — a research fact must
-            // not fake a two-row clamp release).
-            consensus.eps_low = Some(normalized_value);
-            consensus.eps_mid = Some(normalized_value);
-            consensus.eps_high = Some(normalized_value);
-        }
-        AssumptionMetric::ForwardRevenue => {
-            consensus.revenue_low = Some(normalized_value);
-            consensus.revenue_mid = Some(normalized_value);
-            consensus.revenue_high = Some(normalized_value);
-        }
-    }
-    let driver = match input.metric {
-        AssumptionMetric::ForwardEps => "forward-EPS",
-        AssumptionMetric::ForwardRevenue => "forward-revenue",
-    };
-    // The declaration is validated, never selected: a supersede has nothing
-    // to contradict where the feed carries no value, so it is downgraded to
-    // the supplement fill and the rule says so — the shadow audit line reads
-    // what was declared (ruled 2026-08-27).
-    let rule_head = if input.supersede {
-        format!(
-            "supplement (downgraded from a declared supersede — the structured feed \
-             carries no {driver} value to contradict)"
-        )
-    } else {
-        "supplement".to_string()
-    };
-    match analyze(&refined_fin, rates) {
-        EngineVerdict::Analyzed(out) => Ok(RefinedTargets {
-            price_targets: out.price_targets,
-            target_meta: out.target_meta,
-            hurdle: out.hurdle,
-            implied_expectations: out.implied_expectations,
-            quick_basis: out.quick_basis,
-            matched_rule: format!(
-                "{rule_head}: filled the absent {driver} driver with {normalized_value} \
-                 (stated {} {}) from {} ({}, as of {})",
-                input.value, input.units, input.source_url, input.fact_type, input.as_of
-            ),
-        }),
-        EngineVerdict::InsufficientEvidence(reason) => Err(format!(
-            "rejected: the refined analysis abstained ({reason}) — the structured targets stand"
-        )),
-    }
-}
-
 /// The engine-only quick paths' **closed-form re-anchor**
 /// (`docs/portfolio-analysis.md` §The quick check): the stored spread percentiles
 /// and drivers from the last full pass, re-anchored on the fresh `DGS10`, with the
 /// total returns measured from the **fresh** price — one extra FRED print, no
-/// re-estimation, no new heavy retrieval. The ledger's authored monitor band is
+/// re-estimation, no new heavy retrieval. The band monitor's band is
 /// deliberately **not** derived from this — the re-anchor serves the hurdle read
 /// only.
 pub fn reanchor_scenarios(
@@ -3560,12 +3080,10 @@ pub enum NarrativeClass {
 /// cadence-honest pace pair — the interval cancels in the ratio), falling back
 /// to the company's own reported operating series against the annualized price
 /// move where coverage is too thin. Conviction / risk evidence only — a
-/// tripped cap is the suite's shared **soft Medium ceiling on the engine
-/// arm's** mechanical conviction, an annotation beside the model's own value,
-/// never a clamp on it, and never a letter input. As-built the cap fires on
-/// the ratio alone: no leading-metric anchor producer exists in Portfolio, so
-/// every holding reads anchor-absent — the anchor exception joins with the
-/// research loop (ruled 2026-08-21).
+/// tripped hype read records its matched rule as evidence the model weighs,
+/// never a cap on either arm, and never a letter input. The read fires on the
+/// ratio alone: no leading-metric anchor producer exists in Portfolio, so
+/// every holding reads anchor-absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NarrativeRead {
     pub form: NarrativeForm,
@@ -4258,254 +3776,6 @@ mod tests {
         assert!((drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MIN)).abs() < 1e-9);
     }
 
-    // ---- Step-6e forward-assumption refinement ----
-
-    #[test]
-    fn a_supplement_fills_an_absent_driver_and_recomputes_targets() {
-        // The charter case: no positive forward-EPS consensus — the ladder sat
-        // on the revenue rung — and research supplies issued EPS guidance.
-        let mut fin = strong();
-        {
-            let c = fin.consensus.as_mut().unwrap();
-            c.eps_low = None;
-            c.eps_mid = None;
-            c.eps_high = None;
-        }
-        let rates = rates();
-        let before = match analyze(&fin, &rates) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let input = ForwardAssumptionInput {
-            metric: AssumptionMetric::ForwardEps,
-            value: 7.4,
-            units: "USD per share".into(),
-            supersede: false,
-            fact_type: "issued company guidance".into(),
-            as_of: "2026-08-20".into(),
-            source_url: "https://ir.example.com/guidance".into(),
-        };
-        let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
-        assert!(refined.matched_rule.contains("supplement"));
-        assert!(refined.matched_rule.contains("forward-EPS"));
-        assert!(
-            refined.matched_rule.starts_with("supplement: filled"),
-            "a plain supplement names no downgrade: {}",
-            refined.matched_rule
-        );
-        // The refined targets price the EPS rung now — a different surface
-        // than the revenue-rung baseline.
-        assert_ne!(
-            refined.price_targets.twelve_month.as_ref().map(|t| t.base),
-            before.price_targets.twelve_month.as_ref().map(|t| t.base),
-            "the affected scenario target moved"
-        );
-    }
-
-    #[test]
-    fn the_conflict_policy_rejects_displacement_supersede_and_off_whitelist_facts() {
-        let fin = strong(); // carries a positive EPS consensus
-        let rates = rates();
-        let mut input = ForwardAssumptionInput {
-            metric: AssumptionMetric::ForwardEps,
-            value: 9.0,
-            units: "USD per share".into(),
-            supersede: false,
-            fact_type: "issued company guidance".into(),
-            as_of: "2026-08-20".into(),
-            source_url: "https://ir.example.com/guidance".into(),
-        };
-        // A supplement may never displace a present feed value.
-        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
-        assert!(err.contains("may not displace"), "{err}");
-        // A supersede rejects on the named unverifiable condition —
-        // structured-wins is the default.
-        input.supersede = true;
-        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
-        assert!(err.contains("no as-of date"), "{err}");
-        // An off-whitelist fact type rejects even where the driver is absent.
-        let mut no_eps = strong();
-        {
-            let c = no_eps.consensus.as_mut().unwrap();
-            c.eps_low = None;
-            c.eps_mid = None;
-            c.eps_high = None;
-        }
-        input.supersede = false;
-        input.fact_type = "analyst blog estimate".into();
-        let err = refine_targets_with_assumption(&no_eps, &rates, &input).unwrap_err();
-        assert!(err.contains("whitelist"), "{err}");
-        // A malformed as-of rejects.
-        input.fact_type = "issued company guidance".into();
-        input.as_of = "next quarter".into();
-        let err = refine_targets_with_assumption(&no_eps, &rates, &input).unwrap_err();
-        assert!(err.contains("ISO date"), "{err}");
-    }
-
-    #[test]
-    fn a_loss_forecast_consensus_is_present_and_never_displaced() {
-        // A published loss forecast is a *present* feed value, not an absent
-        // driver: the ladder's EPS rung declines it (`> 0.0`), but rung
-        // admissibility is never feed absence. A positive guidance figure
-        // would be a wrong-sign fill on the shadow audit line the 2026-08-27
-        // promotion bar counts, so the supplement rejects against it and a
-        // supersede takes the present-feed branch.
-        let rates = rates();
-        let mut input = ForwardAssumptionInput {
-            metric: AssumptionMetric::ForwardEps,
-            value: 7.4,
-            units: "USD per share".into(),
-            supersede: false,
-            fact_type: "issued company guidance".into(),
-            as_of: "2026-08-20".into(),
-            source_url: "https://ir.example.com/guidance".into(),
-        };
-        for feed_mid in [-0.50, 0.0] {
-            let mut fin = strong();
-            {
-                let c = fin.consensus.as_mut().unwrap();
-                c.eps_low = None;
-                c.eps_mid = Some(feed_mid);
-                c.eps_high = None;
-            }
-            // The ladder is provably off the EPS rung on this fixture.
-            match analyze(&fin, &rates) {
-                EngineVerdict::Analyzed(out) => assert_eq!(
-                    out.target_meta.driver_rung,
-                    "consensus forward revenue per share"
-                ),
-                other => panic!("expected the revenue rung, got {other:?}"),
-            }
-            input.supersede = false;
-            let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
-            assert!(err.contains("may not displace"), "feed {feed_mid}: {err}");
-            assert!(
-                err.contains(&format!("(mid {feed_mid})")),
-                "the audit line names the feed leg and value — feed {feed_mid}: {err}"
-            );
-            input.supersede = true;
-            let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
-            assert!(err.contains("no as-of date"), "feed {feed_mid}: {err}");
-        }
-    }
-
-    #[test]
-    fn a_bracket_without_a_midpoint_is_present_and_never_displaced() {
-        // The FMP builder shapes every consensus leg independently, so a row
-        // carrying `epsLow` / `epsHigh` with a null `epsAvg` lands as a
-        // low/high bracket with no midpoint. The ladder's EPS rung declines it
-        // (no mid), but the bracket is a present feed value — the three-leg
-        // fill must never overwrite it (Codex, loss-forecast slice).
-        let rates = rates();
-        let mut fin = strong();
-        {
-            let c = fin.consensus.as_mut().unwrap();
-            c.eps_low = Some(1.0);
-            c.eps_mid = None;
-            c.eps_high = Some(2.0);
-        }
-        match analyze(&fin, &rates) {
-            EngineVerdict::Analyzed(out) => assert_eq!(
-                out.target_meta.driver_rung,
-                "consensus forward revenue per share"
-            ),
-            other => panic!("expected the revenue rung, got {other:?}"),
-        }
-        let mut input = ForwardAssumptionInput {
-            metric: AssumptionMetric::ForwardEps,
-            value: 7.4,
-            units: "USD per share".into(),
-            supersede: false,
-            fact_type: "issued company guidance".into(),
-            as_of: "2026-08-20".into(),
-            source_url: "https://ir.example.com/guidance".into(),
-        };
-        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
-        assert!(err.contains("may not displace"), "{err}");
-        assert!(
-            err.contains("(low 1, high 2)"),
-            "the audit line names each present leg: {err}"
-        );
-        input.supersede = true;
-        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
-        assert!(err.contains("no as-of date"), "{err}");
-        // The revenue driver's legs are read for a revenue fact — a present
-        // EPS bracket never blocks a revenue fill, and vice versa.
-        {
-            let c = fin.consensus.as_mut().unwrap();
-            c.revenue_low = None;
-            c.revenue_mid = None;
-            c.revenue_high = Some(9.0e9);
-        }
-        input.supersede = false;
-        input.metric = AssumptionMetric::ForwardRevenue;
-        input.units = "USD billions".into();
-        input.value = 4.5;
-        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
-        assert!(err.contains("(high 9000000000)"), "{err}");
-        fin.consensus.as_mut().unwrap().revenue_high = None;
-        let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
-        assert!(
-            refined.matched_rule.contains("forward-revenue"),
-            "{}",
-            refined.matched_rule
-        );
-    }
-
-    #[test]
-    fn a_supersede_declared_against_an_absent_feed_downgrades_to_a_supplement_fill() {
-        // The supersede leg is dormant by design (ruled 2026-08-27): against a
-        // present feed value it rejects on the unverifiable as-of condition,
-        // and against an absent value there is nothing to contradict, so the
-        // declaration is downgraded to the supplement fill — the same
-        // three-leg fill, the same recompute — and the matched rule names the
-        // downgrade so the shadow audit line reads what was declared.
-        let mut fin = strong();
-        {
-            let c = fin.consensus.as_mut().unwrap();
-            c.eps_low = None;
-            c.eps_mid = None;
-            c.eps_high = None;
-        }
-        let rates = rates();
-        let mut input = ForwardAssumptionInput {
-            metric: AssumptionMetric::ForwardEps,
-            value: 7.4,
-            units: "USD per share".into(),
-            supersede: false,
-            fact_type: "issued company guidance".into(),
-            as_of: "2026-08-20".into(),
-            source_url: "https://ir.example.com/guidance".into(),
-        };
-        let as_supplement = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
-        input.supersede = true;
-        let downgraded = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
-        // The fill is the supplement's fill exactly.
-        assert_eq!(
-            downgraded.price_targets.twelve_month.as_ref().map(|t| t.base),
-            as_supplement.price_targets.twelve_month.as_ref().map(|t| t.base),
-        );
-        assert_eq!(downgraded.target_meta.driver_rung, as_supplement.target_meta.driver_rung);
-        // The rule names the downgrade, leading with the accepted-rule family.
-        assert!(
-            downgraded
-                .matched_rule
-                .starts_with("supplement (downgraded from a declared supersede"),
-            "{}",
-            downgraded.matched_rule
-        );
-        assert!(
-            downgraded.matched_rule.contains("no forward-EPS value to contradict"),
-            "{}",
-            downgraded.matched_rule
-        );
-        assert!(
-            downgraded.matched_rule.contains("filled the absent forward-EPS driver"),
-            "{}",
-            downgraded.matched_rule
-        );
-    }
-
     // ---- Panic posture: hostile feed values never panic the compute modules ----
 
     #[test]
@@ -4727,156 +3997,6 @@ mod tests {
         let err =
             tech_event_pre_flag(&closes, &bench, "XLK", "2026-01-02", Some(0.02)).unwrap_err();
         assert!(err.contains("non-finite sector-relative move"), "{err}");
-    }
-
-    #[test]
-    fn assumption_units_normalize_or_reject_before_the_fill() {
-        // Magnitude words scale a revenue fact deterministically.
-        assert_eq!(
-            normalized_assumption_value(AssumptionMetric::ForwardRevenue, 4.5, "USD billions"),
-            Ok(4.5e9)
-        );
-        assert_eq!(
-            normalized_assumption_value(AssumptionMetric::ForwardRevenue, 850.0, "million USD"),
-            Ok(850.0e6)
-        );
-        // A bare absolute-dollar figure passes unchanged.
-        assert_eq!(
-            normalized_assumption_value(AssumptionMetric::ForwardRevenue, 4.5e9, "USD"),
-            Ok(4.5e9)
-        );
-        // A bare small revenue value is unit-ambiguous — "4.5" for $4.5B must
-        // never ride into the driver unscaled.
-        let err =
-            normalized_assumption_value(AssumptionMetric::ForwardRevenue, 4.5, "USD").unwrap_err();
-        assert!(err.contains("unit-ambiguous"), "{err}");
-        // A per-share fact rejects any magnitude token outright.
-        let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "USD millions")
-            .unwrap_err();
-        assert!(err.contains("per-share"), "{err}");
-        assert_eq!(
-            normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "USD per share"),
-            Ok(7.4)
-        );
-        // A subunit conversion is deterministic and local: cents become USD
-        // dollars before the per-share driver is filled.
-        assert_eq!(
-            normalized_assumption_value(
-                AssumptionMetric::ForwardEps,
-                150.0,
-                "cents per diluted share"
-            ),
-            Ok(1.5)
-        );
-        assert_eq!(
-            normalized_assumption_value(AssumptionMetric::ForwardEps, 150.0, "¢ per share"),
-            Ok(1.5)
-        );
-        assert_eq!(
-            normalized_assumption_value(
-                AssumptionMetric::ForwardRevenue,
-                150.0,
-                "million USD cents"
-            ),
-            Ok(1.5e6)
-        );
-        // Market conversion is not local: without a dated FX source, named
-        // foreign currencies and their symbols reject for either driver.
-        for units in ["EUR per share", "GBP per share", "€ per share"] {
-            let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 5.2, units)
-                .unwrap_err();
-            assert!(err.contains("no dated FX"), "{units}: {err}");
-        }
-        for units in ["EUR billions", "million JPY", "₹ billions"] {
-            let err = normalized_assumption_value(AssumptionMetric::ForwardRevenue, 5.2, units)
-                .unwrap_err();
-            assert!(err.contains("no dated FX"), "{units}: {err}");
-        }
-        let err = normalized_assumption_value(
-            AssumptionMetric::ForwardRevenue,
-            f64::MAX,
-            "USD trillions",
-        )
-        .unwrap_err();
-        assert!(err.contains("non-finite"), "{err}");
-        // Conflicting magnitudes reject rather than guessing.
-        let err = normalized_assumption_value(
-            AssumptionMetric::ForwardRevenue,
-            4.5,
-            "billion (prior: million)",
-        )
-        .unwrap_err();
-        assert!(err.contains("conflicting"), "{err}");
-        // Empty units reject for either driver, and a non-monetary unit can
-        // never fill EPS or revenue.
-        let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "  ").unwrap_err();
-        assert!(err.contains("no units"), "{err}");
-        let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "vehicles")
-            .unwrap_err();
-        assert!(err.contains("unsupported unit"), "{err}");
-        let err = normalized_assumption_value(AssumptionMetric::ForwardRevenue, 2.0e6, "vehicles")
-            .unwrap_err();
-        assert!(err.contains("unsupported unit"), "{err}");
-        // The whitelist matches whole tokens — "unfiled rumor" never satisfies
-        // `filed` — and negating / hedging tokens disqualify outright.
-        assert!(!assumption_fact_whitelisted("unfiled rumor"));
-        assert!(assumption_fact_whitelisted("filed figure (10-Q)"));
-        assert!(assumption_fact_whitelisted("issued company guidance"));
-        assert!(!assumption_fact_whitelisted("not guidance"));
-        assert!(!assumption_fact_whitelisted("withdrawn guidance"));
-        assert!(!assumption_fact_whitelisted("rumored contract"));
-
-        // End to end: the billions-stated supplement fills the driver scaled.
-        let mut fin = strong();
-        {
-            let c = fin.consensus.as_mut().unwrap();
-            c.revenue_low = None;
-            c.revenue_mid = None;
-            c.revenue_high = None;
-        }
-        let rates = rates();
-        let input = ForwardAssumptionInput {
-            metric: AssumptionMetric::ForwardRevenue,
-            value: 4.5,
-            units: "USD billions".into(),
-            supersede: false,
-            fact_type: "issued company guidance".into(),
-            as_of: "2026-08-20".into(),
-            source_url: "https://ir.example.com/guidance".into(),
-        };
-        let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
-        assert!(refined.matched_rule.contains("4500000000"), "{}", refined.matched_rule);
-
-        // The same conversion reaches the actual shadow recompute, while a
-        // foreign-currency declaration fails before any driver fill.
-        let mut fin = strong();
-        {
-            let c = fin.consensus.as_mut().unwrap();
-            c.eps_low = None;
-            c.eps_mid = None;
-            c.eps_high = None;
-        }
-        let mut input = ForwardAssumptionInput {
-            metric: AssumptionMetric::ForwardEps,
-            value: 150.0,
-            units: "cents per share".into(),
-            supersede: false,
-            fact_type: "issued company guidance".into(),
-            as_of: "2026-08-20".into(),
-            source_url: "https://ir.example.com/guidance".into(),
-        };
-        let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
-        assert_eq!(
-            refined
-                .quick_basis
-                .as_ref()
-                .and_then(|basis| basis.consensus_eps_mid),
-            Some(1.5)
-        );
-        input.value = 5.2;
-        input.units = "EUR per share".into();
-        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
-        assert!(err.contains("no dated FX"), "{err}");
     }
 
     /// The attempt-2 RKT shape: recovered current earnings against a trail of
@@ -6278,17 +5398,6 @@ mod tests {
     }
 
     #[test]
-    fn price_is_the_only_price_denominated_ledger_series() {
-        for s in LedgerSeries::ALL {
-            assert_eq!(
-                s.price_denominated(),
-                matches!(s, LedgerSeries::Price),
-                "{s:?}"
-            );
-        }
-    }
-
-    #[test]
     fn options_signal_reads_put_skew_from_the_chain() {
         let chain = OptionChain {
             underlying: "AAPL".into(),
@@ -6678,42 +5787,20 @@ mod tests {
     }
 
     #[test]
-    fn statement_derived_series_labels_assert_no_basis() {
+    fn metric_series_labels_assert_no_basis() {
         // The holding's statement basis is per holding and per run — the prompt
-        // states it beside the vocabulary — so no statement-derived label may
-        // claim TTM (or annual) on its own (large-scale review 2026-08-24,
-        // Priority-1 minor: "TTM net margin" on an annual-basis holding).
-        for s in LedgerSeries::ALL.iter().filter(|s| s.statement_derived()) {
+        // states it beside the metric lines — so no label may claim TTM (or
+        // annual) on its own (large-scale review 2026-08-24, Priority-1 minor:
+        // "TTM net margin" on an annual-basis holding).
+        for s in MetricSeries::ALL {
             let d = s.describe();
             assert!(
                 !d.contains("TTM") && !d.to_lowercase().contains("annual"),
                 "{d}"
             );
         }
-        assert_eq!(LedgerSeries::NetMargin.describe(), "net margin");
-        assert_eq!(
-            LedgerSeries::GrossMargin.describe(),
-            "gross margin"
-        );
-        // The flow family is the gate's family less its two balance-sheet instants.
-        let flow: Vec<_> = LedgerSeries::ALL
-            .iter()
-            .filter(|s| s.flow_basis())
-            .map(|s| s.as_kebab())
-            .collect();
-        assert_eq!(
-            flow,
-            ["net-margin", "gross-margin", "revenue-growth", "pe-ratio", "ps-ratio"]
-        );
-        let instants: Vec<_> = LedgerSeries::ALL
-            .iter()
-            .filter(|s| s.statement_derived() && !s.flow_basis())
-            .map(|s| s.as_kebab())
-            .collect();
-        assert_eq!(instants, ["debt-to-equity", "pb-ratio"]);
-        for s in LedgerSeries::ALL {
-            assert!(!s.flow_basis() || s.statement_derived(), "{s:?}");
-        }
+        assert_eq!(MetricSeries::NetMargin.describe(), "net margin");
+        assert_eq!(MetricSeries::GrossMargin.describe(), "gross margin");
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //! the per-stage boundary stays sync; the blocking work is offloaded via
 //! `spawn_blocking` at the Tauri-command seam (the `test_local_daemon` command in
 //! `lib.rs`, mirroring `connection_test`). All calls use Ollama's native surface
-//! (`/api/chat`, `/api/tags`; embeddings ride `/api/embed` in `embedding.rs`) —
+//! (`/api/chat`, `/api/tags`) —
 //! the daemon's OpenAI-compatible `/v1/` layer is deliberately unused, since
 //! schema-constrained output needs the native `format` parameter (the `/v1/` path
 //! advertises only JSON mode). Token + reasoning streaming rides the existing `progress` seam,
@@ -258,7 +258,7 @@ pub(crate) fn retry_class(err: &anyhow::Error) -> Option<RetryClass> {
 const RETRY_ONCE_DELAY: Duration = Duration::from_secs(2);
 
 /// The annotation a second failure carries after one fired retry — shared by
-/// [`RetryOnce::run`] and the trait-gate legs (research / distill), so every
+/// [`RetryOnce::run_unless`] and the research loop's trait-gate leg, so every
 /// path's hard failure names the first attempt's class.
 pub(crate) fn retried_once_annotation(first: &anyhow::Error) -> String {
     match retry_class(first) {
@@ -270,14 +270,13 @@ pub(crate) fn retried_once_annotation(first: &anyhow::Error) -> String {
 /// The bounded retry-once gate (`docs/local-models.md §The local-model adapter
 /// seam`): at most one re-attempt per **issued** call, only for a
 /// [`RetryClass`] failure, never into a cancelled run. One instance rides the
-/// per-run analyst; the streaming stages wrap through [`RetryOnce::run`],
-/// while the research / distill loops — which own their parse above their
-/// model traits — ask [`RetryOnce::permit`] through those traits' gate
-/// methods. The layers must not nest: each call path wraps exactly once. They
-/// compose only through re-issue — the research loop's findings-parse leg
-/// issues a fresh call that carries its own single re-attempt, so one logical
-/// terminal turn is hard-bounded at four calls. Every fired retry emits a
-/// tracker row and records a [`RetryEvent`] for the run's data-health read.
+/// per-run analyst; the streaming stages wrap through [`RetryOnce::run`] and
+/// the distillation through [`RetryOnce::run_unless`], whose veto keeps its
+/// expanded re-attempt final, while the research loop — which owns its parse
+/// above its model trait — asks [`RetryOnce::permit`] through the trait's
+/// `retry_permitted`. The layers must not nest: each call path wraps exactly
+/// once. Every fired retry emits a tracker row and records a [`RetryEvent`]
+/// for the run's data-health read.
 pub(crate) struct RetryOnce {
     events: std::sync::Mutex<Vec<RetryEvent>>,
     delay: Duration,
@@ -363,12 +362,25 @@ impl RetryOnce {
         &self,
         progress: &RunContext,
         stage: &str,
+        attempt: impl FnMut() -> Result<T>,
+    ) -> Result<T> {
+        self.run_unless(progress, stage, || false, attempt)
+    }
+
+    /// [`Self::run`] with a veto read after the first failure: when `vetoed`
+    /// holds, the stage's own final attempt has already issued and no
+    /// re-attempt fires.
+    pub(crate) fn run_unless<T>(
+        &self,
+        progress: &RunContext,
+        stage: &str,
+        vetoed: impl Fn() -> bool,
         mut attempt: impl FnMut() -> Result<T>,
     ) -> Result<T> {
         match attempt() {
             Ok(v) => Ok(v),
             Err(first) => {
-                if !self.permit(progress, stage, &first) {
+                if vetoed() || !self.permit(progress, stage, &first) {
                     return Err(first);
                 }
                 attempt().map_err(|second| second.context(retried_once_annotation(&first)))
@@ -387,8 +399,7 @@ const TOKEN_FLUSH_CHARS: usize = 24;
 /// host (`OLLAMA_HOST`) is `http://localhost:11434` — so a user may reasonably enter
 /// either. Trimming a trailing `/api` (and any trailing slashes) makes both resolve
 /// to the same origin, so the joined path is never doubled into `/api/api/chat`.
-/// Shared by [`LocalModelClient`] and `embedding::LocalEmbedder`, which both append
-/// `/api/...`.
+/// [`LocalModelClient`] appends `/api/...` to it.
 pub(crate) fn normalize_endpoint(endpoint: &str) -> String {
     let trimmed = endpoint.trim().trim_end_matches('/');
     trimmed
@@ -881,14 +892,11 @@ fn model_matches(available: &str, configured: &str) -> bool {
     false
 }
 
-/// The configured roster's model ids: the reasoner and the fast tier, plus the
-/// embedder slot no local job reads (neither makes an embedding call), which
-/// neither gates nor reaches the daemon probe.
+/// The configured roster's model ids: the reasoner and the fast tier.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Roster {
     pub reasoner: String,
     pub fast: String,
-    pub embedder: String,
 }
 
 impl Roster {
@@ -1442,7 +1450,6 @@ pub fn roster_from_config(cfg: &AppConfig) -> Roster {
     Roster {
         reasoner: val(&cfg.local_reasoner_model),
         fast: val(&cfg.local_fast_model),
-        embedder: val(&cfg.local_embedder_model),
     }
 }
 
@@ -1588,11 +1595,10 @@ mod tests {
     use crate::test_http::{Canned, MockHttp};
     use std::sync::atomic::AtomicBool;
 
-    fn roster(reasoner: &str, fast: &str, embedder: &str) -> Roster {
+    fn roster(reasoner: &str, fast: &str) -> Roster {
         Roster {
             reasoner: reasoner.to_string(),
             fast: fast.to_string(),
-            embedder: embedder.to_string(),
         }
     }
 
@@ -1601,7 +1607,6 @@ mod tests {
             local_daemon_endpoint: Some("http://localhost:11434".into()),
             local_reasoner_model: Some("qwen3.5:122b".into()),
             local_fast_model: Some("qwen3.5:35b".into()),
-            local_embedder_model: Some("qwen3-embedding:4b".into()),
             // The shared FMP / FRED credentials joined the local gate with the full
             // Portfolio slice (`docs/portfolio-workflow.md` §Step 1).
             fmp_api_key: Some("fmp-key".into()),
@@ -1935,14 +1940,10 @@ mod tests {
         let available = vec!["qwen3.5:122b".to_string(), "qwen3.5:35b".to_string()];
         // fast tier absent; a blank slot is not reported here (config completeness
         // is the gate's job).
-        let missing = missing_roster_models(&roster("qwen3.5:122b", "absent:35b", ""), &available);
+        let missing = missing_roster_models(&roster("qwen3.5:122b", "absent:35b"), &available);
         assert_eq!(missing, vec!["absent:35b".to_string()]);
-        let none = missing_roster_models(&roster("qwen3.5:122b", "qwen3.5:35b", ""), &available);
+        let none = missing_roster_models(&roster("qwen3.5:122b", "qwen3.5:35b"), &available);
         assert!(none.is_empty());
-        // No local job makes an embedding call, so an embedder id the daemon has
-        // not pulled is never reported missing.
-        let unpulled = missing_roster_models(&roster("qwen3.5:122b", "qwen3.5:35b", "absent:4b"), &available);
-        assert!(unpulled.is_empty(), "{unpulled:?}");
     }
 
     // ---- the gate matrix ----
@@ -1985,19 +1986,6 @@ mod tests {
         // With both present, no credential category fires.
         let clean = local_gate(&local_cfg(), &DaemonProbe::Reachable { missing: vec![] });
         assert!(clean.categories.iter().all(|c| c.kind != WarningKind::ProviderCredentials));
-    }
-
-    #[test]
-    fn gate_never_blocks_on_a_blank_embedder() {
-        // The reasoner serves both local jobs and neither needs an embedder
-        // (`docs/configuration.md §Local Analysis Suite Configuration`).
-        let cfg = AppConfig {
-            local_embedder_model: None,
-            ..local_cfg()
-        };
-        let report = local_gate(&cfg, &DaemonProbe::Reachable { missing: vec![] });
-        assert!(!report.is_blocked, "{:?}", report.categories);
-        assert!(!local_presence_gate(&cfg).is_blocked);
     }
 
     #[test]
@@ -2996,7 +2984,6 @@ mod tests {
         let r = roster_from_config(&cfg);
         assert_eq!(r.reasoner, "qwen3.5:122b");
         assert_eq!(r.fast, "qwen3.5:35b");
-        assert_eq!(r.embedder, "qwen3-embedding:4b");
         // A blank endpoint reads as unset.
         let blank = AppConfig {
             local_daemon_endpoint: Some("  ".into()),

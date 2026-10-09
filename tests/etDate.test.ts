@@ -1,10 +1,11 @@
 // Unit tests for the pure ET session-dating helpers — the frontend mirror of
-// the backend's `market_clock::et_date_of` / `over_age` pair. Run via
+// the backend's `market_clock::et_date_of` / `over_age` pair and its
+// calendar-month rule. Run via
 // `npm test` on Node's built-in runner (type-stripping import, no build step).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { etDateOf, etDayDiff } from "../src/etDate.ts";
+import { addCalendarMonths, etDateOf, etDayDiff } from "../src/etDate.ts";
 
 test("an evening-ET instant dates to the prior ET day, not the UTC date", () => {
   // 2026-08-05 01:30 UTC = 2026-08-04 21:30 EDT.
@@ -79,4 +80,23 @@ test("the diff is direction-signed and zero within one ET day", () => {
     etDayDiff("2026-08-05T15:00:00Z", "2026-08-04T15:00:00Z"),
     -1,
   );
+});
+
+test("calendar months add and clamp on the cases market_clock pins", () => {
+  // The same table as market_clock's CALENDAR_MONTH_CASES.
+  const cases: [string, number, string][] = [
+    ["2026-01-05", 3, "2026-04-05"],
+    ["2026-01-05", 12, "2027-01-05"],
+    ["2026-01-05", 36, "2029-01-05"],
+    ["2025-11-30", 3, "2026-02-28"],
+    ["2026-01-31", 1, "2026-02-28"],
+    ["2027-11-30", 3, "2028-02-29"],
+    ["2024-02-29", 12, "2025-02-28"],
+    ["2026-08-31", 3, "2026-11-30"],
+    ["2026-12-15", 3, "2027-03-15"],
+  ];
+  for (const [from, months, to] of cases) {
+    assert.equal(addCalendarMonths(from, months), to, `${from} + ${months}`);
+  }
+  assert.equal(addCalendarMonths("2026-02-30", 3), null);
 });

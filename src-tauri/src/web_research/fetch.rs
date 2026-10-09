@@ -201,8 +201,8 @@ fn user_agent_for(url: &Url) -> &'static str {
     }
 }
 
-/// One fetched, extracted page — the shape the research loop's evidence
-/// ledger and the document cache consume. `retrieved_at` is the original
+/// One fetched, extracted page — the shape the research loop's evidence and
+/// the document cache consume. `retrieved_at` is the original
 /// retrieval instant (RFC 3339 UTC), the immutable evidence vintage.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FetchedPage {

@@ -10,12 +10,10 @@
 //! The document cache is the cross-run per-fetch layer both jobs' failure
 //! postures name: fetched, readability-extracted documents keyed by the
 //! **normalized requested URL**, with the normalized final URL kept separately
-//! so a redirecting seed hits on every re-read without losing provenance.
+//! so a redirecting address hits on every re-read without losing provenance.
 //! Each carries its **original retrieval timestamp** — the immutable evidence
 //! vintage, never rewritten on reuse — and serves only within the shared
 //! ~4-week freshness window (older entries age out).
-//! Portfolio's higher-level distilled-findings layer is a separate,
-//! job-partitioned store over these same fetches.
 //!
 //! The source state is the learned layer the fetch telemetry accumulates:
 //! per-domain full-vs-thin recovery counts, the failed and denied (HTTP
@@ -31,7 +29,7 @@ use super::fetch::FetchedPage;
 use super::registry::ExtractionProfile;
 
 /// The suite's shared research-freshness window (`docs/portfolio-analysis.md
-/// §Starting parameters` — the ~4-week seed/credit window; the document cache
+/// §Starting parameters` — the ~4-week research-freshness window; the document cache
 /// ages out on the same bound).
 pub const RESEARCH_FRESHNESS_DAYS: i64 = 28;
 
@@ -56,7 +54,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS web_documents (
             url                TEXT PRIMARY KEY,
-            final_url          TEXT,
+            final_url          TEXT NOT NULL,
             host               TEXT NOT NULL,
             retrieved_at       TEXT NOT NULL,
             title              TEXT NOT NULL,
@@ -64,18 +62,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             extraction_quality REAL NOT NULL,
             thin_stub          INTEGER NOT NULL
         )",
-        [],
-    )?;
-    // Additive migration from the research-loop slice's original shape, where
-    // `url` served as both the lookup key and final-URL provenance. Existing
-    // rows were stored under their final URL, so that same value is the honest
-    // backfill for both columns.
-    if !crate::storage::column_exists(conn, "web_documents", "final_url")? {
-        conn.execute("ALTER TABLE web_documents ADD COLUMN final_url TEXT", [])?;
-    }
-    conn.execute(
-        "UPDATE web_documents SET final_url = url
-         WHERE final_url IS NULL OR trim(final_url) = ''",
         [],
     )?;
     conn.execute(
@@ -170,7 +156,7 @@ pub fn get_fresh_document(
     let key = normalize_url(url);
     let exact = conn
         .query_row(
-            "SELECT COALESCE(final_url, url), host, retrieved_at, title, text,
+            "SELECT final_url, host, retrieved_at, title, text,
                     extraction_quality, thin_stub
              FROM web_documents WHERE url = ?1",
             params![key],
@@ -182,7 +168,7 @@ pub fn get_fresh_document(
     }
 
     let mut stmt = conn.prepare(
-        "SELECT COALESCE(final_url, url), host, retrieved_at, title, text,
+        "SELECT final_url, host, retrieved_at, title, text,
                 extraction_quality, thin_stub
          FROM web_documents
          WHERE final_url = ?1 AND url <> ?1
@@ -414,45 +400,6 @@ mod tests {
             .unwrap()
             .expect("the direct final URL hits too");
         assert_eq!(by_final, by_requested);
-    }
-
-    #[test]
-    fn the_original_final_url_key_migrates_without_losing_cache_hits() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE web_documents (
-                url TEXT PRIMARY KEY,
-                host TEXT NOT NULL,
-                retrieved_at TEXT NOT NULL,
-                title TEXT NOT NULL,
-                text TEXT NOT NULL,
-                extraction_quality REAL NOT NULL,
-                thin_stub INTEGER NOT NULL
-             );
-             INSERT INTO web_documents
-                (url, host, retrieved_at, title, text, extraction_quality, thin_stub)
-             VALUES
-                ('https://reuters.com/legacy', 'reuters.com',
-                 '2026-08-20T12:00:00+00:00', 'legacy', 'body', 0.9, 0);",
-        )
-        .unwrap();
-
-        init_schema(&conn).unwrap();
-        let final_url: String = conn
-            .query_row(
-                "SELECT final_url FROM web_documents WHERE url = ?1",
-                params!["https://reuters.com/legacy"],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(final_url, "https://reuters.com/legacy");
-        assert!(get_fresh_document(
-            &conn,
-            "https://reuters.com/legacy",
-            at("2026-08-23T00:00:00+00:00")
-        )
-        .unwrap()
-        .is_some());
     }
 
     #[test]

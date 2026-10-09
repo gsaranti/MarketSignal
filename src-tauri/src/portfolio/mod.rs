@@ -1,25 +1,21 @@
 //! Portfolio Analysis — the local-suite job that grades the user's holdings and
-//! recommends an action for each (`docs/portfolio-analysis.md`). This is the
-//! narrow single-equity slice (Phase 2): the per-holding pipeline end to end —
-//! deterministic dossier ([`dossier`]) → deterministic financial-analysis engine
-//! ([`engine`]) → local-model interpretation ([`pipeline`]) → schema-valid verdict
-//! → persisted run ([`store`]) → the run lifecycle ([`job`]) — validated offline,
-//! against a fixture Schwab source ([`crate::schwab`]) plus FMP + SEC EDGAR.
+//! recommends an action for each (`docs/portfolio-analysis.md`): the per-holding
+//! pipeline end to end — deterministic dossier ([`dossier`]) → deterministic
+//! financial-analysis engine ([`engine`]) → the local model's research, review,
+//! thesis document and action call ([`pipeline`]) → persisted run ([`store`]) →
+//! the run lifecycle ([`job`]).
 //!
 //! This module root holds the **domain types** the stages exchange: the holding
 //! verdict and its parts, the investor profile, and the durable plan-time
-//! parameters pinned for this slice. The split between the deterministic engine and
-//! the model is load-bearing (`docs/local-models.md §Context-memory discipline`):
-//! the engine computes every **baseline-arm** number (sub-scores, the composite
-//! grade, scenario price targets, the options-activity signal, the mechanical
-//! stand-ins), and since `portfolio-v7` the model authors its **own arm** beside
-//! it — its sub-scores, derived letter, and target bands, plus the conviction,
-//! horizon reads, and prose — with model-arm judgment values never
-//! altering or binding the engine baseline (the boundary statement:
-//! `docs/portfolio-analysis.md` §The holding verdict). The engine grade stays a
-//! deterministic roll-up of the
-//! engine's sub-scores, never a model gestalt; the model's letter derives from
-//! the model's own sub-scores through the same shared cutoffs.
+//! parameters. The split between the deterministic engine and the model is
+//! load-bearing (`docs/local-models.md §Context-memory discipline`): the engine
+//! computes every **engine-arm** number (sub-scores, the composite grade, the
+//! bands at three horizons, the options-activity signal, the engine's own rung),
+//! and the model authors its **own arm** beside it — the thesis document with its
+//! typed appendix and the action — with model-arm values never altering or
+//! binding the engine arm (the boundary statement: `docs/portfolio-analysis.md`
+//! §The holding verdict). The engine grade stays a deterministic roll-up of the
+//! engine's sub-scores, never a model gestalt.
 
 pub mod diff;
 #[cfg(test)]
@@ -333,26 +329,26 @@ impl PositionDelta {
             prior_cost_basis: None,
         }
     }
+}
 
-    /// Whether the position's net side reversed versus the prior snapshot (a
-    /// long↔short flip) — thesis-changing by construction, so no long-side verdict
-    /// is valid across it. This per-run predicate's production caller is **outcome
-    /// alignment** ([`outcome`]); the carried-verdict side-reversal *badge* is
-    /// computed separately in [`job`] from the current side against a directional
-    /// verdict's invariant long authoring side, robust across a flip through an
-    /// exactly-zero net this predicate cannot see (`docs/portfolio-analysis.md`
-    /// §Asset eligibility, §Triggering). `false` with no prior counterpart (nothing
-    /// to reverse from) and on a flat side (a zero quantity has no side).
-    pub fn side_reversed(&self, current_quantity: f64) -> bool {
-        match self.prior_quantity {
-            Some(prior) => {
-                prior != 0.0
-                    && current_quantity != 0.0
-                    && prior.is_sign_positive() != current_quantity.is_sign_positive()
-            }
-            None => false,
-        }
-    }
+/// Which way an increase moved the position's average cost per share
+/// (`docs/portfolio-analysis.md` §Holdings change tracking).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BasisDirection {
+    /// The added shares cost more than the prior average — the average rose.
+    PaidUp,
+    /// The added shares cost less than the prior average — the average fell.
+    AveragedDown,
+}
+
+/// The basis read beside an increase: its direction and the average cost per
+/// share on the prior pull and on this one (cost basis ÷ quantity on each).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BasisMove {
+    pub direction: BasisDirection,
+    pub prior_average_cost: f64,
+    pub average_cost: f64,
 }
 
 /// A position present in the prior run's snapshot but absent now — an exited
@@ -780,13 +776,11 @@ pub enum VerdictDisposition {
 /// (`docs/portfolio-analysis.md` §Starting parameters — the TTM statement basis and
 /// its annual fallback).
 ///
-/// It is persisted on each condition's evaluation state because a change of basis
-/// moves every statement-derived level **without the business changing**: a
-/// one-quarter feed gap fails the contiguity guard, drops the holding to the SEC
-/// annual basis, and a growing issuer's P/S steps (measured ~8.0 → 10.3) purely
-/// because the denominator switched from four trailing quarters to a prior fiscal
-/// year. Compared across that step, a model-authored threshold reads as breached by
-/// evidence that does not exist.
+/// The prompt names it beside the levels because a change of basis moves every
+/// statement-derived level **without the business changing**: a one-quarter feed
+/// gap fails the contiguity guard, drops the holding to the SEC annual basis, and a
+/// growing issuer's P/S steps (measured ~8.0 → 10.3) purely because the
+/// denominator switched from four trailing quarters to a prior fiscal year.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StatementBasis {
@@ -800,24 +794,13 @@ pub enum StatementBasis {
 }
 
 impl StatementBasis {
-    /// The prompt's name for the basis — one vocabulary for the ledger section's
-    /// basis line and the evaluation's basis-change note, so the model reads the
-    /// same words wherever the basis is stated.
+    /// The prompt's name for the basis, on the statement-basis line.
     pub fn label(&self) -> &'static str {
         match self {
             StatementBasis::Ttm => "TTM (four trailing quarters)",
             StatementBasis::Annual => {
                 "SEC annual (latest full year — the quarterly window fell back)"
             }
-        }
-    }
-
-    /// The basis word a rendered ledger statement carries in parentheses on a
-    /// flow series ([`QuantCore::render`]).
-    pub fn short(&self) -> &'static str {
-        match self {
-            StatementBasis::Ttm => "TTM",
-            StatementBasis::Annual => "annual",
         }
     }
 }
@@ -828,8 +811,8 @@ impl StatementBasis {
 /// leverage leg): FMP's latest quarterly balance sheet first, SEC's annual
 /// `stockholders_equity` the fallback, stamped at `dossier::merge_financials`.
 ///
-/// It is persisted on the two instants' condition evaluation state beside the
-/// statement basis because the FMP balance-sheet leg is fail-soft: a gap on one
+/// The prompt names it beside the statement basis because the FMP balance-sheet
+/// leg is fail-soft: a gap on one
 /// run and a return on the next flips the equity leg between a quarter-end
 /// instant and a year-end one under an unchanged flow basis, and both series
 /// step with nothing having happened — the flow-basis step's size class, on a
@@ -845,8 +828,7 @@ pub enum EquitySource {
 }
 
 impl EquitySource {
-    /// The prompt's name for the source — one vocabulary for the ledger section's
-    /// basis line and the evaluation's source-change note.
+    /// The prompt's name for the source, on the statement-basis line.
     pub fn label(&self) -> &'static str {
         match self {
             EquitySource::FmpQuarterly => "FMP's latest quarterly balance sheet",
@@ -893,10 +875,13 @@ pub struct HoldingVerdict {
     pub symbol: String,
     pub asset_class: AssetClass,
     /// How the position changed since the prior run — set by the app from the
-    /// deterministic holdings diff ([`diff`]; `docs/portfolio-analysis.md` §What
-    /// changed: the what-changed line carries the position delta), never authored by
-    /// the model.
+    /// deterministic holdings diff ([`diff`]; `docs/portfolio-analysis.md`
+    /// §Holdings change tracking), never authored by the model.
     pub position_change: PositionChange,
+    /// The paid-up-versus-averaged-down read beside an increase
+    /// ([`diff::basis_move`]) — `None` on every other change and wherever an
+    /// average cost per share is undefined on either pull.
+    pub basis_move: Option<BasisMove>,
     pub disposition: VerdictDisposition,
     /// The holding's **analysis vintage** — the UTC RFC3339 timestamp of the full
     /// pass that produced this verdict (`docs/portfolio-analysis.md` §Triggering:
@@ -1158,176 +1143,6 @@ impl FilingSweepRead {
 /// sweep but no longer trips the hard consequences.
 pub const FORENSIC_EVENT_LOOKBACK_DAYS: i64 = 365;
 
-/// Generic corporate-suffix tokens that cannot identify an issuer on their own
-/// (drafted): the identity matcher skips them so "Company" or "Holdings" never
-/// corroborates a cross-issuer citation.
-const GENERIC_NAME_TOKENS: &[&str] = &[
-    "COMPANY",
-    "COMPANIES",
-    "HOLDING",
-    "HOLDINGS",
-    "CORPORATION",
-    "CORP",
-    "INCORPORATED",
-    "GROUP",
-    "INTERNATIONAL",
-    "INDUSTRIES",
-    "ENTERPRISES",
-    "ENTERPRISE",
-    "LIMITED",
-    "TECHNOLOGIES",
-    "TECHNOLOGY",
-    "GLOBAL",
-    "PARTNERS",
-    "CAPITAL",
-    "FINANCIAL",
-    "SYSTEMS",
-    "SOLUTIONS",
-    "SERVICES",
-    "BRANDS",
-    "RESOURCES",
-    "TRUST",
-    "FUND",
-    "FUNDS",
-    "SHARES",
-    "CLASS",
-    "COMMON",
-    "STOCK",
-    // Short suffix forms — below the name-token length floor anyway, listed
-    // for the acronym derivation's trailing-suffix strip.
-    "INC",
-    "LTD",
-    "PLC",
-    "CO",
-];
-
-/// The distinctive issuer-name tokens (uppercased): ≥4 chars and not a
-/// generic corporate suffix — the identity vocabulary shared by the page
-/// matcher and the first-party host check.
-pub(crate) fn distinctive_name_tokens(company_name: Option<&str>) -> Vec<String> {
-    company_name
-        .map(|name| {
-            name.to_ascii_uppercase()
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .filter(|t| t.len() >= 4 && !GENERIC_NAME_TOKENS.contains(t))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The label words that qualify a colon as ticker context (drafted): exchange
-/// and symbol markers only — a generic label (`Risk:`, `Rating:`,
-/// `Category:`) must never turn its value into holding identity.
-const TICKER_LABELS: &[&str] = &[
-    "NYSE", "NASDAQ", "AMEX", "OTC", "OTCMKTS", "ARCA", "BATS", "CBOE", "TICKER", "SYMBOL",
-];
-
-/// Whether a symbol occurrence sits in ticker context: preceded (one optional
-/// space skipped) by `$`, or by a colon whose own label word is an exchange /
-/// ticker marker — `$CAT`, `NYSE: CAT`, `ticker:CAT`, but never `Risk: LOW`.
-fn ticker_context(text: &str, start: usize) -> bool {
-    let bytes = text.as_bytes();
-    if start == 0 {
-        return false;
-    }
-    let mut k = start - 1;
-    if bytes[k] == b' ' {
-        if k == 0 {
-            return false;
-        }
-        k -= 1;
-    }
-    match bytes[k] {
-        b'$' => true,
-        b':' => {
-            // Read the label word ending at the colon (one optional space).
-            let mut end = k;
-            if end > 0 && bytes[end - 1] == b' ' {
-                end -= 1;
-            }
-            let mut label_start = end;
-            while label_start > 0 && bytes[label_start - 1].is_ascii_alphanumeric() {
-                label_start -= 1;
-            }
-            label_start < end
-                && TICKER_LABELS
-                    .iter()
-                    .any(|l| text[label_start..end].eq_ignore_ascii_case(l))
-        }
-        _ => false,
-    }
-}
-
-/// Whether the gap before a word carries a sentence terminator (or the word
-/// opens the text) — the name leg's sentence-initial test.
-fn sentence_initial(bytes: &[u8], start: usize, prev_end: Option<usize>) -> bool {
-    let Some(prev_end) = prev_end else { return true };
-    bytes[prev_end..start]
-        .iter()
-        .any(|b| matches!(b, b'.' | b'!' | b'?' | b'\n'))
-}
-
-/// Whether `text` names the holding. Two legs, both structural rather than
-/// list-driven, because bare uppercase words are not reliable identity
-/// evidence (any English-word ticker — `LOW`, `CAT`, `ALL` — collides with
-/// page prose and furniture):
-///
-/// - **Symbol** — an exact-case word match accepted only in **ticker
-///   context**: preceded by `$`, or by a colon whose label word is an
-///   exchange / ticker marker (`$CAT`, `NYSE: CAT` — never `Risk: LOW`). A
-///   bare uppercase word never satisfies this leg; prose identity is the
-///   name leg's job.
-/// - **Name** — a **distinctive** issuer-name token (≥4 chars, not a generic
-///   corporate suffix) as a capitalized word. A sentence-initial match counts
-///   only when the next word is also capitalized (a proper-noun run: "Target
-///   Corporation reported" yes, "Target price increased" no) — mid-sentence
-///   capitalization is itself the proper-noun signal.
-///
-/// Word-boundary matching throughout — a token inside a longer word (COMPANY
-/// in ACCOMPANYING) never matches. Shared by the pre-profit page cross-check
-/// and the typed-channel issuer validations; rejection is always fail-soft
-/// (a gap-logged dropped row or claim, never a failed run).
-pub(crate) fn text_names_holding(text: &str, symbol: &str, company_name: Option<&str>) -> bool {
-    let sym = symbol.trim();
-    let name_tokens = distinctive_name_tokens(company_name);
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    let mut prev_end: Option<usize> = None;
-    while i < bytes.len() {
-        if !bytes[i].is_ascii_alphanumeric() {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
-            i += 1;
-        }
-        let word = &text[start..i];
-        if !sym.is_empty() && word == sym && ticker_context(text, start) {
-            return true;
-        }
-        if !name_tokens.is_empty()
-            && word.as_bytes()[0].is_ascii_uppercase()
-            && name_tokens.iter().any(|t| t.eq_ignore_ascii_case(word))
-        {
-            if !sentence_initial(bytes, start, prev_end) {
-                return true;
-            }
-            // Sentence-initial: require a following capitalized word.
-            let mut j = i;
-            while j < bytes.len() && !bytes[j].is_ascii_alphanumeric() {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j].is_ascii_uppercase() {
-                return true;
-            }
-        }
-        prev_end = Some(i);
-    }
-    false
-}
-
 /// The per-holding outcome of the item-classified 8-K filings sweep — the
 /// hard-forensic **filing kinds'** producer state (`docs/portfolio-analysis.md`
 /// §Starting parameters — the conviction-layer caps; the shared producer
@@ -1457,9 +1272,8 @@ pub struct HoldingAudit {
     pub fund_exposure: Option<fund::FundExposureBasis>,
     /// The pre-profit execution / financing overlay record
     /// (`docs/portfolio-analysis.md` §Starting parameters) — present on every priced
-    /// stock (the eligibility result persists even when the stock does not enter; the
-    /// period-end-and-span-keyed observation history rides here so it survives run retention and
-    /// the selective carry). `None` on funds, `role_risk_only` holdings.
+    /// stock (the eligibility result persists even when the stock does not enter).
+    /// `None` on funds, `role_risk_only` holdings.
     pub pre_profit: Option<pre_profit::PreProfitOverlay>,
     /// The full hurdle read behind the verdict's three-state `dead_money` field — the
     /// scenario total-return distribution plus the tier-scaled hurdle rate, persisted
@@ -2610,20 +2424,8 @@ pub(crate) fn response_shape_contract(schema: &Value) -> String {
         }
     }
     let example = visit(schema, "", &mut enums);
-    // The ledger's numeric fields, whose `1` placeholders read as magnitudes
-    // (attempt-6 Finding 8; ruled 2026-09-16, F4): each note restates the
-    // ledger contract's own rule (`docs/portfolio-analysis.md` §The position
-    // thesis ledger), never a preference.
-    let notes = if schema["properties"].get("ledger").is_some() {
-        "\nField notes (the ledger's numeric fields; the template's 1 values are placeholders without magnitude):\n\
-         ledger.bear, ledger.base and ledger.bull are three sibling scenario objects under ledger, each with its conditions and probability_pct (0-100).\n\
-         ledger.*.quant.threshold is exactly the level the statement names, in the series' unit.\n\
-         ledger.*.quant.margin is the separate noise band around that level in the same unit, non-negative and a fraction of a nonzero level (a zero level has no cap), never folded into the threshold.\n"
-    } else {
-        ""
-    };
     format!(
-        "\nResponse shape template (illustrative structure, not a completed answer; arrays may be empty). Replace each <field-path> placeholder with that field's value; for enum fields choose one of the Field alternatives below, never the literal placeholder. Sample numbers, booleans and neutral outlooks are not findings:\n{}\nField alternatives (allowed values, not preferences):\n{}\n{notes}The entire response is one JSON object beginning with {{, with no code fence or surrounding prose.\n",
+        "\nResponse shape template (illustrative structure, not a completed answer; arrays may be empty). Replace each <field-path> placeholder with that field's value; for enum fields choose one of the Field alternatives below, never the literal placeholder. Sample numbers, booleans and neutral outlooks are not findings:\n{}\nField alternatives (allowed values, not preferences):\n{}\nThe entire response is one JSON object beginning with {{, with no code fence or surrounding prose.\n",
         serde_json::to_string(&example).unwrap(), enums.join("\n")
     )
 }
@@ -2970,6 +2772,7 @@ mod tests {
             "symbol": "AAPL",
             "asset_class": "stock",
             "position_change": "unchanged",
+            "basis_move": null,
             "disposition": { "status": "not-rated", "reason": "fixture" },
             "analyzed_at": "2026-07-01T09:00:00+00:00",
             "action_source": "rule-demoted",
@@ -3019,6 +2822,7 @@ mod tests {
             symbol: "AAPL".into(),
             asset_class: AssetClass::Stock,
             position_change: PositionChange::Unchanged,
+            basis_move: None,
             disposition: VerdictDisposition::Priced(Box::new(graded.clone())),
             analyzed_at: None,
             action_source: Default::default(),
@@ -3041,6 +2845,7 @@ mod tests {
             symbol: "PGNY".into(),
             asset_class: AssetClass::Stock,
             position_change: PositionChange::Unchanged,
+            basis_move: None,
             disposition: VerdictDisposition::InsufficientEvidence {
                 reason: "below the floor".into(),
                 prior_thesis_document: Some("The prior document.".into()),

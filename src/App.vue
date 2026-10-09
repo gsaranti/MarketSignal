@@ -1357,7 +1357,7 @@ async function refreshPortfolioResume() {
 }
 
 // The engine-only quick check (docs/portfolio-analysis.md §The quick check):
-// re-evaluates every standing thesis ledger between full runs — no model call,
+// re-reads every analyzed holding's engine monitors between full runs — no model call,
 // no web research, no Schwab call — raising per-card attention flags and quiet
 // evidence-event badges, never rewriting a verdict. Streams into the shared
 // tracker like any job; the refreshed state lands as the card overlay.
