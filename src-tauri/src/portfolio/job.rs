@@ -1935,6 +1935,10 @@ fn run_analysis(
                 ma_matches,
             },
         );
+        // The holding's accuracy record, for its self-review alone: the checks
+        // ran before the loop, so this run's are in it (`docs/portfolio-workflow.md`
+        // §Step 6e).
+        dossier.accuracy = accuracy.subject(&position.symbol);
         if is_stock && !skip_retrieval {
             dossier.earnings_issuer = research_website.as_deref().and_then(|website| {
                 crate::sec::earnings::Issuer::new(
@@ -2379,12 +2383,29 @@ fn run_analysis(
 
 /// The Step-5 accuracy pass's product: each holding's accuracy scores (`None`
 /// when the episode store could not be read), the checks this run wrote — by
-/// run id, so a resumed run's list spans both processes — and whether a store
-/// read or write failed (the run's data-health gap).
+/// run id, so a resumed run's list spans both processes — whether a store
+/// read or write failed (the run's data-health gap), and the store as the pass
+/// left it — every episode and every check, this run's included — which each
+/// holding's self-review reads its slice of (`None` when unreadable).
 struct AccuracyPass {
     scores: Option<std::collections::BTreeMap<String, crate::portfolio::outcome::AccuracyScores>>,
     checks: Vec<crate::portfolio::outcome::StoredCheck>,
     gap: bool,
+    store: Option<(
+        Vec<crate::portfolio::outcome::StoredEpisode>,
+        Vec<crate::portfolio::outcome::StoredCheck>,
+    )>,
+}
+
+impl AccuracyPass {
+    /// One holding's accuracy record for its self-review
+    /// (`docs/portfolio-workflow.md` §Step 6e) — `None` where the store could
+    /// not be read this run.
+    fn subject(&self, symbol: &str) -> Option<crate::portfolio::outcome::SubjectAccuracy> {
+        self.store
+            .as_ref()
+            .map(|(episodes, checks)| crate::portfolio::outcome::subject_accuracy(episodes, checks, symbol))
+    }
 }
 
 /// Calendar-day pad below the earliest anchor bar a refresh must serve, so the
@@ -2422,6 +2443,7 @@ fn run_accuracy_pass(
                 scores: None,
                 checks: Vec::new(),
                 gap: true,
+                store: None,
             };
         }
     };
@@ -2535,10 +2557,12 @@ fn run_accuracy_pass(
         scores: Some(scores),
         checks: store_state
             .checks
-            .into_iter()
+            .iter()
             .filter(|c| c.check.run_id == run_id)
+            .cloned()
             .collect(),
         gap,
+        store: Some((store_state.episodes, store_state.checks)),
     }
 }
 
@@ -3367,6 +3391,8 @@ mod tests {
                 distillation: crate::portfolio::distill::DistillationRecord::none(),
             }),
             analysis: None,
+            review: None,
+            accuracy_read_through: None,
         }
     }
 
@@ -6622,12 +6648,25 @@ mod tests {
         prices: &dyn crate::portfolio::outcome::OutcomePriceSource,
         selective: Option<SelectiveRun<'_>>,
     ) -> PortfolioRun {
+        run_with(paths, holdings, at, prices, selective, &StubCompanyData, &StubAnalyst)
+    }
+
+    /// [`run_at`] over a given company source and analyst.
+    fn run_with(
+        paths: &ReportPaths,
+        holdings: Holdings,
+        at: &str,
+        prices: &dyn crate::portfolio::outcome::OutcomePriceSource,
+        selective: Option<SelectiveRun<'_>>,
+        company: &dyn CompanyDataSource,
+        analyst: &dyn HoldingAnalyst,
+    ) -> PortfolioRun {
         TEST_NOW.with(|t| *t.borrow_mut() = Some(at.to_string()));
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(holdings),
-            &StubCompanyData,
+            company,
             &StubMarket,
-            &StubAnalyst,
+            analyst,
             &InvestorProfile::default_fixture(),
             selective,
             Some(prices),
@@ -6711,6 +6750,127 @@ mod tests {
         assert_eq!(persisted.accuracy, second.accuracy);
         let all = store::load_episode_store(&conn).unwrap();
         assert_eq!((all.episodes.len(), all.checks.len()), (4, 2));
+    }
+
+    /// The stub company surface with dated closes running past the stub's
+    /// quarter ends up to the session before the test clock's — the deep
+    /// history a run would fetch — so the self-review reads the horizon
+    /// closes the accuracy pass reads.
+    struct ClosesThroughToday;
+
+    impl CompanyDataSource for ClosesThroughToday {
+        fn financials(&self, symbol: &str) -> CompanyFinancials {
+            StubCompanyData.financials(symbol)
+        }
+        fn facts(&self, symbol: &str) -> SecData {
+            StubCompanyData.facts(symbol)
+        }
+        fn deep_price_history(&self, symbol: &str) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
+            use chrono::Datelike;
+            let today = crate::market_clock::et_date_of(&now_rfc3339()).expect("the test clock");
+            let mut out = StubCompanyData.financials(symbol).daily_closes;
+            let mut d = chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+            while d < today {
+                if d.weekday().number_from_monday() <= 5 {
+                    out.push(crate::portfolio::engine::DatedValue {
+                        date: d.format("%Y-%m-%d").to_string(),
+                        value: 200.0,
+                    });
+                }
+                d += chrono::Duration::days(1);
+            }
+            (out, Vec::new())
+        }
+    }
+
+    /// The stub analyst, recording each review message by symbol.
+    #[derive(Default)]
+    struct ReviewRecorder(std::cell::RefCell<Vec<(String, String)>>);
+
+    impl HoldingAnalyst for ReviewRecorder {
+        fn review(&self, input: &crate::portfolio::review::ReviewInput) -> Result<String> {
+            self.0.borrow_mut().push((
+                input.dossier.position.symbol.clone(),
+                crate::portfolio::review::review_prompt(input).user,
+            ));
+            Ok(crate::portfolio::review::stub_review(input))
+        }
+        fn interpret(&self, input: &crate::portfolio::pipeline::ThesisInput) -> Result<crate::portfolio::PricedModelArm> {
+            StubAnalyst.interpret(input)
+        }
+        forward_stub_verdict_calls!();
+    }
+
+    fn review_of(recorder: &ReviewRecorder, symbol: &str) -> String {
+        let reviews = recorder.0.borrow();
+        let matching: Vec<&String> = reviews.iter().filter(|(s, _)| s == symbol).map(|(_, r)| r).collect();
+        assert_eq!(matching.len(), 1, "one review for {symbol}");
+        matching[0].clone()
+    }
+
+    fn audit_for<'a>(run: &'a PortfolioRun, symbol: &str) -> &'a HoldingAudit {
+        run.audit.iter().find(|a| a.symbol == symbol).expect("the audit row")
+    }
+
+    /// The self-review item's done-when, end to end: a debut reviews nothing;
+    /// the run after it reviews the prior position against the realized
+    /// numbers — the prior's own three-month price scored on its horizon
+    /// close, this run's checks listed as landed after the prior analysis and
+    /// the scores as unread — and persists the review with the store's
+    /// highest check id; the next run finds no new check and reads the scores
+    /// as read, and a carried holding keeps its row's mark.
+    #[test]
+    fn a_continuity_run_reviews_the_prior_position_against_the_accuracy_record() {
+        let (_dir, paths) = paths();
+        let prices = AnchoredPrices::at(200.0);
+        let run = |at: &str, recorder: &ReviewRecorder, selective: Option<SelectiveRun<'_>>| {
+            run_with(&paths, two_stocks(), at, &prices, selective, &ClosesThroughToday, recorder)
+        };
+
+        let debut = ReviewRecorder::default();
+        let first = run("2026-07-06T15:00:00Z", &debut, None);
+        assert!(debut.0.borrow().is_empty(), "a debut reviews nothing");
+        let aapl_first = audit_for(&first, "AAPL");
+        assert_eq!((aapl_first.review.as_deref(), aapl_first.accuracy_read_through), (None, None));
+        let prior_3m = priced(verdict(&first, "AAPL")).appendix.expected_price_3m.expect("a three-month price");
+
+        let second_recorder = ReviewRecorder::default();
+        let second = run("2026-10-09T15:00:00Z", &second_recorder, None);
+        let review = review_of(&second_recorder, "AAPL");
+        // The prior's own three-month price, scored on its horizon close.
+        let score = crate::portfolio::outcome::per_check_score(prior_3m, 200.0);
+        assert!(
+            review.contains(&format!("- three months (2026-10-06): close $200.00 on 2026-10-06; score {score:.1}.\n")),
+            "{review}"
+        );
+        // This run's checks precede the loop: listed, the scores unread. The
+        // prior was a debut, so it read no accuracy record at all.
+        assert!(review.contains("The prior analysis read no accuracy record, so none of these was read before."), "{review}");
+        assert!(review.contains("- forecast of 2026-07-06, three months (2026-10-06): close $200.00 on 2026-10-06; analyst $"), "{review}");
+        assert!(review.contains("last moved 2026-10-09, not read by the prior analysis"), "{review}");
+        let high_water = second.accuracy.checks.iter().map(|c| c.id).max();
+        let aapl_second = audit_for(&second, "AAPL");
+        assert!(aapl_second.review.as_deref().is_some_and(|r| r.starts_with("[stub: the review of the prior position on AAPL")));
+        assert_eq!(aapl_second.accuracy_read_through, high_water);
+
+        // The next run: nothing new landed, the scores read as read; the
+        // carried holding keeps its row's mark.
+        let quick = SelectiveQuickData::default();
+        let third_recorder = ReviewRecorder::default();
+        let third = run(
+            "2026-10-12T15:00:00Z",
+            &third_recorder,
+            Some(SelectiveRun { selected: vec!["MSFT".to_string()], quick_data: &quick }),
+        );
+        let review = review_of(&third_recorder, "MSFT");
+        assert!(
+            review.contains("No check landed after the prior analysis was written: the scores above are the ones it read"),
+            "{review}"
+        );
+        assert!(review.contains("last moved 2026-10-09, read by the prior analysis"), "{review}");
+        assert!(third_recorder.0.borrow().iter().all(|(s, _)| s != "AAPL"), "the carried holding is not reviewed");
+        assert_eq!(audit_for(&third, "AAPL").accuracy_read_through, high_water);
+        assert_eq!(audit_for(&third, "MSFT").accuracy_read_through, high_water);
     }
 
     /// A carried holding's checks run too — the record measures the forecast,

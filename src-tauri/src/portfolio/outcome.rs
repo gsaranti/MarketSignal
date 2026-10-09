@@ -31,6 +31,10 @@ pub const EPISODE_CADENCE_MONTHS: u32 = 1;
 /// session and the window is at most this many weekdays back.
 pub const HORIZON_PROXIMITY_SESSIONS: i64 = 5;
 
+/// The review check lines: the self-review's realized block shows the checks
+/// written since the prior analysis, newest by horizon date, up to this many.
+pub const REVIEW_CHECK_LINES: usize = 12;
+
 // ---- The record --------------------------------------------------------------
 
 /// The three forecast horizons, each a window from the episode's creation date.
@@ -445,6 +449,87 @@ pub fn scores_by_symbol(
         .collect()
 }
 
+impl ArmScore {
+    /// Whether the prior analysis read this score as it stands: the check that
+    /// last moved it was written at or before the mark the prior pass's review
+    /// recorded (`docs/portfolio-analysis.md` §Outcome learning — run order,
+    /// not the calendar). No mark — a prior that read no accuracy record —
+    /// read nothing.
+    pub fn read_by(&self, read_through: Option<i64>) -> bool {
+        read_through.is_some_and(|mark| self.last_moved_check <= mark)
+    }
+}
+
+/// One subject's accuracy record as the pass leaves it for the subject's
+/// self-review: the six scores, the subject's episodes and every check
+/// written onto them (this run's included, since the checks precede the
+/// loop), and the highest check id in the whole store — the mark a review
+/// that reads this record writes. `high_water` is `None` on an empty store.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SubjectAccuracy {
+    pub scores: AccuracyScores,
+    pub episodes: Vec<StoredEpisode>,
+    pub checks: Vec<StoredCheck>,
+    pub high_water: Option<i64>,
+}
+
+/// The subject's slice of the store: its episodes (insertion order), the
+/// checks written onto them, its scores, and the whole store's highest check
+/// id.
+pub fn subject_accuracy(
+    episodes: &[StoredEpisode],
+    checks: &[StoredCheck],
+    symbol: &str,
+) -> SubjectAccuracy {
+    let key = symbol.to_ascii_uppercase();
+    let own: Vec<StoredEpisode> = episodes
+        .iter()
+        .filter(|e| e.record.symbol.eq_ignore_ascii_case(&key))
+        .cloned()
+        .collect();
+    let ids: std::collections::HashSet<i64> = own.iter().map(|e| e.id).collect();
+    let own_checks: Vec<StoredCheck> = checks
+        .iter()
+        .filter(|c| ids.contains(&c.episode_id))
+        .cloned()
+        .collect();
+    SubjectAccuracy {
+        scores: accuracy_scores(&own_checks),
+        episodes: own,
+        checks: own_checks,
+        high_water: checks.iter().map(|c| c.id).max(),
+    }
+}
+
+/// The checks the self-review lists: those written after the prior pass's
+/// mark (every check where the prior read none), newest by horizon date —
+/// ties by check id, newest first — each beside its episode, capped at
+/// `cap`, with the total before the cap.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChecksSince<'a> {
+    pub lines: Vec<(&'a StoredEpisode, &'a StoredCheck, NaiveDate)>,
+    pub total: usize,
+}
+
+pub fn checks_since(subject: &SubjectAccuracy, read_through: Option<i64>, cap: usize) -> ChecksSince<'_> {
+    let episode_of: std::collections::HashMap<i64, &StoredEpisode> =
+        subject.episodes.iter().map(|e| (e.id, e)).collect();
+    let mut lines: Vec<(&StoredEpisode, &StoredCheck, NaiveDate)> = subject
+        .checks
+        .iter()
+        .filter(|c| read_through.is_none_or(|mark| c.id > mark))
+        .filter_map(|c| {
+            let ep = *episode_of.get(&c.episode_id)?;
+            let date = parse_date(&ep.record.created_on).and_then(|d| horizon_date(d, c.check.horizon))?;
+            Some((ep, c, date))
+        })
+        .collect();
+    lines.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.id.cmp(&a.1.id)));
+    let total = lines.len();
+    lines.truncate(cap);
+    ChecksSince { lines, total }
+}
+
 /// The run's accuracy record (`docs/storage.md §Local Analysis Suite Storage`
 /// — the run audit's accuracy records): each holding's accuracy scores, keyed by
 /// symbol, for every holding in the run — carried and failed ones included,
@@ -857,5 +942,71 @@ mod tests {
         let rec = record("2026-01-05");
         let back: PriceRecord = serde_json::from_str(&serde_json::to_string(&rec).unwrap()).unwrap();
         assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn a_subjects_slice_carries_its_own_checks_and_the_whole_stores_mark() {
+        let mut other = record("2026-01-05");
+        other.symbol = "MSFT".into();
+        let eps = vec![stored(1, record("2026-01-05")), stored(2, other)];
+        let checks = vec![
+            scored_check(10, 1, Horizon::ThreeMonth, "2026-04-06", Some(90.0), Some(80.0)),
+            scored_check(11, 2, Horizon::ThreeMonth, "2026-04-06", Some(50.0), None),
+        ];
+        let s = subject_accuracy(&eps, &checks, "aapl");
+        assert_eq!(s.episodes.len(), 1);
+        assert_eq!(s.checks.iter().map(|c| c.id).collect::<Vec<_>>(), vec![10]);
+        assert_eq!(s.scores.three_month.model.as_ref().unwrap().score, 90.0);
+        // The mark is the whole store's highest check id, another symbol's included.
+        assert_eq!(s.high_water, Some(11));
+        assert_eq!(subject_accuracy(&[], &[], "AAPL").high_water, None);
+    }
+
+    #[test]
+    fn the_read_word_compares_the_last_moving_check_with_the_prior_mark() {
+        let arm = ArmScore {
+            score: 80.0,
+            checks: 2,
+            last_moved_on: "2026-04-06".into(),
+            last_moved_check: 7,
+        };
+        assert!(arm.read_by(Some(7)));
+        assert!(arm.read_by(Some(9)));
+        assert!(!arm.read_by(Some(6)));
+        // A prior that read no accuracy record read nothing.
+        assert!(!arm.read_by(None));
+    }
+
+    #[test]
+    fn checks_since_the_mark_list_newest_horizon_first_capped_with_the_total() {
+        let eps = vec![stored(1, record("2026-01-05")), stored(2, record("2026-02-05"))];
+        let checks = vec![
+            scored_check(3, 1, Horizon::ThreeMonth, "2026-04-06", Some(90.0), Some(80.0)),
+            scored_check(4, 2, Horizon::ThreeMonth, "2026-05-06", Some(70.0), Some(60.0)),
+            scored_check(5, 1, Horizon::TwelveMonth, "2027-01-06", Some(60.0), Some(50.0)),
+        ];
+        let s = subject_accuracy(&eps, &checks, "AAPL");
+        // No mark: every check is new, newest horizon date first.
+        let all = checks_since(&s, None, REVIEW_CHECK_LINES);
+        assert_eq!(all.total, 3);
+        assert_eq!(all.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![5, 4, 3]);
+        assert_eq!(all.lines[0].2, d("2027-01-05"));
+        // A mark leaves the checks it covers out.
+        let since = checks_since(&s, Some(3), REVIEW_CHECK_LINES);
+        assert_eq!(since.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![5, 4]);
+        // The cap trims the oldest horizons and keeps the total.
+        let capped = checks_since(&s, None, 2);
+        assert_eq!(capped.total, 3);
+        assert_eq!(capped.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![5, 4]);
+        // A horizon-date tie orders by check id, newest first.
+        let tied = vec![
+            scored_check(8, 1, Horizon::ThreeMonth, "2026-04-06", Some(1.0), None),
+            scored_check(9, 1, Horizon::ThreeMonth, "2026-04-06", Some(1.0), None),
+        ];
+        let s = subject_accuracy(&eps, &tied, "AAPL");
+        let t = checks_since(&s, None, REVIEW_CHECK_LINES);
+        assert_eq!(t.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![9, 8]);
+        // Everything read: none landed.
+        assert_eq!(checks_since(&s, Some(9), REVIEW_CHECK_LINES).total, 0);
     }
 }

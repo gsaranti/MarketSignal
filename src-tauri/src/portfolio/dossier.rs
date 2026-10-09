@@ -412,6 +412,23 @@ pub struct HoldingDossier {
     /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut or
     /// a prior row carrying none.
     pub prior_analysis: Option<crate::portfolio::AnalysisRecord>,
+    /// The prior row's accuracy read-through mark (its audit's
+    /// `accuracy_read_through`) — the highest episode-store check id the
+    /// review behind the prior thesis document read. The self-review reads a
+    /// score as read at or below it and lists the checks above it as new
+    /// (`docs/portfolio-analysis.md` §Outcome learning). `None` on a debut and
+    /// on a prior that read none.
+    pub prior_accuracy_read_through: Option<i64>,
+    /// The prior row's fund exposure basis (its audit's `fund_exposure`) — the
+    /// then side of a `role_risk_only` holding's realized block: the NAV, the
+    /// expense ratio and the exposure reads (`docs/portfolio-workflow.md`
+    /// §Step 6e). `None` on a debut and on a prior that carried none.
+    pub prior_fund_exposure: Option<crate::portfolio::fund::FundExposureBasis>,
+    /// This holding's accuracy record as the run's accuracy pass left it
+    /// ([`crate::portfolio::outcome::SubjectAccuracy`]) — set after assembly by
+    /// the job, read by the self-review alone. `None` where the episode store
+    /// could not be read this run, or where no pass ran (an offline stub).
+    pub accuracy: Option<crate::portfolio::outcome::SubjectAccuracy>,
     /// The loop-time listing-resolution guard's outcome for a stock
     /// (`docs/portfolio-analysis.md` §Asset eligibility) — computed at gather time,
     /// routed by `analyze_holding` beside the eligibility gates. `None` on a fund
@@ -520,6 +537,13 @@ pub struct PriorHolding {
     /// its own date and anchor bar. `None` without an audit row or on a row
     /// carrying none.
     pub analysis: Option<crate::portfolio::AnalysisRecord>,
+    /// The prior row's accuracy read-through mark (its audit's
+    /// `accuracy_read_through`). `None` without an audit row or on a row that
+    /// read none.
+    pub accuracy_read_through: Option<i64>,
+    /// The prior row's fund exposure basis (its audit's `fund_exposure`).
+    /// `None` without an audit row or on a stock's row.
+    pub fund_exposure: Option<crate::portfolio::fund::FundExposureBasis>,
 }
 
 
@@ -879,6 +903,8 @@ pub fn assemble(
         prior_metrics,
         prior_authoring_close,
         prior_analysis,
+        prior_accuracy_read_through,
+        prior_fund_exposure,
     ) = match prior {
         Some(p) => (
             Some(p.verdict),
@@ -891,6 +917,8 @@ pub fn assemble(
             p.metrics,
             p.authoring_close,
             p.analysis,
+            p.accuracy_read_through,
+            p.fund_exposure,
         ),
         None => (
             None,
@@ -900,6 +928,8 @@ pub fn assemble(
             None,
             None,
             Vec::new(),
+            None,
+            None,
             None,
             None,
             None,
@@ -1092,6 +1122,9 @@ pub fn assemble(
         prior_authoring_close,
         prior_pre_profit,
         prior_analysis,
+        prior_accuracy_read_through,
+        prior_fund_exposure,
+        accuracy: None,
         listing,
         filing_events,
         short_interest,
@@ -1287,6 +1320,8 @@ pub fn prior_verdict_for(
         metrics,
         authoring_close,
         analysis,
+        accuracy_read_through,
+        fund_exposure,
     ) = match audit_row {
         Some(a) => {
             let spot = a.quick_basis.as_ref().map(|b| b.spot);
@@ -1309,9 +1344,13 @@ pub fn prior_verdict_for(
                 // abstention carried forward — a selective carry re-persists
                 // the audit whole, so a carried row reads the same.
                 a.analysis.clone(),
+                // The read-through mark travels with the thesis document the
+                // same way: a fresh pass's own, an abstention's carried one.
+                a.accuracy_read_through,
+                a.fund_exposure.clone(),
             )
         }
-        None => (None, None, None, None, Vec::new(), None, None, None),
+        None => (None, None, None, None, Vec::new(), None, None, None, None, None),
     };
     Some(PriorHolding {
         verdict,
@@ -1324,6 +1363,8 @@ pub fn prior_verdict_for(
         metrics,
         authoring_close,
         analysis,
+        accuracy_read_through,
+        fund_exposure,
     })
 }
 
@@ -2611,6 +2652,8 @@ Sources and footnotes.
                     written: "2026-08-03".into(),
                     anchor: None,
                 }),
+                review: None,
+                accuracy_read_through: Some(41),
                 symbol: "AAPL".into(),
                 metrics: Default::default(),
                 sources: vec![],
@@ -2627,7 +2670,14 @@ Sources and footnotes.
                 grade_parameter_version: "grade-v2".into(),
                 quick_basis: None,
                 authoring_close: None,
-                fund_exposure: None,
+                fund_exposure: Some(crate::portfolio::fund::FundExposureBasis {
+                    class_label: "bond fund".into(),
+                    expense_ratio: Some(0.0003),
+                    us_share: None,
+                    top_sector: None,
+                    structural_flag: false,
+                    nav: Some(73.5),
+                }),
                 pre_profit: None,
                 hurdle: None,
                 forensic: None,
@@ -2651,6 +2701,9 @@ Sources and footnotes.
         // own date with it.
         let analysis = prior.analysis.as_ref().expect("the analysis record");
         assert_eq!((analysis.text.as_str(), analysis.written.as_str()), ("The analysis.", "2026-08-03"));
+        // The read-through mark and the fund basis load off the same row.
+        assert_eq!(prior.accuracy_read_through, Some(41));
+        assert_eq!(prior.fund_exposure.as_ref().and_then(|b| b.nav), Some(73.5));
         // No `analyzed_at` on the verdict -> the vintage falls back to the
         // container run's `created_at`.
         assert_eq!(prior.vintage, "2026-08-03T00:00:00Z");

@@ -17,6 +17,7 @@ Then the tools JSON or the response schema the grammar enforces, and any variant
 The holdings are the fixed evidence set of big-run attempt 6 (`src-tauri/src/portfolio/fixtures/attempt-6/README.md`): TSLA for the stock shapes, SPMO for the priced-fund shapes, and the synthetic BND bond fund for the role/risk shapes.
 Their financials, engine output, position and verdict are the reconstructed persisted values, with synthetic position economics.
 The FETCHED VALUES rows the fixed set does not carry on the stock shapes are synthetic values layered on for the examples alone, their names stubbed: the issuer line, the served 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the earnings surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the revenue segments.
+The stock self-review's accuracy record — its earlier forecasts, their checks and scores — is synthetic too, layered for that example alone.
 The verdict's model arm is re-shaped by hand into a thesis document and a typed appendix, since attempt 6 wrote the structured read the document replaced.
 Every parsed article or research field is a stub: a bracketed `[stub: …]` label that keeps the field's place and names what stood there.
 Ids, dates, URLs, hosts and section headers are never stubbed, so the tiers and the glosses that read them render as on a run.

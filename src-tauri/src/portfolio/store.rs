@@ -277,7 +277,11 @@ pub struct CheckpointHeader {
 /// (the deals of the trailing window and the walk's gap) beside the FINRA
 /// file, so a resumed run matches its holdings against the same feed — so no
 /// v22 header can resume this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v23";
+/// `checkpoint-v24` (`portfolio-v75`): the audit carries the self-review's
+/// review and the accuracy read-through mark its thesis document read, and
+/// the fund exposure basis carries the fund's NAV — so no v23 row can resume
+/// this shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v24";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1310,6 +1314,8 @@ mod tests {
             audit: vec![HoldingAudit {
                 research: None,
                 analysis: None,
+                review: None,
+                accuracy_read_through: None,
                 target_meta: None,
                 symbol: "AAPL".into(),
                 metrics: ComputedMetrics::default(),
@@ -1680,6 +1686,7 @@ mod tests {
             us_share: Some(0.97),
             top_sector: Some(("Technology".into(), 0.31)),
             structural_flag: false,
+            nav: None,
         });
         insert_run(&conn, &run).unwrap();
         assert_eq!(latest_run(&conn).unwrap().unwrap(), run);

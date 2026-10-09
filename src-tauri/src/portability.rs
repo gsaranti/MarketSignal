@@ -106,7 +106,10 @@ use crate::storage;
 /// and data health's accuracy-pass gap. A v12–v19 archive's
 /// `portfolio_outcome_episodes` file (the retired decision episodes) is
 /// verified and never read: its import starts the episode store fresh.
-pub const FORMAT_VERSION: u32 = 20;
+/// v21: the audit inside `portfolio_runs.run_json` carries the self-review's
+/// review and the accuracy read-through mark, and the fund exposure basis
+/// carries the fund's NAV (checkpoint-v24).
+pub const FORMAT_VERSION: u32 = 21;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.

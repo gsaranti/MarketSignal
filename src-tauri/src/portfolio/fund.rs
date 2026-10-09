@@ -1089,6 +1089,11 @@ pub struct FundExposureBasis {
     /// (`docs/portfolio-analysis.md` §Starting parameters, the every-fund
     /// asset-class-change leg: a structural-flag reclassification counts).
     pub structural_flag: bool,
+    /// The fund's net asset value per share as the pass read it (`etf/info`),
+    /// where served — the self-review's NAV-then on a `role_risk_only`
+    /// holding's next pass (`docs/portfolio-workflow.md` §Step 6e). Never a
+    /// quick-check comparator.
+    pub nav: Option<f64>,
 }
 
 /// Build the [`FundExposureBasis`] from a fund's fresh metadata — shared by the
@@ -1111,6 +1116,7 @@ pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
         us_share: classification.us_share,
         top_sector,
         structural_flag: classification.structural_kind.is_some(),
+        nav: fund.nav,
     }
 }
 

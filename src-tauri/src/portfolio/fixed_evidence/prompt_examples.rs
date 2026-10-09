@@ -50,6 +50,8 @@ const STUB_ANALYSIS_FUND: &str =
     "[stub: this run's analysis — the fund's exposure profile and holdings news consolidated, as the analysis call returned it]";
 const STUB_PRIOR_ANALYSIS: &str =
     "[stub: the prior run's analysis — the holding's research memory, as the analysis call returned it on 2026-09-02]";
+const STUB_REVIEW: &str =
+    "[stub: this run's review — the prior position against what happened since, as the review call returned it]";
 const STUB_SECTIONS: &str = "## Market Signal Thesis\n\n[stub: the latest report's Market Signal Thesis section]\n\n## Investment Strategy\n\n[stub: the latest report's Investment Strategy section]\n";
 
 /// One rendered call: what the file says about it, and the request as the
@@ -408,6 +410,9 @@ pub(super) fn continuity_dossier(f: &Fixture) -> HoldingDossier {
         anchor: Some(anchor.clone()),
     });
     d.prior_authoring_close = Some(anchor);
+    // The episode store read this run, empty: no check has landed on the
+    // fixture (the stock review example layers synthetic ones on).
+    d.accuracy = Some(crate::portfolio::outcome::SubjectAccuracy::default());
     d.prior_metrics = Some(f.engine_output.metrics.clone());
     d.prior_grade_parameter_version = Some(engine::GRADE_PARAMETER_VERSION.into());
     d.prior_target_parameter_version = Some(engine::SCENARIO_TARGET_PARAMETER_VERSION.into());
@@ -431,6 +436,7 @@ fn thesis_input<'a>(f: &'a Fixture, d: &'a HoldingDossier) -> ThesisInput<'a> {
         tech_pre_flag: None,
         narrative: None,
         prior_split: None,
+        review: None,
     }
 }
 
@@ -439,9 +445,14 @@ fn thesis_input<'a>(f: &'a Fixture, d: &'a HoldingDossier) -> ThesisInput<'a> {
 #[derive(Default)]
 struct RequestCapture {
     role_risk: RefCell<Option<ChatRequest>>,
+    review: RefCell<Option<ChatRequest>>,
 }
 
 impl HoldingAnalyst for RequestCapture {
+    fn review(&self, input: &crate::portfolio::review::ReviewInput) -> anyhow::Result<String> {
+        *self.review.borrow_mut() = Some(pipeline::review_request(REASONER, input));
+        Ok(crate::portfolio::review::stub_review(input))
+    }
     fn interpret(&self, input: &ThesisInput) -> anyhow::Result<PricedModelArm> {
         pipeline::StubAnalyst.interpret(input)
     }
@@ -460,13 +471,23 @@ impl HoldingAnalyst for RequestCapture {
     }
 }
 
-fn role_risk_continuity_request(fx: &SyntheticRoleRisk) -> ChatRequest {
+/// The role/risk second run: a stub first run on 2026-09-03, its row's anchor
+/// bar and fund basis loaded as the prior, the requests captured on
+/// 2026-09-17.
+fn role_risk_second_run(fx: &SyntheticRoleRisk) -> RequestCapture {
     let rates = pipeline::tests::rates();
-    let (first, _) = pipeline::analyze_holding(&pipeline::StubAnalyst, &fx.dossier, &rates, "2026-09-03")
-        .expect("the stub's first run");
+    let (mut first, first_audit) =
+        pipeline::analyze_holding(&pipeline::StubAnalyst, &fx.dossier, &rates, "2026-09-03")
+            .expect("the stub's first run");
+    // The prior rationale stands stubbed, as a model's would.
+    if let crate::portfolio::VerdictDisposition::RoleRiskOnly(rr) = &mut first.disposition {
+        rr.action_rationale = "[stub: the prior action's rationale, as the action call returned it]".into();
+    }
     let mut second = fx.dossier.clone();
     second.prior_verdict = Some(first);
     second.prior_vintage = Some("2026-09-03T14:00:00Z".into());
+    second.prior_authoring_close = first_audit.authoring_close.clone();
+    second.prior_fund_exposure = first_audit.fund_exposure.clone();
     second.position_delta = PositionDelta {
         change: PositionChange::Unchanged,
         prior_quantity: Some(10.0),
@@ -474,7 +495,98 @@ fn role_risk_continuity_request(fx: &SyntheticRoleRisk) -> ChatRequest {
     };
     let capture = RequestCapture::default();
     let _ = pipeline::analyze_holding(&capture, &second, &rates, "2026-09-17").expect("the second run");
-    capture.role_risk.take().expect("the role/risk request was captured")
+    capture
+}
+
+/// A continuity dossier for the review examples: the priced continuity shape
+/// with a close on the session before the prior analysis, so the move since
+/// renders from it as a run's would.
+fn review_dossier(f: &Fixture) -> HoldingDossier {
+    let mut d = continuity_dossier(f);
+    let prior_spot = d.prior_spot.expect("the continuity shape's prior spot");
+    d.financials
+        .daily_closes
+        .insert(0, engine::DatedValue { date: "2026-09-01".into(), value: prior_spot });
+    d
+}
+
+/// The synthetic accuracy record the stock review example renders (ruled
+/// 2026-10-09): four earlier forecasts on the holding, two checks the prior
+/// analysis read (ids 4 and 7) and two this run wrote after it (9, scored on
+/// the analyst's price alone, and 10, a horizon with no forecast), so the
+/// three-month scores read both ways and the lines show both outcomes. The
+/// prices and closes are hand-written; the checks and scores are the
+/// accuracy pass's own arithmetic.
+fn layer_synthetic_accuracy(d: &mut HoldingDossier) {
+    use crate::portfolio::outcome::{
+        check_horizon, Check, HorizonPrices, Horizon, PriceRecord, StoredCheck, StoredEpisode,
+    };
+    let close = |date: &str, value: f64| engine::DatedValue { date: date.into(), value };
+    let episode = |id: i64, created_on: &str, anchor: engine::DatedValue, model: HorizonPrices, engine: HorizonPrices| {
+        StoredEpisode {
+            id,
+            record: PriceRecord {
+                symbol: "TSLA".into(),
+                created_on: created_on.into(),
+                spot: anchor.value,
+                anchor: Some(anchor),
+                model,
+                engine,
+            },
+        }
+    };
+    let three = |v: Option<f64>| HorizonPrices { three_month: v, ..Default::default() };
+    let episodes = vec![
+        episode(1, "2026-03-02", close("2026-02-27", 340.0), three(Some(300.0)), three(Some(310.0))),
+        episode(2, "2026-05-01", close("2026-04-30", 330.0), three(Some(360.0)), three(Some(320.0))),
+        episode(3, "2026-06-08", close("2026-06-05", 335.0), three(Some(380.0)), three(None)),
+        episode(
+            4,
+            "2026-06-10",
+            close("2026-06-09", 336.0),
+            HorizonPrices { twelve_month: Some(400.0), ..Default::default() },
+            three(None),
+        ),
+    ];
+    // Each check reads the series a run would have fetched: the anchor bar
+    // and the horizon's close.
+    let series = |ep: &StoredEpisode, horizon_close: engine::DatedValue| {
+        vec![ep.record.anchor.clone().expect("anchored"), horizon_close]
+    };
+    let check = |id: i64, ep: &StoredEpisode, on: &str, horizon_close: engine::DatedValue| StoredCheck {
+        id,
+        episode_id: ep.id,
+        check: Check {
+            horizon: Horizon::ThreeMonth,
+            checked_on: on.into(),
+            run_id: "synthetic".into(),
+            outcome: check_horizon(&ep.record, Horizon::ThreeMonth, &series(ep, horizon_close)),
+        },
+    };
+    let checks = vec![
+        check(4, &episodes[0], "2026-06-05", close("2026-06-02", 330.0)),
+        check(7, &episodes[1], "2026-08-04", close("2026-07-31", 345.0)),
+        check(9, &episodes[2], "2026-09-16", close("2026-09-08", 352.4)),
+        check(10, &episodes[3], "2026-09-16", close("2026-09-10", 350.0)),
+    ];
+    d.accuracy = Some(crate::portfolio::outcome::subject_accuracy(&episodes, &checks, "TSLA"));
+    d.prior_accuracy_read_through = Some(7);
+}
+
+/// The review input over a priced continuity dossier, the analysis stubbed.
+fn review_input<'a>(
+    f: &'a Fixture,
+    d: &'a HoldingDossier,
+    analysis: &'a crate::portfolio::AnalysisRecord,
+) -> crate::portfolio::review::ReviewInput<'a> {
+    crate::portfolio::review::ReviewInput {
+        dossier: d,
+        rates: rates(),
+        analysis,
+        prior_split: None,
+        price_bridge: Some(1.0),
+        subject: crate::portfolio::review::ReviewSubject::Priced { engine: &f.engine_output },
+    }
 }
 
 fn research_request(s: &research_samples::Sample) -> ChatRequest {
@@ -859,6 +971,63 @@ fn examples() -> Vec<Example> {
         });
     }
 
+    // ---- Step 6e: the self-review ----
+    let review_common = "The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.";
+    {
+        let mut d = review_dossier(&tsla);
+        layer_synthetic_accuracy(&mut d);
+        let analysis = analysis_of(&d, STUB_ANALYSIS_STOCK);
+        out.push(Example {
+            file: "18-review-stock",
+            title: "Self-review — stock, continuity run",
+            step: "6e",
+            holding: "TSLA, on a continuity run over the prior position of 2026-09-02",
+            sentences: lines(&[
+                review_common,
+                "REALIZED carries the price now with its move and the path since, each prior expected price at its horizon date, the accuracy scores with whether the prior analysis read each, the checks written since the prior analysis, and the computed reads then and now.",
+                "The accuracy record here is synthetic, layered for this example alone: four earlier forecasts, two checks the prior analysis read and two this run wrote after it — one scored, one with no forecast at its horizon — so the three-month scores read both ways and the lines show both outcomes.",
+                "The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's; its twelve-month price has not reached its date.",
+            ]),
+            stage: "review TSLA".into(),
+            request: pipeline::review_request(REASONER, &review_input(&tsla, &d, &analysis)),
+            variants: vec![],
+            extras: vec![],
+        });
+        let mut d = review_dossier(&spmo);
+        // The prior read the store (other holdings' checks, through id 12);
+        // none has landed on this fund since.
+        d.prior_accuracy_read_through = Some(12);
+        let analysis = analysis_of(&d, STUB_ANALYSIS_STOCK);
+        out.push(Example {
+            file: "19-review-fund",
+            title: "Self-review — priced fund, continuity run",
+            step: "6e",
+            holding: "SPMO, on a continuity run over the prior position of 2026-09-02; the fixture carries no fund context",
+            sentences: lines(&[
+                review_common,
+                "A priced fund takes the same call; with no check landed since the prior analysis, the fixed sentence says the scores shown are the ones it read. The prior's read-through mark here is hand-written.",
+            ]),
+            stage: "review SPMO".into(),
+            request: pipeline::review_request(REASONER, &review_input(&spmo, &d, &analysis)),
+            variants: vec![],
+            extras: vec![],
+        });
+        out.push(Example {
+            file: "20-review-role-risk",
+            title: "Self-review — role/risk, continuity run",
+            step: "6e",
+            holding: "BND, on a continuity run over a stub first run of 2026-09-03",
+            sentences: lines(&[
+                review_common,
+                "A role read states no price, so PRIOR POSITION carries the prior action and its rationale alone, and REALIZED the price, the NAV and the fund's reads then and now with no accuracy record; the stub first run's row supplies the then side.",
+            ]),
+            stage: "review BND".into(),
+            request: role_risk_second_run(&fx).review.take().expect("the review request was captured"),
+            variants: vec![],
+            extras: vec![],
+        });
+    }
+
     // ---- Step 6f: the thesis document and its appendix ----
     let thesis_common =
         "The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.";
@@ -866,14 +1035,14 @@ fn examples() -> Vec<Example> {
     for (f, file, title, holding, own) in [
         (
             &tsla,
-            "18-thesis-document-stock-first-analysis",
+            "21-thesis-document-stock-first-analysis",
             "Thesis document — stock, first analysis",
             tsla_holding,
             "On a first analysis there is no PRIOR THESIS, and the summary item asks for no continuity clause.",
         ),
         (
             &spmo,
-            "20-thesis-document-fund-first-analysis",
+            "23-thesis-document-fund-first-analysis",
             "Thesis document — priced fund, first analysis",
             "SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis; the fixture carries no fund context, so the FUND block does not render",
             "A priced fund takes the same call with the fund's metric labels and an investment analyst's role line.",
@@ -895,20 +1064,22 @@ fn examples() -> Vec<Example> {
     for (f, file, title, holding, own) in [
         (
             &tsla,
-            "19-thesis-document-stock-continuity",
+            "22-thesis-document-stock-continuity",
             "Thesis document — stock, continuity run",
             "TSLA, on a continuity run over the prior document of 2026-09-02",
-            "On a continuity run the prior document renders verbatim as PRIOR THESIS under its date, and the summary item asks what changed since it; the document is never rewritten.",
+            "On a continuity run this run's review renders under REVIEW, then the prior document verbatim as PRIOR THESIS under its date, and the summary item asks what changed since it and how the prior read held up; the document is never rewritten.",
         ),
         (
             &spmo,
-            "21-thesis-document-fund-continuity",
+            "24-thesis-document-fund-continuity",
             "Thesis document — priced fund, continuity run",
             "SPMO, on a continuity run over the prior document of 2026-09-02; the fixture carries no fund context, so the FUND block does not render",
-            "The fund's continuity shape carries the same PRIOR THESIS section and continuity clause as the stock's.",
+            "The fund's continuity shape carries the same REVIEW and PRIOR THESIS sections and continuity clause as the stock's.",
         ),
     ] {
         let d = continuity_dossier(f);
+        let mut input = thesis_input(f, &d);
+        input.review = Some(STUB_REVIEW.into());
         out.push(Example {
             file,
             title,
@@ -916,7 +1087,7 @@ fn examples() -> Vec<Example> {
             holding,
             sentences: lines(&[thesis_common, own, continuity_note]),
             stage: format!("thesis {}", f.symbol),
-            request: pipeline::thesis_request(REASONER, &thesis_input(f, &d)),
+            request: pipeline::thesis_request(REASONER, &input),
             variants: vec![],
             extras: vec![],
         });
@@ -926,7 +1097,7 @@ fn examples() -> Vec<Example> {
         let input = thesis_input(&tsla, &d);
         let document = pipeline::StubAnalyst.interpret(&input).expect("the stub writes the document").thesis_document;
         out.push(Example {
-            file: "22-thesis-appendix",
+            file: "25-thesis-appendix",
             title: "Thesis appendix — the conversation's second message",
             step: "6f",
             holding: tsla_holding,
@@ -948,9 +1119,10 @@ fn examples() -> Vec<Example> {
             rates: rates(),
             analysis: analysis_of(&fx.dossier, STUB_ANALYSIS_FUND),
             prior_split: None,
+            review: None,
         };
         out.push(Example {
-            file: "23-role-risk-thesis-document-first-analysis",
+            file: "26-role-risk-thesis-document-first-analysis",
             title: "Role/risk thesis document — first analysis",
             step: "6f",
             holding: bnd_holding,
@@ -964,16 +1136,16 @@ fn examples() -> Vec<Example> {
             extras: vec![],
         });
         out.push(Example {
-            file: "24-role-risk-thesis-document-continuity",
+            file: "27-role-risk-thesis-document-continuity",
             title: "Role/risk thesis document — continuity run",
             step: "6f",
             holding: "BND, on a continuity run over a stub first run of 2026-09-03",
             sentences: lines(&[
-                "The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.",
+                "The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the review under REVIEW, the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.",
                 "The analysis is the one no-write-up sentence: the stub run issues no research call and writes nothing, so consolidation spends no analysis call.",
             ]),
             stage: "thesis BND".into(),
-            request: role_risk_continuity_request(&fx),
+            request: role_risk_second_run(&fx).role_risk.take().expect("the role/risk request was captured"),
             variants: vec![],
             extras: vec![],
         });
@@ -1008,7 +1180,7 @@ fn examples() -> Vec<Example> {
         let mut costly = debut_dossier(&tsla);
         costly.position.cost_basis *= 3.0;
         out.push(Example {
-            file: "25-action-priced-first-analysis",
+            file: "28-action-priced-first-analysis",
             title: "Action — priced holding, first analysis",
             step: "6f",
             holding: tsla_holding,
@@ -1076,7 +1248,7 @@ fn examples() -> Vec<Example> {
             }
         }
         out.push(Example {
-            file: "26-action-priced-continuity",
+            file: "29-action-priced-continuity",
             title: "Action — priced holding, continuity run",
             step: "6f",
             holding: "TSLA, on a continuity run over the prior document of 2026-09-02",
@@ -1112,7 +1284,7 @@ fn examples() -> Vec<Example> {
             profile: &fx.dossier.profile,
         };
         out.push(Example {
-            file: "27-action-role-risk",
+            file: "30-action-role-risk",
             title: "Action — role/risk branch",
             step: "6f",
             holding: bnd_holding,
@@ -1331,7 +1503,7 @@ fn render_contents(examples: &[Example]) -> String {
         "*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `{}`; regenerate rather than edit (`docs/prompts/README.md`).*\n\n",
         crate::portfolio::PROMPT_VERSION
     ));
-    out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), consolidation — the distillation shapes and the analysis call (Step 6d) — then the thesis document, its appendix and the action call (Step 6f).\n");
+    out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), consolidation — the distillation shapes and the analysis call (Step 6d) — the self-review on a continuity run (Step 6e), then the thesis document, its appendix and the action call (Step 6f).\n");
     out.push_str("Each file carries the request envelope, every message as sent, and the tools or the response schema.\n");
     out.push_str("On the stock shapes, the FETCHED VALUES rows the fixed set does not carry — the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments — are synthetic values layered on for the examples alone, their names stubbed (`docs/prompts/README.md`).\n\n");
     out.push_str("| File | Call | Step |\n| --- | --- | --- |\n");
@@ -1420,7 +1592,7 @@ fn portfolio_prompt_examples_write() {
 #[test]
 fn portfolio_prompt_examples_render() {
     let examples = examples();
-    assert_eq!(examples.len(), 27);
+    assert_eq!(examples.len(), 30);
     // The header names the stamp this file last changed at, and the writer's
     // comparison sets that stamp aside and nothing else.
     let first = render(&examples[0]);

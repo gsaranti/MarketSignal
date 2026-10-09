@@ -1718,6 +1718,8 @@ mod tests {
         HoldingAudit {
             research: None,
             analysis: None,
+            review: None,
+            accuracy_read_through: None,
             symbol: symbol.into(),
             metrics: engine::ComputedMetrics {
                 pe_ratio: Some(30.0),
@@ -2519,6 +2521,7 @@ mod tests {
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
                 structural_flag: false,
+                nav: None,
             })),
         )
         .unwrap();
@@ -2593,6 +2596,7 @@ mod tests {
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
                 structural_flag: false,
+                nav: None,
             })),
         )
         .unwrap();
@@ -2641,6 +2645,7 @@ mod tests {
                 us_share: None,
                 top_sector: None,
                 structural_flag: false,
+                nav: None,
             })),
         )
         .unwrap();
@@ -2687,6 +2692,7 @@ mod tests {
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
                 structural_flag: false,
+                nav: None,
             })),
         )
         .unwrap();
@@ -2736,6 +2742,7 @@ mod tests {
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
                 structural_flag: false,
+                nav: None,
             })),
         )
         .unwrap();
@@ -2785,6 +2792,7 @@ mod tests {
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
                 structural_flag: false,
+                nav: None,
             })),
         )
         .unwrap();

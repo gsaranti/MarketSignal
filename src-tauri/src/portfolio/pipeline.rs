@@ -40,6 +40,7 @@ use crate::portfolio::{
 
 use crate::portfolio::distill;
 use crate::portfolio::research::{self, HoldingBrief, HoldingResearch, ResearchAuditRecord, ResearchPlan};
+use crate::portfolio::review;
 
 /// What the thesis-document conversation reads (`docs/portfolio-workflow.md`
 /// §Step 6f): the dossier, the engine's computed analysis, the run-level rate
@@ -76,6 +77,11 @@ pub struct ThesisInput<'a> {
     /// price series since the prior document was written; `None` on a debut
     /// or where no split intervened.
     pub prior_split: Option<SplitContext>,
+    /// This run's review, rendered under REVIEW between ANALYSIS and PRIOR
+    /// THESIS on a continuity run (`docs/portfolio-workflow.md` §Step 6f) —
+    /// the accuracy record reaches the document through it alone. `None` on a
+    /// debut.
+    pub review: Option<String>,
 }
 
 /// The split-context line's facts (`docs/portfolio-workflow.md` §Step 6b): what
@@ -110,6 +116,8 @@ pub struct RoleRiskInput<'a> {
     /// ([`analysis_section`]).
     pub analysis: crate::portfolio::AnalysisRecord,
     pub prior_split: Option<SplitContext>,
+    /// This run's review, rendered under REVIEW as on the priced message.
+    pub review: Option<String>,
 }
 
 /// The branch-shaped verdict evidence the per-holding action call reads — the
@@ -253,12 +261,13 @@ fn ensure_action_rationale(
 }
 
 /// The model-backed stages of the pipeline, behind a trait so the orchestration is
-/// stub-driven offline and daemon-driven live. Research (6c) carries a
-/// **defaulted offline implementation** — pipeline-shaped, no web tool, no
-/// model call — so deterministic stubs stay small; consolidation's two calls
-/// (6d) default to a refusal naming the stage, since a stub with no write-up
-/// is never asked to consolidate, and the offline [`StubAnalyst`] renders
-/// them deterministically; the live analyst overrides all three.
+/// stub-driven offline and daemon-driven live. Research (6c) and the
+/// self-review (6e) carry **defaulted offline implementations** —
+/// pipeline-shaped, no web tool, no model call — so deterministic stubs stay
+/// small; consolidation's two calls (6d) default to a refusal naming the
+/// stage, since a stub with no write-up is never asked to consolidate, and
+/// the offline [`StubAnalyst`] renders them deterministically; the live
+/// analyst overrides all four.
 pub trait HoldingAnalyst {
     /// Step 6d — one distillation call over the write-ups
     /// ([`distill::distillation_prompt`]): non-thinking, no grammar, prose.
@@ -279,6 +288,12 @@ pub trait HoldingAnalyst {
         plan: &ResearchPlan,
     ) -> Result<HoldingResearch> {
         Ok(research::offline_stub(plan))
+    }
+    /// Step 6e — the self-review ([`review::review_prompt`]), on a continuity
+    /// run only: thinking, no grammar, prose. Defaults to the offline stub's
+    /// deterministic review ([`review::stub_review`]).
+    fn review(&self, input: &review::ReviewInput) -> Result<String> {
+        Ok(review::stub_review(input))
     }
     /// Step 6f — the thesis-document conversation (`docs/portfolio-workflow.md`
     /// §Step 6f): the document as prose under thinking with no grammar, then
@@ -539,6 +554,14 @@ pub fn analyze_holding(
             .as_deref()
             .and_then(|since| split_event_since(dossier, since)),
     );
+    // A continuity run — one with a prior thesis document, an abstention's
+    // retained one included — takes the self-review (`docs/portfolio-workflow.md`
+    // §Step 6e); a debut has no prior position to review.
+    let has_prior_document = dossier
+        .prior_verdict
+        .as_ref()
+        .and_then(|v| v.thesis_document())
+        .is_some();
     // The prior read's per-share comparators on this run's basis: the spot and
     // every raw consensus-EPS period scale TOGETHER (their ratio — the prior
     // matched-period multiple — is basis-free and must stay so). `None` factor
@@ -706,6 +729,11 @@ pub fn analyze_holding(
         // Written where consolidation ran; an abstention retains the prior
         // run's below, every other no-research exit records none.
         analysis: None,
+        // Written where the self-review ran; every earlier exit records none.
+        review: None,
+        // An abstention carries the prior mark below; every other exit before
+        // the review read none.
+        accuracy_read_through: None,
     };
     let abstain = |reason: String, metrics, meta, pre_profit, soft_forensic| {
         // A below-floor exit retains the prior thesis document unrewritten —
@@ -749,6 +777,10 @@ pub fn analyze_holding(
         // analysis has no price basis to certify, so it carries whether or
         // not a document was retained beside it.
         record.analysis = dossier.prior_analysis.clone();
+        // The accuracy read-through mark travels with the retained document:
+        // the next review reads as read what the review behind it read
+        // (`docs/portfolio-analysis.md` §Outcome learning).
+        record.accuracy_read_through = dossier.prior_accuracy_read_through;
         Ok((verdict, record))
     };
     let not_rated = |reason: String| {
@@ -912,6 +944,26 @@ pub fn analyze_holding(
                     run_date,
                 )?;
                 record_stage_models(analyst.reasoner_id());
+                // The self-review on a continuity run (`docs/portfolio-workflow.md`
+                // §Step 6e): the prior action and the document's conditions
+                // against the fund's realized data — no accuracy record, since
+                // the branch states no price.
+                let rr_review = if has_prior_document {
+                    let text = analyst
+                        .review(&review::ReviewInput {
+                            dossier,
+                            rates,
+                            analysis: &rr_analysis,
+                            prior_split,
+                            price_bridge,
+                            subject: review::ReviewSubject::RoleRisk,
+                        })
+                        .context("reviewing the role/risk holding's prior position")?;
+                    record_stage_models(analyst.reasoner_id());
+                    Some(text)
+                } else {
+                    None
+                };
                 let thesis_document = analyst
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
@@ -919,6 +971,7 @@ pub fn analyze_holding(
                         rates,
                         analysis: rr_analysis.clone(),
                         prior_split,
+                        review: rr_review.clone(),
                     })
                     .context("writing the role/risk holding's thesis document")?;
                 record_stage_models(analyst.reasoner_id());
@@ -949,6 +1002,7 @@ pub fn analyze_holding(
                 let mut audit_record = audit(fund_metrics, None, None, None);
                 audit_record.research = Some(rr_research_record);
                 audit_record.analysis = Some(rr_analysis);
+                audit_record.review = rr_review;
                 audit_record.action_annotations.extend(outside_set_annotation(
                     decision.action,
                     &crate::portfolio::ROLE_RISK_ACTIONS,
@@ -1104,6 +1158,36 @@ pub fn analyze_holding(
         run_research(analyst, dossier, &triggers, rates, prior_split, run_date)?;
     record_stage_models(analyst.reasoner_id());
 
+    // The self-review (`docs/portfolio-workflow.md` §Step 6e) — on a
+    // continuity run, before the thesis document: the prior position against
+    // what has happened since, the holding's accuracy record riding its
+    // realized block and reaching the model nowhere else.
+    let review_text = if has_prior_document {
+        let text = analyst
+            .review(&review::ReviewInput {
+                dossier,
+                rates,
+                analysis: &analysis,
+                prior_split,
+                price_bridge,
+                subject: review::ReviewSubject::Priced { engine: &engine_output },
+            })
+            .context("reviewing the prior position")?;
+        record_stage_models(analyst.reasoner_id());
+        Some(text)
+    } else {
+        None
+    };
+    // The read-through mark this row records (`docs/portfolio-analysis.md`
+    // §Outcome learning): the store's highest check id where the review read
+    // the accuracy record, the prior mark where the store could not be read,
+    // none where no review ran.
+    let accuracy_read_through = match (&review_text, &dossier.accuracy) {
+        (None, _) => None,
+        (Some(_), Some(acc)) => acc.high_water,
+        (Some(_), None) => dossier.prior_accuracy_read_through,
+    };
+
     // The hard-forensic state trips from the item-classified filing kinds
     // alone (`docs/portfolio-analysis.md` §Starting parameters): a fraud
     // allegation reaches the model only through the research write-ups and
@@ -1138,6 +1222,7 @@ pub fn analyze_holding(
             tech_pre_flag: tech_pre_flag.as_ref(),
             narrative: narrative.as_ref(),
             prior_split,
+            review: review_text.clone(),
         })
         .context("writing the holding's thesis document")?;
     record_stage_models(analyst.reasoner_id());
@@ -1245,6 +1330,8 @@ pub fn analyze_holding(
         option_overlay: dossier.option_overlay.clone(),
         research: Some(research_record),
         analysis: Some(analysis),
+        review: review_text,
+        accuracy_read_through,
     };
     Ok((verdict, audit_record))
 }
@@ -1478,12 +1565,15 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     // bridged.
     p.push_str(&analysis_section(d, &input.analysis));
 
+    // REVIEW, on a continuity run — this run's review.
+    p.push_str(&review_section(input.review.as_deref()));
+
     // PRIOR THESIS, on a continuity run.
     let has_prior = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).is_some();
     p.push_str(&prior_thesis_section(d, input.prior_split));
 
     // PART 2
-    p.push_str(&role_risk_task_section(has_tilt, has_gaps, has_prior));
+    p.push_str(&role_risk_task_section(has_tilt, has_gaps, has_prior, input.review.is_some()));
     p
 }
 
@@ -1491,7 +1581,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
 /// role from the sections that rendered, the risks, the trim / sell triggers,
 /// the summary paragraph — within the thesis document's length band, with no
 /// prices and no conviction.
-fn role_risk_task_section(has_tilt: bool, has_gaps: bool, has_prior: bool) -> String {
+fn role_risk_task_section(has_tilt: bool, has_gaps: bool, has_prior: bool, has_review: bool) -> String {
     let mut sections = vec!["CLASS"];
     if has_tilt {
         sections.push("EXPOSURE TILT");
@@ -1519,11 +1609,7 @@ fn role_risk_task_section(has_tilt: bool, has_gaps: bool, has_prior: bool) -> St
     );
     p.push_str(&format!(
         "\n4. A summary paragraph — the read as a whole{}.\n",
-        if has_prior {
-            ", and what changed since the prior analysis, drawing on PRIOR THESIS"
-        } else {
-            ""
-        }
+        continuity_clause(has_prior, has_review)
     ));
     p.push_str(&format!(
         "\nThe document states no expected price and no conviction. It runs {} to {} words.\n",
@@ -2066,12 +2152,16 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     // write-ups, or the prior record carried, dated and bridged.
     p.push_str(&analysis_section(d, &input.analysis));
 
+    // REVIEW, on a continuity run — this run's review; the accuracy record
+    // reaches the document through it alone.
+    p.push_str(&review_section(input.review.as_deref()));
+
     // PRIOR THESIS, on a continuity run.
     let has_prior = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).is_some();
     p.push_str(&prior_thesis_section(d, input.prior_split));
 
     // PART 2
-    p.push_str(&thesis_task_section(has_prior));
+    p.push_str(&thesis_task_section(has_prior, input.review.is_some()));
     p
 }
 
@@ -2156,7 +2246,7 @@ fn soft_forensic_prompt_section(f: &SoftForensicFlags) -> String {
 /// the price series since it was written, or where its basis could not be
 /// verified this run (`docs/portfolio-workflow.md` §Step 6b) — the document is
 /// never rewritten. Empty on a debut, and on a prior that carries no document.
-fn prior_thesis_section(d: &HoldingDossier, split: Option<SplitContext>) -> String {
+pub(crate) fn prior_thesis_section(d: &HoldingDossier, split: Option<SplitContext>) -> String {
     let Some(doc) = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()) else {
         return String::new();
     };
@@ -2192,7 +2282,7 @@ pub(crate) fn prior_analysis_section(d: &HoldingDossier) -> String {
 /// nothing and the prior record stands as this run's, that record under the
 /// date it was written with the split-context line its own anchor bar
 /// yields, so the model never reads pre-split figures as today's.
-fn analysis_section(d: &HoldingDossier, record: &crate::portfolio::AnalysisRecord) -> String {
+pub(crate) fn analysis_section(d: &HoldingDossier, record: &crate::portfolio::AnalysisRecord) -> String {
     let written = (record.written != d.analysis_date).then_some(record.written.as_str());
     document_section("ANALYSIS", written, record_split_context(d, record), &record.text)
 }
@@ -2285,7 +2375,7 @@ fn fmt_split_leg(v: f64) -> String {
 /// source is absent is omitted; a cell the provider left empty reads `(gap)`.
 /// One renderer, shared by the research brief and both thesis-document
 /// branches, byte for byte.
-fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) -> String {
+pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) -> String {
     use crate::portfolio::evidence::{
         MaRole, PriceTargetWindow, FUND_COUNTRY_WEIGHTS_SHOWN, SURPRISE_QUARTERS,
     };
@@ -2994,7 +3084,7 @@ fn target_notes_line(t: &engine::TargetMeta) -> Option<String> {
 /// no value or unit; the expected prices and the conviction argued in the
 /// text, the computed bands evidence and never bounds; the length band stated
 /// and never checked (`docs/portfolio-workflow.md` §Step 6f).
-fn thesis_task_section(has_prior: bool) -> String {
+fn thesis_task_section(has_prior: bool, has_review: bool) -> String {
     let mut p = String::from(
         "\n======== PART 2: TASK ========\n\n\
          Write the thesis document for this holding as plain text — no code fence, no JSON, no \
@@ -3023,11 +3113,7 @@ fn thesis_task_section(has_prior: bool) -> String {
     );
     p.push_str(&format!(
         "\n6. A summary paragraph — the financial read, why those prices and that conviction{}.\n",
-        if has_prior {
-            ", and what changed since the prior analysis, drawing on PRIOR THESIS"
-        } else {
-            ""
-        }
+        continuity_clause(has_prior, has_review)
     ));
     p.push_str(&format!(
         "\nThe document runs {} to {} words.\n",
@@ -3035,6 +3121,29 @@ fn thesis_task_section(has_prior: bool) -> String {
         fmt_thousands(THESIS_DOCUMENT_WORDS.1)
     ));
     p
+}
+
+/// The summary item's continuity clause on both thesis-document messages
+/// (`docs/portfolio-workflow.md` §Step 6f): on a continuity run, what changed
+/// since the prior analysis and how the prior read held up, drawing on the
+/// review and the prior document; none on a debut.
+fn continuity_clause(has_prior: bool, has_review: bool) -> &'static str {
+    match (has_prior, has_review) {
+        (true, true) => {
+            ", and what changed since the prior analysis and how the prior read held up, drawing \
+             on REVIEW and PRIOR THESIS"
+        }
+        (true, false) => ", and what changed since the prior analysis, drawing on PRIOR THESIS",
+        (false, _) => "",
+    }
+}
+
+/// REVIEW on both thesis-document messages: this run's review verbatim, on a
+/// continuity run; empty on a debut.
+fn review_section(review: Option<&str>) -> String {
+    review
+        .map(|text| document_section("REVIEW", None, None, text))
+        .unwrap_or_default()
 }
 
 /// A count with a thousands separator, as the docs state the length bands
@@ -4491,6 +4600,22 @@ pub(super) fn analysis_request(reasoner_model: &str, input: &distill::AnalysisIn
     req
 }
 
+/// Build the self-review request (`docs/portfolio-workflow.md` §Step 6e): the
+/// resident reasoner, thinking on, **no grammar** — the review is prose —
+/// thinking sampling, the interpret-sized context, resident.
+pub(super) fn review_request(reasoner_model: &str, input: &review::ReviewInput) -> ChatRequest {
+    let prompt = review::review_prompt(input);
+    let mut req = ChatRequest::new(
+        reasoner_model,
+        vec![ChatMessage::system(prompt.system), ChatMessage::user(prompt.user)],
+    );
+    req.format_schema = None;
+    req.think = Some(true);
+    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
+    req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
+    req
+}
+
 /// Build the thesis-document request (`docs/portfolio-workflow.md` §Step 6f):
 /// thinking on, **no grammar** — the document is free prose — thinking
 /// sampling, the interpret-sized context.
@@ -4610,6 +4735,27 @@ impl HoldingAnalyst for LocalAnalyst {
         // re-issued.
         let step_key = crate::portfolio::holding_step_key(input.symbol);
         let mut req = analysis_request(&self.reasoner_model, input);
+        let stage = input.stage();
+        req.stage = Some(stage.clone());
+        self.retry.run(self.client.progress(), &stage, || {
+            self.record_model_call(&req);
+            let resp = self
+                .client
+                .chat_streaming(&req, StreamRole::Step(&step_key))?;
+
+            ensure_not_output_limited(&stage, &req, &resp)?;
+            ensure_nonempty_completion(&stage, &resp)?;
+            Ok(resp.content)
+        })
+    }
+
+    fn review(&self, input: &review::ReviewInput) -> Result<String> {
+        // Stream step-scoped like the analysis: the review lands on this
+        // holding's own "Analyze {SYM}" step. The retry gate re-issues the
+        // identical request once on a transient class; a length stop is not
+        // re-issued.
+        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
+        let mut req = review_request(&self.reasoner_model, input);
         let stage = input.stage();
         req.stage = Some(stage.clone());
         self.retry.run(self.client.progress(), &stage, || {
@@ -5051,6 +5197,9 @@ pub(crate) mod tests {
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
             prior_analysis: None,
+            prior_accuracy_read_through: None,
+            prior_fund_exposure: None,
+            accuracy: None,
             listing: None,
             filing_events: None,
             short_interest: None,
@@ -6200,6 +6349,7 @@ pub(crate) mod tests {
             tech_pre_flag: None,
             narrative: None,
             prior_split: None,
+            review: None,
         });
         assert!(!thesis.contains("PRIOR ANALYSIS"), "{thesis}");
         assert!(thesis.contains("\nANALYSIS\nThis run's analysis.\n") && thesis.contains("\nPRIOR THESIS (written 2026-08-03)\n"), "{thesis}");
@@ -6252,6 +6402,7 @@ pub(crate) mod tests {
             tech_pre_flag: None,
             narrative: None,
             prior_split: None,
+            review: None,
         };
         let thesis = thesis_user_prompt(&input(carried_on(&d)));
         assert!(
@@ -6275,6 +6426,7 @@ pub(crate) mod tests {
             rates: rates_static(),
             analysis: carried_on(&fund),
             prior_split: None,
+            review: None,
         });
         assert!(
             role.contains("\nANALYSIS (written 2026-07-01)\nA share split since this document was written re-based the price series by a factor of 0.5000: "),
@@ -6388,6 +6540,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(
             interp.contains(
@@ -6419,6 +6572,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(!interp.contains("COMMODITY PRICES"), "{interp}");
     }
@@ -6880,6 +7034,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(interp.contains(block.as_str()), "{interp}");
 
@@ -6891,6 +7046,7 @@ pub(crate) mod tests {
             dossier: &fd,
             readout: &RoleRiskReadout::default(),
             analysis: analysis_record("No research findings."),
+            review: None,
         });
         assert!(role.contains(block.as_str()), "{role}");
     }
@@ -6920,6 +7076,7 @@ pub(crate) mod tests {
                 pre_profit: None,
                 tech_pre_flag: f,
                 narrative: None,
+                review: None,
             })
         };
         let fired = flag(true);
@@ -7119,6 +7276,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         const LINE: &str = "Market-wide options sentiment (CBOE daily put/call, as of August 19, \
                             2026): total 0.80, index 0.97, equity (gap)\n";
@@ -7133,6 +7291,7 @@ pub(crate) mod tests {
             dossier: &fd,
             readout: &RoleRiskReadout::default(),
             analysis: analysis_record("No research findings."),
+            review: None,
         });
         assert!(role.contains(LINE), "{role}");
         // Absent, neither prompt claims it.
@@ -7147,6 +7306,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(!interp.contains("Market-wide options sentiment"), "{interp}");
     }
@@ -7193,6 +7353,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(
             interp.contains(
@@ -7267,6 +7428,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(
             interp.contains(
@@ -7647,6 +7809,7 @@ pub(crate) mod tests {
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative,
+                review: None,
             })
         };
         // Absent legs stay silent — no empty scaffolding sections.
@@ -7907,10 +8070,15 @@ pub(crate) mod tests {
         // line names the split — v74, the trail to checkpoint-v23 (the M&A
         // feed pinned on the header); data health's count of the walk's gap
         // moves the archive to format 19.
-        assert_eq!(PROMPT_VERSION, "portfolio-v74");
+        // The self-review (2026-10-09): the review call over PRIOR POSITION,
+        // PRIOR THESIS, ANALYSIS and REALIZED with the accuracy record, and
+        // REVIEW on both thesis-document messages — v75, the trail to
+        // checkpoint-v24 (the audit's review and read-through mark, the fund
+        // basis's NAV) and the archive to format 21.
+        assert_eq!(PROMPT_VERSION, "portfolio-v75");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v23"
+            "checkpoint-v24"
         );
     }
 
@@ -8073,6 +8241,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(
             anchored.contains("percentile of their spread to the 10-year Treasury over the last 40 quarterly observations"),
@@ -8106,6 +8275,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(carried.contains("× the current P/E multiple (no anchor history"), "{carried}");
         // The signal-quality FACT survives the trim — the carry branch still names
@@ -8127,6 +8297,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(
             fallback.contains(
@@ -8156,6 +8327,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         // The priced message names the latest report for what it is — a
         // market-level analysis, never by product name — as data with no scope
@@ -8180,6 +8352,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(!bare_user.contains("\nMARKET ANALYSIS\n"), "{bare_user}");
 
@@ -8202,6 +8375,7 @@ pub(crate) mod tests {
             dossier: &d,
             readout: &readout,
             analysis: analysis_record("No research findings."),
+            review: None,
         });
         assert!(
             role.contains("\nMARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
@@ -8228,6 +8402,7 @@ pub(crate) mod tests {
                 dossier: &d,
                 readout: &readout,
                 analysis: analysis_record("No research findings."),
+                review: None,
             })
         };
 
@@ -8281,6 +8456,7 @@ pub(crate) mod tests {
                 dossier: &d,
                 readout: r,
                 analysis: analysis_record("No research findings."),
+                review: None,
             })
         };
         let discount = prompt(&readout(true, Some(-0.072)));
@@ -8399,6 +8575,7 @@ pub(crate) mod tests {
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
+                review: None,
             })
         };
         engine_output.metrics.nav_premium = Some(0.002);
@@ -8454,6 +8631,7 @@ pub(crate) mod tests {
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
+                review: None,
             })
         };
         const CONVENTION: &str = "(mean put IV minus mean call IV, in IV's decimal unit; positive \
@@ -8534,6 +8712,7 @@ pub(crate) mod tests {
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
+                review: None,
             })
         };
         let us = prompt_for(vec![("US".into(), 0.97), ("Canada".into(), 0.03)]);
@@ -8591,6 +8770,7 @@ pub(crate) mod tests {
             dossier: &d,
             readout: &readout,
             analysis: analysis_record("No research findings."),
+            review: None,
         });
         // The role/risk message renders the ratio once, as the fund's reported
         // line under FETCHED VALUES; the computed lines never restate it.
@@ -8616,6 +8796,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(interp.contains("\nFUND\nUS share of holdings: 99%.\n"), "{interp}");
         assert!(
@@ -8693,6 +8874,7 @@ pub(crate) mod tests {
             dossier: &d,
             readout: &readout,
             analysis: analysis_record("No research findings."),
+            review: None,
         });
         const SECTION: &str = "\nUNDERLYING POSITIONING (CFTC weekly, as of 2026-08-11)\nGold — \
                                speculator net +200000 contracts (50.0% of OI long), w/w +4000\n";
@@ -8716,6 +8898,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(interp.contains(SECTION), "{interp}");
         let fund_section = interp.find("\nFUND\n").expect("fund section");
@@ -8730,6 +8913,7 @@ pub(crate) mod tests {
             dossier: &bare,
             readout: &readout,
             analysis: analysis_record("No research findings."),
+            review: None,
         });
         assert!(!role.contains("UNDERLYING POSITIONING"), "{role}");
     }
@@ -8815,6 +8999,7 @@ pub(crate) mod tests {
                 pre_profit: None,
                 tech_pre_flag: None,
                 narrative: None,
+                review: None,
             },
         );
         assert_eq!(interpret.think, Some(true));
@@ -8836,6 +9021,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         }, "The document.");
         assert_eq!(appendix.think, Some(false));
         assert_eq!(appendix.keep_alive, Some(-1));
@@ -8863,6 +9049,7 @@ pub(crate) mod tests {
                 dossier: &d,
                 readout: &readout,
                 analysis: analysis_record("No research findings."),
+                review: None,
             },
         );
         assert_eq!(role_risk.think, Some(true));
@@ -9348,6 +9535,169 @@ pub(crate) mod tests {
         assert_eq!(analyst.fast_id(), "f");
     }
 
+    // ---- The self-review (Step 6e) ---------------------------------------------
+
+    /// Records every review message a pass issues and the thesis-document
+    /// messages that follow, replying with a fixed review.
+    #[derive(Default)]
+    struct ReviewCapture {
+        reviews: std::cell::RefCell<Vec<String>>,
+        thesis: std::cell::RefCell<Option<String>>,
+        role_risk: std::cell::RefCell<Option<String>>,
+    }
+    impl HoldingAnalyst for ReviewCapture {
+        fn review(&self, input: &review::ReviewInput) -> Result<String> {
+            self.reviews.borrow_mut().push(review::review_prompt(input).user);
+            Ok(format!("The review of {}.", input.dossier.position.symbol))
+        }
+        fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
+            *self.thesis.borrow_mut() = Some(thesis_user_prompt(input));
+            StubAnalyst.interpret(input)
+        }
+        fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String> {
+            *self.role_risk.borrow_mut() = Some(role_risk_user_prompt(input));
+            StubAnalyst.interpret_role_risk(input)
+        }
+        fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
+            StubAnalyst.decide_action(input)
+        }
+        fn fast_id(&self) -> String {
+            "fast-tier".into()
+        }
+        fn reasoner_id(&self) -> String {
+            "reasoner".into()
+        }
+    }
+
+    #[test]
+    fn a_continuity_pass_reviews_before_the_thesis_and_records_the_review_and_its_mark() {
+        // A debut issues no review: REVIEW is absent and the row read nothing.
+        let d1 = dossier(AssetClass::Stock, strong_financials());
+        let cap = ReviewCapture::default();
+        let (v1, a1) = analyze_holding(&cap, &d1, &rates(), "2026-08-03").unwrap();
+        assert!(cap.reviews.borrow().is_empty());
+        let debut = cap.thesis.borrow().clone().unwrap();
+        assert!(!debut.contains("\nREVIEW\n"), "{debut}");
+        assert_eq!((a1.review.as_deref(), a1.accuracy_read_through), (None, None));
+
+        // A continuity pass reviews once, before the thesis document: REVIEW
+        // renders between ANALYSIS and PRIOR THESIS and the summary item draws
+        // on it; the row carries the review and the store's highest check id.
+        let mut d2 = dossier(AssetClass::Stock, strong_financials());
+        d2.prior_verdict = Some(v1);
+        d2.prior_vintage = Some("2026-08-03T20:00:00Z".into());
+        d2.prior_spot = a1.quick_basis.as_ref().map(|b| b.spot);
+        d2.prior_authoring_close = a1.authoring_close.clone();
+        d2.prior_accuracy_read_through = Some(3);
+        d2.accuracy = Some(crate::portfolio::outcome::SubjectAccuracy {
+            high_water: Some(9),
+            ..Default::default()
+        });
+        let cap = ReviewCapture::default();
+        let (_, a2) = analyze_holding(&cap, &d2, &rates(), "2026-08-04").unwrap();
+        assert_eq!(cap.reviews.borrow().len(), 1);
+        assert!(cap.reviews.borrow()[0].contains("\nREALIZED\n"));
+        let thesis = cap.thesis.borrow().clone().unwrap();
+        let at = |h: &str| thesis.find(h).unwrap_or_else(|| panic!("{h}:\n{thesis}"));
+        assert!(at("\nANALYSIS") < at("\nREVIEW\nThe review of AAPL.\n"));
+        assert!(at("\nREVIEW\n") < at("\nPRIOR THESIS"));
+        assert!(
+            thesis.contains("and how the prior read held up, drawing on REVIEW and PRIOR THESIS"),
+            "{thesis}"
+        );
+        assert_eq!(a2.review.as_deref(), Some("The review of AAPL."));
+        assert_eq!(a2.accuracy_read_through, Some(9));
+
+        // An unreadable store keeps the prior mark: the review read no record.
+        d2.accuracy = None;
+        let (_, a3) = analyze_holding(&ReviewCapture::default(), &d2, &rates(), "2026-08-04").unwrap();
+        assert_eq!(a3.accuracy_read_through, Some(3));
+
+        // An abstention writes no review and carries the prior mark with the
+        // retained document.
+        d2.listing = Some(crate::portfolio::listing::ListingResolution::Conflict {
+            fmp_name: "Zenith Mining Corp".into(),
+        });
+        let cap = ReviewCapture::default();
+        let (v4, a4) = analyze_holding(&cap, &d2, &rates(), "2026-08-04").unwrap();
+        assert!(cap.reviews.borrow().is_empty());
+        assert!(matches!(v4.disposition, VerdictDisposition::InsufficientEvidence { .. }));
+        assert_eq!((a4.review.as_deref(), a4.accuracy_read_through), (None, Some(3)));
+
+        // The pass after it reviews what the abstained row retains.
+        let mut d5 = dossier(AssetClass::Stock, strong_financials());
+        d5.prior_verdict = Some(v4);
+        d5.prior_vintage = Some("2026-08-03T20:00:00Z".into());
+        d5.prior_authoring_close = a4.authoring_close.clone();
+        d5.prior_accuracy_read_through = a4.accuracy_read_through;
+        let cap = ReviewCapture::default();
+        let (_, a5) = analyze_holding(&cap, &d5, &rates(), "2026-08-05").unwrap();
+        assert_eq!(cap.reviews.borrow().len(), 1);
+        assert!(cap.reviews.borrow()[0].contains("A later analysis made no call"));
+        assert_eq!(a5.review.as_deref(), Some("The review of AAPL."));
+    }
+
+    #[test]
+    fn a_role_risk_continuity_pass_reviews_and_records_no_mark() {
+        let d1 = fund_dossier(bond_fund());
+        let (v1, a1) = analyze_holding(&StubAnalyst, &d1, &rates(), "2026-08-03").unwrap();
+        assert!(matches!(v1.disposition, VerdictDisposition::RoleRiskOnly(_)));
+        assert_eq!(a1.review, None);
+        let mut d2 = fund_dossier(bond_fund());
+        d2.prior_verdict = Some(v1);
+        d2.prior_vintage = Some("2026-08-03T20:00:00Z".into());
+        d2.prior_authoring_close = a1.authoring_close.clone();
+        d2.prior_fund_exposure = a1.fund_exposure.clone();
+        d2.accuracy = Some(crate::portfolio::outcome::SubjectAccuracy {
+            high_water: Some(9),
+            ..Default::default()
+        });
+        let cap = ReviewCapture::default();
+        let (_, a2) = analyze_holding(&cap, &d2, &rates(), "2026-08-04").unwrap();
+        let reviews = cap.reviews.borrow();
+        assert_eq!(reviews.len(), 1);
+        assert!(reviews[0].contains("- NAV per share: "), "{}", reviews[0]);
+        assert!(!reviews[0].contains("ACCURACY SCORES"), "{}", reviews[0]);
+        let message = cap.role_risk.borrow().clone().unwrap();
+        assert!(message.find("\nREVIEW\n").unwrap() < message.find("\nPRIOR THESIS").unwrap());
+        assert!(message.contains("drawing on REVIEW and PRIOR THESIS"), "{message}");
+        assert_eq!(a2.review.as_deref(), Some("The review of BND."));
+        // A role read states no price, so its review reads no accuracy record.
+        assert_eq!(a2.accuracy_read_through, None);
+        // The fund basis persists its NAV for the next pass's then side.
+        assert_eq!(a2.fund_exposure.as_ref().map(|b| b.nav), Some(bond_fund().nav));
+    }
+
+    #[test]
+    fn the_review_request_is_a_thinking_prose_call_at_the_interpret_context() {
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let now = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let analysis = crate::portfolio::AnalysisRecord {
+            text: "The analysis.".into(),
+            written: d.analysis_date.clone(),
+            anchor: None,
+        };
+        let input = review::ReviewInput {
+            dossier: &d,
+            rates: &rates(),
+            analysis: &analysis,
+            prior_split: None,
+            price_bridge: Some(1.0),
+            subject: review::ReviewSubject::Priced { engine: &now },
+        };
+        let req = review_request("reasoner", &input);
+        assert_eq!(req.think, Some(true));
+        assert!(req.format_schema.is_none());
+        assert_eq!(req.keep_alive, Some(KEEP_ALIVE_RESIDENT));
+        assert_eq!(req.messages.len(), 2);
+        assert_eq!(req.messages[0].role, "system");
+        assert!(req.messages[1].content.contains("The review runs 400 to 900 words."));
+        assert_eq!(input.stage(), "review AAPL");
+    }
+
     // ---- The engine's realized data + prompt rendering ----------------------------
 
     #[test]
@@ -9618,6 +9968,7 @@ pub(crate) mod tests {
                 tech_pre_flag: None,
                 narrative: None,
                 prior_split: None,
+                review: None,
             }
         }
         let debut_req = thesis_request("qwen", &input(&stock, &engine_output));
@@ -9742,6 +10093,7 @@ pub(crate) mod tests {
             rates: rates_static(),
             analysis: analysis_record(""),
             prior_split: None,
+            review: None,
         });
         assert!(role_req.format_schema.is_none() && role_req.think == Some(true));
         assert_eq!(role_req.messages[0].content, role_risk_system_prompt());
@@ -9830,6 +10182,7 @@ pub(crate) mod tests {
                 tech_pre_flag: None,
                 narrative: None,
                 prior_split: None,
+                review: None,
             }
         }
         let user = thesis_user_prompt(&input(&d, &engine_output, Some(&flags)));
@@ -10013,6 +10366,7 @@ pub(crate) mod tests {
             pre_profit: Some(&overlay),
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(user.contains("\nPRE-PROFIT EXECUTION AND FINANCING\n"), "{user}");
         // The states render as data, with no arm narration and no binding
@@ -10134,6 +10488,7 @@ pub(crate) mod tests {
             pre_profit: Some(&overlay),
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(
             interp.contains(
@@ -10343,6 +10698,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         assert!(interp.contains("covering 100% of the held shares; net delta -70% of the held shares"), "{interp}");
         assert!(interp.contains("- SHORT CALL — strike 220.00"), "{interp}");
@@ -10481,6 +10837,7 @@ pub(crate) mod tests {
             pre_profit: None,
             tech_pre_flag: None,
             narrative: None,
+            review: None,
         });
         for absent in ["\nPOSITION\n", "Shares held:", "Cost basis:", "Market value:", "Unrealized"] {
             assert!(!interp.contains(absent), "{absent}: {interp}");

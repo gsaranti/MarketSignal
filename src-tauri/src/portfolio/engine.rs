@@ -111,8 +111,8 @@ const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 pub const GRADE_PARAMETER_VERSION: &str = "grade-v2.3";
 
 /// What a grade-parameter boundary changed for a persisted record — the meaning a
-/// stamp mismatch carries to its consumers (the what-changed delta row and the
-/// continuity NOTE), so each names the actual change rather than a generic band
+/// stamp mismatch carries to its consumer (the self-review's method-change
+/// line), so it names the actual change rather than a generic band
 /// recalibration a holding may not have been touched by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GradeParameterChange {
@@ -132,10 +132,8 @@ pub(crate) enum GradeParameterChange {
 /// leave the other's records meaning exactly what they did. The scenario-target
 /// stamp history reads the same split — the fund form swaps the consensus
 /// ladder for the exposure composite — so one branch key serves both
-/// ([`target_parameter_change`]).
-// Constructed by the self-review's parameter-boundary line once that item
-// lands (`docs/portfolio-workflow.md` §Step 6b); the engine readers stay.
-#[allow(dead_code)]
+/// ([`target_parameter_change`]). The self-review's parameter-boundary line
+/// reads the prior verdict's own branch (`docs/portfolio-workflow.md` §Step 6b).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GradeBranch {
     Stock,
@@ -325,8 +323,8 @@ const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
 pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v7";
 
 /// The horizons a scenario-target parameter boundary can have moved on one
-/// branch — the meaning a target-stamp mismatch carries to its consumers (the
-/// what-changed delta row and the continuity NOTE), so each names the horizons
+/// branch — the meaning a target-stamp mismatch carries to its consumer (the
+/// self-review's method-change line), so it names the horizons
 /// the boundary could actually have moved rather than "the targets" (the
 /// 2026-08-24 review's Codex I11, the grade stamp's [`GradeParameterChange`]
 /// mirrored onto the target axis).
@@ -363,10 +361,10 @@ impl TargetHorizons {
         !self.three_month && !self.twelve_month && !self.three_year
     }
 
-    /// The prompt's name for the moved targets — one vocabulary for the delta
-    /// row and the NOTE, the horizons in window order. Never rendered empty:
+    /// The name for the moved targets, the horizons in window order — the
+    /// self-review's method-change line renders it as price bands. Never
+    /// rendered empty:
     /// [`target_parameter_change`] returns `None` where no horizon moved.
-    #[allow(dead_code)] // read by the self-review's parameter-boundary line once it lands
     pub(crate) fn label(self) -> &'static str {
         match (self.three_month, self.twelve_month, self.three_year) {
             (false, false, false) => "no target",
@@ -1007,7 +1005,8 @@ pub struct PriorEngineRead<'a> {
 /// tier and hurdle-state value beside this run's, resolved at exact `then !=
 /// now`; and the grade- and scenario-target parameter boundaries named for what
 /// they changed on the prior's branch, absent where they changed nothing. The
-/// accuracy record rides beside it when outcome learning lands.
+/// accuracy record rides beside it in the review's realized block
+/// ([`crate::portfolio::review`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RealizedEngineData {
     /// The price now; `None` where the run served no usable spot.

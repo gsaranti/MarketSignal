@@ -112,6 +112,7 @@ fn thesis_input<'a>(f: &'a Fixture, d: &'a super::dossier::HoldingDossier) -> Th
         tech_pre_flag: None,
         narrative: None,
         prior_split: None,
+        review: None,
     }
 }
 
@@ -289,6 +290,7 @@ fn synthetic_role_risk_input(fx: &SyntheticRoleRisk) -> RoleRiskInput<'_> {
         rates: rates(),
         analysis: analysis_of(&fx.dossier, fx.research),
         prior_split: None,
+        review: None,
     }
 }
 
@@ -309,9 +311,15 @@ fn synthetic_role_risk_verdict(fx: &SyntheticRoleRisk) -> super::RoleRiskVerdict
 struct RoleRiskCapture {
     system: std::cell::RefCell<Option<String>>,
     user: std::cell::RefCell<Option<String>>,
+    review: std::cell::RefCell<Option<(String, String)>>,
 }
 
 impl HoldingAnalyst for RoleRiskCapture {
+    fn review(&self, input: &super::review::ReviewInput) -> anyhow::Result<String> {
+        let prompt = super::review::review_prompt(input);
+        *self.review.borrow_mut() = Some((prompt.system, prompt.user));
+        Ok(super::review::stub_review(input))
+    }
     fn interpret(&self, input: &ThesisInput) -> anyhow::Result<PricedModelArm> {
         pipeline::StubAnalyst.interpret(input)
     }
@@ -335,10 +343,30 @@ impl HoldingAnalyst for RoleRiskCapture {
 /// then the same fund with that verdict as its prior, the system and user
 /// messages captured on the second run.
 fn synthetic_role_risk_continuity_messages() -> (String, String) {
+    let capture = synthetic_role_risk_second_run();
+    (
+        capture.system.take().expect("the system prompt was captured"),
+        capture.user.take().expect("the user message was captured"),
+    )
+}
+
+/// The synthetic case's continuity review message, captured on the same
+/// second run.
+fn synthetic_role_risk_review_messages() -> (String, String) {
+    synthetic_role_risk_second_run()
+        .review
+        .take()
+        .expect("the review message was captured")
+}
+
+/// The synthetic case's second run: a stub first run on 2026-09-03, its row's
+/// anchor and fund basis loaded as the prior, captured on 2026-09-17.
+fn synthetic_role_risk_second_run() -> RoleRiskCapture {
     let fx = synthetic_role_risk_fixture();
     let rates = pipeline::tests::rates();
-    let (first, _) = pipeline::analyze_holding(&pipeline::StubAnalyst, &fx.dossier, &rates, "2026-09-03")
-        .expect("the stub's first run");
+    let (first, first_audit) =
+        pipeline::analyze_holding(&pipeline::StubAnalyst, &fx.dossier, &rates, "2026-09-03")
+            .expect("the stub's first run");
     assert!(
         matches!(first.disposition, VerdictDisposition::RoleRiskOnly(_)),
         "the synthetic fund must take the role/risk branch: {:?}",
@@ -347,6 +375,8 @@ fn synthetic_role_risk_continuity_messages() -> (String, String) {
     let mut second = fx.dossier.clone();
     second.prior_verdict = Some(first);
     second.prior_vintage = Some("2026-09-03T14:00:00Z".into());
+    second.prior_authoring_close = first_audit.authoring_close.clone();
+    second.prior_fund_exposure = first_audit.fund_exposure.clone();
     second.position_delta = super::PositionDelta {
         change: super::PositionChange::Unchanged,
         prior_quantity: Some(10.0),
@@ -354,10 +384,7 @@ fn synthetic_role_risk_continuity_messages() -> (String, String) {
     };
     let capture = RoleRiskCapture::default();
     let _ = pipeline::analyze_holding(&capture, &second, &rates, "2026-09-17").expect("the second run");
-    (
-        capture.system.take().expect("the system prompt was captured"),
-        capture.user.take().expect("the user message was captured"),
-    )
+    capture
 }
 
 #[test]
@@ -563,6 +590,7 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
             rates: rates(),
             analysis: analysis_of(d, "No research findings."),
             prior_split: None,
+            review: None,
         })
     };
     let base = render(&fund);
@@ -881,7 +909,8 @@ pub(crate) const GAP_ROUTING_WORDS: [&str; 6] =
 fn assert_part2_headings_render(label: &str, part1: &str, part2: &str) {
     for heading in [
         "FETCHED VALUES", "COMPUTED", "MARKET ANALYSIS", "ANALYSIS", "PRIOR THESIS", "CLASS",
-        "EXPOSURE TILT", "RISK PROFILE", "EVIDENCE GAPS", "SOFT FORENSIC FLAGS",
+        "EXPOSURE TILT", "RISK PROFILE", "EVIDENCE GAPS", "SOFT FORENSIC FLAGS", "REVIEW",
+        "PRIOR POSITION", "REALIZED",
     ] {
         if part2.contains(heading) {
             assert!(
@@ -1165,6 +1194,7 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
             "RISK PROFILE\n", "EVIDENCE GAPS\n", "COMPUTED\n", "MARKET ANALYSIS\n", "ANALYSIS\n",
         ];
         if !debut {
+            sections.push("REVIEW\n");
             sections.push("PRIOR THESIS (written 2026-09-03)\n");
         }
         let mut last = 0;
@@ -1202,7 +1232,11 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
         for item in items {
             assert!(part2.contains(item), "{label}: Part 2 lacks {item}\n{part2}");
         }
-        assert_eq!(part2.contains(", and what changed since the prior analysis, drawing on PRIOR THESIS"), !debut, "{label}: {part2}");
+        assert_eq!(
+            part2.contains(", and what changed since the prior analysis and how the prior read held up, drawing on REVIEW and PRIOR THESIS"),
+            !debut,
+            "{label}: {part2}"
+        );
         assert!(!part2.contains("RETURN SHAPE") && !part2.lines().any(|l| l.starts_with('{')), "{label}: {part2}");
         assert_part2_headings_render(label, part1, part2);
         for absent in [
@@ -1234,6 +1268,117 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
     );
     assert!(!cont_user.contains("A share split since this document was written"), "{cont_user}");
     assert!(!debut_user.contains("PRIOR THESIS"), "{debut_user}");
+}
+
+/// The self-review message on a continuity run, on every branch the harness
+/// carries — each priced fixture (stock and priced fund) over its
+/// hand-written prior, and the synthetic role/risk fund over the pipeline's
+/// own second run: two marked parts, Part 1 in the docs' page order with no
+/// instruction, Part 2 the six items naming only sections Part 1 renders and
+/// the length band, and no banned word anywhere (`docs/portfolio-workflow.md`
+/// §Step 6e).
+#[test]
+fn continuity_review_messages_are_two_parts_with_no_app_concept() {
+    // Each message beside the model-authored prose it carries verbatim (the
+    // prior document, the analysis), blanked before the lexicon scan — the
+    // scan reads the app's own sentences.
+    let mut messages: Vec<(String, bool, String, String, Vec<String>)> = Vec::new();
+    for f in fixtures() {
+        let VerdictDisposition::Priced(_) = &f.disposition else { continue };
+        let d = prompt_examples::continuity_dossier(&f);
+        let analysis = analysis_of(&d, &f.research_combined);
+        let prompt = super::review::review_prompt(&super::review::ReviewInput {
+            dossier: &d,
+            rates: rates(),
+            analysis: &analysis,
+            prior_split: None,
+            price_bridge: Some(1.0),
+            subject: super::review::ReviewSubject::Priced { engine: &f.engine_output },
+        });
+        let authored = vec![
+            d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).unwrap_or_default().to_string(),
+            f.research_combined.clone(),
+        ];
+        messages.push((f.symbol.clone(), true, prompt.system, prompt.user, authored));
+    }
+    assert!(messages.len() >= 2, "the fixed set carries a stock and a priced fund");
+    let (system, user) = synthetic_role_risk_review_messages();
+    // The stub first run's action rationale stands where the model's would.
+    let stub_rationale = "Stub action: the grade-mapped rung inside the engine set.".to_string();
+    messages.push(("BND".into(), false, system, user, vec![stub_rationale]));
+    for (label, priced, system, user, authored) in &messages {
+        let (part1, part2) = user
+            .split_once("\n======== PART 2: TASK ========\n")
+            .unwrap_or_else(|| panic!("{label}: no Part 2 marker\n{user}"));
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{label}: {part1}");
+        let mut sections = vec!["FETCHED VALUES\n", "PRIOR POSITION\n", "PRIOR THESIS (written ", "ANALYSIS\n", "REALIZED\n"];
+        if *priced {
+            sections.extend(["PRICE\n", "ACCURACY SCORES\n", "CHECKS SINCE THE PRIOR ANALYSIS\n", "COMPUTED READS\n"]);
+        }
+        let mut last = 0;
+        for section in sections {
+            let i = part1
+                .find(&format!("\n{section}"))
+                .unwrap_or_else(|| panic!("{label}: Part 1 lacks {section}\n{part1}"));
+            assert!(i > last, "{label}: {section} out of order\n{part1}");
+            last = i;
+        }
+        // The prior analysis stays out: this run's analysis already folds it in.
+        assert!(!part1.contains("\nPRIOR ANALYSIS"), "{label}: {part1}");
+        // A role read carries no accuracy record.
+        assert_eq!(part1.contains("ACCURACY SCORES"), *priced, "{label}: {part1}");
+        assert!(!part1.contains("Return "), "{label}: Part 1 instructs\n{part1}");
+        assert!(!part1.to_lowercase().contains("your "), "{label}: Part 1 addresses the model\n{part1}");
+        let mut last = 0;
+        for item in ["\n1. ", "\n2. ", "\n3. Whether the ", "\n4. Where the prior read was right or wrong, and why.", "\n5. What to revise.", "\n6. What should change in how this holding is analyzed."] {
+            let i = part2.find(item).unwrap_or_else(|| panic!("{label}: Part 2 lacks {item}\n{part2}"));
+            assert!(i > last, "{label}: {item} out of order\n{part2}");
+            last = i;
+        }
+        assert!(part2.contains("The review runs 400 to 900 words."), "{label}: {part2}");
+        assert!(!part2.lines().any(|l| l.starts_with('{')), "{label}: a shape line\n{part2}");
+        assert_part2_headings_render(label, part1, part2);
+        let app_text = authored
+            .iter()
+            .filter(|t| !t.is_empty())
+            .fold(user.clone(), |text, prose| text.replace(prose.as_str(), ""));
+        for (l, text) in [("system", system.as_str()), ("user", app_text.as_str())] {
+            let hits = banned_hits(text);
+            assert!(hits.is_empty(), "{label} {l} prompt carries {hits:?}\n{text}");
+        }
+        assert_no_routing_words(label, &app_text);
+    }
+
+    // After an abstention the review reads what the row retains: the
+    // abstention's own reason is the app's card text and never renders.
+    let tsla = fixtures().into_iter().find(|f| f.symbol == "TSLA").expect("TSLA");
+    let mut d = prompt_examples::continuity_dossier(&tsla);
+    let doc = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).unwrap().to_string();
+    let reason = "expense ratio missing — a floor-bearing fund-analog input (etf/info)";
+    d.prior_verdict.as_mut().unwrap().disposition = VerdictDisposition::InsufficientEvidence {
+        reason: reason.into(),
+        prior_thesis_document: Some(doc.clone()),
+    };
+    let analysis = analysis_of(&d, &tsla.research_combined);
+    let prompt = super::review::review_prompt(&super::review::ReviewInput {
+        dossier: &d,
+        rates: rates(),
+        analysis: &analysis,
+        prior_split: None,
+        price_bridge: Some(1.0),
+        subject: super::review::ReviewSubject::Priced { engine: &tsla.engine_output },
+    });
+    let (part1, part2) = prompt
+        .user
+        .split_once("\n======== PART 2: TASK ========\n")
+        .expect("two parts");
+    assert!(part1.contains("A later analysis made no call, so no action"), "{part1}");
+    for leak in [reason, "floor-bearing", "etf/info", "fund-analog"] {
+        assert!(!prompt.user.contains(leak), "the abstention reason leaks `{leak}`\n{}", prompt.user);
+    }
+    assert_part2_headings_render("TSLA abstained", part1, part2);
+    let app_text = prompt.user.replace(doc.as_str(), "").replace(tsla.research_combined.as_str(), "");
+    assert!(banned_hits(&app_text).is_empty(), "{:?}\n{app_text}", banned_hits(&app_text));
 }
 
 /// The action message on the synthetic role/risk verdict is the v41 packet's

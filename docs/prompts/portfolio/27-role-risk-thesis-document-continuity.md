@@ -1,9 +1,9 @@
 # Role/risk thesis document — continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v75`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, on a continuity run over a stub first run of 2026-09-03.
-The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.
+The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the review under REVIEW, the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.
 The analysis is the one no-write-up sentence: the stub run issues no research call and writes nothing, so consolidation spends no analysis call.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3699 chars — the messages and tools as serialized |
+| Prompt material | 3867 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ review. Part 1 of the message gives the inputs. Part 2 says what the document co
 how to return it.
 ~~~~
 
-## User message (3336 chars)
+## User message (3501 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -94,6 +94,10 @@ A market-level analysis dated 2026-09-16, followed by the stance of the 3 most r
 ANALYSIS
 No research write-up this run.
 
+REVIEW
+[stub: the review of the prior action on BND — each trigger against what happened, as the review
+call returned it]
+
 PRIOR THESIS (written 2026-09-03)
 Role: bond fund supplying United States exposure; held for its portfolio role.
 
@@ -118,8 +122,8 @@ ANALYSIS and MARKET ANALYSIS.
 
 3. The triggers for trimming or selling — each a concrete measure, a level and a period.
 
-4. A summary paragraph — the read as a whole, and what changed since the prior analysis, drawing on
-PRIOR THESIS.
+4. A summary paragraph — the read as a whole, and what changed since the prior analysis and how the
+prior read held up, drawing on REVIEW and PRIOR THESIS.
 
 The document states no expected price and no conviction. It runs 900 to 1,800 words.
 ~~~~

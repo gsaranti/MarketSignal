@@ -65,6 +65,7 @@ pub mod pipeline;
 pub mod pre_profit;
 pub mod quick_check;
 pub mod research;
+pub mod review;
 pub mod sector;
 pub mod soft_forensic;
 pub mod store;
@@ -1519,6 +1520,20 @@ pub struct HoldingAudit {
     /// survives the exit; `None` on a not-rated row, the listing guard and a
     /// debut abstention.
     pub analysis: Option<AnalysisRecord>,
+    /// This run's **review** (`docs/portfolio-workflow.md` §Step 6e): the
+    /// self-review's prose over the prior position, read as text, validated
+    /// by nothing and read by this run's thesis-document message alone.
+    /// `None` on a debut and on every exit before the review.
+    pub review: Option<String>,
+    /// The highest episode-store check id the review behind this row's thesis
+    /// document read (`docs/portfolio-analysis.md` §Outcome learning): the next
+    /// review reads a score as read where the check that last moved it is at
+    /// or below this mark, and lists the checks above it as new. A pass whose
+    /// review read the accuracy record writes the store's highest id, or keeps
+    /// the prior mark where the store could not be read; an abstention carries
+    /// the prior row's with the retained document; a debut, a `role_risk_only`
+    /// holding and a not-rated row write `None` — they read none.
+    pub accuracy_read_through: Option<i64>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -2335,7 +2350,22 @@ pub struct HoldingAudit {
 /// feed carries one. The run-level M&A feed pinned on the checkpoint header
 /// moves the trail to `checkpoint-v23`, and data health's count of the walk's
 /// gap moves the archive to format 19.
-pub const PROMPT_VERSION: &str = "portfolio-v74";
+/// `portfolio-v75` (the self-review): on a continuity run the review call
+/// reads HOLDING, FETCHED VALUES, PRIOR POSITION — the prior run's date and
+/// price then, its action and rationale, its conviction and its three
+/// expected prices each with its horizon date, every price on today's basis —
+/// PRIOR THESIS, ANALYSIS and REALIZED — the price now with its move and the
+/// path since, each prior expected price scored once its horizon passed, the
+/// holding's accuracy scores with the read word, the checks written since
+/// the prior analysis, and the computed reads then and now with any method
+/// change — and writes the review as prose; a `role_risk_only` holding's
+/// review reads its prior action and the fund's price, NAV, expense and
+/// exposure reads then and now. Both thesis-document messages carry REVIEW
+/// between ANALYSIS and PRIOR THESIS, and the summary item asks how the prior
+/// read held up. The audit's review and its accuracy read-through mark, and
+/// the fund exposure basis's NAV, move the trail to `checkpoint-v24` and the
+/// archive to format 21.
+pub const PROMPT_VERSION: &str = "portfolio-v75";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

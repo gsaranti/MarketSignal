@@ -1,11 +1,12 @@
-# Thesis document — stock, continuity run
+# Self-review — stock, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v75`; regenerate rather than edit (`docs/prompts/README.md`).*
 
-Holding: TSLA, on a continuity run over the prior document of 2026-09-02.
-The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
-On a continuity run the prior document renders verbatim as PRIOR THESIS under its date, and the summary item asks what changed since it; the document is never rewritten.
-The prior here is attempt 6's persisted verdict, its model arm re-shaped by hand into a thesis document and an appendix, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's and its anchor bar; attempt 6 wrote no second run.
+Holding: TSLA, on a continuity run over the prior position of 2026-09-02.
+The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
+REALIZED carries the price now with its move and the path since, each prior expected price at its horizon date, the accuracy scores with whether the prior analysis read each, the checks written since the prior analysis, and the computed reads then and now.
+The accuracy record here is synthetic, layered for this example alone: four earlier forecasts, two checks the prior analysis read and two this run wrote after it — one scored, one with no forecast at its horizon — so the three-month scores read both ways and the lines show both outcomes.
+The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's; its twelve-month price has not reached its date.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 Under FETCHED VALUES, the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the statements, the quote and the closes are the fixed set's.
 
@@ -13,24 +14,23 @@ Under FETCHED VALUES, the issuer line, the 52-week range, the 8-K list, the shor
 
 | Field | Value |
 | --- | --- |
-| Workflow step | `docs/portfolio-workflow.md` §Step 6f |
-| Stage label | `thesis TSLA` |
+| Workflow step | `docs/portfolio-workflow.md` §Step 6e |
+| Stage label | `review TSLA` |
 | Model | the roster's resident reasoner |
 | Thinking | on (`think: true`) |
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 12074 chars — the messages and tools as serialized |
+| Prompt material | 11210 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
-You are an equity analyst writing the thesis document for one holding in a portfolio review. Part 1
-of the message gives the inputs. Part 2 says what the document covers, in order, and how to return
-it.
+You are an investment analyst reviewing the prior position on one holding for a portfolio review.
+Part 1 of the message gives the inputs. Part 2 says what the review covers and how to return it.
 ~~~~
 
-## User message (11686 chars)
+## User message (10836 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -45,7 +45,7 @@ millions; a yield or a return as a percentage); none is computed, and a cell the
 reads (gap).
 Profile: name Tesla, Inc.; exchange NASDAQ; sector Consumer Cyclical; industry Auto - Manufacturers.
 Quote: 358.97 per share (the live print, undated), 52-week low 215.38 and high 430.76 as served.
-Daily closes: 2 sessions from 2026-09-02 to 2026-09-14; close on the prior analysis date 2026-09-02:
+Daily closes: 3 sessions from 2026-09-01 to 2026-09-14; close on the prior analysis date 2026-09-02:
 348.20 (2026-09-02).
 8-K filings of the trailing twelve months, newest first (filing date: items): 2026-07-23: 2.02,
 9.01; 2026-05-15 (8-K/A): 5.02; 2026-04-22: 2.02, 9.01.
@@ -91,79 +91,18 @@ Other 28.0B, China 21.0B; FY2024 (period end 2024-12-31) United States 47.0B, Ot
 21.5B.
 Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
 
-COMPUTED
-The computed reads follow under their labels, up to MARKET ANALYSIS; each is derived from the
-fetched data by fixed formulas.
-
-METRICS
-Flow metrics (net margin, gross margin, revenue growth, P/E, P/S) are on a TTM (four trailing
-quarters) basis. Balance-sheet metrics (debt / equity, P/B) are from FMP's latest quarterly balance
-sheet.
-- net margin: 0.0368 — a fraction, never a percent (0.16 means 16%)
-- gross margin: 0.1885 — a fraction, never a percent (0.16 means 16%)
-- year-over-year revenue growth: 0.1175 — a fraction, never a percent (0.16 means 16%)
-- debt / equity ratio: 0.1076 — a ratio (1.5 means debt is 1.5 times equity)
-- daily realized return volatility: 0.0320 — a daily fraction, never a percent (0.02 means 2% per
-day)
-- trailing price return: -0.0309 — a fraction, never a percent (0.16 means 16%)
-- price / earnings multiple: 368.8658 — a multiple (25 means 25x)
-- price / sales multiple: 13.5914 — a multiple (25 means 25x)
-- price / book multiple: 16.2142 — a multiple (25 means 25x)
-
-SCORES
-Four scores from 0 to 100, higher is better on every axis: quality; valuation, where higher means
-more attractive; momentum; risk, where higher means more resilient. The grade is a letter derived
-from the quality, valuation and risk scores.
-quality 10, valuation 33, momentum 45, risk 64. Grade F. Risk tier: high.
-
-PRICE BANDS (USD)
-- three-month: bear 229.41 / base 310.01 / bull 390.61. Method: base = the twelve-month base price
-return prorated to three months; bear and bull = ±26.0% (two standard deviations of daily volatility
-over 63 sessions, capped at 26%)
-- twelve-month: bear 62.04 / base 163.12 / bull 911.74. Method: consensus forward EPS (low / mid /
-high) × P/E multiples at the 75th / 50th / 25th percentile of their spread to the 10-year Treasury
-over the last 12 quarterly observations
-- three-year: bear 62.04 / base 163.12 / bull 911.74. Method: the twelve-month drivers held at flat
-growth for two further years (a single forward consensus row, or no definable growth) at the same
-multiples — an extrapolation that assumes today's rate and spread regime holds
-- Notes: the driver blends two consensus rows.
-- What the current price implies, at each scenario's multiple: EPS growth versus the trailing print
-of +11.2% at the bull multiple, +325.8% at the base multiple, +634.8% at the bear multiple.
-Assumptions: rate-anchored (spread-percentile) multiples, 10-year Treasury 4.97%.
-
-CAPITAL EFFICIENCY
-The computed twelve-month total return in each scenario (the move from the current price to the
-scenario price, plus forward income per share, as a fraction of the current price) and the hurdle
-rate it is measured against, with the read: clears when even the bear case clears the hurdle, fails
-when even the bull case misses it, indeterminate otherwise.
-bear -82.6% / base -54.3% / bull +155.7%; hurdle 12.7%; read: indeterminate.
-
-OPTIONS ACTIVITY
-put/call volume 0.961, put/call open interest 1.090, implied volatility 0.435, IV skew 0.000 (mean
-put IV minus mean call IV, in IV's decimal unit; positive means puts are richer).
-
-SHORT INTEREST (FINRA biweekly file, settlement 2026-08-31; the file lags its settlement by about 7
-business days)
-80000000 shares short (+5.3% vs the prior settlement's 76000000), average daily volume 95000000,
-days to cover 0.84
-
-MARKET ANALYSIS
-A market-level analysis dated 2026-09-16, followed by the stance of the 3 most recent analyses.
-## Market Signal Thesis
-
-[stub: the latest report's Market Signal Thesis section]
-
-## Investment Strategy
-
-[stub: the latest report's Investment Strategy section]
-
-- 2026-09-16: thesis bearish, risk posture risk-off
-- 2026-08-30: thesis mixed, risk posture mixed
-- 2026-08-25: thesis mixed, risk posture mixed
-
-ANALYSIS
-[stub: this run's analysis — the research consolidated across the topics, as the analysis call
-returned it]
+PRIOR POSITION
+The position stated at the prior analysis: its date, the price then, the action with its rationale,
+the conviction, and the expected share price at each horizon with the horizon's date.
+Date: 2026-09-02.
+Price then: $348.20 per share.
+Action: trim, chosen in the prior analysis.
+Rationale: [rationale removed from the fixture: the run's sentence referenced whether the position
+was up or down]
+Conviction: low.
+Expected price at three months: none stated (2026-12-02).
+Expected price at twelve months: $145.00 by 2027-09-02.
+Expected price at three years: none stated (2029-09-02).
 
 PRIOR THESIS (written 2026-09-02)
 Thesis: Investment thesis rests on Robotaxi monetization within 12-24 months justifying premium
@@ -202,28 +141,78 @@ four fatalities). My bear target ($92) applies a distress multiple to core auto 
 credits. Bull case ($398) requires successful Robotaxi launch with approved commercial operations by
 Q1-CY27; this is possible but not probable given regulatory and technical execution risks.
 
+ANALYSIS
+[stub: this run's analysis — the research consolidated across the topics, as the analysis call
+returned it]
+
+REALIZED
+What has happened since the prior analysis, computed from the fetched prices and the stored records,
+under the labels below.
+
+PRICE
+Now: $358.97 per share, +3.1% since the prior analysis (from the close of $348.20 on 2026-09-01).
+Closes since the prior analysis: high $358.97 on 2026-09-14, low $348.20 on 2026-09-02.
+
+EXPECTED PRICES
+Each expected price under PRIOR POSITION at its horizon date: once the date has passed, the close on
+it — or the last close within 5 sessions before it — and the score, 100 × (1 − |expected − close| ÷
+close), floored at 0; before it, not reached, the path so far under PRICE.
+- three months: none stated.
+- twelve months (2027-09-02): not reached.
+- three years: none stated.
+
+ACCURACY SCORES
+How the expected prices stated on this holding have scored once their horizon dates passed, at each
+horizon, for the analyst's prices and for the computed base values: the mean of the per-check
+scores, each 100 × (1 − |expected − close| ÷ close), floored at 0, so 0 to 100; no score yet before
+the first check. Each score names the date of the check that last moved it and whether the prior
+analysis read it.
+- three months: analyst 92.9 over 3 checks, last moved 2026-09-16, not read by the prior analysis;
+computed base 93.3 over 2 checks, last moved 2026-08-04, read by the prior analysis.
+- twelve months: analyst no score yet; computed base no score yet.
+- three years: analyst no score yet; computed base no score yet.
+
+CHECKS SINCE THE PRIOR ANALYSIS
+Every line landed after the prior analysis was written; none was read before. One line per forecast
+and horizon, newest horizon date first: the forecast's date, the horizon and its date, the close
+read, and each expected price with its score.
+- forecast of 2026-06-10, three months (2026-09-10): not scored — no price was stated at this
+horizon.
+- forecast of 2026-06-08, three months (2026-09-08): close $352.40 on 2026-09-08; analyst $380.00,
+score 92.2; computed base none stated.
+
+COMPUTED READS
+The computed reads at the prior analysis beside this run's, then → now; the prior price bands on
+today's price basis.
+- grade: F → F.
+- scores (0 to 100, higher is better; valuation higher means more attractive, risk higher means more
+resilient): quality 10 → 10; valuation 33 → 33; momentum 45 → 45; risk 64 → 64.
+- risk tier: high → high.
+- capital efficiency: indeterminate → indeterminate.
+- price bands (USD, bear / base / bull): three-month 229.41 / 310.01 / 390.61 → 229.41 / 310.01 /
+390.61; twelve-month 62.04 / 163.12 / 911.74 → 62.04 / 163.12 / 911.74; three-year 62.04 / 163.12 /
+911.74 → 62.04 / 163.12 / 911.74.
+- metrics: net margin 3.7% → 3.7%; gross margin 18.9% → 18.9%; revenue growth 11.8% → 11.8%;
+debt/equity 0.11 → 0.11; return volatility 3.2% → 3.2%; trailing return -3.1% → -3.1%; P/E 368.87 →
+368.87; P/S 13.59 → 13.59; P/B 16.21 → 16.21.
+
 ======== PART 2: TASK ========
 
-Write the thesis document for this holding as plain text — no code fence, no JSON, no heading before
-the first line. It covers, in this order:
+Write the review of the prior position as plain text — no code fence, no JSON, no heading before the
+first line. It covers, in this order:
 
-1. The thesis — the investment case, from FETCHED VALUES, COMPUTED, ANALYSIS and MARKET ANALYSIS.
+1. Each expected price under PRIOR POSITION against what happened, from REALIZED.
 
-2. The key drivers — what the thesis depends on.
+2. Each falsifier and each trigger the document under PRIOR THESIS names — whether the falsifier
+tripped or the trigger fired, by the numbers under FETCHED VALUES, ANALYSIS and REALIZED.
 
-3. The bear, base and bull scenarios — the conditions that produce each and your probability for it;
-the three sum to about 100 percent.
+3. Whether the thesis survives.
 
-4. The falsifiers — the observations that would show the thesis wrong — and the triggers — the
-conditions on which the position would be added to, trimmed or sold — each a concrete measure, a
-level and a period, a trigger stating the direction of the position change.
+4. Where the prior read was right or wrong, and why.
 
-5. The expected share price at three months, twelve months and three years, and your conviction in
-the read as a whole as high, medium or low, each argued in the text; the price bands under COMPUTED
-are evidence, not bounds. Where you state no price at a horizon, or no conviction, say so.
+5. What to revise.
 
-6. A summary paragraph — the financial read, why those prices and that conviction, and what changed
-since the prior analysis, drawing on PRIOR THESIS.
+6. What should change in how this holding is analyzed.
 
-The document runs 900 to 1,800 words.
+The review runs 400 to 900 words.
 ~~~~

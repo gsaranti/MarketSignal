@@ -1,10 +1,10 @@
 # Thesis document — priced fund, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v75`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, on a continuity run over the prior document of 2026-09-02; the fixture carries no fund context, so the FUND block does not render.
 The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
-The fund's continuity shape carries the same PRIOR THESIS section and continuity clause as the stock's.
+The fund's continuity shape carries the same REVIEW and PRIOR THESIS sections and continuity clause as the stock's.
 The prior here is attempt 6's persisted verdict, its model arm re-shaped by hand into a thesis document and an appendix, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's and its anchor bar; attempt 6 wrote no second run.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 
@@ -19,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7605 chars — the messages and tools as serialized |
+| Prompt material | 7765 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ Part 1 of the message gives the inputs. Part 2 says what the document covers, in
 return it.
 ~~~~
 
-## User message (7243 chars)
+## User message (7400 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -105,6 +105,10 @@ ANALYSIS
 [stub: this run's analysis — the research consolidated across the topics, as the analysis call
 returned it]
 
+REVIEW
+[stub: this run's review — the prior position against what happened since, as the review call
+returned it]
+
 PRIOR THESIS (written 2026-09-02)
 Thesis: SPMO delivers momentum-alpha by rotating S&P 500 into price-momentum leaders, providing
 tactical outperformance during trending markets but vulnerable to factor mean-reversion in rotation
@@ -162,7 +166,7 @@ the read as a whole as high, medium or low, each argued in the text; the price b
 are evidence, not bounds. Where you state no price at a horizon, or no conviction, say so.
 
 6. A summary paragraph — the financial read, why those prices and that conviction, and what changed
-since the prior analysis, drawing on PRIOR THESIS.
+since the prior analysis and how the prior read held up, drawing on REVIEW and PRIOR THESIS.
 
 The document runs 900 to 1,800 words.
 ~~~~
