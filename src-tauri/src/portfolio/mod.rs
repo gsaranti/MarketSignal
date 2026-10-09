@@ -65,6 +65,7 @@ pub mod pipeline;
 pub mod pre_profit;
 pub mod quick_check;
 pub mod research;
+pub mod sector;
 pub mod soft_forensic;
 pub mod store;
 
@@ -95,12 +96,6 @@ pub fn holding_step_key(symbol: &str) -> String {
 /// rather than a second retention path, and the number bounds the sidebar's
 /// `list_run_summaries` blob parse as well as disk.
 pub const PORTFOLIO_RUN_RETENTION: u32 = 30;
-
-/// The Step-6a semantic continuity retrieval's depth — the top-k cosine hits a
-/// holding's dossier recalls from the Portfolio memory partition's `summary`
-/// rows (`docs/portfolio-workflow.md` §Step 6a). Drafted, calibratable
-/// (`docs/portfolio-analysis.md` §Starting parameters).
-pub const SEMANTIC_RECALL_TOP_K: usize = 3;
 
 /// How many recent Market Signal reports load as the house-view context for a
 /// holding's dossier (`docs/portfolio-analysis.md` — the report is a read-only shared
@@ -456,12 +451,12 @@ impl Action {
     }
 }
 
-/// How a verdict's action came to be — the canonical two-value vocabulary from
-/// `docs/portfolio-analysis.md` §Outcome learning: **`model-chosen`** (a model
-/// pass actually chose it — every fresh verdict) or **`rule-demoted`** (an over-age
-/// carried add-family action rule-demoted to *hold* at the roll-up — a labeled
-/// rule-based weaken that stays out of the pooled outcome cohorts, so the hold
-/// cohort measures only holds a model actually chose; §Triggering).
+/// How a verdict's action came to be — the canonical two-value vocabulary:
+/// **`model-chosen`** (a model pass actually chose it — every fresh verdict) or
+/// **`rule-demoted`** (an over-age carried add-family action rule-demoted to
+/// *hold* at the roll-up — a labeled rule-based weaken, so a rendered hold
+/// reads as the model's only where a model chose it; `docs/portfolio-analysis.md`
+/// §Triggering).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ActionSource {
@@ -1017,6 +1012,11 @@ pub struct DataHealth {
     /// The run-level M&A feed walk failed or truncated this run — same posture
     /// (the deals gathered before the failure still matched).
     pub ma_gap: bool,
+    /// The accuracy pass hit an episode-store read or write error this run —
+    /// the scores read unavailable where the store could not be read, and a
+    /// horizon whose check failed to write stays pending (fail-soft,
+    /// `docs/portfolio-analysis.md` §Failure posture).
+    pub accuracy_gap: bool,
     /// Distinct sector-benchmark series a completed holding read as unavailable (each
     /// starves the technology-event pre-flag for its holdings) — same counted-only
     /// posture; rebuilt from the holdings' rows, so a resumed run counts a benchmark
@@ -1423,13 +1423,13 @@ pub struct HoldingAudit {
     /// exactly as authored with the departure recorded here (the two-arm contract:
     /// engine evidence annotates, never bars).
     pub action_annotations: Vec<String>,
-    /// How the scenario targets were derived — rung, fallbacks, and the parameter
-    /// version target calibration keys on (`docs/portfolio-analysis.md` §Outcome
-    /// learning). `None` on a not-rated / abstained / role-risk-only holding.
+    /// How the scenario targets were derived — rung, fallbacks, and the
+    /// scenario-target parameter version (`docs/portfolio-analysis.md` §Starting
+    /// parameters). `None` on a not-rated / abstained / role-risk-only holding.
     pub target_meta: Option<engine::TargetMeta>,
     /// The grade-parameter version the letter and sub-scores were computed under
     /// ([`engine::GRADE_PARAMETER_VERSION`]) — the boundary marker that lets the
-    /// what-changed audit and outcome-learning cohorts recognize a parameter boundary
+    /// self-review's parameter-boundary line recognize a parameter boundary
     /// for what it changed: a band recalibration (letters moving with no input
     /// change) or a stamped sub-score's input re-homing
     /// ([`engine::grade_parameter_change`]). Stamped on every audit, the early
@@ -1462,9 +1462,8 @@ pub struct HoldingAudit {
     pub pre_profit: Option<pre_profit::PreProfitOverlay>,
     /// The full hurdle read behind the verdict's three-state `dead_money` field — the
     /// scenario total-return distribution plus the tier-scaled hurdle rate, persisted
-    /// so a decision episode's calibration snapshot can freeze the hurdle inputs
-    /// (`docs/portfolio-analysis.md` §Outcome learning). `None` on not-rated /
-    /// abstained / role-risk-only holdings.
+    /// with the audit (`docs/portfolio-analysis.md` §Starting parameters). `None` on
+    /// not-rated / abstained / role-risk-only holdings.
     pub hurdle: Option<engine::HurdleRead>,
     /// The hard-forensic filings-sweep record ([`ForensicRead`]) — present on a
     /// priced stock whose gather ran the item-classified 8-K sweep (state `Unknown`
@@ -2362,6 +2361,10 @@ pub struct PortfolioRun {
     /// failed badge), or an empty debut-failure card where none does. Empty on a
     /// clean run.
     pub failed_holdings: Vec<HoldingFailure>,
+    /// The run's accuracy record ([`outcome::AccuracyRecord`]): each holding's
+    /// accuracy scores keyed by symbol, the episodes this run opened, and the
+    /// checks this run wrote (`docs/portfolio-analysis.md` §Outcome learning).
+    pub accuracy: outcome::AccuracyRecord,
 }
 
 /// A per-holding analysis failure the run isolated (`docs/portfolio-analysis.md`

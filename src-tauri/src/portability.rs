@@ -100,7 +100,13 @@ use crate::storage;
 /// shape with its call count (checkpoint-v22).
 /// v19: the run's data health inside `portfolio_runs.run_json` counts the
 /// run-level M&A feed walk's gap beside the FINRA one (checkpoint-v23).
-pub const FORMAT_VERSION: u32 = 19;
+/// v20: the episode store is the price record — `portfolio_episodes` and the
+/// checks written onto them, `portfolio_episode_checks`, both carried with
+/// their ids — and `portfolio_runs.run_json` carries the run's accuracy record
+/// and data health's accuracy-pass gap. A v12–v19 archive's
+/// `portfolio_outcome_episodes` file (the retired decision episodes) is
+/// verified and never read: its import starts the episode store fresh.
+pub const FORMAT_VERSION: u32 = 20;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -110,16 +116,18 @@ const ENC_MAGIC: &[u8; 8] = b"MSDPENC1";
 /// machine, which is what makes report vectors portable at all.
 const REPORT_EMBEDDER_ID: &str = "text-embedding-3-large";
 
-/// The ten exported tables, in insert dependency order (reports first, so
-/// the vector summaries and snapshots that join on `report_id` land after them).
-const TABLES: [&str; 10] = [
+/// The eleven exported tables, in insert dependency order (reports first, so
+/// the vector summaries and snapshots that join on `report_id` land after them;
+/// episodes before the checks that reference them).
+const TABLES: [&str; 11] = [
     "reports",
     "baseline_snapshots",
     "vector_memory",
     "portfolio_runs",
     "holdings_pulls",
     "portfolio_quick_checks",
-    "portfolio_outcome_episodes",
+    "portfolio_episodes",
+    "portfolio_episode_checks",
     "price_bars",
     "web_documents",
     "web_source_state",
@@ -127,7 +135,25 @@ const TABLES: [&str; 10] = [
 
 /// The tables' zip entry names, same order — what export writes and import
 /// consumes, shared so the two sides can never drift.
-const DB_ENTRY_NAMES: [&str; 10] = [
+const DB_ENTRY_NAMES: [&str; 11] = [
+    "db/reports.ndjson",
+    "db/baseline_snapshots.ndjson",
+    "db/vector_memory.ndjson",
+    "db/portfolio_runs.ndjson",
+    "db/holdings_pulls.ndjson",
+    "db/portfolio_quick_checks.ndjson",
+    "db/portfolio_episodes.ndjson",
+    "db/portfolio_episode_checks.ndjson",
+    "db/price_bars.ndjson",
+    "db/web_documents.ndjson",
+    "db/web_source_state.ndjson",
+];
+
+/// The v4–v19 entry set — the retired decision-episode file in the episode
+/// store's place; only v12–v19 reach it, [`check_format_version`] refusing
+/// the earlier pre-release formats. Required (verified) like any entry of its
+/// format, and never parsed: the import starts the episode store fresh.
+const V4_TO_V19_DB_ENTRY_NAMES: [&str; 10] = [
     "db/reports.ndjson",
     "db/baseline_snapshots.ndjson",
     "db/vector_memory.ndjson",
@@ -149,7 +175,8 @@ const DB_ENTRY_NAMES: [&str; 10] = [
 /// 2026-08-29 — no data compat pre-release).
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
     match format_version {
-        v if v >= 4 => &DB_ENTRY_NAMES,
+        v if v >= 20 => &DB_ENTRY_NAMES,
+        v if v >= 4 => &V4_TO_V19_DB_ENTRY_NAMES,
         _ => &DB_ENTRY_NAMES[..5],
     }
 }
@@ -250,16 +277,26 @@ struct QuickCheckRow {
     state_json: String,
 }
 
-/// One outcome decision episode on the wire (`docs/portfolio-analysis.md`
-/// §Outcome learning): durable calibration state that outlives run retention —
-/// an aged-out anchor run cannot regenerate its episodes, so they move whole.
+/// One episode on the wire (`docs/portfolio-analysis.md` §Outcome learning):
+/// a price record that outlives run retention — an aged-out run cannot
+/// regenerate its episodes, so they move whole, under their ids (insertion
+/// order, and what the checks reference).
 #[derive(Debug, Serialize, Deserialize)]
-struct OutcomeEpisodeRow {
-    episode_id: String,
+struct EpisodeRow {
+    id: i64,
     symbol: String,
-    anchor_at: String,
-    state: String,
+    created_on: String,
     episode_json: String,
+}
+
+/// One check on the wire, under its id (run order) and its episode's.
+#[derive(Debug, Serialize, Deserialize)]
+struct EpisodeCheckRow {
+    id: i64,
+    episode_id: i64,
+    horizon: String,
+    run_id: String,
+    check_json: String,
 }
 
 /// One shared price-bar cache row on the wire (`docs/storage.md §Local Analysis
@@ -377,7 +414,8 @@ pub fn export_archive(
     let runs = read_portfolio_run_rows(&conn)?;
     let pulls = read_holdings_pull_rows(&conn)?;
     let quick_checks = read_quick_check_rows(&conn)?;
-    let episodes = read_outcome_episode_rows(&conn)?;
+    let episodes = read_episode_rows(&conn)?;
+    let episode_checks = read_episode_check_rows(&conn)?;
     let price_bars = read_price_bar_rows(&conn)?;
     let web_documents = read_web_document_rows(&conn)?;
     let web_source_states = read_web_source_state_rows(&conn)?;
@@ -401,9 +439,10 @@ pub fn export_archive(
     row_counts.insert("portfolio_runs".to_string(), runs.len() as u64);
     row_counts.insert("holdings_pulls".to_string(), pulls.len() as u64);
     row_counts.insert("portfolio_quick_checks".to_string(), quick_checks.len() as u64);
+    row_counts.insert("portfolio_episodes".to_string(), episodes.len() as u64);
     row_counts.insert(
-        "portfolio_outcome_episodes".to_string(),
-        episodes.len() as u64,
+        "portfolio_episode_checks".to_string(),
+        episode_checks.len() as u64,
     );
     row_counts.insert("price_bars".to_string(), price_bars.len() as u64);
     row_counts.insert("web_documents".to_string(), web_documents.len() as u64);
@@ -428,7 +467,7 @@ pub fn export_archive(
     // The db/*.ndjson entries join the manifest's checksum inventory alongside
     // the store files, so import can verify every entry — table rows included —
     // before its destructive phase.
-    let db_payloads: [Vec<u8>; 10] = [
+    let db_payloads: [Vec<u8>; 11] = [
         ndjson(&reports)?,
         ndjson(&snapshots)?,
         ndjson(&vectors)?,
@@ -436,6 +475,7 @@ pub fn export_archive(
         ndjson(&pulls)?,
         ndjson(&quick_checks)?,
         ndjson(&episodes)?,
+        ndjson(&episode_checks)?,
         ndjson(&price_bars)?,
         ndjson(&web_documents)?,
         ndjson(&web_source_states)?,
@@ -620,8 +660,12 @@ pub fn import_archive(
     let run_rows: Vec<PortfolioRunRow> = parse_ndjson(&entries, "db/portfolio_runs.ndjson")?;
     let pull_rows: Vec<HoldingsPullRow> = parse_ndjson(&entries, "db/holdings_pulls.ndjson")?;
     let quick_rows: Vec<QuickCheckRow> = parse_ndjson(&entries, "db/portfolio_quick_checks.ndjson")?;
-    let episode_rows: Vec<OutcomeEpisodeRow> =
-        parse_ndjson(&entries, "db/portfolio_outcome_episodes.ndjson")?;
+    // A v12–v19 archive's `portfolio_outcome_episodes` file is verified above
+    // and deliberately never read; these entries are absent there, so the
+    // episode store imports empty.
+    let episode_rows: Vec<EpisodeRow> = parse_ndjson(&entries, "db/portfolio_episodes.ndjson")?;
+    let episode_check_rows: Vec<EpisodeCheckRow> =
+        parse_ndjson(&entries, "db/portfolio_episode_checks.ndjson")?;
     let price_bar_rows: Vec<PriceBarRow> = parse_ndjson(&entries, "db/price_bars.ndjson")?;
     let web_document_rows: Vec<WebDocumentRow> = parse_ndjson(&entries, "db/web_documents.ndjson")?;
     let web_source_state_rows: Vec<WebSourceStateRow> =
@@ -674,12 +718,35 @@ pub fn import_archive(
             quick_rows.len()
         );
     }
-    // The outcome stores' schema constraints, mirrored pre-destructively: the
-    // UNIQUE episode_id and the price-bar (symbol, date) primary key.
+    // The episode store's schema constraints, mirrored pre-destructively: the
+    // episode and check id keys, a check's horizon held to one check per
+    // episode, and every check's episode present — plus the price-bar
+    // (symbol, date) primary key.
     let mut seen_episode_ids = BTreeSet::new();
     for row in &episode_rows {
-        if !seen_episode_ids.insert(row.episode_id.as_str()) {
-            bail!("archive carries a duplicate outcome episode id {:?}", row.episode_id);
+        if !seen_episode_ids.insert(row.id) {
+            bail!("archive carries a duplicate episode id {}", row.id);
+        }
+    }
+    let mut seen_check_ids = BTreeSet::new();
+    let mut seen_check_horizons = BTreeSet::new();
+    for row in &episode_check_rows {
+        if !seen_check_ids.insert(row.id) {
+            bail!("archive carries a duplicate check id {}", row.id);
+        }
+        if !seen_check_horizons.insert((row.episode_id, row.horizon.as_str())) {
+            bail!(
+                "archive carries two {} checks for episode {}",
+                row.horizon,
+                row.episode_id
+            );
+        }
+        if !seen_episode_ids.contains(&row.episode_id) {
+            bail!(
+                "archive carries check {} for episode {}, which it does not carry",
+                row.id,
+                row.episode_id
+            );
         }
     }
     let mut seen_bar_keys = BTreeSet::new();
@@ -861,9 +928,16 @@ pub fn import_archive(
     }
     for row in &episode_rows {
         tx.execute(
-            "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
+            "INSERT INTO portfolio_episodes (id, symbol, created_on, episode_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![row.id, row.symbol, row.created_on, row.episode_json],
+        )?;
+    }
+    for row in &episode_check_rows {
+        tx.execute(
+            "INSERT INTO portfolio_episode_checks (id, episode_id, horizon, run_id, check_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![row.episode_id, row.symbol, row.anchor_at, row.state, row.episode_json],
+            params![row.id, row.episode_id, row.horizon, row.run_id, row.check_json],
         )?;
     }
     for row in &price_bar_rows {
@@ -1046,19 +1120,36 @@ fn read_quick_check_rows(conn: &Connection) -> Result<Vec<QuickCheckRow>> {
     Ok(rows)
 }
 
-fn read_outcome_episode_rows(conn: &Connection) -> Result<Vec<OutcomeEpisodeRow>> {
+fn read_episode_rows(conn: &Connection) -> Result<Vec<EpisodeRow>> {
     let mut stmt = conn.prepare(
-        "SELECT episode_id, symbol, anchor_at, state, episode_json
-         FROM portfolio_outcome_episodes ORDER BY id",
+        "SELECT id, symbol, created_on, episode_json FROM portfolio_episodes ORDER BY id",
     )?;
     let rows = stmt
         .query_map([], |r| {
-            Ok(OutcomeEpisodeRow {
-                episode_id: r.get(0)?,
+            Ok(EpisodeRow {
+                id: r.get(0)?,
                 symbol: r.get(1)?,
-                anchor_at: r.get(2)?,
-                state: r.get(3)?,
-                episode_json: r.get(4)?,
+                created_on: r.get(2)?,
+                episode_json: r.get(3)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn read_episode_check_rows(conn: &Connection) -> Result<Vec<EpisodeCheckRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, episode_id, horizon, run_id, check_json
+         FROM portfolio_episode_checks ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(EpisodeCheckRow {
+                id: r.get(0)?,
+                episode_id: r.get(1)?,
+                horizon: r.get(2)?,
+                run_id: r.get(3)?,
+                check_json: r.get(4)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1489,8 +1580,14 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
-             VALUES ('ep-one', 'AAPL', '2026-07-06T12:00:00Z', 'active', '{\"episode_id\":\"ep-one\"}')",
+            "INSERT INTO portfolio_episodes (id, symbol, created_on, episode_json)
+             VALUES (7, 'AAPL', '2026-07-06', '{\"marker\":\"ep-seven\"}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO portfolio_episode_checks (id, episode_id, horizon, run_id, check_json)
+             VALUES (3, 7, 'three_month', 'run-two', '{\"marker\":\"check-three\"}')",
             [],
         )
         .unwrap();
@@ -1728,16 +1825,26 @@ mod tests {
             )
             .unwrap();
         assert!(state_json.contains("run-one"));
-        // The outcome episode and the price-bar cache ride it too (format v3),
+        // The episode store rides it under its ids (format v20) — the check
+        // still references its episode — and the price-bar cache (format v3),
         // the close surviving the REAL column exactly.
         let episode_json: String = conn
             .query_row(
-                "SELECT episode_json FROM portfolio_outcome_episodes WHERE episode_id = 'ep-one'",
+                "SELECT episode_json FROM portfolio_episodes WHERE id = 7",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(episode_json.contains("ep-one"));
+        assert!(episode_json.contains("ep-seven"));
+        let (check_episode, check_json): (i64, String) = conn
+            .query_row(
+                "SELECT episode_id, check_json FROM portfolio_episode_checks WHERE id = 3",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(check_episode, 7);
+        assert!(check_json.contains("check-three"));
         let close: f64 = conn
             .query_row(
                 "SELECT close FROM price_bars WHERE symbol = 'AAPL' AND date = '2026-07-03'",
@@ -2230,17 +2337,21 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None, None).unwrap();
 
-        // Drop the two v3-only entries and their listings. Under the archive's
-        // own (v3) version that is truncation and must refuse…
+        // Drop the episode-store and price-bar entries and their listings.
+        // Under the archive's own version that is truncation and must refuse…
         let mut entries = read_archive_entries(&dest);
-        for name in ["db/portfolio_outcome_episodes.ndjson", "db/price_bars.ndjson"] {
+        let dropped = [
+            "db/portfolio_episodes.ndjson",
+            "db/portfolio_episode_checks.ndjson",
+            "db/price_bars.ndjson",
+        ];
+        for name in dropped {
             entries.remove(name);
         }
         let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
-        manifest.files.retain(|f| {
-            f.path != "db/portfolio_outcome_episodes.ndjson" && f.path != "db/price_bars.ndjson"
-        });
-        manifest.row_counts.remove("portfolio_outcome_episodes");
+        manifest.files.retain(|f| !dropped.contains(&f.path.as_str()));
+        manifest.row_counts.remove("portfolio_episodes");
+        manifest.row_counts.remove("portfolio_episode_checks");
         manifest.row_counts.remove("price_bars");
         entries.insert(
             "manifest.json".to_string(),
@@ -2341,28 +2452,106 @@ mod tests {
     }
 
     #[test]
+    fn a_v19_archive_imports_with_the_episode_store_started_fresh() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+
+        // Re-shape the archive as a v19 export: the two episode-store entries
+        // out, the retired decision-episode file in, listed and checksummed.
+        let mut entries = read_archive_entries(&dest);
+        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        for name in ["db/portfolio_episodes.ndjson", "db/portfolio_episode_checks.ndjson"] {
+            entries.remove(name);
+            manifest.files.retain(|f| f.path != name);
+        }
+        manifest.row_counts.remove("portfolio_episodes");
+        manifest.row_counts.remove("portfolio_episode_checks");
+        manifest.format_version = 19;
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        // A row the importer would refuse if it ever read it.
+        add_entry_rechecksummed(
+            &mut entries,
+            "db/portfolio_outcome_episodes.ndjson",
+            b"{not a row}\n".to_vec(),
+        );
+        let v19_path = source.db_path.parent().unwrap().join("v19.zip");
+        rebuild_zip(&entries, &v19_path);
+        let (_b, target) = temp_store();
+        let loaded = import_archive(&target, &v19_path, None, false).unwrap();
+        assert_eq!(loaded.reports, 2, "everything else imports");
+        assert_eq!(table_count(&target, "portfolio_episodes"), 0);
+        assert_eq!(table_count(&target, "portfolio_episode_checks"), 0);
+        assert_eq!(table_count(&target, "price_bars"), 1);
+
+        // The retired file is still a required entry of its format.
+        let mut entries = read_archive_entries(&v19_path);
+        entries.remove("db/portfolio_outcome_episodes.ndjson");
+        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest.files.retain(|f| f.path != "db/portfolio_outcome_episodes.ndjson");
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let truncated = source.db_path.parent().unwrap().join("v19-truncated.zip");
+        rebuild_zip(&entries, &truncated);
+        let (_c, target) = temp_store();
+        let err = import_archive(&target, &truncated, None, false).unwrap_err();
+        assert!(err.to_string().contains("missing or not listed"), "{err}");
+    }
+
+    #[test]
     fn duplicate_outcome_rows_are_refused_pre_destructively() {
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None, None).unwrap();
 
-        // A duplicated episode id — the UNIQUE mirror.
+        // A duplicated episode id — the primary-key mirror.
         let mut entries = read_archive_entries(&dest);
-        let text =
-            String::from_utf8(entries["db/portfolio_outcome_episodes.ndjson"].clone()).unwrap();
+        let text = String::from_utf8(entries["db/portfolio_episodes.ndjson"].clone()).unwrap();
         let doubled = format!("{text}{text}");
         replace_entry_rechecksummed(
             &mut entries,
-            "db/portfolio_outcome_episodes.ndjson",
+            "db/portfolio_episodes.ndjson",
             doubled.into_bytes(),
         );
         let dup_path = source.db_path.parent().unwrap().join("dup-episode.zip");
         rebuild_zip(&entries, &dup_path);
         let (_b, target) = temp_store();
         let err = import_archive(&target, &dup_path, None, false).unwrap_err();
-        assert!(err.to_string().contains("duplicate outcome episode"), "{err}");
-        assert_eq!(table_count(&target, "portfolio_outcome_episodes"), 0);
+        assert!(err.to_string().contains("duplicate episode id"), "{err}");
+        assert_eq!(table_count(&target, "portfolio_episodes"), 0);
+
+        // A second check on the same episode and horizon — the UNIQUE mirror.
+        let check_row = |id: i64, episode_id: i64| {
+            format!(
+                "{{\"id\":{id},\"episode_id\":{episode_id},\"horizon\":\"three_month\",\"run_id\":\"r\",\"check_json\":\"{{}}\"}}\n"
+            )
+        };
+        let text =
+            String::from_utf8(read_archive_entries(&dest)["db/portfolio_episode_checks.ndjson"].clone()).unwrap();
+        for (tampered, needle) in [
+            (format!("{text}{}", check_row(4, 7)), "two three_month checks for episode 7"),
+            (check_row(4, 99), "for episode 99, which it does not carry"),
+        ] {
+            let mut entries = read_archive_entries(&dest);
+            replace_entry_rechecksummed(
+                &mut entries,
+                "db/portfolio_episode_checks.ndjson",
+                tampered.into_bytes(),
+            );
+            let path = source.db_path.parent().unwrap().join("bad-check.zip");
+            rebuild_zip(&entries, &path);
+            let (_t, target) = temp_store();
+            let err = import_archive(&target, &path, None, false).unwrap_err();
+            assert!(err.to_string().contains(needle), "{err}");
+            assert_eq!(table_count(&target, "portfolio_episode_checks"), 0);
+        }
 
         // A duplicated (symbol, date) bar — the primary-key mirror.
         let mut entries = read_archive_entries(&dest);

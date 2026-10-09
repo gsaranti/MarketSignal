@@ -937,7 +937,7 @@ impl FmpDataSource {
     /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
     /// leading slash doesn't double up.
     #[cfg(test)]
-    fn with_base_url(mut self, base_url: &str) -> Self {
+    pub(crate) fn with_base_url(mut self, base_url: &str) -> Self {
         self.base_url = base_url.trim_end_matches('/').to_string();
         self
     }
@@ -1900,8 +1900,7 @@ fn company_quote_from_value(value: &Value) -> Option<CompanyQuote> {
 /// against an October last-pass date, so in source form it corrupts exactly
 /// the lexicographic consumers readability exists to protect (`DatedValue`'s
 /// ISO contract, the EOD chronology sort, the quick check's since-`last_pass`
-/// compare — Codex round 5). Same hazard `dividend_history_from_value` guards
-/// by windowing on the parsed date and rendering its output canonically.
+/// compare — Codex round 5).
 fn canonical_date(date: &str) -> Option<String> {
     chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .ok()
@@ -3272,7 +3271,7 @@ mod tests {
 
     #[test]
     fn ttm_dividend_pull_requests_the_full_history_margin() {
-        // The TTM pull shares the label-time history limit: the feed's newest
+        // The TTM pull requests the full history margin: the feed's newest
         // rows can be future-dated declarations that consume slots without
         // landing in the window, and a monthly payer alone fills a 12-row cap —
         // a truncated pull silently understates the trailing sum (and with it
@@ -4936,12 +4935,11 @@ const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
 /// limit cuts the *nearest* forward year off the page.
 const ESTIMATES_PAGE_LIMIT: &str = "10";
 const FMP_DIVIDENDS_PATH: &str = "/dividends";
-/// The company profile — the outcome episodes' sector-label source
-/// (`docs/portfolio-analysis.md §Outcome learning` — the entry-stamped sector
-/// identity).
+/// The company profile — the stamped sector identity's label source
+/// (`portfolio::sector`).
 const FMP_PROFILE_PATH: &str = "/profile";
-/// Dividend rows requested for both dividend pulls — the label-time history and
-/// the trailing-TTM sum. A monthly payer over a 13-month window needs ~15, and
+/// Dividend rows requested for the dividend pull — the trailing-TTM sum and the
+/// latest payments. A monthly payer over a 13-month window needs ~15, and
 /// the newest rows can be future-dated announced-but-unpaid declarations that
 /// consume slots without landing in the window; the margin covers both plus
 /// specials (a truncated pull would silently understate the trailing sum).
@@ -5612,41 +5610,6 @@ impl FmpDataSource {
             Ok(lookup) => lookup,
             Err(reason) => {
                 ProfileLookup::Unverified(format!("FMP profile unavailable ({})", reason.as_str()))
-            }
-        }
-    }
-
-    /// The dated per-share dividend history within `[from, to]` — the outcome
-    /// labels' total-return leg (`docs/portfolio-analysis.md §Outcome learning`:
-    /// the window's cash dividends summed without reinvestment). Strict like the
-    /// TTM read: a malformed or drifted body is `Err` (the caller records the
-    /// labeled price-only fallback), never a silent zero that would read as a
-    /// dividend elimination.
-    pub fn fetch_dividend_history(
-        &self,
-        symbol: &str,
-        from: chrono::NaiveDate,
-        to: chrono::NaiveDate,
-    ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
-        match self.suite_get_shaped(
-            "company-dividends-history",
-            symbol,
-            "Dividend history (outcome labels)",
-            FMP_DIVIDENDS_PATH,
-            &[("symbol", symbol), ("limit", DIVIDEND_HISTORY_LIMIT)],
-            |value| match dividend_history_from_value(value, from, to) {
-                Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
-                // No in-window dividends — an honest empty, not a failure.
-                Ok(rows) => Shaped::empty(Ok(rows)),
-                Err(e) => {
-                    let detail = format!("{e:#}");
-                    Shaped::malformed(Err(e)).with_detail(detail)
-                }
-            },
-        ) {
-            Ok(result) => result,
-            Err(reason) => {
-                anyhow::bail!("FMP dividend history unavailable ({})", reason.as_str())
             }
         }
     }
@@ -7630,53 +7593,6 @@ fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::Prof
     })
 }
 
-/// Shape a `/dividends` body into dated per-share amounts within `[from, to]`,
-/// oldest first. Strict like [`dividends_from_value`]: an unreadable row is
-/// `Err`, never a silent skip — a dropped in-window payment would understate the
-/// total-return label without a trace. Pure.
-fn dividend_history_from_value(
-    value: &Value,
-    from: chrono::NaiveDate,
-    to: chrono::NaiveDate,
-) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
-    let Some(rows) = value.as_array() else {
-        anyhow::bail!("non-array body — malformed or drifted response");
-    };
-    let mut out: Vec<crate::portfolio::engine::DatedValue> = Vec::new();
-    for row in rows {
-        let Some(date) = row.get("date").and_then(Value::as_str) else {
-            anyhow::bail!("a dividend row carried no date — malformed or drifted response");
-        };
-        let Ok(parsed) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
-            anyhow::bail!(
-                "a dividend row carried a non-ISO date {date:?} — malformed or drifted response"
-            );
-        };
-        // Window on the PARSED date, never the source text (non-zero-padded
-        // fields compare lexicographically outside the window).
-        if parsed < from || parsed > to {
-            continue;
-        }
-        // Numeric-first per key: a present-but-null `adjDividend` beside a numeric
-        // `dividend` must read the amount, not take the unreadable-row bail path.
-        let amount = row
-            .get("adjDividend")
-            .and_then(Value::as_f64)
-            .or_else(|| row.get("dividend").and_then(Value::as_f64));
-        let Some(a) = amount else {
-            anyhow::bail!(
-                "an in-window dividend row carried no numeric amount — malformed or drifted response"
-            );
-        };
-        out.push(crate::portfolio::engine::DatedValue {
-            date: parsed.format("%Y-%m-%d").to_string(),
-            value: a,
-        });
-    }
-    out.sort_by(|a, b| a.date.cmp(&b.date));
-    Ok(out)
-}
-
 /// Fill a [`crate::portfolio::fund::FundData`] from an `etf/info` body (array-of-one
 /// or bare object). The expense ratio arrives in **percent units** (0.09 = 9 bps)
 /// and normalizes to a decimal ratio at this seam — live-verified 2026-07-16
@@ -8569,44 +8485,6 @@ mod suite_tests {
                 .unwrap(),
             Some(0.26)
         );
-    }
-
-    #[test]
-    fn dividend_history_windows_sorts_and_stays_strict() {
-        let from = chrono::NaiveDate::from_ymd_opt(2025, 6, 3).unwrap();
-        let to = chrono::NaiveDate::from_ymd_opt(2026, 6, 3).unwrap();
-        let body = r#"[
-          {"date":"2026-08-10","adjDividend":0.27},
-          {"date":"2026-02-10","dividend":0.25},
-          {"date":"2025-11-10","adjDividend":0.24},
-          {"date":"2025-01-10","adjDividend":0.23}
-        ]"#;
-        let v: Value = serde_json::from_str(body).unwrap();
-        let rows = dividend_history_from_value(&v, from, to).unwrap();
-        // Only the two in-window rows, oldest first.
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].date, "2025-11-10");
-        assert!((rows[1].value - 0.25).abs() < 1e-12);
-        // Strict like the TTM read: an unreadable in-window amount is Err (the
-        // caller records the labeled price-only fallback), never a silent zero.
-        let bad: Value =
-            serde_json::from_str(r#"[{"date":"2025-11-10","adjDividend":"0.24"}]"#).unwrap();
-        assert!(dividend_history_from_value(&bad, from, to).is_err());
-        // An empty body is a genuine non-payer window.
-        let empty: Value = serde_json::from_str("[]").unwrap();
-        assert!(dividend_history_from_value(&empty, from, to).unwrap().is_empty());
-    }
-
-    #[test]
-    fn dividend_history_null_adj_amount_falls_through_to_the_plain_amount() {
-        let from = chrono::NaiveDate::from_ymd_opt(2025, 6, 3).unwrap();
-        let to = chrono::NaiveDate::from_ymd_opt(2026, 6, 3).unwrap();
-        let v: Value =
-            serde_json::from_str(r#"[{"date":"2025-11-10","adjDividend":null,"dividend":0.24}]"#)
-                .unwrap();
-        let rows = dividend_history_from_value(&v, from, to).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert!((rows[0].value - 0.24).abs() < 1e-12);
     }
 
     #[test]

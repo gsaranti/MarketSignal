@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { etDayDiff } from "../etDate";
 import { localDate, localDateTime } from "../format";
 import type {
+  AccuracyScores,
   FlagTrigger,
   HoldingFailure,
   HoldingQuickState,
@@ -806,8 +807,9 @@ const SETUP_NOTE = "Setup — market-setup read, outside the letter";
 // ---- The typed strip and the engine line ------------------------------------
 // The strip carries the thesis document's typed appendix — the conviction and
 // the expected price at each horizon, each null where the document stated
-// none, rendered as "none"; the engine line beneath it carries the engine's
-// three bands in the same horizon order, a never-authored band as a dash.
+// none, rendered as "none" — and the holding's accuracy scores beside them;
+// the engine line beneath it carries the engine's three bands in the same
+// horizon order, a never-authored band as a dash.
 
 function convictionLevel(c: PortfolioConviction | null): number {
   return c === null ? 0 : CONVICTION_LEVEL[c];
@@ -818,6 +820,31 @@ function expectedPrices(a: ThesisAppendix): [string, number | null][] {
     ["3-mo expected", a.expected_price_3m],
     ["12-mo expected", a.expected_price_12m],
     ["3-yr expected", a.expected_price_3y],
+  ];
+}
+
+// The holding's accuracy scores at each horizon, per arm (docs/portfolio-analysis.md
+// §Outcome learning): the mean per-check score, 0–100, read as a whole number;
+// `null` is "no score yet". `arms` is `null` when this run could not read the
+// episode store — the scores are unavailable, its data-health line names why.
+type AccuracyArm = { arm: "model" | "engine"; score: number | null };
+function accuracyRows(symbol: string): { label: string; arms: AccuracyArm[] | null }[] {
+  const all = props.run?.accuracy.scores ?? null;
+  const s: AccuracyScores | undefined = all?.[symbol.toUpperCase()];
+  const row = (label: string, key: keyof AccuracyScores) => ({
+    label,
+    arms:
+      all === null
+        ? null
+        : ([
+            { arm: "model", score: s?.[key].model?.score ?? null },
+            { arm: "engine", score: s?.[key].engine?.score ?? null },
+          ] as AccuracyArm[]),
+  });
+  return [
+    row("3-mo accuracy", "three_month"),
+    row("12-mo accuracy", "twelve_month"),
+    row("3-yr accuracy", "three_year"),
   ];
 }
 
@@ -1653,7 +1680,9 @@ const keyFigures = computed(() => {
                     <template v-if="v.disposition.status === 'priced'">
                       <!-- The thesis document's typed appendix — the conviction
                            and the expected price at each horizon, persisted
-                           exactly as transcribed; a null field renders as none. -->
+                           exactly as transcribed; a null field renders as none —
+                           then the holding's accuracy scores, model and engine,
+                           at each horizon. -->
                       <dl class="hc-kv hc-strip-kv">
                         <dt>Conviction</dt>
                         <dd>
@@ -1686,6 +1715,26 @@ const keyFigures = computed(() => {
                               moneyExact.format(price)
                             }}</span>
                             <span v-else class="hc-none">none</span>
+                          </dd>
+                        </template>
+                        <template v-for="row in accuracyRows(v.symbol)" :key="row.label">
+                          <dt>{{ row.label }}</dt>
+                          <dd>
+                            <span v-if="row.arms === null" class="hc-none">unavailable</span>
+                            <span
+                              v-else-if="row.arms.every((a) => a.score === null)"
+                              class="hc-none"
+                              >no score yet</span
+                            >
+                            <template v-else>
+                              <span v-for="(a, i) in row.arms" :key="a.arm"
+                                >{{ (i > 0 ? " · " : "") + a.arm + " "
+                                }}<span v-if="a.score !== null" class="ana-num">{{
+                                  Math.round(a.score)
+                                }}</span
+                                ><span v-else class="hc-none">no score yet</span></span
+                              >
+                            </template>
                           </dd>
                         </template>
                       </dl>

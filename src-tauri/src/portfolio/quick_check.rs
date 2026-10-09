@@ -1781,6 +1781,7 @@ mod tests {
                 fetched_at: "2026-07-20T00:00:00Z".into(),
             },
             failed_holdings: Vec::new(),
+            accuracy: Default::default(),
         }
     }
 
@@ -1898,6 +1899,7 @@ mod tests {
             ],
             rate_prints: Default::default(),
             failed_holdings: Vec::new(),
+            accuracy: Default::default(),
         };
         store::insert_run(&conn, &run).unwrap();
         let mut data = StubData::quiet(195.0, "2026-08-02");

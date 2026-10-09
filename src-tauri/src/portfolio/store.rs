@@ -57,27 +57,44 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // The outcome-learning decision-episode store (`docs/portfolio-analysis.md
-    // §Outcome learning`) — persisted **independent of the run retention** (a
-    // 12-month outcome window can outlive it): active episodes are never evicted;
-    // matured ones freeze under their own cap. Exported by data portability
-    // (format v3); the UNIQUE episode_id is mirrored by an import pre-check.
+    // The retired decision-episode table: its rows are no price records, so the
+    // episode store starts fresh beside it.
+    conn.execute("DROP TABLE IF EXISTS portfolio_outcome_episodes", [])?;
+    // The episode store (`docs/portfolio-analysis.md §Outcome learning`) —
+    // append-only price records, persisted **independent of the run retention**
+    // (a three-year horizon outlives any count-based window), and the checks
+    // written onto them once each. Both tables are insert-only: nothing here
+    // updates or deletes a row. The autoincrement ids are insertion order — an
+    // episode's is which one is a symbol's latest, a check's is run order — and
+    // `UNIQUE (episode_id, horizon)` holds a horizon to one check. Exported by
+    // data portability (format v20) with their ids; the id keys, the check's
+    // episode reference and the horizon uniqueness are mirrored by import
+    // pre-checks.
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS portfolio_outcome_episodes (
+        "CREATE TABLE IF NOT EXISTS portfolio_episodes (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            episode_id   TEXT NOT NULL UNIQUE,
             symbol       TEXT NOT NULL,
-            anchor_at    TEXT NOT NULL,
-            state        TEXT NOT NULL,
+            created_on   TEXT NOT NULL,
             episode_json TEXT NOT NULL
         )",
         [],
     )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS portfolio_episode_checks (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            episode_id INTEGER NOT NULL,
+            horizon    TEXT NOT NULL,
+            run_id     TEXT NOT NULL,
+            check_json TEXT NOT NULL,
+            UNIQUE (episode_id, horizon)
+        )",
+        [],
+    )?;
     // The shared price-bar cache (`docs/storage.md §Local Analysis Suite Storage`)
-    // — split-adjusted daily closes keyed by symbol, the label-time strict rule's
-    // read/refresh surface. Exported by data portability (format v3) so imported
-    // pending episodes can mature offline; the (symbol, date) primary key is
-    // mirrored by an import pre-check.
+    // — split-adjusted daily closes keyed by symbol, the accuracy checks'
+    // refresh target. Exported by data portability (format v3) so an imported
+    // store keeps its series; the (symbol, date) primary key is mirrored by an
+    // import pre-check.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS price_bars (
             symbol TEXT NOT NULL,
@@ -277,7 +294,7 @@ pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v23";
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointAccumulators {
     pub sector_by_symbol:
-        std::collections::HashMap<String, crate::portfolio::outcome::SectorIdentity>,
+        std::collections::HashMap<String, crate::portfolio::sector::SectorIdentity>,
     pub industry_by_symbol: std::collections::HashMap<String, Option<String>>,
     pub profile_name_by_symbol: std::collections::HashMap<String, Option<String>>,
 }
@@ -454,132 +471,126 @@ pub fn clear_checkpoints(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// ---- Outcome-episode store (`docs/portfolio-analysis.md §Outcome learning`) ------
+// ---- The episode store (`docs/portfolio-analysis.md §Outcome learning`) ---------
 
-/// A row whose JSON no longer decoded at load, identified by its readable SQL
-/// columns — enough for the recovery seam ([`crate::portfolio::outcome::
-/// lost_active_symbols`]) to re-seed tracking without ever touching the row.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SkippedEpisodeRow {
-    pub episode_id: String,
-    pub symbol: String,
-    pub anchor_at: String,
-    /// The SQL `state` column value ("active" / "matured").
-    pub state: String,
-    /// How many **readable** episodes preceded this row in the `id`-ordered scan —
-    /// its position in insertion order, without exposing SQL ids.
-    ///
-    /// It is what lets "is this corrupt row superseded?" be answered in insertion
-    /// order: any readable episode at index `>= readable_before` was inserted after
-    /// it. Answered by comparing `anchor_at` instead, a backwards clock step made a
-    /// later-inserted recovery episode look older, so the symbol stayed flagged lost
-    /// and re-debuted on every subsequent run.
-    pub readable_before: usize,
+/// The whole episode store, loaded: every readable episode and check in
+/// insertion order, every `(episode, horizon)` a check row exists for — off the
+/// SQL columns, so an unreadable check still holds its horizon written and is
+/// never re-due — plus the count of rows that no longer decoded.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EpisodeStore {
+    pub episodes: Vec<crate::portfolio::outcome::StoredEpisode>,
+    pub checks: Vec<crate::portfolio::outcome::StoredCheck>,
+    pub written: std::collections::HashSet<(i64, crate::portfolio::outcome::Horizon)>,
+    pub skipped: usize,
 }
 
-/// A whole-store episode load: the decodable episodes plus the rows that were
-/// skipped.
-pub struct EpisodeLoad {
-    pub episodes: Vec<crate::portfolio::outcome::DecisionEpisode>,
-    pub skipped: Vec<SkippedEpisodeRow>,
-}
-
-/// Load every decision episode, active and matured, oldest anchor first. A row
-/// whose JSON no longer decodes is **skipped, logged, and reported — never a
-/// load failure and never deleted**: aborting on one corrupt row would hand the
-/// job an empty set (whose never-seeded rule then re-debuts the whole book on
-/// every run beside the valid history), while auto-deleting would let a serde
-/// regression silently destroy the store. The skipped rows' readable SQL columns
-/// ride back so the job can re-seed a symbol whose *active* episode was lost.
-/// Bounded by the matured archive's cap plus the active set (~a year of decision
-/// changes), so a whole-store load stays a modest local parse.
-pub fn load_episodes(conn: &Connection) -> Result<EpisodeLoad> {
-    let mut stmt = conn.prepare(
-        // **Insertion order** (`id`), not `anchor_at`: run identity in this store is
-        // insertion order everywhere since the piece-3 batch, and the in-memory
-        // "latest episode" selections read this vec's own order. Ordered by a wall
-        // clock, a backwards clock step would place a newly opened episode BEFORE an
-        // older active one and permanently shadow it — every later extension,
-        // falsifier event and inherited sector identity attaching to the stale
-        // predecessor. `anchor_at` stays the episode's dated anchor; it is not its
-        // identity.
-        "SELECT episode_id, symbol, anchor_at, state, episode_json \
-         FROM portfolio_outcome_episodes ORDER BY id ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-        ))
-    })?;
-    let mut episodes = Vec::new();
-    let mut skipped = Vec::new();
+/// Load every episode and check, oldest first by insertion order (`id`) — the
+/// order that names a symbol's latest episode and that is a check's run order;
+/// the creation date is data, never identity. A row whose JSON no longer
+/// decodes is **skipped and logged — never a load failure and never deleted**:
+/// an unreadable episode is never due, and its checks count in no score.
+pub fn load_episode_store(conn: &Connection) -> Result<EpisodeStore> {
+    use crate::portfolio::outcome::{StoredCheck, StoredEpisode};
+    let mut out = EpisodeStore::default();
+    let mut stmt =
+        conn.prepare("SELECT id, episode_json FROM portfolio_episodes ORDER BY id ASC")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
     for row in rows {
-        let (episode_id, symbol, anchor_at, state, json) = row?;
+        let (id, json) = row?;
         match serde_json::from_str(&json) {
-            Ok(episode) => episodes.push(episode),
+            Ok(record) => out.episodes.push(StoredEpisode { id, record }),
             Err(e) => {
-                eprintln!(
-                    "outcome learning: skipping unreadable episode row {episode_id}: {e}"
-                );
-                skipped.push(SkippedEpisodeRow {
-                    episode_id,
-                    symbol,
-                    anchor_at,
-                    state,
-                    readable_before: episodes.len(),
-                });
+                eprintln!("outcome learning: skipping unreadable episode row {id}: {e}");
+                out.skipped += 1;
             }
         }
     }
-    Ok(EpisodeLoad { episodes, skipped })
+    let mut stmt = conn.prepare(
+        "SELECT id, episode_id, horizon, check_json FROM portfolio_episode_checks ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, episode_id, horizon, json) = row?;
+        if let Some(h) = crate::portfolio::outcome::Horizon::from_key(&horizon) {
+            out.written.insert((episode_id, h));
+        }
+        match serde_json::from_str(&json) {
+            Ok(check) => out.checks.push(StoredCheck { id, episode_id, check }),
+            Err(e) => {
+                eprintln!("outcome learning: skipping unreadable check row {id}: {e}");
+                out.skipped += 1;
+            }
+        }
+    }
+    Ok(out)
 }
 
-/// Upsert one episode by its stable `episode_id` (open, extend, tag, and label
-/// mutations all land through here).
-pub fn save_episode(
+/// Append one episode — the store's only episode write; an episode is never
+/// updated or deleted.
+pub fn insert_episode(
     conn: &Connection,
-    episode: &crate::portfolio::outcome::DecisionEpisode,
-) -> Result<()> {
-    let state = match episode.state {
-        crate::portfolio::outcome::EpisodeState::Active => "active",
-        crate::portfolio::outcome::EpisodeState::Matured => "matured",
-    };
-    let episode_json = serde_json::to_string(episode)?;
+    record: &crate::portfolio::outcome::PriceRecord,
+) -> Result<crate::portfolio::outcome::StoredEpisode> {
     conn.execute(
-        "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(episode_id) DO UPDATE SET
-             symbol = excluded.symbol,
-             anchor_at = excluded.anchor_at,
-             state = excluded.state,
-             episode_json = excluded.episode_json",
-        params![episode.episode_id, episode.symbol, episode.anchor_at, state, episode_json],
+        "INSERT INTO portfolio_episodes (symbol, created_on, episode_json) VALUES (?1, ?2, ?3)",
+        params![
+            record.symbol.to_ascii_uppercase(),
+            record.created_on,
+            serde_json::to_string(record)?
+        ],
     )?;
-    Ok(())
+    Ok(crate::portfolio::outcome::StoredEpisode {
+        id: conn.last_insert_rowid(),
+        record: record.clone(),
+    })
 }
 
-/// Prune **matured** episodes beyond the newest `keep` (by anchor), oldest first —
-/// the matured archive's cap. Active episodes are never evicted: one still
-/// accruing labels is age-bounded, not count-capped.
-// Keeps the newest `keep` matured rows by **insertion order** (`id`), matching
-// `load_episodes`. Under `anchor_at` a backwards clock step could delete the
-// just-matured row while keeping an older one.
-pub fn prune_matured_episodes(conn: &Connection, keep: u32) -> Result<()> {
+/// Write one check onto its episode — once: a second check for the same
+/// episode and horizon is refused by the schema, so a horizon can never be
+/// re-scored.
+pub fn insert_check(
+    conn: &Connection,
+    episode_id: i64,
+    check: &crate::portfolio::outcome::Check,
+) -> Result<crate::portfolio::outcome::StoredCheck> {
     conn.execute(
-        "DELETE FROM portfolio_outcome_episodes
-         WHERE state = 'matured' AND id NOT IN (
-             SELECT id FROM portfolio_outcome_episodes
-             WHERE state = 'matured'
-             ORDER BY id DESC
-             LIMIT ?1
-         )",
-        [keep],
+        "INSERT INTO portfolio_episode_checks (episode_id, horizon, run_id, check_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            episode_id,
+            check.horizon.key(),
+            check.run_id,
+            serde_json::to_string(check)?
+        ],
     )?;
-    Ok(())
+    Ok(crate::portfolio::outcome::StoredCheck {
+        id: conn.last_insert_rowid(),
+        episode_id,
+        check: check.clone(),
+    })
+}
+
+/// Each symbol's latest episode creation date, latest by insertion order — the
+/// opening cadence's read. Off the SQL columns alone, so a row whose JSON no
+/// longer decodes still holds its symbol's cadence.
+pub fn latest_episode_dates(conn: &Connection) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt =
+        conn.prepare("SELECT symbol, created_on FROM portfolio_episodes ORDER BY id ASC")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (symbol, created_on) = row?;
+        out.insert(symbol, created_on);
+    }
+    Ok(out)
 }
 
 // ---- Price-bar cache (`docs/storage.md §Local Analysis Suite Storage`) ----------
@@ -1172,7 +1183,7 @@ mod tests {
         let acc = CheckpointAccumulators {
             sector_by_symbol: [(
                 "AAPL".to_string(),
-                crate::portfolio::outcome::SectorIdentity::resolve(Some("Technology")),
+                crate::portfolio::sector::SectorIdentity::resolve(Some("Technology")),
             )]
             .into_iter()
             .collect(),
@@ -1231,7 +1242,7 @@ mod tests {
         let acc = CheckpointAccumulators {
             sector_by_symbol: [(
                 "AAPL".to_string(),
-                crate::portfolio::outcome::SectorIdentity::resolve(Some("Technology")),
+                crate::portfolio::sector::SectorIdentity::resolve(Some("Technology")),
             )]
             .into_iter()
             .collect(),
@@ -1324,6 +1335,7 @@ mod tests {
             }],
             rate_prints: Default::default(),
             failed_holdings: Vec::new(),
+            accuracy: Default::default(),
         }
     }
 
@@ -1944,105 +1956,124 @@ mod tests {
         assert_eq!(baseline.holdings.positions[0].quantity, 100.0);
     }
 
-    fn sample_episode(episode_id: &str, symbol: &str, anchor_at: &str) -> crate::portfolio::outcome::DecisionEpisode {
+    fn sample_record(symbol: &str, created_on: &str) -> crate::portfolio::outcome::PriceRecord {
         use crate::portfolio::outcome::*;
-        DecisionEpisode {
-            episode_id: episode_id.into(),
+        PriceRecord {
             symbol: symbol.into(),
-            anchor_run_id: "run-1".into(),
-            anchor_at: anchor_at.into(),
-            intrinsic_vintage: anchor_at.into(),
-            vintage_fresh: true,
-            action_source: Default::default(),
-            position_change: PositionChange::New,
-            sector: SectorIdentity::resolve(Some("Technology")),
-            opened: vec![OpenReason::Debut],
-            body: EpisodeBody::RoleRiskOnly(RoleRiskEpisode {
-                action: crate::portfolio::Action::Hold,
-                degraded_inputs: vec![],
+            created_on: created_on.into(),
+            spot: 195.0,
+            anchor: Some(crate::portfolio::engine::DatedValue {
+                date: "2026-08-03".into(),
+                value: 194.0,
             }),
-            observations: vec![],
-            alignment: None,
-            falsifier_events: vec![],
-            labels: pending_labels(
-                chrono::NaiveDate::parse_from_str(&anchor_at[..10], "%Y-%m-%d").unwrap(),
-            ),
-            state: EpisodeState::Active,
-            self_correction_count: 0,
+            model: HorizonPrices {
+                three_month: Some(200.0),
+                twelve_month: None,
+                three_year: Some(260.0),
+            },
+            engine: HorizonPrices {
+                three_month: Some(198.0),
+                twelve_month: Some(210.0),
+                three_year: Some(250.0),
+            },
+        }
+    }
+
+    fn sample_check(horizon: crate::portfolio::outcome::Horizon) -> crate::portfolio::outcome::Check {
+        use crate::portfolio::outcome::*;
+        Check {
+            horizon,
+            checked_on: "2026-11-05".into(),
+            run_id: "run-2".into(),
+            outcome: CheckOutcome::Unscorable {
+                cause: UnscorableCause::NoCloseInProximity,
+            },
         }
     }
 
     #[test]
-    fn episodes_round_trip_and_upsert_by_episode_id() {
+    fn episodes_and_checks_append_and_load_in_insertion_order() {
+        use crate::portfolio::outcome::Horizon;
         let conn = mem();
-        let mut ep = sample_episode("ep-1", "AAPL", "2026-08-04T12:00:00+00:00");
-        save_episode(&conn, &ep).unwrap();
-        assert_eq!(load_episodes(&conn).unwrap().episodes, vec![ep.clone()]);
-        // An upsert replaces in place — no duplicate row.
-        ep.state = crate::portfolio::outcome::EpisodeState::Matured;
-        ep.alignment = Some(crate::portfolio::outcome::ObservedNetAlignment::Aligned);
-        save_episode(&conn, &ep).unwrap();
-        let back = load_episodes(&conn).unwrap().episodes;
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0], ep);
+        let first = insert_episode(&conn, &sample_record("aapl", "2026-08-04")).unwrap();
+        let second = insert_episode(&conn, &sample_record("MSFT", "2026-08-04")).unwrap();
+        assert!(second.id > first.id, "ids are insertion order");
+        let check = insert_check(&conn, first.id, &sample_check(Horizon::ThreeMonth)).unwrap();
+        let store = load_episode_store(&conn).unwrap();
+        assert_eq!(store.episodes, vec![first.clone(), second]);
+        assert_eq!(store.checks, vec![check]);
+        assert_eq!(store.skipped, 0);
+        let symbol: String = conn
+            .query_row("SELECT symbol FROM portfolio_episodes WHERE id = ?1", [first.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(symbol, "AAPL", "the column is stored uppercase");
     }
 
     #[test]
-    fn a_corrupt_episode_row_is_skipped_reported_and_never_aborts_the_load() {
-        // One undecodable row must cost only itself: aborting the whole load
-        // would hand the job an empty set, whose never-seeded rule then
-        // re-debuts the entire book on every run beside the bad row. The
-        // same-symbol case matters: the corrupt row here is AAPL's *latest
-        // active* episode beside readable older AAPL history, and the reported
-        // skipped row is what lets the plan's recovery seam re-seed the symbol.
+    fn a_horizon_takes_one_check_ever() {
+        use crate::portfolio::outcome::Horizon;
         let conn = mem();
-        let mut older = sample_episode("ep-old", "AAPL", "2025-08-04T12:00:00+00:00");
-        older.state = crate::portfolio::outcome::EpisodeState::Matured;
-        save_episode(&conn, &older).unwrap();
+        let ep = insert_episode(&conn, &sample_record("AAPL", "2026-08-04")).unwrap();
+        insert_check(&conn, ep.id, &sample_check(Horizon::ThreeMonth)).unwrap();
+        assert!(
+            insert_check(&conn, ep.id, &sample_check(Horizon::ThreeMonth)).is_err(),
+            "a second check on the same horizon is refused"
+        );
+        insert_check(&conn, ep.id, &sample_check(Horizon::TwelveMonth)).unwrap();
+        assert_eq!(load_episode_store(&conn).unwrap().checks.len(), 2);
+    }
+
+    #[test]
+    fn the_retired_decision_episode_table_is_dropped_at_init() {
+        let conn = Connection::open_in_memory().unwrap();
         conn.execute(
-            "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
-             VALUES ('ep-bad', 'AAPL', '2026-06-01T00:00:00+00:00', 'active', '{not json')",
+            "CREATE TABLE portfolio_outcome_episodes (id INTEGER PRIMARY KEY, episode_json TEXT)",
             [],
         )
         .unwrap();
-        let load = load_episodes(&conn).unwrap();
-        assert_eq!(load.episodes.len(), 1, "the readable row survives the bad one");
-        assert_eq!(load.episodes[0].episode_id, "ep-old");
-        assert_eq!(load.skipped.len(), 1);
-        assert_eq!(load.skipped[0].episode_id, "ep-bad");
-        assert_eq!(load.skipped[0].symbol, "AAPL");
-        assert_eq!(load.skipped[0].state, "active");
-        assert_eq!(load.skipped[0].anchor_at, "2026-06-01T00:00:00+00:00");
+        init_schema(&conn).unwrap();
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'portfolio_outcome_episodes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        assert!(load_episode_store(&conn).unwrap().episodes.is_empty());
     }
 
     #[test]
-    fn matured_pruning_never_evicts_an_active_episode() {
+    fn an_unreadable_row_is_skipped_logged_and_never_aborts_the_load() {
+        use crate::portfolio::outcome::Horizon;
         let conn = mem();
-        // Three matured (oldest first) + one active older than all of them.
-        save_episode(&conn, &{
-            let mut e = sample_episode("ep-active", "GONE", "2025-01-01T00:00:00+00:00");
-            e.state = crate::portfolio::outcome::EpisodeState::Active;
-            e
-        })
+        let ep = insert_episode(&conn, &sample_record("AAPL", "2026-08-04")).unwrap();
+        conn.execute(
+            "INSERT INTO portfolio_episodes (symbol, created_on, episode_json)
+             VALUES ('AAPL', '2026-09-04', '{not json')",
+            [],
+        )
         .unwrap();
-        for (id, at) in [
-            ("ep-a", "2026-01-01T00:00:00+00:00"),
-            ("ep-b", "2026-02-01T00:00:00+00:00"),
-            ("ep-c", "2026-03-01T00:00:00+00:00"),
-        ] {
-            let mut e = sample_episode(id, "AAPL", at);
-            e.state = crate::portfolio::outcome::EpisodeState::Matured;
-            save_episode(&conn, &e).unwrap();
-        }
-        prune_matured_episodes(&conn, 2).unwrap();
-        let ids: Vec<String> = load_episodes(&conn)
-            .unwrap()
-            .episodes
-            .into_iter()
-            .map(|e| e.episode_id)
-            .collect();
-        // The oldest matured fell; the active row — older still — survives.
-        assert_eq!(ids, vec!["ep-active", "ep-b", "ep-c"]);
+        insert_check(&conn, ep.id, &sample_check(Horizon::ThreeMonth)).unwrap();
+        conn.execute(
+            "INSERT INTO portfolio_episode_checks (episode_id, horizon, run_id, check_json)
+             VALUES (?1, 'twelve_month', 'run-2', '{not json')",
+            [ep.id],
+        )
+        .unwrap();
+        let store = load_episode_store(&conn).unwrap();
+        assert_eq!(store.episodes, vec![ep.clone()]);
+        assert_eq!(store.checks.len(), 1);
+        assert_eq!(store.skipped, 2);
+        // The unreadable check still holds its horizon written, so it is never
+        // re-due (its re-write would hit the one-check-per-horizon rule).
+        assert!(store.written.contains(&(ep.id, Horizon::TwelveMonth)));
+        assert!(store.written.contains(&(ep.id, Horizon::ThreeMonth)));
+        // Never deleted: the rows stay for inspection.
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM portfolio_episodes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
     }
 
     #[test]

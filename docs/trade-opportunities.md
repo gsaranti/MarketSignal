@@ -453,7 +453,7 @@ Which episode is a lifecycle's latest is **insertion order**, matching run ident
 
 **The checks.**
 An episode's horizon dates are its creation date plus three, twelve and thirty-six calendar months.
-A horizon is **due** when its date is on or before the run's ET session date and nothing has been written for it — one query over the store, so nothing is ever re-scored and a horizon is scored by the first run on or after its date, however many runs later that is.
+A horizon is **due** when its date is strictly before the run's ET session date and nothing has been written for it — one query over the store, so nothing is ever re-scored and a horizon is scored by the first run after its date, however many runs later that is.
 The checks run **at job start, before discovery, in every mode** — Discover, Deep Audit, and the engine-only Quick Audit alike, since they need no model — so this run's self-reviews read every check that has come due by its session and a resumed run never re-scores a written horizon ([trade-opportunities-workflow.md §Step 2](trade-opportunities-workflow.md#step-2-load-shared-context)).
 For every due horizon the pass reads the **close on the horizon date, or the last session at or before it within the drafted proximity**, from the symbol's dated-EOD series, refreshed through the shared price-bar cache for every symbol with a due horizon — a live pick, a departed one and a turned-away name alike, since the record measures the forecast.
 The episode's prices first cross the **split-adjustment bridge** where the series was re-based since the episode was created ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).

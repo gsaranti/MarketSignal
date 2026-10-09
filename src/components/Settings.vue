@@ -337,8 +337,8 @@ function onSaveProviders() {
 
 // --- Local analysis models ---------------------------------------------------
 // Daemon endpoint + roster ids (docs/configuration.md §Local Models). Ungated
-// values that round-trip; presence of endpoint + reasoner + embedder is what
-// clears the "local models not configured" warning (App re-checks after save).
+// values that round-trip; presence of endpoint + reasoner is what clears the
+// "local models not configured" warning (App re-checks after save).
 
 const localDirty = computed(() => {
   const s = props.settings?.local_models;
@@ -461,15 +461,13 @@ const searxngStatusLine = computed<{ tone: LocalStatusTone; text: string }>(() =
   };
 });
 
-// Whether the *saved* required roster (reasoner + embedder) is filled — a
-// reachable daemon with an empty roster must not read as fully set up (the
-// probe only checks the ids that are configured, so an empty roster has
-// nothing to be "missing").
+// Whether the *saved* required roster — the reasoner, the one required slot —
+// is filled: a reachable daemon with an empty roster must not read as fully
+// set up (the probe only checks the ids that are configured, so an empty
+// roster has nothing to be "missing").
 const savedRosterComplete = computed(() => {
   const lm = props.settings?.local_models;
-  return (
-    !!lm && lm.reasoner_model.trim() !== "" && lm.embedder_model.trim() !== ""
-  );
+  return !!lm && lm.reasoner_model.trim() !== "";
 });
 
 // The connection indicator's four states (docs/interface.md §Connection
@@ -504,7 +502,7 @@ const localStatus = computed<{ tone: LocalStatusTone; text: string }>(() => {
   if (!savedRosterComplete.value) {
     return {
       tone: "pending",
-      text: "Daemon reachable — add the reasoner and embedder model ids to complete setup.",
+      text: "Daemon reachable — add the reasoner model id to complete setup.",
     };
   }
   return { tone: "ok", text: "Daemon reachable — all rostered models available." };
@@ -958,7 +956,7 @@ const importDataLabel = computed(() =>
         <!-- Local analysis models (docs/configuration.md §Local Models,
              docs/interface.md §Connection status). The in-app clear path for the
              "local models not configured" warning: presence of endpoint +
-             reasoner + embedder unlocks the local-suite Run buttons the moment
+             reasoner unlocks the local-suite Run buttons the moment
              it saves (App re-checks the presence gate). Ungated like the
              provider credentials — no cloud token needed. Connectivity is a
              separate, manual Test Connection: never probed at startup, so the
@@ -968,7 +966,7 @@ const importDataLabel = computed(() =>
             <h3 id="sec-local-models" class="section-eyebrow">Local analysis models</h3>
             <p class="section-note">
               Portfolio Analysis and Trade Opportunities run on your own Ollama
-              daemon. The endpoint, reasoner, and embedder are required before
+              daemon. The endpoint and reasoner are required before
               either can run; the fast tier is optional. The app supervises a
               daemon you install — it bundles neither Ollama nor the models.
             </p>
@@ -1000,7 +998,7 @@ const importDataLabel = computed(() =>
               />
             </div>
             <div class="field">
-              <label class="label" for="local-embedder">Embedder model</label>
+              <label class="label" for="local-embedder">Embedder model (optional)</label>
               <input
                 id="local-embedder"
                 v-model="localModels.embedder_model"

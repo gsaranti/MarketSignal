@@ -892,22 +892,13 @@ async fn generate_portfolio_manual(
             quick_data: qd,
         });
 
-        // The outcome pass's label-time retrieval surface (FMP dated EOD, FMP
-        // dividends) plus the local embedder for the matured-read durable
-        // learnings (`docs/portfolio-analysis.md` §Outcome learning). The
-        // embedder is best-effort: a client that fails to build just skips the
-        // learning rows, never the run.
+        // The accuracy checks' refresh surface — FMP dated EOD, written through
+        // the shared price-bar cache (`docs/portfolio-analysis.md` §Outcome
+        // learning).
         let out_fmp = FmpDataSource::new(fmp_key)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let outcome_prices = portfolio::outcome::LiveOutcomePrices { fmp: out_fmp };
-        let outcome_embedder = embedding::LocalEmbedder::new(&endpoint, &roster.embedder).ok();
-        let outcome_sources = portfolio::outcome::OutcomeSources {
-            price: &outcome_prices,
-            embedder: outcome_embedder
-                .as_ref()
-                .map(|e| e as &dyn embedding::Embedder),
-        };
 
         // A requested resume loads and validates the checkpoint trail here —
         // fast refusal with the reason, before the slot is claimed. The roster
@@ -933,7 +924,7 @@ async fn generate_portfolio_manual(
             &analyst,
             &profile,
             selective,
-            Some(&outcome_sources),
+            Some(&outcome_prices),
             resume_checkpoint,
             &paths,
             &guard,

@@ -31,7 +31,8 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | `portfolio_runs` | Local-suite run history (retention 30): each run's two-arm verdicts with their thesis documents, actions, roll-up and audit record — the research documents and the page roster included ([storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage)). Nascent today, but durable once the suite runs live. |
 | `holdings_pulls` | The single latest view-only holdings snapshot. |
 | `portfolio_quick_checks` | The quick check's between-run state — attention flags, unexamined evidence events, the rate-print cache. Durable analytical state: flags do not regenerate on the next sweep. |
-| `portfolio_outcome_episodes` | The episode store — the accuracy pass's price records with their checks and unscorable states ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)); append-only state that outlives the 30-run retention, since an aged-out run cannot regenerate its episodes. |
+| `portfolio_episodes` | The episode store — the accuracy pass's price records ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)); append-only state that outlives the 30-run retention, since an aged-out run cannot regenerate its episodes. Carried under their ids (joined in format v20). |
+| `portfolio_episode_checks` | The checks and unscorable states written onto the episodes, carried under their ids and their episodes' (joined in format v20). |
 | `price_bars` | The shared price-bar cache — public price data: Trade Opportunities' render-time read and both jobs' accuracy checks' refresh target, carried so an imported store keeps its series and their as-of dates; a check still waits for a successful refresh ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)). |
 | `web_documents` | The shared web-research document cache (joined in format v4; requested/final URL split in format v5), including each normalized requested-URL key and its separate post-redirect final URL so imported repeat fetches preserve both cache hits and provenance. |
 | `web_source_state` | The shared web-research extraction telemetry (joined in format v4; the failed / denied fetch-attempt counters joined in format v6) — learned full/thin counts, the failed and denied attempt counts, extraction profile, and render-first state. |
@@ -75,7 +76,8 @@ market-signal-export-YYYY-MM-DD.zip
     portfolio_runs.ndjson
     holdings_pulls.ndjson
     portfolio_quick_checks.ndjson   format v2+
-    portfolio_outcome_episodes.ndjson   format v3+
+    portfolio_episodes.ndjson       format v20+
+    portfolio_episode_checks.ndjson format v20+
     price_bars.ndjson               format v3+
   reports/                   the canonical Markdown bodies
   research-archive/          processed source documents
@@ -136,6 +138,7 @@ The **Import** action in the same Settings section:
 3. Read and validate the manifest: reject a format version newer than this build understands; verify every entry's size + checksum, and never consume bytes the manifest doesn't list.
    Every table entry **the archive's own format version requires** (five in format v1 — the shipped build's format; the current set otherwise) must be **present and manifest-listed** — a truncated archive is refused, never imported as a sparse store, while a v1 archive imports complete under its own five-entry set (backward compatibility by version, never sparse tolerance).
    The pre-release v2 through v10 shapes, which no shipped build wrote, are refused outright (no local-suite data compat pre-release).
+   A v12–v19 archive's `portfolio_outcome_episodes` entry — the retired decision episodes — is required and verified like any entry of its format, and never read, so its import starts the episode store fresh.
    All row-level validation — NDJSON parse, embedding decode, the schema's uniqueness/cardinality — also runs here, **before any destructive step**, so a bad archive can only abort while the store is untouched.
    Reading the archive is itself bounded: entries unpack under a total-size ceiling (4 GiB — generous by orders of magnitude over a real corpus), and `manifest.json` — which is read before that ceiling can apply — carries its own smaller bound (16 MiB), so a crafted zip can't demand unbounded memory through either read.
 4. Determine whether the target store is **empty** (no reports, no learnings, no portfolio runs):
@@ -161,6 +164,7 @@ It is a local database artifact, like the re-derived `markdown_path`, so the exp
 A clock-stepped report — one generated last but dated earliest — therefore **survives on the source machine and can be evicted after an import**, where it is the earliest insertion rather than the latest.
 That is the accepted cost of leaving a machine-local artifact out of the archive, not an equivalence: the retention rule's own guarantee is narrower and unaffected, namely that a run can never evict the report *it just wrote*, since a report generated after the import takes the highest insertion order.
 Where that report sits in the date-ordered sidebar is a separate question and depends on whether the clock has been corrected.
+The episode store's insertion order, by contrast, is portable: episodes and checks travel under their ids, since a check names its episode by id and a symbol's latest episode is its highest.
 
 ### Why replace-all, not merge (for v1)
 

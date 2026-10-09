@@ -1,693 +1,475 @@
-//! Outcome learning — the recommendation-state-keyed decision-episode machinery
-//! (`docs/portfolio-analysis.md §Outcome learning`): episodes open when a holding's
-//! recommendation state changes, accrue engine-computed 1/3/6/12-month outcome
-//! labels (total-return primary, price-only common basis), and feed the derived
-//! calibration reads. Everything here is deterministic; no model stage is involved.
+//! Outcome learning — the accuracy record (`docs/portfolio-analysis.md §Outcome
+//! learning`): an append-only store of **price records** (episodes), each scored
+//! once per horizon by an engine-computed **check**, and the per-arm **accuracy
+//! scores** derived from the checks. Everything here is deterministic; no model
+//! stage is involved, and nothing the model writes alters a check or a score.
 //!
-//! The module splits into a pure core and two thin impure seams:
-//! - **Lifecycle** ([`plan_episodes`], [`tag_alignment`]) and **reads**
-//!   ([`derive_reads`]) are pure functions over in-memory episodes.
-//! - **Labels** ([`mature_labels`]) read price series through [`SeriesCtx`] — the
-//!   shared price-bar cache plus an [`OutcomePriceSource`] for label-time
-//!   refreshes (FMP dated EOD) — and the dividend history for the total-return
-//!   leg.
-//!
-//! The standing-thesis episode-creation leg and the self-correction counters are
-//! **live**: both read the 6g what-changed attribution validator's per-holding
-//! audit ([`crate::portfolio::WhatChangedAudit`]) — an attributed thesis-level
-//! move or a labeled self-correction opens an episode with the action unchanged
-//! ([`OpenReason::ThesisChange`]), and the validated self-correction counts
-//! accumulate per episode. Terminal outcomes are typed conservatively: no
-//! corporate-action feed exists, so a previously covered series that stops
-//! resolves `terminal-unscorable` past the price-coverage grace, never a
-//! fabricated acquisition or bankruptcy read.
+//! The core is pure and job-agnostic: the due rule, the check, the score and the
+//! opening cadence read a plain [`PriceRecord`] and its checks, so Trade
+//! Opportunities' episode store (the same record plus its lifecycle id and
+//! decision class) reuses them over its own table. The impure seams are thin:
+//! the closes source ([`OutcomePriceSource`]) and the store calls the job makes
+//! (`portfolio::store`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use anyhow::Result;
-use chrono::{Months, NaiveDate};
-use rusqlite::Connection;
+use chrono::{Datelike, Months, NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 
-use crate::portfolio::diff::HoldingsDiff;
-use crate::portfolio::engine::{DatedValue, HurdleRead};
-use crate::portfolio::{
-    store, Action, ActionSource, Conviction, Grade, HoldingAudit, HoldingVerdict, HurdleState,
-    PositionChange, PriceTargets, RiskTier, SubScores, VerdictDisposition,
-};
-use crate::schwab::Holdings;
+use crate::portfolio::engine::{self, DatedValue};
 
 // ---- Calibratable constants (`docs/portfolio-analysis.md §Starting parameters`) --
 
-/// The matured archive's row cap — matured episodes beyond it evict oldest-first.
-/// The active set carries no cap: an episode still accruing labels is never evicted.
-pub const MATURED_ARCHIVE_CAP: u32 = 5_000;
+/// The episode cadence: a priced holding analyzed this run opens an episode when
+/// it has none, or when its latest is this many calendar months old or more.
+pub const EPISODE_CADENCE_MONTHS: u32 = 1;
 
-/// How long past a window's end a pending price leg may wait for coverage before it
-/// closes as the typed `price-coverage-unscorable` label (~3 months, the constant
-/// shared with Trade Opportunities — `docs/storage.md §Local Analysis Suite
-/// Storage`).
-pub const PRICE_COVERAGE_GRACE_DAYS: i64 = 91;
+/// The horizon proximity: a check reads the close on the horizon date, or the
+/// last session at or before it within this many sessions. Sessions count as
+/// weekdays — `market_clock` carries no holiday table, so a holiday counts as a
+/// session and the window is at most this many weekdays back.
+pub const HORIZON_PROXIMITY_SESSIONS: i64 = 5;
 
-/// The proposal eligibility bar: unique holdings with matured (scored) windows,
-/// clustered by holding — never raw episode counts. Below it the pass records the
-/// typed below-bar note and proposes nothing.
-pub const PROPOSAL_ELIGIBILITY_BAR: usize = 30;
+// ---- The record --------------------------------------------------------------
 
-/// The bear–bull band's declared nominal coverage, scored with the interval score
-/// on the price-only label.
-pub const NOMINAL_BAND_COVERAGE: f64 = 0.80;
-
-/// The four forward label windows, in months.
-pub const LABEL_WINDOWS_MONTHS: [u32; 4] = [1, 3, 6, 12];
-
-/// The market benchmark's FMP identity (`docs/data-sources.md §Financial
-/// Modeling Prep` — the benchmark identity table). Episodes never persist this
-/// symbol — it is applied at label time — so the 2026-08-12 rename from Stooq's
-/// `^spx` touched only the price-bar cache (cleaned at store init).
-pub const MARKET_BENCHMARK: &str = "^GSPC";
-
-/// Coverage tolerance: the scored end bar — the last close at or before a
-/// window end — covers that end only when it sits within this many calendar
-/// days of it (weekends and short market closures). The bound binds the bar
-/// actually scored, never the series' latest bar ([`window_end_close`]).
-const COVERAGE_TOLERANCE_DAYS: i64 = 4;
-
-/// Session-proximity bound around a keyed session, in calendar days (long
-/// weekend + holiday headroom). It bounds both session-adjacent reads: the
-/// "next session's close" **after** the episode anchor (the entry) and the
-/// close **at or before** the intrinsic-vintage session (the basis bridge). A
-/// bar beyond the bound on either side is not an adjacent session — a late
-/// series start, a sparse cache — so the entry case holds the window pending
-/// and the bridge case excludes the bridge-dependent reads, never a much-later
-/// entry or a years-stale bridge.
-const ENTRY_TOLERANCE_DAYS: i64 = 7;
-
-/// Calendar-day pad on fetch ranges, so the entry anchor (the first session after
-/// the run) and month-end joins never sit exactly on a fetch boundary.
-const FETCH_PAD_DAYS: i64 = 7;
-
-// ---- Sector identity -------------------------------------------------------------
-
-/// The SPDR sector-ETF benchmark for an FMP profile sector label
-/// (`docs/data-sources.md §Financial Modeling Prep` — the sector-ETF mapping).
-/// Accepts both FMP's
-/// label vocabulary and the near-identical GICS names; `None` for anything else
-/// (the typed `sector-unscorable` path, never a guessed benchmark).
-pub fn spdr_for_sector(label: &str) -> Option<&'static str> {
-    let l = label.trim().to_ascii_lowercase();
-    Some(match l.as_str() {
-        "basic materials" | "materials" => "XLB",
-        "communication services" => "XLC",
-        "energy" => "XLE",
-        "financial services" | "financials" => "XLF",
-        "industrials" => "XLI",
-        "technology" | "information technology" => "XLK",
-        "consumer defensive" | "consumer staples" => "XLP",
-        "real estate" => "XLRE",
-        "utilities" => "XLU",
-        "healthcare" | "health care" => "XLV",
-        "consumer cyclical" | "consumer discretionary" => "XLY",
-        _ => return None,
-    })
+/// The three forecast horizons, each a window from the episode's creation date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Horizon {
+    ThreeMonth,
+    TwelveMonth,
+    ThreeYear,
 }
 
-/// The episode's **entry-stamped sector identity** — the sector label at the anchor
-/// run plus its resolved SPDR benchmark symbol, stamped once and never re-classified
-/// at label time (resolvable after an exit by construction). A holding with no valid
-/// mapping carries the typed `sector-unscorable` reason on its sector legs; the
-/// market leg is unaffected.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SectorIdentity {
-    pub sector: Option<String>,
-    pub benchmark: Option<String>,
-    /// The typed `sector-unscorable` reason when no benchmark resolved.
-    pub unscorable: Option<String>,
-}
+impl Horizon {
+    pub const ALL: [Horizon; 3] = [Horizon::ThreeMonth, Horizon::TwelveMonth, Horizon::ThreeYear];
 
-impl SectorIdentity {
-    /// Resolve a profile sector label into the stamped identity.
-    pub fn resolve(sector_label: Option<&str>) -> Self {
-        match sector_label {
-            Some(label) => match spdr_for_sector(label) {
-                Some(etf) => Self {
-                    sector: Some(label.to_string()),
-                    benchmark: Some(etf.to_string()),
-                    unscorable: None,
-                },
-                None => Self {
-                    sector: Some(label.to_string()),
-                    benchmark: None,
-                    unscorable: Some(format!(
-                        "sector-unscorable: no SPDR mapping for sector {label:?}"
-                    )),
-                },
-            },
-            None => Self::unscorable("no sector label resolved at the anchor run"),
+    /// The horizon's length in calendar months.
+    pub fn months(self) -> u32 {
+        match self {
+            Horizon::ThreeMonth => 3,
+            Horizon::TwelveMonth => 12,
+            Horizon::ThreeYear => 36,
         }
     }
 
-    pub fn unscorable(reason: &str) -> Self {
-        Self {
-            sector: None,
-            benchmark: None,
-            unscorable: Some(format!("sector-unscorable: {reason}")),
+    /// The horizon's stored key — the store's `horizon` column.
+    pub fn key(self) -> &'static str {
+        match self {
+            Horizon::ThreeMonth => "three_month",
+            Horizon::TwelveMonth => "twelve_month",
+            Horizon::ThreeYear => "three_year",
         }
+    }
+
+    /// The horizon a stored key names; `None` for any other text.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Horizon::ALL.into_iter().find(|h| h.key() == key)
     }
 }
 
-// ---- Episode types ----------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EpisodeState {
-    Active,
-    /// Frozen into the compact matured archive: every window label recorded.
-    Matured,
+/// One value per horizon, each null where none was stated — the model's expected
+/// prices (null where the appendix left a horizon unstated) or the engine's base
+/// values (null where the engine authored no band).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct HorizonPrices {
+    pub three_month: Option<f64>,
+    pub twelve_month: Option<f64>,
+    pub three_year: Option<f64>,
 }
 
-/// The next run's deterministic net-alignment tag (`docs/portfolio-analysis.md`
-/// §Outcome learning). The name is deliberate: a net diff cannot see round trips,
-/// transfers, or partial execution, so the tag claims only what the diff observed —
-/// never that advice was "followed".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ObservedNetAlignment {
-    Aligned,
-    Contrary,
-    Partial,
-    Unknown,
-    /// A net long↔short reversal — its own class, excluded from the aligned /
-    /// contrary cohort slices (crossing zero lies outside any long-side
-    /// recommendation's direction).
-    Reversed,
+impl HorizonPrices {
+    pub fn get(&self, horizon: Horizon) -> Option<f64> {
+        match horizon {
+            Horizon::ThreeMonth => self.three_month,
+            Horizon::TwelveMonth => self.twelve_month,
+            Horizon::ThreeYear => self.three_year,
+        }
+    }
+
+    /// Whether any horizon carries a value.
+    pub fn any(&self) -> bool {
+        Horizon::ALL.iter().any(|h| self.get(*h).is_some())
+    }
 }
 
-/// Why an episode opened — the recommendation-state change that minted it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum OpenReason {
-    /// First analysis of the holding — or the first after the machinery landed,
-    /// or the recovery re-seed after the symbol's active episode row became
-    /// unreadable ([`plan_episodes`]'s two seeding seams).
-    Debut,
-    BranchFlip,
-    ActionChange,
-    /// The action change was the over-age rule-demotion, not a model decision.
-    RuleDemotion,
-    /// The standing thesis changed with the branch and action unchanged — the
-    /// run's validated what-changed audit recorded an attributed thesis-level
-    /// move or a labeled self-correction
-    /// (`docs/portfolio-analysis.md §Outcome learning`; live since the 6g
-    /// attribution validator landed).
-    ThesisChange,
-}
-
-/// What a non-opening run recorded onto the active episode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ObservationKind {
-    /// A fresh pass re-affirmed the recommendation (inputs may have moved — a
-    /// re-affirmed decision over moved inputs is still one decision).
-    Reaffirmed,
-    /// A selective run carried the verdict forward unchanged.
-    Carried,
-    /// An insufficient-evidence exit retained the standing recommendation.
-    Abstained,
-}
-
-/// One extension observation on an active episode.
+/// An episode — the **price record**: the symbol, the creation date (the
+/// creation run's ET session), the spot that day, the anchor close that bridges
+/// the record across a later split (the newest settled close strictly before the
+/// creation session, with its bar date), the model's expected share price and
+/// the engine's base value at the three horizons — nothing else. Never updated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EpisodeObservation {
-    pub run_id: String,
-    /// The observing run's `created_at`.
-    pub observed_at: String,
-    pub kind: ObservationKind,
-}
-
-/// A confirmed falsifier crossing recorded onto the episode that carried the
-/// condition (`{condition_id, confirmed_at, confirmation_observation_id}` —
-/// `docs/portfolio-analysis.md §Outcome learning`). The lead-time fields are
-/// engine-stamped when the episode's twelve-month window matures.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FalsifierEvent {
-    pub condition_id: String,
-    /// The run date the crossing confirmed on.
-    pub confirmed_at: String,
-    /// The distinct observation the confirmation keyed on.
-    pub confirmation_observation_id: String,
-    /// True when the confirmation arrived after the holding's episode had
-    /// matured, or its date lies beyond that episode's twelve-month measurement
-    /// window — recorded as context for the next episode, feeding no lead-time
-    /// read (that read is bounded to the episode's own window).
-    pub post_maturity: bool,
-    /// Signed trading-day distance from `confirmed_at` to the first within-window
-    /// close below the recorded twelve-month bear-case line: positive = the
-    /// falsifier confirmed before the breach, zero = same session, negative = the
-    /// line had already broken. Stamped when the 12-month window matures.
-    pub lead_time_trading_days: Option<i64>,
-    /// Explicit `no-material-drawdown`: no within-window close below the bear line
-    /// by maturity.
-    pub no_material_drawdown: Option<bool>,
-}
-
-/// The decision-time engine snapshot a priced episode carries — what a future
-/// parameter proposal needs for counterfactual re-testing, frozen on the episode
-/// because the run's own audit record can age out of the run retention before a
-/// 12-month label matures.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CalibrationSnapshot {
-    pub sub_scores: SubScores,
-    pub grade: Grade,
-    /// The appendix's conviction at open — null where the document stated
-    /// none (`docs/portfolio-analysis.md` §The holding verdict).
-    pub conviction: Option<Conviction>,
-    pub risk_tier: RiskTier,
-    /// The scenario bands and base-case targets (price targets — target
-    /// calibration scores these against the price-only label).
-    pub price_targets: PriceTargets,
-    pub dead_money: HurdleState,
-    /// The full hurdle read (scenario total-return distribution + the tier-scaled
-    /// hurdle rate) the audit carried.
-    pub hurdle: Option<HurdleRead>,
-    /// The run-level DGS2 print the hurdle was anchored on.
-    pub dgs2: Option<f64>,
-    /// The authoring-time spot the targets were computed from (the quick-check
-    /// basis's print). Target calibration scores bands **in return space over this
-    /// spot**: the authored band is an absolute price in the authoring-time basis,
-    /// while label-time closes are retroactively split-adjusted, so a price-space
-    /// comparison would shear across a split. `None` (no basis persisted) excludes
-    /// the episode from band scoring rather than comparing across bases.
-    pub authoring_spot: Option<f64>,
-    /// Cap signals in force at the decision (the pre-profit overlay's matched
-    /// rules; empty when none).
-    pub cap_signals: Vec<String>,
-    pub grade_parameter_version: Option<String>,
-    pub target_parameter_version: Option<String>,
-    pub degraded_inputs: Vec<String>,
-}
-
-/// The priced branch's episode body.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PricedEpisode {
-    /// The final portfolio action.
-    pub action: Action,
-    pub snapshot: CalibrationSnapshot,
-}
-
-/// The `role_risk_only` branch's reduced episode body — no lean, grade, conviction,
-/// band, target, or dead-money field exists on that verdict to record. Excluded from
-/// target calibration and every grade-linked read; counted in its own class.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RoleRiskEpisode {
-    pub action: Action,
-    pub degraded_inputs: Vec<String>,
-}
-
-/// The branch-typed episode body — an explicit schema per branch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EpisodeBody {
-    Priced(Box<PricedEpisode>),
-    RoleRiskOnly(RoleRiskEpisode),
-}
-
-/// One forward label window on an episode.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WindowLabel {
-    pub window_months: u32,
-    /// The window's end date (anchor date + the window, calendar-clamped), ISO.
-    pub window_end: String,
-    pub outcome: LabelOutcome,
-}
-
-/// A window label's outcome. Typed unscorable closures are counted and logged,
-/// excluded from spreads and calibration denominators.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LabelOutcome {
-    Pending,
-    Scored(Box<ScoredLabel>),
-    /// The price leg never covered the window within the shared grace — or,
-    /// over a covered window, its price arithmetic did not finish finite
-    /// (Codex I16, round 1).
-    PriceCoverageUnscorable,
-    /// A previously covered series stopped resolving — conservatively terminal
-    /// (no corporate-action feed exists to type an acquisition or bankruptcy).
-    TerminalUnscorable,
-}
-
-/// One scored window label — reconstructed statelessly from split-adjusted daily
-/// closes. The entry reference is the **next session's close** after the anchor run
-/// (a consistent evaluation anchor, deliberately not called an executable price).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ScoredLabel {
-    pub entry_date: String,
-    pub entry_price: f64,
-    pub end_date: String,
-    pub end_price: f64,
-    /// The label-basis close **at or before the intrinsic-vintage ET session**
-    /// — the same-session counterpart of the snapshot's authoring spot, so
-    /// authored absolute prices (band edges, the bear line) convert into the
-    /// label basis as `price × anchor_close ⁄ authoring_spot`. Keyed at the
-    /// intrinsic vintage, not the episode anchor: the spot and targets belong to
-    /// the intrinsic pass, older than the anchor on a rule-demotion open (for
-    /// vintage-fresh episodes the two key the same session). The next-session
-    /// entry cannot serve this role: it sits an overnight gap away from the
-    /// spot, which would shear the comparison. `None` when the series carried no
-    /// proximate bar at or before that session — those labels are excluded from
-    /// band scoring (the residual error of the bridge is intraday
-    /// quote-vs-close, never a split or a gap).
-    pub anchor_close: Option<f64>,
-    /// Price-only forward return — the cross-entry common basis.
-    pub price_return: f64,
-    /// Total return: the window's cash dividends summed without reinvestment over
-    /// the anchor price. `None` = the label-time dividends re-pull failed — the
-    /// labeled price-only fallback, with the gap recorded.
-    pub total_return: Option<f64>,
-    pub total_return_gap: Option<String>,
-    /// Maximum drawdown over the window's closes (≤ 0).
-    pub max_drawdown: f64,
-    /// Price-only return spread vs the market benchmark (both sides price-only).
-    pub vs_market: Option<f64>,
-    pub market_leg_gap: Option<String>,
-    /// Price-only return spread vs the entry-stamped sector benchmark.
-    pub vs_sector: Option<f64>,
-    pub sector_leg_gap: Option<String>,
-    /// The run date the label recorded on.
-    pub labeled_at: String,
-}
-
-/// One decision episode — the bounded twelve-month measurement instrument
-/// (`docs/portfolio-analysis.md §Outcome learning`), persisted independently of the
-/// run retention and frozen into the matured archive once its 12-month labels
-/// record.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DecisionEpisode {
-    pub episode_id: String,
+pub struct PriceRecord {
     pub symbol: String,
-    pub anchor_run_id: String,
-    /// The anchor run's `created_at` (UTC RFC3339); its date keys the label windows.
-    pub anchor_at: String,
-    /// The run that actually authored the intrinsic fields this episode records —
-    /// the verdict's effective analysis vintage.
-    pub intrinsic_vintage: String,
-    /// True when the intrinsic fields were authored by the anchor run itself. The
-    /// lean-keyed cohorts and target calibration consume vintage-fresh episodes
-    /// only (a carried verdict's forecast is scored by the episode that authored
-    /// it).
-    pub vintage_fresh: bool,
-    pub action_source: ActionSource,
-    /// The position delta at the anchor run.
-    pub position_change: PositionChange,
-    pub sector: SectorIdentity,
-    pub opened: Vec<OpenReason>,
-    pub body: EpisodeBody,
-    pub observations: Vec<EpisodeObservation>,
-    /// Tagged once, by the first run after the anchor, from its deterministic
-    /// holdings diff.
-    pub alignment: Option<ObservedNetAlignment>,
-    pub falsifier_events: Vec<FalsifierEvent>,
-    pub labels: Vec<WindowLabel>,
-    pub state: EpisodeState,
-    /// The validated self-corrections accumulated on this episode — seeded from the
-    /// opening run's what-changed audit and extended by later fresh passes
-    /// (`docs/portfolio-analysis.md §Outcome learning`; the 6g attribution
-    /// validator labels them, downgrades included).
-    pub self_correction_count: u32,
+    /// ISO `YYYY-MM-DD` — data, never identity (identity is insertion order).
+    pub created_on: String,
+    pub spot: f64,
+    /// `None` when the creation run had no dated closes — every horizon then
+    /// writes unscorable rather than comparing cross-basis.
+    pub anchor: Option<DatedValue>,
+    pub model: HorizonPrices,
+    pub engine: HorizonPrices,
 }
 
-impl DecisionEpisode {
-    /// The anchor date (the run date the windows key on) — the anchor instant's
-    /// **ET session date** ([`crate::market_clock::et_date_of`]), never the UTC
-    /// date prefix: an evening-ET run has rolled to the next UTC date, and a
-    /// UTC-dated anchor keys the entry one session late and the basis bridge to
-    /// a session traded entirely after the decision.
-    pub fn anchor_date(&self) -> Option<NaiveDate> {
-        crate::market_clock::et_date_of(&self.anchor_at)
-    }
+/// An episode under its store identity — the autoincrement id, whose order is
+/// insertion order (which episode is a holding's latest).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredEpisode {
+    pub id: i64,
+    pub record: PriceRecord,
+}
 
-    fn body_action(&self) -> Action {
-        match &self.body {
-            EpisodeBody::Priced(p) => p.action,
-            EpisodeBody::RoleRiskOnly(r) => r.action,
+// ---- Checks ------------------------------------------------------------------
+
+/// One arm's leg of a scored check: the expected price as compared — the
+/// recorded price converted through the check's bridge factor onto the close's
+/// basis — and the per-check score.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LegScore {
+    pub expected: f64,
+    pub score: f64,
+}
+
+/// Why a horizon was written unscorable at once (it leaves the due set and
+/// counts in no score).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UnscorableCause {
+    /// Neither arm recorded a price at this horizon.
+    NoForecast,
+    /// The episode was created with no dated closes, so its prices carry no
+    /// anchor to bridge from.
+    NoAnchor,
+    /// The refreshed series no longer carries the episode's anchor bar.
+    AnchorBarMissing,
+    /// The refreshed series served no close inside the proximity — a delisting,
+    /// an acquisition, a ticker change, a symbol the source never covered.
+    NoCloseInProximity,
+}
+
+/// What a check found at its horizon.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum CheckOutcome {
+    Scored {
+        /// The close read — the horizon date's, or the last session at or before
+        /// it within the proximity — with its bar date.
+        close: DatedValue,
+        /// The split-bridge factor the recorded prices converted through (1.0
+        /// where the series was not re-based since creation).
+        bridge_factor: f64,
+        /// `None` where the episode recorded no model price at this horizon.
+        model: Option<LegScore>,
+        /// `None` where the episode recorded no engine base value at this horizon.
+        engine: Option<LegScore>,
+    },
+    Unscorable { cause: UnscorableCause },
+}
+
+/// A check, written onto its episode once: the horizon, the check date (the
+/// writing run's ET session), the run that wrote it, and what it found.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Check {
+    pub horizon: Horizon,
+    pub checked_on: String,
+    pub run_id: String,
+    pub outcome: CheckOutcome,
+}
+
+/// A check under its store identity: the autoincrement id (insertion order —
+/// run order, which the self-review's read-by-the-prior-analysis word compares)
+/// and the episode it scores.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredCheck {
+    pub id: i64,
+    pub episode_id: i64,
+    pub check: Check,
+}
+
+/// A horizon's date: the creation date plus the horizon's calendar months (a
+/// month-end creation clamps to the target month's last day).
+pub fn horizon_date(created_on: NaiveDate, horizon: Horizon) -> Option<NaiveDate> {
+    created_on.checked_add_months(Months::new(horizon.months()))
+}
+
+/// Every due horizon — one whose date is **strictly before** the run's session
+/// (so the close it reads has settled) and onto which nothing has been written —
+/// as `(episode id, horizon)`, in insertion order then horizon order. One query
+/// over the store: nothing is ever re-scored, and a horizon is scored by the
+/// first run after its date, however many runs later that is. `written` is
+/// every `(episode, horizon)` the store holds a check row for, read or not.
+pub fn due_horizons(
+    episodes: &[StoredEpisode],
+    written: &std::collections::HashSet<(i64, Horizon)>,
+    session: NaiveDate,
+) -> Vec<(i64, Horizon)> {
+    let mut due = Vec::new();
+    for ep in episodes {
+        let Some(created) = parse_date(&ep.record.created_on) else {
+            continue;
+        };
+        for h in Horizon::ALL {
+            let Some(date) = horizon_date(created, h) else {
+                continue;
+            };
+            if date < session && !written.contains(&(ep.id, h)) {
+                due.push((ep.id, h));
+            }
         }
     }
+    due
+}
 
-    /// Whether every window label has recorded (scored or typed) — the maturity
-    /// boundary.
-    fn fully_labeled(&self) -> bool {
-        self.labels
-            .iter()
-            .all(|l| !matches!(l.outcome, LabelOutcome::Pending))
+/// The cause a due horizon is unscorable for **without reading any series** —
+/// no forecast at the horizon, or no anchor to bridge from — so the symbol
+/// spends no pull on it. `None` when the horizon needs the refreshed series.
+pub fn unscorable_without_series(record: &PriceRecord, horizon: Horizon) -> Option<UnscorableCause> {
+    if record.model.get(horizon).is_none() && record.engine.get(horizon).is_none() {
+        return Some(UnscorableCause::NoForecast);
+    }
+    if record.anchor.is_none() {
+        return Some(UnscorableCause::NoAnchor);
+    }
+    None
+}
+
+/// The per-check score: `100 × (1 − |expected − actual| ⁄ actual)`, floored at 0.
+pub fn per_check_score(expected: f64, actual: f64) -> f64 {
+    (100.0 * (1.0 - (expected - actual).abs() / actual)).max(0.0)
+}
+
+/// Score one due horizon against the symbol's freshly fetched dated-EOD series.
+/// The anchor bar and the horizon close are both read from `closes`, one fetch,
+/// so they sit on one basis; the recorded prices cross the split-adjustment
+/// bridge (`engine::split_bridge_factor`, its deadband included) before scoring,
+/// so a split can never score as a miss.
+pub fn check_horizon(record: &PriceRecord, horizon: Horizon, closes: &[DatedValue]) -> CheckOutcome {
+    let unscorable = |cause| CheckOutcome::Unscorable { cause };
+    if let Some(cause) = unscorable_without_series(record, horizon) {
+        return unscorable(cause);
+    }
+    let Some(target) = parse_date(&record.created_on).and_then(|d| horizon_date(d, horizon)) else {
+        return unscorable(UnscorableCause::NoCloseInProximity);
+    };
+    let Some(close) = close_within_proximity(closes, target) else {
+        return unscorable(UnscorableCause::NoCloseInProximity);
+    };
+    let anchor = record.anchor.as_ref().expect("checked above");
+    let Some(factor) = engine::split_bridge_factor(closes, anchor) else {
+        return unscorable(UnscorableCause::AnchorBarMissing);
+    };
+    let leg = |price: Option<f64>| {
+        price.map(|p| {
+            let expected = p * factor;
+            LegScore {
+                expected,
+                score: per_check_score(expected, close.value),
+            }
+        })
+    };
+    CheckOutcome::Scored {
+        close: close.clone(),
+        bridge_factor: factor,
+        model: leg(record.model.get(horizon)),
+        engine: leg(record.engine.get(horizon)),
     }
 }
 
-pub(crate) fn parse_iso_date_prefix(s: &str) -> Option<NaiveDate> {
+/// The close a check reads: the last usable bar (finite, positive) at or before
+/// the horizon date, provided no more than [`HORIZON_PROXIMITY_SESSIONS`]
+/// sessions lie after it up to and including the horizon date.
+fn close_within_proximity(closes: &[DatedValue], target: NaiveDate) -> Option<&DatedValue> {
+    let (bar, date) = closes
+        .iter()
+        .filter(|b| b.value.is_finite() && b.value > 0.0)
+        .filter_map(|b| parse_date(&b.date).map(|d| (b, d)))
+        .filter(|(_, d)| *d <= target)
+        .max_by_key(|(_, d)| *d)?;
+    (sessions_after(date, target) <= HORIZON_PROXIMITY_SESSIONS).then_some(bar)
+}
+
+/// The weekdays strictly after `from` up to and including `to`.
+fn sessions_after(from: NaiveDate, to: NaiveDate) -> i64 {
+    let mut n = 0;
+    let mut d = from;
+    while d < to {
+        d = d.succ_opt().expect("in range");
+        if !matches!(d.weekday(), Weekday::Sat | Weekday::Sun) {
+            n += 1;
+        }
+    }
+    n
+}
+
+pub(crate) fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok()
 }
 
-/// The label windows for an anchor date, all pending.
-pub fn pending_labels(anchor: NaiveDate) -> Vec<WindowLabel> {
-    LABEL_WINDOWS_MONTHS
+// ---- Opening -----------------------------------------------------------------
+
+/// Whether a priced subject analyzed this run opens an episode: it has none, or
+/// its latest (by insertion order) is [`EPISODE_CADENCE_MONTHS`] or more old at
+/// the run's session. A subject re-priced between those points is not recorded,
+/// so the scored forecast is the monthly snapshot.
+pub fn cadence_opens(latest_created_on: Option<&str>, session: NaiveDate) -> bool {
+    let Some(latest) = latest_created_on else {
+        return true;
+    };
+    match parse_date(latest).and_then(|d| d.checked_add_months(Months::new(EPISODE_CADENCE_MONTHS)))
+    {
+        Some(due) => due <= session,
+        // An unreadable creation date cannot hold the cadence closed.
+        None => true,
+    }
+}
+
+// ---- The accuracy scores -----------------------------------------------------
+
+/// One arm's accuracy score at one horizon: the arithmetic mean of its per-check
+/// scores, 0 to 100, over the checks that scored the arm, with the check that
+/// last moved it — its check date and its store id (run order).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArmScore {
+    pub score: f64,
+    pub checks: u32,
+    pub last_moved_on: String,
+    pub last_moved_check: i64,
+}
+
+/// Both arms' scores at one horizon — `None` is "no score yet".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HorizonAccuracy {
+    pub model: Option<ArmScore>,
+    pub engine: Option<ArmScore>,
+}
+
+/// A subject's six accuracy scores — per horizon, per arm.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccuracyScores {
+    pub three_month: HorizonAccuracy,
+    pub twelve_month: HorizonAccuracy,
+    pub three_year: HorizonAccuracy,
+}
+
+impl AccuracyScores {
+    pub fn at(&self, horizon: Horizon) -> &HorizonAccuracy {
+        match horizon {
+            Horizon::ThreeMonth => &self.three_month,
+            Horizon::TwelveMonth => &self.twelve_month,
+            Horizon::ThreeYear => &self.three_year,
+        }
+    }
+
+    fn at_mut(&mut self, horizon: Horizon) -> &mut HorizonAccuracy {
+        match horizon {
+            Horizon::ThreeMonth => &mut self.three_month,
+            Horizon::TwelveMonth => &mut self.twelve_month,
+            Horizon::ThreeYear => &mut self.three_year,
+        }
+    }
+}
+
+/// Derive a subject's accuracy scores from its checks (any order): an
+/// unscorable check counts in no score, and a scored check counts for each arm
+/// whose leg it carries — a null model price's check scores the engine alone.
+pub fn accuracy_scores<'a>(checks: impl IntoIterator<Item = &'a StoredCheck>) -> AccuracyScores {
+    #[derive(Default)]
+    struct Acc {
+        sum: f64,
+        n: u32,
+        last: Option<(i64, String)>,
+    }
+    impl Acc {
+        fn add(&mut self, leg: &LegScore, check: &StoredCheck) {
+            self.sum += leg.score;
+            self.n += 1;
+            if self.last.as_ref().is_none_or(|(id, _)| check.id > *id) {
+                self.last = Some((check.id, check.check.checked_on.clone()));
+            }
+        }
+        fn finish(self) -> Option<ArmScore> {
+            let (id, on) = self.last?;
+            Some(ArmScore {
+                score: self.sum / self.n as f64,
+                checks: self.n,
+                last_moved_on: on,
+                last_moved_check: id,
+            })
+        }
+    }
+    let mut accs: BTreeMap<Horizon, (Acc, Acc)> = BTreeMap::new();
+    for c in checks {
+        if let CheckOutcome::Scored { model, engine, .. } = &c.check.outcome {
+            let (m, e) = accs.entry(c.check.horizon).or_default();
+            if let Some(leg) = model {
+                m.add(leg, c);
+            }
+            if let Some(leg) = engine {
+                e.add(leg, c);
+            }
+        }
+    }
+    let mut out = AccuracyScores::default();
+    for (h, (m, e)) in accs {
+        *out.at_mut(h) = HorizonAccuracy {
+            model: m.finish(),
+            engine: e.finish(),
+        };
+    }
+    out
+}
+
+/// Each symbol's accuracy scores over the whole store — every episode of the
+/// symbol, held or exited, since the record scores the forecast, not the book.
+pub fn scores_by_symbol(
+    episodes: &[StoredEpisode],
+    checks: &[StoredCheck],
+    symbols: impl IntoIterator<Item = String>,
+) -> BTreeMap<String, AccuracyScores> {
+    let symbol_of: std::collections::HashMap<i64, String> = episodes
         .iter()
-        .map(|&m| WindowLabel {
-            window_months: m,
-            window_end: window_end(anchor, m).format("%Y-%m-%d").to_string(),
-            outcome: LabelOutcome::Pending,
+        .map(|e| (e.id, e.record.symbol.to_ascii_uppercase()))
+        .collect();
+    symbols
+        .into_iter()
+        .map(|s| {
+            let key = s.to_ascii_uppercase();
+            let scores = accuracy_scores(
+                checks
+                    .iter()
+                    .filter(|c| symbol_of.get(&c.episode_id) == Some(&key)),
+            );
+            (key, scores)
         })
         .collect()
 }
 
-/// A window's end date: the anchor plus `months` calendar months, day-clamped
-/// (Jan 31 + 1 month = Feb 28/29).
-pub fn window_end(anchor: NaiveDate, months: u32) -> NaiveDate {
-    anchor
-        .checked_add_months(Months::new(months))
-        .unwrap_or(anchor)
-}
-
-// ---- Run-facing records (persisted on the run blob) --------------------------------
-
-/// One opened-episode note on the run record.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OpenedEpisodeNote {
-    pub symbol: String,
-    pub episode_id: String,
-    pub reasons: Vec<OpenReason>,
-}
-
-/// One alignment tag applied by this run's diff.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AlignmentTag {
-    pub symbol: String,
-    pub episode_id: String,
-    pub alignment: ObservedNetAlignment,
-}
-
-/// One newly recorded window label.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MaturedNote {
-    pub symbol: String,
-    pub episode_id: String,
-    pub window_months: u32,
-    /// "scored" / "price-coverage-unscorable" / "terminal-unscorable".
-    pub outcome: String,
-    /// The scored total return where the outcome scored (price-only where the
-    /// total-return leg was unavailable).
-    pub total_return: Option<f64>,
-    pub price_return: Option<f64>,
-}
-
-/// One cohort's per-window statistics — unique-holding counted (multiple episodes
-/// of one symbol average per symbol first).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CohortStat {
-    /// The cohort key (an action rung's kebab label, or a class name).
-    pub key: String,
-    pub unique_holdings: usize,
-    /// Mean absolute total return — the primary ordering read (quotes the
-    /// price-only return per label where the TR leg was unavailable; a labeled mix
-    /// is still a mix, so the pure price-only mean rides beside it).
-    pub mean_total_return: Option<f64>,
-    pub mean_price_return: Option<f64>,
-    /// Price-only relative spreads — the regime-controlled diagnostic.
-    pub mean_vs_market: Option<f64>,
-    pub mean_vs_sector: Option<f64>,
-}
-
-/// The action-cohort spreads for one window.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CohortWindowRead {
-    pub window_months: u32,
-    /// The intrinsic layer: vintage-fresh, model-chosen priced episodes, keyed by action.
-    pub lean_cohorts: Vec<CohortStat>,
-    /// The final-action strata — diagnostic only (raw return ordering cannot score
-    /// a risk override), read across vintages, stratified by the action rung.
-    pub final_action_cohorts: Vec<CohortStat>,
-    /// `role_risk_only` episodes — their own class, never pooled.
-    pub role_risk: Option<CohortStat>,
-    /// Rule-demoted episodes — their own class, out of the pooled cohorts.
-    pub rule_demoted: Option<CohortStat>,
-}
-
-/// Target calibration for one band window and one target-function version
-/// (1- and 12-month bands score at their matching windows; the 3- and 6-month
-/// labels serve the cohort reads). Reads are **split by the snapshot's target
-/// parameter version** — the function is versioned exactly so calibration never
-/// mixes bases (`docs/portfolio-analysis.md §Starting parameters`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TargetCalibrationRead {
-    pub window_months: u32,
-    /// The target-function parameter version this read aggregates (`None` groups
-    /// episodes whose snapshot carries none).
-    pub parameter_version: Option<String>,
-    /// Bands scored (vintage-fresh episodes whose window scored and whose snapshot
-    /// carried the matching band plus the authoring spot).
-    pub scored: usize,
-    /// Fraction of realized prices inside the bear–bull band, vs the declared
-    /// nominal ([`NOMINAL_BAND_COVERAGE`]).
-    pub coverage_rate: Option<f64>,
-    pub nominal_coverage: f64,
-    /// Mean interval (Winkler) score at the nominal level — calibration and
-    /// sharpness together; lower is better, ungameable by width. Scored **in
-    /// return space over the authoring spot** (band edges as returns vs the
-    /// price-only label), so scores are split-safe and comparable across price
-    /// levels.
-    pub mean_interval_score: Option<f64>,
-    /// Mean signed base-case error `(realized − base) / base` — the systematic-bias
-    /// read on the scenario engine (realized reconstructed in the authoring basis
-    /// via `spot × (1 + price_return)`).
-    pub mean_base_signed_error: Option<f64>,
-}
-
-/// One arm's outlook direction hit-rate at its mapped window (short → 1-month,
-/// mid → 6-month, long → 12-month labels) — the two-arm scoreboard's directional
-/// read (`docs/portfolio-analysis.md` §Outcome learning). Realized direction is
-/// the price-only label's sign (a directional call is about the price path); a
-/// neutral read is counted beside the hit-rate, never inside it; a zero realized
-/// return scores a directional call as a miss.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OutlookDirectionRead {
-    /// "engine" (the stand-in arm) or "model".
-    pub arm: String,
-    pub window_months: u32,
-    /// Directional (bullish / bearish) reads whose window scored.
-    pub scored: usize,
-    pub hits: usize,
-    /// Neutral reads at this window, excluded from the hit-rate.
-    pub neutral: usize,
-}
-
-/// The model-vs-engine band head-to-head at one window, computed over the
-/// **paired population only** — episodes where BOTH arms carried a band and the
-/// window scored with an authoring spot and anchor bridge — so the comparison is
-/// same-events by construction, never two independently-pooled populations
-/// (`docs/portfolio-analysis.md` §Outcome learning). The per-arm
-/// `target_calibration` reads keep each arm's full population separately.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HeadToHeadRead {
-    pub window_months: u32,
-    /// Paired bands scored — identical for both arms by construction.
-    pub scored: usize,
-    pub engine_mean_interval_score: Option<f64>,
-    pub model_mean_interval_score: Option<f64>,
-    pub engine_coverage_rate: Option<f64>,
-    pub model_coverage_rate: Option<f64>,
-}
-
-/// One falsifier lead-time record (priced episodes only).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FalsifierLeadTimeRead {
-    pub symbol: String,
-    pub episode_id: String,
-    pub condition_id: String,
-    pub confirmed_at: String,
-    pub lead_time_trading_days: Option<i64>,
-    pub no_material_drawdown: bool,
-}
-
-/// The per-holding self-correction accumulation — the cumulative calibration
-/// signal over the counts the 6g attribution validator labels
-/// (`docs/portfolio-analysis.md §Outcome learning`).
+/// The run's accuracy record (`docs/storage.md §Local Analysis Suite Storage`
+/// — the run audit's accuracy records): each holding's accuracy scores, keyed by
+/// symbol, for every holding in the run — carried and failed ones included,
+/// since their checks ran this run too; the episodes this run opened; and the
+/// checks and unscorable states this run wrote (by run id, so a resumed run's
+/// list spans both processes).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SelfCorrectionRead {
-    pub total: u32,
-    /// Holdings with a non-zero count, `(symbol, count)`.
-    pub per_holding: Vec<(String, u32)>,
+pub struct AccuracyRecord {
+    /// `None` when the episode store could not be read this run — the scores
+    /// are unavailable, not "no score yet" (the run's data health counts the gap).
+    pub scores: Option<BTreeMap<String, AccuracyScores>>,
+    pub opened: Vec<StoredEpisode>,
+    pub checks: Vec<StoredCheck>,
 }
 
-/// The proposal eligibility record — the typed below-bar note
-/// (`docs/portfolio-analysis.md §Outcome learning`: no proposal below the bar; the
-/// proposal statistics themselves ride a later slice once matured data exists).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct EligibilityRecord {
-    /// Unique holdings with at least one **scored** matured window.
-    pub unique_matured_holdings: usize,
-    pub bar: usize,
-    pub eligible: bool,
-    pub note: String,
-}
+// ---- The closes source -------------------------------------------------------
 
-/// The derived scorecard reads (`docs/portfolio-analysis.md §Outcome learning`),
-/// computed over the updated episode set: cohort return-spreads, both arms'
-/// target-band calibration and their head-to-head, outlook-direction hit-rates,
-/// falsifier lead-times, self-correction, and proposal eligibility.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct DerivedReads {
-    pub cohorts: Vec<CohortWindowRead>,
-    pub target_calibration: Vec<TargetCalibrationRead>,
-    /// The model arm's band calibration — same scorer and exclusion rules as
-    /// `target_calibration`, over the episodes' frozen model bands (empty until
-    /// episodes mature); each arm's read covers that arm's own full band
-    /// population.
-    pub model_target_calibration: Vec<TargetCalibrationRead>,
-    /// The paired model-vs-engine head-to-head ([`HeadToHeadRead`]) — the ONLY read
-    /// the arms are compared on.
-    pub head_to_head: Vec<HeadToHeadRead>,
-    /// Both arms' outlook direction hit-rates.
-    pub outlook_direction: Vec<OutlookDirectionRead>,
-    pub falsifier_lead_times: Vec<FalsifierLeadTimeRead>,
-    pub self_correction: SelfCorrectionRead,
-    pub eligibility: EligibilityRecord,
-}
-
-/// This run's outcome-learning records, persisted with the run
-/// (`docs/portfolio-workflow.md §Step 7a, §Step 8`).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct OutcomeRecords {
-    pub opened: Vec<OpenedEpisodeNote>,
-    /// Symbols whose active episode this run extended (re-affirmed / carried /
-    /// abstained).
-    pub extended: Vec<String>,
-    pub alignment_tags: Vec<AlignmentTag>,
-    /// Window labels newly recorded by this run's label pass.
-    pub matured: Vec<MaturedNote>,
-    /// Symbols with a window pending on a price-coverage gap (within grace).
-    pub pending_coverage: Vec<String>,
-    pub reads: DerivedReads,
-}
-
-// ---- The label-time price source ---------------------------------------------------
-
-/// The outcome pass's retrieval seam: daily closes (FMP dated EOD) and the
-/// dividend history for the total-return leg. Behind a trait so the job is
-/// offline-testable; failures are fail-soft at the caller (a label stays pending,
-/// never a run failure).
+/// Where a check's dated-EOD series comes from — the refresh the accuracy pass
+/// writes through the shared price-bar cache.
 pub trait OutcomePriceSource {
     fn daily_closes(&self, symbol: &str, from: NaiveDate, to: NaiveDate)
         -> Result<Vec<DatedValue>>;
-    fn dividend_history(
-        &self,
-        symbol: &str,
-        from: NaiveDate,
-        to: NaiveDate,
-    ) -> Result<Vec<DatedValue>>;
 }
 
-/// The live source: FMP dated EOD for the daily closes, FMP `dividends` for the
-/// total-return leg — the same single rung as the per-holding deep history
-/// (`docs/verification/2026-08-12-stooq-removal-decision.md`).
+/// The live source: FMP dated EOD, the suite's one deep-price rung.
 pub struct LiveOutcomePrices {
     pub fmp: crate::fmp::FmpDataSource,
 }
@@ -700,3754 +482,380 @@ impl OutcomePriceSource for LiveOutcomePrices {
         _to: NaiveDate,
     ) -> Result<Vec<DatedValue>> {
         // The FMP dated-EOD fetch is now-anchored; a lookback from today
-        // covering `from` spans the requested range (labels always read
-        // through the present), which is why the range's own upper bound goes
-        // unread here.
+        // covering `from` spans the requested range, which is why the range's
+        // own upper bound goes unread here.
         // A lookback COUNT, not a session key: the UTC date is fine here —
         // one extra day of history is harmless, and the bars are then
         // selected by their own dates.
+        // An honest empty serve (an HTTP-200 `[]`) passes through as a served
+        // series with no close: the check writes the horizon unscorable at once
+        // and the symbol spends no further pull. Only a failed fetch is `Err`,
+        // leaving the horizon pending.
         let today = chrono::Utc::now().date_naive();
         let lookback = (today - from).num_days().max(1);
-        match self.fmp.fetch_dated_eod(symbol, lookback) {
-            Ok(closes) if !closes.is_empty() => Ok(closes),
-            Ok(_) => anyhow::bail!("FMP dated EOD served no rows for {symbol}"),
-            Err(fmp_err) => Err(fmp_err.context(format!("FMP dated EOD failed for {symbol}"))),
-        }
-    }
-
-    fn dividend_history(
-        &self,
-        symbol: &str,
-        from: NaiveDate,
-        to: NaiveDate,
-    ) -> Result<Vec<DatedValue>> {
-        self.fmp.fetch_dividend_history(symbol, from, to)
+        self.fmp
+            .fetch_dated_eod(symbol, lookback)
+            .map_err(|fmp_err| fmp_err.context(format!("FMP dated EOD failed for {symbol}")))
     }
 }
 
-/// A source with nothing to serve — every call errs, so labels stay pending
-/// (the offline / demo posture; also the stub the job tests pass).
+/// A source with nothing to serve — every refresh fails, so every due horizon
+/// that needs a series stays pending (the posture of a job run with no price
+/// source).
 pub struct UnavailablePriceSource;
 
 impl OutcomePriceSource for UnavailablePriceSource {
     fn daily_closes(&self, symbol: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
         anyhow::bail!("no outcome price source available ({symbol})")
     }
-    fn dividend_history(&self, symbol: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-        anyhow::bail!("no outcome price source available ({symbol})")
-    }
-}
-
-/// The outcome pass's external surfaces, bundled so the job signature grows by one
-/// parameter: the price source plus the optional embedder for the matured-read
-/// durable learnings. `None` at the job level = no retrievals (labels stay
-/// pending) and no embeddings — the pure lifecycle machinery still runs.
-pub struct OutcomeSources<'a> {
-    pub price: &'a dyn OutcomePriceSource,
-    pub embedder: Option<&'a dyn crate::embedding::Embedder>,
-}
-
-/// The shared price-bar cache read/refresh context (`docs/storage.md §Local
-/// Analysis Suite Storage` — the label-time strict rule): a symbol's series is
-/// served from the cache when it already covers the needed span; otherwise one
-/// fetch per symbol per pass refreshes it through today and merges into the cache.
-/// A failed refresh serves whatever the cache holds (the caller's coverage rule
-/// then leaves the label pending).
-pub struct SeriesCtx<'a> {
-    conn: &'a Connection,
-    source: Option<&'a dyn OutcomePriceSource>,
-    mem: HashMap<String, Vec<DatedValue>>,
-    /// Symbols already fetched this pass — success or failure alike, so a symbol
-    /// whose source genuinely lacks the span (a short history, a delisting) can
-    /// never spend a second request in one pass.
-    fetch_attempted: HashSet<String>,
-}
-
-impl<'a> SeriesCtx<'a> {
-    pub fn new(conn: &'a Connection, source: Option<&'a dyn OutcomePriceSource>) -> Self {
-        Self {
-            conn,
-            source,
-            mem: HashMap::new(),
-            fetch_attempted: HashSet::new(),
-        }
-    }
-
-    /// The symbol's cached-through series covering `from` through each of
-    /// `ends` where possible. Coverage is the caller's judgment
-    /// ([`window_end_close`]); this only guarantees the cache is as complete
-    /// as one refresh could make it.
-    fn series(&mut self, symbol: &str, from: NaiveDate, ends: &[NaiveDate]) -> &[DatedValue] {
-        let key = symbol.to_ascii_uppercase();
-        if !self.mem.contains_key(&key) {
-            // Usable bars only, at load as at merge: the FMP parse drops an
-            // unusable close, but a bar cached before that rule or served by
-            // another source must not reach the label arithmetic — a zero
-            // entry close made `price_return` a persisted `null` (Codex I16,
-            // reviewer round; ruled 2026-08-29).
-            let cached = usable_bars(store::load_price_bars(self.conn, &key).unwrap_or_default());
-            self.mem.insert(key.clone(), cached);
-        }
-        let needs_fetch = {
-            let cached = &self.mem[&key];
-            // Start coverage means an anchor-adjacent bar, not merely any bar
-            // before `from`: a sparse cache whose nearest pre-anchor bar is
-            // years old has a hole at the anchor, and serving it as covered
-            // would hand the callers a stale basis bridge.
-            let covers_start = anchor_session_close(cached, from).is_some();
-            // The end judgment is the same bounded end-bar rule scoring uses,
-            // and it weighs EVERY end the caller will score, not just the
-            // furthest: an internal gap at any due window's end must earn the
-            // one heal fetch, or that window closes unscorable with the
-            // source sitting available.
-            !(covers_start && ends.iter().all(|end| window_end_close(cached, *end).is_some()))
-        };
-        if needs_fetch && !self.fetch_attempted.contains(&key) {
-            if let Some(source) = self.source {
-                self.fetch_attempted.insert(key.clone());
-                let fetch_from = from - chrono::Duration::days(FETCH_PAD_DAYS);
-                // A fetch range's upper bound, not a session key (see
-                // `fetch_floor` above for the bound that is one).
-                let fetch_to = chrono::Utc::now().date_naive();
-                if let Ok(bars) = source.daily_closes(symbol, fetch_from, fetch_to) {
-                    let bars = usable_bars(bars);
-                    if !bars.is_empty() {
-                        let _ = store::merge_price_bars(self.conn, &key, &bars);
-                        let merged = merge_series(self.mem.remove(&key).unwrap_or_default(), bars);
-                        self.mem.insert(key.clone(), merged);
-                    }
-                }
-            }
-        }
-        &self.mem[&key]
-    }
-}
-
-/// The bars whose close is usable — finite and strictly positive
-/// (`engine::usable_price`) — the one admission every series the label pass
-/// reads goes through, so the cache never holds and the arithmetic never sees
-/// a print that is not a price.
-fn usable_bars(bars: Vec<DatedValue>) -> Vec<DatedValue> {
-    bars.into_iter()
-        .filter(|b| crate::portfolio::engine::usable_price(Some(b.value)).is_some())
-        .collect()
-}
-
-/// Merge two dated series by date (newer fetch wins on a shared date), sorted
-/// oldest-first.
-fn merge_series(cached: Vec<DatedValue>, fresh: Vec<DatedValue>) -> Vec<DatedValue> {
-    let mut by_date: std::collections::BTreeMap<String, f64> =
-        cached.into_iter().map(|b| (b.date, b.value)).collect();
-    for b in fresh {
-        by_date.insert(b.date, b.value);
-    }
-    by_date
-        .into_iter()
-        .map(|(date, value)| DatedValue { date, value })
-        .collect()
-}
-
-/// The window's scored end bar: the last close at or before `w_end`, bounded by
-/// [`COVERAGE_TOLERANCE_DAYS`]. The coverage rule binds the bar actually
-/// scored, never the series' latest bar — over an internal gap a tail-only
-/// read certified an arbitrarily stale end bar, degenerately the entry bar
-/// itself, recording a fabricated exact-0% window.
-fn window_end_close(closes: &[DatedValue], w_end: NaiveDate) -> Option<&DatedValue> {
-    close_at_or_before(closes, w_end).filter(|b| {
-        parse_iso_date_prefix(&b.date)
-            .is_some_and(|d| d >= w_end - chrono::Duration::days(COVERAGE_TOLERANCE_DAYS))
-    })
-}
-
-fn close_at_or_before(closes: &[DatedValue], date: NaiveDate) -> Option<&DatedValue> {
-    let iso = date.format("%Y-%m-%d").to_string();
-    closes.iter().rev().find(|b| b.date.as_str() <= iso.as_str())
-}
-
-fn first_close_after(closes: &[DatedValue], date: NaiveDate) -> Option<&DatedValue> {
-    let iso = date.format("%Y-%m-%d").to_string();
-    closes.iter().find(|b| b.date.as_str() > iso.as_str())
-}
-
-/// The window's entry reference: the first close after the anchor, **bounded by
-/// [`ENTRY_TOLERANCE_DAYS`]** — a first bar beyond the bound is a series that
-/// never covered the start, not a next-session close.
-fn entry_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> {
-    first_close_after(closes, anchor).filter(|b| {
-        parse_iso_date_prefix(&b.date)
-            .is_some_and(|d| d <= anchor + chrono::Duration::days(ENTRY_TOLERANCE_DAYS))
-    })
-}
-
-/// The anchor-session close — the basis bridge's realized leg
-/// ([`ScoredLabel::anchor_close`]): the last close at or before the anchor,
-/// **bounded by the same [`ENTRY_TOLERANCE_DAYS`]** — a years-old bar from a
-/// sparse cache sits at the anchor's date position but is no decision-instant
-/// close, so it must exclude the bridge-dependent reads rather than scale them.
-/// `pub(crate)` because the 6f retrospective's price comparisons ride the same
-/// bridge contract (`pipeline::retrospective_section`) — one home, one bound.
-pub(crate) fn anchor_session_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> {
-    close_at_or_before(closes, anchor).filter(|b| {
-        parse_iso_date_prefix(&b.date)
-            .is_some_and(|d| d >= anchor - chrono::Duration::days(ENTRY_TOLERANCE_DAYS))
-    })
-}
-
-// ---- The label engine ---------------------------------------------------------------
-
-/// The interval (Winkler) score for a central `(1 − alpha)` interval `[lo, hi]`
-/// against a realized value: width plus `2/alpha` times any exceedance. A proper
-/// scoring rule — an arbitrarily wide band pays for its width, so raw hit-rate
-/// can't be gamed. Lower is better.
-pub fn interval_score(lo: f64, hi: f64, realized: f64, alpha: f64) -> f64 {
-    let width = hi - lo;
-    let mut score = width;
-    if realized < lo {
-        score += (2.0 / alpha) * (lo - realized);
-    } else if realized > hi {
-        score += (2.0 / alpha) * (realized - hi);
-    }
-    score
-}
-
-/// What the label pass changed.
-pub struct LabelPassSummary {
-    pub matured: Vec<MaturedNote>,
-    pub pending_coverage: Vec<String>,
-    pub changed: HashSet<String>,
-}
-
-/// The deterministic label pass (`docs/portfolio-workflow.md §Step 7a`): for every
-/// active episode, compute any newly due window labels after refreshing the
-/// episode symbol's series through the window end via the shared price-bar cache —
-/// independently of the current holdings work-list, so an exited name refreshes
-/// too. A window past the shared grace closes typed rather than pending forever;
-/// an episode with every window recorded freezes into the matured archive. Every
-/// retrieval failure is fail-soft: the label stays pending, never a run failure.
-pub fn mature_labels(
-    episodes: &mut [DecisionEpisode],
-    ctx: &mut SeriesCtx<'_>,
-    today: NaiveDate,
-    run_date: &str,
-) -> LabelPassSummary {
-    let mut summary = LabelPassSummary {
-        matured: Vec::new(),
-        pending_coverage: Vec::new(),
-        changed: HashSet::new(),
-    };
-    // The per-series fetch floor: the earliest active-episode anchor touching
-    // each fetched symbol (the holding itself, the market benchmark, the sector
-    // benchmark), so the one fetch per symbol per pass spans every active
-    // episode's windows on a single adjustment basis. Floored at the fetching
-    // episode's own anchor instead, a partial-range merge after a split could
-    // leave one series in two bases, and a second episode with an older anchor
-    // had no fetch left to heal its start coverage (piece-3 ruling 9).
-    let mut fetch_floor: HashMap<String, NaiveDate> = HashMap::new();
-    for ep in episodes.iter() {
-        if ep.state != EpisodeState::Active {
-            continue;
-        }
-        let Some(anchor) = ep.anchor_date() else {
-            continue;
-        };
-        let mut floor = |symbol: &str, from: NaiveDate| {
-            fetch_floor
-                .entry(symbol.to_ascii_uppercase())
-                .and_modify(|d| *d = (*d).min(from))
-                .or_insert(from);
-        };
-        // The holding's own series is additionally floored at its **intrinsic
-        // vintage**, which on a rule-demotion open is OLDER than the anchor: that
-        // is the session the basis bridge keys at (`anchor_close` below), and a
-        // floor that stops at the anchor leaves the bridge's own bar outside the
-        // refreshed range. Because `merge_price_bars` rewrites only fetched dates
-        // and `price_bars` is never pruned, a bar cached before a split then
-        // satisfies the bridge on a **stale adjustment basis** rather than being
-        // excluded — fabricating a material-drawdown breach off a pre-split price.
-        // The absent-bar sibling case was already excluded correctly; this is the
-        // present-but-stale hole in the same guard.
-        let vintage = crate::market_clock::et_date_of(&ep.intrinsic_vintage);
-        floor(&ep.symbol, vintage.map_or(anchor, |v| v.min(anchor)));
-        // The benchmark legs are read from the anchor only (`bench_return`), never
-        // bridged, so they keep the anchor floor.
-        floor(MARKET_BENCHMARK, anchor);
-        if let Some(b) = &ep.sector.benchmark {
-            floor(b, anchor);
-        }
-    }
-    let floor_for = |fetch_floor: &HashMap<String, NaiveDate>, symbol: &str, own: NaiveDate| {
-        fetch_floor
-            .get(&symbol.to_ascii_uppercase())
-            .copied()
-            .unwrap_or(own)
-            .min(own)
-    };
-    for ep in episodes.iter_mut() {
-        if ep.state != EpisodeState::Active {
-            continue;
-        }
-        let Some(anchor) = ep.anchor_date() else {
-            continue;
-        };
-        let mut changed = false;
-        // The furthest window this pass will read, so the symbol is fetched once.
-        let due_ends: Vec<NaiveDate> = ep
-            .labels
-            .iter()
-            .filter(|l| matches!(l.outcome, LabelOutcome::Pending))
-            .filter_map(|l| NaiveDate::parse_from_str(&l.window_end, "%Y-%m-%d").ok())
-            .filter(|end| *end <= today)
-            .collect();
-        let Some(furthest) = due_ends.iter().max().copied() else {
-            continue;
-        };
-        let closes = ctx
-            .series(&ep.symbol, floor_for(&fetch_floor, &ep.symbol, anchor), &due_ends)
-            .to_vec();
-        let entry = entry_close(&closes, anchor).cloned();
-        // One dividends pull per episode serves every scoring window (the
-        // furthest due end bounds the span) — never one request per window.
-        let mut episode_divs: Option<std::result::Result<Vec<DatedValue>, String>> = None;
-
-        // The sector benchmark is entry-stamped; an unscorable identity types the
-        // sector legs immediately and never blocks scoring.
-        let sector_bench = ep.sector.benchmark.clone();
-        let sector_gap = ep.sector.unscorable.clone();
-        // The label-basis close at the decision instant — the split-bridge the
-        // authored absolute prices convert through ([`ScoredLabel::anchor_close`]),
-        // session-proximity-bounded like the entry — keyed at the episode's
-        // **intrinsic vintage** (ET session), not the episode anchor:
-        // `authoring_spot` and the authored targets belong to the intrinsic
-        // pass, which on a rule-demotion open is older than the anchor run, and
-        // an anchor-keyed bridge sheared the line for vintage-stale episodes
-        // (piece-3 ruling 9). Vintage-fresh episodes key the same session either
-        // way.
-        let anchor_close = crate::market_clock::et_date_of(&ep.intrinsic_vintage)
-            .and_then(|d| anchor_session_close(&closes, d))
-            .map(|b| b.value);
-        // The material-drawdown line converted into the **label basis** via that
-        // bridge (`anchor_close × bear ⁄ authoring_spot`): the authored bear
-        // target is an absolute price in its authoring-time basis, label-time
-        // closes are retroactively split-adjusted, and both bridge legs share the
-        // authoring instant — anchoring on the next-session entry instead would
-        // inject its overnight gap into the line (an upward gap fabricates a
-        // breach, a downward one hides it). No spot or no bridge bar (no authoring
-        // spot persisted, a start-uncovered series, an uncovered intrinsic session)
-        // leaves the events unstamped, excluded from the read — never a
-        // cross-basis comparison.
-        let bear_line_12m = match &ep.body {
-            EpisodeBody::Priced(p) => p
-                .snapshot
-                .price_targets
-                .twelve_month
-                .as_ref()
-                .map(|t| t.bear)
-                .zip(p.snapshot.authoring_spot.filter(|s| *s > 0.0))
-                .zip(anchor_close)
-                .map(|((bear, spot), bridge)| bridge * bear / spot),
-            EpisodeBody::RoleRiskOnly(_) => None,
-        };
-
-        for i in 0..ep.labels.len() {
-            if !matches!(ep.labels[i].outcome, LabelOutcome::Pending) {
-                continue;
-            }
-            let Ok(w_end) = NaiveDate::parse_from_str(&ep.labels[i].window_end, "%Y-%m-%d") else {
-                continue;
-            };
-            if w_end > today {
-                continue;
-            }
-            // Coverage is the scored end bar's own bound plus at least one
-            // post-entry observation — an end bar on the entry session is a
-            // window with no observed post-entry price, not a flat return.
-            let end_bar = window_end_close(&closes, w_end);
-            let holding_covered = entry
-                .as_ref()
-                .zip(end_bar)
-                .is_some_and(|(e, b)| b.date > e.date);
-            // Usable bars bound neither quotient: a feed-extreme pair overflows
-            // the return, and both it and the drawdown persist as required
-            // floats on the label. A covered window whose price arithmetic did
-            // not finish finite takes the coverage lifecycle below — pending
-            // inside the grace, the typed price-coverage closure past it —
-            // never a `continue` that pends forever off the summary (Codex
-            // I16, reviewer round and its Codex round 1; ruled 2026-08-29).
-            let arithmetic = entry
-                .as_ref()
-                .zip(end_bar)
-                .filter(|_| holding_covered)
-                .map(|(e, b)| (b.value / e.value - 1.0, drawdown_over(&closes, &e.date, w_end)))
-                .filter(|(r, d)| r.is_finite() && d.is_finite());
-            let past_grace = today > w_end + chrono::Duration::days(PRICE_COVERAGE_GRACE_DAYS);
-            if arithmetic.is_none() {
-                if holding_covered {
-                    eprintln!(
-                        "outcome learning: {} {}-month window — the price arithmetic over its \
-                         entry and end bars did not finish finite; {}",
-                        ep.symbol,
-                        ep.labels[i].window_months,
-                        if past_grace {
-                            "closing price-coverage unscorable"
-                        } else {
-                            "pending inside the coverage grace"
-                        }
-                    );
-                }
-                if past_grace {
-                    // The grace doubles as the transient-vs-disappearance
-                    // discriminator: a series alive at the entry that stopped
-                    // before the window end is conservatively terminal; one
-                    // that never covered the start (empty, or first bar beyond
-                    // the entry bound) — or that is still alive PAST the
-                    // window end, an interior gap the heal fetch could not
-                    // fill — takes the price-coverage state, terminal staying
-                    // reserved for a series that actually stopped. Unfinished
-                    // arithmetic over a covered window is the price-coverage
-                    // state too.
-                    let outcome = if !holding_covered
-                        && entry.is_some()
-                        && first_close_after(&closes, w_end).is_none()
-                    {
-                        LabelOutcome::TerminalUnscorable
-                    } else {
-                        LabelOutcome::PriceCoverageUnscorable
-                    };
-                    summary.matured.push(MaturedNote {
-                        symbol: ep.symbol.clone(),
-                        episode_id: ep.episode_id.clone(),
-                        window_months: ep.labels[i].window_months,
-                        outcome: match outcome {
-                            LabelOutcome::PriceCoverageUnscorable => {
-                                "price-coverage-unscorable".to_string()
-                            }
-                            _ => "terminal-unscorable".to_string(),
-                        },
-                        total_return: None,
-                        price_return: None,
-                    });
-                    ep.labels[i].outcome = outcome;
-                    changed = true;
-                } else {
-                    summary.pending_coverage.push(ep.symbol.clone());
-                }
-                continue;
-            }
-            let entry = entry.as_ref().expect("finished arithmetic implies entry");
-            let end_bar = end_bar.expect("finished arithmetic implies a bounded end bar");
-            let (price_return, max_drawdown) = arithmetic.expect("checked above");
-            // Benchmark legs follow the same coverage rule: an uncovered
-            // resolvable leg holds the whole window pending within grace, then
-            // scores with the leg typed unavailable past it.
-            let market_series = ctx
-                .series(
-                    MARKET_BENCHMARK,
-                    floor_for(&fetch_floor, MARKET_BENCHMARK, anchor),
-                    std::slice::from_ref(&w_end),
-                )
-                .to_vec();
-            let market_ret = bench_return(&market_series, anchor, w_end);
-            let sector_series = sector_bench.as_ref().map(|b| {
-                ctx.series(b, floor_for(&fetch_floor, b, anchor), std::slice::from_ref(&w_end))
-                    .to_vec()
-            });
-            let sector_ret = sector_series
-                .as_ref()
-                .and_then(|s| bench_return(s, anchor, w_end));
-            let market_pending = market_ret.is_none() && !past_grace;
-            let sector_pending =
-                sector_bench.is_some() && sector_ret.is_none() && !past_grace;
-            if market_pending || sector_pending {
-                summary.pending_coverage.push(ep.symbol.clone());
-                continue;
-            }
-
-            let entry_date = parse_iso_date_prefix(&entry.date).unwrap_or(anchor);
-            let symbol = ep.symbol.clone();
-            let divs_result = episode_divs.get_or_insert_with(|| match ctx.source {
-                Some(s) => s
-                    .dividend_history(&symbol, entry_date, furthest)
-                    .map_err(|e| e.to_string()),
-                None => Err("no price source".to_string()),
-            });
-            // The window's end is the END BAR's own date, not the calendar
-            // `w_end`: the end price is the last close at or before `w_end`, so a
-            // dividend going ex AFTER that close is not yet out of the price it is
-            // being added to. Counting it inflates the label — always signed
-            // positive, since dividends only add — and the gap is routine: any
-            // `w_end` on a weekend, a holiday, or a stale-cache tail leaves days
-            // between the last close and the calendar bound. This mirrors the
-            // entry side, which already bounds on the entry bar's own date.
-            let end_iso = end_bar.date.chars().take(10).collect::<String>();
-            let entry_iso = entry_date.format("%Y-%m-%d").to_string();
-            let (total_return, total_return_gap) = match divs_result {
-                Ok(rows) => {
-                    // The window off an entry CLOSE is `(entry, end]`: an
-                    // ex-date on the entry session itself is already out of the
-                    // entry price, so counting it would overstate the label by
-                    // one payment.
-                    let paid: f64 = rows
-                        .iter()
-                        .filter(|d| {
-                            d.date.as_str() > entry_iso.as_str()
-                                && d.date.as_str() <= end_iso.as_str()
-                        })
-                        .map(|d| d.value)
-                        .sum();
-                    // The sum is unbounded: an overflow would persist as `null`
-                    // and read back as the failed-re-pull `None` with no gap
-                    // saying so — so it takes the labeled fallback explicitly
-                    // (the 2026-08-24 review's Codex I16, ruled 2026-08-29).
-                    let total = (end_bar.value + paid) / entry.value - 1.0;
-                    if total.is_finite() {
-                        (Some(total), None)
-                    } else {
-                        (
-                            None,
-                            Some(
-                                "total-return leg unavailable (the window's dividend sum \
-                                 overflowed) — price-only label"
-                                    .to_string(),
-                            ),
-                        )
-                    }
-                }
-                Err(e) => (
-                    None,
-                    Some(format!("total-return leg unavailable ({e}) — price-only label")),
-                ),
-            };
-            let scored = ScoredLabel {
-                entry_date: entry.date.clone(),
-                entry_price: entry.value,
-                end_date: end_bar.date.clone(),
-                end_price: end_bar.value,
-                anchor_close,
-                price_return,
-                total_return,
-                total_return_gap,
-                max_drawdown,
-                vs_market: market_ret.map(|m| price_return - m),
-                market_leg_gap: market_ret
-                    .is_none()
-                    .then(|| "market benchmark leg never covered the window or its return did not finish finite".to_string()),
-                vs_sector: sector_ret.map(|s| price_return - s),
-                sector_leg_gap: sector_gap.clone().or_else(|| {
-                    (sector_bench.is_some() && sector_ret.is_none())
-                        .then(|| "sector benchmark leg never covered the window or its return did not finish finite".to_string())
-                }),
-                labeled_at: run_date.to_string(),
-            };
-            summary.matured.push(MaturedNote {
-                symbol: ep.symbol.clone(),
-                episode_id: ep.episode_id.clone(),
-                window_months: ep.labels[i].window_months,
-                outcome: "scored".to_string(),
-                total_return: scored.total_return,
-                price_return: Some(scored.price_return),
-            });
-            // The falsifier lead-time read stamps when the 12-month window scores
-            // — fields already frozen at the episode's intrinsic vintage: the
-            // recorded twelve-month bear target is the material-drawdown line.
-            if ep.labels[i].window_months == 12 {
-                if let Some(bear_line) = bear_line_12m {
-                    stamp_lead_times(
-                        &mut ep.falsifier_events,
-                        &closes,
-                        &entry.date,
-                        w_end,
-                        bear_line,
-                    );
-                }
-            }
-            ep.labels[i].outcome = LabelOutcome::Scored(Box::new(scored));
-            changed = true;
-        }
-        if changed {
-            if ep.fully_labeled() {
-                ep.state = EpisodeState::Matured;
-            }
-            summary.changed.insert(ep.episode_id.clone());
-        }
-    }
-    summary.pending_coverage.sort();
-    summary.pending_coverage.dedup();
-    summary
-}
-
-/// A benchmark's own price-only window return, on its own next-session entry
-/// anchor (the same [`ENTRY_TOLERANCE_DAYS`] bound as the holding leg) and its
-/// own bounded end bar ([`window_end_close`], strictly after the entry).
-/// `None` when the series doesn't cover the window at either end, or when the
-/// return over two usable bars does not finish finite — the spread it feeds
-/// is an `Option` serde would write as `null` with no gap saying why (Codex
-/// I16, round 1).
-fn bench_return(closes: &[DatedValue], anchor: NaiveDate, w_end: NaiveDate) -> Option<f64> {
-    let entry = entry_close(closes, anchor)?;
-    let end = window_end_close(closes, w_end)?;
-    (end.date > entry.date)
-        .then(|| end.value / entry.value - 1.0)
-        .filter(|r| r.is_finite())
-}
-
-/// Maximum drawdown (≤ 0) over the closes from the entry bar through the window
-/// end.
-fn drawdown_over(closes: &[DatedValue], entry_date: &str, w_end: NaiveDate) -> f64 {
-    let end_iso = w_end.format("%Y-%m-%d").to_string();
-    let mut peak = f64::MIN;
-    let mut worst = 0.0f64;
-    for bar in closes {
-        if bar.date.as_str() < entry_date || bar.date.as_str() > end_iso.as_str() {
-            continue;
-        }
-        peak = peak.max(bar.value);
-        if peak > 0.0 {
-            worst = worst.min(bar.value / peak - 1.0);
-        }
-    }
-    worst
-}
-
-/// Stamp each unstamped, in-episode falsifier event's signed trading-day distance
-/// to the first within-window close below the bear-case line — deterministic, never
-/// interpretive. `bear_line` arrives already converted into the label basis
-/// (`anchor_close × bear ⁄ authoring_spot` — the caller's split-bridge), so the
-/// comparison is the documented absolute one: the first close below the line.
-/// Positive = confirmed before the breach; explicit `no-material-drawdown` when no
-/// such close occurs by maturity. A confirmation outside the window is typed
-/// post-maturity and excluded, never clamped onto the last bar.
-fn stamp_lead_times(
-    events: &mut [FalsifierEvent],
-    closes: &[DatedValue],
-    entry_date: &str,
-    w_end: NaiveDate,
-    bear_line: f64,
-) {
-    let end_iso = w_end.format("%Y-%m-%d").to_string();
-    let window: Vec<&DatedValue> = closes
-        .iter()
-        .filter(|b| b.date.as_str() >= entry_date && b.date.as_str() <= end_iso.as_str())
-        .collect();
-    let breach_idx = window.iter().position(|b| b.value < bear_line);
-    for ev in events.iter_mut() {
-        if ev.post_maturity || ev.lead_time_trading_days.is_some() || ev.no_material_drawdown.is_some()
-        {
-            continue;
-        }
-        let Ok(confirmed) = NaiveDate::parse_from_str(&ev.confirmed_at, "%Y-%m-%d") else {
-            // A fresh crossing is canonical ISO by construction. An old or
-            // corrupt row must not be clamped onto a real bar and turned into a
-            // fabricated lead-time observation.
-            continue;
-        };
-        if confirmed > w_end {
-            // The confirmation lies outside this episode's measurement window.
-            // Type it post-maturity so the derived read excludes it; never
-            // clamp it onto the window's last bar.
-            ev.post_maturity = true;
-            continue;
-        }
-        match breach_idx {
-            None => ev.no_material_drawdown = Some(true),
-            Some(bi) => {
-                // The confirmation's position: the first bar at or after the
-                // confirmation date. If the bounded series has no such bar,
-                // the distance is unobservable — never substitute its last bar.
-                let Some(ci) = window
-                    .iter()
-                    .position(|b| b.date.as_str() >= ev.confirmed_at.as_str())
-                else {
-                    continue;
-                };
-                ev.lead_time_trading_days = Some(bi as i64 - ci as i64);
-                ev.no_material_drawdown = Some(false);
-            }
-        }
-    }
-}
-
-// ---- Alignment tagging ---------------------------------------------------------------
-
-/// The deterministic net-alignment mapping, from the recommended action and the
-/// diff's observed net move. The full table (pinned by tests):
-///
-/// | action        | reversed | exited   | increased | decreased | unchanged | new     |
-/// |---------------|----------|----------|-----------|-----------|-----------|---------|
-/// | hold          | reversed | contrary | contrary  | contrary  | aligned   | unknown |
-/// | add family    | reversed | contrary | aligned   | contrary  | partial   | unknown |
-/// | trim          | reversed | aligned  | contrary  | aligned   | partial   | unknown |
-/// | sell-all      | reversed | aligned  | contrary  | partial   | partial   | unknown |
-///
-/// `partial` claims either a move in the recommended direction short of it
-/// (sell-all → decreased) or no observable move under a directional
-/// recommendation; `unknown` = the diff had no prior counterpart to classify
-/// against (defensive — an episode's anchor run always had one).
-pub fn net_alignment(
-    action: Action,
-    change: PositionChange,
-    exited: bool,
-    reversed: bool,
-) -> ObservedNetAlignment {
-    use ObservedNetAlignment as A;
-    if reversed {
-        return A::Reversed;
-    }
-    if exited {
-        return if action.is_exit_family() {
-            A::Aligned
-        } else {
-            A::Contrary
-        };
-    }
-    match (action, change) {
-        (_, PositionChange::New) => A::Unknown,
-        (Action::Hold, PositionChange::Unchanged) => A::Aligned,
-        (Action::Hold, _) => A::Contrary,
-        (Action::Add | Action::AddAggressively, PositionChange::Increased) => A::Aligned,
-        (Action::Add | Action::AddAggressively, PositionChange::Decreased) => A::Contrary,
-        (Action::Add | Action::AddAggressively, PositionChange::Unchanged) => A::Partial,
-        (Action::Trim, PositionChange::Decreased) => A::Aligned,
-        (Action::Trim, PositionChange::Increased) => A::Contrary,
-        (Action::Trim, PositionChange::Unchanged) => A::Partial,
-        (Action::SellAll, PositionChange::Decreased | PositionChange::Unchanged) => A::Partial,
-        (Action::SellAll, PositionChange::Increased) => A::Contrary,
-    }
-}
-
-/// Tag each still-untagged active episode anchored to the prior run with this
-/// run's observed net alignment (`docs/portfolio-analysis.md §Outcome learning` —
-/// "the next run's deterministic holdings diff tags the holding's active
-/// episode"). Episodes anchored earlier stay untagged: this diff observes only the
-/// prior-run → now move, so tagging an older anchor would claim an observation the
-/// diff never made.
-pub fn tag_alignment(
-    episodes: &mut [DecisionEpisode],
-    prior_run_id: Option<&str>,
-    holdings: &Holdings,
-    diff: &HoldingsDiff,
-) -> (Vec<AlignmentTag>, HashSet<String>) {
-    let mut tags = Vec::new();
-    let mut changed = HashSet::new();
-    let Some(prior_id) = prior_run_id else {
-        return (tags, changed);
-    };
-    let exited: HashSet<String> = diff
-        .exited
-        .iter()
-        .map(|e| e.symbol.to_ascii_uppercase())
-        .collect();
-    for ep in episodes.iter_mut() {
-        if ep.state != EpisodeState::Active
-            || ep.alignment.is_some()
-            || ep.anchor_run_id != prior_id
-        {
-            continue;
-        }
-        let key = ep.symbol.to_ascii_uppercase();
-        let position = holdings
-            .positions
-            .iter()
-            .find(|p| p.symbol.eq_ignore_ascii_case(&ep.symbol));
-        let tag = match position {
-            None => net_alignment(ep.body_action(), PositionChange::Unchanged, exited.contains(&key), false),
-            Some(p) => {
-                let delta = diff.delta_for(&p.symbol);
-                net_alignment(
-                    ep.body_action(),
-                    delta.change,
-                    false,
-                    delta.side_reversed(p.quantity),
-                )
-            }
-        };
-        ep.alignment = Some(tag);
-        tags.push(AlignmentTag {
-            symbol: ep.symbol.clone(),
-            episode_id: ep.episode_id.clone(),
-            alignment: tag,
-        });
-        changed.insert(ep.episode_id.clone());
-    }
-    (tags, changed)
-}
-
-// ---- Episode lifecycle ----------------------------------------------------------------
-
-/// The comparable recommendation state of one verdict — the episode-creation key.
-/// Since `portfolio-v9` identity compares the branch and the action alone
-/// (`docs/portfolio-analysis.md §Outcome learning`): the retired ledger
-/// target-weight range no longer exists to compare. The standing-thesis leg
-/// deliberately stays outside this key — it is a per-run signal from the
-/// validated what-changed audit ([`episode_decision`]'s `thesis_changed`), not a
-/// comparable state.
-#[derive(Debug, Clone, PartialEq)]
-enum RecState {
-    Priced { action: Action },
-    RoleRisk { action: Action },
-    /// An insufficient-evidence exit — the standing recommendation is retained,
-    /// so an abstention is never a state change (and never opens).
-    Abstained,
-    /// Not-rated (or no verdict): outside the episode machinery.
-    None,
-}
-
-fn rec_state(v: &HoldingVerdict) -> RecState {
-    match &v.disposition {
-        VerdictDisposition::Priced(g) => RecState::Priced { action: g.action },
-        VerdictDisposition::RoleRiskOnly(r) => RecState::RoleRisk { action: r.action },
-        VerdictDisposition::InsufficientEvidence { .. } => RecState::Abstained,
-        VerdictDisposition::NotRated { .. } => RecState::None,
-    }
-}
-
-/// The decision the symbol's latest **active episode** is standing on — its own
-/// recorded action, not a verdict's.
-///
-/// It exists for the abstained-prior arm. An abstained verdict carries no action at
-/// all (`InsufficientEvidence` has none to carry), so comparing "did the
-/// recommendation change across the abstention?" against the prior *verdict* can
-/// only ever compare branch. The episode the abstention extended does carry the
-/// action it was opened on, and that is the forecast calibration scores — so it
-/// is the correct thing to compare against.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StandingDecision {
-    pub action: Action,
-}
-
-impl StandingDecision {
-    fn of(ep: &DecisionEpisode) -> Self {
-        match &ep.body {
-            EpisodeBody::Priced(p) => Self { action: p.action },
-            EpisodeBody::RoleRiskOnly(r) => Self { action: r.action },
-        }
-    }
-}
-
-/// What this run does to a holding's episode stream.
-#[derive(Debug, Clone, PartialEq)]
-pub enum EpisodeDecision {
-    Open(Vec<OpenReason>),
-    Extend(ObservationKind),
-    Nothing,
-}
-
-/// Decide open / extend / nothing from the prior run's verdict and this run's
-/// (`docs/portfolio-analysis.md §Outcome learning` — the creation rule). An
-/// abstention always extends (the standing recommendation stands); a prior
-/// abstention compares its retained ledger's branch **plus the action its
-/// standing episode carries**, since the abstained verdict itself re-authored
-/// neither (`standing`). `thesis_changed` is the standing-thesis leg's signal —
-/// the run's validated what-changed audit recorded an attributed thesis-level
-/// move or a labeled self-correction for this holding (fresh passes only; a
-/// carried audit's what-changed is its own run's fact) — and opens an episode
-/// even with the branch and action unchanged; input movement alone never does.
-pub fn episode_decision(
-    prior: Option<&HoldingVerdict>,
-    current: &HoldingVerdict,
-    current_is_fresh: bool,
-    standing: Option<StandingDecision>,
-    thesis_changed: bool,
-) -> EpisodeDecision {
-    let cur = rec_state(current);
-    let extend_kind = if !current_is_fresh {
-        ObservationKind::Carried
-    } else {
-        ObservationKind::Reaffirmed
-    };
-    match cur {
-        RecState::None => EpisodeDecision::Nothing,
-        RecState::Abstained => EpisodeDecision::Extend(ObservationKind::Abstained),
-        RecState::Priced { .. } | RecState::RoleRisk { .. } => {
-            let Some(prior_v) = prior else {
-                return EpisodeDecision::Open(vec![OpenReason::Debut]);
-            };
-            match rec_state(prior_v) {
-                RecState::None => EpisodeDecision::Open(vec![OpenReason::Debut]),
-                RecState::Abstained => {
-                    // A document-less abstained prior is a *debut* abstention —
-                    // the holding was never tracked, so nothing is comparable
-                    // and the episode opens as a debut.
-                    if prior_v.thesis_document().is_none() {
-                        return EpisodeDecision::Open(vec![OpenReason::Debut]);
-                    }
-                    // The abstained prior retained its thesis document, which
-                    // names no branch: a branch flip across an abstention is
-                    // not detectable and is never claimed; the action is not
-                    // comparable either.
-                    let mut reasons = Vec::new();
-                    // The action comes from the STANDING EPISODE, not the
-                    // abstained verdict (which carries none). Without this the
-                    // first fresh pass after an abstention extended the episode it
-                    // had just superseded: the recommendation had moved, but the
-                    // comparison could not see it, so the new forecast accrued onto
-                    // the old one's window and calibration scored a decision against
-                    // observations made before it existed.
-                    if let Some(st) = standing {
-                        let cur_action = match &cur {
-                            RecState::Priced { action } | RecState::RoleRisk { action } => *action,
-                            _ => unreachable!("the outer match admits only analyzed states"),
-                        };
-                        if st.action != cur_action {
-                            reasons.push(OpenReason::ActionChange);
-                            if current.action_source == ActionSource::RuleDemoted {
-                                reasons.push(OpenReason::RuleDemotion);
-                            }
-                        }
-                    }
-                    if thesis_changed {
-                        reasons.push(OpenReason::ThesisChange);
-                    }
-                    reasons.dedup();
-                    if reasons.is_empty() {
-                        EpisodeDecision::Extend(extend_kind)
-                    } else {
-                        EpisodeDecision::Open(reasons)
-                    }
-                }
-                prior_state => {
-                    let mut reasons = Vec::new();
-                    match (&prior_state, &cur) {
-                        (RecState::Priced { .. }, RecState::RoleRisk { .. })
-                        | (RecState::RoleRisk { .. }, RecState::Priced { .. }) => {
-                            reasons.push(OpenReason::BranchFlip);
-                        }
-                        _ => {}
-                    }
-                    let prior_action = match prior_state {
-                        RecState::Priced { action } | RecState::RoleRisk { action } => action,
-                        _ => unreachable!(),
-                    };
-                    let cur_action = match cur {
-                        RecState::Priced { action } | RecState::RoleRisk { action } => action,
-                        _ => unreachable!(),
-                    };
-                    if prior_action != cur_action {
-                        reasons.push(OpenReason::ActionChange);
-                        if current.action_source == ActionSource::RuleDemoted {
-                            reasons.push(OpenReason::RuleDemotion);
-                        }
-                    }
-                    if thesis_changed {
-                        reasons.push(OpenReason::ThesisChange);
-                    }
-                    if reasons.is_empty() {
-                        EpisodeDecision::Extend(extend_kind)
-                    } else {
-                        EpisodeDecision::Open(reasons)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The symbols whose **active** episode row was unreadable at load and is not
-/// superseded by a newer readable episode — the recovery-seed set (uppercase).
-///
-/// The supersession bound is what keeps the flag from becoming a zombie: once a
-/// recovery debut (or any later episode) lands, the lost row stops mattering, so a
-/// post-maturity re-affirmation can never re-open off it. It reads **insertion
-/// order** — `readable_before`, the corrupt row's position in the `id`-ordered scan —
-/// not `anchor_at`: under a backwards clock step a later-inserted recovery episode
-/// carries an older timestamp, so a timestamp bound left the symbol permanently
-/// flagged and opened a fresh debut episode on every subsequent run, filling the
-/// store with one-run episodes and polluting every cohort read.
-pub fn lost_active_symbols(
-    skipped: &[store::SkippedEpisodeRow],
-    episodes: &[DecisionEpisode],
-) -> HashSet<String> {
-    skipped
-        .iter()
-        .filter(|row| row.state == "active")
-        .filter(|row| {
-            let after = row.readable_before.min(episodes.len());
-            !episodes[after..]
-                .iter()
-                .any(|e| e.symbol.eq_ignore_ascii_case(&row.symbol))
-        })
-        .map(|row| row.symbol.to_ascii_uppercase())
-        .collect()
-}
-
-/// Inputs to the pure per-run episode planning.
-pub struct PlanInput<'a> {
-    pub run_id: &'a str,
-    pub created_at: &'a str,
-    pub verdicts: &'a [HoldingVerdict],
-    pub audits: &'a [HoldingAudit],
-    pub prior_verdicts: Option<&'a [HoldingVerdict]>,
-    /// Sector identities read at this run's fresh passes (keyed uppercase).
-    pub sector_by_symbol: &'a HashMap<String, SectorIdentity>,
-    /// The run-level DGS2 print, for the snapshot.
-    pub dgs2: Option<f64>,
-    /// Symbols whose active episode row was unreadable and unsuperseded
-    /// ([`lost_active_symbols`], uppercase) — a symbol here re-seeds via a
-    /// debut (any readable active is an older predecessor, never the lost
-    /// decision's carrier), so a lost row can't leave the current decision
-    /// untracked until the next state change.
-    pub unreadable_active_symbols: HashSet<String>,
-}
-
-/// What the plan changed.
-pub struct PlanSummary {
-    pub opened: Vec<OpenedEpisodeNote>,
-    pub extended: Vec<String>,
-    pub changed: HashSet<String>,
-}
-
-/// Append-or-extend this run's decision episodes in place
-/// (`docs/portfolio-workflow.md §Step 8`): open on an observable
-/// recommendation-state change — including the never-seeded debut of a symbol
-/// with no episode at all (the unseeded seam) — extend the **latest** active
-/// episode on a re-affirmation / carry / abstention, record nothing
-/// post-maturity, and attach this run's confirmed falsifier crossings to the
-/// active episode that stood at run start and carried the evaluated condition
-/// (the debut episode when no predecessor existed; the latest matured episode,
-/// typed post-maturity, when none is active).
-pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>) -> PlanSummary {
-    let mut summary = PlanSummary {
-        opened: Vec::new(),
-        extended: Vec::new(),
-        changed: HashSet::new(),
-    };
-    // Freeze the condition carrier before this run opens any successors. A
-    // confirmed crossing is produced by evaluating the standing ledger; when
-    // that same crossing moves the action and opens a new episode, selecting
-    // the latest active row after the open would attach the old condition's
-    // event to the new thesis that never carried it. Push-only planning keeps
-    // these indices stable for the attach pass below.
-    let mut crossing_carrier_at_start: HashMap<String, usize> = HashMap::new();
-    for (index, episode) in episodes.iter().enumerate() {
-        if episode.state == EpisodeState::Active {
-            crossing_carrier_at_start.insert(episode.symbol.to_ascii_uppercase(), index);
-        }
-    }
-    for verdict in input.verdicts {
-        let key = verdict.symbol.to_ascii_uppercase();
-        let prior_v = input
-            .prior_verdicts
-            .and_then(|pv| pv.iter().find(|v| v.symbol.eq_ignore_ascii_case(&verdict.symbol)));
-        let vintage = verdict.analyzed_at.as_deref().unwrap_or(input.created_at);
-        let is_fresh = vintage == input.created_at;
-        // The symbol's latest active episode, selected in insertion order exactly as
-        // the extend target below is — the decision an abstention has been standing
-        // on.
-        let standing = episodes
-            .iter()
-            .rfind(|e| {
-                e.state == EpisodeState::Active
-                    && e.symbol.eq_ignore_ascii_case(&verdict.symbol)
-            })
-            .map(StandingDecision::of);
-        let audit = input
-            .audits
-            .iter()
-            .find(|a| a.symbol.eq_ignore_ascii_case(&verdict.symbol));
-        // The standing-thesis and self-correction signals went with the
-        // what-changed audit: the thesis document is read as text and
-        // validated by nothing, so no app-side signal exists until outcome
-        // learning reshapes the store to the price record.
-        let thesis_changed = false;
-        let self_corrections = 0u32;
-        let mut decision =
-            episode_decision(prior_v, verdict, is_fresh, standing, thesis_changed);
-        // Two seeding seams convert an `Extend` into the debut open
-        // ([`OpenReason::Debut`]); an abstention still never opens. **Unseeded**:
-        // a stable holding yields `Extend`, but a symbol with no readable episode
-        // at all — none ever opened for it, or its matured history pruned — was
-        // never seeded and opens its debut; a symbol whose matured episode still
-        // reads is a post-maturity re-affirmation and is left behind.
-        // **Recovery**: a symbol whose active episode row was unreadable and
-        // unsuperseded re-seeds unconditionally — `lost_active` membership
-        // already means nothing readable is newer than the corrupt row, so any
-        // readable active episode is an older predecessor whose forecast stopped
-        // accruing when the lost successor opened; extending it would graft the
-        // current decision onto a forecast it never re-affirmed (the corrupt row
-        // itself is never deleted).
-        if matches!(decision, EpisodeDecision::Extend(_))
-            && !matches!(rec_state(verdict), RecState::Abstained)
-        {
-            let any_readable = episodes
-                .iter()
-                .any(|e| e.symbol.eq_ignore_ascii_case(&verdict.symbol));
-            if !any_readable || input.unreadable_active_symbols.contains(&key) {
-                decision = EpisodeDecision::Open(vec![OpenReason::Debut]);
-            }
-        }
-        match decision {
-            EpisodeDecision::Nothing => {}
-            EpisodeDecision::Extend(kind) => {
-                // Attach to the **latest** active episode: an older episode still
-                // maturing stopped accruing observations when the state change
-                // opened its successor (`docs/portfolio-analysis.md §Outcome
-                // learning` — "the old one stops accruing").
-                // "Latest" is **insertion order** — the last matching row in the
-                // store's `id`-ordered load — never `max_by(anchor_at)`: a
-                // backwards wall-clock step would otherwise select an older
-                // active episode forever and permanently shadow the one just
-                // opened. Same premise as the piece-3 `latest_run` / `prune_runs`
-                // fixes.
-                if let Some(ep) = episodes.iter_mut().rfind(|e| {
-                    e.state == EpisodeState::Active
-                        && e.symbol.eq_ignore_ascii_case(&verdict.symbol)
-                }) {
-                    ep.observations.push(EpisodeObservation {
-                        run_id: input.run_id.to_string(),
-                        observed_at: input.created_at.to_string(),
-                        kind,
-                    });
-                    // Defensive: a self-correction opens via `thesis_changed`,
-                    // so an extension normally adds zero — accumulate anyway so
-                    // no labeled count can be dropped.
-                    ep.self_correction_count += self_corrections;
-                    summary.extended.push(verdict.symbol.clone());
-                    summary.changed.insert(ep.episode_id.clone());
-                }
-                // No active episode: a post-maturity re-affirmation records
-                // nothing — there is no open forecast left to observe against.
-            }
-            EpisodeDecision::Open(reasons) => {
-                let sector = input
-                    .sector_by_symbol
-                    .get(&key)
-                    .cloned()
-                    .or_else(|| {
-                        // A carried-verdict open (the rule-demotion path) had no
-                        // fresh profile read; the symbol's latest episode carries
-                        // the entry-stamped identity to inherit.
-                        episodes
-                            .iter()
-                            .rfind(|e| e.symbol.eq_ignore_ascii_case(&verdict.symbol))
-                            .map(|e| e.sector.clone())
-                    })
-                    .unwrap_or_else(|| {
-                        SectorIdentity::unscorable("no sector read at the anchor run")
-                    });
-                // The ET session date, matching [`DecisionEpisode::anchor_date`]
-                // — the window ends stamped here key on the same day that
-                // read-side derivation yields.
-                let Some(anchor) = crate::market_clock::et_date_of(input.created_at) else {
-                    continue;
-                };
-                let body = match &verdict.disposition {
-                    VerdictDisposition::Priced(g) => {
-                        let hurdle = audit.and_then(|a| a.hurdle.clone());
-                        // Freeze the short-rate print from the SAME intrinsic
-                        // hurdle read. On a carried rule-demotion open,
-                        // `input.dgs2` is the consuming run's print while the
-                        // verdict and audit are older; pairing those vintages
-                        // makes the snapshot internally impossible. The hurdle
-                        // is defined as DGS2 + the stamped risk-tier premium, so
-                        // recover its own anchor (preserving the live print
-                        // exactly when it reproduces the stored hurdle).
-                        let hurdle_dgs2 = hurdle
-                            .as_ref()
-                            .and_then(|read| read.hurdle_rate)
-                            .and_then(|rate| {
-                                let premium = crate::portfolio::engine::tier_premium(g.risk_tier);
-                                let recovered = rate - premium;
-                                if !recovered.is_finite() {
-                                    return None;
-                                }
-                                Some(
-                                    input
-                                        .dgs2
-                                        .filter(|live| (*live + premium).to_bits() == rate.to_bits())
-                                        .unwrap_or(recovered),
-                                )
-                            });
-                        EpisodeBody::Priced(Box::new(PricedEpisode {
-                            action: g.action,
-                            snapshot: CalibrationSnapshot {
-                                sub_scores: g.sub_scores,
-                                grade: g.grade,
-                                conviction: g.appendix.conviction,
-                                risk_tier: g.risk_tier,
-                                price_targets: g.price_targets.clone(),
-                                dead_money: g.dead_money,
-                                hurdle,
-                                dgs2: hurdle_dgs2,
-                                authoring_spot: audit
-                                    .and_then(|a| a.quick_basis.as_ref())
-                                    .map(|b| b.spot),
-                                // The cap signals in force: the pre-profit overlay's
-                                // matched rules, a tripped hard-forensic rule, and a
-                                // tripped narrative-vs-reality soft rule — each an
-                                // engine-arm annotation the counterfactual re-test
-                                // needs (`docs/portfolio-analysis.md` §Outcome
-                                // learning).
-                                cap_signals: audit
-                                    .and_then(|a| a.pre_profit.as_ref())
-                                    .filter(|pp| pp.is_eligible())
-                                    .map(|pp| pp.consequences.matched_rules.clone())
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .chain(
-                                        audit
-                                            .and_then(|a| a.forensic.as_ref())
-                                            .and_then(|f| f.matched_rule.clone()),
-                                    )
-                                    .chain(
-                                        audit
-                                            .and_then(|a| a.narrative.as_ref())
-                                            .and_then(|n| n.matched_rule.clone()),
-                                    )
-                                    .collect(),
-                                grade_parameter_version: audit
-                                    .map(|a| a.grade_parameter_version.clone()),
-                                target_parameter_version: audit
-                                    .and_then(|a| a.target_meta.as_ref())
-                                    .map(|t| t.parameter_version.clone()),
-                                degraded_inputs: audit
-                                    .map(|a| a.degraded_inputs.clone())
-                                    .unwrap_or_default(),
-                            },
-                        }))
-                    }
-                    VerdictDisposition::RoleRiskOnly(r) => {
-                        EpisodeBody::RoleRiskOnly(RoleRiskEpisode {
-                            action: r.action,
-                            degraded_inputs: audit
-                                .map(|a| a.degraded_inputs.clone())
-                                .unwrap_or_default(),
-                        })
-                    }
-                    // `Open` is only decided for analyzed dispositions.
-                    _ => continue,
-                };
-                let episode = DecisionEpisode {
-                    episode_id: uuid::Uuid::new_v4().to_string(),
-                    symbol: verdict.symbol.clone(),
-                    anchor_run_id: input.run_id.to_string(),
-                    anchor_at: input.created_at.to_string(),
-                    intrinsic_vintage: vintage.to_string(),
-                    vintage_fresh: is_fresh,
-                    action_source: verdict.action_source,
-                    position_change: verdict.position_change,
-                    sector,
-                    opened: reasons.clone(),
-                    body,
-                    observations: Vec::new(),
-                    alignment: None,
-                    falsifier_events: Vec::new(),
-                    labels: pending_labels(anchor),
-                    state: EpisodeState::Active,
-                    // Seeded with this run's labeled count — the validated
-                    // what-changed audit's, zero on every other open.
-                    self_correction_count: self_corrections,
-                };
-                summary.opened.push(OpenedEpisodeNote {
-                    symbol: verdict.symbol.clone(),
-                    episode_id: episode.episode_id.clone(),
-                    reasons,
-                });
-                summary.changed.insert(episode.episode_id.clone());
-                episodes.push(episode);
-            }
-        }
-    }
-
-    summary
-}
-
-// ---- Derived reads ---------------------------------------------------------------------
-
-/// Per-episode scored label for a window, where recorded.
-fn scored_for(ep: &DecisionEpisode, months: u32) -> Option<&ScoredLabel> {
-    ep.labels
-        .iter()
-        .find(|l| l.window_months == months)
-        .and_then(|l| match &l.outcome {
-            LabelOutcome::Scored(s) => Some(s.as_ref()),
-            _ => None,
-        })
-}
-
-/// The one mean every scoreboard read persists through — the cohort returns,
-/// the band interval scores, the base errors, the paired head-to-head — reading
-/// as absent rather than infinite when its sum overflows (finite values near
-/// `f64::MAX` can still sum past it), so no scoreboard read ever persists a
-/// non-finite number: serde would write `null` and the reload would silently
-/// read `None` (Codex I6, rounds 1 and 2).
-fn finite_mean(xs: &[f64]) -> Option<f64> {
-    (!xs.is_empty())
-        .then(|| xs.iter().sum::<f64>() / xs.len() as f64)
-        .filter(|m| m.is_finite())
-}
-
-/// One cohort field's cross-symbol accumulation: the per-symbol means
-/// collected, and poisoned the moment any symbol's mean was non-finite over
-/// inputs it did have — so a per-symbol overflow reaches the persisted field
-/// as absent rather than as a mean over fewer holdings than `unique_holdings`
-/// reports (the population never silently shrinks below the reported count;
-/// Codex I6, round 3). A symbol with no inputs for the field contributes
-/// nothing and poisons nothing: a missing relative-return leg is an absence,
-/// not a numerical failure.
-#[derive(Default)]
-struct FieldMeans {
-    values: Vec<f64>,
-    poisoned: bool,
-}
-
-impl FieldMeans {
-    fn push_symbol(&mut self, inputs: &[f64]) {
-        if inputs.is_empty() {
-            return;
-        }
-        match finite_mean(inputs) {
-            Some(v) => self.values.push(v),
-            None => self.poisoned = true,
-        }
-    }
-
-    fn finish(&self) -> Option<f64> {
-        if self.poisoned {
-            None
-        } else {
-            finite_mean(&self.values)
-        }
-    }
-}
-
-/// Group episodes into one cohort stat: per-symbol means first, then across
-/// symbols — unique-holding counted, never raw episode counts.
-fn cohort_stat(key: &str, members: &[(&DecisionEpisode, &ScoredLabel)]) -> Option<CohortStat> {
-    if members.is_empty() {
-        return None;
-    }
-    let mut per_symbol: HashMap<String, Vec<&ScoredLabel>> = HashMap::new();
-    for (ep, label) in members {
-        per_symbol
-            .entry(ep.symbol.to_ascii_uppercase())
-            .or_default()
-            .push(label);
-    }
-    let mut tr = FieldMeans::default();
-    let mut pr = FieldMeans::default();
-    let mut vm = FieldMeans::default();
-    let mut vs = FieldMeans::default();
-    for labels in per_symbol.values() {
-        // The primary mean quotes price-only where a label's total-return leg was
-        // unavailable (`docs/portfolio-analysis.md §Outcome learning` — "any
-        // comparison with a missing total-return leg quotes price-only") — a
-        // labeled mix, never a silently shrunk population; the pure price-only
-        // mean rides beside it.
-        tr.push_symbol(
-            &labels
-                .iter()
-                .map(|l| l.total_return.unwrap_or(l.price_return))
-                .collect::<Vec<_>>(),
-        );
-        pr.push_symbol(&labels.iter().map(|l| l.price_return).collect::<Vec<_>>());
-        vm.push_symbol(&labels.iter().filter_map(|l| l.vs_market).collect::<Vec<_>>());
-        vs.push_symbol(&labels.iter().filter_map(|l| l.vs_sector).collect::<Vec<_>>());
-    }
-    Some(CohortStat {
-        key: key.to_string(),
-        unique_holdings: per_symbol.len(),
-        mean_total_return: tr.finish(),
-        mean_price_return: pr.finish(),
-        mean_vs_market: vm.finish(),
-        mean_vs_sector: vs.finish(),
-    })
-}
-
-/// Compute the derived scorecard reads over the episode store
-/// (`docs/portfolio-analysis.md §Outcome learning`). Pure; attribution stays at the
-/// cohort level — no per-decision P&L verdict is ever assigned.
-pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
-    let mut cohorts = Vec::new();
-    for &months in &LABEL_WINDOWS_MONTHS {
-        let scored: Vec<(&DecisionEpisode, &ScoredLabel)> = episodes
-            .iter()
-            .filter_map(|ep| scored_for(ep, months).map(|s| (ep, s)))
-            .collect();
-        // The intrinsic layer: vintage-fresh, model-chosen, priced.
-        let mut lean_cohorts = Vec::new();
-        let mut final_action_cohorts = Vec::new();
-        for action in [
-            Action::SellAll,
-            Action::Trim,
-            Action::Hold,
-            Action::Add,
-            Action::AddAggressively,
-        ] {
-            let lean_members: Vec<_> = scored
-                .iter()
-                .filter(|(ep, _)| {
-                    ep.vintage_fresh
-                        && ep.action_source == ActionSource::ModelChosen
-                        && matches!(&ep.body, EpisodeBody::Priced(p) if p.action == action)
-                })
-                .cloned()
-                .collect();
-            if let Some(stat) = cohort_stat(action.as_kebab(), &lean_members) {
-                lean_cohorts.push(stat);
-            }
-            let final_members: Vec<_> = scored
-                .iter()
-                .filter(|(ep, _)| {
-                    ep.action_source == ActionSource::ModelChosen
-                        && matches!(&ep.body, EpisodeBody::Priced(p) if p.action == action)
-                })
-                .cloned()
-                .collect();
-            if let Some(stat) = cohort_stat(action.as_kebab(), &final_members) {
-                final_action_cohorts.push(stat);
-            }
-        }
-        let role_members: Vec<_> = scored
-            .iter()
-            .filter(|(ep, _)| matches!(ep.body, EpisodeBody::RoleRiskOnly(_)))
-            .cloned()
-            .collect();
-        let demoted_members: Vec<_> = scored
-            .iter()
-            .filter(|(ep, _)| ep.action_source == ActionSource::RuleDemoted)
-            .cloned()
-            .collect();
-        cohorts.push(CohortWindowRead {
-            window_months: months,
-            lean_cohorts,
-            final_action_cohorts,
-            role_risk: cohort_stat("role-risk-only", &role_members),
-            rule_demoted: cohort_stat("rule-demoted", &demoted_members),
-        });
-    }
-
-    // Target calibration: each band at its matching window, vintage-fresh bands
-    // only, scored on the price-only label — in return space over the authoring
-    // spot (split-safe), split per target-function parameter version (bases
-    // never mix). One accumulation, parameterized on the band source, runs for
-    // BOTH arms: the engine bands and the model arm's frozen bands share the
-    // scorer, the exclusion rules, and the population, so the model-vs-engine
-    // head-to-head is fair (`docs/portfolio-analysis.md` §Outcome learning):
-    // under v9 both arms ride every priced episode, so they score the same band
-    // population.
-    #[derive(Default)]
-    struct BandAcc {
-        scores: Vec<f64>,
-        hits: usize,
-        base_errors: Vec<f64>,
-    }
-    /// A band source for the shared accumulation: (episode, window months) → the
-    /// arm's (bear, base, bull), `None` when the arm carries no band there.
-    type BandSource = dyn Fn(&PricedEpisode, u32) -> Option<(f64, f64, f64)>;
-    /// One band's scored read against the realized return — (interval score,
-    /// hit) — or `None` when a derived value is not finite: a return-space edge
-    /// or the score itself. The fail-closed read beneath the decode gate must
-    /// read the derived values, not the inputs alone (Codex I6, round 1): an
-    /// in-domain but astronomically wide band (`1e308` over a $1 spot) overflows
-    /// the return conversion or the Winkler penalty, and an infinity here would
-    /// persist as `null` and read back as absent — so the band is excluded from
-    /// the arm's read and from the pairing instead, the same exclusion a
-    /// non-finite leg takes.
-    fn band_read(band: (f64, f64, f64), spot: f64, realized_r: f64) -> Option<(f64, bool)> {
-        let (bear, _base, bull) = band;
-        let (lo, hi) = (bear.min(bull), bear.max(bull));
-        let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
-        let score = interval_score(lo_r, hi_r, realized_r, 1.0 - NOMINAL_BAND_COVERAGE);
-        (lo_r.is_finite() && hi_r.is_finite() && score.is_finite())
-            .then_some((score, realized_r >= lo_r && realized_r <= hi_r))
-    }
-    let band_calibration =
-        |band_of: &BandSource| {
-            let mut reads = Vec::new();
-            for months in [1u32, 12u32] {
-                let mut by_version: std::collections::BTreeMap<Option<String>, BandAcc> =
-                    std::collections::BTreeMap::new();
-                for ep in episodes {
-                    if !ep.vintage_fresh {
-                        continue;
-                    }
-                    let EpisodeBody::Priced(p) = &ep.body else {
-                        continue;
-                    };
-                    let Some(label) = scored_for(ep, months) else {
-                        continue;
-                    };
-                    let Some((bear, base, bull)) = band_of(p, months) else {
-                        continue;
-                    };
-                    let Some(spot) = p.snapshot.authoring_spot.filter(|s| *s > 0.0) else {
-                        // No authoring spot recorded: the bases can't be
-                        // reconciled, so the band is excluded rather than
-                        // compared across them.
-                        continue;
-                    };
-                    let Some(bridge) = label.anchor_close.filter(|a| *a > 0.0) else {
-                        // No anchor-session close on the label: the realized side
-                        // has no same-instant bridge to the authoring basis (the
-                        // next-session entry sits an overnight gap away), so the
-                        // band is excluded.
-                        continue;
-                    };
-                    // Realized return from the same decision instant: end over the
-                    // anchor-session close — both sides of the comparison now share
-                    // one anchor, so neither a split nor the overnight gap into the
-                    // entry can shear it.
-                    let realized_r = label.end_price / bridge - 1.0;
-                    let Some((score, hit)) = band_read((bear, base, bull), spot, realized_r) else {
-                        continue;
-                    };
-                    let acc = by_version
-                        .entry(p.snapshot.target_parameter_version.clone())
-                        .or_default();
-                    if hit {
-                        acc.hits += 1;
-                    }
-                    acc.scores.push(score);
-                    if base != 0.0 {
-                        let realized_authoring_basis = spot * (1.0 + realized_r);
-                        let err = (realized_authoring_basis - base) / base;
-                        // The same derived-value discipline: a base tiny enough to
-                        // overflow the division is excluded, not averaged.
-                        if err.is_finite() {
-                            acc.base_errors.push(err);
-                        }
-                    }
-                }
-                if by_version.is_empty() {
-                    // Keep the per-window read present (scored: 0) so an empty
-                    // store still reports the window rather than omitting it.
-                    by_version.insert(None, BandAcc::default());
-                }
-                for (version, acc) in by_version {
-                    let n = acc.scores.len();
-                    reads.push(TargetCalibrationRead {
-                        window_months: months,
-                        parameter_version: version,
-                        scored: n,
-                        coverage_rate: (n > 0).then(|| acc.hits as f64 / n as f64),
-                        nominal_coverage: NOMINAL_BAND_COVERAGE,
-                        mean_interval_score: finite_mean(&acc.scores),
-                        mean_base_signed_error: finite_mean(&acc.base_errors),
-                    });
-                }
-            }
-            reads
-        };
-    let engine_band = |p: &PricedEpisode, months: u32| -> Option<(f64, f64, f64)> {
-        // The one-month band no longer exists (the engine's near-horizon leg is
-        // three months); every other window keeps its twelve-month pairing as
-        // before. Suspended until outcome learning reshapes the record.
-        let band = match months {
-            1 => None,
-            _ => p.snapshot.price_targets.twelve_month.as_ref(),
-        }?;
-        Some((band.bear, band.base, band.bull))
-    };
-    let target_calibration = band_calibration(&engine_band);
-    // The model arm authors no bands since the thesis document replaced the
-    // structured read — its expected prices are scored by the accuracy pass
-    // outcome learning builds, so the model calibration, the paired
-    // head-to-head and the outlook read are empty until that item reshapes
-    // the record.
-    let model_target_calibration: Vec<TargetCalibrationRead> = Vec::new();
-    let head_to_head: Vec<HeadToHeadRead> = Vec::new();
-    let outlook_direction: Vec<OutlookDirectionRead> = Vec::new();
-
-    let falsifier_lead_times = episodes
-        .iter()
-        .flat_map(|ep| {
-            ep.falsifier_events
-                .iter()
-                .filter(|ev| !ev.post_maturity)
-                .filter(|ev| {
-                    ev.lead_time_trading_days.is_some() || ev.no_material_drawdown == Some(true)
-                })
-                .map(|ev| FalsifierLeadTimeRead {
-                    symbol: ep.symbol.clone(),
-                    episode_id: ep.episode_id.clone(),
-                    condition_id: ev.condition_id.clone(),
-                    confirmed_at: ev.confirmed_at.clone(),
-                    lead_time_trading_days: ev.lead_time_trading_days,
-                    no_material_drawdown: ev.no_material_drawdown == Some(true),
-                })
-        })
-        .collect();
-
-    let mut per_holding: HashMap<String, u32> = HashMap::new();
-    for ep in episodes {
-        if ep.self_correction_count > 0 {
-            *per_holding.entry(ep.symbol.to_ascii_uppercase()).or_default() +=
-                ep.self_correction_count;
-        }
-    }
-    let total = per_holding.values().sum();
-    let mut per_holding: Vec<(String, u32)> = per_holding.into_iter().collect();
-    per_holding.sort();
-
-    let unique_matured: HashSet<String> = episodes
-        .iter()
-        .filter(|ep| {
-            LABEL_WINDOWS_MONTHS
-                .iter()
-                .any(|&m| scored_for(ep, m).is_some())
-        })
-        .map(|ep| ep.symbol.to_ascii_uppercase())
-        .collect();
-    let eligible = unique_matured.len() >= PROPOSAL_ELIGIBILITY_BAR;
-    let eligibility = EligibilityRecord {
-        unique_matured_holdings: unique_matured.len(),
-        bar: PROPOSAL_ELIGIBILITY_BAR,
-        eligible,
-        note: if eligible {
-            format!(
-                "{} unique holdings with matured windows clear the ≥ {} bar — parameter \
-                 proposals are eligible (the proposal statistics ride a later slice)",
-                unique_matured.len(),
-                PROPOSAL_ELIGIBILITY_BAR
-            )
-        } else {
-            format!(
-                "below the proposal eligibility bar ({} of ≥ {} unique holdings with \
-                 matured windows) — no proposal is made from a small sample",
-                unique_matured.len(),
-                PROPOSAL_ELIGIBILITY_BAR
-            )
-        },
-    };
-
-    DerivedReads {
-        cohorts,
-        target_calibration,
-        model_target_calibration,
-        head_to_head,
-        outlook_direction,
-        falsifier_lead_times,
-        self_correction: SelfCorrectionRead { total, per_holding },
-        eligibility,
-    }
-}
-
-/// The durable-learning text for a run whose label pass recorded matured windows —
-/// embedded into the Portfolio memory partition (`docs/portfolio-analysis.md`
-/// §Outcome learning). `None` when nothing matured (no learning row is written).
-pub fn matured_learning_text(records: &OutcomeRecords, run_date: &str) -> Option<String> {
-    if records.matured.is_empty() {
-        return None;
-    }
-    let mut lines = vec![format!(
-        "Portfolio outcome learning ({run_date}): {} window label(s) recorded.",
-        records.matured.len()
-    )];
-    for m in &records.matured {
-        let detail = match (m.total_return, m.price_return) {
-            (Some(tr), _) => format!("total return {:+.1}%", tr * 100.0),
-            (None, Some(pr)) => format!("price-only return {:+.1}%", pr * 100.0),
-            _ => m.outcome.clone(),
-        };
-        lines.push(format!(
-            "{} {}-month window: {} ({})",
-            m.symbol, m.window_months, m.outcome, detail
-        ));
-    }
-    // The model-vs-engine head-to-head — the PAIRED read only (same episodes,
-    // both arms scoring the same realized outcomes), never two independently
-    // pooled populations.
-    for h in &records.reads.head_to_head {
-        if let (Some(model), Some(engine)) =
-            (h.model_mean_interval_score, h.engine_mean_interval_score)
-        {
-            lines.push(format!(
-                "model-vs-engine {}-month interval score (paired, {} bands): model \
-                 {model:.4} vs engine {engine:.4} — lower is better",
-                h.window_months, h.scored
-            ));
-        }
-    }
-    lines.push(records.reads.eligibility.note.clone());
-    Some(lines.join("\n"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portfolio::{
-        GradedVerdict, OptionsSignal, PriceTarget,
-    };
 
-    fn bars(rows: &[(&str, f64)]) -> Vec<DatedValue> {
-        rows.iter()
-            .map(|(d, v)| DatedValue {
-                date: d.to_string(),
-                value: *v,
-            })
-            .collect()
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
     }
 
-    fn graded(action: Action) -> GradedVerdict {
-        GradedVerdict {
-            grade: Grade::B,
-            sub_scores: SubScores {
-                quality: 70.0,
-                valuation: 60.0,
-                momentum: 55.0,
-                risk: 65.0,
-            },
-            action,
-            action_rationale: String::new(),
-            thesis_document: "Thesis: t.".into(),
-            appendix: crate::portfolio::ThesisAppendix {
-                conviction: Some(Conviction::Medium),
-                expected_price_3m: Some(102.0),
-                expected_price_12m: Some(120.0),
-                expected_price_3y: None,
-            },
-            engine_rung: action,
-            authored_band_relation: None,
-            price_targets: PriceTargets {
-                three_month: Some(PriceTarget {
-                    base: 102.0,
-                    bear: 95.0,
-                    bull: 108.0,
-                    methodology: "test".into(),
-                }),
-                twelve_month: Some(PriceTarget {
-                    base: 120.0,
-                    bear: 90.0,
-                    bull: 150.0,
-                    methodology: "test".into(),
-                }),
-                three_year: None,
-            },
-            options_signal: OptionsSignal {
-                put_call_volume: None,
-                put_call_open_interest: None,
-                implied_volatility: None,
-                iv_skew: None,
-            },
-            risk_tier: RiskTier::Medium,
-            dead_money: HurdleState::Indeterminate,
-            low_confidence_grade: false,
-            fund_class_label: None,
+    fn bar(date: &str, value: f64) -> DatedValue {
+        DatedValue {
+            date: date.to_string(),
+            value,
         }
     }
 
-    fn plain_audit(symbol: &str) -> HoldingAudit {
-        HoldingAudit {
-            symbol: symbol.into(),
-            metrics: Default::default(),
-            sources: vec![],
-            model_ids: vec![],
-            prompt_version: crate::portfolio::PROMPT_VERSION.into(),
-            evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
-            degraded_inputs: vec![],
-            action_annotations: vec![],
-            target_meta: None,
-            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
-            quick_basis: None,
-            authoring_close: None,
-            fund_exposure: None,
-            pre_profit: None,
-            hurdle: None,
-            forensic: None,
-            soft_forensic: None,
-            tech_event_pre_flag: None,
-            short_interest: None,
-            implied_expectations: None,
-            narrative: None,
-            option_overlay: None,
-            research: None,
-            analysis: None,
+    /// Weekday closes from `from` through `to` at a constant value.
+    fn weekday_closes(from: &str, to: &str, value: f64) -> Vec<DatedValue> {
+        let mut out = Vec::new();
+        let mut day = d(from);
+        while day <= d(to) {
+            if !matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
+                out.push(bar(&day.format("%Y-%m-%d").to_string(), value));
+            }
+            day = day.succ_opt().unwrap();
+        }
+        out
+    }
+
+    fn prices(m3: Option<f64>, m12: Option<f64>, m36: Option<f64>) -> HorizonPrices {
+        HorizonPrices {
+            three_month: m3,
+            twelve_month: m12,
+            three_year: m36,
         }
     }
 
-    fn verdict(symbol: &str, action: Action, _weights: (f64, f64)) -> HoldingVerdict {
-        HoldingVerdict {
-            symbol: symbol.into(),
-            asset_class: crate::portfolio::AssetClass::Stock,
-            position_change: PositionChange::Unchanged,
-            disposition: VerdictDisposition::Priced(Box::new(graded(action))),
-            analyzed_at: None,
-            action_source: ActionSource::ModelChosen,
-            side_reversed: false,
-        }
-    }
-
-    fn fresh(mut v: HoldingVerdict, created_at: &str) -> HoldingVerdict {
-        v.analyzed_at = Some(created_at.to_string());
-        v
-    }
-
-    fn plan_input<'a>(
-        run_id: &'a str,
-        created_at: &'a str,
-        verdicts: &'a [HoldingVerdict],
-        prior: Option<&'a [HoldingVerdict]>,
-        sector: &'a HashMap<String, SectorIdentity>,
-    ) -> PlanInput<'a> {
-        PlanInput {
-            run_id,
-            created_at,
-            verdicts,
-            audits: &[],
-            prior_verdicts: prior,
-            sector_by_symbol: sector,
-            dgs2: Some(0.04),
-            unreadable_active_symbols: HashSet::new(),
-        }
-    }
-
-    // ---- SPDR map / sector identity ----
-
-    #[test]
-    fn spdr_map_covers_the_eleven_sectors_and_rejects_unknowns() {
-        assert_eq!(spdr_for_sector("Technology"), Some("XLK"));
-        assert_eq!(spdr_for_sector("consumer cyclical"), Some("XLY"));
-        assert_eq!(spdr_for_sector("Health Care"), Some("XLV"));
-        assert_eq!(spdr_for_sector("Healthcare"), Some("XLV"));
-        assert_eq!(spdr_for_sector("Financial Services"), Some("XLF"));
-        assert_eq!(spdr_for_sector("Space Mining"), None);
-        let id = SectorIdentity::resolve(Some("Technology"));
-        assert_eq!(id.benchmark.as_deref(), Some("XLK"));
-        assert!(id.unscorable.is_none());
-        let un = SectorIdentity::resolve(None);
-        assert!(un.benchmark.is_none());
-        assert!(un.unscorable.as_deref().unwrap().contains("sector-unscorable"));
-    }
-
-    // ---- Lifecycle: the transition matrix ----
-
-    #[test]
-    fn a_debut_opens_and_a_reaffirmation_extends_once() {
-        let created = "2026-08-04T12:00:00+00:00";
-        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), created)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        let s = plan_episodes(&plan_input("run-1", created, &verdicts, None, &sector), &mut episodes);
-        assert_eq!(s.opened.len(), 1);
-        assert_eq!(s.opened[0].reasons, vec![OpenReason::Debut]);
-        assert_eq!(episodes.len(), 1);
-        assert!(episodes[0].vintage_fresh);
-        assert_eq!(episodes[0].labels.len(), 4);
-
-        // Same recommendation next run: extend, never a second episode.
-        let created2 = "2026-08-11T12:00:00+00:00";
-        let verdicts2 = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), created2)];
-        let s2 = plan_episodes(
-            &plan_input("run-2", created2, &verdicts2, Some(&verdicts), &sector),
-            &mut episodes,
-        );
-        assert!(s2.opened.is_empty());
-        assert_eq!(s2.extended, vec!["AAPL".to_string()]);
-        assert_eq!(episodes.len(), 1);
-        assert_eq!(episodes[0].observations.len(), 1);
-        assert_eq!(episodes[0].observations[0].kind, ObservationKind::Reaffirmed);
-    }
-
-    #[test]
-    fn episode_decision_thesis_leg_opens_only_on_the_signal() {
-        let prior = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        let current = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        assert_eq!(
-            episode_decision(Some(&prior), &current, true, None, false),
-            EpisodeDecision::Extend(ObservationKind::Reaffirmed)
-        );
-        assert_eq!(
-            episode_decision(Some(&prior), &current, true, None, true),
-            EpisodeDecision::Open(vec![OpenReason::ThesisChange])
-        );
-        // Beside an action change the thesis signal records as a second reason.
-        let moved = verdict("AAPL", Action::Trim, (0.03, 0.06));
-        assert_eq!(
-            episode_decision(Some(&prior), &moved, true, None, true),
-            EpisodeDecision::Open(vec![OpenReason::ActionChange, OpenReason::ThesisChange])
-        );
-    }
-
-    #[test]
-    fn a_backwards_clock_step_cannot_shadow_the_newly_opened_episode() {
-        // Run 1 opens the episode. Run 2 changes the action, so it opens a
-        // successor — but its `created_at` is EARLIER than run 1's, the shape a
-        // clock correction or an NTP step produces. Under `max_by(anchor_at)` every
-        // later extension, falsifier event and inherited sector identity attached
-        // to the run-1 predecessor forever, and the successor — the episode
-        // carrying the current recommendation — accrued nothing for the rest of its
-        // twelve months. Insertion order cannot invert.
-        let c1 = "2026-08-11T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-
-        let c2 = "2026-08-04T12:00:00+00:00"; // a week BEFORE run 1
-        let changed = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c2)];
-        let s = plan_episodes(
-            &plan_input("run-2", c2, &changed, Some(&prior), &sector),
-            &mut episodes,
-        );
-        assert_eq!(s.opened.len(), 1, "the action change still opens a successor");
-        assert_eq!(episodes.len(), 2);
-        assert!(
-            episodes[1].anchor_at < episodes[0].anchor_at,
-            "the fixture must actually invert the wall clock"
-        );
-        let successor = episodes[1].episode_id.clone();
-
-        // Run 3 re-affirms: the observation must land on the successor.
-        let c3 = "2026-08-18T12:00:00+00:00";
-        let same = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c3)];
-        let s3 = plan_episodes(
-            &plan_input("run-3", c3, &same, Some(&changed), &sector),
-            &mut episodes,
-        );
-        assert_eq!(s3.extended, vec!["AAPL".to_string()]);
-        let carrying: Vec<&str> = episodes
-            .iter()
-            .filter(|e| !e.observations.is_empty())
-            .map(|e| e.episode_id.as_str())
-            .collect();
-        assert_eq!(
-            carrying,
-            vec![successor.as_str()],
-            "the extension must attach to the successor, not the wall-clock-newer predecessor"
-        );
-    }
-
-    #[test]
-    fn an_action_change_opens_a_fresh_episode_and_a_reaffirmation_extends() {
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let action_changed = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c2)];
-        let s = plan_episodes(
-            &plan_input("run-2", c2, &action_changed, Some(&prior), &sector),
-            &mut episodes,
-        );
-        assert_eq!(s.opened.len(), 1);
-        assert_eq!(s.opened[0].reasons, vec![OpenReason::ActionChange]);
-
-        // A re-affirmed action extends; episode identity reads the action alone
-        // under the tunnel-vision contract (the ledger carries no weight range).
-        let c3 = "2026-08-18T12:00:00+00:00";
-        let reaffirmed = vec![fresh(verdict("AAPL", Action::Trim, (0.02, 0.04)), c3)];
-        let s = plan_episodes(
-            &plan_input("run-3", c3, &reaffirmed, Some(&action_changed), &sector),
-            &mut episodes,
-        );
-        assert!(s.opened.is_empty());
-        assert_eq!(episodes.len(), 2);
-    }
-
-
-    #[test]
-    fn an_abstention_extends_and_never_opens() {
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        abstained.disposition = VerdictDisposition::InsufficientEvidence {
-            reason: "thin".into(),
-            prior_thesis_document: None,
-        };
-        abstained.analyzed_at = Some(c1.to_string()); // preserved prior vintage
-        let s = plan_episodes(
-            &plan_input("run-2", c2, &[abstained], Some(&prior), &sector),
-            &mut episodes,
-        );
-        assert!(s.opened.is_empty());
-        assert_eq!(episodes.len(), 1);
-        assert_eq!(episodes[0].observations[0].kind, ObservationKind::Abstained);
-    }
-
-    #[test]
-    fn post_maturity_reaffirmation_records_nothing_and_a_change_reopens() {
-        let c1 = "2025-06-02T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-        episodes[0].state = EpisodeState::Matured;
-
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let same = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
-        let s = plan_episodes(
-            &plan_input("run-2", c2, &same, Some(&prior), &sector),
-            &mut episodes,
-        );
-        assert!(s.opened.is_empty());
-        assert!(s.extended.is_empty(), "no active episode: nothing records");
-        assert!(episodes[0].observations.is_empty());
-
-        let c3 = "2026-08-18T12:00:00+00:00";
-        let changed = vec![fresh(verdict("AAPL", Action::Add, (0.03, 0.06)), c3)];
-        let s = plan_episodes(
-            &plan_input("run-3", c3, &changed, Some(&same), &sector),
-            &mut episodes,
-        );
-        assert_eq!(s.opened.len(), 1, "the next genuine change opens fresh");
-        assert_eq!(episodes.len(), 2);
-    }
-
-    #[test]
-    fn a_rule_demotion_opens_a_vintage_stale_episode_in_its_own_class() {
-        let c1 = "2026-07-01T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Add, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-
-        // A selective run demotes the carried over-age add to hold; the carried
-        // verdict keeps its older vintage.
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let mut demoted = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        demoted.analyzed_at = Some(c1.to_string());
-        demoted.action_source = ActionSource::RuleDemoted;
-        let demoted = vec![demoted];
-        let mut audit = plain_audit("AAPL");
-        audit.hurdle = Some(HurdleRead {
-            state: HurdleState::Indeterminate,
-            hurdle_rate: Some(0.09),
-            tr_bear: Some(0.08),
-            tr_base: Some(0.10),
-            tr_bull: Some(0.12),
-            admits_new_money: true,
-        });
-        let audits = vec![audit];
-        let mut input = plan_input("run-2", c2, &demoted, Some(&prior), &sector);
-        input.audits = &audits;
-        input.dgs2 = Some(0.07);
-        let s = plan_episodes(&input, &mut episodes);
-        assert_eq!(s.opened.len(), 1);
-        assert!(s.opened[0].reasons.contains(&OpenReason::RuleDemotion));
-        let ep = episodes.last().unwrap();
-        assert!(!ep.vintage_fresh, "carried fields keep their older vintage");
-        assert_eq!(ep.action_source, ActionSource::RuleDemoted);
-        // It inherited the debut episode's sector identity (no fresh profile read).
-        assert_eq!(ep.sector, episodes[0].sector);
-        let EpisodeBody::Priced(priced) = &ep.body else {
-            panic!("rule-demoted priced verdict must keep a priced episode")
-        };
-        assert_eq!(priced.snapshot.hurdle, audits[0].hurdle);
-        assert!(
-            (priced.snapshot.dgs2.unwrap() - 0.04).abs() < 1e-12,
-            "the snapshot's DGS2 must be the intrinsic hurdle's 4% anchor, not the consuming run's 7% print"
-        );
-    }
-
-    #[test]
-    fn an_unseeded_symbol_with_a_prior_verdict_seeds_a_debut_episode() {
-        // The unseeded seam: the store holds no episode for the symbol (none ever
-        // opened, or its matured history pruned) while a prior verdict exists. An
-        // unchanged recommendation must still seed the symbol's debut episode —
-        // otherwise stable holdings stay outside outcome learning until their
-        // recommendation happens to change.
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let same = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        let s = plan_episodes(
-            &plan_input("run-2", c2, &same, Some(&prior), &sector),
-            &mut episodes,
-        );
-        assert_eq!(s.opened.len(), 1, "the never-seeded symbol debuts");
-        assert_eq!(s.opened[0].reasons, vec![OpenReason::Debut]);
-        assert!(s.extended.is_empty());
-        assert_eq!(episodes.len(), 1);
-
-        // An abstained current verdict still never opens, seeded or not.
-        let mut abstained = verdict("MSFT", Action::Hold, (0.03, 0.06));
-        abstained.disposition = VerdictDisposition::InsufficientEvidence {
-            reason: "thin".into(),
-            prior_thesis_document: None,
-        };
-        let prior_msft = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c1)];
-        let s = plan_episodes(
-            &plan_input("run-2", c2, &[abstained], Some(&prior_msft), &sector),
-            &mut episodes,
-        );
-        assert!(s.opened.is_empty());
-        assert_eq!(episodes.len(), 1, "no MSFT episode was minted");
-    }
-
-    #[test]
-    fn a_lost_active_row_re_seeds_beside_readable_history() {
-        // The corrupt-latest-active case: readable matured AAPL history exists,
-        // so the symbol is "seeded", but the active row carrying the current
-        // decision was unreadable — the recovery seam must re-open tracking.
-        let c1 = "2025-08-04T12:00:00+00:00";
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let mut matured = old_episode("AAPL", c1);
-        matured.state = EpisodeState::Matured;
-        let mut episodes = vec![matured];
-        let skipped = vec![store::SkippedEpisodeRow {
-            episode_id: "ep-bad".into(),
+    fn record(created_on: &str) -> PriceRecord {
+        PriceRecord {
             symbol: "AAPL".into(),
-            anchor_at: "2026-06-01T00:00:00+00:00".into(),
-            state: "active".into(),
-            // The matured row was read BEFORE the corrupt one, so nothing readable
-            // supersedes it — supersession is insertion order, not the timestamp.
-            readable_before: 1,
-        }];
-        let lost = lost_active_symbols(&skipped, &episodes);
-        assert!(lost.contains("AAPL"));
-
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let same = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
-        let sector = HashMap::new();
-        let mut input = plan_input("run-2", c2, &same, Some(&prior), &sector);
-        input.unreadable_active_symbols = lost;
-        let s = plan_episodes(&input, &mut episodes);
-        assert_eq!(s.opened.len(), 1, "the lost decision re-enters tracking");
-        assert_eq!(s.opened[0].reasons, vec![OpenReason::Debut]);
-        assert_eq!(episodes.len(), 2);
-
-        // The recovery episode's newer anchor supersedes the lost row: the flag
-        // dies, so a later post-maturity re-affirmation can never re-open off it.
-        assert!(lost_active_symbols(&skipped, &episodes).is_empty());
-
-        // A readable active episode *older* than the lost row is a predecessor
-        // whose forecast stopped accruing when the lost successor opened —
-        // recovery still re-seeds, and the predecessor absorbs no observation.
-        let mut with_older_active = vec![old_episode("MSFT", c1)];
-        let skipped_msft = vec![store::SkippedEpisodeRow {
-            episode_id: "ep-bad-2".into(),
-            symbol: "MSFT".into(),
-            anchor_at: "2026-06-01T00:00:00+00:00".into(),
-            state: "active".into(),
-            // Inserted after the predecessor: nothing readable follows it.
-            readable_before: 1,
-        }];
-        let lost = lost_active_symbols(&skipped_msft, &with_older_active);
-        assert!(lost.contains("MSFT"));
-        let prior_m = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c1)];
-        let same_m = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c2)];
-        let mut input = plan_input("run-2", c2, &same_m, Some(&prior_m), &sector);
-        input.unreadable_active_symbols = lost;
-        let s = plan_episodes(&input, &mut with_older_active);
-        assert_eq!(
-            s.opened.len(),
-            1,
-            "an older active predecessor never absorbs the lost decision"
-        );
-        assert_eq!(s.opened[0].reasons, vec![OpenReason::Debut]);
-        assert!(with_older_active[0].observations.is_empty());
-        assert_eq!(with_older_active.len(), 2);
-
-        // A readable episode *newer* than the lost row supersedes it entirely:
-        // the flag never forms, and the ordinary extend applies.
-        let c_new = "2026-07-01T12:00:00+00:00";
-        let mut with_newer_active = vec![old_episode("NVDA", c_new)];
-        let skipped_nvda = vec![store::SkippedEpisodeRow {
-            episode_id: "ep-bad-3".into(),
-            symbol: "NVDA".into(),
-            anchor_at: "2026-06-01T00:00:00+00:00".into(),
-            state: "active".into(),
-            // The readable episode was inserted AFTER the corrupt row, so it
-            // supersedes it.
-            readable_before: 0,
-        }];
-        let lost = lost_active_symbols(&skipped_nvda, &with_newer_active);
-        assert!(lost.is_empty(), "a newer readable episode supersedes the lost row");
-        let prior_n = vec![fresh(verdict("NVDA", Action::Hold, (0.03, 0.06)), c_new)];
-        let same_n = vec![fresh(verdict("NVDA", Action::Hold, (0.03, 0.06)), c2)];
-        let mut input = plan_input("run-2", c2, &same_n, Some(&prior_n), &sector);
-        input.unreadable_active_symbols = lost;
-        let s = plan_episodes(&input, &mut with_newer_active);
-        assert!(s.opened.is_empty());
-        assert_eq!(s.extended, vec!["NVDA".to_string()]);
-        assert_eq!(with_newer_active.len(), 1);
-    }
-
-    #[test]
-    fn an_action_change_across_an_abstention_opens_instead_of_extending() {
-        // Run 1 recommends Hold. Run 2 abstains, retaining the standing ledger, so
-        // the episode extends. Run 3 comes back fresh with Trim — the
-        // recommendation has MOVED across the abstention.
-        //
-        // The abstained verdict carries no action to compare against
-        // (`InsufficientEvidence` has none), so before this fix run 3 compared only
-        // branch and weight range, found them unchanged, and EXTENDED the episode it
-        // had just superseded: the Trim forecast accrued onto the Hold episode's
-        // window, and calibration scored the Hold decision against observations
-        // made after it stopped being the recommendation.
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let hold = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &hold, None, &sector), &mut episodes);
-        assert_eq!(episodes.len(), 1);
-
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        // The abstention carries the prior's thesis document, as the pipeline
-        // persists it: the holding stays tracked across the abstention.
-        abstained.disposition = VerdictDisposition::InsufficientEvidence {
-            reason: "inconclusive re-read".into(),
-            prior_thesis_document: Some("the standing thesis".into()),
-        };
-        let abstained = vec![fresh(abstained, c2)];
-        let s2 = plan_episodes(
-            &plan_input("run-2", c2, &abstained, Some(&hold), &sector),
-            &mut episodes,
-        );
-        assert_eq!(s2.extended, vec!["AAPL".to_string()], "an abstention extends");
-        assert_eq!(episodes.len(), 1);
-
-        let c3 = "2026-08-18T12:00:00+00:00";
-        let trim = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c3)];
-        let s3 = plan_episodes(
-            &plan_input("run-3", c3, &trim, Some(&abstained), &sector),
-            &mut episodes,
-        );
-        assert!(
-            s3.extended.is_empty(),
-            "the moved recommendation must not extend the superseded episode"
-        );
-        assert_eq!(s3.opened.len(), 1);
-        assert!(
-            s3.opened[0].reasons.contains(&OpenReason::ActionChange),
-            "the action moved across the abstention: {:?}",
-            s3.opened[0].reasons
-        );
-        assert_eq!(episodes.len(), 2);
-    }
-
-    #[test]
-    fn an_unchanged_recommendation_across_an_abstention_still_extends() {
-        // The other half: when nothing actually moved, the abstention's episode
-        // keeps accruing. The fix must not mint an episode per abstention.
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let hold = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &hold, None, &sector), &mut episodes);
-
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        // The abstention carries the prior's thesis document, as the pipeline
-        // persists it: the holding stays tracked across the abstention.
-        abstained.disposition = VerdictDisposition::InsufficientEvidence {
-            reason: "inconclusive re-read".into(),
-            prior_thesis_document: Some("the standing thesis".into()),
-        };
-        let abstained = vec![fresh(abstained, c2)];
-        plan_episodes(
-            &plan_input("run-2", c2, &abstained, Some(&hold), &sector),
-            &mut episodes,
-        );
-
-        let c3 = "2026-08-18T12:00:00+00:00";
-        let same = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c3)];
-        let s3 = plan_episodes(
-            &plan_input("run-3", c3, &same, Some(&abstained), &sector),
-            &mut episodes,
-        );
-        assert_eq!(s3.extended, vec!["AAPL".to_string()]);
-        assert!(s3.opened.is_empty());
-        assert_eq!(episodes.len(), 1, "no episode churn from an abstention alone");
-    }
-
-    #[test]
-    fn a_priced_verdict_after_a_ledger_less_abstention_opens_as_debut() {
-        // A debut abstention retained no standing ledger — nothing is
-        // comparable, so the first priced verdict is a DEBUT open, never a
-        // fabricated weight-range change against a never-committed range.
-        let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        abstained.disposition = VerdictDisposition::InsufficientEvidence {
-            reason: "debut abstention".into(),
-            prior_thesis_document: None,
-        };
-        let current = verdict("AAPL", Action::Hold, (0.03, 0.06));
-        // No standing episode either — a debut abstention was never seeded.
-        let decision = episode_decision(Some(&abstained), &current, true, None, false);
-        assert_eq!(
-            decision,
-            EpisodeDecision::Open(vec![OpenReason::Debut]),
-            "ledger-less abstained prior must read as a debut"
-        );
-    }
-
-    // ---- Alignment ----
-
-    #[test]
-    fn the_alignment_table_is_pinned() {
-        use ObservedNetAlignment as A;
-        use PositionChange as C;
-        // Reversal dominates everything.
-        assert_eq!(net_alignment(Action::Add, C::Increased, false, true), A::Reversed);
-        // Exits.
-        assert_eq!(net_alignment(Action::SellAll, C::Unchanged, true, false), A::Aligned);
-        assert_eq!(net_alignment(Action::Trim, C::Unchanged, true, false), A::Aligned);
-        assert_eq!(net_alignment(Action::Hold, C::Unchanged, true, false), A::Contrary);
-        // Hold.
-        assert_eq!(net_alignment(Action::Hold, C::Unchanged, false, false), A::Aligned);
-        assert_eq!(net_alignment(Action::Hold, C::Increased, false, false), A::Contrary);
-        // Add family.
-        assert_eq!(net_alignment(Action::Add, C::Increased, false, false), A::Aligned);
-        assert_eq!(net_alignment(Action::Add, C::Decreased, false, false), A::Contrary);
-        assert_eq!(net_alignment(Action::Add, C::Unchanged, false, false), A::Partial);
-        // Trim / sell.
-        assert_eq!(net_alignment(Action::Trim, C::Decreased, false, false), A::Aligned);
-        assert_eq!(net_alignment(Action::SellAll, C::Decreased, false, false), A::Partial);
-        assert_eq!(net_alignment(Action::SellAll, C::Increased, false, false), A::Contrary);
-        // No prior counterpart.
-        assert_eq!(net_alignment(Action::Add, C::New, false, false), A::Unknown);
-    }
-
-    // ---- Label engine (pure pieces) ----
-
-    #[test]
-    fn window_end_clamps_calendar_months() {
-        let jan31 = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
-        assert_eq!(window_end(jan31, 1), NaiveDate::from_ymd_opt(2026, 2, 28).unwrap());
-        let mar1 = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-        assert_eq!(window_end(mar1, 12), NaiveDate::from_ymd_opt(2027, 3, 1).unwrap());
-    }
-
-    #[test]
-    fn interval_score_penalizes_exceedance_and_width() {
-        // Inside the band: just the width.
-        assert!((interval_score(90.0, 110.0, 100.0, 0.2) - 20.0).abs() < 1e-12);
-        // Below: width + (2/alpha) * distance.
-        assert!((interval_score(90.0, 110.0, 80.0, 0.2) - (20.0 + 100.0)).abs() < 1e-12);
-        // A gamed-wide band pays for its width.
-        assert!(interval_score(0.0, 1000.0, 100.0, 0.2) > interval_score(90.0, 110.0, 100.0, 0.2));
-    }
-
-    #[test]
-    fn drawdown_is_computed_from_the_running_peak() {
-        let closes = bars(&[
-            ("2026-01-02", 100.0),
-            ("2026-01-05", 110.0),
-            ("2026-01-06", 88.0),
-            ("2026-01-07", 95.0),
-        ]);
-        let dd = drawdown_over(&closes, "2026-01-02", NaiveDate::from_ymd_opt(2026, 1, 31).unwrap());
-        assert!((dd - (88.0 / 110.0 - 1.0)).abs() < 1e-12);
-    }
-
-    // ---- The label pass over the cached-through series ----
-
-    /// A synthetic source: linear weekday closes over `[from, to]`, per-symbol
-    /// offset so holding and benchmark returns differ; no dividends.
-    struct SyntheticPrices {
-        fail_dividends: bool,
-    }
-
-    impl OutcomePriceSource for SyntheticPrices {
-        fn daily_closes(
-            &self,
-            symbol: &str,
-            from: NaiveDate,
-            to: NaiveDate,
-        ) -> Result<Vec<DatedValue>> {
-            let offset = symbol.len() as f64;
-            let mut out = Vec::new();
-            let mut d = from;
-            let mut i = 0f64;
-            while d <= to {
-                use chrono::Datelike;
-                if d.weekday().number_from_monday() <= 5 {
-                    out.push(DatedValue {
-                        date: d.format("%Y-%m-%d").to_string(),
-                        value: 100.0 + offset + i * 0.1,
-                    });
-                }
-                i += 1.0;
-                d += chrono::Duration::days(1);
-            }
-            Ok(out)
-        }
-        fn dividend_history(
-            &self,
-            _symbol: &str,
-            _from: NaiveDate,
-            _to: NaiveDate,
-        ) -> Result<Vec<DatedValue>> {
-            if self.fail_dividends {
-                anyhow::bail!("dividends endpoint down")
-            }
-            Ok(vec![])
+            created_on: created_on.into(),
+            spot: 100.0,
+            anchor: Some(bar("2026-01-02", 100.0)),
+            model: prices(Some(110.0), Some(120.0), Some(150.0)),
+            engine: prices(Some(105.0), Some(115.0), Some(140.0)),
         }
     }
 
-    fn mem_conn() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        crate::storage::init_schema(&conn).unwrap();
-        conn
+    fn stored(id: i64, record: PriceRecord) -> StoredEpisode {
+        StoredEpisode { id, record }
     }
 
-    /// Wraps [`SyntheticPrices`] recording every `daily_closes` call's
-    /// `(symbol, from)` — the fetch-floor pin.
-    struct RecordingPrices {
-        inner: SyntheticPrices,
-        calls: std::cell::RefCell<Vec<(String, NaiveDate)>>,
-    }
-
-    impl OutcomePriceSource for RecordingPrices {
-        fn daily_closes(
-            &self,
-            symbol: &str,
-            from: NaiveDate,
-            to: NaiveDate,
-        ) -> Result<Vec<DatedValue>> {
-            self.calls.borrow_mut().push((symbol.to_string(), from));
-            self.inner.daily_closes(symbol, from, to)
-        }
-        fn dividend_history(
-            &self,
-            symbol: &str,
-            from: NaiveDate,
-            to: NaiveDate,
-        ) -> Result<Vec<DatedValue>> {
-            self.inner.dividend_history(symbol, from, to)
-        }
-    }
-
-    fn old_episode(symbol: &str, anchor_at: &str) -> DecisionEpisode {
-        // The ET session date, as the production open path stamps it.
-        let anchor = crate::market_clock::et_date_of(anchor_at).unwrap();
-        DecisionEpisode {
-            episode_id: format!("ep-{symbol}"),
-            symbol: symbol.into(),
-            anchor_run_id: "run-old".into(),
-            anchor_at: anchor_at.into(),
-            intrinsic_vintage: anchor_at.into(),
-            vintage_fresh: true,
-            action_source: ActionSource::ModelChosen,
-            position_change: PositionChange::New,
-            sector: SectorIdentity::resolve(Some("Technology")),
-            opened: vec![OpenReason::Debut],
-            body: EpisodeBody::Priced(Box::new(PricedEpisode {
-                action: Action::Hold,
-                snapshot: CalibrationSnapshot {
-                    sub_scores: SubScores {
-                        quality: 70.0,
-                        valuation: 60.0,
-                        momentum: 55.0,
-                        risk: 65.0,
-                    },
-                    grade: Grade::B,
-                    conviction: Some(Conviction::Medium),
-                    risk_tier: RiskTier::Medium,
-                    price_targets: PriceTargets {
-                        three_month: Some(crate::portfolio::PriceTarget {
-                            base: 105.0,
-                            bear: 95.0,
-                            bull: 115.0,
-                            methodology: "test".into(),
-                        }),
-                        twelve_month: Some(crate::portfolio::PriceTarget {
-                            base: 120.0,
-                            bear: 60.0,
-                            bull: 160.0,
-                            methodology: "test".into(),
-                        }),
-                        three_year: None,
-                    },
-                    dead_money: HurdleState::Indeterminate,
-                    hurdle: None,
-                    dgs2: Some(0.04),
-                    authoring_spot: Some(100.0),
-                    cap_signals: vec![],
-                    grade_parameter_version: Some("grade-v2".into()),
-                    target_parameter_version: Some("targets-v3".into()),
-                    degraded_inputs: vec![],
-                    // The two-arm freeze: a model band wider than the engine's and
-                    // opposite-direction outlooks, so the head-to-head reads have
-                    // something to distinguish.
+    fn scored_check(
+        id: i64,
+        episode_id: i64,
+        horizon: Horizon,
+        on: &str,
+        model: Option<f64>,
+        engine: Option<f64>,
+    ) -> StoredCheck {
+        let leg = |s: Option<f64>| s.map(|score| LegScore { expected: 1.0, score });
+        StoredCheck {
+            id,
+            episode_id,
+            check: Check {
+                horizon,
+                checked_on: on.into(),
+                run_id: "run".into(),
+                outcome: CheckOutcome::Scored {
+                    close: bar(on, 1.0),
+                    bridge_factor: 1.0,
+                    model: leg(model),
+                    engine: leg(engine),
                 },
-            })),
-            observations: vec![],
-            alignment: None,
-            falsifier_events: vec![],
-            labels: pending_labels(anchor),
-            state: EpisodeState::Active,
-            self_correction_count: 0,
+            },
         }
     }
 
     #[test]
-    fn the_label_pass_scores_due_windows_and_matures_the_episode() {
-        let conn = mem_conn();
-        // Anchored ~14 months ago: every window is due, all within the synthetic
-        // series' coverage (through today), so the episode fully matures.
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430))
-            .to_rfc3339();
-        let mut episodes = vec![old_episode("GONE", &anchor_at)];
-        let source = SyntheticPrices {
-            fail_dividends: false,
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = chrono::Utc::now().date_naive();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
-        assert_eq!(summary.matured.len(), 4, "all four windows recorded");
-        assert!(summary.matured.iter().all(|m| m.outcome == "scored"));
-        assert_eq!(episodes[0].state, EpisodeState::Matured);
-        let scored = scored_for(&episodes[0], 12).expect("12-month scored");
-        // Empty dividend history: the total-return leg equals the price leg.
-        assert_eq!(scored.total_return, Some(scored.price_return));
-        // Relative legs computed against the market benchmark and the stamped
-        // XLK benchmark.
-        assert!(scored.vs_market.is_some());
-        assert!(scored.vs_sector.is_some());
-        // The fetched series landed in the shared bar cache — holding + both
-        // benchmarks.
-        assert!(!store::load_price_bars(&conn, "GONE").unwrap().is_empty());
-        assert!(!store::load_price_bars(&conn, MARKET_BENCHMARK).unwrap().is_empty());
-        assert!(!store::load_price_bars(&conn, "XLK").unwrap().is_empty());
-        // A second pass is a no-op (nothing pending), served from cache.
-        let source2 = UnavailablePriceSource;
-        let mut ctx2 = SeriesCtx::new(&conn, Some(&source2));
-        let summary2 = mature_labels(&mut episodes, &mut ctx2, today, "2026-08-05");
-        assert!(summary2.matured.is_empty());
+    fn horizon_dates_add_calendar_months_and_clamp_month_end() {
+        assert_eq!(horizon_date(d("2026-01-05"), Horizon::ThreeMonth), Some(d("2026-04-05")));
+        assert_eq!(horizon_date(d("2026-01-05"), Horizon::TwelveMonth), Some(d("2027-01-05")));
+        assert_eq!(horizon_date(d("2026-01-05"), Horizon::ThreeYear), Some(d("2029-01-05")));
+        // A month-end creation clamps to the target month's last day.
+        assert_eq!(horizon_date(d("2025-11-30"), Horizon::ThreeMonth), Some(d("2026-02-28")));
     }
 
     #[test]
-    fn an_evening_et_anchor_keys_entry_and_bridge_to_the_et_session() {
-        // 2026-02-04 01:30 UTC = 2026-02-03 20:30 EST: the decision belongs to
-        // the ET session of Tue the 3rd. Entry = the next session's close (Wed
-        // the 4th) and the bridge = the 3rd's close. The old UTC-prefix dating
-        // anchored on the 4th — entry one session late (the 5th) and a bridge
-        // close from a session traded entirely after the decision.
-        let conn = mem_conn();
-        let mut episodes = vec![old_episode("ETAN", "2026-02-04T01:30:00+00:00")];
-        let source = SyntheticPrices {
-            fail_dividends: false,
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-05-01");
-        let scored = scored_for(&episodes[0], 1).expect("1-month scored");
-        assert_eq!(scored.entry_date, "2026-02-04", "next session after the ET day");
-        // The bridge close is the ET session's own bar: fetch floor 2026-02-03
-        // − 7 pad = 01-27 (i=0), so 02-03 is i=7 → 100 + 4 + 0.7.
-        let bridge = scored.anchor_close.expect("bridge covered");
-        assert!((bridge - 104.7).abs() < 1e-9, "{bridge}");
-        assert!((scored.entry_price - 104.8).abs() < 1e-9, "{}", scored.entry_price);
+    fn a_horizon_is_due_only_after_its_date_and_until_written() {
+        let eps = vec![stored(1, record("2026-01-05"))];
+        let none = std::collections::HashSet::new();
+        // On the horizon date itself: not due (that session's close is unsettled).
+        assert!(due_horizons(&eps, &none, d("2026-04-05")).is_empty());
+        // The session after: the three-month horizon is due.
+        assert_eq!(due_horizons(&eps, &none, d("2026-04-06")), vec![(1, Horizon::ThreeMonth)]);
+        // Written once, it is never due again.
+        let written = std::collections::HashSet::from([(1, Horizon::ThreeMonth)]);
+        assert!(due_horizons(&eps, &written, d("2026-05-01")).is_empty());
+        // Long after: every horizon past its date is due, in horizon order.
+        assert_eq!(
+            due_horizons(&eps, &none, d("2029-02-01")),
+            vec![(1, Horizon::ThreeMonth), (1, Horizon::TwelveMonth), (1, Horizon::ThreeYear)]
+        );
+        // The stored keys name their horizons.
+        for h in Horizon::ALL {
+            assert_eq!(Horizon::from_key(h.key()), Some(h));
+        }
+        assert_eq!(Horizon::from_key("one_month"), None);
     }
 
     #[test]
-    fn the_bridge_keys_at_the_intrinsic_vintage_healed_by_the_shared_fetch_floor() {
-        // Two active episodes on one symbol: EP-OLD anchored 02-10 (vintage
-        // fresh) and EP-NEW anchored 03-10 carrying an intrinsic vintage of
-        // 02-10 (a rule-demotion open). The symbol fetch floors at the earliest
-        // active anchor (02-10), so EP-NEW's bridge session is covered — and the
-        // bridge keys at the intrinsic vintage's session close, not the episode
-        // anchor's (which would shear the bear line by the 02-10 → 03-10 move).
-        let conn = mem_conn();
-        let mut ep_new = old_episode("BRDG", "2026-03-10T12:00:00+00:00");
-        ep_new.episode_id = "ep-BRDG-new".into();
-        ep_new.intrinsic_vintage = "2026-02-10T12:00:00+00:00".into();
-        ep_new.vintage_fresh = false;
-        let mut episodes = vec![
-            old_episode("BRDG", "2026-02-10T12:00:00+00:00"),
-            ep_new,
+    fn the_per_check_score_is_one_minus_the_relative_error_floored_at_zero() {
+        assert_eq!(per_check_score(100.0, 100.0), 100.0);
+        assert!((per_check_score(110.0, 100.0) - 90.0).abs() < 1e-9);
+        assert!((per_check_score(90.0, 100.0) - 90.0).abs() < 1e-9);
+        // An error larger than the close floors at zero, never negative.
+        assert_eq!(per_check_score(250.0, 100.0), 0.0);
+    }
+
+    #[test]
+    fn a_check_scores_both_arms_against_the_horizon_close() {
+        let rec = record("2026-01-05");
+        let closes = weekday_closes("2026-01-02", "2026-04-10", 100.0);
+        match check_horizon(&rec, Horizon::ThreeMonth, &closes) {
+            CheckOutcome::Scored { close, bridge_factor, model, engine } => {
+                // 2026-04-05 is a Sunday: the last session at or before it is Friday.
+                assert_eq!(close.date, "2026-04-03");
+                assert_eq!(bridge_factor, 1.0);
+                assert!((model.unwrap().score - 90.0).abs() < 1e-9);
+                assert!((engine.unwrap().score - 95.0).abs() < 1e-9);
+            }
+            other => panic!("expected a scored check, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_proximity_admits_five_sessions_back_and_not_six() {
+        let rec = record("2026-01-09"); // three-month horizon: Thursday 2026-04-09
+        let mut closes = vec![bar("2026-01-02", 100.0)];
+        // The last close five sessions back (Thursday 2026-04-02): admitted.
+        closes.push(bar("2026-04-02", 100.0));
+        assert!(matches!(
+            check_horizon(&rec, Horizon::ThreeMonth, &closes),
+            CheckOutcome::Scored { .. }
+        ));
+        // Six sessions back (Wednesday 2026-04-01): unscorable.
+        closes.pop();
+        closes.push(bar("2026-04-01", 100.0));
+        assert_eq!(
+            check_horizon(&rec, Horizon::ThreeMonth, &closes),
+            CheckOutcome::Unscorable {
+                cause: UnscorableCause::NoCloseInProximity
+            }
+        );
+    }
+
+    #[test]
+    fn a_split_bridges_so_it_scores_as_a_hit_never_a_miss() {
+        // A 2:1 split since creation: the refreshed series carries the anchor
+        // bar at half its recorded close.
+        let rec = record("2026-01-05");
+        let mut closes = weekday_closes("2026-01-02", "2026-04-10", 55.0);
+        closes[0] = bar("2026-01-02", 50.0);
+        match check_horizon(&rec, Horizon::ThreeMonth, &closes) {
+            CheckOutcome::Scored { bridge_factor, model, .. } => {
+                assert_eq!(bridge_factor, 0.5);
+                let model = model.unwrap();
+                assert_eq!(model.expected, 55.0);
+                assert_eq!(model.score, 100.0);
+            }
+            other => panic!("expected a scored check, got {other:?}"),
+        }
+        // A sub-deadband revision of the anchor bar never poses as a split.
+        let mut revised = weekday_closes("2026-01-02", "2026-04-10", 110.0);
+        revised[0] = bar("2026-01-02", 101.0);
+        match check_horizon(&rec, Horizon::ThreeMonth, &revised) {
+            CheckOutcome::Scored { bridge_factor, model, .. } => {
+                assert_eq!(bridge_factor, 1.0);
+                assert_eq!(model.unwrap().score, 100.0);
+            }
+            other => panic!("expected a scored check, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_unscorable_cause_is_typed() {
+        let closes = weekday_closes("2026-01-02", "2026-04-10", 100.0);
+        let mut no_forecast = record("2026-01-05");
+        no_forecast.model.three_month = None;
+        no_forecast.engine.three_month = None;
+        assert_eq!(
+            check_horizon(&no_forecast, Horizon::ThreeMonth, &closes),
+            CheckOutcome::Unscorable { cause: UnscorableCause::NoForecast }
+        );
+        assert_eq!(unscorable_without_series(&no_forecast, Horizon::ThreeMonth), Some(UnscorableCause::NoForecast));
+
+        let mut no_anchor = record("2026-01-05");
+        no_anchor.anchor = None;
+        assert_eq!(unscorable_without_series(&no_anchor, Horizon::ThreeMonth), Some(UnscorableCause::NoAnchor));
+        assert_eq!(
+            check_horizon(&no_anchor, Horizon::ThreeMonth, &closes),
+            CheckOutcome::Unscorable { cause: UnscorableCause::NoAnchor }
+        );
+
+        let rec = record("2026-01-05");
+        assert_eq!(unscorable_without_series(&rec, Horizon::ThreeMonth), None);
+        let missing_anchor_bar = weekday_closes("2026-01-05", "2026-04-10", 100.0);
+        assert_eq!(
+            check_horizon(&rec, Horizon::ThreeMonth, &missing_anchor_bar),
+            CheckOutcome::Unscorable { cause: UnscorableCause::AnchorBarMissing }
+        );
+
+        // A series that stops long before the horizon (a delisting).
+        let delisted = weekday_closes("2026-01-02", "2026-02-27", 100.0);
+        assert_eq!(
+            check_horizon(&rec, Horizon::ThreeMonth, &delisted),
+            CheckOutcome::Unscorable { cause: UnscorableCause::NoCloseInProximity }
+        );
+    }
+
+    #[test]
+    fn a_null_leg_scores_the_other_arm_alone() {
+        let closes = weekday_closes("2026-01-02", "2026-04-10", 100.0);
+        let mut model_null = record("2026-01-05");
+        model_null.model.three_month = None;
+        match check_horizon(&model_null, Horizon::ThreeMonth, &closes) {
+            CheckOutcome::Scored { model, engine, .. } => {
+                assert!(model.is_none());
+                assert!(engine.is_some());
+            }
+            other => panic!("expected a scored check, got {other:?}"),
+        }
+        let mut engine_null = record("2026-01-05");
+        engine_null.engine.three_month = None;
+        match check_horizon(&engine_null, Horizon::ThreeMonth, &closes) {
+            CheckOutcome::Scored { model, engine, .. } => {
+                assert!(model.is_some());
+                assert!(engine.is_none());
+            }
+            other => panic!("expected a scored check, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scores_average_per_arm_and_carry_the_check_that_last_moved_them() {
+        let checks = vec![
+            scored_check(3, 1, Horizon::ThreeMonth, "2026-04-06", Some(80.0), Some(60.0)),
+            scored_check(7, 2, Horizon::ThreeMonth, "2026-05-06", None, Some(100.0)),
+            StoredCheck {
+                id: 9,
+                episode_id: 3,
+                check: Check {
+                    horizon: Horizon::ThreeMonth,
+                    checked_on: "2026-06-06".into(),
+                    run_id: "run".into(),
+                    outcome: CheckOutcome::Unscorable { cause: UnscorableCause::NoCloseInProximity },
+                },
+            },
         ];
-        let source = RecordingPrices {
-            inner: SyntheticPrices {
-                fail_dividends: false,
+        let s = accuracy_scores(&checks);
+        let model = s.three_month.model.as_ref().unwrap();
+        assert_eq!(model.score, 80.0);
+        assert_eq!(model.checks, 1);
+        assert_eq!((model.last_moved_on.as_str(), model.last_moved_check), ("2026-04-06", 3));
+        let engine = s.three_month.engine.as_ref().unwrap();
+        assert_eq!(engine.score, 80.0);
+        assert_eq!(engine.checks, 2);
+        // The unscorable check moves nothing.
+        assert_eq!((engine.last_moved_on.as_str(), engine.last_moved_check), ("2026-05-06", 7));
+        // No score yet where no check landed.
+        assert_eq!(s.twelve_month, HorizonAccuracy::default());
+        assert!(s.three_year.model.is_none());
+    }
+
+    #[test]
+    fn scores_by_symbol_reads_every_episode_of_the_symbol() {
+        let mut msft = record("2026-01-05");
+        msft.symbol = "MSFT".into();
+        let eps = vec![stored(1, record("2026-01-05")), stored(2, msft), stored(3, record("2026-02-05"))];
+        let checks = vec![
+            scored_check(1, 1, Horizon::ThreeMonth, "2026-04-06", Some(80.0), Some(70.0)),
+            scored_check(2, 2, Horizon::ThreeMonth, "2026-04-06", Some(10.0), Some(10.0)),
+            scored_check(3, 3, Horizon::ThreeMonth, "2026-05-06", Some(60.0), Some(50.0)),
+        ];
+        let by = scores_by_symbol(&eps, &checks, ["aapl".to_string(), "NVDA".to_string()]);
+        assert_eq!(by["AAPL"].three_month.model.as_ref().unwrap().score, 70.0);
+        assert_eq!(by["AAPL"].three_month.engine.as_ref().unwrap().checks, 2);
+        assert_eq!(by["NVDA"], AccuracyScores::default());
+        assert!(!by.contains_key("MSFT"));
+    }
+
+    #[test]
+    fn the_cadence_opens_at_one_month_and_not_before() {
+        assert!(cadence_opens(None, d("2026-03-01")));
+        assert!(!cadence_opens(Some("2026-02-05"), d("2026-03-04")));
+        assert!(cadence_opens(Some("2026-02-05"), d("2026-03-05")));
+        assert!(cadence_opens(Some("2026-01-31"), d("2026-02-28")));
+        assert!(!cadence_opens(Some("2026-01-31"), d("2026-02-27")));
+    }
+
+    #[test]
+    fn the_live_source_passes_an_empty_serve_through_and_errs_only_on_a_failed_fetch() {
+        use crate::test_http::{Canned, MockHttp};
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "[]",
             },
-            calls: std::cell::RefCell::new(Vec::new()),
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-05-01");
-        // One holding fetch, floored at the earliest active anchor − pad.
-        let calls = source.calls.borrow();
-        let brdg: Vec<_> = calls.iter().filter(|(s, _)| s == "BRDG").collect();
-        assert_eq!(brdg.len(), 1, "one fetch per symbol per pass: {calls:?}");
-        assert_eq!(
-            brdg[0].1,
-            NaiveDate::from_ymd_opt(2026, 2, 3).unwrap(),
-            "floored at the earliest active-episode anchor minus the pad"
-        );
-        drop(calls);
-        // Both episodes bridge through the 02-10 session close (i=7 from the
-        // 02-03 fetch start → 100 + 4 + 0.7): a vintage-fresh no-op for EP-OLD,
-        // the intrinsic-vintage keying for EP-NEW.
-        let old_scored = scored_for(&episodes[0], 1).expect("EP-OLD 1-month scored");
-        let new_scored = scored_for(&episodes[1], 1).expect("EP-NEW 1-month scored");
-        let old_bridge = old_scored.anchor_close.expect("EP-OLD bridge covered");
-        let new_bridge = new_scored.anchor_close.expect("EP-NEW bridge covered");
-        assert!((old_bridge - 104.7).abs() < 1e-9, "{old_bridge}");
-        assert!((new_bridge - 104.7).abs() < 1e-9, "{new_bridge}");
-        // EP-NEW's entry still keys on its own anchor (the session after 03-10).
-        assert_eq!(new_scored.entry_date, "2026-03-11");
-    }
-
-    #[test]
-    fn the_fetch_floor_covers_the_intrinsic_session_the_bridge_keys_at() {
-        // A lone rule-demotion episode: anchor 03-10, intrinsic vintage 02-10 —
-        // the vintage is OLDER than the anchor, which is the shape that exposed
-        // the hole. The fetch is floored at `min(anchor, vintage)`, so the session
-        // the bridge keys at is inside the refreshed range and the bridge resolves
-        // there. Floored at the anchor alone, `merge_price_bars` rewrote only the
-        // fetched dates and left the 02-10 bar however the cache last held it —
-        // and since `price_bars` is never pruned, a bar cached before a split
-        // satisfied the bridge on a stale basis, fabricating a drawdown breach.
-        let conn = mem_conn();
-        let mut ep = old_episode("LONE", "2026-03-10T12:00:00+00:00");
-        ep.intrinsic_vintage = "2026-02-10T12:00:00+00:00".into();
-        ep.vintage_fresh = false;
-        let mut episodes = vec![ep];
-        let source = RecordingPrices {
-            inner: SyntheticPrices {
-                fail_dividends: false,
+            Canned::Reply {
+                status: 404,
+                headers: vec![],
+                body: "{}",
             },
-            calls: Default::default(),
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-05-01");
-        let holding_from = source
-            .calls
-            .borrow()
-            .iter()
-            .find(|(sym, _)| sym == "LONE")
-            .map(|(_, from)| *from)
-            .expect("the holding's series was fetched");
-        assert!(
-            holding_from <= NaiveDate::from_ymd_opt(2026, 2, 10).unwrap(),
-            "the fetch must reach the intrinsic session, not stop at the anchor: {holding_from}"
-        );
-        let scored = scored_for(&episodes[0], 1).expect("1-month scored");
-        let anchor_close = scored.anchor_close.expect("the bridge resolves at the vintage");
-        // The synthetic series rises with date, so a bridge keyed at the intrinsic
-        // session (02-10) must sit strictly below the anchor session's own close —
-        // proving it keyed at the vintage rather than silently falling back to the
-        // anchor, which is what the old exclusion was protecting against.
-        let at_anchor = {
-            let series = ctx.series("LONE", holding_from, &[today]).to_vec();
-            anchor_session_close(&series, NaiveDate::from_ymd_opt(2026, 3, 10).unwrap())
-                .map(|b| b.value)
-                .expect("the anchor session is covered")
-        };
-        assert!(
-            anchor_close < at_anchor,
-            "the bridge keyed at {anchor_close}, the anchor session closes at {at_anchor} — \
-             it must key at the intrinsic vintage, never the anchor"
-        );
-        assert!(scored.price_return.is_finite());
-    }
-
-    #[test]
-    fn a_genuinely_unservable_intrinsic_session_still_excludes_the_bridge() {
-        // The exclusion arm the fix must preserve: when the SOURCE cannot serve the
-        // intrinsic session at all, the bridge is excluded rather than keyed at the
-        // anchor instead. Excluded-not-guessed survives the wider floor.
-        struct LateStart;
-        impl OutcomePriceSource for LateStart {
-            fn daily_closes(
-                &self,
-                symbol: &str,
-                from: NaiveDate,
-                to: NaiveDate,
-            ) -> Result<Vec<DatedValue>> {
-                // Nothing before 03-01, whatever the caller asks for.
-                let clamped = from.max(NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
-                SyntheticPrices {
-                    fail_dividends: false,
-                }
-                .daily_closes(symbol, clamped, to)
-            }
-            fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-                Ok(Vec::new())
-            }
-        }
-        let conn = mem_conn();
-        let mut ep = old_episode("LONE", "2026-03-10T12:00:00+00:00");
-        ep.intrinsic_vintage = "2026-02-10T12:00:00+00:00".into();
-        ep.vintage_fresh = false;
-        let mut episodes = vec![ep];
-        let mut ctx = SeriesCtx::new(&conn, Some(&LateStart));
-        mature_labels(
-            &mut episodes,
-            &mut ctx,
-            NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
-            "2026-05-01",
-        );
-        let scored = scored_for(&episodes[0], 1).expect("1-month scored");
-        assert!(
-            scored.anchor_close.is_none(),
-            "an unservable intrinsic session excludes the bridge: {:?}",
-            scored.anchor_close
-        );
-        assert!(scored.price_return.is_finite(), "the window itself still scores");
-    }
-
-    #[test]
-    fn an_overflowing_dividend_sum_takes_the_labeled_price_only_fallback() {
-        // Codex I16 (ruled 2026-08-29): the window's dividend sum is unbounded
-        // — two feed-extreme amounts overflow the total return to inf, which
-        // persisted as `null` and read back as the failed-re-pull `None` with
-        // no gap saying so. It takes the labeled fallback explicitly.
-        struct Extreme;
-        impl OutcomePriceSource for Extreme {
-            fn daily_closes(
-                &self,
-                symbol: &str,
-                from: NaiveDate,
-                to: NaiveDate,
-            ) -> Result<Vec<DatedValue>> {
-                SyntheticPrices {
-                    fail_dividends: false,
-                }
-                .daily_closes(symbol, from, to)
-            }
-            fn dividend_history(
-                &self,
-                _: &str,
-                from: NaiveDate,
-                _: NaiveDate,
-            ) -> Result<Vec<DatedValue>> {
-                let d1 = (from + chrono::Duration::days(100)).format("%Y-%m-%d").to_string();
-                let d2 = (from + chrono::Duration::days(200)).format("%Y-%m-%d").to_string();
-                Ok(bars(&[(d1.as_str(), f64::MAX), (d2.as_str(), f64::MAX)]))
-            }
-        }
-        let conn = mem_conn();
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
-        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
-        let mut ctx = SeriesCtx::new(&conn, Some(&Extreme));
-        let today = chrono::Utc::now().date_naive();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
-        let scored = scored_for(&episodes[0], 12).expect("scored");
-        assert!(scored.price_return.is_finite(), "the price-only label still scores");
-        assert_eq!(scored.total_return, None);
-        assert!(
-            scored.total_return_gap.as_deref().is_some_and(|g| g.contains("overflowed")),
-            "{:?}",
-            scored.total_return_gap
-        );
-    }
-
-    #[test]
-    fn a_zero_close_never_enters_the_series_or_the_label() {
-        // Codex I16, reviewer round (ruled 2026-08-29): a served zero close is
-        // not a price. Admitted, it read as a 100% drawdown inside the window
-        // (and at the entry it made `price_return` a persisted `null`); now the
-        // series admits usable bars only, so it reaches neither the cache nor
-        // the label arithmetic.
-        struct ZeroBars;
-        impl OutcomePriceSource for ZeroBars {
-            fn daily_closes(
-                &self,
-                symbol: &str,
-                from: NaiveDate,
-                to: NaiveDate,
-            ) -> Result<Vec<DatedValue>> {
-                let mut bars = SyntheticPrices {
-                    fail_dividends: false,
-                }
-                .daily_closes(symbol, from, to)?;
-                for b in bars.iter_mut().skip(150).take(3) {
-                    b.value = 0.0;
-                }
-                Ok(bars)
-            }
-            fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-                Ok(Vec::new())
-            }
-        }
-        let conn = mem_conn();
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
-        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
-        let mut ctx = SeriesCtx::new(&conn, Some(&ZeroBars));
-        let today = chrono::Utc::now().date_naive();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
-        let scored = scored_for(&episodes[0], 12).expect("scored");
-        assert_eq!(
-            scored.max_drawdown, 0.0,
-            "a zero close read as a 100% drawdown before: {scored:?}"
-        );
-        assert!(scored.price_return.is_finite() && scored.entry_price > 0.0, "{scored:?}");
-        let cached = store::load_price_bars(&conn, "AAPL").unwrap();
-        assert!(
-            !cached.is_empty() && cached.iter().all(|b| b.value > 0.0),
-            "the cache never holds an unusable bar"
-        );
-    }
-
-    /// Serves the synthetic series, with every bar of `symbol` dated inside
-    /// `(anchor, anchor + 4d]` — the entry reference's bars — set to a subnormal
-    /// close: usable (finite, positive), yet any return off it overflows.
-    struct TinyEntry {
-        symbol: &'static str,
-        anchor: NaiveDate,
-    }
-
-    impl OutcomePriceSource for TinyEntry {
-        fn daily_closes(&self, symbol: &str, from: NaiveDate, to: NaiveDate) -> Result<Vec<DatedValue>> {
-            let mut bars = SyntheticPrices {
-                fail_dividends: false,
-            }
-            .daily_closes(symbol, from, to)?;
-            if symbol == self.symbol {
-                for b in bars.iter_mut() {
-                    let d = parse_iso_date_prefix(&b.date).unwrap();
-                    if d > self.anchor && d <= self.anchor + chrono::Duration::days(4) {
-                        b.value = 1e-310;
-                    }
-                }
-            }
-            Ok(bars)
-        }
-        fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[test]
-    fn unfinished_price_arithmetic_takes_the_coverage_lifecycle_never_pending_forever() {
-        // Codex I16, round 1 (ruled 2026-08-29): a covered window whose price
-        // return overflows is pending inside the shared grace — on the
-        // summary's pending list — and closes as the typed price-coverage
-        // state past it, never a silent `continue` that re-pends every pass.
-        // The anchor sits 430 days back: the 1-month window is past the
-        // 91-day grace, the 12-month window (65 days matured) inside it.
-        let conn = mem_conn();
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
-        // The episode dates its anchor by ET session (`old_episode`), so the
-        // tiny-bar window keys on the same session — a UTC date would sit one
-        // day ahead of it between 20:00 and 24:00 ET.
-        let anchor = crate::market_clock::et_date_of(&anchor_at).unwrap();
-        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
-        let source = TinyEntry {
-            symbol: "AAPL",
-            anchor,
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = chrono::Utc::now().date_naive();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
-        let ep = &episodes[0];
-        let label = |months: u32| ep.labels.iter().find(|l| l.window_months == months).unwrap();
-        assert_eq!(
-            label(1).outcome,
-            LabelOutcome::PriceCoverageUnscorable,
-            "past the grace the window closes typed: {:?}",
-            label(1).outcome
-        );
-        assert_eq!(label(12).outcome, LabelOutcome::Pending, "{:?}", label(12).outcome);
-        assert!(
-            summary.pending_coverage.contains(&"AAPL".to_string()),
-            "inside the grace the window is on the pending list: {:?}",
-            summary.pending_coverage
-        );
-        assert!(
-            summary.matured.iter().any(|m| m.window_months == 1
-                && m.outcome == "price-coverage-unscorable"),
-            "{:?}",
-            summary.matured
-        );
-        assert!(scored_for(ep, 12).is_none());
-    }
-
-    #[test]
-    fn an_overflowing_benchmark_return_reads_the_leg_unavailable_with_its_gap() {
-        // Codex I16, round 1: the benchmark's own return over two usable bars
-        // can overflow; the spread reads absent WITH its gap naming why —
-        // never an inf serde writes as `null` beside no gap.
-        let conn = mem_conn();
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
-        // The episode dates its anchor by ET session (`old_episode`), so the
-        // tiny-bar window keys on the same session — a UTC date would sit one
-        // day ahead of it between 20:00 and 24:00 ET.
-        let anchor = crate::market_clock::et_date_of(&anchor_at).unwrap();
-        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
-        let source = TinyEntry {
-            symbol: MARKET_BENCHMARK,
-            anchor,
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = chrono::Utc::now().date_naive();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
-        // The 1-month window is past the grace, so it scores with the market
-        // leg typed unavailable rather than holding the window pending.
-        let scored = scored_for(&episodes[0], 1).expect("the holding leg scores");
-        assert!(scored.price_return.is_finite(), "{scored:?}");
-        assert_eq!(scored.vs_market, None, "{scored:?}");
-        assert!(
-            scored.market_leg_gap.as_deref().is_some_and(|g| g.contains("did not finish finite")),
-            "{:?}",
-            scored.market_leg_gap
-        );
-    }
-
-    #[test]
-    fn a_failed_dividends_pull_takes_the_labeled_price_only_fallback() {
-        let conn = mem_conn();
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
-        let mut episodes = vec![old_episode("AAPL", &anchor_at)];
-        let source = SyntheticPrices {
-            fail_dividends: true,
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = chrono::Utc::now().date_naive();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
-        let scored = scored_for(&episodes[0], 12).expect("scored");
-        assert!(scored.total_return.is_none());
-        assert!(scored
-            .total_return_gap
-            .as_deref()
-            .unwrap()
-            .contains("price-only"));
-    }
-
-    /// Serves no closes (the cache is pre-seeded) but one dividend, dated between
-    /// the window's last close and its calendar end — finding 9's population.
-    struct GapDividend {
-        ex_date: &'static str,
-    }
-
-    impl OutcomePriceSource for GapDividend {
-        fn daily_closes(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-            Ok(Vec::new())
-        }
-        fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-            Ok(bars(&[(self.ex_date, 5.0)]))
-        }
-    }
-
-    #[test]
-    fn a_dividend_going_ex_after_the_last_close_is_not_counted_in_total_return() {
-        let conn = mem_conn();
-        // The 1-month window ends 2026-06-01 (a Monday). The series' last close is
-        // 2026-05-28 — inside COVERAGE_TOLERANCE_DAYS, so the window is covered and
-        // scores, with the end price taken from the 28th.
-        let seeded = bars(&[
-            ("2026-05-04", 100.0),
-            ("2026-05-18", 105.0),
-            ("2026-05-28", 110.0),
         ]);
-        // Both benchmark legs too — an unseeded resolvable leg holds the whole
-        // window pending inside grace, which would mask the assertion.
-        for sym in ["AAPL", MARKET_BENCHMARK, "XLK"] {
-            store::merge_price_bars(&conn, sym, &seeded).unwrap();
-        }
-        // Ex-date 2026-05-29: after the end bar's close, but on or before the
-        // calendar `w_end`. The holder has not earned it as of the price the label
-        // divides by, so adding it overstates the return — and dividends only add,
-        // so the error is always signed positive.
-        let source = GapDividend {
-            ex_date: "2026-05-29",
+        let live = LiveOutcomePrices {
+            fmp: crate::fmp::FmpDataSource::new("test-key".to_string())
+                .unwrap()
+                .with_base_url(&server.base_url),
         };
-        let mut episodes = vec![old_episode("AAPL", "2026-05-01T12:00:00+00:00")];
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        mature_labels(
-            &mut episodes,
-            &mut ctx,
-            NaiveDate::from_ymd_opt(2026, 6, 3).unwrap(),
-            "2026-06-03",
-        );
-        let scored = scored_for(&episodes[0], 1).expect("the 1-month window scored");
-        let price_return = 110.0 / 100.0 - 1.0;
-        assert!(
-            (scored.price_return - price_return).abs() < 1e-9,
-            "price leg unchanged: {} vs {price_return}",
-            scored.price_return
-        );
-        assert!(
-            scored
-                .total_return
-                .is_some_and(|tr| (tr - price_return).abs() < 1e-9),
-            "the out-of-window dividend must not ride the total-return leg: {:?}",
-            scored.total_return
-        );
-    }
-
-    #[test]
-    fn a_dividend_on_the_end_bars_own_session_still_counts() {
-        // The boundary the fix must not over-correct: an ex-date ON the end bar's
-        // session IS out of that close, so it belongs in the window. Bounding at
-        // the bar's date keeps it (`<=`), exactly as the entry side excludes its
-        // own session's ex-date with a strict `>`.
-        let conn = mem_conn();
-        let seeded = bars(&[
-            ("2026-05-04", 100.0),
-            ("2026-05-18", 105.0),
-            ("2026-05-28", 110.0),
-        ]);
-        // Both benchmark legs too — an unseeded resolvable leg holds the whole
-        // window pending inside grace, which would mask the assertion.
-        for sym in ["AAPL", MARKET_BENCHMARK, "XLK"] {
-            store::merge_price_bars(&conn, sym, &seeded).unwrap();
-        }
-        let source = GapDividend {
-            ex_date: "2026-05-28",
-        };
-        let mut episodes = vec![old_episode("AAPL", "2026-05-01T12:00:00+00:00")];
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        mature_labels(
-            &mut episodes,
-            &mut ctx,
-            NaiveDate::from_ymd_opt(2026, 6, 3).unwrap(),
-            "2026-06-03",
-        );
-        let scored = scored_for(&episodes[0], 1).expect("the 1-month window scored");
-        assert!(
-            scored
-                .total_return
-                .is_some_and(|tr| (tr - ((110.0 + 5.0) / 100.0 - 1.0)).abs() < 1e-9),
-            "an ex-date on the end session must still count: {:?}",
-            scored.total_return
-        );
-    }
-
-    #[test]
-    fn no_source_leaves_labels_pending_then_grace_closes_them_typed() {
-        let conn = mem_conn();
-        let anchor_at = "2026-05-01T12:00:00+00:00";
-        let mut episodes = vec![old_episode("AAPL", anchor_at)];
-        // 1-month window (2026-06-01) is due but uncovered; within grace it stays
-        // pending.
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
-        assert!(summary.matured.is_empty());
-        assert_eq!(summary.pending_coverage, vec!["AAPL".to_string()]);
-        assert_eq!(episodes[0].state, EpisodeState::Active);
-        // Past the grace with a never-covered series: price-coverage-unscorable.
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        assert_eq!(summary.matured.len(), 1);
-        assert_eq!(summary.matured[0].outcome, "price-coverage-unscorable");
-        // A series that existed but stopped resolves terminal past grace: seed
-        // bars that end before the 3-month window, then age past its grace.
-        store::merge_price_bars(
-            &conn,
-            "MSFT",
-            &bars(&[("2026-05-04", 100.0), ("2026-06-05", 101.0)]),
-        )
-        .unwrap();
-        let mut episodes = vec![old_episode("MSFT", anchor_at)];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 12, 20).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-12-20");
-        assert!(summary
-            .matured
-            .iter()
-            .any(|m| m.outcome == "terminal-unscorable"));
-    }
-
-    #[test]
-    fn a_late_starting_series_never_scores_a_late_entry() {
-        // A cached series that starts well after the anchor (a partial refresh, a
-        // late series start) reaches the window end but never covered the start:
-        // the window must hold pending — then close price-coverage-unscorable —
-        // rather than score a months-late bar as the "next session" entry.
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "LATE",
-            &bars(&[("2026-07-01", 100.0), ("2026-12-31", 110.0)]),
-        )
-        .unwrap();
-        let mut episodes = vec![old_episode("LATE", "2026-05-01T12:00:00+00:00")];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
-        assert!(summary.matured.is_empty(), "a late entry never scores");
-        assert_eq!(summary.pending_coverage, vec!["LATE".to_string()]);
-        // Past the grace it closes as never-covered, not terminal.
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        assert_eq!(summary.matured.len(), 1);
-        assert_eq!(summary.matured[0].outcome, "price-coverage-unscorable");
-    }
-
-    #[test]
-    fn a_benchmark_series_starting_late_never_supplies_a_return() {
-        let closes = bars(&[("2026-07-01", 100.0), ("2026-12-31", 110.0)]);
-        let anchor = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
-        let w_end = NaiveDate::from_ymd_opt(2026, 12, 20).unwrap();
-        assert_eq!(bench_return(&closes, anchor, w_end), None);
-        // A timely start AND a genuine end-window bar supply one.
-        let timely = bars(&[("2026-05-04", 100.0), ("2026-12-18", 110.0)]);
-        assert!(bench_return(&timely, anchor, w_end).is_some());
-        // A tail bar past the window end alone does not: the last bar at or
-        // before the end is the entry bar itself — the fabricated flat-return
-        // shape (F2), which the old tail-only read certified as covered.
-        let gapped = bars(&[("2026-05-04", 100.0), ("2026-12-31", 110.0)]);
-        assert_eq!(bench_return(&gapped, anchor, w_end), None);
-    }
-
-    #[test]
-    fn an_end_bar_on_the_entry_session_never_supplies_a_return() {
-        // A window short enough that its only in-tolerance bar is the entry bar:
-        // a return needs at least one observed post-entry price.
-        let closes = bars(&[("2026-05-04", 100.0)]);
-        let anchor = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
-        let w_end = NaiveDate::from_ymd_opt(2026, 5, 6).unwrap();
-        assert_eq!(bench_return(&closes, anchor, w_end), None);
-    }
-
-    #[test]
-    fn an_internal_gap_at_the_window_end_holds_pending_then_closes_price_coverage() {
-        // The series tail reaches past the window end — the old tail-only
-        // coverage read — but the last bar at or before it is the entry bar,
-        // so scoring would record a fabricated exact-0% window. It must hold
-        // pending inside grace, then close typed, never score — and the bar
-        // AFTER the window end proves the series never stopped, so the type
-        // is price-coverage, never the terminal contract reserved for
-        // genuine disappearances.
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "GAPX",
-            &bars(&[("2026-05-04", 100.0), ("2026-06-05", 120.0)]),
-        )
-        .unwrap();
-        let mut episodes = vec![old_episode("GAPX", "2026-05-01T12:00:00+00:00")];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        // The 1-month window ends 2026-06-01: due, inside grace.
-        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
-        assert!(
-            summary.matured.is_empty(),
-            "a stale end bar must never score: {:?}",
-            summary.matured
-        );
-        assert_eq!(summary.pending_coverage, vec!["GAPX".to_string()]);
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        assert_eq!(summary.matured.len(), 1, "{:?}", summary.matured);
-        assert_eq!(summary.matured[0].window_months, 1);
-        assert_eq!(summary.matured[0].outcome, "price-coverage-unscorable");
-    }
-
-    #[test]
-    fn a_series_that_stops_before_the_window_end_closes_terminal_past_grace() {
-        // Alive at the entry, no bar at or after the window end: the
-        // conservatively terminal contract — the case the discriminator's
-        // terminal arm is reserved for.
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "STOP",
-            &bars(&[("2026-05-04", 100.0), ("2026-05-10", 90.0)]),
-        )
-        .unwrap();
-        let mut episodes = vec![old_episode("STOP", "2026-05-01T12:00:00+00:00")];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        assert_eq!(summary.matured.len(), 1, "{:?}", summary.matured);
-        assert_eq!(summary.matured[0].window_months, 1);
-        assert_eq!(summary.matured[0].outcome, "terminal-unscorable");
-    }
-
-    #[test]
-    fn an_earlier_due_window_gap_also_earns_the_heal_fetch() {
-        // The cache covers the start and the FURTHEST due end, but gaps at
-        // the 1-month end. The heal judgment must weigh every due end, not
-        // just the furthest, or the earlier window silently loses its one
-        // fetch and closes unscorable with the source sitting available.
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "TWOG",
-            &bars(&[
-                ("2026-03-02", 99.0),
-                ("2026-03-03", 100.0),
-                ("2026-06-01", 118.0),
-            ]),
-        )
-        .unwrap();
-        struct TwoGapSource;
-        impl OutcomePriceSource for TwoGapSource {
-            fn daily_closes(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-                Ok(bars(&[
-                    ("2026-03-02", 99.0),
-                    ("2026-03-03", 100.0),
-                    ("2026-04-01", 108.0),
-                    ("2026-05-15", 112.0),
-                    ("2026-06-01", 118.0),
-                ]))
+        let served = live.daily_closes("GONE", d("2026-01-01"), d("2026-10-09")).unwrap();
+        assert!(served.is_empty(), "an empty serve is a served series, never an error");
+        let rec = record("2026-01-05");
+        assert_eq!(
+            check_horizon(&rec, Horizon::ThreeMonth, &served),
+            CheckOutcome::Unscorable {
+                cause: UnscorableCause::NoCloseInProximity
             }
-            fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-                Ok(Vec::new())
-            }
-        }
-        let mut episodes = vec![old_episode("TWOG", "2026-03-02T12:00:00+00:00")];
-        let source = TwoGapSource;
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        // Both the 1-month (2026-04-02) and 3-month (2026-06-02) windows are due.
-        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
-        assert_eq!(summary.matured.len(), 2, "{:?}", summary.pending_coverage);
-        assert!(summary.matured.iter().all(|m| m.outcome == "scored"));
-        let scored = scored_for(&episodes[0], 1).expect("the healed 1-month window scored");
-        assert_eq!(scored.end_date, "2026-04-01");
-        assert!(
-            (scored.price_return - 0.08).abs() < 1e-9,
-            "healed 1-month end bar: {}",
-            scored.price_return
         );
-    }
-
-    /// Serves one dense series for every symbol — the heal-fetch pin's source.
-    struct HealSource;
-    impl OutcomePriceSource for HealSource {
-        fn daily_closes(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-            Ok(bars(&[
-                ("2026-04-30", 99.0),
-                ("2026-05-04", 100.0),
-                ("2026-05-18", 110.0),
-                ("2026-05-28", 118.0),
-                ("2026-06-05", 120.0),
-            ]))
-        }
-        fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
-            Ok(Vec::new())
-        }
+        assert!(live.daily_closes("GONE", d("2026-01-01"), d("2026-10-09")).is_err());
     }
 
     #[test]
-    fn a_cached_gap_at_the_window_end_earns_its_heal_fetch() {
-        // The cache covers the start and its tail passes the window end, so
-        // the old tail-only refresh judgment skipped the fetch and scored the
-        // stale bar; the end-bar-bounded judgment fetches, and the window
-        // scores from the healed series.
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "HEAL",
-            &bars(&[
-                ("2026-04-30", 99.0),
-                ("2026-05-04", 100.0),
-                ("2026-06-05", 120.0),
-            ]),
-        )
-        .unwrap();
-        let mut episodes = vec![old_episode("HEAL", "2026-05-01T12:00:00+00:00")];
-        let source = HealSource;
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
-        assert_eq!(summary.matured.len(), 1, "{:?}", summary.pending_coverage);
-        assert_eq!(summary.matured[0].outcome, "scored");
-        let scored = scored_for(&episodes[0], 1).expect("the healed window scored");
-        assert_eq!(scored.end_date, "2026-05-28");
-        assert!(
-            (scored.price_return - 0.18).abs() < 1e-9,
-            "healed end bar: {}",
-            scored.price_return
-        );
-    }
-
-    #[test]
-    fn lead_time_stamps_against_the_bear_line_when_the_12_month_window_scores() {
-        let conn = mem_conn();
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
-        let mut ep = old_episode("AAPL", &anchor_at);
-        // A confirmed falsifier early in the window; the synthetic series never
-        // drops below the 60.0 bear line, so the read is no-material-drawdown.
-        let confirmed = (chrono::Utc::now() - chrono::Duration::days(400))
-            .format("%Y-%m-%d")
-            .to_string();
-        ep.falsifier_events.push(FalsifierEvent {
-            condition_id: "c-1".into(),
-            confirmed_at: confirmed,
-            confirmation_observation_id: "2025-06-30".into(),
-            post_maturity: false,
-            lead_time_trading_days: None,
-            no_material_drawdown: None,
-        });
-        let mut episodes = vec![ep];
-        let source = SyntheticPrices {
-            fail_dividends: false,
+    fn the_record_round_trips_with_its_kebab_and_snake_tags() {
+        let check = Check {
+            horizon: Horizon::TwelveMonth,
+            checked_on: "2027-01-06".into(),
+            run_id: "r".into(),
+            outcome: CheckOutcome::Unscorable { cause: UnscorableCause::AnchorBarMissing },
         };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = chrono::Utc::now().date_naive();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
-        let ev = &episodes[0].falsifier_events[0];
-        assert_eq!(ev.no_material_drawdown, Some(true));
-        assert!(ev.lead_time_trading_days.is_none());
-        // The derived read collects it.
-        let reads = derive_reads(&episodes);
-        assert_eq!(reads.falsifier_lead_times.len(), 1);
-        assert!(reads.falsifier_lead_times[0].no_material_drawdown);
-    }
-
-    #[test]
-    fn a_confirmation_after_the_episode_window_is_never_clamped_to_its_last_bar() {
-        let mut events = vec![FalsifierEvent {
-            condition_id: "c-1".into(),
-            confirmed_at: "2026-06-03".into(),
-            confirmation_observation_id: "obs-late".into(),
-            post_maturity: false,
-            lead_time_trading_days: None,
-            no_material_drawdown: None,
-        }];
-        let closes = bars(&[
-            ("2025-06-03", 100.0),
-            ("2026-01-15", 55.0),
-            ("2026-06-01", 70.0),
-        ]);
-        stamp_lead_times(
-            &mut events,
-            &closes,
-            "2025-06-03",
-            NaiveDate::from_ymd_opt(2026, 6, 2).unwrap(),
-            60.0,
-        );
-        let event = &events[0];
-        assert!(event.post_maturity);
-        assert!(event.lead_time_trading_days.is_none());
-        assert!(event.no_material_drawdown.is_none());
-
-        // A malformed old row is excluded too, but is not falsely typed as a
-        // known post-window date.
-        events[0].confirmed_at = "later".into();
-        events[0].post_maturity = false;
-        stamp_lead_times(
-            &mut events,
-            &closes,
-            "2025-06-03",
-            NaiveDate::from_ymd_opt(2026, 6, 2).unwrap(),
-            60.0,
-        );
-        assert!(!events[0].post_maturity);
-        assert!(events[0].lead_time_trading_days.is_none());
-        assert!(events[0].no_material_drawdown.is_none());
-    }
-
-    #[test]
-    fn falsifier_lead_times_are_split_safe_across_a_retroactive_adjustment() {
-        // Authored at spot 100 with bear target 60 (a −40% line); a 2:1 split
-        // then re-bases the label-time series around 50. Price-space comparison
-        // would read every close below 60 as an instant false breach; return
-        // space reads the −10% dip as no material drawdown.
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "SPLT",
-            &bars(&[
-                ("2025-06-02", 50.0),
-                ("2025-06-03", 50.0),
-                ("2025-09-01", 48.0),
-                ("2026-01-15", 45.0),
-                // A genuine end-window bar: the 12-month window (2026-06-02)
-                // scores its own bounded end bar, never the stale 01-15 close.
-                ("2026-06-01", 52.0),
-                ("2026-06-05", 52.0),
-            ]),
-        )
-        .unwrap();
-        let mut ep = old_episode("SPLT", "2025-06-02T12:00:00+00:00");
-        ep.falsifier_events.push(FalsifierEvent {
-            condition_id: "c-1".into(),
-            confirmed_at: "2025-08-01".into(),
-            confirmation_observation_id: "obs-1".into(),
-            post_maturity: false,
-            lead_time_trading_days: None,
-            no_material_drawdown: None,
-        });
-        let mut episodes = vec![ep];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        let ev = &episodes[0].falsifier_events[0];
-        assert_eq!(
-            ev.no_material_drawdown,
-            Some(true),
-            "no false breach across the split"
-        );
-        assert!(ev.lead_time_trading_days.is_none());
-
-        // A genuine −46% close still breaches, with the confirmation's positive
-        // lead over the later breach bar.
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "DEEP",
-            &bars(&[
-                ("2025-06-02", 50.0),
-                ("2025-06-03", 50.0),
-                ("2025-09-01", 48.0),
-                ("2026-01-15", 27.0),
-                ("2026-06-01", 52.0),
-                ("2026-06-05", 52.0),
-            ]),
-        )
-        .unwrap();
-        let mut ep = old_episode("DEEP", "2025-06-02T12:00:00+00:00");
-        ep.falsifier_events.push(FalsifierEvent {
-            condition_id: "c-1".into(),
-            confirmed_at: "2025-08-01".into(),
-            confirmation_observation_id: "obs-1".into(),
-            post_maturity: false,
-            lead_time_trading_days: None,
-            no_material_drawdown: None,
-        });
-        let mut episodes = vec![ep];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        let ev = &episodes[0].falsifier_events[0];
-        assert_eq!(ev.no_material_drawdown, Some(false));
-        assert_eq!(
-            ev.lead_time_trading_days,
-            Some(1),
-            "confirmed one bar before the breach"
-        );
-    }
-
-    #[test]
-    fn a_stale_pre_anchor_bar_never_serves_as_the_bridge() {
-        // A sparse cache holds a years-old bar, a valid next-session entry, and
-        // window-end coverage. The labels still score (they need no bridge),
-        // but the bridge-dependent reads — band calibration, lead-time
-        // stamping — must exclude rather than scale through the stale close.
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "SPRS",
-            &bars(&[
-                ("2023-01-10", 80.0),
-                ("2025-06-03", 50.0),
-                // Every window's own end bar, so all four score without the
-                // bridge (the 1/3/6/12-month ends off the 2025-06-02 anchor).
-                ("2025-07-01", 49.0),
-                ("2025-09-01", 48.0),
-                ("2025-12-01", 47.0),
-                ("2026-01-15", 45.0),
-                ("2026-06-01", 52.0),
-                ("2026-06-05", 52.0),
-            ]),
-        )
-        .unwrap();
-        let mut ep = old_episode("SPRS", "2025-06-02T12:00:00+00:00");
-        ep.falsifier_events.push(FalsifierEvent {
-            condition_id: "c-1".into(),
-            confirmed_at: "2025-08-01".into(),
-            confirmation_observation_id: "obs-1".into(),
-            post_maturity: false,
-            lead_time_trading_days: None,
-            no_material_drawdown: None,
-        });
-        let mut episodes = vec![ep];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        assert!(
-            summary.matured.iter().all(|m| m.outcome == "scored"),
-            "labels score without the bridge"
-        );
-        let scored = scored_for(&episodes[0], 12).expect("scored");
-        assert_eq!(
-            scored.anchor_close, None,
-            "a 2023 bar is no decision-instant bridge"
-        );
-        let ev = &episodes[0].falsifier_events[0];
-        assert!(
-            ev.lead_time_trading_days.is_none() && ev.no_material_drawdown.is_none(),
-            "lead time stays unstamped, excluded from the read"
-        );
-        let reads = derive_reads(&episodes);
-        assert!(
-            reads.target_calibration.iter().all(|t| t.scored == 0),
-            "no band scores through a stale bridge"
-        );
-    }
-
-    #[test]
-    fn lead_time_breaches_key_on_the_anchor_close_not_the_entry_gap() {
-        // Line = anchor_close × bear ⁄ spot = 50 × 60 ⁄ 100 = 30, regardless of
-        // the overnight gap into the entry. A −20% gap-down entry (40) would
-        // make the entry-anchored rule miss the genuine 28-close breach; a
-        // gap-up entry (60) would make it fabricate one from the 32 close.
-        let event = || FalsifierEvent {
-            condition_id: "c-1".into(),
-            confirmed_at: "2025-08-01".into(),
-            confirmation_observation_id: "obs-1".into(),
-            post_maturity: false,
-            lead_time_trading_days: None,
-            no_material_drawdown: None,
-        };
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "GAPD",
-            &bars(&[
-                ("2025-06-02", 50.0),
-                ("2025-06-03", 40.0),
-                ("2025-09-01", 38.0),
-                ("2026-01-15", 28.0),
-                ("2026-06-01", 41.0),
-                ("2026-06-05", 41.0),
-            ]),
-        )
-        .unwrap();
-        let mut ep = old_episode("GAPD", "2025-06-02T12:00:00+00:00");
-        ep.falsifier_events.push(event());
-        let mut episodes = vec![ep];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        let ev = &episodes[0].falsifier_events[0];
-        assert_eq!(ev.no_material_drawdown, Some(false), "the 28 close breaches the 30 line");
-        assert_eq!(ev.lead_time_trading_days, Some(1));
-
-        let conn = mem_conn();
-        store::merge_price_bars(
-            &conn,
-            "GAPU",
-            &bars(&[
-                ("2025-06-02", 50.0),
-                ("2025-06-03", 60.0),
-                ("2025-09-01", 58.0),
-                ("2026-01-15", 32.0),
-                ("2026-06-01", 55.0),
-                ("2026-06-05", 55.0),
-            ]),
-        )
-        .unwrap();
-        let mut ep = old_episode("GAPU", "2025-06-02T12:00:00+00:00");
-        ep.falsifier_events.push(event());
-        let mut episodes = vec![ep];
-        let mut ctx = SeriesCtx::new(&conn, None);
-        mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
-        let ev = &episodes[0].falsifier_events[0];
-        assert_eq!(
-            ev.no_material_drawdown,
-            Some(true),
-            "32 sits above the 30 line — no fabricated breach off the gap-up entry"
-        );
-        assert!(ev.lead_time_trading_days.is_none());
-    }
-
-    #[test]
-    fn derived_reads_cohorts_and_calibration_come_from_scored_windows() {
-        let conn = mem_conn();
-        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
-        let mut episodes = vec![old_episode("AAPL", &anchor_at), old_episode("MSFT", &anchor_at)];
-        let source = SyntheticPrices {
-            fail_dividends: false,
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = chrono::Utc::now().date_naive();
-        mature_labels(&mut episodes, &mut ctx, today, "2026-08-04");
-        let reads = derive_reads(&episodes);
-        let twelve = reads
-            .cohorts
-            .iter()
-            .find(|c| c.window_months == 12)
-            .unwrap();
-        let hold = twelve
-            .lean_cohorts
-            .iter()
-            .find(|c| c.key == "hold")
-            .expect("hold cohort");
-        assert_eq!(hold.unique_holdings, 2);
-        assert!(hold.mean_total_return.is_some());
-        let cal = reads
-            .target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(cal.scored, 2);
-        assert!(cal.mean_interval_score.is_some());
-        // The model arm authors no bands and no outlook since the thesis
-        // document replaced the structured read: its calibration, the paired
-        // head-to-head and the direction reads are empty until outcome
-        // learning scores the appendix's expected prices.
-        assert!(reads.model_target_calibration.is_empty());
-        assert!(reads.head_to_head.is_empty());
-        assert!(reads.outlook_direction.is_empty());
-        assert!(!reads.eligibility.eligible, "2 of 30: below the bar");
-        assert!(reads.eligibility.note.contains("below the proposal eligibility bar"));
-    }
-
-    fn scored_label(price_return: f64, total_return: Option<f64>) -> ScoredLabel {
-        ScoredLabel {
-            entry_date: "2026-08-05".into(),
-            entry_price: 50.0,
-            end_date: "2027-08-04".into(),
-            end_price: 50.0 * (1.0 + price_return),
-            anchor_close: Some(50.0),
-            price_return,
-            total_return,
-            total_return_gap: total_return
-                .is_none()
-                .then(|| "total-return leg unavailable — price-only label".into()),
-            max_drawdown: -0.1,
-            vs_market: None,
-            market_leg_gap: None,
-            vs_sector: None,
-            sector_leg_gap: None,
-            labeled_at: "2027-08-04".into(),
-        }
-    }
-
-    fn set_scored(ep: &mut DecisionEpisode, months: u32, label: ScoredLabel) {
-        let slot = ep
-            .labels
-            .iter_mut()
-            .find(|l| l.window_months == months)
-            .unwrap();
-        slot.outcome = LabelOutcome::Scored(Box::new(label));
-    }
-
-    #[test]
-    fn a_missing_total_return_leg_quotes_price_only_in_the_primary_mean() {
-        // The labeled-mix rule: a label whose TR leg failed contributes its
-        // price-only return to the primary mean — the population never silently
-        // shrinks below the reported holding count.
-        let anchor = "2026-08-04T12:00:00+00:00";
-        let mut with_tr = old_episode("AAPL", anchor);
-        set_scored(&mut with_tr, 12, scored_label(0.05, Some(0.10)));
-        let mut without_tr = old_episode("MSFT", anchor);
-        set_scored(&mut without_tr, 12, scored_label(0.20, None));
-        let reads = derive_reads(&[with_tr, without_tr]);
-        let twelve = reads.cohorts.iter().find(|c| c.window_months == 12).unwrap();
-        let hold = twelve.lean_cohorts.iter().find(|c| c.key == "hold").unwrap();
-        assert_eq!(hold.unique_holdings, 2);
-        assert!((hold.mean_total_return.unwrap() - 0.15).abs() < 1e-12);
-        assert!((hold.mean_price_return.unwrap() - 0.125).abs() < 1e-12);
-    }
-
-    #[test]
-    fn target_calibration_is_split_safe_across_a_retroactive_adjustment() {
-        // Authored at spot 100 (band 60–160); a 2:1 split then re-bases the whole
-        // label-time series, so the window scores entry 50 → end 55 (+10%).
-        // Price-space comparison would read 55 against the 60–160 band — a false
-        // miss; return space over the authoring spot reads +10% inside
-        // [−40%, +60%].
-        let mut ep = old_episode("SPLT", "2026-08-04T12:00:00+00:00");
-        set_scored(&mut ep, 12, scored_label(0.10, None));
-        let reads = derive_reads(&[ep]);
-        let cal = reads
-            .target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(cal.scored, 1);
-        assert_eq!(cal.coverage_rate, Some(1.0), "no false miss across the split");
-        // Base error reconstructs the realized price in the authoring basis:
-        // 100 × 1.10 = 110 vs base 120.
-        assert!((cal.mean_base_signed_error.unwrap() - (110.0 - 120.0) / 120.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn target_calibration_keys_on_the_anchor_close_not_the_entry_gap() {
-        // Anchor-session close 50, a gap-down entry (45), window end 29. From
-        // the decision instant the realized move is −42% — outside the authored
-        // −40% bear edge (60 at spot 100) — while the entry-anchored read
-        // (−35.6%) would have called it inside the band.
-        let mut ep = old_episode("GAP", "2026-08-04T12:00:00+00:00");
-        let mut label = scored_label(29.0 / 45.0 - 1.0, None);
-        label.entry_price = 45.0;
-        label.end_price = 29.0;
-        label.anchor_close = Some(50.0);
-        set_scored(&mut ep, 12, label);
-        let reads = derive_reads(&[ep]);
-        let cal = reads
-            .target_calibration
-            .iter()
-            .find(|t| t.window_months == 12)
-            .unwrap();
-        assert_eq!(cal.scored, 1);
-        assert_eq!(
-            cal.coverage_rate,
-            Some(0.0),
-            "outside the band from the decision instant"
-        );
-        // Base error through the bridge: realized in the authoring basis is
-        // 100 × 29 ⁄ 50 = 58 vs base 120.
-        assert!((cal.mean_base_signed_error.unwrap() - (58.0 - 120.0) / 120.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn a_cohort_mean_whose_sum_overflows_reads_as_absent() {
-        // The finite-mean discipline reaches the cohort returns too (Codex I6,
-        // round 2): two holdings each with a finite near-max return still count
-        // as unique holdings, and their cross-symbol mean reads as absent rather
-        // than infinite.
-        let anchor = "2026-08-04T12:00:00+00:00";
-        let mut episodes = Vec::new();
-        for sym in ["AAPL", "MSFT"] {
-            let mut ep = old_episode(sym, anchor);
-            set_scored(&mut ep, 12, scored_label(1.7e308, None));
-            episodes.push(ep);
-        }
-        let reads = derive_reads(&episodes);
-        let twelve = reads
-            .cohorts
-            .iter()
-            .find(|c| c.window_months == 12)
-            .unwrap();
-        let hold = twelve
-            .lean_cohorts
-            .iter()
-            .find(|c| c.key == "hold")
-            .expect("hold cohort");
-        assert_eq!(hold.unique_holdings, 2, "membership is unchanged by the mean");
-        assert_eq!(hold.mean_price_return, None, "an overflowing mean reads as absent");
-        assert_eq!(hold.mean_total_return, None);
-
-        // A per-symbol overflow poisons the field it feeds (Codex I6, round 3):
-        // two AAPL episodes at near-max overflow AAPL's own mean, and the cohort
-        // field reads as absent rather than as MSFT alone under a count of two
-        // — while MSFT's relative-return leg, which AAPL simply lacks, still
-        // averages: a missing leg is an absence, not a numerical failure.
-        let mut aapl_1 = old_episode("AAPL", anchor);
-        set_scored(&mut aapl_1, 12, scored_label(1.7e308, None));
-        let mut aapl_2 = old_episode("AAPL", anchor);
-        aapl_2.episode_id = "ep-AAPL-2".into();
-        set_scored(&mut aapl_2, 12, scored_label(1.7e308, None));
-        let mut msft = old_episode("MSFT", anchor);
-        let mut label = scored_label(0.10, None);
-        label.vs_market = Some(0.05);
-        set_scored(&mut msft, 12, label);
-        let reads = derive_reads(&[aapl_1, aapl_2, msft]);
-        let twelve = reads
-            .cohorts
-            .iter()
-            .find(|c| c.window_months == 12)
-            .unwrap();
-        let hold = twelve
-            .lean_cohorts
-            .iter()
-            .find(|c| c.key == "hold")
-            .expect("hold cohort");
-        assert_eq!(hold.unique_holdings, 2);
-        assert_eq!(hold.mean_price_return, None, "never a mean over fewer holdings than reported");
-        assert_eq!(hold.mean_total_return, None);
-        assert_eq!(hold.mean_vs_market, Some(0.05), "a missing leg contributes nothing and poisons nothing");
-        assert_eq!(hold.mean_vs_sector, None);
-    }
-
-    #[test]
-    fn target_calibration_never_mixes_parameter_versions() {
-        let anchor = "2026-08-04T12:00:00+00:00";
-        let mut v3 = old_episode("AAPL", anchor);
-        set_scored(&mut v3, 12, scored_label(0.10, None));
-        let mut v2 = old_episode("MSFT", anchor);
-        if let EpisodeBody::Priced(p) = &mut v2.body {
-            p.snapshot.target_parameter_version = Some("targets-v2".into());
-        }
-        set_scored(&mut v2, 12, scored_label(0.10, None));
-        let reads = derive_reads(&[v3, v2]);
-        let twelve: Vec<_> = reads
-            .target_calibration
-            .iter()
-            .filter(|t| t.window_months == 12)
-            .collect();
-        assert_eq!(twelve.len(), 2, "one read per parameter version");
-        assert!(twelve.iter().all(|t| t.scored == 1));
-        let versions: Vec<_> = twelve
-            .iter()
-            .map(|t| t.parameter_version.as_deref())
-            .collect();
-        assert!(versions.contains(&Some("targets-v2")));
-        assert!(versions.contains(&Some("targets-v3")));
+        let json = serde_json::to_value(&check).unwrap();
+        assert_eq!(json["horizon"], "twelve_month");
+        assert_eq!(json["outcome"]["status"], "unscorable");
+        assert_eq!(json["outcome"]["cause"], "anchor-bar-missing");
+        assert_eq!(serde_json::from_value::<Check>(json).unwrap(), check);
+        let rec = record("2026-01-05");
+        let back: PriceRecord = serde_json::from_str(&serde_json::to_string(&rec).unwrap()).unwrap();
+        assert_eq!(back, rec);
     }
 }

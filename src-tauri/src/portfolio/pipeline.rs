@@ -206,13 +206,12 @@ pub fn tax_caveat(
 }
 
 /// The model's investment sentence alone — the persisted rationale less the
-/// app's appended tax caveat, where one rides. The Step-7 summary embedding
-/// vectorizes this form, never the persisted rationale, so the Step-6a recall
-/// of a prior trim or sell cannot re-supply the tax posture or the P/L sign to
-/// the next intrinsic interpretation (fix list 3.2; the §3 slice's Codex
-/// implementation review, superseding the §1+§2 slice's A3 acceptance). The
-/// caveat is a fixed sentence joined by one space (`with_tax_caveat`), so the
-/// strip is exact; a rationale without one passes through untouched.
+/// app's appended tax caveat, where one rides. PRIOR ACTION renders this form,
+/// never the persisted rationale, so a prior trim or sell cannot re-supply the
+/// tax posture or the P/L sign to the next intrinsic interpretation (fix list
+/// 3.2). The caveat is a fixed sentence joined by one space
+/// (`with_tax_caveat`), so the strip is exact; a rationale without one passes
+/// through untouched.
 pub fn investment_sentence(rationale: &str) -> &str {
     for caveat in [TAX_CAVEAT_GAIN, TAX_CAVEAT_LOSS] {
         if let Some(sentence) = rationale.strip_suffix(caveat) {
@@ -950,9 +949,6 @@ pub fn analyze_holding(
                 let mut audit_record = audit(fund_metrics, None, None, None);
                 audit_record.research = Some(rr_research_record);
                 audit_record.analysis = Some(rr_analysis);
-                audit_record
-                    .degraded_inputs
-                    .extend(dossier.semantic_recall.gap.clone());
                 audit_record.action_annotations.extend(outside_set_annotation(
                     decision.action,
                     &crate::portfolio::ROLE_RISK_ACTIONS,
@@ -1208,7 +1204,6 @@ pub fn analyze_holding(
     degraded_inputs.extend(engine_output.tier_gaps.iter().cloned());
     degraded_inputs.extend(tech_pre_flag_gap.clone());
     degraded_inputs.extend(narrative_gap.clone());
-    degraded_inputs.extend(dossier.semantic_recall.gap.clone());
     let audit_record = HoldingAudit {
         symbol: symbol.clone(),
         metrics: engine_output.metrics.clone(),
@@ -5031,7 +5026,6 @@ pub(crate) mod tests {
         HoldingDossier {
             earnings_issuer: None,
             prior_metrics: None,
-            semantic_recall: Default::default(),
             news_seeds: Vec::new(),
             analysis_date: "2026-07-28".into(),
             company_name: None,

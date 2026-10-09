@@ -101,6 +101,10 @@ function verdict(
   };
 }
 
+function armScore(score: number) {
+  return { score, checks: 1, last_moved_on: "2026-06-30", last_moved_check: 1 };
+}
+
 // Four cards spanning the variants and the sort matrix:
 //   MSFT — graded, biggest value, negative gain (30k on 32k cost).
 //   AAPL — graded, +39.3% gain.
@@ -175,6 +179,19 @@ const run: PortfolioRun = {
   },
   audit: [],
   failed_holdings: [],
+  // The run's accuracy record: AAPL has two arms scored at three months and
+  // the engine alone at twelve; MSFT has no checks yet.
+  accuracy: {
+    scores: {
+      AAPL: {
+        three_month: { model: armScore(84.4), engine: armScore(79) },
+        twelve_month: { model: null, engine: armScore(70.2) },
+        three_year: { model: null, engine: null },
+      },
+    },
+    opened: [],
+    checks: [],
+  },
   // The persist-seam marker the backend ships (always concrete on the wire).
 };
 
@@ -529,7 +546,15 @@ describe("PortfolioView verdict cards", () => {
     expect(strip.find(".conviction").attributes("aria-label")).toBe("Conviction: medium");
     expect(strip.findAll(".conviction i.on")).toHaveLength(2);
     const rows = strip.findAll("dt").map((d) => d.text());
-    expect(rows).toEqual(["Conviction", "3-mo expected", "12-mo expected", "3-yr expected"]);
+    expect(rows).toEqual([
+      "Conviction",
+      "3-mo expected",
+      "12-mo expected",
+      "3-yr expected",
+      "3-mo accuracy",
+      "12-mo accuracy",
+      "3-yr accuracy",
+    ]);
     expect(strip.text()).toContain("$205.00");
     expect(strip.text()).toContain("$210.00");
     // The three-year field is null on the fixture: it renders as none, never a
@@ -567,7 +592,41 @@ describe("PortfolioView verdict cards", () => {
     const strip = card.find(".hc-col-strip .hc-strip-kv");
     expect(strip.find(".conviction").attributes("aria-label")).toBe("Conviction: none");
     expect(strip.findAll(".conviction i.on")).toHaveLength(0);
-    expect(strip.findAll(".hc-none").map((n) => n.text())).toEqual(["none", "none", "none", "none"]);
+    const appendix = strip.findAll("dd").slice(0, 4).map((d) => d.find(".hc-none").text());
+    expect(appendix).toEqual(["none", "none", "none", "none"]);
+  });
+
+  test("the strip renders each horizon's accuracy for both arms, no score yet per arm", () => {
+    const wrapper = mountView({ run });
+    const accuracyOf = (symbol: string) => {
+      const card = wrapper
+        .findAll(".card-stack .holding-card")
+        .find((c) => c.find(".ana-ticker").text() === symbol)!;
+      return card
+        .find(".hc-col-strip .hc-strip-kv")
+        .findAll("dd")
+        .slice(4)
+        .map((d) => d.text());
+    };
+    // Whole numbers; an arm with no check landed reads no score yet on its own.
+    expect(accuracyOf("AAPL")).toEqual([
+      "model 84 · engine 79",
+      "model no score yet · engine 70",
+      "no score yet",
+    ]);
+    // A holding the store holds no check for reads no score yet throughout.
+    expect(accuracyOf("MSFT")).toEqual(["no score yet", "no score yet", "no score yet"]);
+  });
+
+  test("an unreadable episode store reads unavailable, never no score yet", () => {
+    const wrapper = mountView({
+      run: { ...run, accuracy: { ...run.accuracy, scores: null } },
+    });
+    const card = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
+    const values = card.find(".hc-strip-kv").findAll("dd").slice(4).map((d) => d.text());
+    expect(values).toEqual(["unavailable", "unavailable", "unavailable"]);
   });
 
   test("a band the engine never authored dashes in the engine line and omits its methodology", async () => {
@@ -735,6 +794,7 @@ describe("PortfolioView verdict cards", () => {
     expect(wrapper.find(".holding-card .hc-reveal").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("band");
     expect(wrapper.text()).not.toContain("Conviction");
+    expect(wrapper.text()).not.toContain("accuracy");
     // The key-figure strip counts the branch in its own tile.
     expect(wrapper.text()).toContain("Role/risk");
   });
@@ -1689,6 +1749,9 @@ describe("PortfolioView text-first card", () => {
       "3-mo expected",
       "12-mo expected",
       "3-yr expected",
+      "3-mo accuracy",
+      "12-mo accuracy",
+      "3-yr accuracy",
     ]);
     expect(strip.find(".hc-strip-kv").text()).toContain("$280.00");
     expect(strip.find(".hc-strip-kv").text()).toContain("$400.00");

@@ -865,7 +865,7 @@ pub fn run_portfolio_job(
     analyst: &dyn HoldingAnalyst,
     profile: &InvestorProfile,
     selective: Option<SelectiveRun<'_>>,
-    outcome_sources: Option<&crate::portfolio::outcome::OutcomeSources<'_>>,
+    outcome_prices: Option<&dyn crate::portfolio::outcome::OutcomePriceSource>,
     resume: Option<store::Checkpoint>,
     paths: &ReportPaths,
     guard: &RunGuard,
@@ -915,7 +915,7 @@ pub fn run_portfolio_job(
             analyst,
             profile,
             selective,
-            outcome_sources,
+            outcome_prices,
             resume,
             paths,
             &conn,
@@ -996,137 +996,6 @@ pub fn run_portfolio_job(
     }
 }
 
-/// The Step-6a semantic-recall query, built deterministically from the holding's
-/// identity and the prior verdict's themes (`docs/portfolio-workflow.md`
-/// §Step 6a) — the embedding request builder byte-caps it before the call.
-fn semantic_query_text(
-    symbol: &str,
-    sector: Option<&str>,
-    industry: Option<&str>,
-    prior: Option<&dossier::PriorHolding>,
-) -> String {
-    let mut q = format!("holding {symbol}");
-    if let Some(s) = sector {
-        q.push_str(&format!(", sector {s}"));
-    }
-    if let Some(i) = industry {
-        q.push_str(&format!(", industry {i}"));
-    }
-    // The prior thesis document's opening stands in for the retired ledger's
-    // thesis line until the removal sweep retires the recall path.
-    if let Some(doc) = prior.and_then(|p| p.verdict.thesis_document()) {
-        q.push_str(&format!(". Standing thesis: {}", document_opening(doc)));
-    }
-    q
-}
-
-/// The first paragraph of a thesis document, capped — the opening the recall
-/// query and nothing else reads.
-fn document_opening(doc: &str) -> String {
-    let first = doc.trim().split("\n\n").next().unwrap_or("").trim();
-    crate::data_sources::cap_chars(first, 600).0
-}
-
-/// Run the Step-6a semantic continuity retrieval — fail-soft
-/// (`docs/portfolio-workflow.md` §Step 6a): an unconfigured embedder or an
-/// empty partition (the first post-slice run, by design) is silent absence,
-/// while a failed embed, count, or search records the typed gap and skips
-/// recall for this holding only.
-fn semantic_recall_for(
-    conn: &Connection,
-    embedder: Option<&dyn crate::embedding::Embedder>,
-    query: &str,
-) -> dossier::SemanticRecall {
-    use crate::vector_memory::{self, MemoryKind, MemoryNamespace};
-    let Some(embedder) = embedder else {
-        return dossier::SemanticRecall::default();
-    };
-    let gap = |reason: String| dossier::SemanticRecall {
-        hits: Vec::new(),
-        gap: Some(format!("semantic recall skipped: {reason}")),
-    };
-    // The cheap guard: an empty summary shelf needs no query embedding at all.
-    // Kind-scoped deliberately — the partition's durable-learning rows never
-    // participate in this recall, so they must not make it look searchable.
-    match vector_memory::count_memory_kind(conn, MemoryKind::Summary, MemoryNamespace::Portfolio)
-    {
-        Ok(0) => return dossier::SemanticRecall::default(),
-        Ok(_) => {}
-        Err(e) => return gap(format!("memory count failed: {e}")),
-    }
-    let vector = match embedder.embed(query) {
-        Ok(v) => v,
-        Err(e) => return gap(format!("query embedding failed: {e}")),
-    };
-    match vector_memory::search_memory(
-        conn,
-        &vector,
-        Some(MemoryKind::Summary),
-        MemoryNamespace::Portfolio,
-        crate::portfolio::SEMANTIC_RECALL_TOP_K,
-    ) {
-        Ok(hits) => dossier::SemanticRecall {
-            hits: hits.iter().map(|h| h.prompt_fragment()).collect(),
-            gap: None,
-        },
-        Err(e) => gap(format!("memory search failed: {e}")),
-    }
-}
-
-/// The per-holding continuity summary text the Step-7 embedding vectorizes
-/// (`docs/portfolio-workflow.md` §Step 7's run-result embeddings): the standing
-/// thesis (ledger thesis, key drivers, scenario lean), the intrinsic read —
-/// grade and conviction, or the role read and structural flag on the
-/// `role_risk_only` branch — and the portfolio action, so cross-run recall
-/// surfaces the substance of prior analysis rather than a bare grade. `None` on
-/// a not-rated or insufficient-evidence verdict — nothing analyzed to recall.
-/// The action rides as the model's investment sentence alone
-/// ([`crate::portfolio::pipeline::investment_sentence`]): the app's tax caveat
-/// never enters the embedding, so recall cannot carry the tax posture or the
-/// P/L sign back into an intrinsic interpretation (fix list 3.2, `portfolio-v38`).
-fn holding_summary_text(v: &crate::portfolio::HoldingVerdict) -> Option<String> {
-    use crate::portfolio::pipeline::investment_sentence;
-    // The thesis document itself is the summary's substance (the embedding
-    // request builder byte-caps what goes on the wire); the path retires with
-    // the removal sweep once the job stops writing to vector memory.
-    let document = |doc: &str| {
-        let doc = doc.trim();
-        if doc.is_empty() {
-            "(none recorded)".to_string()
-        } else {
-            doc.to_string()
-        }
-    };
-    match &v.disposition {
-        crate::portfolio::VerdictDisposition::Priced(g) => Some(format!(
-            "{}: grade {}, conviction {}, action {} — {}. Standing thesis: {}",
-            v.symbol,
-            g.grade.as_str(),
-            g.appendix
-                .conviction
-                .map(crate::portfolio::Conviction::as_str)
-                .unwrap_or("none"),
-            g.action.as_kebab(),
-            investment_sentence(&g.action_rationale),
-            document(&g.thesis_document),
-        )),
-        crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => Some(format!(
-            "{}: role/risk-only ({}{}), action {} — {}. Role: {}",
-            v.symbol,
-            r.class_label,
-            if r.structural_flag {
-                ", structurally path-dependent"
-            } else {
-                ""
-            },
-            r.action.as_kebab(),
-            investment_sentence(&r.action_rationale),
-            document(&r.thesis_document),
-        )),
-        _ => None,
-    }
-}
-
 /// The analysis half: pull holdings, load the house view, run each holding through the
 /// pipeline, build the roll-up, and persist the run. Returns the persisted
 /// [`PortfolioRun`]. A cancellation check and the per-holding checkpoint write
@@ -1139,7 +1008,7 @@ fn run_analysis(
     analyst: &dyn HoldingAnalyst,
     profile: &InvestorProfile,
     selective: Option<SelectiveRun<'_>>,
-    outcome_sources: Option<&crate::portfolio::outcome::OutcomeSources<'_>>,
+    outcome_prices: Option<&dyn crate::portfolio::outcome::OutcomePriceSource>,
     resume: Option<store::Checkpoint>,
     paths: &ReportPaths,
     conn: &Connection,
@@ -1192,7 +1061,7 @@ fn run_analysis(
         .filter(|s| Some(&s.swept_run_id) == prior_run_id.as_ref());
 
     // The run's one wall-clock instant, minted before any dated decision: the
-    // house-view freshness gate, the over-age reads, the label pass, and the
+    // house-view freshness gate, the over-age reads, the accuracy pass, and the
     // persisted `created_at` (which the card's stale badge ages against) all
     // derive from it, so an hours-long run crossing ET midnight cannot demote on
     // one ET day and render the badge on the next. Run identity is insertion
@@ -1215,8 +1084,8 @@ fn run_analysis(
     let today = crate::market_clock::et_date_of(&created_at)
         .unwrap_or_else(|| crate::market_clock::et_session_date(chrono::Utc::now()));
     // The same session as a `YYYY-MM-DD` string — the one `run_date` every dated
-    // stamp in this run uses (the per-holding ledger evaluation and the label
-    // pass alike), so a run cannot stamp its own book across two ET days.
+    // stamp in this run uses (the per-holding pass and the accuracy pass alike),
+    // so a run cannot stamp its own book across two ET days.
     let run_session_date = today.format("%Y-%m-%d").to_string();
 
     // Freshness-gated (`docs/portfolio-workflow.md` §Step 5): a stale latest
@@ -1317,6 +1186,19 @@ fn run_analysis(
         None => market.mergers_acquisitions(today),
     };
     ctx.step_finished("mergers", "ok", ma_gap.clone());
+
+    // The accuracy checks — before any per-holding work, so this run's reviews
+    // read every check that has come due (`docs/portfolio-workflow.md` §Step 5).
+    // Never pinned: a resume re-runs the pass, and the due query excludes every
+    // horizon the interrupted process already wrote.
+    let accuracy = run_accuracy_pass(
+        conn,
+        outcome_prices.unwrap_or(&crate::portfolio::outcome::UnavailablePriceSource),
+        ctx,
+        &run_id,
+        today,
+        &holdings.positions.iter().map(|p| p.symbol.clone()).collect::<Vec<_>>(),
+    );
 
     // ---- Selective work-list (`docs/portfolio-analysis.md` §Triggering) ------
     // A selective run analyzes **strictly the user's selection** (ruled
@@ -1529,13 +1411,12 @@ fn run_analysis(
     let mut sector_history_gap_cache: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    // The entry-stamped sector identities read at this run's fresh passes — one
-    // fail-soft profile call per fresh-passed stock (`docs/portfolio-analysis.md`
-    // §Outcome learning); a fund is a multi-sector vehicle by construction, typed
-    // `sector-unscorable` without a profile call.
+    // The stamped sector identities read at this run's fresh passes — one
+    // fail-soft profile call per fresh-passed stock; a fund is a multi-sector
+    // vehicle by construction, typed `sector-unscorable` without a profile call.
     let mut sector_by_symbol: std::collections::HashMap<
         String,
-        crate::portfolio::outcome::SectorIdentity,
+        crate::portfolio::sector::SectorIdentity,
     > = seeded.sector_by_symbol;
     // The same profile lookup's issuer name, keyed alongside the sector so the
     // prompt header can name the company when Schwab's description is blank.
@@ -1616,7 +1497,7 @@ fn run_analysis(
             industry_by_symbol.insert(position.symbol.to_ascii_uppercase(), industry);
             sector_by_symbol.insert(
                 position.symbol.to_ascii_uppercase(),
-                crate::portfolio::outcome::SectorIdentity::resolve(sector.as_deref()),
+                crate::portfolio::sector::SectorIdentity::resolve(sector.as_deref()),
             );
             Some(crate::portfolio::listing::resolve_listing(
                 &position.symbol,
@@ -1627,7 +1508,7 @@ fn run_analysis(
             if is_fund {
                 sector_by_symbol.insert(
                     position.symbol.to_ascii_uppercase(),
-                    crate::portfolio::outcome::SectorIdentity::unscorable(
+                    crate::portfolio::sector::SectorIdentity::unscorable(
                         "multi-sector vehicle (fund)",
                     ),
                 );
@@ -1977,28 +1858,6 @@ fn run_analysis(
         } else {
             None
         };
-        // Step-6a semantic continuity retrieval (`docs/portfolio-workflow.md`
-        // §Step 6a): a deterministic query over the holding's identity and the
-        // prior verdict's themes, embedded and cosine-searched against this
-        // job's own `summary` partition — fail-soft: a failed lane records a
-        // degraded input; the deterministically loaded prior verdict and ledger
-        // are unaffected. Skipped whole for a holding the loop never grades.
-        let semantic_recall = if !skip_retrieval {
-            let symbol_key = position.symbol.to_ascii_uppercase();
-            let query = semantic_query_text(
-                &position.symbol,
-                sector_by_symbol.get(&symbol_key).and_then(|s| s.sector.as_deref()),
-                industry_by_symbol.get(&symbol_key).and_then(|i| i.as_deref()),
-                prior.as_ref(),
-            );
-            semantic_recall_for(
-                conn,
-                outcome_sources.and_then(|s| s.embedder),
-                &query,
-            )
-        } else {
-            dossier::SemanticRecall::default()
-        };
         // The dossier's research-loop seed leg (`docs/portfolio-workflow.md`
         // §Step 6a): symbol-scoped news since the shared research-freshness
         // window, as typed seeds with stable app-assigned IDs — leads, never
@@ -2067,7 +1926,6 @@ fn run_analysis(
                 Vec::new()
             },
             sector_benchmark,
-            semantic_recall,
             news_seeds,
             run_session_date.clone(),
             dossier::StockEvidenceLegs {
@@ -2381,17 +2239,14 @@ fn run_analysis(
             cboe: cboe_gap.is_some(),
             finra: finra_gap.is_some(),
             ma: ma_gap.is_some(),
+            accuracy: accuracy.gap,
             benchmark: health.benchmark_gaps.len(),
         },
         prompt_usage,
         model_retries,
         failed_holdings.len(),
     );
-    // Episode opening and the scoreboard are suspended until outcome learning
-    // reshapes the store to the price record (`docs/portfolio-analysis.md`
-    // §Outcome learning); the run persists no outcome records.
-
-    let run = PortfolioRun {
+    let mut run = PortfolioRun {
         run_id,
         created_at: created_at.clone(),
         holdings,
@@ -2408,56 +2263,34 @@ fn run_analysis(
             fetched_at: created_at.clone(),
         },
         failed_holdings,
+        accuracy: crate::portfolio::outcome::AccuracyRecord {
+            scores: accuracy.scores,
+            opened: Vec::new(),
+            checks: accuracy.checks,
+        },
     };
 
     ctx.step_started("persist", "Persist run");
-    // One transaction: the run row and the retention prune land together.
+    // One transaction: this run's episodes, the run row and the retention
+    // prune land together — a run persists with its episodes or with neither
+    // (`docs/portfolio-workflow.md` §Step 7). The cadence reads each symbol's
+    // latest creation date inside the transaction.
     let tx = conn.unchecked_transaction()?;
+    let latest_created_on = store::latest_episode_dates(&tx)?;
+    for record in episodes_to_open(
+        &run.verdicts,
+        &run.audit,
+        &created_at,
+        today,
+        &latest_created_on,
+    ) {
+        let opened = store::insert_episode(&tx, &record)?;
+        run.accuracy.opened.push(opened);
+    }
     store::insert_run(&tx, &run)?;
     store::prune_runs(&tx, crate::portfolio::PORTFOLIO_RUN_RETENTION)?;
     tx.commit()?;
 
-    // Per-holding verdict summaries embed as continuity `summary` rows in the
-    // Portfolio partition (`docs/portfolio-workflow.md` §Step 7's run-result
-    // embeddings) — fresh-vintage analyzed verdicts only (a carried verdict's
-    // summary already rode its authoring run), keyed `{run_id}:{SYMBOL}` so the
-    // rows prune with their run (`store::prune_runs`) under the summary-kind
-    // unique index. Best-effort like the learning row above: a failed or
-    // invalid embedding costs that holding's memory row, never the persisted
-    // run.
-    if let Some(embedder) = outcome_sources.and_then(|s| s.embedder) {
-        for v in &run.verdicts {
-            if v.analyzed_at.as_deref() != Some(created_at.as_str()) {
-                continue;
-            }
-            let Some(text) = holding_summary_text(v) else {
-                continue;
-            };
-            let row_id = format!("{}:{}", run.run_id, v.symbol.to_ascii_uppercase());
-            match embedder.embed(&text) {
-                Ok(vector) => {
-                    if let Err(e) = crate::vector_memory::insert_memory(
-                        conn,
-                        crate::vector_memory::MemoryKind::Summary,
-                        crate::vector_memory::MemoryNamespace::Portfolio,
-                        Some(&row_id),
-                        &text,
-                        &vector,
-                        &created_at,
-                    ) {
-                        eprintln!(
-                            "holding summary: memory insert failed for {} (row skipped): {e}",
-                            v.symbol
-                        );
-                    }
-                }
-                Err(e) => eprintln!(
-                    "holding summary: embedding failed for {} (row skipped): {e}",
-                    v.symbol
-                ),
-            }
-        }
-    }
     // The successful full pass consumed each analyzed holding's triggering
     // observations in interpretation / continuity (the acknowledgment stamps ride
     // the 6g seam), so those holdings' quick-check flags, badges, and carried
@@ -2544,6 +2377,229 @@ fn run_analysis(
     Ok(run)
 }
 
+/// The Step-5 accuracy pass's product: each holding's accuracy scores (`None`
+/// when the episode store could not be read), the checks this run wrote — by
+/// run id, so a resumed run's list spans both processes — and whether a store
+/// read or write failed (the run's data-health gap).
+struct AccuracyPass {
+    scores: Option<std::collections::BTreeMap<String, crate::portfolio::outcome::AccuracyScores>>,
+    checks: Vec<crate::portfolio::outcome::StoredCheck>,
+    gap: bool,
+}
+
+/// Calendar-day pad below the earliest anchor bar a refresh must serve, so the
+/// anchor never sits exactly on the fetch boundary.
+const ACCURACY_FETCH_PAD_DAYS: i64 = 7;
+
+/// The accuracy checks over the episode store (`docs/portfolio-workflow.md`
+/// §Step 5; `docs/portfolio-analysis.md` §Outcome learning): every due horizon
+/// is written once — unscorable at once where no series is needed to say so
+/// (no forecast, no anchor), else scored against the symbol's one fresh
+/// dated-EOD refresh, merged through the shared price-bar cache. A failed
+/// refresh leaves its horizons pending for a later run. A store read or write
+/// error is fail-soft: logged, the horizon left pending, the gap counted on
+/// data health — the run continues.
+fn run_accuracy_pass(
+    conn: &Connection,
+    prices: &dyn crate::portfolio::outcome::OutcomePriceSource,
+    ctx: &RunContext,
+    run_id: &str,
+    session: chrono::NaiveDate,
+    symbols: &[String],
+) -> AccuracyPass {
+    use crate::portfolio::outcome::{self, Check, CheckOutcome, Horizon, StoredCheck};
+    ctx.step_started("accuracy", "Accuracy checks");
+    let mut store_state = match store::load_episode_store(conn) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("accuracy pass: the episode store could not be read ({e}) — scores unavailable this run");
+            ctx.step_finished(
+                "accuracy",
+                "ok",
+                Some("episode store unreadable — scores unavailable".to_string()),
+            );
+            return AccuracyPass {
+                scores: None,
+                checks: Vec::new(),
+                gap: true,
+            };
+        }
+    };
+    let checked_on = session.format("%Y-%m-%d").to_string();
+    let due = outcome::due_horizons(&store_state.episodes, &store_state.written, session);
+    let records: std::collections::HashMap<i64, outcome::PriceRecord> = store_state
+        .episodes
+        .iter()
+        .map(|e| (e.id, e.record.clone()))
+        .collect();
+    let mut gap = false;
+    let (mut unscorable, mut pending) = (0usize, 0usize);
+    let mut written: Vec<StoredCheck> = Vec::new();
+    let mut write = |episode_id: i64, horizon: Horizon, found: CheckOutcome, gap: &mut bool| {
+        let check = Check {
+            horizon,
+            checked_on: checked_on.clone(),
+            run_id: run_id.to_string(),
+            outcome: found,
+        };
+        match store::insert_check(conn, episode_id, &check) {
+            Ok(stored) => {
+                written.push(stored);
+                true
+            }
+            Err(e) => {
+                eprintln!(
+                    "accuracy pass: check write failed for episode {episode_id} {} ({e}) — left pending",
+                    horizon.key()
+                );
+                *gap = true;
+                false
+            }
+        }
+    };
+
+    // The horizons no series can rescue are written at once, spending no pull.
+    let mut needs_series: std::collections::BTreeMap<String, Vec<(i64, Horizon)>> =
+        std::collections::BTreeMap::new();
+    for (id, horizon) in due {
+        let record = &records[&id];
+        match outcome::unscorable_without_series(record, horizon) {
+            Some(cause) => {
+                if write(id, horizon, CheckOutcome::Unscorable { cause }, &mut gap) {
+                    unscorable += 1;
+                } else {
+                    pending += 1;
+                }
+            }
+            None => needs_series
+                .entry(record.symbol.to_ascii_uppercase())
+                .or_default()
+                .push((id, horizon)),
+        }
+    }
+
+    // One refresh per symbol with a due horizon — a held, an exited and an
+    // unselected carried name alike: the record measures the forecast, not the
+    // book. The anchor bar and the horizon close are read from that one fetch,
+    // so they share a basis; the bars then merge into the cache.
+    for (symbol, items) in needs_series {
+        let earliest_anchor = items
+            .iter()
+            .filter_map(|(id, _)| records[id].anchor.as_ref())
+            .filter_map(|a| outcome::parse_date(&a.date))
+            .min()
+            .unwrap_or(session);
+        let from = earliest_anchor - chrono::Duration::days(ACCURACY_FETCH_PAD_DAYS);
+        // The live source's adapter writes the refresh's one tracker row under
+        // this step.
+        let closes = match prices.daily_closes(&symbol, from, session) {
+            Ok(closes) => closes,
+            Err(e) => {
+                eprintln!("accuracy pass: refresh failed for {symbol} ({e}) — left pending");
+                pending += items.len();
+                continue;
+            }
+        };
+        if let Err(e) = store::merge_price_bars(conn, &symbol, &closes) {
+            eprintln!("accuracy pass: price-bar cache merge failed for {symbol} ({e})");
+            gap = true;
+        }
+        for (id, horizon) in items {
+            let found = outcome::check_horizon(&records[&id], horizon, &closes);
+            let is_unscorable = matches!(found, CheckOutcome::Unscorable { .. });
+            if write(id, horizon, found, &mut gap) {
+                if is_unscorable {
+                    unscorable += 1;
+                }
+            } else {
+                pending += 1;
+            }
+        }
+    }
+
+    let detail = (!written.is_empty() || pending > 0).then(|| {
+        format!(
+            "{} check{} written ({unscorable} unscorable), {pending} pending",
+            written.len(),
+            if written.len() == 1 { "" } else { "s" }
+        )
+    });
+    store_state.checks.extend(written);
+    let scores = outcome::scores_by_symbol(
+        &store_state.episodes,
+        &store_state.checks,
+        symbols.iter().cloned(),
+    );
+    ctx.step_finished("accuracy", "ok", detail);
+    AccuracyPass {
+        scores: Some(scores),
+        checks: store_state
+            .checks
+            .into_iter()
+            .filter(|c| c.check.run_id == run_id)
+            .collect(),
+        gap,
+    }
+}
+
+/// The price records this run opens (`docs/portfolio-workflow.md` §Step 7):
+/// one per priced holding analyzed this run — its vintage is this run's —
+/// whose appendix stated at least one price and whose cadence allows it (no
+/// episode yet, or its latest a month or more old). The record takes the run's
+/// spot (the price the targets were computed from), the anchor bar this pass
+/// stamped, the appendix's three prices and the engine's three base values. A
+/// `role_risk_only`, carried, abstained or not-rated verdict opens none.
+fn episodes_to_open(
+    verdicts: &[HoldingVerdict],
+    audits: &[HoldingAudit],
+    created_at: &str,
+    session: chrono::NaiveDate,
+    latest_created_on: &std::collections::HashMap<String, String>,
+) -> Vec<crate::portfolio::outcome::PriceRecord> {
+    use crate::portfolio::outcome::{cadence_opens, HorizonPrices, PriceRecord};
+    let mut out = Vec::new();
+    for v in verdicts {
+        if v.analyzed_at.as_deref() != Some(created_at) {
+            continue;
+        }
+        let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
+            continue;
+        };
+        let model = HorizonPrices {
+            three_month: g.appendix.expected_price_3m,
+            twelve_month: g.appendix.expected_price_12m,
+            three_year: g.appendix.expected_price_3y,
+        };
+        if !model.any() {
+            continue;
+        }
+        let key = v.symbol.to_ascii_uppercase();
+        if !cadence_opens(latest_created_on.get(&key).map(String::as_str), session) {
+            continue;
+        }
+        let Some(audit) = audits.iter().find(|a| a.symbol.eq_ignore_ascii_case(&v.symbol)) else {
+            continue;
+        };
+        let Some(spot) = audit.quick_basis.as_ref().map(|b| b.spot) else {
+            eprintln!("accuracy record: {} has no run-time spot on its audit — no episode opened", v.symbol);
+            continue;
+        };
+        out.push(PriceRecord {
+            symbol: key,
+            created_on: session.format("%Y-%m-%d").to_string(),
+            spot,
+            anchor: audit.authoring_close.clone(),
+            model,
+            engine: HorizonPrices {
+                three_month: g.price_targets.three_month.as_ref().map(|t| t.base),
+                twelve_month: g.price_targets.twelve_month.as_ref().map(|t| t.base),
+                three_year: g.price_targets.three_year.as_ref().map(|t| t.base),
+            },
+        });
+    }
+    out
+}
+
 /// Run-level enriching-feed gap counts feeding data health — counted, never
 /// attention: every feed here is fail-soft and additive
 /// (`docs/portfolio-analysis.md` §Failure posture), so a gap is surfaced on the
@@ -2556,6 +2612,8 @@ pub(crate) struct FeedGaps {
     pub finra: bool,
     /// The M&A feed walk failed or truncated.
     pub ma: bool,
+    /// The accuracy pass hit an episode-store read or write error.
+    pub accuracy: bool,
     pub benchmark: usize,
 }
 
@@ -2759,6 +2817,9 @@ fn build_data_health(
     if feed_gaps.ma {
         parts.push("M&A feed unavailable or truncated".to_string());
     }
+    if feed_gaps.accuracy {
+        parts.push("accuracy record degraded by a store error".to_string());
+    }
     if research_gap_count > 0 {
         parts.push(format!(
             "research coverage degraded on {research_degraded_holdings} holding{} \
@@ -2943,6 +3004,7 @@ fn build_data_health(
         cboe_gap: feed_gaps.cboe,
         finra_gap: feed_gaps.finra,
         ma_gap: feed_gaps.ma,
+        accuracy_gap: feed_gaps.accuracy,
         benchmark_gaps: feed_gaps.benchmark,
         research_degraded_holdings,
         research_gap_count,
@@ -2958,7 +3020,19 @@ fn build_data_health(
 /// Current time as an RFC3339 UTC string — the canonical persisted form, like
 /// [`crate::jobs`]; local-time conversion is a display concern at the UI seam.
 fn now_rfc3339() -> String {
+    #[cfg(test)]
+    if let Some(now) = TEST_NOW.with(|t| t.borrow().clone()) {
+        return now;
+    }
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stepped run clock, read by [`now_rfc3339`] while set — so a test
+    /// can run the job at two sessions months apart (the job runs on the test's
+    /// own thread).
+    static TEST_NOW: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The fail-soft shell around a prior-state store read (the prior run, the
@@ -3232,6 +3306,7 @@ mod tests {
                 cboe: true,
                 finra: true,
                 ma: true,
+                accuracy: true,
                 benchmark: 1,
             },
             vec![],
@@ -3242,6 +3317,7 @@ mod tests {
         assert!(dh.cboe_gap);
         assert!(dh.finra_gap);
         assert!(dh.ma_gap);
+        assert!(dh.accuracy_gap);
         assert_eq!(dh.benchmark_gaps, 1);
         assert!(!dh.attention, "enriching-feed gaps never trip attention");
         assert!(dh.summary.contains("commodity context: 2 series gap(s)"), "{}", dh.summary);
@@ -3249,6 +3325,7 @@ mod tests {
         assert!(dh.summary.contains("CBOE put/call backdrop unavailable"), "{}", dh.summary);
         assert!(dh.summary.contains("FINRA short interest unavailable"), "{}", dh.summary);
         assert!(dh.summary.contains("M&A feed unavailable or truncated"), "{}", dh.summary);
+        assert!(dh.summary.contains("accuracy record degraded by a store error"), "{}", dh.summary);
         assert!(dh.summary.contains("sector benchmark series failed on 1 symbol(s)"), "{}", dh.summary);
         // Clean feeds leave the line untouched.
         let dh = build_data_health(&[], &std::collections::HashSet::new(), 0, false, false, FeedGaps::default(), vec![], vec![]);
@@ -6488,51 +6565,342 @@ mod tests {
         }
     }
 
-    /// Synthetic weekday closes through today (per-symbol offset), so a backdated
-    /// episode's windows are all coverable in-run; no dividends.
-    struct SyntheticOutcomePrices;
+    // ---- The accuracy record (`docs/portfolio-analysis.md` §Outcome learning) ----
 
-    impl crate::portfolio::outcome::OutcomePriceSource for SyntheticOutcomePrices {
+    /// The stub company data's own closes (the anchor bar a run stamps is the
+    /// 2026-06-30 close, 190), extended with weekday closes from 2026-07-01
+    /// through the request's end at `close` — every bar times `rebase`, as a
+    /// retroactively split-adjusted series serves them after a split.
+    struct AnchoredPrices {
+        close: f64,
+        rebase: f64,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl AnchoredPrices {
+        fn at(close: f64) -> Self {
+            Self {
+                close,
+                rebase: 1.0,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl crate::portfolio::outcome::OutcomePriceSource for AnchoredPrices {
         fn daily_closes(
             &self,
             symbol: &str,
-            from: chrono::NaiveDate,
+            _from: chrono::NaiveDate,
             to: chrono::NaiveDate,
         ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
             use chrono::Datelike;
-            let offset = symbol.len() as f64;
-            let mut out = Vec::new();
-            let mut d = from;
-            let mut i = 0f64;
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut out = StubCompanyData.financials(symbol).daily_closes;
+            let mut d = chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
             while d <= to {
                 if d.weekday().number_from_monday() <= 5 {
                     out.push(crate::portfolio::engine::DatedValue {
                         date: d.format("%Y-%m-%d").to_string(),
-                        value: 100.0 + offset + i * 0.1,
+                        value: self.close,
                     });
                 }
-                i += 1.0;
                 d += chrono::Duration::days(1);
+            }
+            for bar in &mut out {
+                bar.value *= self.rebase;
             }
             Ok(out)
         }
-        fn dividend_history(
+    }
+
+    /// Run the whole-book job at a stepped instant on the test clock.
+    fn run_at(
+        paths: &ReportPaths,
+        holdings: Holdings,
+        at: &str,
+        prices: &dyn crate::portfolio::outcome::OutcomePriceSource,
+        selective: Option<SelectiveRun<'_>>,
+    ) -> PortfolioRun {
+        TEST_NOW.with(|t| *t.borrow_mut() = Some(at.to_string()));
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings),
+            &StubCompanyData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            selective,
+            Some(prices),
+            None,
+            paths,
+            &RunGuard::default(),
+            &ctx(),
+        );
+        TEST_NOW.with(|t| *t.borrow_mut() = None);
+        match outcome.unwrap() {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    fn priced(v: &HoldingVerdict) -> &crate::portfolio::GradedVerdict {
+        match &v.disposition {
+            crate::portfolio::VerdictDisposition::Priced(g) => g,
+            other => panic!("expected a priced verdict, got {other:?}"),
+        }
+    }
+
+    /// The item's done-when: a two-run sequence over fixture data writes the
+    /// episodes, scores the due horizon on the second run for both arms, and
+    /// persists the scores the card renders.
+    #[test]
+    fn a_two_run_sequence_scores_a_due_horizon_for_both_arms() {
+        use crate::portfolio::outcome::{CheckOutcome, Horizon};
+        let (_dir, paths) = paths();
+        let prices = AnchoredPrices::at(200.0);
+
+        let first = run_at(&paths, two_stocks(), "2026-07-06T15:00:00Z", &prices, None);
+        assert_eq!(first.accuracy.opened.len(), 2, "a debut opens one episode per priced holding");
+        let aapl = &first.accuracy.opened.iter().find(|e| e.record.symbol == "AAPL").unwrap().record;
+        let g = priced(verdict(&first, "AAPL"));
+        assert_eq!(aapl.created_on, "2026-07-06");
+        assert_eq!(aapl.spot, 195.0);
+        assert_eq!(aapl.anchor.as_ref().map(|a| (a.date.as_str(), a.value)), Some(("2026-06-30", 190.0)));
+        assert_eq!(aapl.model.three_month, g.appendix.expected_price_3m);
+        assert_eq!(aapl.engine.three_month, g.price_targets.three_month.as_ref().map(|t| t.base));
+        assert_ne!(aapl.model.three_month, aapl.engine.three_month, "the stub arms differ");
+        assert!(first.accuracy.checks.is_empty(), "nothing is due on a debut");
+        assert_eq!(prices.calls.load(std::sync::atomic::Ordering::SeqCst), 0, "no pull with nothing due");
+        let first_scores = first.accuracy.scores.as_ref().unwrap();
+        assert_eq!(first_scores["AAPL"], Default::default(), "no score yet");
+
+        // Three months and a few days later the three-month horizon (2026-10-06)
+        // is due; the twelve-month and three-year horizons are not.
+        let second = run_at(&paths, two_stocks(), "2026-10-09T15:00:00Z", &prices, None);
+        assert_eq!(second.accuracy.checks.len(), 2, "{:?}", second.accuracy.checks);
+        for check in &second.accuracy.checks {
+            assert_eq!(check.check.horizon, Horizon::ThreeMonth);
+            assert_eq!(check.check.checked_on, "2026-10-09");
+            assert_eq!(check.check.run_id, second.run_id);
+            match &check.check.outcome {
+                CheckOutcome::Scored { close, bridge_factor, model, engine } => {
+                    assert_eq!(close.date, "2026-10-06");
+                    assert_eq!(close.value, 200.0);
+                    assert_eq!(*bridge_factor, 1.0);
+                    assert!(model.is_some() && engine.is_some());
+                }
+                other => panic!("expected a scored check, got {other:?}"),
+            }
+        }
+        let scores = &second.accuracy.scores.as_ref().unwrap()["AAPL"];
+        let expected = |p: Option<f64>| crate::portfolio::outcome::per_check_score(p.unwrap(), 200.0);
+        let model = scores.three_month.model.as_ref().expect("the model arm scored");
+        let engine = scores.three_month.engine.as_ref().expect("the engine arm scored");
+        assert!((model.score - expected(aapl.model.three_month)).abs() < 1e-9);
+        assert!((engine.score - expected(aapl.engine.three_month)).abs() < 1e-9);
+        assert_ne!(model.score, engine.score);
+        assert_eq!(model.last_moved_on, "2026-10-09");
+        assert!(scores.twelve_month.model.is_none() && scores.three_year.engine.is_none());
+        // The monthly cadence opens this run's episodes too.
+        assert_eq!(second.accuracy.opened.len(), 2);
+        assert!(!second.roll_up.data_health.accuracy_gap);
+
+        // The scores and the record persist with the run.
+        let conn = storage::open(&paths.db_path).unwrap();
+        let persisted = store::latest_run(&conn).unwrap().unwrap();
+        assert_eq!(persisted.accuracy, second.accuracy);
+        let all = store::load_episode_store(&conn).unwrap();
+        assert_eq!((all.episodes.len(), all.checks.len()), (4, 2));
+    }
+
+    /// A carried holding's checks run too — the record measures the forecast,
+    /// not the book — but only a fresh pass opens an episode.
+    #[test]
+    fn a_selective_run_scores_the_carried_tail_and_opens_only_fresh_episodes() {
+        let (_dir, paths) = paths();
+        let prices = AnchoredPrices::at(200.0);
+        run_at(&paths, two_stocks(), "2026-07-06T15:00:00Z", &prices, None);
+        let quick = SelectiveQuickData::default();
+        let second = run_at(
+            &paths,
+            two_stocks(),
+            "2026-10-09T15:00:00Z",
+            &prices,
+            Some(SelectiveRun {
+                selected: vec!["AAPL".to_string()],
+                quick_data: &quick,
+            }),
+        );
+        let scores = second.accuracy.scores.as_ref().unwrap();
+        assert!(scores["MSFT"].three_month.engine.is_some(), "the carried holding is scored");
+        let opened: Vec<&str> = second.accuracy.opened.iter().map(|e| e.record.symbol.as_str()).collect();
+        assert_eq!(opened, vec!["AAPL"], "a carried verdict opens no episode");
+    }
+
+    fn accuracy_store() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        conn
+    }
+
+    fn open_episode(conn: &Connection, symbol: &str, anchor: Option<f64>) -> i64 {
+        use crate::portfolio::outcome::{HorizonPrices, PriceRecord};
+        store::insert_episode(
+            conn,
+            &PriceRecord {
+                symbol: symbol.into(),
+                created_on: "2026-07-06".into(),
+                spot: 195.0,
+                anchor: anchor.map(|value| crate::portfolio::engine::DatedValue {
+                    date: "2026-06-30".into(),
+                    value,
+                }),
+                model: HorizonPrices {
+                    three_month: Some(210.0),
+                    twelve_month: Some(230.0),
+                    three_year: None,
+                },
+                engine: HorizonPrices {
+                    three_month: Some(200.0),
+                    twelve_month: None,
+                    three_year: None,
+                },
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    fn session(s: &str) -> chrono::NaiveDate {
+        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    /// A failed refresh leaves its horizons pending, due again next run; the
+    /// pass is idempotent — a re-run (a resume) writes nothing already written,
+    /// and lists the run's checks across both passes.
+    #[test]
+    fn a_failed_refresh_stays_pending_and_a_rerun_writes_nothing_twice() {
+        use crate::portfolio::outcome::UnavailablePriceSource;
+        let conn = accuracy_store();
+        open_episode(&conn, "AAPL", Some(190.0));
+        let symbols = vec!["AAPL".to_string()];
+        let failed = run_accuracy_pass(&conn, &UnavailablePriceSource, &ctx(), "run-2", session("2026-10-09"), &symbols);
+        assert!(failed.checks.is_empty());
+        assert!(!failed.gap, "a failed refresh is the normal pending path, never a store gap");
+        assert_eq!(failed.scores.unwrap()["AAPL"], Default::default());
+
+        let prices = AnchoredPrices::at(200.0);
+        let scored = run_accuracy_pass(&conn, &prices, &ctx(), "run-3", session("2026-10-12"), &symbols);
+        assert_eq!(scored.checks.len(), 1);
+        let again = run_accuracy_pass(&conn, &prices, &ctx(), "run-3", session("2026-10-12"), &symbols);
+        assert_eq!(again.checks, scored.checks, "the re-run lists the run's checks, writing none");
+        assert_eq!(prices.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "nothing due, no pull");
+        assert_eq!(store::load_episode_store(&conn).unwrap().checks.len(), 1);
+    }
+
+    /// A source that serves every symbol an honest empty series.
+    struct EmptyPrices {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::portfolio::outcome::OutcomePriceSource for EmptyPrices {
+        fn daily_closes(
             &self,
             _symbol: &str,
             _from: chrono::NaiveDate,
             _to: chrono::NaiveDate,
         ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
-            Ok(vec![])
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Vec::new())
         }
     }
 
-    /// A fixed-vector embedder for the matured-learning leg.
-    struct FixedEmbedder;
+    /// A served series with no close inside the proximity — a delisting, a
+    /// symbol the source never covered — writes the horizon unscorable at once,
+    /// and the symbol spends no further pull.
+    #[test]
+    fn an_empty_served_series_is_unscorable_at_once_and_never_pulled_again() {
+        use crate::portfolio::outcome::{CheckOutcome, UnscorableCause};
+        let conn = accuracy_store();
+        open_episode(&conn, "GONE", Some(190.0));
+        let prices = EmptyPrices {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let symbols = vec!["GONE".to_string()];
+        let pass = run_accuracy_pass(&conn, &prices, &ctx(), "run-2", session("2026-10-09"), &symbols);
+        assert_eq!(
+            pass.checks[0].check.outcome,
+            CheckOutcome::Unscorable { cause: UnscorableCause::NoCloseInProximity }
+        );
+        assert!(!pass.gap);
+        let again = run_accuracy_pass(&conn, &prices, &ctx(), "run-3", session("2026-10-12"), &symbols);
+        assert!(again.checks.is_empty());
+        assert_eq!(prices.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
-    impl crate::embedding::Embedder for FixedEmbedder {
-        fn embed(&self, _text: &str) -> Result<Vec<f32>> {
-            Ok(vec![0.1, 0.2, 0.3, 0.4])
+    /// An unreadable check row still holds its horizon written: it is never
+    /// re-due, so it neither re-spends a pull nor trips the gap every run.
+    #[test]
+    fn an_unreadable_check_row_is_never_re_due() {
+        let conn = accuracy_store();
+        let id = open_episode(&conn, "AAPL", Some(190.0));
+        conn.execute(
+            "INSERT INTO portfolio_episode_checks (episode_id, horizon, run_id, check_json)
+             VALUES (?1, 'three_month', 'run-2', '{not json')",
+            [id],
+        )
+        .unwrap();
+        let prices = AnchoredPrices::at(200.0);
+        let pass = run_accuracy_pass(&conn, &prices, &ctx(), "run-3", session("2026-10-12"), &["AAPL".to_string()]);
+        assert!(pass.checks.is_empty());
+        assert!(!pass.gap);
+        assert_eq!(prices.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// The split-adjustment bridge: a series re-based 2:1 since the episode
+    /// was created scores on the converted prices, never as a miss.
+    #[test]
+    fn a_split_since_creation_is_bridged_before_scoring() {
+        use crate::portfolio::outcome::CheckOutcome;
+        let conn = accuracy_store();
+        open_episode(&conn, "AAPL", Some(190.0));
+        let prices = AnchoredPrices {
+            rebase: 0.5,
+            ..AnchoredPrices::at(200.0)
+        };
+        let pass = run_accuracy_pass(&conn, &prices, &ctx(), "run-2", session("2026-10-09"), &["AAPL".to_string()]);
+        match &pass.checks[0].check.outcome {
+            CheckOutcome::Scored { bridge_factor, close, model, engine } => {
+                assert_eq!(*bridge_factor, 0.5);
+                assert_eq!(close.value, 100.0);
+                assert_eq!(model.unwrap().expected, 105.0);
+                assert_eq!(engine.unwrap().score, 100.0, "the engine's 200 bridges to 100, a hit");
+            }
+            other => panic!("expected a scored check, got {other:?}"),
         }
+    }
+
+    /// A horizon no series can rescue is written unscorable at once and spends
+    /// no pull; a store error is fail-soft — the gap counted, the run going on.
+    #[test]
+    fn an_anchorless_episode_spends_no_pull_and_a_store_error_is_a_gap() {
+        use crate::portfolio::outcome::{CheckOutcome, UnscorableCause};
+        let conn = accuracy_store();
+        open_episode(&conn, "AAPL", None);
+        let prices = AnchoredPrices::at(200.0);
+        let pass = run_accuracy_pass(&conn, &prices, &ctx(), "run-2", session("2026-10-09"), &["AAPL".to_string()]);
+        assert_eq!(prices.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(pass.checks.len(), 1, "only the three-month horizon is due");
+        assert_eq!(
+            pass.checks[0].check.outcome,
+            CheckOutcome::Unscorable { cause: UnscorableCause::NoAnchor }
+        );
+        assert_eq!(pass.scores.unwrap()["AAPL"], Default::default(), "an unscorable check moves no score");
+
+        conn.execute("DROP TABLE portfolio_episode_checks", []).unwrap();
+        let broken = run_accuracy_pass(&conn, &prices, &ctx(), "run-3", session("2026-10-12"), &["AAPL".to_string()]);
+        assert!(broken.gap);
+        assert!(broken.scores.is_none(), "an unreadable store leaves the scores unavailable");
     }
 
     fn verdict<'a>(run: &'a PortfolioRun, symbol: &str) -> &'a HoldingVerdict {
@@ -6540,289 +6908,6 @@ mod tests {
             .iter()
             .find(|v| v.symbol.eq_ignore_ascii_case(symbol))
             .unwrap_or_else(|| panic!("{symbol} in run"))
-    }
-
-    // ---- Step-6a semantic recall + per-holding summary embeddings ----
-
-    struct FailingEmbedder;
-
-    impl crate::embedding::Embedder for FailingEmbedder {
-        fn embed(&self, _text: &str) -> Result<Vec<f32>> {
-            anyhow::bail!("daemon unreachable")
-        }
-    }
-
-    #[test]
-    fn holding_summary_text_captures_the_read_and_skips_exits() {
-        let created = "2026-08-21T12:00:00+00:00";
-        let mut v = crate::portfolio::HoldingVerdict {
-            symbol: "AAPL".into(),
-            asset_class: crate::portfolio::AssetClass::Stock,
-            position_change: Default::default(),
-            disposition: crate::portfolio::VerdictDisposition::InsufficientEvidence {
-                reason: "thin".into(),
-                prior_thesis_document: None,
-            },
-            analyzed_at: Some(created.into()),
-            action_source: Default::default(),
-            side_reversed: false,
-        };
-        assert!(holding_summary_text(&v).is_none(), "an abstention has nothing to recall");
-
-        // A priced verdict summarizes thesis, read, and action.
-        let run = {
-            // Reuse the demo-run pipeline's stub output for a realistic verdict.
-            let (tempdir, paths) = paths();
-            let outcome = run_portfolio_job(
-                &FixtureHoldingsSource::with_holdings(two_stocks()),
-                &StubCompanyData,
-                &StubMarket,
-                &StubAnalyst,
-                &InvestorProfile::default_fixture(),
-                None,
-                None,
-                None,
-                &paths,
-                &RunGuard::default(),
-                &ctx(),
-            )
-            .unwrap();
-            drop(tempdir);
-            match outcome {
-                PortfolioJobOutcome::Successful(run) => *run,
-                other => panic!("expected success, got {other:?}"),
-            }
-        };
-        let text = holding_summary_text(verdict(&run, "AAPL")).expect("priced summarizes");
-        assert!(text.starts_with("AAPL: grade "), "{text}");
-        assert!(text.contains("action "), "{text}");
-        assert!(text.contains("Standing thesis:"), "{text}");
-
-        // The app's tax caveat never enters the embedding on either branch
-        // (fix list 3.2, the §3 slice's Codex review): the summary carries the
-        // model's investment sentence alone, so recall cannot re-supply the
-        // tax posture or the P/L sign to the next intrinsic interpretation.
-        use crate::portfolio::pipeline::{TAX_CAVEAT_GAIN, TAX_CAVEAT_LOSS};
-        let mut taxed = verdict(&run, "AAPL").clone();
-        if let crate::portfolio::VerdictDisposition::Priced(g) = &mut taxed.disposition {
-            g.action = crate::portfolio::Action::Trim;
-            g.action_rationale = format!("Trim on the stretched multiple. {TAX_CAVEAT_GAIN}");
-        }
-        let text = holding_summary_text(&taxed).unwrap();
-        assert!(text.contains("action trim — Trim on the stretched multiple.") && text.contains("Standing thesis:"), "{text}");
-        for absent in ["Tax note", "unrealized", "tax cost", "tax benefit"] {
-            assert!(!text.contains(absent), "{absent} leaked into the priced summary: {text}");
-        }
-        v.disposition = crate::portfolio::VerdictDisposition::RoleRiskOnly(Box::new(
-            crate::portfolio::RoleRiskVerdict {
-                class_label: "bond fund".into(),
-                thesis_document: "Role: the core fixed-income sleeve.".into(),
-                exposure_tilt: Vec::new(),
-                expense_drag: None,
-                observable_risk: None,
-                structural_flag: false,
-                is_cef: false,
-                nav_premium: None,
-                evidence_gaps: Vec::new(),
-                action: crate::portfolio::Action::SellAll,
-                action_rationale: format!("Exit the sleeve on mandate drift. {TAX_CAVEAT_LOSS}"),
-            },
-        ));
-        let text = holding_summary_text(&v).unwrap();
-        assert!(text.contains("action sell-all — Exit the sleeve on mandate drift.") && text.contains("Role:"), "{text}");
-        for absent in ["Tax note", "unrealized", "tax cost", "tax benefit"] {
-            assert!(!text.contains(absent), "{absent} leaked into the role/risk summary: {text}");
-        }
-
-        v.disposition = crate::portfolio::VerdictDisposition::NotRated {
-            reason: "cash".into(),
-        };
-        assert!(holding_summary_text(&v).is_none(), "not-rated has nothing to recall");
-    }
-
-    #[test]
-    fn a_successful_run_writes_per_holding_summary_rows_that_recall_reads() {
-        let (_tempdir, paths) = paths();
-        let prices = SyntheticOutcomePrices;
-        let embedder = FixedEmbedder;
-        let sources = crate::portfolio::outcome::OutcomeSources {
-            price: &prices,
-            embedder: Some(&embedder),
-        };
-        let outcome = run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &StubAnalyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            Some(&sources),
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap();
-        let run = match outcome {
-            PortfolioJobOutcome::Successful(run) => *run,
-            other => panic!("expected success, got {other:?}"),
-        };
-        let conn = storage::open(&paths.db_path).unwrap();
-        // One summary row per fresh analyzed verdict, keyed {run_id}:{SYMBOL}.
-        let mut stmt = conn
-            .prepare(
-                "SELECT report_id FROM vector_memory
-                 WHERE namespace = 'portfolio' AND kind = 'summary' ORDER BY report_id",
-            )
-            .unwrap();
-        let ids: Vec<String> = stmt
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<std::result::Result<_, _>>()
-            .unwrap();
-        let mut expected: Vec<String> = run
-            .verdicts
-            .iter()
-            .filter(|v| holding_summary_text(v).is_some())
-            .map(|v| format!("{}:{}", run.run_id, v.symbol.to_ascii_uppercase()))
-            .collect();
-        expected.sort();
-        assert_eq!(ids, expected, "per-holding rows keyed {{run_id}}:{{SYMBOL}}");
-        assert!(!ids.is_empty(), "the fixture book has analyzed holdings");
-
-        // The Step-6a lane reads them back: hits, no gap.
-        let recall = semantic_recall_for(&conn, Some(&embedder), "holding AAPL, sector Technology");
-        assert!(recall.gap.is_none(), "{:?}", recall.gap);
-        assert!(!recall.hits.is_empty());
-        assert!(recall.hits[0].starts_with("[summary · "), "{}", recall.hits[0]);
-
-        // Two-run regression, both branches (fix list 3.2, the §3 slice's Codex
-        // review): a stored row written from a taxed exit on each branch reads
-        // back at the next run's recall without the app's caveat — the tax
-        // posture and the P/L sign never reach an intrinsic interpretation
-        // through memory.
-        use crate::embedding::Embedder;
-        use crate::portfolio::pipeline::{TAX_CAVEAT_GAIN, TAX_CAVEAT_LOSS};
-        let mut priced = verdict(&run, "AAPL").clone();
-        if let crate::portfolio::VerdictDisposition::Priced(g) = &mut priced.disposition {
-            g.action = crate::portfolio::Action::Trim;
-            g.action_rationale = format!("Trim on the stretched multiple. {TAX_CAVEAT_GAIN}");
-        }
-        let mut role = priced.clone();
-        role.symbol = "BND".into();
-        role.disposition = crate::portfolio::VerdictDisposition::RoleRiskOnly(Box::new(
-            crate::portfolio::RoleRiskVerdict {
-                class_label: "bond fund".into(),
-                thesis_document: "Role: the core fixed-income sleeve.".into(),
-                exposure_tilt: Vec::new(),
-                expense_drag: None,
-                observable_risk: None,
-                structural_flag: false,
-                is_cef: false,
-                nav_premium: None,
-                evidence_gaps: Vec::new(),
-                action: crate::portfolio::Action::SellAll,
-                action_rationale: format!("Exit the sleeve on mandate drift. {TAX_CAVEAT_LOSS}"),
-            },
-        ));
-        for (v, key) in [(&priced, "taxed-run:AAPL"), (&role, "taxed-run:BND")] {
-            let text = holding_summary_text(v).unwrap();
-            crate::vector_memory::insert_memory(
-                &conn,
-                crate::vector_memory::MemoryKind::Summary,
-                crate::vector_memory::MemoryNamespace::Portfolio,
-                Some(key),
-                &text,
-                &embedder.embed(&text).unwrap(),
-                "2026-09-16T00:00:00+00:00",
-            )
-            .unwrap();
-        }
-        let recall = semantic_recall_for(&conn, Some(&embedder), "holding AAPL, sector Technology");
-        assert!(recall.hits.iter().any(|h| h.contains("Trim on the stretched multiple")), "{:?}", recall.hits);
-        for hit in &recall.hits {
-            for absent in ["Tax note", "unrealized", "tax cost", "tax benefit"] {
-                assert!(!hit.contains(absent), "{absent} reached recall: {hit}");
-            }
-        }
-        let stored: Vec<String> = conn
-            .prepare("SELECT content FROM vector_memory WHERE namespace = 'portfolio' AND kind = 'summary'")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<std::result::Result<_, _>>()
-            .unwrap();
-        assert!(stored.iter().any(|t| t.contains("Exit the sleeve on mandate drift")), "{stored:?}");
-        assert!(stored.iter().all(|t| !t.contains("Tax note")), "{stored:?}");
-
-        // And pruning to one run keeps these rows (theirs) while a foreign-run id
-        // sweeps.
-        crate::vector_memory::insert_memory(
-            &conn,
-            crate::vector_memory::MemoryKind::Summary,
-            crate::vector_memory::MemoryNamespace::Portfolio,
-            Some("dead-run-id:GONE"),
-            "orphan",
-            &[0.1, 0.2, 0.3, 0.4],
-            "2026-08-01T00:00:00+00:00",
-        )
-        .unwrap();
-        store::prune_runs(&conn, 1).unwrap();
-        let survivors: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM vector_memory
-                 WHERE namespace = 'portfolio' AND kind = 'summary'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(survivors as usize, expected.len(), "orphan swept, own rows kept");
-    }
-
-    #[test]
-    fn semantic_recall_is_silent_when_absent_and_gaps_on_failure() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        storage::init_schema(&conn).unwrap();
-        // No embedder configured: silent absence, matching the learning embed's
-        // guard.
-        let r = semantic_recall_for(&conn, None, "q");
-        assert!(r.hits.is_empty() && r.gap.is_none());
-        // Empty partition: silent absence (the first post-slice run, by design).
-        let r = semantic_recall_for(&conn, Some(&FixedEmbedder), "q");
-        assert!(r.hits.is_empty() && r.gap.is_none());
-        // A learnings-only partition is still silent absence: the guard counts
-        // summary rows, and the failing embedder proves no query embed is spent
-        // on a search that cannot hit.
-        crate::vector_memory::insert_memory(
-            &conn,
-            crate::vector_memory::MemoryKind::Learning,
-            crate::vector_memory::MemoryNamespace::Portfolio,
-            None,
-            "a matured calibration learning",
-            &[0.4, 0.3, 0.2, 0.1],
-            "2026-08-01T00:00:00+00:00",
-        )
-        .unwrap();
-        let r = semantic_recall_for(&conn, Some(&FailingEmbedder), "q");
-        assert!(r.hits.is_empty() && r.gap.is_none());
-        // A populated summary shelf with a failing embedder: the typed gap.
-        crate::vector_memory::insert_memory(
-            &conn,
-            crate::vector_memory::MemoryKind::Summary,
-            crate::vector_memory::MemoryNamespace::Portfolio,
-            Some("run:AAPL"),
-            "AAPL: grade B",
-            &[0.1, 0.2, 0.3, 0.4],
-            "2026-08-01T00:00:00+00:00",
-        )
-        .unwrap();
-        let r = semantic_recall_for(&conn, Some(&FailingEmbedder), "q");
-        assert!(r.hits.is_empty());
-        assert!(
-            r.gap.as_deref().unwrap().contains("query embedding failed"),
-            "{:?}",
-            r.gap
-        );
     }
 
     /// Re-persist the latest run with one verdict doctored — the prior-run shapes

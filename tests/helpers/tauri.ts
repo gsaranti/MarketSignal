@@ -180,6 +180,7 @@ export const samplePortfolioRun: PortfolioRun = {
   },
   audit: [],
   failed_holdings: [],
+  accuracy: { scores: {}, opened: [], checks: [] },
 };
 
 // A standalone Pull-holdings snapshot, fresher than samplePortfolioRun.

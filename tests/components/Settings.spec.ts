@@ -305,9 +305,30 @@ test("a reachable daemon over an empty roster never claims full setup", () => {
     localDaemon: { reachable: true, detail: null, missing_models: [] },
   });
   const status = wrapper.find(".local-test .cred-status");
-  expect(status.text()).toContain("add the reasoner and embedder");
+  expect(status.text()).toContain("add the reasoner model id");
   expect(status.text()).not.toContain("all rostered models available");
   expect(status.classes()).toContain("cred-status--pending");
+});
+
+test("a saved reasoner completes the roster with no embedder", () => {
+  // The reasoner is the one required slot — neither local job makes an
+  // embedding call, so a blank embedder never holds setup open.
+  const wrapper = makeWrapper({
+    settings: {
+      ...settingsView,
+      local_models: {
+        daemon_endpoint: "http://127.0.0.1:11434",
+        reasoner_model: "qwen3.5:122b",
+        fast_model: "",
+        embedder_model: "",
+      },
+    },
+    localDaemon: { reachable: true, detail: null, missing_models: [] },
+  });
+  const status = wrapper.find(".local-test .cred-status");
+  expect(status.text()).toContain("all rostered models available");
+  expect(status.classes()).toContain("cred-status--ok");
+  expect(wrapper.text()).toContain("The endpoint and reasoner are required");
 });
 
 // --- Web research (independent, ungated submission) ---------------------------

@@ -881,7 +881,9 @@ fn model_matches(available: &str, configured: &str) -> bool {
     false
 }
 
-/// The configured roster's three model ids (reasoner, fast tier, embedder).
+/// The configured roster's model ids: the reasoner and the fast tier, plus the
+/// embedder slot no local job reads (neither makes an embedding call), which
+/// neither gates nor reaches the daemon probe.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Roster {
     pub reasoner: String,
@@ -893,11 +895,7 @@ impl Roster {
     /// The configured (non-blank) roster ids, deduped, in roster order.
     fn configured_ids(&self) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
-        for id in [
-            self.reasoner.trim(),
-            self.fast.trim(),
-            self.embedder.trim(),
-        ] {
+        for id in [self.reasoner.trim(), self.fast.trim()] {
             if !id.is_empty() && !out.contains(&id) {
                 out.push(id);
             }
@@ -1456,7 +1454,7 @@ pub fn roster_from_config(cfg: &AppConfig) -> Roster {
 /// the local suite, and vice versa.
 ///
 /// Three gaps fold into the one category, in order: configuration not yet complete
-/// (endpoint / a **required** roster slot — reasoner or embedder — blank; the
+/// (endpoint or the reasoner — the one **required** roster slot — blank; the
 /// optional fast tier never gates, `docs/configuration.md §Local Analysis Suite
 /// Configuration` — a blank fast falls back to the reasoner in the pipeline), the
 /// daemon unreachable, and a configured roster id the daemon doesn't have.
@@ -1469,9 +1467,6 @@ pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
     }
     if config::present(&cfg.local_reasoner_model).is_none() {
         unconfigured.push("reasoner model");
-    }
-    if config::present(&cfg.local_embedder_model).is_none() {
-        unconfigured.push("embedder model");
     }
     if !unconfigured.is_empty() {
         items.push(format!("Not configured: {}.", config::join_list(&unconfigured)));
@@ -1938,12 +1933,16 @@ mod tests {
     #[test]
     fn missing_roster_models_flags_only_absent_configured_ids() {
         let available = vec!["qwen3.5:122b".to_string(), "qwen3.5:35b".to_string()];
-        // embedder absent; a blank slot is not reported here (config completeness is
-        // the gate's job).
-        let missing = missing_roster_models(&roster("qwen3.5:122b", "qwen3.5:35b", "absent:4b"), &available);
-        assert_eq!(missing, vec!["absent:4b".to_string()]);
+        // fast tier absent; a blank slot is not reported here (config completeness
+        // is the gate's job).
+        let missing = missing_roster_models(&roster("qwen3.5:122b", "absent:35b", ""), &available);
+        assert_eq!(missing, vec!["absent:35b".to_string()]);
         let none = missing_roster_models(&roster("qwen3.5:122b", "qwen3.5:35b", ""), &available);
         assert!(none.is_empty());
+        // No local job makes an embedding call, so an embedder id the daemon has
+        // not pulled is never reported missing.
+        let unpulled = missing_roster_models(&roster("qwen3.5:122b", "qwen3.5:35b", "absent:4b"), &available);
+        assert!(unpulled.is_empty(), "{unpulled:?}");
     }
 
     // ---- the gate matrix ----
@@ -1989,8 +1988,21 @@ mod tests {
     }
 
     #[test]
+    fn gate_never_blocks_on_a_blank_embedder() {
+        // The reasoner serves both local jobs and neither needs an embedder
+        // (`docs/configuration.md §Local Analysis Suite Configuration`).
+        let cfg = AppConfig {
+            local_embedder_model: None,
+            ..local_cfg()
+        };
+        let report = local_gate(&cfg, &DaemonProbe::Reachable { missing: vec![] });
+        assert!(!report.is_blocked, "{:?}", report.categories);
+        assert!(!local_presence_gate(&cfg).is_blocked);
+    }
+
+    #[test]
     fn gate_never_blocks_on_the_optional_fast_tier() {
-        // Endpoint + reasoner + embedder with NO fast model is a valid documented
+        // Endpoint + reasoner with NO fast model is a valid documented
         // setup (`docs/configuration.md` — the fast tier never gates); the
         // pipeline falls back to the reasoner for distillation.
         let cfg = AppConfig {

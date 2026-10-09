@@ -449,12 +449,6 @@ pub struct HoldingDossier {
     /// on a stock whose sector resolved to a SPDR benchmark and whose run
     /// fetched it; the technology-event pre-flag's read-against leg.
     pub sector_benchmark: Option<BenchmarkSeries>,
-    /// The Step-6a semantic continuity recall ([`SemanticRecall`]) — prompt
-    /// fragments retrieved from the Portfolio memory partition's `summary` rows,
-    /// with the fail-soft gap where the lane failed. Empty-and-gapless on a
-    /// debut-empty partition (the first post-slice run, by design), a
-    /// not-gradeable holding, or an unconfigured embedder.
-    pub semantic_recall: SemanticRecall,
     /// The symbol-scoped `news/stock` headlines fetched at dossier assembly as
     /// research-loop **seeds** — leads, never evidence (`docs/web-research.md`
     /// §The research loop and context management). Empty on a fund, a failed
@@ -485,19 +479,6 @@ pub struct HoldingDossier {
     /// target ([`ma_matches_for_holding`]). Empty where the feed named it on
     /// neither side, on a fund, and where the feed never loaded.
     pub ma_matches: Vec<crate::portfolio::evidence::MaMatch>,
-}
-
-/// The Step-6a semantic continuity retrieval's outcome
-/// (`docs/portfolio-workflow.md` §Step 6a): the recalled prompt fragments from
-/// this job's own memory partition, or the typed fail-soft gap. A failure skips
-/// recall for this holding only — the deterministically loaded prior verdict and
-/// ledger are unaffected. The gap is recorded on the audit's degraded inputs at
-/// the interpretation paths (never fed to the engine, matching the narrative /
-/// pre-flag gap treatment).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SemanticRecall {
-    pub hits: Vec<String>,
-    pub gap: Option<String>,
 }
 
 /// The prior run's carry-over for one holding, read off the latest persisted run:
@@ -883,7 +864,6 @@ pub fn assemble(
     put_call_backdrop: Option<crate::cboe::PutCallBackdrop>,
     commodity_context: Vec<CommodityPrint>,
     sector_benchmark: Option<BenchmarkSeries>,
-    semantic_recall: SemanticRecall,
     news_seeds: Vec<crate::portfolio::research::ResearchSeed>,
     analysis_date: String,
     legs: StockEvidenceLegs,
@@ -1119,7 +1099,6 @@ pub fn assemble(
         put_call_backdrop,
         commodity_context,
         sector_benchmark,
-        semantic_recall,
         news_seeds,
         analysis_date,
         sources,
@@ -1421,7 +1400,6 @@ mod tests {
                 None,
                 Vec::new(),
                 None,
-                SemanticRecall::default(),
                 Vec::new(),
                 "2026-07-28".to_string(),
                 legs,
@@ -2070,7 +2048,6 @@ Sources and footnotes.
             None,
             Vec::new(),
             None,
-            SemanticRecall::default(),
             Vec::new(),
             "2026-07-28".to_string(),
             StockEvidenceLegs::default(),
@@ -2155,7 +2132,6 @@ Sources and footnotes.
             None,
             Vec::new(),
             None,
-            SemanticRecall::default(),
             Vec::new(),
             "2026-07-28".to_string(),
             StockEvidenceLegs::default(),
@@ -2211,7 +2187,6 @@ Sources and footnotes.
                 None,
                 Vec::new(),
                 None,
-                SemanticRecall::default(),
                 Vec::new(),
                 "2026-07-28".to_string(),
                 StockEvidenceLegs::default(),
@@ -2282,7 +2257,6 @@ Sources and footnotes.
             None,
             Vec::new(),
             None,
-            SemanticRecall::default(),
             Vec::new(),
             "2026-07-28".to_string(),
             StockEvidenceLegs::default(),
@@ -2582,6 +2556,7 @@ Sources and footnotes.
             audit: vec![],
             rate_prints: Default::default(),
             failed_holdings: Vec::new(),
+            accuracy: Default::default(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
@@ -2665,6 +2640,7 @@ Sources and footnotes.
             }],
             rate_prints: Default::default(),
             failed_holdings: Vec::new(),
+            accuracy: Default::default(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
@@ -2724,6 +2700,7 @@ Sources and footnotes.
             audit: vec![],
             rate_prints: Default::default(),
             failed_holdings: Vec::new(),
+            accuracy: Default::default(),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();

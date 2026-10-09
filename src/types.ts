@@ -192,8 +192,9 @@ export interface ConnectionTestResult {
 // The local-analysis-models values (docs/configuration.md §Local Models):
 // daemon endpoint + roster ids. Not secrets, so unlike credentials they
 // round-trip in full ("" when unset) and the form submits all four verbatim to
-// `save_local_model_settings`. Reasoner + embedder are the presence-gated pair;
-// the fast tier is optional and never gates.
+// `save_local_model_settings`. The reasoner is the one presence-gated slot;
+// the fast tier is optional and never gates, and the embedder slot — no local
+// job makes an embedding call — gates nothing.
 export interface LocalModelSettings {
   daemon_endpoint: string;
   reasoner_model: string;
@@ -604,6 +605,9 @@ export interface DataHealth {
   cboe_gap: boolean;
   finra_gap: boolean;
   ma_gap: boolean;
+  // The accuracy pass hit an episode-store read or write error — the scores
+  // read unavailable where the store could not be read (fail-soft).
+  accuracy_gap: boolean;
   benchmark_gaps: number;
   // Persisted research coverage gaps, folded from per-holding research audits
   // without matching their human-readable gap strings. Counted and named in
@@ -697,6 +701,39 @@ export interface PortfolioRun {
   // card shows that stale data beside a failed badge), or an empty debut-failure
   // card otherwise. Empty on a clean run.
   failed_holdings: HoldingFailure[];
+  // The run's accuracy record (docs/portfolio-analysis.md §Outcome learning).
+  accuracy: AccuracyRecord;
+}
+
+// One arm's accuracy score at one horizon: the mean per-check score, 0–100,
+// with the check that last moved it. `null` in its slot is "no score yet".
+export interface ArmScore {
+  score: number;
+  checks: number;
+  last_moved_on: string;
+  last_moved_check: number;
+}
+
+export interface HorizonAccuracy {
+  model: ArmScore | null;
+  engine: ArmScore | null;
+}
+
+// A holding's six accuracy scores — per horizon, per arm.
+export interface AccuracyScores {
+  three_month: HorizonAccuracy;
+  twelve_month: HorizonAccuracy;
+  three_year: HorizonAccuracy;
+}
+
+// The run's accuracy record: each holding's scores keyed by symbol (`null`
+// when the episode store could not be read this run), plus the episodes the
+// run opened and the checks it wrote — persisted for the audit; the card
+// reads the scores alone.
+export interface AccuracyRecord {
+  scores: Record<string, AccuracyScores> | null;
+  opened: unknown[];
+  checks: unknown[];
 }
 
 // A per-holding analysis failure the run isolated (docs/portfolio-analysis.md
