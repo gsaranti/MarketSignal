@@ -166,10 +166,10 @@ fn cap_error_body(body: &str) -> String {
     }
 }
 
-/// The OAuth token client: exchanges codes, refreshes access tokens, and answers the
-/// connection-state question the run-gate asks. Holds the developer `client_id`, the
-/// Keychain-backed [`TokenStore`], and a blocking HTTP client. The `token_url` is a
-/// field so tests can point it at a localhost mock ([`crate::test_http`]).
+/// The OAuth token client: exchanges codes and hands out live access tokens, refreshing
+/// them as needed. Holds the developer `client_id`, the Keychain-backed [`TokenStore`],
+/// and a blocking HTTP client. The `token_url` is a field so tests can point it at a
+/// localhost mock ([`crate::test_http`]).
 pub struct OauthClient {
     http: reqwest::blocking::Client,
     token_url: String,
@@ -298,15 +298,34 @@ impl OauthClient {
         }
         Ok(self.refresh(now)?.access_token)
     }
+}
 
-    /// Whether a usable connection exists at `now` — tokens present and the refresh
-    /// window open. The source-selection gate reads this to decide live-vs-blocked
-    /// without attempting a network call.
-    pub fn is_connected(&self, now: DateTime<Utc>) -> Result<bool> {
-        Ok(self
-            .store
-            .tokens()?
-            .is_some_and(|t| t.refresh_valid(now)))
+/// Whether the Keychain rail holds a usable connection, as the local presence gate and
+/// the source-selection seam read it — no network call. A failed read of the token set
+/// (a denied Keychain access prompt, any other Keychain failure, a blob that does not
+/// parse) is its own state rather than an error, so the gate can say why the local
+/// jobs are blocked (`docs/schwab-integration.md §Failure posture`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchwabPresence {
+    /// Tokens present and the refresh window open.
+    Connected,
+    /// No token set stored, or the 7-day refresh window has lapsed.
+    NotConnected,
+    /// The stored token set could not be read.
+    Unreadable,
+}
+
+/// Read [`SchwabPresence`] off `store` at `now`. Never fails: a read error is
+/// [`SchwabPresence::Unreadable`], its cause written to stderr — the error names the
+/// entry and the Keychain or parse failure, never a stored value.
+pub fn schwab_presence(store: &dyn TokenStore, now: DateTime<Utc>) -> SchwabPresence {
+    match store.tokens() {
+        Ok(Some(t)) if t.refresh_valid(now) => SchwabPresence::Connected,
+        Ok(_) => SchwabPresence::NotConnected,
+        Err(e) => {
+            eprintln!("schwab connection unreadable: {e:#}");
+            SchwabPresence::Unreadable
+        }
     }
 }
 
@@ -328,8 +347,8 @@ pub enum SchwabConnection {
 
 /// Classify the stored token set into a [`SchwabConnection`] at `now`. Pure — the command
 /// reads the tokens off the Keychain rail and hands them in — so the state machine is
-/// unit-testable without a store. Mirrors [`OauthClient::is_connected`]'s
-/// refresh-window rule (`Connected` iff `is_connected`), but keeps the `Expired` case
+/// unit-testable without a store. Mirrors [`schwab_presence`]'s refresh-window rule
+/// (`Connected` iff [`SchwabPresence::Connected`]), but keeps the `Expired` case
 /// distinct so the surface can prompt re-login rather than first-connect.
 pub fn connection_state(tokens: &Option<SchwabTokens>, now: DateTime<Utc>) -> SchwabConnection {
     match tokens {
@@ -372,30 +391,56 @@ impl SchwabStatus {
             refresh_expires_at,
         }
     }
+
+    /// Read the status off `store` at `now`. A failed read of the client secret is an
+    /// error. A failed read of the token set reads as no token set — not connected —
+    /// its cause written to stderr, so the Settings section still renders and a connect
+    /// overwrites the stored set (`docs/schwab-integration.md §Failure posture`).
+    pub fn read(client_id: String, store: &dyn TokenStore, now: DateTime<Utc>) -> Result<Self> {
+        let secret_configured = store
+            .get(SECRET_CLIENT_SECRET)?
+            .is_some_and(|s| !s.trim().is_empty());
+        let tokens = store.tokens().unwrap_or_else(|e| {
+            eprintln!("schwab connection unreadable: {e:#}");
+            None
+        });
+        Ok(Self::build(client_id, secret_configured, tokens, now))
+    }
 }
 
 /// The message a local job returns when it is run without a connected Schwab account
 /// (`docs/schwab-integration.md §A connected Schwab account is required`). It is the
-/// [`schwab_gate`] category's item, so the run-gate block and the (future) warning band
-/// speak with one voice. Job-neutral ("this analysis") because the gate is shared by both
-/// local jobs — Portfolio Analysis today, Trade Opportunities once it lands.
+/// [`schwab_gate`] category's item, so the run-gate block and the warning band speak with
+/// one voice. Job-neutral ("this analysis") because the gate is shared by both local
+/// jobs — Portfolio Analysis today, Trade Opportunities once it lands.
 pub const SCHWAB_NOT_CONNECTED_MSG: &str =
     "Schwab account not connected — connect your Schwab account (weekly re-login) to run this analysis.";
 
+/// The [`schwab_gate`] item when the stored token set could not be read
+/// (`docs/schwab-integration.md §Failure posture`): allowing the Keychain prompt
+/// recovers a denied read, and a reconnect overwrites a blob that does not parse.
+pub const SCHWAB_UNREADABLE_MSG: &str =
+    "Schwab connection unreadable — allow Market Signal to read its Keychain entry when macOS asks, or reconnect your Schwab account, to run this analysis.";
+
 /// The local-suite Schwab-connection gate, as a [`ValidationReport`] carrying one
-/// [`WarningKind::Schwab`] category when disconnected — the exact shape
-/// `local_model::local_gate` produces for the daemon. Pure over the connection bool, so
-/// it is both unit-testable and the single producer the run-gate and the (deferred)
-/// local-suite warning band share. Independent of the cloud-report gate
-/// (`config::validate`): a disconnected Schwab account blocks only the local jobs, never
-/// the Market Signal Report. `connected` comes from [`OauthClient::is_connected`].
-pub fn schwab_gate(connected: bool) -> ValidationReport {
+/// [`WarningKind::Schwab`] category unless connected — the exact shape
+/// `local_model::local_gate` produces for the daemon. Pure over [`SchwabPresence`], so it
+/// is both unit-testable and the single producer the run-gate and the local-suite warning
+/// band share. Independent of the cloud-report gate (`config::validate`): a missing or
+/// unreadable Schwab connection blocks only the local jobs, never the Market Signal
+/// Report. `presence` comes from [`schwab_presence`].
+pub fn schwab_gate(presence: SchwabPresence) -> ValidationReport {
+    let item = match presence {
+        SchwabPresence::Connected => None,
+        SchwabPresence::NotConnected => Some(SCHWAB_NOT_CONNECTED_MSG),
+        SchwabPresence::Unreadable => Some(SCHWAB_UNREADABLE_MSG),
+    };
     let mut categories = Vec::new();
-    if !connected {
+    if let Some(item) = item {
         categories.push(WarningCategory {
             kind: WarningKind::Schwab,
             title: "Charles Schwab connection".to_string(),
-            items: vec![SCHWAB_NOT_CONNECTED_MSG.to_string()],
+            items: vec![item.to_string()],
             dismiss_id: None,
         });
     }
@@ -483,7 +528,7 @@ fn open_url(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schwab_secrets::InMemoryTokenStore;
+    use crate::schwab_secrets::{DeniedTokenStore, InMemoryTokenStore, SECRET_TOKENS};
     use crate::test_http::{Canned, MockHttp};
 
     fn store_with_secret() -> Arc<InMemoryTokenStore> {
@@ -841,34 +886,66 @@ mod tests {
     }
 
     #[test]
-    fn schwab_gate_blocks_only_when_disconnected() {
-        // Connected → no category, not blocked (the local job proceeds).
-        let ok = schwab_gate(true);
-        assert!(!ok.is_blocked);
-        assert!(ok.categories.is_empty());
+    fn schwab_status_reads_an_unreadable_token_set_as_not_connected() {
+        let now = Utc::now();
+        // A token blob that does not parse: the status still reads, not connected, so the
+        // Settings section renders and a connect can overwrite the blob.
+        let store = store_with_secret();
+        store.set(SECRET_TOKENS, "{not json").unwrap();
+        let status = SchwabStatus::read("client-abc".into(), &*store, now).unwrap();
+        assert_eq!(status.client_id, "client-abc");
+        assert!(status.secret_configured);
+        assert_eq!(status.connection, SchwabConnection::NotConnected);
+        assert_eq!(status.refresh_expires_at, None);
 
-        // Disconnected → one blocking WarningKind::Schwab category carrying the reconnect
-        // prompt. This is the producer both the run-gate block and the (deferred)
-        // local-suite warning band consume — parity with `local_gate`/LocalModels.
-        let blocked = schwab_gate(false);
-        assert!(blocked.is_blocked);
-        assert_eq!(blocked.categories.len(), 1);
-        let cat = &blocked.categories[0];
-        assert_eq!(cat.kind, WarningKind::Schwab);
-        assert!(cat.dismiss_id.is_none());
-        assert!(
-            cat.items[0].contains("connect your Schwab account"),
-            "{:?}",
-            cat.items
-        );
+        // A readable live set reads through as connected.
+        store
+            .set_tokens(&SchwabTokens {
+                access_token: "a".into(),
+                refresh_token: "r".into(),
+                access_expires_at: now + Duration::minutes(30),
+                refresh_expires_at: now + Duration::days(6),
+            })
+            .unwrap();
+        let status = SchwabStatus::read("client-abc".into(), &*store, now).unwrap();
+        assert_eq!(status.connection, SchwabConnection::Connected);
+
+        // A failed read of the client secret stays an error.
+        assert!(SchwabStatus::read("client-abc".into(), &DeniedTokenStore, now).is_err());
     }
 
     #[test]
-    fn is_connected_tracks_token_presence_and_the_refresh_window() {
+    fn schwab_gate_blocks_unless_connected() {
+        // Connected → no category, not blocked (the local job proceeds).
+        let ok = schwab_gate(SchwabPresence::Connected);
+        assert!(!ok.is_blocked);
+        assert!(ok.categories.is_empty());
+
+        // Not connected, or unreadable → one blocking WarningKind::Schwab category
+        // carrying that state's item. This is the producer both the run-gate block and
+        // the local-suite warning band consume — parity with `local_gate`/LocalModels.
+        for (presence, item) in [
+            (SchwabPresence::NotConnected, SCHWAB_NOT_CONNECTED_MSG),
+            (SchwabPresence::Unreadable, SCHWAB_UNREADABLE_MSG),
+        ] {
+            let blocked = schwab_gate(presence);
+            assert!(blocked.is_blocked, "{presence:?}");
+            assert_eq!(blocked.categories.len(), 1, "{presence:?}");
+            let cat = &blocked.categories[0];
+            assert_eq!(cat.kind, WarningKind::Schwab);
+            assert!(cat.dismiss_id.is_none());
+            assert_eq!(cat.items, vec![item.to_string()]);
+        }
+        assert!(SCHWAB_NOT_CONNECTED_MSG.contains("connect your Schwab account"));
+        assert!(SCHWAB_UNREADABLE_MSG.contains("Keychain"));
+    }
+
+    #[test]
+    fn schwab_presence_tracks_token_presence_and_the_refresh_window() {
         let now = Utc::now();
         let store = store_with_secret();
-        let oauth = client(store.clone(), "http://127.0.0.1:1/unused");
-        assert!(!oauth.is_connected(now).unwrap()); // no tokens yet
+        // No tokens yet.
+        assert_eq!(schwab_presence(&*store, now), SchwabPresence::NotConnected);
         store
             .set_tokens(&SchwabTokens {
                 access_token: "a".into(),
@@ -877,7 +954,37 @@ mod tests {
                 refresh_expires_at: now + Duration::days(2),
             })
             .unwrap();
-        assert!(oauth.is_connected(now).unwrap()); // refresh window open → connected
-        assert!(!oauth.is_connected(now + Duration::days(3)).unwrap()); // lapsed
+        // Refresh window open → connected; lapsed → not connected.
+        assert_eq!(schwab_presence(&*store, now), SchwabPresence::Connected);
+        assert_eq!(
+            schwab_presence(&*store, now + Duration::days(3)),
+            SchwabPresence::NotConnected
+        );
+    }
+
+    #[test]
+    fn schwab_presence_reads_a_failed_token_read_as_unreadable() {
+        let now = Utc::now();
+        // A denied Keychain access prompt.
+        assert_eq!(
+            schwab_presence(&DeniedTokenStore, now),
+            SchwabPresence::Unreadable
+        );
+        // A token blob that does not parse.
+        let store = store_with_secret();
+        store.set(SECRET_TOKENS, "{not json").unwrap();
+        assert_eq!(schwab_presence(&*store, now), SchwabPresence::Unreadable);
+        // A double-encoded record: valid JSON, but a string where the record belongs.
+        let record = serde_json::to_string(&SchwabTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            access_expires_at: now + Duration::minutes(30),
+            refresh_expires_at: now + Duration::days(7),
+        })
+        .unwrap();
+        store
+            .set(SECRET_TOKENS, &serde_json::to_string(&record).unwrap())
+            .unwrap();
+        assert_eq!(schwab_presence(&*store, now), SchwabPresence::Unreadable);
     }
 }

@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -91,12 +91,19 @@ pub trait TokenStore: Send + Sync {
 
     /// Read and deserialize the stored [`SchwabTokens`], or `None` when the account
     /// has never been connected. A malformed blob is an error (a corrupted rail is
-    /// not the same as an absent one).
+    /// not the same as an absent one). The error names the parse failure's kind and
+    /// position alone: serde's own message can quote the stored value (a
+    /// double-encoded record quotes both tokens), and the rail never logs one.
     fn tokens(&self) -> Result<Option<SchwabTokens>> {
         match self.get(SECRET_TOKENS)? {
-            Some(raw) => Ok(Some(
-                serde_json::from_str(&raw).context("parsing stored Schwab tokens")?,
-            )),
+            Some(raw) => Ok(Some(serde_json::from_str(&raw).map_err(|e| {
+                anyhow!(
+                    "parsing stored Schwab tokens: {} at line {} column {}",
+                    parse_failure(e.classify()),
+                    e.line(),
+                    e.column()
+                )
+            })?)),
             None => Ok(None),
         }
     }
@@ -105,6 +112,18 @@ pub trait TokenStore: Send + Sync {
     fn set_tokens(&self, tokens: &SchwabTokens) -> Result<()> {
         let raw = serde_json::to_string(tokens).context("serializing Schwab tokens")?;
         self.set(SECRET_TOKENS, &raw)
+    }
+}
+
+/// The kind of a token-blob parse failure, in words that never carry the blob
+/// ([`TokenStore::tokens`]).
+fn parse_failure(category: serde_json::error::Category) -> &'static str {
+    use serde_json::error::Category;
+    match category {
+        Category::Syntax => "not valid JSON",
+        Category::Eof => "truncated",
+        Category::Data => "not a token record",
+        Category::Io => "unreadable",
     }
 }
 
@@ -185,6 +204,38 @@ impl TokenStore for InMemoryTokenStore {
     }
 }
 
+/// A store whose every call fails the way a denied Keychain access prompt does — the
+/// `keyring` crate maps macOS's errSecAuthFailed to `PlatformFailure` — wrapped exactly
+/// as [`KeyringTokenStore`] wraps it. The fixture for the presence gate's fail-soft read
+/// (`docs/schwab-integration.md §Failure posture`).
+#[cfg(test)]
+pub struct DeniedTokenStore;
+
+#[cfg(test)]
+impl DeniedTokenStore {
+    fn denied<T>(op: &str, name: &str) -> Result<T> {
+        Err(keyring::Error::PlatformFailure(
+            "The user name or passphrase you entered is not correct.".into(),
+        ))
+        .with_context(|| format!("{op} Keychain entry {name}"))
+    }
+}
+
+#[cfg(test)]
+impl TokenStore for DeniedTokenStore {
+    fn get(&self, name: &str) -> Result<Option<String>> {
+        Self::denied("reading", name)
+    }
+
+    fn set(&self, name: &str, _value: &str) -> Result<()> {
+        Self::denied("writing", name)
+    }
+
+    fn delete(&self, name: &str) -> Result<()> {
+        Self::denied("deleting", name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +290,29 @@ mod tests {
         let store = InMemoryTokenStore::new();
         store.set(SECRET_TOKENS, "{not json").unwrap();
         assert!(store.tokens().is_err());
+    }
+
+    #[test]
+    fn a_malformed_token_blob_error_names_its_kind_and_never_the_stored_value() {
+        let store = InMemoryTokenStore::new();
+        // Valid JSON holding a string where the record belongs: serde's own message
+        // quotes that string whole, both tokens included.
+        let record = serde_json::to_string(&sample_tokens(Utc::now())).unwrap();
+        let double_encoded = serde_json::to_string(&record).unwrap();
+        for (blob, kind) in [
+            (double_encoded.as_str(), "not a token record"),
+            (r#"{"access_token":"access-abc" "refresh_token"}"#, "not valid JSON"),
+            (r#"{"access_token":"access-abc","#, "truncated"),
+        ] {
+            store.set(SECRET_TOKENS, blob).unwrap();
+            let chain = format!("{:#}", store.tokens().unwrap_err());
+            assert!(!chain.contains("access-abc"), "{chain}");
+            assert!(!chain.contains("refresh-xyz"), "{chain}");
+            assert!(
+                chain.starts_with(&format!("parsing stored Schwab tokens: {kind} at line 1 column ")),
+                "{chain}"
+            );
+        }
     }
 
     /// Live round-trip against the real macOS Keychain (the production rail). Ignored

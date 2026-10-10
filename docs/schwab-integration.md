@@ -76,3 +76,9 @@ A failed or unauthorized pull leaves the last good holdings intact — it never 
 A stock's per-symbol options signal degrades to **one typed options-signal gap** on a per-symbol fetch failure or a malformed response — top-level shape drift and a non-numeric per-contract strike / volume / open-interest alike, so a fabricated 0.0 level never enters the signal as data — never a whole-job failure: the signal is enriching everywhere it is consumed.
 A genuinely un-optioned name (an empty chain or a 404) carries **no signal and no gap** — a market fact, not a degradation, kept out of the degraded-input reads.
 The **positions pull** takes the opposite posture exactly where the book is the job's subject: a failed pull **fails a Portfolio Analysis run** (holdings are its floor-bearing input — there is nothing to analyze without them), while Trade Opportunities touches holdings only in its display-only Step-8 owned/not-owned cross-reference, which is **fail-soft** ([trade-opportunities-workflow.md §Step 8](trade-opportunities-workflow.md#step-8-holdings-cross-reference)).
+
+A failed Keychain read of the stored token set — a denied access prompt, any other Keychain failure, or a token set that does not parse — reads as an **unreadable connection**.
+An unreadable connection raises the Schwab-connection warning with its own item, which asks the user to allow the Keychain read or to reconnect.
+An unreadable connection blocks both local jobs exactly as a missing connection does.
+The read never fails the local warning check, so the local-model and provider-credential categories still surface beside it ([interface.md §Persistent Warning Area](interface.md#persistent-warning-area)).
+The Settings connection status reads an unreadable token set as not connected, so a connect from Settings overwrites it.

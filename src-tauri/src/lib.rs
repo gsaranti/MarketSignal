@@ -484,8 +484,8 @@ enum HoldingsChoice {
     /// The live Schwab Trader API source — a connected account with an open refresh
     /// window.
     Live,
-    /// No connection: the job is blocked with a re-authentication prompt rather than
-    /// run in a degraded mode.
+    /// No usable connection — not connected, lapsed, or unreadable: the job is blocked
+    /// with the gate's prompt rather than run in a degraded mode.
     NotConnected,
 }
 
@@ -530,23 +530,26 @@ fn build_holdings_source(cfg: &AppConfig) -> Result<Box<dyn schwab::HoldingsSour
     } else {
         let client_id = cfg.schwab_client_id.clone().unwrap_or_default();
         Some(Arc::new(
-            schwab_oauth::OauthClient::new(client_id, store).map_err(|e| e.to_string())?,
+            schwab_oauth::OauthClient::new(client_id, Arc::clone(&store))
+                .map_err(|e| e.to_string())?,
         ))
     };
-    let connected = match &oauth {
-        Some(o) => o
-            .is_connected(chrono::Utc::now())
-            .map_err(|e| e.to_string())?,
-        None => false,
+    let presence = if fixture_escape {
+        // The fixture path never reads the rail; the escape hatch wins below.
+        schwab_oauth::SchwabPresence::NotConnected
+    } else {
+        schwab_oauth::schwab_presence(store.as_ref(), chrono::Utc::now())
     };
+    let connected = presence == schwab_oauth::SchwabPresence::Connected;
     match choose_holdings_source(fixture_escape, connected) {
         HoldingsChoice::Fixture => Ok(Box::new(schwab::FixtureHoldingsSource::new())),
         HoldingsChoice::NotConnected => {
             // Produce + consume the WarningKind::Schwab category via the shared
             // gate, mirroring how `local_gate` blocks a run for LocalModels; the
             // same producer feeds the warning band via `check_local_configuration`.
-            // Surface its item — the specific reconnect prompt — as the gate error.
-            let report = schwab_oauth::schwab_gate(false);
+            // Surface its item — the reconnect prompt, or the unreadable-Keychain
+            // prompt — as the gate error.
+            let report = schwab_oauth::schwab_gate(presence);
             let message = report
                 .categories
                 .into_iter()
@@ -673,25 +676,20 @@ fn save_schwab_credentials(
 /// and the derived connection state (never-connected / connected / lapsed) with the
 /// refresh-window expiry for the weekly-re-login heads-up. Read from local storage only —
 /// no network probe, mirroring the report's presence-not-connectivity posture — and never
-/// returns the secret or a token. Sync, like `get_settings`.
+/// returns the secret or a token; an unreadable token set reads as not connected
+/// ([`schwab_oauth::SchwabStatus::read`]). Sync, like `get_settings`.
 #[tauri::command]
 fn schwab_status(app: tauri::AppHandle) -> Result<schwab_oauth::SchwabStatus, String> {
     let client_id = {
         let conn = open_app_db(&app)?;
         AppConfig::load(&conn).schwab_client_id.unwrap_or_default()
     };
-    let store = schwab_secrets::KeyringTokenStore::new();
-    let secret_configured = store
-        .get(schwab_secrets::SECRET_CLIENT_SECRET)
-        .map_err(|e| e.to_string())?
-        .is_some_and(|s| !s.trim().is_empty());
-    let tokens = store.tokens().map_err(|e| e.to_string())?;
-    Ok(schwab_oauth::SchwabStatus::build(
+    schwab_oauth::SchwabStatus::read(
         client_id,
-        secret_configured,
-        tokens,
+        &schwab_secrets::KeyringTokenStore::new(),
         chrono::Utc::now(),
-    ))
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Disconnect the Schwab account: clear the stored OAuth token set from the Keychain rail
@@ -1183,40 +1181,53 @@ async fn pull_holdings(
 
 /// The local-suite **presence** gate for the Persistent Warning Area
 /// (`docs/interface.md §Persistent Warning Area` — both local categories are
-/// presence-based, fired on missing *configuration*, never a connectivity probe):
-/// the `local-models` category from the config fields alone
-/// (`local_model::local_presence_gate`) plus the `schwab` category from the stored
-/// token state (`schwab_oauth::schwab_gate` — not-connected or refresh lapsed, no
-/// network). Deliberately separate from the cloud `check_configuration`:
-/// `is_blocked` here means the **local jobs** are blocked, never the report. Sync —
-/// local SQLite + Keychain reads only.
+/// presence-based, fired on missing *configuration*, never a connectivity probe).
+/// Deliberately separate from the cloud `check_configuration`: `is_blocked` here
+/// means the **local jobs** are blocked, never the report. Sync — local SQLite +
+/// Keychain reads only.
 #[tauri::command]
 fn check_local_configuration(app: tauri::AppHandle) -> Result<config::ValidationReport, String> {
     let cfg = {
         let conn = open_app_db(&app)?;
         AppConfig::load(&conn)
     };
-    let local = local_model::local_presence_gate(&cfg);
-    let store = schwab_secrets::KeyringTokenStore::new();
-    let connected = if schwab_fixture_escape() {
+    Ok(local_configuration_report(
+        &cfg,
+        &schwab_secrets::KeyringTokenStore::new(),
+        schwab_fixture_escape(),
+        chrono::Utc::now(),
+    ))
+}
+
+/// The report behind [`check_local_configuration`]: the `local-models` category from
+/// the config fields alone (`local_model::local_presence_gate`) plus the `schwab`
+/// category from the stored token state (`schwab_oauth::schwab_gate` — not connected,
+/// refresh lapsed, or unreadable; no network). A failed Keychain read raises the
+/// Schwab category rather than failing the report, so every other category still
+/// stands (`docs/schwab-integration.md §Failure posture`).
+fn local_configuration_report(
+    cfg: &AppConfig,
+    store: &dyn TokenStore,
+    fixture_escape: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> config::ValidationReport {
+    let local = local_model::local_presence_gate(cfg);
+    let presence = if fixture_escape {
         // The offline fixture satisfies the holdings source, so don't warn about a
         // connection the run wouldn't use.
-        true
+        schwab_oauth::SchwabPresence::Connected
     } else {
-        store
-            .tokens()
-            .map_err(|e| e.to_string())?
-            .is_some_and(|t| t.refresh_valid(chrono::Utc::now()))
+        schwab_oauth::schwab_presence(store, now)
     };
-    let schwab = schwab_oauth::schwab_gate(connected);
+    let schwab = schwab_oauth::schwab_gate(presence);
 
     let mut categories = local.categories;
     categories.extend(schwab.categories);
     let is_blocked = categories.iter().any(|c| c.kind.is_blocking());
-    Ok(config::ValidationReport {
+    config::ValidationReport {
         categories,
         is_blocked,
-    })
+    }
 }
 
 /// List the most recent persisted reports for the Recent Reports sidebar
@@ -1846,6 +1857,92 @@ mod tests {
             choose_holdings_source(false, false),
             HoldingsChoice::NotConnected
         );
+    }
+
+    /// A fully configured local suite — the roster plus the shared FMP / FRED keys — so
+    /// the only category the local report can raise is Schwab's.
+    fn configured_local_suite() -> AppConfig {
+        AppConfig {
+            local_daemon_endpoint: Some("http://localhost:11434".into()),
+            local_reasoner_model: Some("qwen3.5:122b".into()),
+            fmp_api_key: Some("fmp-key".into()),
+            fred_api_key: Some("fred-key".into()),
+            ..AppConfig::default()
+        }
+    }
+
+    #[test]
+    fn local_configuration_report_raises_the_schwab_warning_on_a_denied_keychain_read() {
+        // A denied Keychain read raises the Schwab category alone, carrying the
+        // unreadable item, and the local jobs block on it.
+        let report = local_configuration_report(
+            &configured_local_suite(),
+            &schwab_secrets::DeniedTokenStore,
+            false,
+            chrono::Utc::now(),
+        );
+        assert!(report.is_blocked);
+        assert_eq!(report.categories.len(), 1, "{:?}", report.categories);
+        let cat = &report.categories[0];
+        assert_eq!(cat.kind, config::WarningKind::Schwab);
+        assert_eq!(
+            cat.items,
+            vec![schwab_oauth::SCHWAB_UNREADABLE_MSG.to_string()]
+        );
+    }
+
+    #[test]
+    fn local_configuration_report_keeps_the_other_categories_beside_a_denied_read() {
+        // A failed read leaves standing the categories that have nothing to do with
+        // the Keychain.
+        let report = local_configuration_report(
+            &AppConfig::default(),
+            &schwab_secrets::DeniedTokenStore,
+            false,
+            chrono::Utc::now(),
+        );
+        let kinds: Vec<_> = report.categories.iter().map(|c| c.kind).collect();
+        assert!(kinds.contains(&config::WarningKind::LocalModels), "{kinds:?}");
+        assert!(kinds.contains(&config::WarningKind::ProviderCredentials), "{kinds:?}");
+        assert!(kinds.contains(&config::WarningKind::Schwab), "{kinds:?}");
+        assert!(report.is_blocked);
+    }
+
+    #[test]
+    fn local_configuration_report_never_reads_the_store_behind_the_fixture_escape() {
+        let report = local_configuration_report(
+            &configured_local_suite(),
+            &schwab_secrets::DeniedTokenStore,
+            true,
+            chrono::Utc::now(),
+        );
+        assert!(report.categories.is_empty(), "{:?}", report.categories);
+        assert!(!report.is_blocked);
+    }
+
+    #[test]
+    fn local_configuration_report_reads_the_stored_connection() {
+        let now = chrono::Utc::now();
+        let store = schwab_secrets::InMemoryTokenStore::new();
+        // Never connected → the reconnect prompt.
+        let report = local_configuration_report(&configured_local_suite(), &store, false, now);
+        assert!(report.is_blocked);
+        assert_eq!(
+            report.categories[0].items,
+            vec![schwab_oauth::SCHWAB_NOT_CONNECTED_MSG.to_string()]
+        );
+        // Connected → nothing to warn about.
+        store
+            .set_tokens(&schwab_secrets::SchwabTokens {
+                access_token: "a".into(),
+                refresh_token: "r".into(),
+                access_expires_at: now + chrono::Duration::minutes(30),
+                refresh_expires_at: now + chrono::Duration::days(7),
+            })
+            .unwrap();
+        let report = local_configuration_report(&configured_local_suite(), &store, false, now);
+        assert!(report.categories.is_empty(), "{:?}", report.categories);
+        assert!(!report.is_blocked);
     }
 
     #[test]
