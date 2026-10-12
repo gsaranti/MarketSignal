@@ -385,6 +385,8 @@ mod tests {
                 sector: "Technology".into(),
                 exchange: "NASDAQ".into(),
                 pe: Some(30.0),
+                pe_history: None,
+                trailing_return: None,
             }],
             market_risk_premium: vec![MarketRiskPremium {
                 country: "United States".into(),
@@ -402,6 +404,8 @@ mod tests {
                 sector: "Technology".into(),
                 exchange: "NASDAQ".into(),
                 pe: Some(31.5),
+                pe_history: None,
+                trailing_return: None,
             }],
             market_risk_premium: vec![MarketRiskPremium {
                 country: "United States".into(),
@@ -429,6 +433,71 @@ mod tests {
         assert!((erp.abs_change - 0.2).abs() < 1e-9);
         // `sectors` is a performance percentage — never diffed.
         assert!(!d.changed.iter().any(|s| s.group == GroupKind::Sectors));
+    }
+
+    /// The trailing-year reads against a group's own history are structural reads, not
+    /// inter-report levels: populating them on either side leaves the change view exactly as
+    /// the snapshot `pe` alone produces it, and `industries` stays out of the diff.
+    #[test]
+    fn history_reads_leave_the_change_view_unchanged() {
+        use crate::data_sources::{IndustrySnapshot, PeHistory, TrailingReturn};
+        let sector = |pe: f64| SectorPe {
+            sector: "Energy".into(),
+            exchange: "NYSE".into(),
+            pe: Some(pe),
+            pe_history: None,
+            trailing_return: None,
+        };
+        let industry = |change_pct: f64| IndustrySnapshot {
+            industry: "Oil & Gas Midstream".into(),
+            exchange: "NYSE".into(),
+            change_pct,
+            pe: Some(20.0),
+            pe_history: None,
+            trailing_return: None,
+        };
+        let prior = BaselineMarketData {
+            sector_pe: vec![sector(18.0)],
+            industries: vec![industry(-0.4)],
+            ..Default::default()
+        };
+        let current = BaselineMarketData {
+            sector_pe: vec![sector(17.1)],
+            industries: vec![industry(0.7)],
+            ..Default::default()
+        };
+        let plain = compute_deltas(&current, &prior, 7.0);
+
+        let with_history = |mut data: BaselineMarketData, percentile: f64, return_pct: f64| {
+            let pe_history = Some(PeHistory {
+                percentile,
+                min: 16.2,
+                median: 21.7,
+                max: 35.8,
+                start: 21.4,
+                latest: 17.1,
+                from: "2025-10-13".into(),
+                to: "2026-10-12".into(),
+            });
+            let trailing_return = Some(TrailingReturn {
+                return_pct,
+                from: "2025-10-13".into(),
+                to: "2026-10-12".into(),
+            });
+            data.sector_pe[0].pe_history = pe_history.clone();
+            data.sector_pe[0].trailing_return = trailing_return.clone();
+            data.industries[0].pe_history = pe_history;
+            data.industries[0].trailing_return = trailing_return;
+            data
+        };
+        let enriched = compute_deltas(
+            &with_history(current, 6.5, 31.9),
+            &with_history(prior, 40.0, 12.0),
+            7.0,
+        );
+        assert_eq!(enriched, plain);
+        assert_eq!(plain.changed.len(), 1, "the sector P/E level alone is diffed");
+        assert!(!plain.changed.iter().any(|s| s.group == GroupKind::Industries));
     }
 
     /// A series that resolved last run but failed this run is `missing` *and* carries the

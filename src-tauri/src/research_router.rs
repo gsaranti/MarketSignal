@@ -170,6 +170,9 @@ materially, where second-order implications matter, or where a known upcoming ev
 markets. The baseline's economic-release calendar may carry, per release, the consensus estimate \
 and any realized surprise, and Fed / FOMC event dates: a material surprise, or an upcoming release \
 or Fed event the thesis turns on, is a routable signal. \
+Sector and industry valuation rows may carry each group's P/E against its own trailing-year \
+range, paired with its return over that year: a valuation extreme, read with whether the group \
+is rising or falling, is a routable signal. \
 The clusters carry publish dates and the report's current date is provided: balance \
 materiality with freshness — a genuinely new development, especially from the current or prior \
 day relative to that date, deserves a place in the plan and should not be dropped for an older \
@@ -562,6 +565,14 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("the consensus estimate \
 and any realized surprise, and Fed / FOMC event dates"));
         assert!(SYSTEM_PROMPT.contains("is a routable signal"));
+    }
+
+    #[test]
+    fn system_prompt_routes_on_a_valuation_extreme_with_its_price_context() {
+        assert!(SYSTEM_PROMPT.contains("P/E against its own trailing-year \
+range, paired with its return over that year"));
+        assert!(SYSTEM_PROMPT.contains("read with whether the group \
+is rising or falling, is a routable signal"));
     }
 
     #[test]

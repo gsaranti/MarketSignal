@@ -240,7 +240,10 @@ the read.",
         body: "Valuation Compression. Analyze how rates, yields, and macro conditions bear on \
 valuation multiples. Read the gathered valuation levels — the per-sector and per-industry P/E and \
 the market risk premium — against the 10-year yield and the change view, focusing on long-duration \
-growth assets and high-multiple sectors most sensitive to discount-rate moves. Judge whether \
+growth assets and high-multiple sectors most sensitive to discount-rate moves. Where a sector \
+or industry row carries its P/E against its own trailing-year range and its return over that \
+year, judge whether a multiple has expanded or compressed from that history's start and latest \
+prints, not from the snapshot. Judge whether \
 earnings growth is sufficient to justify current multiples or whether rising yields threaten \
 compression. Carry this as the valuation risk to the equity call — not a standalone \
 point.",
@@ -343,5 +346,21 @@ mod tests {
             .unwrap();
         assert!(lens.body.contains("consensus estimate and its realized surprise"), "{}", lens.body);
         assert!(!lens.body.contains("no consensus"), "{}", lens.body);
+    }
+
+    #[test]
+    fn the_valuation_lens_reads_the_multiple_from_its_own_history() {
+        let lens = CATALOG
+            .iter()
+            .find(|s| s.name == "Valuation Compression")
+            .unwrap();
+        assert!(
+            lens.body.contains(
+                "judge whether a multiple has expanded or compressed from that history's start \
+and latest prints, not from the snapshot"
+            ),
+            "{}",
+            lens.body
+        );
     }
 }

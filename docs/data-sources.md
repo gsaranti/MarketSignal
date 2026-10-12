@@ -84,6 +84,9 @@ The sector-P/E snapshot and history rows share one shaper, so a snapshot row wit
 That shaper holds the report adapter's integrity contract as well.
 Every row's exchange must be present and equal to the board the call was pinned to, and a row served under another board — or without one — reads the whole body malformed, the served board named.
 A sector-P/E print is usable only when finite, positive, and within the plausible-aggregate ceiling the report's sector-P/E adapter applies (`SECTOR_PE_MAX`, calibrated in code off the live distribution probe), and an out-of-band print is dropped like an unreadable row.
+The report's industry P/E and sector / industry performance history shapers hold the same exchange contract.
+An industry P/E history print is usable only when finite, positive, and within the industry snapshot's ceiling (`INDUSTRY_PE_MAX`), and a daily `averageChange` only when finite.
+A history row for another sector or industry than the one requested is unreadable and dropped, the sector-P/E history included.
 A fund weighting row (`etf/sector-weightings`, `etf/country-weightings`) is usable only when its served percent is finite and within 0–100, the endpoints included.
 Any other weighting row is unreadable and dropped.
 A body with some rows dropped keeps its `ok` tracker row — every shaper's posture — and only an all-unreadable body reads malformed.
@@ -589,13 +592,38 @@ When the fetch returned rows but a mapped event of a release dated in the window
 The model's prompt never carries that row.
 
 **Historical sector / industry valuation + performance.**
-Today the sector/industry P/E *and* performance are both point-in-time, read only cross-sectionally (which group is rich vs cheap, strong vs weak *right now*).
-Four paid endpoints — `historical-sector-pe` / `historical-industry-pe` and `historical-sector-performance` / `historical-industry-performance`, each keyed by sector/industry + `exchange`, with `from` / `to` — add a **time dimension** over a fixed trailing ~1 year, fetched for all 11 sectors × both exchanges and for the **extreme industries the snapshot already surfaces** (not all ~130).
+The snapshot sector / industry P/E *and* performance are point-in-time, read cross-sectionally (which group is rich vs cheap, strong vs weak *right now*).
+Four paid endpoints — `historical-sector-pe` / `historical-industry-pe` and `historical-sector-performance` / `historical-industry-performance`, each keyed by sector/industry + `exchange`, with `from` / `to` — add a **time dimension** over a fixed trailing year.
+They are fetched for every sector the sector-P/E snapshot returned on each exchange and for the **extreme industries the industry snapshot surfaces** (not all ~130), one request per group, endpoint and exchange.
+The window runs from 365 days before the UTC date to the UTC date, a fetch-range bound.
+The freshness check below reads the ET session date.
+The four endpoints' row shape — one row per trading day, newest first, the requested group and exchange echoed — was live-verified 2026-10-12.
 The two series are shaped differently, so the engine derives a different read from each:
-- the P/E endpoints return a `pe` **level**, so the engine takes its **percentile within the trailing window + a min / median / max band** — rich/cheap against its own history;
-- the performance endpoints return a daily **`averageChange`** (that date's average constituent move) expressed in **percentage points** (`0.64` means 0.64% — live-verified 2026-07-16, the same convention the shipped snapshot adapter's `change_pct` preserves), *not* a price level or a decimal fraction, so the engine normalizes each day to `daily_return = averageChange / 100` and **compounds the normalized daily changes into a trailing cumulative return** (`Π(1 + averageChange / 100) − 1`, serialized as a decimal fraction) — the rising / falling read — rather than percentiling the raw daily moves (a percentile of `averageChange` would say "today's move was unusual," not "the group is up over the window").
+- the P/E endpoints return a `pe` **level**, so the engine takes the newest valid print's **percentile within the trailing window + a min / median / max band** — rich/cheap against its own history;
+- the performance endpoints return a daily **`averageChange`** (that date's average constituent move) expressed in **percentage points** (`0.64` means 0.64% — live-verified 2026-07-16, the same convention the shipped snapshot adapter's `change_pct` preserves), *not* a price level or a decimal fraction, so the engine normalizes each day to `daily_return = averageChange / 100` and **compounds the normalized daily changes into a trailing cumulative return** (`Π(1 + averageChange / 100) − 1`, serialized in percent) — the rising / falling read — rather than percentiling the raw daily moves (a percentile of `averageChange` would say "today's move was unusual," not "the group is up over the window").
 
-Both derivations run under one **single-homed rule set** (the workflow points here rather than restating it): rows are sorted date-ascending and **deduplicated by date** (the last row for a date wins); a null / non-finite value is dropped, a **P/E ≤ 0 is dropped as inadmissible** against-own-history, and a daily `averageChange` outside **±25 percentage points** is dropped as inadmissible (a unit-error guard — drafted); the **percentile is the inclusive rank** — the share of the window's valid values ≤ the current value, reported 0–100 (ties count as ≤); and a read requires a **minimum sample of ≥ 60 valid points** with the **newest valid point ≤ 7 days old** (both drafted) — below either, the read is **absent plus a typed partial-data gap**, never a numeric default.
+Both derivations run under one **single-homed rule set** (the workflow points here rather than restating it).
+Rows are sorted date-ascending and **deduplicated by date** (the last row for a date wins).
+A row its shaper drops — undatable, non-finite, or a P/E outside its band — never reaches the dedup, so the last row for a date is the last one the shaper kept.
+A null / non-finite value is dropped, a **P/E ≤ 0 is dropped as inadmissible** against-own-history, and a daily `averageChange` outside **±25 percentage points** is dropped as inadmissible (a unit-error guard — drafted).
+A P/E print past its snapshot's plausible-aggregate ceiling is dropped too: the sector history's `SECTOR_PE_MAX`, the industry history's `INDUSTRY_PE_MAX` ([§Financial Modeling Prep](#financial-modeling-prep)).
+The **percentile is the inclusive rank** of the newest valid print — the share of the window's valid values ≤ it, reported 0–100 (ties count as ≤).
+An even-count median is the mean of the two middle values.
+A read requires a **minimum sample of ≥ 60 valid points** with the **newest valid point ≤ 7 days old** against the ET session date (both drafted).
+Below either, the read is **absent plus a partial-data gap** for that group, never a numeric default.
+
+Both reads ride the `SectorPe` and `IndustrySnapshot` rows, one per (group, exchange).
+`pe_history` carries `percentile`, `min`, `median` and `max`, plus `start` and `latest`, the P/E at the window's oldest and newest valid prints.
+The percentile and band place the multiple within its range and carry no direction.
+A change in the multiple over the window reads from `start` against `latest`.
+`trailing_return` carries `return_pct`, in percent.
+Each read's `from` and `to` are the dates of its window's oldest and newest valid points.
+An absent read serializes as an explicit `null`.
+`SectorPerformance` carries neither, because its snapshot row names no exchange.
+The fetch fails soft per endpoint and exchange.
+A key below the paid tier (HTTP 402) stops that loop, its reads absent silently.
+A this-run failure — rejected, or unavailable past the retry ladder — records one gap for that endpoint on that exchange and stops the loop.
+A 404, an empty or unreadable body, or a series below the sample floor or past the freshness bound records one gap for that group alone, and the loop moves on.
 
 Both are compact derived numbers, not the raw series.
 Paired, they let the model read a re-rating *with* its price context: a group cheap against its own P/E history *and* up over the trailing window (a re-rating turn) reads differently from one cheap *and still down* (a possible value trap) — the distinction a single snapshot can't support.
@@ -618,15 +646,16 @@ A fourth candidate — **true index breadth** (advance/decline, participation) �
 All three enrichments follow the same three structural rules so they neither bloat storage nor disturb the report-to-report change view:
 
 - **Persist the derived read, not the raw history.**
-  Only the compact derived numbers — the calendar's per-event **`surprises` entries** (event name, unit, estimate, actual, relation tag, **absolute gap**, signed **% gap**, and the polarity-mapped beat / miss read where defined), the P/E percentile + band, the performance trailing cumulative return, and the froth reads (the IPO and M&A **recent + prior-window counts**, the **upcoming-scheduled IPO count**, the bounded notable-name list, and the aggregate proceeds / deal value where the feed carried it) — ride into the packet and the persisted baseline snapshot; the raw ~250-point P/E and performance series and the full IPO / deal lists are transient fetch input, discarded once the derived reads are computed.
+  Only the compact derived numbers — the calendar's per-event **`surprises` entries** (event name, unit, estimate, actual, relation tag, **absolute gap**, signed **% gap**, and the polarity-mapped beat / miss read where defined), the P/E percentile + band with the window's start and latest prints, the performance trailing cumulative return, and the froth reads (the IPO and M&A **recent + prior-window counts**, the **upcoming-scheduled IPO count**, the bounded notable-name list, and the aggregate proceeds / deal value where the feed carried it) — ride into the packet and the persisted baseline snapshot; the raw ~250-point P/E and performance series and the full IPO / deal lists are transient fetch input, discarded once the derived reads are computed.
   **Every optional derived value has explicit absent semantics** — absent means *not derivable* (an unmapped release, a `null` or zero estimate, an exhausted page budget), **never zero** — so a prompt or snapshot comparison can always distinguish missing from zero.
 - **New fields carry `#[serde(default)]`.**
-  The enrichments add fields to `BaselineMarketData` and its member structs — `EconomicRelease` (the per-event `surprises` vector, defaulting to empty, and the event `class`, defaulting to `release`), `SectorPe` and `IndustrySnapshot` (valuation-history context), `SectorPerformance` and `IndustrySnapshot` (performance-history context) — plus a new issuance-activity group; each must default so an *older* snapshot — serialized before the field existed — still deserializes (to empty / `None`), keeping the prior-vs-current comparison backward-compatible.
+  The enrichments add fields to `BaselineMarketData` and its member structs — `EconomicRelease` (the per-event `surprises` vector, defaulting to empty, and the event `class`, defaulting to `release`), `SectorPe` and `IndustrySnapshot` (the valuation- and performance-history reads) — plus a new issuance-activity group; each must default so an *older* snapshot — serialized before the field existed — still deserializes (to empty / `None`), keeping the prior-vs-current comparison backward-compatible.
   (The prior-snapshot decode is already fail-soft regardless — see [report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data).)
 - **All stay out of the level-delta engine.**
   The surprise is a native actual-vs-consensus value, the P/E percentile + band and the performance trailing cumulative return are trailing-window structural reads, and the IPO / M&A counts are set-valued activity tallies — none is an inter-report level change — so, like CFTC positioning and the existing movers / earnings / calendar groups, none joins the diffed level groups; the existing point-in-time `sector_pe` level-diff is untouched (it reads only the current `pe`), and the `sectors` performance group stays excluded from the diff exactly as it is today.
 
-The prompt-side changes these require are specified in [report-workflow.md §Step 16](report-workflow.md#step-16-main-agent-synthesis): the data rides into every **baseline-carrying generative prompt** — the research router (Step 8), the three analysts (Step 12), and the main synthesis (Step 16) — automatically via JSON serialization (the headline filter and the embedding calls carry no baseline payload), but the interpretive prose must be updated in lockstep — including one existing main-agent instruction that currently tells the model to *ignore* multiple-expansion-over-time, which the P/E history now supports.
+The prompt-side changes these require are specified in [report-workflow.md §Step 16](report-workflow.md#step-16-main-agent-synthesis): the data rides into every **baseline-carrying generative prompt** — the research router (Step 8), the three analysts (Step 12), and the main synthesis (Step 16) — automatically via JSON serialization (the headline filter and the embedding calls carry no baseline payload), but the interpretive prose must be updated in lockstep.
+The main-agent valuation instruction reads multiple expansion or de-rating over the window only from the P/E history's start and latest prints, and since the previous report only from the change view's measured sector P/E move.
 
 ### Local analysis suite — shared sourcing
 

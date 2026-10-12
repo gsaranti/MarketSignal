@@ -260,11 +260,48 @@ pub struct EarningsEvent {
 /// near-zero earnings base (band-bounded to `(0.0, SECTOR_PE_MAX]` in `sector_pe_from_value`,
 /// the same drop-to-`None` stance as [`IndustrySnapshot::pe`]); the (sector, exchange) row
 /// still rides so the model sees the sector was scanned. One row per (sector, exchange).
+/// On the paid FMP tier the row also carries the two trailing-year reads against the
+/// sector's own history on that exchange (`group_history`, `docs/data-sources.md §Report
+/// enrichment`); each is `None` when it was not derivable this run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SectorPe {
     pub sector: String,
     pub exchange: String,
     pub pe: Option<f64>,
+    /// Defaults to `None`, so a snapshot persisted before the enrichment decodes.
+    #[serde(default)]
+    pub pe_history: Option<PeHistory>,
+    /// Defaults to `None`, so a snapshot persisted before the enrichment decodes.
+    #[serde(default)]
+    pub trailing_return: Option<TrailingReturn>,
+}
+
+/// A group's latest P/E against its own trailing-year history on one exchange: the
+/// `percentile` (0–100, the share of the window's valid prints at or below the newest
+/// one) with the window's `min` / `median` / `max`, plus the P/E at the window's two ends —
+/// `start` on `from` and `latest` on `to`, the dates of the oldest and newest valid prints.
+/// The percentile and band place the multiple within its range and carry no direction; a
+/// change in the multiple over the window reads from `start` against `latest`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeHistory {
+    pub percentile: f64,
+    pub min: f64,
+    pub median: f64,
+    pub max: f64,
+    pub start: f64,
+    pub latest: f64,
+    pub from: String,
+    pub to: String,
+}
+
+/// A group's cumulative return over its trailing-year window on one exchange, compounded
+/// from the daily average move: `return_pct` in percent. `from` and `to` are the dates of
+/// the window's oldest and newest valid days.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrailingReturn {
+    pub return_pct: f64,
+    pub from: String,
+    pub to: String,
 }
 
 /// One industry's finer-rotation read, joining FMP's free `industry-performance-snapshot`
@@ -275,13 +312,20 @@ pub struct SectorPe {
 /// **exchange-specific**, so `exchange` is carried and the cap is applied per exchange (both
 /// NASDAQ and NYSE). `change_pct` is the average percent move; `pe` is `None` when no
 /// meaningful P/E is available — the PE snapshot didn't carry that industry, its aggregate
-/// earnings are non-positive (FMP reports 0.0 there), or its call failed.
+/// earnings are non-positive (FMP reports 0.0 there), or its call failed. On the paid FMP
+/// tier the row also carries the two trailing-year reads, as [`SectorPe`] does.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndustrySnapshot {
     pub industry: String,
     pub exchange: String,
     pub change_pct: f64,
     pub pe: Option<f64>,
+    /// Defaults to `None`, so a snapshot persisted before the enrichment decodes.
+    #[serde(default)]
+    pub pe_history: Option<PeHistory>,
+    /// Defaults to `None`, so a snapshot persisted before the enrichment decodes.
+    #[serde(default)]
+    pub trailing_return: Option<TrailingReturn>,
 }
 
 /// The US equity-risk-premium from FMP's free `market-risk-premium` (Damodaran's
@@ -723,16 +767,22 @@ impl MarketDataSource for StubMarketDataSource {
                     sector: "Technology".into(),
                     exchange: "NASDAQ".into(),
                     pe: Some(38.4),
+                    pe_history: None,
+                    trailing_return: None,
                 },
                 SectorPe {
                     sector: "Technology".into(),
                     exchange: "NYSE".into(),
                     pe: Some(24.6),
+                    pe_history: None,
+                    trailing_return: None,
                 },
                 SectorPe {
                     sector: "Energy".into(),
                     exchange: "NYSE".into(),
                     pe: Some(12.1),
+                    pe_history: None,
+                    trailing_return: None,
                 },
             ],
             industries: vec![
@@ -741,12 +791,16 @@ impl MarketDataSource for StubMarketDataSource {
                     exchange: "NASDAQ".into(),
                     change_pct: 2.4,
                     pe: Some(41.2),
+                    pe_history: None,
+                    trailing_return: None,
                 },
                 IndustrySnapshot {
                     industry: "Oil & Gas Midstream".into(),
                     exchange: "NYSE".into(),
                     change_pct: -1.9,
                     pe: None,
+                    pe_history: None,
+                    trailing_return: None,
                 },
             ],
             market_risk_premium: vec![MarketRiskPremium {
@@ -929,6 +983,67 @@ mod tests {
         assert!(json.contains(r#""gap_pct":null"#), "{json}");
         assert!(json.contains(r#""relation":"in-line""#), "{json}");
         assert!(json.contains(r#""class":"fed""#), "{json}");
+        let back: BaselineMarketData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, baseline);
+    }
+
+    #[test]
+    fn a_pre_enrichment_valuation_snapshot_decodes_with_no_history_reads() {
+        // A shipped report's snapshot carries the bare sector-P/E and industry rows; the
+        // defaults read them as rows with no history reads, so the prior-snapshot decode
+        // never fails on the new fields.
+        let old: BaselineMarketData = serde_json::from_str(
+            r#"{"sector_pe":[{"sector":"Energy","exchange":"NYSE","pe":12.1}],
+                "industries":[{"industry":"Semiconductors","exchange":"NASDAQ","change_pct":2.4,"pe":41.2}]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.sector_pe[0].pe, Some(12.1));
+        assert!(old.sector_pe[0].pe_history.is_none());
+        assert!(old.sector_pe[0].trailing_return.is_none());
+        assert!(old.industries[0].pe_history.is_none());
+        assert!(old.industries[0].trailing_return.is_none());
+    }
+
+    #[test]
+    fn the_history_reads_round_trip_with_explicit_nulls() {
+        let baseline = BaselineMarketData {
+            sector_pe: vec![SectorPe {
+                sector: "Energy".into(),
+                exchange: "NYSE".into(),
+                pe: Some(17.1),
+                pe_history: Some(PeHistory {
+                    percentile: 6.5,
+                    min: 16.2,
+                    median: 21.7,
+                    max: 35.8,
+                    start: 21.4,
+                    latest: 17.1,
+                    from: "2025-10-13".into(),
+                    to: "2026-10-12".into(),
+                }),
+                trailing_return: None,
+            }],
+            industries: vec![IndustrySnapshot {
+                industry: "Oil & Gas Midstream".into(),
+                exchange: "NYSE".into(),
+                change_pct: 0.7,
+                pe: None,
+                pe_history: None,
+                trailing_return: Some(TrailingReturn {
+                    return_pct: 20.1,
+                    from: "2025-10-13".into(),
+                    to: "2026-10-12".into(),
+                }),
+            }],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&baseline).unwrap();
+        // An absent read serializes as an explicit null, never omitted and never zero.
+        assert!(json.contains(r#""trailing_return":null"#), "{json}");
+        assert!(json.contains(r#""pe_history":null"#), "{json}");
+        assert!(json.contains(r#""percentile":6.5"#), "{json}");
+        assert!(json.contains(r#""start":21.4,"latest":17.1"#), "{json}");
+        assert!(json.contains(r#""return_pct":20.1"#), "{json}");
         let back: BaselineMarketData = serde_json::from_str(&json).unwrap();
         assert_eq!(back, baseline);
     }

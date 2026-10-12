@@ -16,6 +16,7 @@ pub mod fmp;
 pub mod fmp_news;
 pub mod fred;
 pub mod gdelt;
+pub mod group_history;
 pub mod headline_filter;
 pub mod http_retry;
 pub mod jobs;

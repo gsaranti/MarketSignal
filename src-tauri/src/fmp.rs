@@ -58,6 +58,7 @@ use crate::data_sources::{
 };
 use crate::cadence::ReportCadence;
 use crate::econ_calendar::{self, CalendarRow, EconomicCalendarSource};
+use crate::group_history::{self, DatedPoint, NotDerivable};
 use crate::portfolio::evidence::{
     Chamber, CompanyEvidence, CongressionalTrade, DividendRow, EnterpriseValueRow, GradesConsensus,
     InsiderStatistics, InsiderTrade, MaDeal, OwnerEarningsRow, PriceTargetConsensus,
@@ -146,6 +147,15 @@ const FMP_ECONOMIC_CALENDAR_PATH: &str = "/economic-calendar";
 const FMP_SECTOR_PE_PATH: &str = "/sector-pe-snapshot";
 const FMP_INDUSTRY_PERF_PATH: &str = "/industry-performance-snapshot";
 const FMP_INDUSTRY_PE_PATH: &str = "/industry-pe-snapshot";
+
+/// FMP's paid trailing-history endpoints behind the sector and industry reads against their
+/// own history (`group_history`, `docs/data-sources.md §Report enrichment`), each keyed by
+/// one sector or industry on one exchange with `from` / `to` (probed live 2026-10-12: one
+/// row per trading day, newest first). The sector P/E history shares
+/// [`FMP_HISTORICAL_SECTOR_PE_PATH`] with the Portfolio fund path.
+const FMP_HISTORICAL_INDUSTRY_PE_PATH: &str = "/historical-industry-pe";
+const FMP_HISTORICAL_SECTOR_PERF_PATH: &str = "/historical-sector-performance";
+const FMP_HISTORICAL_INDUSTRY_PERF_PATH: &str = "/historical-industry-performance";
 
 /// FMP's free market-risk-premium endpoint — Damodaran's per-country equity-risk-premium
 /// dataset (no params). Filtered to the US row; a near-static annual constant (probed live
@@ -684,6 +694,8 @@ fn sector_pe_from_value(value: Value, expected_exchange: &str) -> Result<Vec<Sec
                 sector: raw.sector,
                 exchange: raw.exchange,
                 pe,
+                pe_history: None,
+                trailing_return: None,
             });
         }
     }
@@ -781,9 +793,190 @@ fn top_bottom_industries(
                 exchange,
                 change_pct,
                 pe,
+                pe_history: None,
+                trailing_return: None,
             }
         })
         .collect()
+}
+
+/// One of the four trailing-history series behind the sector and industry reads against
+/// their own history (`group_history`), each fetched per group on one exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryFamily {
+    SectorPe,
+    SectorReturn,
+    IndustryPe,
+    IndustryReturn,
+}
+
+impl HistoryFamily {
+    fn path(self) -> &'static str {
+        match self {
+            HistoryFamily::SectorPe => FMP_HISTORICAL_SECTOR_PE_PATH,
+            HistoryFamily::SectorReturn => FMP_HISTORICAL_SECTOR_PERF_PATH,
+            HistoryFamily::IndustryPe => FMP_HISTORICAL_INDUSTRY_PE_PATH,
+            HistoryFamily::IndustryReturn => FMP_HISTORICAL_INDUSTRY_PERF_PATH,
+        }
+    }
+
+    /// The query parameter and row field naming the group.
+    fn name_key(self) -> &'static str {
+        match self {
+            HistoryFamily::SectorPe | HistoryFamily::SectorReturn => "sector",
+            HistoryFamily::IndustryPe | HistoryFamily::IndustryReturn => "industry",
+        }
+    }
+
+    /// The baseline group whose rows carry the read.
+    fn group(self) -> GroupKind {
+        match self {
+            HistoryFamily::SectorPe | HistoryFamily::SectorReturn => GroupKind::SectorPe,
+            HistoryFamily::IndustryPe | HistoryFamily::IndustryReturn => GroupKind::Industries,
+        }
+    }
+
+    /// The series-id stem of the family's tracker rows and gaps.
+    fn slug(self) -> &'static str {
+        match self {
+            HistoryFamily::SectorPe => "sector-pe-history",
+            HistoryFamily::SectorReturn => "sector-return-history",
+            HistoryFamily::IndustryPe => "industry-pe-history",
+            HistoryFamily::IndustryReturn => "industry-return-history",
+        }
+    }
+
+    /// The family's display name, for its one family-level gap.
+    fn label(self) -> &'static str {
+        match self {
+            HistoryFamily::SectorPe => "Sector P/E history",
+            HistoryFamily::SectorReturn => "Sector return history",
+            HistoryFamily::IndustryPe => "Industry P/E history",
+            HistoryFamily::IndustryReturn => "Industry return history",
+        }
+    }
+
+    /// The per-group read's display noun, for its tracker row and row-level gap.
+    fn read_label(self) -> &'static str {
+        match self {
+            HistoryFamily::SectorPe | HistoryFamily::IndustryPe => "P/E history",
+            HistoryFamily::SectorReturn | HistoryFamily::IndustryReturn => "return history",
+        }
+    }
+}
+
+/// The dates every history fetch in one scan shares: the fetch window and the ET session
+/// date the freshness check reads.
+#[derive(Debug, Clone, Copy)]
+struct HistoryClock {
+    from: NaiveDate,
+    to: NaiveDate,
+    session: NaiveDate,
+}
+
+impl HistoryClock {
+    fn at(now: chrono::DateTime<Utc>) -> Self {
+        // The fetch range's upper bound deliberately stays the UTC date — a fetch bound, not a
+        // session key; the freshness check reads the ET session (`market_clock`).
+        let (from, to) = group_history::window(now.date_naive());
+        Self {
+            from,
+            to,
+            session: crate::market_clock::et_session_date(now),
+        }
+    }
+}
+
+/// A group name as a series-id token: lowercase ASCII alphanumerics, every other run `-`
+/// (`Oil & Gas Midstream` → `oil-gas-midstream`).
+fn series_token(name: &str) -> String {
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// One gap for a whole history family on `exchange`: a this-run failure stops the family's
+/// loop there, so the reads it did not reach share this one manifest entry.
+fn history_family_gap(family: HistoryFamily, exchange: &str, reason: GapReason) -> DataGap {
+    DataGap::new(
+        family.group(),
+        format!("{}-{}", family.slug(), exchange.to_ascii_lowercase()),
+        format!("{} ({exchange})", family.label()),
+        reason,
+    )
+}
+
+/// Shape one `historical-*` body into the requested group's dated points. The sector P/E
+/// rows go through the one sector-P/E shaper ([`sector_pe_rows_from_value`] — its exchange
+/// check and `(0, SECTOR_PE_MAX]` band); the other three hold the same integrity contract —
+/// a row served under another exchange, or none, makes the whole body `Err` — with an
+/// industry P/E usable inside `(0, INDUSTRY_PE_MAX]` and a daily `averageChange` usable when
+/// finite (the ±25-point guard is the derivation's). A row for another group than the one
+/// requested, or without a datable date or a usable value, is unreadable and dropped. A body
+/// that is not an array is `Err`.
+fn history_points_from_value(
+    value: &Value,
+    family: HistoryFamily,
+    name: &str,
+    exchange: &str,
+) -> Result<Vec<DatedPoint>> {
+    let Some(rows) = value.as_array() else {
+        anyhow::bail!("FMP {} response is not an array", family.path());
+    };
+    let parse_date = |date: &str| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
+    if family == HistoryFamily::SectorPe {
+        return Ok(sector_pe_rows_from_value(value, exchange)?
+            .into_iter()
+            .filter(|row| row.sector == name)
+            .filter_map(|row| {
+                Some(DatedPoint {
+                    date: parse_date(&row.date)?,
+                    value: row.pe,
+                })
+            })
+            .collect());
+    }
+    let value_key = match family {
+        HistoryFamily::IndustryPe => "pe",
+        _ => "averageChange",
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let served = row.get("exchange").and_then(Value::as_str);
+        if served != Some(exchange) {
+            anyhow::bail!(
+                "FMP {} returned exchange {} for an {exchange:?} request — the exchange filter \
+                 was ignored",
+                family.path(),
+                served.map_or_else(|| "<absent>".to_string(), |s| format!("{s:?}"))
+            );
+        }
+        if row.get(family.name_key()).and_then(Value::as_str) != Some(name) {
+            continue;
+        }
+        let Some(date) = row.get("date").and_then(Value::as_str).and_then(parse_date) else {
+            continue;
+        };
+        let reading = match row.get(value_key) {
+            Some(Value::Number(n)) => n.as_f64(),
+            Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
+            _ => None,
+        };
+        let usable = |v: &f64| match family {
+            HistoryFamily::IndustryPe => v.is_finite() && *v > 0.0 && *v <= INDUSTRY_PE_MAX,
+            _ => v.is_finite(),
+        };
+        let Some(reading) = reading.filter(usable) else {
+            continue;
+        };
+        out.push(DatedPoint {
+            date,
+            value: reading,
+        });
+    }
+    Ok(out)
 }
 
 /// Shape a successful market-risk-premium response, filtering to the US row
@@ -1605,6 +1798,201 @@ impl FmpDataSource {
         }
     }
 
+    /// Attach the trailing-year reads to each sector-P/E row: per exchange, the P/E history
+    /// and the return history of every sector the snapshot returned on that board
+    /// (`docs/data-sources.md §Report enrichment`). A read that was not derivable stays
+    /// `None`.
+    fn attach_sector_history(
+        &self,
+        rows: &mut [SectorPe],
+        clock: HistoryClock,
+        gaps: &mut Vec<DataGap>,
+    ) {
+        for exchange in SNAPSHOT_EXCHANGES {
+            let names: Vec<String> = rows
+                .iter()
+                .filter(|r| r.exchange == *exchange)
+                .map(|r| r.sector.clone())
+                .collect();
+            if names.is_empty() {
+                continue;
+            }
+            let pe = self.fetch_history_family(
+                HistoryFamily::SectorPe,
+                exchange,
+                &names,
+                clock,
+                group_history::pe_history,
+                gaps,
+            );
+            let ret = self.fetch_history_family(
+                HistoryFamily::SectorReturn,
+                exchange,
+                &names,
+                clock,
+                group_history::trailing_return,
+                gaps,
+            );
+            for row in rows.iter_mut().filter(|r| r.exchange == *exchange) {
+                row.pe_history = pe.get(&row.sector).cloned();
+                row.trailing_return = ret.get(&row.sector).cloned();
+            }
+        }
+    }
+
+    /// Attach the trailing-year reads to each surfaced industry, per exchange, as
+    /// [`Self::attach_sector_history`] does for the sectors.
+    fn attach_industry_history(
+        &self,
+        rows: &mut [IndustrySnapshot],
+        clock: HistoryClock,
+        gaps: &mut Vec<DataGap>,
+    ) {
+        for exchange in SNAPSHOT_EXCHANGES {
+            let names: Vec<String> = rows
+                .iter()
+                .filter(|r| r.exchange == *exchange)
+                .map(|r| r.industry.clone())
+                .collect();
+            if names.is_empty() {
+                continue;
+            }
+            let pe = self.fetch_history_family(
+                HistoryFamily::IndustryPe,
+                exchange,
+                &names,
+                clock,
+                group_history::pe_history,
+                gaps,
+            );
+            let ret = self.fetch_history_family(
+                HistoryFamily::IndustryReturn,
+                exchange,
+                &names,
+                clock,
+                group_history::trailing_return,
+                gaps,
+            );
+            for row in rows.iter_mut().filter(|r| r.exchange == *exchange) {
+                row.pe_history = pe.get(&row.industry).cloned();
+                row.trailing_return = ret.get(&row.industry).cloned();
+            }
+        }
+    }
+
+    /// Fetch one history family for each of `names` on `exchange` — one request and one
+    /// tracker row per group over the clock's window — and derive each group's read.
+    /// Fail-soft by cause: a 402 (a key below the paid tier) stops the loop silently; a
+    /// this-run failure (rejected, or unavailable past the retry ladder) records one
+    /// family-level gap and stops the loop; a 404, an empty or unreadable body, or a series
+    /// below the sample floor or freshness bound records one gap for that group alone and
+    /// the loop moves on. Returns each derived read by group name.
+    fn fetch_history_family<T>(
+        &self,
+        family: HistoryFamily,
+        exchange: &str,
+        names: &[String],
+        clock: HistoryClock,
+        derive: fn(&[DatedPoint], NaiveDate) -> std::result::Result<T, NotDerivable>,
+        gaps: &mut Vec<DataGap>,
+    ) -> HashMap<String, T> {
+        let mut out = HashMap::new();
+        let from = clock.from.format("%Y-%m-%d").to_string();
+        let to = clock.to.format("%Y-%m-%d").to_string();
+        let group = family.group();
+        for name in names {
+            if self.progress.is_cancelled() {
+                break;
+            }
+            let series_id = format!(
+                "{}-{}-{}",
+                family.slug(),
+                exchange.to_ascii_lowercase(),
+                series_token(name)
+            );
+            let display = format!("{name} {} ({exchange})", family.read_label());
+            self.progress
+                .request_started("FMP", group.as_str(), &series_id, &display);
+            let gaps_before = gaps.len();
+            let row_gap = |reason| DataGap::new(group, series_id.as_str(), display.as_str(), reason);
+            let mut detail = None;
+            let mut stop = false;
+            let response = self.get(
+                family.path(),
+                &[
+                    (family.name_key(), name.as_str()),
+                    ("exchange", exchange),
+                    ("from", from.as_str()),
+                    ("to", to.as_str()),
+                ],
+            );
+            match response {
+                Ok((402, body)) => {
+                    detail = Some(http_gap_detail(402, &body));
+                    stop = true;
+                }
+                Ok((status, body)) => match interpret_response(status, &body) {
+                    Disposition::Value(value) => {
+                        match history_points_from_value(&value, family, name, exchange) {
+                            Ok(points) if !points.is_empty() => {
+                                match derive(&points, clock.session) {
+                                    Ok(read) => {
+                                        out.insert(name.clone(), read);
+                                    }
+                                    Err(why) => {
+                                        detail = Some(why.detail());
+                                        gaps.push(row_gap(GapReason::Unavailable));
+                                    }
+                                }
+                            }
+                            Ok(_) if value.as_array().is_some_and(Vec::is_empty) => {
+                                detail = Some("empty response".to_string());
+                                gaps.push(row_gap(GapReason::Unavailable));
+                            }
+                            Ok(_) => {
+                                detail = Some("no served row was readable".to_string());
+                                gaps.push(row_gap(GapReason::Malformed));
+                            }
+                            Err(e) => {
+                                detail = Some(format!("{e:#}"));
+                                gaps.push(row_gap(GapReason::Malformed));
+                            }
+                        }
+                    }
+                    Disposition::Gap(reason @ (GapReason::Rejected | GapReason::Unavailable)) => {
+                        detail = Some(http_gap_detail(status, &body));
+                        gaps.push(history_family_gap(family, exchange, reason));
+                        stop = true;
+                    }
+                    Disposition::Gap(reason) => {
+                        detail = Some(http_gap_detail(status, &body));
+                        gaps.push(row_gap(reason));
+                    }
+                },
+                Err(e) => {
+                    detail = Some(format!("{e:#}"));
+                    gaps.push(history_family_gap(family, exchange, GapReason::Unavailable));
+                    stop = true;
+                }
+            }
+            emit_series_row(
+                &self.progress,
+                "FMP",
+                group,
+                &series_id,
+                &display,
+                gaps,
+                gaps_before,
+                out.contains_key(name),
+                detail,
+            );
+            if stop {
+                break;
+            }
+        }
+        out
+    }
+
     /// Fetch the US equity-risk-premium in one call (no date), then filter to the US row.
     /// Additive and non-floor like `earnings`: a permanent absence or an empty / no-US-row
     /// response is silent; a this-run failure (auth / quota / 5xx / transport / malformed)
@@ -2002,8 +2390,13 @@ impl MarketDataSource for FmpDataSource {
         let index_performance = self.fetch_index_performance(&mut gaps);
         let movers = self.fetch_movers(&mut gaps);
         let earnings = self.fetch_earnings(earnings_back_days(cadence.elapsed_days()), &mut gaps);
-        let sector_pe = self.fetch_sector_pe(&mut gaps);
-        let industries = self.fetch_industries(&mut gaps);
+        // The paid-tier trailing-year reads against each group's own history ride the
+        // sector-P/E and industry rows the snapshots returned.
+        let history_clock = HistoryClock::at(Utc::now());
+        let mut sector_pe = self.fetch_sector_pe(&mut gaps);
+        self.attach_sector_history(&mut sector_pe, history_clock, &mut gaps);
+        let mut industries = self.fetch_industries(&mut gaps);
+        self.attach_industry_history(&mut industries, history_clock, &mut gaps);
         let market_risk_premium = self.fetch_market_risk_premium(&mut gaps);
         Ok(BaselineMarketData {
             indices,
@@ -2270,6 +2663,465 @@ mod tests {
         let statuses: Vec<&str> = finished.iter().map(|(_, s)| s.as_str()).collect();
         assert_eq!(statuses, ["ok", "empty", "rejected", "malformed"]);
         assert!(finished.iter().all(|(id, _)| id == "economic-calendar"));
+    }
+
+    /// A live-shaped `historical-*` body: `n` daily rows ending at `end`, newest first (the
+    /// served order), each valued `value` under `value_key`.
+    fn history_body(
+        name_key: &str,
+        name: &str,
+        exchange: &str,
+        value_key: &str,
+        n: usize,
+        end: &str,
+        value: f64,
+    ) -> &'static str {
+        let end = NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap();
+        let rows: Vec<Value> = (0..n)
+            .map(|i| {
+                serde_json::json!({
+                    "date": (end - Duration::days(i as i64)).format("%Y-%m-%d").to_string(),
+                    name_key: name,
+                    "exchange": exchange,
+                    value_key: value,
+                })
+            })
+            .collect();
+        Box::leak(Value::Array(rows).to_string().into_boxed_str())
+    }
+
+    fn history_clock() -> HistoryClock {
+        let day = |s| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        HistoryClock {
+            from: day("2025-10-12"),
+            to: day("2026-10-12"),
+            session: day("2026-10-12"),
+        }
+    }
+
+    fn sector_row(sector: &str, exchange: &str) -> SectorPe {
+        SectorPe {
+            sector: sector.into(),
+            exchange: exchange.into(),
+            pe: Some(20.0),
+            pe_history: None,
+            trailing_return: None,
+        }
+    }
+
+    fn industry_row(industry: &str, exchange: &str) -> IndustrySnapshot {
+        IndustrySnapshot {
+            industry: industry.into(),
+            exchange: exchange.into(),
+            change_pct: 1.0,
+            pe: None,
+            pe_history: None,
+            trailing_return: None,
+        }
+    }
+
+    fn recorded_rows(rec: &crate::progress::RecordingReporter) -> Vec<(String, String)> {
+        rec.messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished {
+                    series_id, status, ..
+                } => Some((series_id, status)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn history_clock_bounds_the_fetch_in_utc_and_reads_freshness_on_the_et_session() {
+        // 02:00 UTC on Oct 13 is still Oct 12's evening in New York.
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-13T02:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let clock = HistoryClock::at(now);
+        assert_eq!(clock.to, NaiveDate::from_ymd_opt(2026, 10, 13).unwrap());
+        assert_eq!(clock.from, NaiveDate::from_ymd_opt(2025, 10, 13).unwrap());
+        assert_eq!(clock.session, NaiveDate::from_ymd_opt(2026, 10, 12).unwrap());
+    }
+
+    #[test]
+    fn series_token_slugs_a_group_name() {
+        assert_eq!(series_token("Oil & Gas Midstream"), "oil-gas-midstream");
+        assert_eq!(series_token("Banks - Regional"), "banks-regional");
+        assert_eq!(series_token("Energy"), "energy");
+    }
+
+    #[test]
+    fn history_points_shape_each_family_under_the_integrity_contract() {
+        // Sector P/E rides the shared shaper: another sector's row, a non-positive print, a
+        // print past SECTOR_PE_MAX and an undatable row all drop.
+        let sector_pe = serde_json::json!([
+            {"date":"2026-10-12","sector":"Energy","exchange":"NYSE","pe":17.1},
+            {"date":"2026-10-09","sector":"Technology","exchange":"NYSE","pe":30.0},
+            {"date":"2026-10-08","sector":"Energy","exchange":"NYSE","pe":0.0},
+            {"date":"2026-10-07","sector":"Energy","exchange":"NYSE","pe":SECTOR_PE_MAX + 1.0},
+            {"date":"not a date","sector":"Energy","exchange":"NYSE","pe":18.0}
+        ]);
+        let points =
+            history_points_from_value(&sector_pe, HistoryFamily::SectorPe, "Energy", "NYSE")
+                .unwrap();
+        assert_eq!(
+            points,
+            [DatedPoint {
+                date: NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
+                value: 17.1
+            }]
+        );
+        // Industry P/E: the INDUSTRY_PE_MAX band, a numeric string, another industry.
+        let industry_pe = serde_json::json!([
+            {"date":"2026-10-12","industry":"Oil & Gas Midstream","exchange":"NYSE","pe":110.0},
+            {"date":"2026-10-09","industry":"Oil & Gas Midstream","exchange":"NYSE","pe":"15.5"},
+            {"date":"2026-10-08","industry":"Oil & Gas Midstream","exchange":"NYSE","pe":INDUSTRY_PE_MAX + 1.0},
+            {"date":"2026-10-07","industry":"Oil & Gas Refining","exchange":"NYSE","pe":12.0}
+        ]);
+        let points = history_points_from_value(
+            &industry_pe,
+            HistoryFamily::IndustryPe,
+            "Oil & Gas Midstream",
+            "NYSE",
+        )
+        .unwrap();
+        let values: Vec<f64> = points.iter().map(|p| p.value).collect();
+        assert_eq!(values, [110.0, 15.5]);
+        // Performance: any finite move survives the shaper (the ±25 guard is the
+        // derivation's); a non-finite string or a missing value drops.
+        let perf = serde_json::json!([
+            {"date":"2026-10-12","sector":"Energy","exchange":"NYSE","averageChange":30.0},
+            {"date":"2026-10-09","sector":"Energy","exchange":"NYSE","averageChange":"NaN"},
+            {"date":"2026-10-08","sector":"Energy","exchange":"NYSE"},
+            {"date":"2026-10-07","sector":"Energy","exchange":"NYSE","averageChange":"-0.6"}
+        ]);
+        let points =
+            history_points_from_value(&perf, HistoryFamily::SectorReturn, "Energy", "NYSE")
+                .unwrap();
+        let values: Vec<f64> = points.iter().map(|p| p.value).collect();
+        assert_eq!(values, [30.0, -0.6]);
+        // A row served under another board, or none, fails the whole body; so does a
+        // non-array body.
+        for family in [
+            HistoryFamily::SectorPe,
+            HistoryFamily::SectorReturn,
+            HistoryFamily::IndustryPe,
+            HistoryFamily::IndustryReturn,
+        ] {
+            let key = family.name_key();
+            let off_board = serde_json::json!([
+                {"date":"2026-10-12", key:"X", "exchange":"NASDAQ", "pe":10.0, "averageChange":0.1}
+            ]);
+            assert!(history_points_from_value(&off_board, family, "X", "NYSE").is_err());
+            let boardless = serde_json::json!([
+                {"date":"2026-10-12", key:"X", "pe":10.0, "averageChange":0.1}
+            ]);
+            assert!(history_points_from_value(&boardless, family, "X", "NYSE").is_err());
+            let object = serde_json::json!({"Error":"drifted"});
+            assert!(history_points_from_value(&object, family, "X", "NYSE").is_err());
+        }
+    }
+
+    #[test]
+    fn sector_history_attaches_both_reads_and_stops_silently_below_the_paid_tier() {
+        let server = MockHttp::serve(vec![
+            // Energy P/E: a full window → a read.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: history_body("sector", "Energy", "NYSE", "pe", 60, "2026-10-12", 17.0),
+            },
+            // Technology P/E: below the sample floor → that row's gap alone.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: history_body("sector", "Technology", "NYSE", "pe", 30, "2026-10-12", 30.0),
+            },
+            // Energy return: a key below the paid tier → the family stops, no gap.
+            Canned::Reply {
+                status: 402,
+                headers: vec![],
+                body: "Premium Query Parameter",
+            },
+        ]);
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let source = test_source(&server.base_url).with_context(ctx);
+        let mut rows = vec![sector_row("Energy", "NYSE"), sector_row("Technology", "NYSE")];
+        let mut gaps = Vec::new();
+
+        source.attach_sector_history(&mut rows, history_clock(), &mut gaps);
+
+        let energy = rows[0].pe_history.as_ref().expect("Energy P/E history");
+        assert_eq!(energy.percentile, 100.0);
+        assert_eq!((energy.min, energy.median, energy.max), (17.0, 17.0, 17.0));
+        assert_eq!((energy.start, energy.latest), (17.0, 17.0));
+        assert_eq!((energy.from.as_str(), energy.to.as_str()), ("2026-08-14", "2026-10-12"));
+        assert_eq!(rows[1].pe_history, None);
+        assert!(rows.iter().all(|r| r.trailing_return.is_none()));
+        assert_eq!(rows[0].pe, Some(20.0), "the snapshot level is untouched");
+        let recorded: Vec<(GroupKind, &str, GapReason)> = gaps
+            .iter()
+            .map(|g| (g.group, g.series_id.as_str(), g.reason))
+            .collect();
+        assert_eq!(
+            recorded,
+            [(
+                GroupKind::SectorPe,
+                "sector-pe-history-nyse-technology",
+                GapReason::Unavailable
+            )]
+        );
+        // NASDAQ carried no rows, so no request went there; the 402 stopped Technology's
+        // return before it was asked.
+        assert_eq!(
+            server.request_paths(),
+            [
+                "/historical-sector-pe",
+                "/historical-sector-pe",
+                "/historical-sector-performance"
+            ]
+        );
+        let target = &server.request_targets()[0];
+        for param in ["sector=Energy", "exchange=NYSE", "from=2025-10-12", "to=2026-10-12"] {
+            assert!(target.contains(param), "{target}");
+        }
+        assert_eq!(
+            recorded_rows(&rec),
+            [
+                ("sector-pe-history-nyse-energy".to_string(), "ok".to_string()),
+                (
+                    "sector-pe-history-nyse-technology".to_string(),
+                    "unavailable".to_string()
+                ),
+                (
+                    "sector-return-history-nyse-energy".to_string(),
+                    "empty".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn industry_history_stops_a_family_on_a_this_run_failure_and_gaps_a_row_otherwise() {
+        let server = MockHttp::serve(vec![
+            // NASDAQ P/E, Alpha: rejected → one family gap, Beta never asked.
+            Canned::Reply {
+                status: 403,
+                headers: vec![],
+                body: "Forbidden",
+            },
+            // NASDAQ return, Alpha: a drifted body → that row's malformed gap.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"unexpected":true}"#,
+            },
+            // NASDAQ return, Beta: a 404 → that row's out-of-scope gap.
+            Canned::Reply {
+                status: 404,
+                headers: vec![],
+                body: "Not Found",
+            },
+            // NYSE P/E, Oil & Gas Midstream: an empty body → that row's gap.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "[]",
+            },
+            // NYSE return, Oil & Gas Midstream: a full window of +0.1pp days → a read.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: history_body(
+                    "industry",
+                    "Oil & Gas Midstream",
+                    "NYSE",
+                    "averageChange",
+                    60,
+                    "2026-10-09",
+                    0.1,
+                ),
+            },
+        ]);
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let source = test_source(&server.base_url).with_context(ctx);
+        let mut rows = vec![
+            industry_row("Alpha", "NASDAQ"),
+            industry_row("Beta", "NASDAQ"),
+            industry_row("Oil & Gas Midstream", "NYSE"),
+        ];
+        let mut gaps = Vec::new();
+
+        source.attach_industry_history(&mut rows, history_clock(), &mut gaps);
+
+        assert!(rows.iter().all(|r| r.pe_history.is_none()));
+        assert!(rows[0].trailing_return.is_none() && rows[1].trailing_return.is_none());
+        let midstream = rows[2].trailing_return.as_ref().expect("a return read");
+        assert!((midstream.return_pct - (1.001f64.powi(60) - 1.0) * 100.0).abs() < 1e-9);
+        assert_eq!(midstream.to, "2026-10-09");
+        let recorded: Vec<(GroupKind, &str, GapReason)> = gaps
+            .iter()
+            .map(|g| (g.group, g.series_id.as_str(), g.reason))
+            .collect();
+        assert_eq!(
+            recorded,
+            [
+                (
+                    GroupKind::Industries,
+                    "industry-pe-history-nasdaq",
+                    GapReason::Rejected
+                ),
+                (
+                    GroupKind::Industries,
+                    "industry-return-history-nasdaq-alpha",
+                    GapReason::Malformed
+                ),
+                (
+                    GroupKind::Industries,
+                    "industry-return-history-nasdaq-beta",
+                    GapReason::OutOfScope
+                ),
+                (
+                    GroupKind::Industries,
+                    "industry-pe-history-nyse-oil-gas-midstream",
+                    GapReason::Unavailable
+                ),
+            ]
+        );
+        assert_eq!(gaps[0].series_name, "Industry P/E history (NASDAQ)");
+        assert_eq!(gaps[3].series_name, "Oil & Gas Midstream P/E history (NYSE)");
+        assert!(
+            server.request_targets()[3].contains("industry=Oil+%26+Gas+Midstream")
+                || server.request_targets()[3].contains("industry=Oil%20%26%20Gas%20Midstream"),
+            "{}",
+            server.request_targets()[3]
+        );
+        let statuses: Vec<String> = recorded_rows(&rec).into_iter().map(|(_, s)| s).collect();
+        assert_eq!(
+            statuses,
+            ["rejected", "malformed", "out-of-scope", "unavailable", "ok"]
+        );
+    }
+
+    #[test]
+    fn history_family_stops_on_an_error_envelope_or_a_transport_failure() {
+        let names = vec!["Energy".to_string(), "Technology".to_string()];
+        let recorded = |gaps: &[DataGap]| -> Vec<(GroupKind, String, GapReason)> {
+            gaps.iter()
+                .map(|g| (g.group, g.series_id.clone(), g.reason))
+                .collect()
+        };
+
+        // A 200 carrying FMP's error envelope is a rejection: one family gap, and the next
+        // sector is never asked.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"Error Message":"Limit Reach . Please upgrade your plan"}"#,
+        }]);
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let source = test_source(&server.base_url).with_context(ctx);
+        let mut gaps = Vec::new();
+        let reads = source.fetch_history_family(
+            HistoryFamily::SectorPe,
+            "NYSE",
+            &names,
+            history_clock(),
+            group_history::pe_history,
+            &mut gaps,
+        );
+        assert!(reads.is_empty());
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(
+            recorded(&gaps),
+            [(
+                GroupKind::SectorPe,
+                "sector-pe-history-nyse".to_string(),
+                GapReason::Rejected
+            )]
+        );
+        assert_eq!(gaps[0].series_name, "Sector P/E history (NYSE)");
+        let statuses: Vec<String> = recorded_rows(&rec).into_iter().map(|(_, s)| s).collect();
+        assert_eq!(statuses, ["rejected"]);
+
+        // A transport failure past the retry ladder: one unavailable family gap, the loop
+        // stopped. The millisecond schedule keeps the retries instant.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let source = test_source("http://127.0.0.1:1")
+            .with_retry_policy(crate::http_retry::RetryPolicy {
+                rate_limit: crate::http_retry::Schedule {
+                    attempts: 2,
+                    base: StdDuration::from_millis(1),
+                },
+                server_error: crate::http_retry::Schedule {
+                    attempts: 2,
+                    base: StdDuration::from_millis(1),
+                },
+                retry_after_cap: StdDuration::from_millis(50),
+            })
+            .with_context(ctx);
+        let mut gaps = Vec::new();
+        let reads = source.fetch_history_family(
+            HistoryFamily::SectorReturn,
+            "NYSE",
+            &names,
+            history_clock(),
+            group_history::trailing_return,
+            &mut gaps,
+        );
+        assert!(reads.is_empty());
+        assert_eq!(
+            recorded(&gaps),
+            [(
+                GroupKind::SectorPe,
+                "sector-return-history-nyse".to_string(),
+                GapReason::Unavailable
+            )]
+        );
+        let rows = recorded_rows(&rec);
+        assert_eq!(rows.len(), 1, "the loop stopped after the first group");
+        assert_eq!(rows[0].1, "unavailable");
+    }
+
+    #[test]
+    fn history_attach_makes_no_request_after_a_cancel() {
+        let server = MockHttp::serve(vec![]);
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        );
+        let source = test_source(&server.base_url).with_context(ctx);
+        let mut sectors = vec![sector_row("Energy", "NYSE")];
+        let mut industries = vec![industry_row("Alpha", "NASDAQ")];
+        let mut gaps = Vec::new();
+        source.attach_sector_history(&mut sectors, history_clock(), &mut gaps);
+        source.attach_industry_history(&mut industries, history_clock(), &mut gaps);
+        assert_eq!(server.attempts(), 0);
+        assert!(gaps.is_empty());
+        assert!(sectors[0].pe_history.is_none() && industries[0].trailing_return.is_none());
     }
 
     #[test]

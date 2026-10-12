@@ -240,12 +240,23 @@ weakest industries by average daily move, each joined with that industry's aggre
 available (`pe` may be null when earnings are non-positive, implausibly inflated by a \
 near-zero earnings base, or the snapshot lacked it), so you \
 can read which narrow groups are rotating and whether they are richly or cheaply valued as \
-they do. Treat this as a level read — whether a group is expensive or cheap right now — not as \
-a claim about multiple expansion or de-rating over time, which a single snapshot cannot \
-support. `market_risk_premium` is the US equity-risk-premium (a near-static annual constant, \
-so read its level, not period-to-period change) — the excess return demanded over the risk-free \
-rate, a valuation anchor for how richly equities are priced. Use these to ground the regime \
-and strategy reads in valuation, not momentum alone.
+they do. Treat the snapshot `pe` as a level read — whether a group is expensive or cheap right \
+now. A `sector_pe` or `industries` row may also carry two reads over the group's trailing year. \
+`pe_history` places the group's `latest` P/E within its own range over the window: its \
+`percentile` (0–100, the share of the window's prints at or below the latest), with the \
+window's `min`, `median` and `max`, and `start`, the P/E at the window's first print. \
+`trailing_return` is the group's cumulative return over its window, `return_pct` in percent. \
+Each read's `from` and `to` date its window. Read the two together: a group cheap against its \
+own history and up over the window reads as a possible re-rating turn; cheap and still \
+falling, a possible value trap; rich and still rising, momentum carrying a rich valuation. The \
+percentile places a multiple within its range; it is not a direction. Claim multiple expansion or \
+de-rating over the window only from `start` against `latest`, or since the previous report \
+from the change view's measured move in a sector's `pe`; a row with neither supports the level \
+read alone. A null read was not derivable this run — never a \
+middle percentile or a flat return. `market_risk_premium` is the US equity-risk-premium (a \
+near-static annual constant, so read its level, not period-to-period change) — the excess \
+return demanded over the risk-free rate, a valuation anchor for how richly equities are \
+priced. Use these to ground the regime and strategy reads in valuation, not momentum alone.
 
 `calendar` is the recent and upcoming US economic-release schedule. An entry's `class` is \
 `release` for a scheduled data release or `fed` for a Fed / FOMC event, whose date is the \
@@ -1922,6 +1933,36 @@ instructions"));
 figure not available, never zero"));
         assert!(SYSTEM_PROMPT.contains("Read a run of upside or downside surprises as an input to the \
 risk-posture read"));
+    }
+
+    #[test]
+    fn system_prompt_reads_the_valuation_history_with_its_price_context() {
+        // The history reads are inert without the prose that reads them, and the old
+        // instruction to ignore change over time must be gone.
+        for field in [
+            "`pe_history`",
+            "`percentile`",
+            "`median`",
+            "`start`",
+            "`latest`",
+            "`trailing_return`",
+            "`return_pct`",
+        ] {
+            assert!(SYSTEM_PROMPT.contains(field), "{field}");
+        }
+        // The percentile carries no direction; a change in the multiple reads from a dated
+        // comparison alone.
+        assert!(SYSTEM_PROMPT.contains("The percentile places a multiple within its range; it is \
+not a direction."));
+        assert!(SYSTEM_PROMPT.contains("Claim multiple expansion or de-rating over the window only \
+from `start` against `latest`, or since the previous report from the change view's measured \
+move in a sector's `pe`; a row with neither supports the level read alone."));
+        // The three readings pair a level with a price move and claim no direction for the
+        // multiple; that claim rests on the dated comparison alone.
+        assert!(SYSTEM_PROMPT.contains("reads as a possible re-rating turn; cheap and still \
+falling, a possible value trap; rich and still rising, momentum carrying a rich valuation."));
+        assert!(!SYSTEM_PROMPT.contains("stretching the multiple"));
+        assert!(!SYSTEM_PROMPT.contains("which a single snapshot cannot"));
     }
 
     #[test]
