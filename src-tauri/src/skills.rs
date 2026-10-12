@@ -251,8 +251,10 @@ discount-rate moves; and the yield move that would force a re-rating.",
         name: "Consensus vs Contrarian Analysis",
         description: "Evaluates what the market currently expects versus what outcomes would genuinely surprise participants.",
         body: "Consensus vs Contrarian Analysis. Evaluate what the market expects versus what would \
-genuinely surprise it. The economic calendar carries release names and dates but no consensus \
-estimates — so source macro consensus from the research packet — while the earnings group already \
+genuinely surprise it. The economic calendar carries, where one is served, each tracked print's \
+consensus estimate and its realized surprise (the relation, the gap, and a beat / miss read where \
+the print has a favorable direction); where a release carries none, source macro consensus from \
+the research packet — while the earnings group already \
 carries large-cap estimate-versus-actual EPS and revenue, a direct read on where results are \
 beating or missing consensus. Test both against the baseline, positioning, and the change view: \
 identify overconsensus narratives, underappreciated risks, and asymmetric setups where \
@@ -331,5 +333,15 @@ mod tests {
         }
         // The verdict marker is the forcing function — one source of truth for both consumers.
         assert!(block.contains("Verdict to produce —"), "{block}");
+    }
+
+    #[test]
+    fn the_consensus_lens_reads_the_calendar_surprises() {
+        let lens = CATALOG
+            .iter()
+            .find(|s| s.name == "Consensus vs Contrarian Analysis")
+            .unwrap();
+        assert!(lens.body.contains("consensus estimate and its realized surprise"), "{}", lens.body);
+        assert!(!lens.body.contains("no consensus"), "{}", lens.body);
     }
 }

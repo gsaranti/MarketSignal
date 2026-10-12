@@ -17,9 +17,9 @@
 //! commodity / yield series to the same `internals` group and fills the
 //! `macro_levels` group (Fed-funds target range, inflation breakevens, consumer
 //! sentiment, PCE) and the economic-release `calendar` (the recent + upcoming US
-//! reports, from FRED's free release-dates schedule — FMP's economic-calendar endpoint
-//! is premium-gated); BLS fills the `labor_levels` group (CPI, unemployment, payrolls,
-//! wages).
+//! reports, from FRED's free release-dates schedule, with FMP's paid economic calendar
+//! layering consensus, surprise and Fed / FOMC dates on where the key reaches it); BLS
+//! fills the `labor_levels` group (CPI, unemployment, payrolls, wages).
 
 use serde::{Deserialize, Serialize};
 
@@ -116,21 +116,77 @@ pub struct SectorPerformance {
 
 /// One entry in the Step-3 economic-release calendar: a scheduled or just-released US
 /// economic report (`docs/report-workflow.md §Step 3` — the "CPI/PCE/jobs
-/// calendar" and "major economic reports from the recent window"). Sourced from FRED's
-/// free release-dates schedule (FMP's economic-calendar endpoint is premium-gated), so
-/// it carries the release **name** and **date** but not the report's figures — those
-/// reach the model through the `macro_levels` / `labor_levels` series quotes. `status`
-/// is `"released"` for a date in the recent window or `"upcoming"` for a scheduled
-/// future date. No analyst-consensus figure is carried: no market-data API serves free US
-/// consensus, so consensus — where it bears on the thesis — reaches the report through the
-/// research phase rather than this calendar. (A perpetually-`None` `expected` slot was
-/// removed rather than serialized as inert `null` the model could misread as "no estimate
-/// exists".)
+/// calendar" and "major economic reports from the recent window"), or a Fed / FOMC event.
+/// A `release` entry comes from FRED's free release-dates schedule, so it carries the
+/// release **name** and **date**; the report's figures reach the model through the
+/// `macro_levels` / `labor_levels` series quotes. On the paid FMP tier a release also
+/// carries `surprises` — one entry per tracked component print, the consensus estimate and
+/// the realized surprise against it (`econ_calendar`, `docs/data-sources.md §Report
+/// enrichment`); an unmapped release, a null estimate or an FMP outage leaves it empty. A
+/// `fed` entry is an FMP-only Fed / FOMC event whose date is the information; its
+/// `surprises` stay empty. `status` is `"released"` for a date in the recent window or
+/// `"upcoming"` for a scheduled future date.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EconomicRelease {
     pub release: String,
     pub date: String,
     pub status: String,
+    /// Defaults to `release`, so a snapshot persisted before Fed events existed decodes.
+    #[serde(default)]
+    pub class: CalendarEventClass,
+    /// Defaults to empty, so a snapshot persisted before the enrichment decodes.
+    #[serde(default)]
+    pub surprises: Vec<EconomicSurprise>,
+}
+
+/// Which kind of calendar event an [`EconomicRelease`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CalendarEventClass {
+    /// A scheduled data release from FRED's release-dates schedule.
+    #[default]
+    Release,
+    /// A Fed / FOMC event from FMP's paid economic calendar.
+    Fed,
+}
+
+/// Where a print's actual landed against its consensus estimate: `in-line` when the
+/// absolute gap is within the event's epsilon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SurpriseRelation {
+    Above,
+    InLine,
+    Below,
+}
+
+/// The polarity-mapped read of an out-of-band print: `beat` on the event's favorable
+/// side, `miss` on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BeatMiss {
+    Beat,
+    Miss,
+}
+
+/// One tracked component print of a release: the consensus estimate and, once released,
+/// the actual with the deterministic surprise reads. Every optional value serializes as
+/// an explicit `null` meaning *not derivable*, never zero: an upcoming print carries the
+/// estimate alone, `gap_pct` is null on a zero estimate, and `beat_miss` is null for an
+/// in-line print or an event with no favorable polarity. `estimate`, `actual` and
+/// `abs_gap` are in `unit`; `abs_gap` is the magnitude `|actual − estimate|` (the
+/// `relation` carries the direction) and `gap_pct` the signed
+/// `(actual − estimate) / |estimate|` in percent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EconomicSurprise {
+    pub event: String,
+    pub unit: String,
+    pub estimate: f64,
+    pub actual: Option<f64>,
+    pub relation: Option<SurpriseRelation>,
+    pub abs_gap: Option<f64>,
+    pub gap_pct: Option<f64>,
+    pub beat_miss: Option<BeatMiss>,
 }
 
 /// One index's multi-horizon performance, derived from FMP's end-of-day history
@@ -447,9 +503,10 @@ pub struct BaselineMarketData {
     pub labor_levels: Vec<Quote>,
     /// Step-3 economic-release calendar (`docs/report-workflow.md §Step 3`): the
     /// recent and upcoming US economic reports (CPI, PCE, jobs, GDP, …) as a
-    /// release schedule from FRED's free release-dates endpoint. A schedule of names +
-    /// dates, not figures — the actual readings reach the model via `macro_levels` /
-    /// `labor_levels`. Empty is valid (a quiet window, or the calendar soft-degraded); it
+    /// release schedule from FRED's free release-dates endpoint, each release carrying
+    /// its tracked prints' consensus and surprise where FMP's paid calendar serves them,
+    /// plus the Fed / FOMC events. The actual readings reach the model via `macro_levels`
+    /// / `labor_levels`. Empty is valid (a quiet window, or the calendar soft-degraded); it
     /// carries no completeness floor, unlike the series groups.
     #[serde(default)]
     pub calendar: Vec<EconomicRelease>,
@@ -622,6 +679,8 @@ impl MarketDataSource for StubMarketDataSource {
                 release: "Employment Situation".into(),
                 date: "2026-06-05".into(),
                 status: "released".into(),
+                class: CalendarEventClass::Release,
+                surprises: Vec::new(),
             }],
             index_performance: vec![IndexPerformance {
                 symbol: "^GSPC".into(),
@@ -792,6 +851,88 @@ mod tests {
         assert_eq!(old.change.kind, ChangeKind::Percent);
     }
 
+    #[test]
+    fn a_pre_enrichment_calendar_snapshot_decodes_to_a_release_with_no_surprises() {
+        // A shipped report's snapshot carries the bare `{release, date, status}` entry; the
+        // defaults read it as a FRED release with no consensus, so the prior-snapshot decode
+        // never fails on the new fields.
+        let old: BaselineMarketData = serde_json::from_str(
+            r#"{"calendar":[{"release":"Consumer Price Index","date":"2026-06-10","status":"upcoming"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.calendar.len(), 1);
+        assert_eq!(old.calendar[0].class, CalendarEventClass::Release);
+        assert!(old.calendar[0].surprises.is_empty());
+    }
+
+    #[test]
+    fn the_calendar_enrichment_round_trips_with_explicit_nulls() {
+        let baseline = BaselineMarketData {
+            calendar: vec![
+                EconomicRelease {
+                    release: "Employment Situation".into(),
+                    date: "2026-10-02".into(),
+                    status: "released".into(),
+                    class: CalendarEventClass::Release,
+                    surprises: vec![
+                        EconomicSurprise {
+                            event: "Non Farm Payrolls".into(),
+                            unit: "thousands of jobs".into(),
+                            estimate: 90.0,
+                            actual: Some(29.0),
+                            relation: Some(SurpriseRelation::Below),
+                            abs_gap: Some(61.0),
+                            gap_pct: Some(-67.77777777777779),
+                            beat_miss: Some(BeatMiss::Miss),
+                        },
+                        EconomicSurprise {
+                            event: "Unemployment Rate".into(),
+                            unit: "percent".into(),
+                            estimate: 4.1,
+                            actual: Some(4.1),
+                            relation: Some(SurpriseRelation::InLine),
+                            abs_gap: Some(0.0),
+                            gap_pct: Some(0.0),
+                            beat_miss: None,
+                        },
+                    ],
+                },
+                EconomicRelease {
+                    release: "Gross Domestic Product".into(),
+                    date: "2026-10-29".into(),
+                    status: "upcoming".into(),
+                    class: CalendarEventClass::Release,
+                    surprises: vec![EconomicSurprise {
+                        event: "GDP Growth Rate QoQ".into(),
+                        unit: "% annualized quarter-over-quarter".into(),
+                        estimate: 0.9,
+                        actual: None,
+                        relation: None,
+                        abs_gap: None,
+                        gap_pct: None,
+                        beat_miss: None,
+                    }],
+                },
+                EconomicRelease {
+                    release: "Fed Interest Rate Decision".into(),
+                    date: "2026-10-28".into(),
+                    status: "upcoming".into(),
+                    class: CalendarEventClass::Fed,
+                    surprises: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&baseline).unwrap();
+        // Absent reads serialize as explicit nulls, never omitted and never zero.
+        assert!(json.contains(r#""actual":null"#), "{json}");
+        assert!(json.contains(r#""gap_pct":null"#), "{json}");
+        assert!(json.contains(r#""relation":"in-line""#), "{json}");
+        assert!(json.contains(r#""class":"fed""#), "{json}");
+        let back: BaselineMarketData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, baseline);
+    }
+
     /// A stub shaped like the secondary sources (`fred` + `bls`) — it contributes the
     /// `internals` / `macro_levels` (FRED) and `labor_levels` (BLS) groups the
     /// secondaries own, so the composite merge can be exercised offline.
@@ -849,6 +990,8 @@ mod tests {
                 release: "Consumer Price Index".into(),
                 date: "2026-06-10".into(),
                 status: "upcoming".into(),
+                class: CalendarEventClass::Release,
+                surprises: Vec::new(),
             }],
             // A FRED-side gap (an oil series that 5xx'd this run) must survive the merge
             // into the unified manifest the gate and the agent read.

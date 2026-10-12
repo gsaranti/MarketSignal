@@ -247,6 +247,19 @@ so read its level, not period-to-period change) — the excess return demanded o
 rate, a valuation anchor for how richly equities are priced. Use these to ground the regime \
 and strategy reads in valuation, not momentum alone.
 
+`calendar` is the recent and upcoming US economic-release schedule. An entry's `class` is \
+`release` for a scheduled data release or `fed` for a Fed / FOMC event, whose date is the \
+information. A release may carry `surprises` — one entry per tracked component print: the \
+consensus `estimate`, the `actual` once released, its `unit`, the `relation` to the estimate \
+(`above` / `in-line` / `below`), the `abs_gap` in the print's own units, the signed `gap_pct`, \
+and a `beat_miss` read where the print has a favorable direction (a hotter inflation print is a \
+miss, a stronger payroll print a beat; wage and job-openings prints carry none, since their \
+market read turns on the regime). A print not yet released carries the estimate alone. A null is a \
+figure not available, never zero; a release with no `surprises` has no consensus here, so source \
+any expectation from the research. Read a run of upside or downside surprises as an input to the \
+risk-posture read, and the upcoming schedule with its consensus as the known events that could \
+move markets.
+
 When present, the prompt also carries the current news and deep research, condensed by the \
 application layer. `news clusters` are the most market-significant stories, each a topic \
 with a relevance score and its member headlines; each headline carries its publish date, so \
@@ -1899,8 +1912,24 @@ instructions"));
     }
 
     #[test]
+    fn system_prompt_reads_the_calendar_consensus_and_surprises() {
+        // The enrichment's fields are inert without the prose that reads them.
+        for field in ["`class`", "`surprises`", "`relation`", "`abs_gap`", "`gap_pct`", "`beat_miss`"] {
+            assert!(SYSTEM_PROMPT.contains(field), "{field}");
+        }
+        assert!(SYSTEM_PROMPT.contains("A print not yet released carries the estimate alone."));
+        assert!(SYSTEM_PROMPT.contains("A null is a \
+figure not available, never zero"));
+        assert!(SYSTEM_PROMPT.contains("Read a run of upside or downside surprises as an input to the \
+risk-posture read"));
+    }
+
+    #[test]
     fn user_prompt_embeds_baseline_when_present() {
-        use crate::data_sources::{Change, DataGap, EconomicRelease, GapReason, GroupKind, Quote};
+        use crate::data_sources::{
+            BeatMiss, CalendarEventClass, Change, DataGap, EconomicRelease, EconomicSurprise,
+            GapReason, GroupKind, Quote, SurpriseRelation,
+        };
         let baseline = BaselineMarketData {
             indices: vec![Quote {
                 symbol: "^GSPC".into(),
@@ -1913,6 +1942,17 @@ instructions"));
                 release: "Employment Situation".into(),
                 date: "2026-06-05".into(),
                 status: "released".into(),
+                class: CalendarEventClass::Release,
+                surprises: vec![EconomicSurprise {
+                    event: "Non Farm Payrolls".into(),
+                    unit: "thousands of jobs".into(),
+                    estimate: 90.0,
+                    actual: Some(29.0),
+                    relation: Some(SurpriseRelation::Below),
+                    abs_gap: Some(61.0),
+                    gap_pct: Some(-67.8),
+                    beat_miss: Some(BeatMiss::Miss),
+                }],
             }],
             gaps: vec![DataGap::new(
                 GroupKind::LaborLevels,
@@ -1932,6 +1972,11 @@ instructions"));
         // The economic-release calendar reaches the model the same way — through the
         // whole-baseline serialization, no formatter change.
         assert!(prompt.contains("Employment Situation"), "{prompt}");
+        // So does a release's consensus surprise, with its unit and polarity-mapped read.
+        assert!(prompt.contains(r#""surprises": ["#), "{prompt}");
+        assert!(prompt.contains(r#""event": "Non Farm Payrolls""#), "{prompt}");
+        assert!(prompt.contains(r#""unit": "thousands of jobs""#), "{prompt}");
+        assert!(prompt.contains(r#""beat_miss": "miss""#), "{prompt}");
         // The missing-data manifest rides in the same way: the agent sees which series
         // were absent this run, and why, rather than inferring values for them.
         assert!(prompt.contains("CES0500000003"), "{prompt}");

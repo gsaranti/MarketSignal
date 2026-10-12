@@ -9,6 +9,7 @@ pub mod connection_test;
 pub mod cot;
 pub mod data_sources;
 pub mod document_parser;
+pub mod econ_calendar;
 pub mod embedding;
 pub mod finra;
 pub mod fmp;
@@ -385,9 +386,15 @@ async fn generate_report_manual(
         let fmp = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        let fred = FredDataSource::new(fred_key)
+        // FRED's release calendar joins FMP's paid economic calendar for each release's
+        // consensus and surprise and the Fed / FOMC dates; a free key leaves names + dates.
+        let consensus = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
+        let fred = FredDataSource::new(fred_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone())
+            .with_consensus(consensus);
         let bls = BlsDataSource::new()
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());

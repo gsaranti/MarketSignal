@@ -167,7 +167,10 @@ Given the current baseline market data, the change since the previous report, th
 news clusters, summaries of recent prior reports, and any recalled long-term memory, decide \
 which topics deserve deeper investigation for this report. Favor topics where the data moved \
 materially, where second-order implications matter, or where a known upcoming event could move \
-markets. The clusters carry publish dates and the report's current date is provided: balance \
+markets. The baseline's economic-release calendar may carry, per release, the consensus estimate \
+and any realized surprise, and Fed / FOMC event dates: a material surprise, or an upcoming release \
+or Fed event the thesis turns on, is a routable signal. \
+The clusters carry publish dates and the report's current date is provided: balance \
 materiality with freshness — a genuinely new development, especially from the current or prior \
 day relative to that date, deserves a place in the plan and should not be dropped for an older \
 topic that is merely more heavily covered. When prior-report \
@@ -552,6 +555,13 @@ mod tests {
             unresolved_questions: vec!["Will the labor market crack?".into()],
             forward_outlook_themes: vec!["Defensive rotation".into()],
         }
+    }
+
+    #[test]
+    fn system_prompt_routes_on_the_calendar_consensus_and_fed_dates() {
+        assert!(SYSTEM_PROMPT.contains("the consensus estimate \
+and any realized surprise, and Fed / FOMC event dates"));
+        assert!(SYSTEM_PROMPT.contains("is a routable signal"));
     }
 
     #[test]

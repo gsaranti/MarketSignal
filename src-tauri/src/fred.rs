@@ -23,11 +23,14 @@
 //!
 //! It additionally owns the Step-3 **economic-release calendar** (`calendar`): the
 //! recent and upcoming US economic reports (CPI, PCE, jobs, GDP, …), built
-//! from FRED's free *release-dates* schedule rather than the observations endpoint.
-//! FMP's economic-calendar endpoint is premium-gated (verified live: HTTP 402), so the
-//! schedule comes from FRED; the actual figures reach the model through the series
-//! groups above, not the calendar. Unlike the series groups the calendar has no
-//! completeness floor — an empty window is valid.
+//! from FRED's free *release-dates* schedule rather than the observations endpoint; the
+//! actual figures reach the model through the series groups above. On the report path
+//! the adapter also carries FMP's paid economic calendar
+//! ([`FredDataSource::with_consensus`]): each release joins its tracked prints' consensus
+//! and surprise inside the calendar loop, where the release id is in scope, and the Fed /
+//! FOMC events FRED has no schedule for are appended (`econ_calendar`). A free FMP key or
+//! an FMP outage leaves the calendar at names and dates. Unlike the series groups the
+//! calendar has no completeness floor — an empty window is valid.
 //!
 //! Like `fmp`, the HTTP call is synchronous (`reqwest::blocking`) so the trait
 //! stays sync; the blocking work is offloaded via `spawn_blocking` at the Tauri
@@ -58,10 +61,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::data_sources::{
-    emit_series_row, BaselineMarketData, Change, ChangeKind, DataGap, EconomicRelease, GapReason,
-    GroupKind, MarketDataSource, Quote,
+    emit_series_row, BaselineMarketData, CalendarEventClass, Change, ChangeKind, DataGap,
+    EconomicRelease, EconomicSurprise, GapReason, GroupKind, MarketDataSource, Quote,
 };
 use crate::cadence::ReportCadence;
+use crate::econ_calendar::{self, CalendarRow, EconomicCalendarSource};
 use crate::progress::RunContext;
 
 /// Base URL for FRED's API. The endpoint paths below are joined onto it in each
@@ -678,12 +682,14 @@ fn observations_to_quote(
 /// it). The window is also enforced server-side by the query's realtime params; the
 /// re-check here keeps the function self-contained and testable. An unparseable date is a
 /// contract violation that `fetch_calendar` records as a `Malformed` gap rather than
-/// dropping silently.
+/// dropping silently. `surprises` yields each kept date's consensus surprises (the join
+/// against the attached feed; none without one).
 fn releases_to_calendar(
     value: Value,
     name: &str,
     today: NaiveDate,
     back_days: i64,
+    surprises: impl Fn(NaiveDate) -> Vec<EconomicSurprise>,
 ) -> Result<Vec<EconomicRelease>> {
     let raw: FredReleaseDates = serde_json::from_value(value)
         .context("FRED release/dates response did not match the expected shape")?;
@@ -706,6 +712,8 @@ fn releases_to_calendar(
             release: name.to_string(),
             date: date_str.to_string(),
             status: status.to_string(),
+            class: CalendarEventClass::Release,
+            surprises: surprises(date),
         });
     }
     Ok(out)
@@ -721,6 +729,10 @@ pub struct FredDataSource {
     /// Run context for live progress + cooperative cancellation; a no-op by default
     /// (tests / smokes), the live one attached via [`FredDataSource::with_context`].
     progress: Arc<RunContext>,
+    /// The consensus feed the calendar joins against — FMP's paid economic calendar,
+    /// attached on the report path alone via [`FredDataSource::with_consensus`]. `None`
+    /// leaves the calendar at names and dates.
+    consensus: Option<Box<dyn EconomicCalendarSource>>,
 }
 
 impl FredDataSource {
@@ -734,6 +746,7 @@ impl FredDataSource {
             http,
             base_url: FRED_BASE.to_string(),
             progress: RunContext::noop(),
+            consensus: None,
         })
     }
 
@@ -750,6 +763,14 @@ impl FredDataSource {
     /// request and stops making requests once a cancel is observed.
     pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
         self.progress = ctx;
+        self
+    }
+
+    /// Attach the consensus feed the economic-release calendar joins against, so each
+    /// release carries its tracked prints' consensus and surprise and the Fed / FOMC events
+    /// are appended (`docs/data-sources.md §Report enrichment`).
+    pub fn with_consensus(mut self, source: impl EconomicCalendarSource + 'static) -> Self {
+        self.consensus = Some(Box::new(source));
         self
     }
 
@@ -1085,20 +1106,30 @@ impl FredDataSource {
     /// this-run failure (auth / quota / 5xx / transport / malformed) is recorded as a
     /// `Calendar` gap so the agent knows the schedule was thinned on this run. An empty
     /// result (a quiet window) is valid; the actual figures reach the model through the
-    /// series groups regardless.
+    /// series groups regardless. With a consensus feed attached, one fetch over the window
+    /// (widened by the join's date tolerance) precedes the loop: each release's entries
+    /// join their prints' surprises by release id, and the Fed / FOMC events in the
+    /// window are appended after the releases.
     fn fetch_calendar(
         &self,
         today: NaiveDate,
         back_days: i64,
         gaps: &mut Vec<DataGap>,
     ) -> Vec<EconomicRelease> {
-        let start = (today - Duration::days(back_days))
-            .format("%Y-%m-%d")
-            .to_string();
-        let end = (today + Duration::days(CALENDAR_FWD_DAYS))
-            .format("%Y-%m-%d")
-            .to_string();
+        let start_date = today - Duration::days(back_days);
+        let end_date = today + Duration::days(CALENDAR_FWD_DAYS);
+        let start = start_date.format("%Y-%m-%d").to_string();
+        let end = end_date.format("%Y-%m-%d").to_string();
+        let consensus = match &self.consensus {
+            Some(source) if !self.progress.is_cancelled() => {
+                let (from, to) = econ_calendar::fetch_window(start_date, end_date);
+                source.economic_calendar(from, to, gaps)
+            }
+            _ => Vec::new(),
+        };
         let mut out = Vec::new();
+        // The releases with a FRED date in the window — the ones the drift check reads.
+        let mut dated: Vec<u32> = Vec::new();
         let mut rejected = false;
         for (release_id, name) in RELEASES {
             if self.progress.is_cancelled() {
@@ -1130,9 +1161,19 @@ impl FredDataSource {
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
             };
             match disposition {
-                Disposition::Value(value) => match releases_to_calendar(value, name, today, back_days)
-                {
-                    Ok(entries) => out.extend(entries),
+                Disposition::Value(value) => match releases_to_calendar(
+                    value,
+                    name,
+                    today,
+                    back_days,
+                    |date| econ_calendar::surprises_for(*release_id, date, &consensus),
+                ) {
+                    Ok(entries) => {
+                        if !entries.is_empty() {
+                            dated.push(*release_id);
+                        }
+                        out.extend(entries);
+                    }
                     Err(_) => gaps.push(DataGap::new(
                         GroupKind::Calendar,
                         id_str.as_str(),
@@ -1166,7 +1207,38 @@ impl FredDataSource {
                 None,
             );
         }
+        self.emit_event_map_drift(&dated, &consensus, gaps);
+        out.extend(econ_calendar::fed_events(&consensus, start_date, end_date, today));
         out
+    }
+
+    /// The map-drift signal: when the consensus fetch returned rows but a mapped event of
+    /// a release dated in the window appears in none of them, one tracker row names the
+    /// missing events. A renamed FMP event otherwise fails soft to names and dates with no
+    /// trace; the model's prompt never sees this row.
+    fn emit_event_map_drift(&self, dated: &[u32], consensus: &[CalendarRow], gaps: &[DataGap]) {
+        let missing = econ_calendar::absent_events(dated, consensus);
+        if missing.is_empty() {
+            return;
+        }
+        let series_id = "economic-calendar-map";
+        let name = "Economic Calendar (event map)";
+        self.progress
+            .request_started("FMP", GroupKind::Calendar.as_str(), series_id, name);
+        emit_series_row(
+            &self.progress,
+            "FMP",
+            GroupKind::Calendar,
+            series_id,
+            name,
+            gaps,
+            gaps.len(),
+            false,
+            Some(format!(
+                "no FMP print carries {} in the window — the event map may need re-verifying",
+                missing.join(", ")
+            )),
+        );
     }
 }
 
@@ -1215,6 +1287,7 @@ impl MarketDataSource for FredDataSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_sources::{BeatMiss, SurpriseRelation};
     use crate::test_http::{Canned, MockHttp};
 
     // `Cadence`, `FRESHNESS`, `cadence_for`, and `Cadence::max_staleness_days` now live
@@ -1425,6 +1498,281 @@ mod tests {
         FredDataSource::new("test-key".to_string())
             .expect("build adapter")
             .with_base_url(base_url)
+    }
+
+    /// A canned consensus feed: serves its rows (or records a gap and serves none, like a
+    /// failed fetch) and records each requested window.
+    struct CannedConsensus {
+        rows: Vec<crate::econ_calendar::CalendarRow>,
+        fail: bool,
+        windows: Arc<std::sync::Mutex<Vec<(NaiveDate, NaiveDate)>>>,
+    }
+
+    impl EconomicCalendarSource for CannedConsensus {
+        fn economic_calendar(
+            &self,
+            from: NaiveDate,
+            to: NaiveDate,
+            gaps: &mut Vec<DataGap>,
+        ) -> Vec<crate::econ_calendar::CalendarRow> {
+            self.windows.lock().unwrap().push((from, to));
+            if self.fail {
+                gaps.push(DataGap::new(
+                    GroupKind::Calendar,
+                    "economic-calendar",
+                    "Economic Calendar (consensus)",
+                    GapReason::Unavailable,
+                ));
+                return Vec::new();
+            }
+            self.rows.clone()
+        }
+    }
+
+    /// The seven release-dates replies, in `RELEASES` order: Employment Situation and
+    /// Personal Income released, JOLTS and GDP upcoming, the rest quiet.
+    fn calendar_replies() -> Vec<Canned> {
+        let reply = |body| Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body,
+        };
+        vec![
+            reply(r#"{"release_dates":[{"release_id":50,"date":"2026-10-02"}]}"#),
+            reply(r#"{"release_dates":[]}"#),
+            reply(r#"{"release_dates":[]}"#),
+            reply(r#"{"release_dates":[{"release_id":54,"date":"2026-09-30"}]}"#),
+            reply(r#"{"release_dates":[]}"#),
+            reply(r#"{"release_dates":[{"release_id":192,"date":"2026-10-14"}]}"#),
+            reply(r#"{"release_dates":[{"release_id":53,"date":"2026-10-29"}]}"#),
+        ]
+    }
+
+    fn consensus_rows() -> Vec<crate::econ_calendar::CalendarRow> {
+        crate::econ_calendar::rows_from_value(serde_json::json!([
+            {"date": "2026-10-02 12:30:00", "country": "US", "event": "Non Farm Payrolls (Sep)",
+             "impact": "High", "estimate": 90, "actual": 29},
+            {"date": "2026-10-02 12:30:00", "country": "US", "event": "Unemployment Rate (Sep)",
+             "impact": "High", "estimate": 4.1, "actual": 4.2},
+            {"date": "2026-09-30 12:30:00", "country": "US", "event": "PCE Price Index MoM (Aug)",
+             "impact": "Medium", "estimate": null, "actual": 0.3},
+            {"date": "2026-09-30 12:30:00", "country": "US", "event": "Personal Income MoM (Aug)",
+             "impact": "High", "estimate": 0.4, "actual": 0.1},
+            {"date": "2026-10-29 12:30:00", "country": "US", "event": "GDP Growth Rate QoQ (Q3)",
+             "impact": "High", "estimate": 0.9, "actual": null},
+            {"date": "2026-10-07 18:00:00", "country": "US", "event": "FOMC Minutes",
+             "impact": "High", "estimate": null, "actual": null},
+            {"date": "2026-10-28 18:00:00", "country": "US", "event": "Fed Interest Rate Decision",
+             "impact": "High", "estimate": null, "actual": null},
+            {"date": "2026-11-18 19:00:00", "country": "US", "event": "FOMC Minutes",
+             "impact": "High", "estimate": null, "actual": null}
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_calendar_joins_each_release_to_its_consensus_and_appends_the_fed_events() {
+        let server = MockHttp::serve(calendar_replies());
+        let windows = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let source = test_source(&server.base_url).with_consensus(CannedConsensus {
+            rows: consensus_rows(),
+            fail: false,
+            windows: windows.clone(),
+        });
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let mut gaps = Vec::new();
+        let cal = source.fetch_calendar(today, 45, &mut gaps);
+        assert!(gaps.is_empty(), "{gaps:?}");
+        // One consensus fetch over the FRED window, padded a day on each side.
+        assert_eq!(
+            *windows.lock().unwrap(),
+            [(
+                NaiveDate::from_ymd_opt(2026, 8, 27).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 11, 3).unwrap()
+            )]
+        );
+        let entry = |name: &str| cal.iter().find(|e| e.release == name).unwrap();
+
+        // Matched: both Employment Situation prints carry, each by its own rule.
+        let jobs = entry("Employment Situation");
+        let events: Vec<_> = jobs
+            .surprises
+            .iter()
+            .map(|s| (s.event.as_str(), s.relation, s.beat_miss))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                ("Non Farm Payrolls", Some(SurpriseRelation::Below), Some(BeatMiss::Miss)),
+                ("Unemployment Rate", Some(SurpriseRelation::InLine), None),
+            ]
+        );
+        // A null estimate drops that print alone; its sibling still carries.
+        let income = entry("Personal Income and Outlays");
+        assert_eq!(income.surprises.len(), 1);
+        assert_eq!(income.surprises[0].event, "Personal Income MoM");
+        assert_eq!(income.surprises[0].beat_miss, Some(BeatMiss::Miss));
+        // Unmatched: no consensus row for JOLTS — names and dates.
+        let jolts = entry("Job Openings and Labor Turnover Survey");
+        assert_eq!(jolts.status, "upcoming");
+        assert!(jolts.surprises.is_empty());
+        // Upcoming with a consensus: the estimate alone.
+        let gdp = entry("Gross Domestic Product");
+        assert_eq!(gdp.surprises.len(), 1);
+        assert_eq!((gdp.surprises[0].estimate, gdp.surprises[0].actual), (0.9, None));
+        // The Fed events in the window follow the releases, as their own class.
+        let fed: Vec<_> = cal
+            .iter()
+            .filter(|e| e.class == CalendarEventClass::Fed)
+            .map(|e| (e.release.as_str(), e.date.as_str(), e.status.as_str()))
+            .collect();
+        assert_eq!(
+            fed,
+            [
+                ("FOMC Minutes", "2026-10-07", "released"),
+                ("Fed Interest Rate Decision", "2026-10-28", "upcoming"),
+            ]
+        );
+        assert!(cal[..4].iter().all(|e| e.class == CalendarEventClass::Release));
+    }
+
+    /// The `(series_id, status, detail)` of every finished FMP calendar tracker row.
+    fn fmp_calendar_rows(
+        rec: &crate::progress::RecordingReporter,
+    ) -> Vec<(String, String, Option<String>)> {
+        rec.messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished {
+                    provider,
+                    series_id,
+                    status,
+                    detail,
+                    ..
+                } if provider == "FMP" => Some((series_id, status, detail)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn recording_context() -> (Arc<crate::progress::RecordingReporter>, Arc<RunContext>) {
+        let rec = Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = RunContext::new(
+            "run",
+            rec.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        (rec, ctx)
+    }
+
+    #[test]
+    fn a_mapped_event_missing_from_the_whole_window_raises_one_event_map_row() {
+        // The fixture feed carries no Average Hourly Earnings, Core PCE, Personal
+        // Spending, JOLTs or GDP Price Index print anywhere in the window, while each of
+        // their releases has a FRED date in it; the CPI release has none, so its events
+        // are not checked.
+        let server = MockHttp::serve(calendar_replies());
+        let (rec, ctx) = recording_context();
+        let source = test_source(&server.base_url)
+            .with_context(ctx)
+            .with_consensus(CannedConsensus {
+                rows: consensus_rows(),
+                fail: false,
+                windows: Arc::new(std::sync::Mutex::new(Vec::new())),
+            });
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let mut gaps = Vec::new();
+        source.fetch_calendar(today, 45, &mut gaps);
+        let rows = fmp_calendar_rows(&rec);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let (series_id, status, detail) = &rows[0];
+        assert_eq!(series_id, "economic-calendar-map");
+        assert_eq!(status, "empty");
+        assert_eq!(
+            detail.as_deref(),
+            Some(
+                "no FMP print carries Average Hourly Earnings MoM, Core PCE Price Index MoM, \
+Personal Spending MoM, JOLTs Job Openings, GDP Price Index QoQ in the window — the event map \
+may need re-verifying"
+            )
+        );
+        assert!(gaps.is_empty(), "the signal is a tracker row, never a manifest gap");
+    }
+
+    #[test]
+    fn a_window_carrying_every_mapped_event_raises_no_event_map_row() {
+        let server = MockHttp::serve(calendar_replies());
+        let (rec, ctx) = recording_context();
+        let mut rows = consensus_rows();
+        rows.extend(
+            crate::econ_calendar::rows_from_value(serde_json::json!([
+                {"date": "2026-10-02 12:30:00", "event": "Average Hourly Earnings MoM (Sep)"},
+                {"date": "2026-09-30 12:30:00", "event": "Core PCE Price Index MoM (Aug)"},
+                {"date": "2026-09-30 12:30:00", "event": "Personal Spending MoM (Aug)"},
+                {"date": "2026-09-29 14:00:00", "event": "JOLTs Job Openings (Aug)"},
+                {"date": "2026-10-29 12:30:00", "event": "GDP Price Index QoQ (Q3)"}
+            ]))
+            .unwrap(),
+        );
+        let source = test_source(&server.base_url)
+            .with_context(ctx)
+            .with_consensus(CannedConsensus {
+                rows,
+                fail: false,
+                windows: Arc::new(std::sync::Mutex::new(Vec::new())),
+            });
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        source.fetch_calendar(today, 45, &mut Vec::new());
+        assert!(fmp_calendar_rows(&rec).is_empty());
+    }
+
+    #[test]
+    fn a_failed_consensus_fetch_leaves_the_calendar_at_names_and_dates() {
+        let server = MockHttp::serve(calendar_replies());
+        let source = test_source(&server.base_url).with_consensus(CannedConsensus {
+            rows: consensus_rows(),
+            fail: true,
+            windows: Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let mut gaps = Vec::new();
+        let cal = source.fetch_calendar(today, 45, &mut gaps);
+        assert_eq!(cal.len(), 4, "the FRED releases alone, no Fed events");
+        assert!(cal.iter().all(|e| e.surprises.is_empty()));
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].series_id, "economic-calendar");
+    }
+
+    #[test]
+    fn without_a_consensus_feed_the_calendar_is_names_and_dates() {
+        let server = MockHttp::serve(calendar_replies());
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let mut gaps = Vec::new();
+        let cal = test_source(&server.base_url).fetch_calendar(today, 45, &mut gaps);
+        assert_eq!(cal.len(), 4);
+        assert!(cal
+            .iter()
+            .all(|e| e.class == CalendarEventClass::Release && e.surprises.is_empty()));
+    }
+
+    #[test]
+    fn every_mapped_release_id_is_a_tracked_fred_release() {
+        // The map keys on the numeric release id: a row naming an id outside `RELEASES`
+        // could never join, and a tracked release with no row never carries consensus.
+        for m in crate::econ_calendar::EVENT_MAP {
+            assert!(
+                RELEASES.iter().any(|(id, _)| *id == m.release_id),
+                "{} names release {}",
+                m.event,
+                m.release_id
+            );
+        }
+        for (id, name) in RELEASES {
+            assert!(
+                crate::econ_calendar::EVENT_MAP.iter().any(|m| m.release_id == *id),
+                "{name} has no map row"
+            );
+        }
     }
 
     #[test]
@@ -2042,7 +2390,10 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let cal = releases_to_calendar(v, "Consumer Price Index", today, CALENDAR_BACK_DAYS).unwrap();
+        let cal = releases_to_calendar(v, "Consumer Price Index", today, CALENDAR_BACK_DAYS, |_| {
+            Vec::new()
+        })
+        .unwrap();
         assert_eq!(cal.len(), 3, "out-of-window dates dropped: {cal:?}");
         assert_eq!(cal[0].date, "2026-06-05");
         assert_eq!(cal[0].status, "released");
@@ -2142,10 +2493,10 @@ mod tests {
             serde_json::from_str(r#"{"release_dates":[{"release_id":10,"date":"2026-05-12"}]}"#)
                 .unwrap()
         };
-        let scaled = releases_to_calendar(v(), "CPI", today, 45).unwrap();
+        let scaled = releases_to_calendar(v(), "CPI", today, 45, |_| Vec::new()).unwrap();
         assert_eq!(scaled.len(), 1, "in-window under the scaled lookback: {scaled:?}");
         assert_eq!(scaled[0].status, "released");
-        let floor = releases_to_calendar(v(), "CPI", today, CALENDAR_BACK_DAYS).unwrap();
+        let floor = releases_to_calendar(v(), "CPI", today, CALENDAR_BACK_DAYS, |_| Vec::new()).unwrap();
         assert!(floor.is_empty(), "outside the 10-day floor: {floor:?}");
     }
 
@@ -2153,7 +2504,9 @@ mod tests {
     fn releases_to_calendar_empty_is_empty() {
         let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
         let v: Value = serde_json::from_str(r#"{"release_dates":[]}"#).unwrap();
-        assert!(releases_to_calendar(v, "x", today, CALENDAR_BACK_DAYS).unwrap().is_empty());
+        assert!(releases_to_calendar(v, "x", today, CALENDAR_BACK_DAYS, |_| Vec::new())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -2161,11 +2514,11 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
         // A body without the `release_dates` array is a contract violation.
         let bad_shape: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
-        assert!(releases_to_calendar(bad_shape, "x", today, CALENDAR_BACK_DAYS).is_err());
+        assert!(releases_to_calendar(bad_shape, "x", today, CALENDAR_BACK_DAYS, |_| Vec::new()).is_err());
         // An unparseable date fails closed rather than being silently dropped.
         let bad_date: Value =
             serde_json::from_str(r#"{"release_dates":[{"date":"June 6th"}]}"#).unwrap();
-        assert!(releases_to_calendar(bad_date, "x", today, CALENDAR_BACK_DAYS).is_err());
+        assert!(releases_to_calendar(bad_date, "x", today, CALENDAR_BACK_DAYS, |_| Vec::new()).is_err());
     }
 
     #[test]

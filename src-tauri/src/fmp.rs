@@ -57,6 +57,7 @@ use crate::data_sources::{
     SectorPe, SectorPerformance, StockMover,
 };
 use crate::cadence::ReportCadence;
+use crate::econ_calendar::{self, CalendarRow, EconomicCalendarSource};
 use crate::portfolio::evidence::{
     Chamber, CompanyEvidence, CongressionalTrade, DividendRow, EnterpriseValueRow, GradesConsensus,
     InsiderStatistics, InsiderTrade, MaDeal, OwnerEarningsRow, PriceTargetConsensus,
@@ -131,6 +132,11 @@ const FMP_MOST_ACTIVE_PATH: &str = "/most-actives";
 /// ~1-month history window (probed live Jun 2026: forward dates return estimates with
 /// null actuals, past dates return both).
 const FMP_EARNINGS_PATH: &str = "/earnings-calendar";
+
+/// FMP's paid economic calendar — every US event in a date window with its impact,
+/// consensus estimate and actual (a free key replies 402). The report's consensus feed
+/// (`econ_calendar`), joined onto FRED's release schedule.
+const FMP_ECONOMIC_CALENDAR_PATH: &str = "/economic-calendar";
 
 /// FMP's free valuation + finer-rotation snapshots — all date-keyed like the
 /// sector-performance snapshot (a dateless call returns HTTP 400), all free-tier (probed
@@ -2020,6 +2026,65 @@ impl MarketDataSource for FmpDataSource {
     }
 }
 
+impl EconomicCalendarSource for FmpDataSource {
+    /// One `economic-calendar` request over the window, with one tracker row. A 402 / 404
+    /// (a key below the paid tier) is silent; a this-run failure or an unreadable body
+    /// records one `Calendar` gap. Either way the calendar stays at names and dates.
+    fn economic_calendar(
+        &self,
+        from: NaiveDate,
+        to: NaiveDate,
+        gaps: &mut Vec<DataGap>,
+    ) -> Vec<CalendarRow> {
+        if self.progress.is_cancelled() {
+            return Vec::new();
+        }
+        let series_id = "economic-calendar";
+        let name = "Economic Calendar (consensus)";
+        let from = from.format("%Y-%m-%d").to_string();
+        let to = to.format("%Y-%m-%d").to_string();
+        self.progress
+            .request_started("FMP", GroupKind::Calendar.as_str(), series_id, name);
+        let gaps_before = gaps.len();
+        let (disposition, gap_detail) = self.get_interpreted(
+            FMP_ECONOMIC_CALENDAR_PATH,
+            &[("country", "US"), ("from", from.as_str()), ("to", to.as_str())],
+        );
+        let out = match disposition {
+            Disposition::Value(value) => match econ_calendar::rows_from_value(value) {
+                Ok(rows) => rows,
+                Err(_) => {
+                    gaps.push(DataGap::new(
+                        GroupKind::Calendar,
+                        series_id,
+                        name,
+                        GapReason::Malformed,
+                    ));
+                    Vec::new()
+                }
+            },
+            // A plan-tier refusal (402) or absence (404) is silent: names and dates.
+            Disposition::Gap(GapReason::OutOfScope) => Vec::new(),
+            Disposition::Gap(reason) => {
+                gaps.push(DataGap::new(GroupKind::Calendar, series_id, name, reason));
+                Vec::new()
+            }
+        };
+        emit_series_row(
+            &self.progress,
+            "FMP",
+            GroupKind::Calendar,
+            series_id,
+            name,
+            gaps,
+            gaps_before,
+            !out.is_empty(),
+            gap_detail,
+        );
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2125,6 +2190,86 @@ mod tests {
         FmpDataSource::new("test-key".to_string())
             .expect("build adapter")
             .with_base_url(base_url)
+    }
+
+    #[test]
+    fn economic_calendar_reads_the_window_and_soft_fails_by_cause() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-10-02 12:30:00","country":"US","event":"Non Farm Payrolls (Sep)","impact":"High","estimate":90,"actual":29,"unit":"K"}]"#,
+            },
+            Canned::Reply {
+                status: 402,
+                headers: vec![],
+                body: "Payment Required",
+            },
+            Canned::Reply {
+                status: 403,
+                headers: vec![],
+                body: "Forbidden",
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"unexpected":true}"#,
+            },
+        ]);
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let source = test_source(&server.base_url).with_context(ctx);
+        let from = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let mut gaps = Vec::new();
+
+        let rows = source.economic_calendar(from, to, &mut gaps);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event, "Non Farm Payrolls (Sep)");
+        assert_eq!((rows[0].estimate, rows[0].actual), (Some(90.0), Some(29.0)));
+        assert!(gaps.is_empty());
+        let target = &server.request_targets()[0];
+        assert!(target.starts_with("/economic-calendar?"), "{target}");
+        for param in ["country=US", "from=2026-09-01", "to=2026-11-02"] {
+            assert!(target.contains(param), "{target}");
+        }
+
+        // A key below the paid tier: no rows and no gap — names and dates, silently.
+        assert!(source.economic_calendar(from, to, &mut gaps).is_empty());
+        assert!(gaps.is_empty(), "a plan-tier refusal records no gap");
+
+        // A this-run failure and an unreadable body each record one Calendar gap.
+        assert!(source.economic_calendar(from, to, &mut gaps).is_empty());
+        assert!(source.economic_calendar(from, to, &mut gaps).is_empty());
+        let recorded: Vec<(GroupKind, &str, GapReason)> = gaps
+            .iter()
+            .map(|g| (g.group, g.series_id.as_str(), g.reason))
+            .collect();
+        assert_eq!(
+            recorded,
+            [
+                (GroupKind::Calendar, "economic-calendar", GapReason::Rejected),
+                (GroupKind::Calendar, "economic-calendar", GapReason::Malformed),
+            ]
+        );
+        // One tracker row per fetch, its status the shaped outcome.
+        let finished: Vec<(String, String)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished {
+                    series_id, status, ..
+                } => Some((series_id, status)),
+                _ => None,
+            })
+            .collect();
+        let statuses: Vec<&str> = finished.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(statuses, ["ok", "empty", "rejected", "malformed"]);
+        assert!(finished.iter().all(|(id, _)| id == "economic-calendar"));
     }
 
     #[test]

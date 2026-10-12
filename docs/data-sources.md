@@ -530,30 +530,33 @@ The report reads both CFTC datasets' curated bellwether contracts at run level �
 **Used by:** Market Signal Report only — paid tier.
 
 Upgrading the shared FMP credential to the paid tier (the one paid dependency the local analysis suite already requires — see [Local analysis suite — shared sourcing](#local-analysis-suite--shared-sourcing) below) unlocks three report-side baseline enrichments.
-Each is an **opt-in addition to the existing scan, not a replacement**: the report's current data-source logic is unchanged, each enrichment soft-degrades to today's behavior on any failure, and all are paid-gated, so they were live-verified together with the suite's paid-key checkpoint (**run 2026-07-16** with the upgraded key) — for the calendar enrichment that checkpoint **verified the release→event map's drafted FMP event strings against live calendar responses** (the May–July 2026 windows; the row set below carries the verified strings).
+Each is an **opt-in addition to the existing scan, not a replacement**: the report's current data-source logic is unchanged, each enrichment soft-degrades to today's behavior on any failure, and all are paid-gated, so they were live-verified together with the suite's paid-key checkpoint (**run 2026-07-16** with the upgraded key).
+The calendar enrichment's release→event map carries its own live-verification date, in its table header below.
 
 **Economic-calendar consensus + surprise.**
 FRED stays the release-schedule backbone; FMP's paid `economic-calendar` (`?country=US&from=&to=`, fields `event` / `date` / `impact` / `previous` / `estimate` / `actual`) layers on two things the FRED schedule can't carry.
 (1) For the report's tracked market-moving releases, the engine joins FMP's `estimate` / `actual` onto the matching FRED release through a **curated release→event map** — FRED release names ("Employment Situation") and FMP event names ("Non Farm Payrolls") don't string-match, and one release fans out to several FMP events (Employment Situation alone carries payroll, unemployment-rate, and wage prints, with different units and polarities), so the join is **per event, not per release**.
 The map is the **versioned canonical table** the classification codes against: each row is one **release ↔ event pair**, keyed by the **numeric FRED `release_id`** (the existing `RELEASES` const's stable key, each display name pinned to its ID) plus the FMP event name, the stable per-event identity (a release's rows form its event set).
-**Code joins on the numeric ID plus the verified event string, never on the release's display name**, which is presentation text only — the existing `EconomicRelease` carries only the name downstream, so the join lives inside the FRED adapter's fetch loop, where the ID is in scope, or the struct gains an ID field, settled at wiring.
+**Code joins on the numeric ID plus the verified event string, never on the release's display name**, which is presentation text only.
+The join lives inside the FRED adapter's calendar loop, where the release ID is in scope.
+On the report path the adapter carries FMP's calendar as its consensus feed, fetched in one request per scan over the calendar window widened by the date tolerance.
 Each row carries that event's **unit normalization** between the two feeds, a **date-match tolerance** (same calendar date, ±1 day for cross-midnight publishes — drafted; one shared rule, so it stays out of the per-row columns), a **favorable polarity** (`higher-favorable` / `lower-favorable` / `none` — above-consensus payrolls are favorable; above-consensus CPI is not a "beat"), and an **in-line epsilon** in the event's own units.
 The tracked releases are the calendar's seven curated market-moving releases (the existing `RELEASES` table: Employment Situation, Consumer Price Index, Producer Price Index, Personal Income and Outlays, Advance Monthly Sales for Retail and Food Services, Job Openings and Labor Turnover Survey, Gross Domestic Product — FOMC arrives separately via the FMP `impact` filter below and needs no map row).
-The complete row set follows — drafted in-doc and live-verified before wiring (the identity-table convention), the **FMP event strings and raw scales live-verified 2026-07-16**: polarity follows one stated convention — **activity reads are `higher-favorable`, inflation reads `lower-favorable`, and prints whose market read inverts by regime (wages, job openings — growth-positive but rate-hawkish) are `none`** — and the epsilons are judgment-drafted in-line bands like the corpus's other drafted constants; a wrong event string fails soft to an unmapped event (names + dates), never a wrong classification.
-Three live-verified name findings ride the join:
-- live event names carry a **trailing parenthesized reference period** (`Non Farm Payrolls (Jun)`, `GDP Growth Rate QoQ (Q1)`, weekly prints `(Jul/04)`), so the join matches on the event name **with that trailing token stripped — exact after stripping**, because the feed carries near-names that must not collide (`U-6 Unemployment Rate`; the index-level `CPI` / `Core CPI` / `Producer Price Index` rows);
-- the feed carries **duplicate alias rows** for the CPI prints (`Inflation Rate` / `Core Inflation Rate` MoM / YoY mirror the `CPI`-named rows with identical values) — the map keys on the `CPI`-named rows, and the per-event-name dedup keeps the aliases inert;
-- a drafted `Core PPI MoM` row was **removed at verification** — the feed carries no core-PPI event in any checked window (only the `Producer Price Index` level / MoM / YoY prints), so the Producer Price Index release maps its headline MoM print alone.
+The complete row set follows — drafted in-doc and live-verified before wiring (the identity-table convention), the **FMP event strings and raw scales live-verified 2026-10-12**: polarity follows one stated convention — **activity reads are `higher-favorable`, inflation reads `lower-favorable`, and prints whose market read inverts by regime (wages, job openings — growth-positive but rate-hawkish) are `none`** — and the epsilons are judgment-drafted in-line bands like the corpus's other drafted constants; a wrong event string fails soft to an unmapped event (names + dates), never a wrong classification.
+Two live-verified name findings ride the join:
+- live event names carry a **trailing parenthesized reference period** (`Non Farm Payrolls (Jun)`, `GDP Growth Rate QoQ (Q1)`, weekly prints `(Jul/04)`), so the join matches on the event name **with that trailing token stripped — exact after stripping**, because the feed carries near-names that must not collide (`U-6 Unemployment Rate`; the index-level `Producer Price Index`, `Inflation Rate` and `Core Inflation Rate` rows; `CPI s.a`, `CPI n.s.a MoM` and `Cleveland CPI MoM`);
+- the feed serves the **CPI prints under `Inflation Rate` names** (`Inflation Rate MoM`, `Core Inflation Rate MoM`, `Inflation Rate YoY`), not `CPI` names, so the Consumer Price Index rows key on those.
 
-| FRED `release_id` | FRED release (display) | FMP event (live-verified 2026-07-16) | Unit normalization | Polarity | Epsilon |
+| FRED `release_id` | FRED release (display) | FMP event (live-verified 2026-10-12) | Unit normalization | Polarity | Epsilon |
 | --- | --- | --- | --- | --- | --- |
 | 50 | Employment Situation | Non Farm Payrolls | thousands of jobs (verified — feed `unit` `K`) | higher-favorable | ±25k |
 | 50 | Employment Situation | Unemployment Rate | percent | lower-favorable | ±0.1pp |
 | 50 | Employment Situation | Average Hourly Earnings MoM | % month-over-month | none | ±0.1pp |
-| 10 | Consumer Price Index | CPI MoM | % month-over-month | lower-favorable | ±0.1pp |
-| 10 | Consumer Price Index | Core CPI MoM | % month-over-month | lower-favorable | ±0.1pp |
-| 10 | Consumer Price Index | CPI YoY | % year-over-year | lower-favorable | ±0.1pp |
+| 10 | Consumer Price Index | Inflation Rate MoM | % month-over-month | lower-favorable | ±0.1pp |
+| 10 | Consumer Price Index | Core Inflation Rate MoM | % month-over-month | lower-favorable | ±0.1pp |
+| 10 | Consumer Price Index | Inflation Rate YoY | % year-over-year | lower-favorable | ±0.1pp |
 | 46 | Producer Price Index | Producer Price Index MoM | % month-over-month | lower-favorable | ±0.2pp |
+| 46 | Producer Price Index | Core PPI MoM | % month-over-month | lower-favorable | ±0.2pp |
 | 54 | Personal Income and Outlays | PCE Price Index MoM | % month-over-month | lower-favorable | ±0.1pp |
 | 54 | Personal Income and Outlays | Core PCE Price Index MoM | % month-over-month | lower-favorable | ±0.1pp |
 | 54 | Personal Income and Outlays | Personal Income MoM | % month-over-month | higher-favorable | ±0.2pp |
@@ -563,10 +566,27 @@ Three live-verified name findings ride the join:
 | 192 | Job Openings and Labor Turnover Survey | JOLTs Job Openings | millions of openings (verified — feed `unit` `M`) | none | ±0.2M |
 | 53 | Gross Domestic Product | GDP Growth Rate QoQ | % annualized quarter-over-quarter | higher-favorable | ±0.3pp |
 | 53 | Gross Domestic Product | GDP Price Index QoQ | % annualized quarter-over-quarter | lower-favorable | ±0.2pp |
+
 From each matched event row the engine computes a deterministic, **neutral relation tag** — `above` / `in-line` / `below` estimate (`in-line` when |actual − estimate| ≤ the row's epsilon) — plus the **absolute gap** in the event's own units (**always carried** — the deterministic surprise magnitude even where the % gap is undefined), the signed actual-vs-estimate **% gap** (`(actual − estimate) / |estimate|`, **`None` when the estimate is zero**), and a **beat / miss** read **only where the row maps a polarity** (beat = the favorable side): the engine derives, the model interprets.
-The release keeps its single identity: `EconomicRelease` gains a **`surprises` vector — one entry per matched event** (the map's event name as its key, plus estimate / actual / relation tag / absolute gap / % gap / beat-miss), empty when nothing matched and **deduplicated per event name** within the date tolerance (the latest print wins) — so a multi-event release carries every component surprise without overwriting any.
+The absolute gap (`abs_gap`) is the magnitude `|actual − estimate|`, the relation tag carrying the direction.
+The % gap (`gap_pct`) is serialized in percent.
+An in-line print carries no beat / miss read.
+The release keeps its single identity: `EconomicRelease` carries a **`surprises` vector — one entry per matched event** (the map's event name as its key, plus the row's unit label, estimate / actual / relation tag / absolute gap / % gap / beat-miss), empty when nothing matched and **deduplicated per event name** within the date tolerance (the latest print wins) — so a multi-event release carries every component surprise without overwriting any.
+An entry exists wherever the matched print carries an estimate, so an upcoming release carries its consensus ahead of the print, its actual and derived reads `null`.
+Every absent read serializes as an explicit `null`.
 (2) FMP-only **Fed / FOMC events** (filtered to Medium/High `impact`), which FRED has no scheduled-date series for, are appended as a distinct event class, closing the documented FOMC-date gap.
+The Fed events are an exact-name allowlist matched after the period strip: `Fed Interest Rate Decision`, `FOMC Minutes`, `FOMC Economic Projections`.
+The feed's Fed-speaker rows and its bare `Press Conference` row on the decision date stay out.
+Each rides the calendar as an `EconomicRelease` whose `class` is `fed` (a FRED release's is `release`), dated and given its released / upcoming status like the FRED rows, its `surprises` empty.
 Fail-soft throughout: an unmapped release, a `null` estimate, or an FMP outage leaves that release at **names + dates only** (today's behavior) — never a fabricated consensus.
+A `null` estimate drops that event alone.
+The release's other events still carry their surprises.
+A key below the paid tier (HTTP 402) leaves the calendar at names + dates silently.
+A failed fetch on the run records one `Calendar` gap (`economic-calendar`) in the missing-data manifest.
+A response with rows of which none can be read records that gap as malformed.
+A renamed FMP event fails soft like an unmapped one, so map drift carries its own signal.
+When the fetch returned rows but a mapped event of a release dated in the window appears in none of them, the run tracker carries one `Economic Calendar (event map)` row naming the missing events.
+The model's prompt never carries that row.
 
 **Historical sector / industry valuation + performance.**
 Today the sector/industry P/E *and* performance are both point-in-time, read only cross-sectionally (which group is rich vs cheap, strong vs weak *right now*).
@@ -598,10 +618,10 @@ A fourth candidate — **true index breadth** (advance/decline, participation) �
 All three enrichments follow the same three structural rules so they neither bloat storage nor disturb the report-to-report change view:
 
 - **Persist the derived read, not the raw history.**
-  Only the compact derived numbers — the calendar's per-event **`surprises` entries** (event name, estimate, actual, relation tag, **absolute gap**, signed **% gap**, and the polarity-mapped beat / miss read where defined), the P/E percentile + band, the performance trailing cumulative return, and the froth reads (the IPO and M&A **recent + prior-window counts**, the **upcoming-scheduled IPO count**, the bounded notable-name list, and the aggregate proceeds / deal value where the feed carried it) — ride into the packet and the persisted baseline snapshot; the raw ~250-point P/E and performance series and the full IPO / deal lists are transient fetch input, discarded once the derived reads are computed.
+  Only the compact derived numbers — the calendar's per-event **`surprises` entries** (event name, unit, estimate, actual, relation tag, **absolute gap**, signed **% gap**, and the polarity-mapped beat / miss read where defined), the P/E percentile + band, the performance trailing cumulative return, and the froth reads (the IPO and M&A **recent + prior-window counts**, the **upcoming-scheduled IPO count**, the bounded notable-name list, and the aggregate proceeds / deal value where the feed carried it) — ride into the packet and the persisted baseline snapshot; the raw ~250-point P/E and performance series and the full IPO / deal lists are transient fetch input, discarded once the derived reads are computed.
   **Every optional derived value has explicit absent semantics** — absent means *not derivable* (an unmapped release, a `null` or zero estimate, an exhausted page budget), **never zero** — so a prompt or snapshot comparison can always distinguish missing from zero.
 - **New fields carry `#[serde(default)]`.**
-  The enrichments add fields to `BaselineMarketData` and its member structs — `EconomicRelease` (the per-event `surprises` vector, defaulting to empty), `SectorPe` and `IndustrySnapshot` (valuation-history context), `SectorPerformance` and `IndustrySnapshot` (performance-history context) — plus a new issuance-activity group; each must default so an *older* snapshot — serialized before the field existed — still deserializes (to empty / `None`), keeping the prior-vs-current comparison backward-compatible.
+  The enrichments add fields to `BaselineMarketData` and its member structs — `EconomicRelease` (the per-event `surprises` vector, defaulting to empty, and the event `class`, defaulting to `release`), `SectorPe` and `IndustrySnapshot` (valuation-history context), `SectorPerformance` and `IndustrySnapshot` (performance-history context) — plus a new issuance-activity group; each must default so an *older* snapshot — serialized before the field existed — still deserializes (to empty / `None`), keeping the prior-vs-current comparison backward-compatible.
   (The prior-snapshot decode is already fail-soft regardless — see [report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data).)
 - **All stay out of the level-delta engine.**
   The surprise is a native actual-vs-consensus value, the P/E percentile + band and the performance trailing cumulative return are trailing-window structural reads, and the IPO / M&A counts are set-valued activity tallies — none is an inter-report level change — so, like CFTC positioning and the existing movers / earnings / calendar groups, none joins the diffed level groups; the existing point-in-time `sector_pe` level-diff is untouched (it reads only the current `pe`), and the `sectors` performance group stays excluded from the diff exactly as it is today.
