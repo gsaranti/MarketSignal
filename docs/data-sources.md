@@ -438,7 +438,7 @@ The free-tier paths serve the baseline scan; the paid-tier paths are the **repor
 | `/historical-sector-performance` | paid | sector daily `averageChange` → trailing cumulative return |
 | `/historical-industry-performance` | paid | industry daily `averageChange` → trailing cumulative return |
 | `/ipos-calendar` | paid | recently priced + upcoming scheduled IPOs → issuance-froth count |
-| `/mergers-acquisitions-latest` | paid | recently announced M&A deals → deal-froth count |
+| `/mergers-acquisitions-latest` | paid | registered M&A deals (S-4 / F-4 filings) → deal-froth count |
 
 The application calls Financial Modeling Prep directly for the equity-market portion of the baseline market-data scan ([report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data)) — indices, volatility, gold and silver, and sector performance.
 Each index's multi-horizon performance (weekly, month-to-date, year-to-date, and 52-week-range position) is derived from FMP's free historical end-of-day prices (verified live: the indices and the VIX return on the free tier).
@@ -629,27 +629,68 @@ Both are compact derived numbers, not the raw series.
 Paired, they let the model read a re-rating *with* its price context: a group cheap against its own P/E history *and* up over the trailing window (a re-rating turn) reads differently from one cheap *and still down* (a possible value trap) — the distinction a single snapshot can't support.
 
 **IPO / M&A froth.**
-The report has no primary-market feed today, so it can't see the issuance / deal-making pace that runs hot late-cycle and freezes under stress.
-Two paid endpoints add it — `ipos-calendar` (`?from=&to=`, recently priced + upcoming scheduled offerings) and `mergers-acquisitions-latest` (`?page=&limit=`, recently announced deals) — which the engine reduces to a compact **activity read**.
-That read is the recent-window IPO count and the recent-window M&A deal count, **each recent count paired with its prior equivalent-window count** so the engine carries a native rising / cooling **trend**.
+The issuance / deal-making pace that runs hot late-cycle and freezes under stress comes from two paid endpoints — `ipos-calendar` (`?from=&to=`) and `mergers-acquisitions-latest` (`?page=&limit=`) — which the engine reduces to a compact **activity read**, the `primary_market` group.
+Both feeds' row shapes were live-verified 2026-10-12.
+The read pairs each recent-window count with its prior equivalent-window count, so the group carries a native rising / cooling **trend**.
 This is the way CFTC positioning carries its own week-over-week change while staying out of the level-delta engine: the model is handed only the current packet plus the computed change view, never prior raw packets, so the trend can't come from the delta engine and must be self-contained.
 The read also carries the **upcoming-scheduled IPO count**, a standalone forward-looking datum with **no trend pair** — a prior "upcoming" window isn't reconstructable from the current feed, since postponed or since-priced offerings vanish from the schedule, so a pair here couldn't be self-contained.
-It carries a bounded list of the largest / most notable names (and aggregate proceeds / deal value where the feed carries it) for color.
-Like the earnings and economic-release calendars, the recent window is sized to the report cadence (a monthly run sees the month's froth, not a week's), clamped to **7–31 days** (the earnings calendar's own floor / cap convention; a first run with no cadence anchor defaults to the floor); windows are **half-open** on the feeds' calendar dates on the ET session (the earnings calendar's date convention) — the recent window ending at the report date (exclusive), the **prior window the contiguous equal-length window immediately before it** — while the upcoming-IPO window is fixed at **14 days** forward (the earnings calendar's forward-window convention).
-The date-ranged `ipos-calendar` covers the recent and prior windows in one bounded call; `mergers-acquisitions-latest` is paged, not date-ranged, so the adapter walks pages back toward the prior-window boundary under a **drafted page budget of ≤ 10 pages at `limit=100`** (comfortably ≥ two months of deals), the **notable-name list capped at 5 per feed** (drafted).
-Coverage resolves to one of **three completion states**: pages reached the prior boundary → both counts; pages covered only the recent boundary → the recent count with the prior count **absent** (the trend degrades to the recent count alone — never a fabricated prior); pages failed to cover even the recent window → **no M&A count and a typed partial-data gap**, so a partial count can never serialize as complete.
+
+The windows sit on the ET session date T and are **half-open** on the feeds' calendar dates (the earnings calendar's date convention).
+The recent window is [T − N, T), and the prior window is the contiguous equal-length window immediately before it, [T − 2N, T − N).
+N is sized to the report cadence like the earnings lookback, so a monthly run sees the month's froth, not a week's: the elapsed interval rounded up and clamped to **7–31 days**, a first run with no cadence anchor taking the floor.
+The upcoming-IPO window is fixed at **14 days** forward, [T, T + 14) (the earnings calendar's forward-window convention).
+Each window serializes as `from` and `to`, its first and last day.
+
+- **IPOs.**
+  `ipos-calendar` is a new-listings calendar: beside the operating-company IPOs it lists fund and ETF launches, notes, warrants, rights, when-issued lines and the parts of each blank-check (SPAC) offering, its `actions` reading `Expected` or `Priced`.
+  One request covers the three windows, from T − 2N to T + 13.
+  A row counts only when it carries a share count (`shares` above zero), which keeps the operating IPOs and one row per SPAC offering and leaves out every listing that is not an offering.
+  A priced row counts in the recent or prior window, an expected row in the upcoming window, and any other status nowhere.
+  A symbol counts once, its latest-dated row winning.
+  A row without a symbol counts alone.
+  The `ipos` read carries `recent_count`, `prior_count`, `upcoming_count` and `notable`.
+  The notable list is the recent window's priced offerings, largest first by the feed's `dealSize` (the offering's dollar size) and sizeless rows after by date, capped at **five** (drafted).
+  Each notable IPO carries `symbol`, `company`, `date`, `exchange` and `deal_size_usd`.
+- **Registered deals.**
+  `mergers-acquisitions-latest` serves SEC registration filings (S-4 / F-4) newest first, each dated at filing (`transactionDate`).
+  A registration follows a deal's announcement, typically by several weeks, and covers deals paid at least partly in stock.
+  The feed serves one row per acquirer security (share classes, warrants, units, preferreds), every row of a filing carrying the filing's `link`, so one deal is one filing `link`.
+  A row with no link falls back to its (acquirer, target) names, case-folded.
+  A row with neither counts as a deal of its own.
+  A deal sits in the window of its earliest walked row, the boundary page's rows before the windows included.
+  The feed is paged, not date-ranged, so the adapter walks pages back toward the prior window's first day under a **drafted page budget of ≤ 10 pages at `limit=100`** — the walk Portfolio's run-level M&A feed shares ([§Portfolio Analysis — endpoint surface](#portfolio-analysis--endpoint-surface)).
+  On the live probe one page spanned five months of filings.
+  The `deals` read carries `recent_count`, `prior_count` and `notable`, the recent window's newest deals capped at **five** (drafted), each with `acquirer`, `target`, `target_symbol` and `date`.
+  The feed carries no deal value, so no deal carries one.
+
+The walk's coverage resolves to one of **three completion states**:
+
+- pages reached the windows' first day or the feed's end → both counts;
+- pages covered only the recent window, a row dated in the prior window seen before the page cap or a later page's failure stopped the walk → the recent count with `prior_count` **null** (the trend degrades to the recent count alone — never a fabricated prior);
+- pages failed to cover even the recent window → **no deal read and one `primary-market` gap**, so a partial count can never serialize as complete.
+
 The model reads the pace *and its trend* as a risk-appetite / late-cycle tell — a surge or accelerating pace feeding the risk-on / late-cycle read, a freeze the risk-off / stress read.
 Fail-soft and non-floor: a failed gather degrades to no froth signal, never a failed run.
+Each side fails soft alone, and the group is `null` when neither side was read.
+A key below the paid tier (HTTP 402) or a 404 on a side's first request leaves that side absent silently.
+A this-run failure records one `primary-market` gap for its side: the IPO request's, the M&A walk's first page's, or the failing page's in the third completion state (`unavailable` on the page cap).
+An IPO calendar with no row in any window, or an empty first M&A page, records an `unavailable` gap — a fault of the feed, never a freeze.
+A body with rows of which none can be read records a `malformed` gap.
+A count is a completeness claim, so a side whose feed served a row it could have counted but could not read is withheld, never undercounted.
+An IPO row with a share count but no readable date withholds `ipos` with one `malformed` gap.
+An undated row with no share count, like a fund launch, could never have counted, so it withholds nothing.
+Every M&A row is a deal row, so a row the walk could not read on a page whose other rows it read withholds `deals` with one `malformed` gap.
+A later page with no readable row is a failed page, so the completion states above govern it.
 
 A fourth candidate — **true index breadth** (advance/decline, participation) — was considered and **ruled out**: FMP exposes no breadth metric, so the movers group stays the report's breadth proxy.
 
 All three enrichments follow the same three structural rules so they neither bloat storage nor disturb the report-to-report change view:
 
 - **Persist the derived read, not the raw history.**
-  Only the compact derived numbers — the calendar's per-event **`surprises` entries** (event name, unit, estimate, actual, relation tag, **absolute gap**, signed **% gap**, and the polarity-mapped beat / miss read where defined), the P/E percentile + band with the window's start and latest prints, the performance trailing cumulative return, and the froth reads (the IPO and M&A **recent + prior-window counts**, the **upcoming-scheduled IPO count**, the bounded notable-name list, and the aggregate proceeds / deal value where the feed carried it) — ride into the packet and the persisted baseline snapshot; the raw ~250-point P/E and performance series and the full IPO / deal lists are transient fetch input, discarded once the derived reads are computed.
+  Only the compact derived numbers — the calendar's per-event **`surprises` entries** (event name, unit, estimate, actual, relation tag, **absolute gap**, signed **% gap**, and the polarity-mapped beat / miss read where defined), the P/E percentile + band with the window's start and latest prints, the performance trailing cumulative return, and the froth reads (the IPO and M&A **recent + prior-window counts**, the **upcoming-scheduled IPO count**, and the bounded notable-name lists with each notable IPO's deal size where the feed carried it) — ride into the packet and the persisted baseline snapshot; the raw ~250-point P/E and performance series and the full IPO / deal lists are transient fetch input, discarded once the derived reads are computed.
   **Every optional derived value has explicit absent semantics** — absent means *not derivable* (an unmapped release, a `null` or zero estimate, an exhausted page budget), **never zero** — so a prompt or snapshot comparison can always distinguish missing from zero.
 - **New fields carry `#[serde(default)]`.**
-  The enrichments add fields to `BaselineMarketData` and its member structs — `EconomicRelease` (the per-event `surprises` vector, defaulting to empty, and the event `class`, defaulting to `release`), `SectorPe` and `IndustrySnapshot` (the valuation- and performance-history reads) — plus a new issuance-activity group; each must default so an *older* snapshot — serialized before the field existed — still deserializes (to empty / `None`), keeping the prior-vs-current comparison backward-compatible.
+  The enrichments add fields to `BaselineMarketData` and its member structs — `EconomicRelease` (the per-event `surprises` vector, defaulting to empty, and the event `class`, defaulting to `release`), `SectorPe` and `IndustrySnapshot` (the valuation- and performance-history reads) — plus the new `primary_market` group, defaulting to `None`; each must default so an *older* snapshot — serialized before the field existed — still deserializes (to empty / `None`), keeping the prior-vs-current comparison backward-compatible.
   (The prior-snapshot decode is already fail-soft regardless — see [report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data).)
 - **All stay out of the level-delta engine.**
   The surprise is a native actual-vs-consensus value, the P/E percentile + band and the performance trailing cumulative return are trailing-window structural reads, and the IPO / M&A counts are set-valued activity tallies — none is an inter-report level change — so, like CFTC positioning and the existing movers / earnings / calendar groups, none joins the diffed level groups; the existing point-in-time `sector_pe` level-diff is untouched (it reads only the current `pe`), and the `sectors` performance group stays excluded from the diff exactly as it is today.

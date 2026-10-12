@@ -380,6 +380,74 @@ pub struct CotPositioning {
     pub real_money_net_weekly_change: Option<f64>,
 }
 
+/// The primary-market pace (`docs/data-sources.md §Report enrichment`): new listings from
+/// FMP's paid `ipos-calendar` and the takeovers registered with the SEC from its paid
+/// `mergers-acquisitions-latest`, counted over three windows on the ET session date T —
+/// `recent` [T−N, T) and `prior` [T−2N, T−N), N the report cadence clamped to 7–31 days,
+/// and `upcoming` [T, T+14) — each serialized as its first and last day. Each side is
+/// `None` when it was not gathered this run; the group is absent when neither was. The
+/// recent-vs-prior pairs are the group's own trend, so like `cot_positioning` it stays out
+/// of the level-delta engine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrimaryMarketActivity {
+    pub recent: ActivityWindow,
+    pub prior: ActivityWindow,
+    pub upcoming: ActivityWindow,
+    pub ipos: Option<IpoActivity>,
+    pub deals: Option<DealActivity>,
+}
+
+/// One activity window's first and last day, both included (`YYYY-MM-DD`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActivityWindow {
+    pub from: String,
+    pub to: String,
+}
+
+/// The IPO side of [`PrimaryMarketActivity`]: the offerings priced in the recent and prior
+/// windows and those scheduled in the upcoming one, a row counting only when it carries a
+/// share count (the calendar also lists fund launches, notes, warrants, rights and
+/// when-issued lines, none of which do), plus the recent window's largest offerings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IpoActivity {
+    pub recent_count: u32,
+    pub prior_count: u32,
+    pub upcoming_count: u32,
+    pub notable: Vec<NotableIpo>,
+}
+
+/// One of the recent window's largest IPOs; `deal_size_usd` is the offering's dollar size
+/// as the feed states it (`dealSize`), and each field is `None` where the feed carries none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotableIpo {
+    pub symbol: Option<String>,
+    pub company: Option<String>,
+    pub date: String,
+    pub exchange: Option<String>,
+    pub deal_size_usd: Option<f64>,
+}
+
+/// The deal side of [`PrimaryMarketActivity`]: the merger and acquisition deals whose SEC
+/// registration statement was filed in the recent and prior windows, one per filing, plus
+/// the recent window's latest. `prior_count` is `None` when the page walk covered the recent
+/// window but not the prior one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DealActivity {
+    pub recent_count: u32,
+    pub prior_count: Option<u32>,
+    pub notable: Vec<NotableDeal>,
+}
+
+/// One of the recent window's latest deals: each party's name as served (its symbol where
+/// the feed served no name) and the target's ticker where it is listed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotableDeal {
+    pub acquirer: Option<String>,
+    pub target: Option<String>,
+    pub target_symbol: Option<String>,
+    pub date: String,
+}
+
 /// Which Step-3 baseline group a [`DataGap`] belongs to. Serializes to a stable kebab
 /// label so the model reading the manifest sees the same group names the data groups
 /// carry, and the coverage gate (`pipeline::enforce_coverage`) can match on it.
@@ -399,6 +467,7 @@ pub enum GroupKind {
     Industries,
     MarketRiskPremium,
     CotPositioning,
+    PrimaryMarket,
 }
 
 impl GroupKind {
@@ -420,6 +489,7 @@ impl GroupKind {
             GroupKind::Industries => "industries",
             GroupKind::MarketRiskPremium => "market-risk-premium",
             GroupKind::CotPositioning => "cot-positioning",
+            GroupKind::PrimaryMarket => "primary-market",
         }
     }
 }
@@ -598,6 +668,13 @@ pub struct BaselineMarketData {
     /// `movers` / `earnings`, soft-degrading rather than failing the run.
     #[serde(default)]
     pub cot_positioning: Vec<CotPositioning>,
+    /// Step-3 primary-market pace: the IPO and registered-deal counts against the window
+    /// before, with the upcoming IPOs (FMP's paid `ipos-calendar` and
+    /// `mergers-acquisitions-latest`). `None` when neither feed was gathered — additive and
+    /// non-floor, soft-degrading rather than failing the run. Defaults to `None`, so a
+    /// snapshot persisted before the group decodes.
+    #[serde(default)]
+    pub primary_market: Option<PrimaryMarketActivity>,
     /// Step-3 missing-data manifest: the series / releases a provider failed to resolve
     /// this run (`DataGap`), each tagged with its group and reason. Populated by the
     /// adapters as they degrade instead of failing, merged across providers by the
@@ -834,6 +911,7 @@ impl MarketDataSource for StubMarketDataSource {
                     real_money_net_weekly_change: None,
                 },
             ],
+            primary_market: None,
             gaps: Vec::new(),
         })
     }
@@ -881,6 +959,7 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
         merged.industries.extend(extra.industries);
         merged.market_risk_premium.extend(extra.market_risk_premium);
         merged.cot_positioning.extend(extra.cot_positioning);
+        merged.primary_market = merged.primary_market.or(extra.primary_market);
         merged.gaps.extend(extra.gaps);
         Ok(merged)
     }
@@ -1046,6 +1125,83 @@ mod tests {
         assert!(json.contains(r#""return_pct":20.1"#), "{json}");
         let back: BaselineMarketData = serde_json::from_str(&json).unwrap();
         assert_eq!(back, baseline);
+    }
+
+    fn sample_primary_market() -> PrimaryMarketActivity {
+        let window = |from: &str, to: &str| ActivityWindow {
+            from: from.into(),
+            to: to.into(),
+        };
+        PrimaryMarketActivity {
+            recent: window("2026-09-12", "2026-10-11"),
+            prior: window("2026-08-13", "2026-09-11"),
+            upcoming: window("2026-10-12", "2026-10-25"),
+            ipos: None,
+            deals: Some(DealActivity {
+                recent_count: 7,
+                prior_count: None,
+                notable: vec![NotableDeal {
+                    acquirer: Some("Inflection Point Acquisition Corp. VII".into()),
+                    target: Some("Intuitive Machines, Inc.".into()),
+                    target_symbol: None,
+                    date: "2026-10-08".into(),
+                }],
+            }),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_persisted_before_the_primary_market_group_decodes_without_it() {
+        let old: BaselineMarketData =
+            serde_json::from_str(r#"{"indices":[],"cot_positioning":[],"gaps":[]}"#).unwrap();
+        assert_eq!(old.primary_market, None);
+    }
+
+    #[test]
+    fn the_primary_market_group_round_trips_with_explicit_nulls() {
+        let baseline = BaselineMarketData {
+            primary_market: Some(sample_primary_market()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&baseline).unwrap();
+        // An absent read serializes as an explicit null, never omitted and never zero.
+        assert!(json.contains(r#""ipos":null"#), "{json}");
+        assert!(json.contains(r#""recent_count":7,"prior_count":null"#), "{json}");
+        assert!(json.contains(r#""target_symbol":null"#), "{json}");
+        assert!(
+            json.contains(r#""recent":{"from":"2026-09-12","to":"2026-10-11"}"#),
+            "{json}"
+        );
+        let back: BaselineMarketData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, baseline);
+        // A run that read neither feed carries the group as an explicit null too.
+        let none = serde_json::to_string(&BaselineMarketData::default()).unwrap();
+        assert!(none.contains(r#""primary_market":null"#), "{none}");
+    }
+
+    /// A stub that reads only the primary-market group, as the FMP adapter does.
+    struct PrimaryMarketStub;
+
+    impl MarketDataSource for PrimaryMarketStub {
+        fn baseline_scan(&self, _cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
+            Ok(BaselineMarketData {
+                primary_market: Some(sample_primary_market()),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[test]
+    fn the_composite_keeps_the_primary_market_group_from_the_source_that_read_it() {
+        let cadence = ReportCadence::from_elapsed(None);
+        let first = CompositeMarketDataSource::new(PrimaryMarketStub, StubMarketDataSource)
+            .baseline_scan(cadence)
+            .unwrap();
+        assert_eq!(first.primary_market, Some(sample_primary_market()));
+        let second = CompositeMarketDataSource::new(StubMarketDataSource, PrimaryMarketStub)
+            .baseline_scan(cadence)
+            .unwrap();
+        assert_eq!(second.primary_market, Some(sample_primary_market()));
     }
 
     /// A stub shaped like the secondary sources (`fred` + `bls`) — it contributes the

@@ -1314,6 +1314,9 @@ fn group_present_count(data: &BaselineMarketData, group: GroupKind) -> usize {
         GroupKind::Industries => data.industries.len(),
         GroupKind::MarketRiskPremium => data.market_risk_premium.len(),
         GroupKind::CotPositioning => data.cot_positioning.len(),
+        GroupKind::PrimaryMarket => data.primary_market.as_ref().map_or(0, |p| {
+            usize::from(p.ipos.is_some()) + usize::from(p.deals.is_some())
+        }),
     }
 }
 
@@ -1587,10 +1590,10 @@ mod tests {
 
     #[test]
     fn enforce_coverage_ignores_additive_groups() {
-        // movers / earnings and the valuation + finer-rotation groups (sector-PE,
-        // industries, market-risk-premium) are all additive, non-floor: empty groups and
-        // even this-run gaps in them never gate a run whose floor groups (indices + a
-        // posture group) are covered.
+        // movers / earnings, the valuation + finer-rotation groups (sector-PE,
+        // industries, market-risk-premium) and the primary-market group are all additive,
+        // non-floor: empty groups and even this-run gaps in them never gate a run whose
+        // floor groups (indices + a posture group) are covered.
         let mut gaps = covgaps(GroupKind::Movers, GapReason::Unavailable, 3);
         gaps.extend(covgaps(GroupKind::Earnings, GapReason::Rejected, 1));
         gaps.extend(covgaps(GroupKind::SectorPe, GapReason::Unavailable, 1));
@@ -1600,10 +1603,12 @@ mod tests {
             GapReason::Rejected,
             1,
         ));
+        gaps.extend(covgaps(GroupKind::PrimaryMarket, GapReason::Unavailable, 2));
         let data = BaselineMarketData {
             indices: covq(4),
             internals: covq(9),
-            // movers / earnings / sector_pe / industries / market_risk_premium left empty
+            // movers / earnings / sector_pe / industries / market_risk_premium /
+            // primary_market left empty
             gaps,
             ..Default::default()
         };

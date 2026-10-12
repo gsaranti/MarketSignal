@@ -173,6 +173,9 @@ or Fed event the thesis turns on, is a routable signal. \
 Sector and industry valuation rows may carry each group's P/E against its own trailing-year \
 range, paired with its return over that year: a valuation extreme, read with whether the group \
 is rising or falling, is a routable signal. \
+The primary-market group counts recent IPOs and merger and acquisition deals against the \
+equal-length window before, with the IPOs scheduled ahead: a surge or freeze in issuance or \
+deal-making is a routable signal. \
 The clusters carry publish dates and the report's current date is provided: balance \
 materiality with freshness — a genuinely new development, especially from the current or prior \
 day relative to that date, deserves a place in the plan and should not be dropped for an older \
@@ -565,6 +568,14 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("the consensus estimate \
 and any realized surprise, and Fed / FOMC event dates"));
         assert!(SYSTEM_PROMPT.contains("is a routable signal"));
+    }
+
+    #[test]
+    fn system_prompt_routes_on_a_primary_market_surge_or_freeze() {
+        assert!(SYSTEM_PROMPT.contains("counts recent IPOs and merger and acquisition deals \
+against the equal-length window before, with the IPOs scheduled ahead"));
+        assert!(SYSTEM_PROMPT.contains("a surge or freeze in issuance or \
+deal-making is a routable signal"));
     }
 
     #[test]

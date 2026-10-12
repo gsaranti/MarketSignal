@@ -52,20 +52,22 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::data_sources::{
-    emit_series_row, BaselineMarketData, Change, DataGap, EarningsEvent, GapReason, GroupKind,
-    IndexPerformance, IndustrySnapshot, MarketDataSource, MarketRiskPremium, MoverCategory, Quote,
-    SectorPe, SectorPerformance, StockMover,
+    emit_series_row, BaselineMarketData, Change, DataGap, DealActivity, EarningsEvent, GapReason,
+    GroupKind, IndexPerformance, IndustrySnapshot, IpoActivity, MarketDataSource,
+    MarketRiskPremium, MoverCategory, PrimaryMarketActivity, Quote, SectorPe, SectorPerformance,
+    StockMover,
 };
 use crate::cadence::ReportCadence;
 use crate::econ_calendar::{self, CalendarRow, EconomicCalendarSource};
 use crate::group_history::{self, DatedPoint, NotDerivable};
 use crate::portfolio::evidence::{
     Chamber, CompanyEvidence, CongressionalTrade, DividendRow, EnterpriseValueRow, GradesConsensus,
-    InsiderStatistics, InsiderTrade, MaDeal, OwnerEarningsRow, PriceTargetConsensus,
-    PriceTargetTrend, PriceTargetWindow, RatingAction, RatingsSnapshot, RatioLines, SegmentYear,
-    SharesFloat, SplitRow, CONGRESSIONAL_TRADES_COUNT, DIVIDENDS_SHOWN, INSIDER_TRADES_COUNT,
-    MA_PAGE_CAP, RATING_ACTIONS_COUNT, SEGMENT_FISCAL_YEARS,
+    InsiderStatistics, InsiderTrade, MaDeal, MaWalk, MaWalkEnd, OwnerEarningsRow,
+    PriceTargetConsensus, PriceTargetTrend, PriceTargetWindow, RatingAction, RatingsSnapshot,
+    RatioLines, SegmentYear, SharesFloat, SplitRow, CONGRESSIONAL_TRADES_COUNT, DIVIDENDS_SHOWN,
+    INSIDER_TRADES_COUNT, MA_PAGE_CAP, RATING_ACTIONS_COUNT, SEGMENT_FISCAL_YEARS,
 };
+use crate::primary_market::{self, FrothWindows, IpoRow, IpoStatus};
 use crate::progress::RunContext;
 
 /// Base URL for FMP's stable API. The endpoint paths below are joined onto it in
@@ -133,6 +135,8 @@ const FMP_MOST_ACTIVE_PATH: &str = "/most-actives";
 /// ~1-month history window (probed live Jun 2026: forward dates return estimates with
 /// null actuals, past dates return both).
 const FMP_EARNINGS_PATH: &str = "/earnings-calendar";
+/// The paid new-listings calendar the primary-market read counts its IPOs from.
+const FMP_IPOS_CALENDAR_PATH: &str = "/ipos-calendar";
 
 /// FMP's paid economic calendar — every US event in a date window with its impact,
 /// consensus estimate and actual (a free key replies 402). The report's consensus feed
@@ -260,7 +264,7 @@ const MOVER_FUND_MARKERS: &[&str] = &[
 /// revenue magnitude is the proxy), capped at the largest N by revenue estimate. Tunable
 /// after a live run.
 ///
-/// The *back* window scales with the run cadence ([`earnings_back_days`]): [`EARNINGS_BACK_DAYS`]
+/// The *back* window scales with the run cadence ([`cadence_window_days`]): [`EARNINGS_BACK_DAYS`]
 /// is the floor (a sub-weekly run still gets a week of recent context) and
 /// [`EARNINGS_BACK_MAX_DAYS`] the cap (FMP's free earnings window is ~1 month). The *forward*
 /// window stays fixed — "upcoming" is upcoming regardless of how long since the last report.
@@ -270,11 +274,12 @@ const EARNINGS_FWD_DAYS: i64 = 14;
 const EARNINGS_MIN_REVENUE: f64 = 5_000_000_000.0;
 const EARNINGS_MAX_ROWS: usize = 25;
 
-/// The earnings-calendar lookback in whole days for this run: [`EARNINGS_BACK_DAYS`] on the
-/// first report (no prior interval), else the elapsed interval rounded up and clamped to
+/// The cadence-sized window in whole days for this run — the earnings-calendar lookback and
+/// the primary-market read's recent window: [`EARNINGS_BACK_DAYS`] on the first report (no
+/// prior interval), else the elapsed interval rounded up and clamped to
 /// `[EARNINGS_BACK_DAYS, EARNINGS_BACK_MAX_DAYS]`. The saturating `f64 as i64` cast makes a
 /// non-finite or absurd interval clamp to the floor/cap rather than panic.
-fn earnings_back_days(elapsed_days: Option<f64>) -> i64 {
+fn cadence_window_days(elapsed_days: Option<f64>) -> i64 {
     match elapsed_days {
         None => EARNINGS_BACK_DAYS,
         Some(d) => (d.ceil() as i64).clamp(EARNINGS_BACK_DAYS, EARNINGS_BACK_MAX_DAYS),
@@ -1565,6 +1570,104 @@ impl FmpDataSource {
         out
     }
 
+    /// The primary-market read (`docs/data-sources.md §Report enrichment`): the IPO side off
+    /// one `ipos-calendar` request over the three windows, the deal side off the M&A walk
+    /// back to the windows' first day; `None` when neither side was read.
+    fn fetch_primary_market(
+        &self,
+        windows: &FrothWindows,
+        gaps: &mut Vec<DataGap>,
+    ) -> Option<PrimaryMarketActivity> {
+        let ipos = self.fetch_ipo_activity(windows, gaps);
+        let deals = self.fetch_deal_activity(windows, gaps);
+        primary_market::activity(windows, ipos, deals)
+    }
+
+    /// The IPO side: one `ipos-calendar` request from the windows' first day to their last,
+    /// one tracker row. A key below the paid tier (402) or a 404 leaves it absent silently; a
+    /// this-run failure, a body with no readable row, a served offering with no readable date,
+    /// or a calendar with no row in any window records one `PrimaryMarket` gap.
+    fn fetch_ipo_activity(
+        &self,
+        windows: &FrothWindows,
+        gaps: &mut Vec<DataGap>,
+    ) -> Option<IpoActivity> {
+        if self.progress.is_cancelled() {
+            return None;
+        }
+        let from = windows.first_day().format("%Y-%m-%d").to_string();
+        let to = windows.last_day().format("%Y-%m-%d").to_string();
+        let group = GroupKind::PrimaryMarket;
+        let (series_id, name) = ("ipos-calendar", "IPO Calendar");
+        self.progress
+            .request_started("FMP", group.as_str(), series_id, name);
+        let gaps_before = gaps.len();
+        let gap = |reason| DataGap::new(group, series_id, name, reason);
+        let (disposition, mut detail) = self.get_interpreted(
+            FMP_IPOS_CALENDAR_PATH,
+            &[("from", from.as_str()), ("to", to.as_str())],
+        );
+        let out = match disposition {
+            Disposition::Value(value) => match ipo_rows_from_value(&value) {
+                Ok((rows, undated_offerings)) => {
+                    let (read, reason) =
+                        primary_market::ipo_activity(&rows, undated_offerings, windows);
+                    if let Some(reason) = reason {
+                        detail = Some(if undated_offerings > 0 {
+                            format!("{undated_offerings} served offering(s) carried no readable date")
+                        } else {
+                            "no calendar row in any window".to_string()
+                        });
+                        gaps.push(gap(reason));
+                    }
+                    read
+                }
+                Err(e) => {
+                    detail = Some(format!("{e:#}"));
+                    gaps.push(gap(GapReason::Malformed));
+                    None
+                }
+            },
+            // A key below the paid tier (402) or a 404 is silent for this additive group.
+            Disposition::Gap(GapReason::OutOfScope) => None,
+            Disposition::Gap(reason) => {
+                gaps.push(gap(reason));
+                None
+            }
+        };
+        emit_series_row(
+            &self.progress,
+            "FMP",
+            group,
+            series_id,
+            name,
+            gaps,
+            gaps_before,
+            out.is_some(),
+            detail,
+        );
+        out
+    }
+
+    /// The deal side: the M&A walk back to the windows' first day, one tracker row per page,
+    /// mapped onto the three completion states ([`primary_market::deal_activity`]); a state
+    /// with no deal read records its one `PrimaryMarket` gap.
+    fn fetch_deal_activity(
+        &self,
+        windows: &FrothWindows,
+        gaps: &mut Vec<DataGap>,
+    ) -> Option<DealActivity> {
+        let group = GroupKind::PrimaryMarket;
+        let (series_id, name) = ("mergers-acquisitions-latest", "M&A Registrations");
+        let since = windows.first_day().format("%Y-%m-%d").to_string();
+        let walk = self.walk_mergers(&since, group.as_str(), series_id, name);
+        let (read, gap) = primary_market::deal_activity(&walk, windows);
+        if let Some(reason) = gap {
+            gaps.push(DataGap::new(group, series_id, name, reason));
+        }
+        read
+    }
+
     /// Fetch the per-sector P/E for each exchange in [`SNAPSHOT_EXCHANGES`] (NASDAQ + NYSE),
     /// accumulating the exchange-tagged rows so the model sees the growth and value reads
     /// side by side. Each exchange walks independently via [`Self::fetch_sector_pe_for_exchange`].
@@ -2389,7 +2492,12 @@ impl MarketDataSource for FmpDataSource {
         let sectors = self.fetch_sectors(&mut gaps);
         let index_performance = self.fetch_index_performance(&mut gaps);
         let movers = self.fetch_movers(&mut gaps);
-        let earnings = self.fetch_earnings(earnings_back_days(cadence.elapsed_days()), &mut gaps);
+        let window_days = cadence_window_days(cadence.elapsed_days());
+        let earnings = self.fetch_earnings(window_days, &mut gaps);
+        // The primary-market windows sit on the ET session date, as the earnings window does.
+        let froth_windows =
+            FrothWindows::new(crate::market_clock::et_session_date(Utc::now()), window_days);
+        let primary_market = self.fetch_primary_market(&froth_windows, &mut gaps);
         // The paid-tier trailing-year reads against each group's own history ride the
         // sector-P/E and industry rows the snapshots returned.
         let history_clock = HistoryClock::at(Utc::now());
@@ -2414,6 +2522,7 @@ impl MarketDataSource for FmpDataSource {
             labor_levels: Vec::new(),
             calendar: Vec::new(),
             cot_positioning: Vec::new(),
+            primary_market,
             gaps,
         })
     }
@@ -2484,21 +2593,23 @@ mod tests {
     use crate::test_http::{Canned, MockHttp};
 
     #[test]
-    fn earnings_back_days_floors_caps_and_scales() {
+    fn cadence_window_days_floors_caps_and_scales() {
         // First report (no interval) → the floor.
-        assert_eq!(earnings_back_days(None), EARNINGS_BACK_DAYS);
+        assert_eq!(cadence_window_days(None), EARNINGS_BACK_DAYS);
         // Sub-weekly run floors to the default week of context.
-        assert_eq!(earnings_back_days(Some(1.0)), EARNINGS_BACK_DAYS);
+        assert_eq!(cadence_window_days(Some(1.0)), EARNINGS_BACK_DAYS);
+        assert_eq!(cadence_window_days(Some(3.2)), EARNINGS_BACK_DAYS);
         // A multi-week run rounds up to ~its interval, above the floor and below the cap.
-        assert_eq!(earnings_back_days(Some(10.0)), 10);
-        assert_eq!(earnings_back_days(Some(30.0)), 30);
+        assert_eq!(cadence_window_days(Some(10.0)), 10);
+        assert_eq!(cadence_window_days(Some(12.5)), 13);
+        assert_eq!(cadence_window_days(Some(30.0)), 30);
         // A longer gap is capped at FMP's ~1-month free window.
-        assert_eq!(earnings_back_days(Some(45.0)), EARNINGS_BACK_MAX_DAYS);
-        assert_eq!(earnings_back_days(Some(120.0)), EARNINGS_BACK_MAX_DAYS);
+        assert_eq!(cadence_window_days(Some(45.0)), EARNINGS_BACK_MAX_DAYS);
+        assert_eq!(cadence_window_days(Some(120.0)), EARNINGS_BACK_MAX_DAYS);
         // Degenerate intervals (clock skew, non-finite) clamp to the floor, never panic.
-        assert_eq!(earnings_back_days(Some(-5.0)), EARNINGS_BACK_DAYS);
-        assert_eq!(earnings_back_days(Some(f64::NAN)), EARNINGS_BACK_DAYS);
-        assert_eq!(earnings_back_days(Some(f64::INFINITY)), EARNINGS_BACK_MAX_DAYS);
+        assert_eq!(cadence_window_days(Some(-5.0)), EARNINGS_BACK_DAYS);
+        assert_eq!(cadence_window_days(Some(f64::NAN)), EARNINGS_BACK_DAYS);
+        assert_eq!(cadence_window_days(Some(f64::INFINITY)), EARNINGS_BACK_MAX_DAYS);
     }
 
     #[test]
@@ -2718,6 +2829,314 @@ mod tests {
             pe_history: None,
             trailing_return: None,
         }
+    }
+
+    /// N = 30 on 2026-10-12: prior 08-13..09-11, recent 09-12..10-11, upcoming 10-12..10-25.
+    fn froth_windows() -> FrothWindows {
+        FrothWindows::new(NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(), 30)
+    }
+
+    fn froth_source(base_url: &str) -> (FmpDataSource, Arc<crate::progress::RecordingReporter>) {
+        let rec = Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = RunContext::new(
+            "run",
+            rec.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        (test_source(base_url).with_context(ctx), rec)
+    }
+
+    fn reply(status: u16, body: &'static str) -> Canned {
+        Canned::Reply {
+            status,
+            headers: vec![],
+            body,
+        }
+    }
+
+    /// The live calendar's row shapes: two recent priced offerings, one prior, one scheduled,
+    /// and a fund launch with no share count.
+    const IPO_BODY: &str = r#"[
+        {"symbol":"CTY","date":"2026-10-16","company":"City Therapeutics","exchange":"NASDAQ","actions":"Expected","shares":9722222,"priceRange":"17.00 - 19.00","marketCap":null,"dealSize":212430545},
+        {"symbol":"TRXB","date":"2026-10-09","company":"TRex Bio Inc.","exchange":"NASDAQ","actions":"Priced","shares":8333334,"priceRange":null,"marketCap":113287167,"dealSize":116666676},
+        {"symbol":"OAKL","date":"2026-10-07","company":"Oakmark ETF","exchange":"NYSE","actions":"Priced","shares":null,"priceRange":null,"marketCap":25,"dealSize":null},
+        {"symbol":"ACCV","date":"2026-09-30","company":"Accelevation Holdings Corp.","exchange":"NASDAQ","actions":"Priced","shares":30000000,"priceRange":null,"marketCap":null,"dealSize":540000000},
+        {"symbol":"LYNX","date":"2026-08-19","company":"Lyntris Inc.","exchange":"NASDAQ","actions":"Priced","shares":17000000,"priceRange":null,"marketCap":null,"dealSize":297500000}
+    ]"#;
+
+    /// One M&A page, newest first: a recent filing fanned out over two securities, a prior
+    /// filing, and a row past the windows' first day that ends the walk.
+    const MNA_BODY: &str = r#"[
+        {"symbol":"IPXG","companyName":"Inflection Point VII","targetedSymbol":"LUNR","targetedCompanyName":"Intuitive Machines, Inc.","transactionDate":"2026-10-08","link":"https://sec.gov/a"},
+        {"symbol":"IPXGW","companyName":"Inflection Point VII*","targetedSymbol":"LUNR","targetedCompanyName":"Intuitive Machines, Inc.","transactionDate":"2026-10-08","link":"https://sec.gov/a"},
+        {"symbol":"OSTK","companyName":"Overstock","targetedSymbol":"FTHM","targetedCompanyName":"Fathom Holdings Inc.","transactionDate":"2026-08-17","link":"https://sec.gov/b"},
+        {"symbol":"AMZN","companyName":"Amazon","targetedSymbol":"GSAT","targetedCompanyName":"Globalstar, Inc.","transactionDate":"2026-07-31","link":"https://sec.gov/c"}
+    ]"#;
+
+    /// A full M&A page of distinct filings on one date.
+    fn full_mna_page(date: &str) -> &'static str {
+        let rows: Vec<String> = (0..crate::portfolio::evidence::MA_PAGE_LIMIT)
+            .map(|i| {
+                format!(
+                    r#"{{"symbol":"A{i}","companyName":"Acq {i}","targetedCompanyName":"Tgt {i}","transactionDate":"{date}","link":"L{i}"}}"#
+                )
+            })
+            .collect();
+        Box::leak(format!("[{}]", rows.join(",")).into_boxed_str())
+    }
+
+    #[test]
+    fn primary_market_reads_both_feeds_with_one_row_per_request() {
+        let server = MockHttp::serve(vec![reply(200, IPO_BODY), reply(200, MNA_BODY)]);
+        let (source, rec) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let group = source
+            .fetch_primary_market(&froth_windows(), &mut gaps)
+            .expect("both sides read");
+        assert!(gaps.is_empty(), "{gaps:?}");
+        assert_eq!(
+            (group.recent.from.as_str(), group.recent.to.as_str()),
+            ("2026-09-12", "2026-10-11")
+        );
+        let ipos = group.ipos.unwrap();
+        assert_eq!(
+            (ipos.recent_count, ipos.prior_count, ipos.upcoming_count),
+            (2, 1, 1),
+            "the fund launch carries no share count"
+        );
+        let names: Vec<&str> = ipos
+            .notable
+            .iter()
+            .map(|n| n.symbol.as_deref().unwrap())
+            .collect();
+        assert_eq!(names, vec!["ACCV", "TRXB"]);
+        assert_eq!(ipos.notable[0].deal_size_usd, Some(540_000_000.0));
+        let deals = group.deals.unwrap();
+        assert_eq!((deals.recent_count, deals.prior_count), (1, Some(1)));
+        assert_eq!(deals.notable[0].target_symbol.as_deref(), Some("LUNR"));
+        let targets = server.request_targets();
+        assert!(targets[0].starts_with("/ipos-calendar?"), "{}", targets[0]);
+        for param in ["from=2026-08-13", "to=2026-10-25"] {
+            assert!(targets[0].contains(param), "{}", targets[0]);
+        }
+        assert!(targets[1].starts_with("/mergers-acquisitions-latest?"), "{}", targets[1]);
+        assert!(targets[1].contains("page=0"), "{}", targets[1]);
+        assert_eq!(targets.len(), 2, "the first page crossed the windows' first day");
+        assert_eq!(
+            recorded_rows(&rec),
+            vec![
+                ("ipos-calendar".to_string(), "ok".to_string()),
+                ("mergers-acquisitions-latest".to_string(), "ok".to_string()),
+            ]
+        );
+        let groups: Vec<String> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished { group, .. } => Some(group),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(groups, vec!["primary-market", "primary-market"]);
+    }
+
+    #[test]
+    fn primary_market_below_the_paid_tier_is_absent_silently() {
+        let server = MockHttp::serve(vec![
+            reply(402, "Payment Required"),
+            reply(402, "Payment Required"),
+        ]);
+        let (source, _) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        assert_eq!(source.fetch_primary_market(&froth_windows(), &mut gaps), None);
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    #[test]
+    fn primary_market_ipo_side_fails_soft_by_cause_beside_the_deal_side() {
+        let gap_ids = |gaps: &[DataGap]| -> Vec<(GroupKind, String, GapReason)> {
+            gaps.iter()
+                .map(|g| (g.group, g.series_id.clone(), g.reason))
+                .collect()
+        };
+        let cases: [(Canned, GapReason); 3] = [
+            (reply(403, "Forbidden"), GapReason::Rejected),
+            (reply(200, "[]"), GapReason::Unavailable),
+            (reply(200, r#"[{"symbol":"NODATE"}]"#), GapReason::Malformed),
+        ];
+        for (ipo_reply, reason) in cases {
+            let server = MockHttp::serve(vec![ipo_reply, reply(200, MNA_BODY)]);
+            let (source, _) = froth_source(&server.base_url);
+            let mut gaps = Vec::new();
+            let group = source
+                .fetch_primary_market(&froth_windows(), &mut gaps)
+                .expect("the deal side still reads");
+            assert_eq!(group.ipos, None);
+            assert!(group.deals.is_some());
+            assert_eq!(
+                gap_ids(&gaps),
+                vec![(GroupKind::PrimaryMarket, "ipos-calendar".to_string(), reason)]
+            );
+        }
+    }
+
+    #[test]
+    fn primary_market_withholds_a_side_whose_feed_served_a_row_it_could_not_read() {
+        let gap_ids = |gaps: &[DataGap]| -> Vec<(String, GapReason)> {
+            gaps.iter().map(|g| (g.series_id.clone(), g.reason)).collect()
+        };
+        // A priced offering with no symbol still counts, alone.
+        let symbolless = r#"[
+            {"date":"2026-10-01","company":"No Symbol Inc.","exchange":"NASDAQ","actions":"Priced","shares":5000000,"dealSize":80000000},
+            {"symbol":"LYNX","date":"2026-08-19","company":"Lyntris Inc.","exchange":"NASDAQ","actions":"Priced","shares":17000000,"dealSize":297500000}
+        ]"#;
+        let server = MockHttp::serve(vec![reply(200, symbolless), reply(200, MNA_BODY)]);
+        let (source, _) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let ipos = source
+            .fetch_primary_market(&froth_windows(), &mut gaps)
+            .unwrap()
+            .ipos
+            .unwrap();
+        assert_eq!((ipos.recent_count, ipos.prior_count), (1, 1));
+        assert_eq!(ipos.notable[0].symbol, None);
+        assert!(gaps.is_empty(), "{gaps:?}");
+
+        // An offering the reader cannot date withholds the IPO read; a dateless row with no
+        // share count (a fund launch) could never have counted, so it does not.
+        let undated = r#"[
+            {"symbol":"NODT","company":"Undated Corp.","exchange":"NYSE","actions":"Priced","shares":5000000},
+            {"symbol":"ETFX","company":"Some ETF","exchange":"NYSE","actions":"Priced","shares":null},
+            {"symbol":"LYNX","date":"2026-08-19","company":"Lyntris Inc.","exchange":"NASDAQ","actions":"Priced","shares":17000000}
+        ]"#;
+        let server = MockHttp::serve(vec![reply(200, undated), reply(200, MNA_BODY)]);
+        let (source, rec) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let group = source
+            .fetch_primary_market(&froth_windows(), &mut gaps)
+            .unwrap();
+        assert_eq!(group.ipos, None);
+        assert!(group.deals.is_some());
+        assert_eq!(
+            gap_ids(&gaps),
+            vec![("ipos-calendar".to_string(), GapReason::Malformed)]
+        );
+        assert_eq!(recorded_rows(&rec)[0].1, "malformed");
+
+        // Every M&A row is a deal row: one the walk served but could not read withholds the
+        // deal read.
+        let dateless = r#"[
+            {"symbol":"IPXG","companyName":"Inflection Point VII","targetedSymbol":"LUNR","targetedCompanyName":"Intuitive Machines, Inc.","transactionDate":"2026-10-08","link":"https://sec.gov/a"},
+            {"symbol":"ZZZ","companyName":"Undated Acquirer","targetedCompanyName":"Undated Target","link":"https://sec.gov/z"},
+            {"symbol":"AMZN","companyName":"Amazon","targetedSymbol":"GSAT","targetedCompanyName":"Globalstar, Inc.","transactionDate":"2026-07-31","link":"https://sec.gov/c"}
+        ]"#;
+        let server = MockHttp::serve(vec![reply(200, IPO_BODY), reply(200, dateless)]);
+        let (source, _) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let group = source
+            .fetch_primary_market(&froth_windows(), &mut gaps)
+            .unwrap();
+        assert_eq!(group.deals, None);
+        assert!(group.ipos.is_some());
+        assert_eq!(
+            gap_ids(&gaps),
+            vec![("mergers-acquisitions-latest".to_string(), GapReason::Malformed)]
+        );
+    }
+
+    #[test]
+    fn primary_market_a_later_page_with_no_readable_row_is_a_failed_page() {
+        // The feed is newest first, so a wholly unreadable page after one that reached the
+        // prior window holds only rows older than the recent window: the recent count stands,
+        // the prior count is not derivable, and no gap is recorded (completion state 2).
+        let server = MockHttp::serve(vec![
+            reply(200, IPO_BODY),
+            reply(200, full_mna_page("2026-09-01")),
+            reply(200, r#"[{"symbol":"NODATE"}]"#),
+        ]);
+        let (source, rec) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let deals = source
+            .fetch_primary_market(&froth_windows(), &mut gaps)
+            .unwrap()
+            .deals
+            .unwrap();
+        assert_eq!((deals.recent_count, deals.prior_count), (0, None));
+        assert!(gaps.is_empty(), "{gaps:?}");
+        let statuses: Vec<String> = recorded_rows(&rec).into_iter().map(|r| r.1).collect();
+        assert_eq!(statuses, vec!["ok", "ok", "malformed"]);
+    }
+
+    #[test]
+    fn primary_market_deal_walk_maps_its_ending_onto_the_completion_states() {
+        // State 2: a full page reaching into the prior window, then a failed page — the
+        // recent count alone, no gap.
+        let server = MockHttp::serve(vec![
+            reply(200, IPO_BODY),
+            reply(200, full_mna_page("2026-09-01")),
+            reply(403, "Forbidden"),
+        ]);
+        let (source, rec) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let deals = source
+            .fetch_primary_market(&froth_windows(), &mut gaps)
+            .unwrap()
+            .deals
+            .unwrap();
+        assert_eq!((deals.recent_count, deals.prior_count), (0, None));
+        assert!(gaps.is_empty(), "{gaps:?}");
+        let statuses: Vec<String> = recorded_rows(&rec).into_iter().map(|r| r.1).collect();
+        assert_eq!(statuses, vec!["ok", "ok", "rejected"]);
+
+        // State 3: a full page inside the recent window, then a failed page — no deal read
+        // and one gap carrying the failure's reason.
+        let server = MockHttp::serve(vec![
+            reply(200, IPO_BODY),
+            reply(200, full_mna_page("2026-10-01")),
+            reply(403, "Forbidden"),
+        ]);
+        let (source, _) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let group = source
+            .fetch_primary_market(&froth_windows(), &mut gaps)
+            .unwrap();
+        assert_eq!(group.deals, None);
+        assert!(group.ipos.is_some());
+        let recorded: Vec<(&str, GapReason)> = gaps
+            .iter()
+            .map(|g| (g.series_id.as_str(), g.reason))
+            .collect();
+        assert_eq!(recorded, vec![("mergers-acquisitions-latest", GapReason::Rejected)]);
+
+        // An empty first page is a fault of the feed, never a quiet market.
+        let server = MockHttp::serve(vec![reply(200, IPO_BODY), reply(200, "[]")]);
+        let (source, _) = froth_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let group = source
+            .fetch_primary_market(&froth_windows(), &mut gaps)
+            .unwrap();
+        assert_eq!(group.deals, None);
+        let recorded: Vec<(&str, GapReason)> = gaps
+            .iter()
+            .map(|g| (g.series_id.as_str(), g.reason))
+            .collect();
+        assert_eq!(recorded, vec![("mergers-acquisitions-latest", GapReason::Unavailable)]);
+    }
+
+    #[test]
+    fn primary_market_skips_its_requests_once_the_run_is_cancelled() {
+        let server = MockHttp::serve(vec![]);
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let ctx = RunContext::new(
+            "run",
+            Arc::new(crate::progress::RecordingReporter::default()),
+            cancelled,
+        );
+        let source = test_source(&server.base_url).with_context(ctx);
+        let mut gaps = Vec::new();
+        assert_eq!(source.fetch_primary_market(&froth_windows(), &mut gaps), None);
+        assert!(gaps.is_empty());
+        assert!(server.request_targets().is_empty());
     }
 
     fn recorded_rows(rec: &crate::progress::RecordingReporter) -> Vec<(String, String)> {
@@ -8141,6 +8560,37 @@ fn ma_deals_from_value(value: &Value) -> Result<Vec<MaDeal>> {
     })
 }
 
+/// `ipos-calendar` → its readable rows and the count of served offerings no reader could
+/// date. A row needs a listing date to be read; a served row with a share count but no
+/// readable date is an offering the counts cannot place. A share count or a deal size that
+/// is absent, non-finite or not positive reads as `None`. A non-empty body with no readable
+/// row is drift, never an honest empty.
+fn ipo_rows_from_value(value: &Value) -> Result<(Vec<IpoRow>, usize)> {
+    let rows = evidence_rows(value, "ipos-calendar")?;
+    let mut out = Vec::new();
+    let mut undated_offerings = 0;
+    for row in rows {
+        let shares = served_f64(row, "shares").filter(|s| *s > 0.0);
+        let Some(date) = served_date(row, "date") else {
+            undated_offerings += usize::from(shares.is_some());
+            continue;
+        };
+        out.push(IpoRow {
+            symbol: served_str(row, "symbol"),
+            company: served_str(row, "company"),
+            date,
+            exchange: served_str(row, "exchange"),
+            status: IpoStatus::from_served(served_str(row, "actions").as_deref()),
+            shares,
+            deal_size: served_f64(row, "dealSize").filter(|s| *s > 0.0),
+        });
+    }
+    if out.is_empty() && !rows.is_empty() {
+        anyhow::bail!("FMP ipos-calendar: no served row was readable — malformed or drifted response");
+    }
+    Ok((out, undated_offerings))
+}
+
 /// One evidence leg's identity ([`FmpDataSource::evidence_leg`]): the tracker
 /// row's kind and label, the endpoint path, and the name its gaps carry.
 struct EvidenceLeg {
@@ -8479,22 +8929,44 @@ impl FmpDataSource {
     /// failure or the cap leaves the rows gathered with the gap saying so.
     /// Wholly fail-soft.
     pub fn fetch_recent_mergers(&self, session: NaiveDate) -> (Vec<MaDeal>, Option<String>) {
-        use crate::portfolio::evidence::{window_start, MA_PAGE_LIMIT, MA_WINDOW_MONTHS};
+        use crate::portfolio::evidence::{window_start, MA_WINDOW_MONTHS};
         let since = window_start(session, MA_WINDOW_MONTHS);
+        let MaWalk { mut deals, end, .. } =
+            self.walk_mergers(&since, "mergers-latest", "market", "M&A feed");
+        deals.retain(|d| d.transaction_date.as_str() >= since.as_str());
+        let gap = match end {
+            MaWalkEnd::Boundary | MaWalkEnd::FeedEnd | MaWalkEnd::EmptyFeed => None,
+            MaWalkEnd::Cap => Some(format!(
+                "FMP M&A feed walk reached its {MA_PAGE_CAP}-page cap before the window's boundary"
+            )),
+            MaWalkEnd::Failed { page, detail, .. } => Some(ma_walk_gap(page, &detail)),
+            MaWalkEnd::Cancelled => Some("FMP M&A feed walk skipped (run cancelled)".to_string()),
+        };
+        (deals, gap)
+    }
+
+    /// The M&A feed walked newest first from its first page — the one walk Portfolio's
+    /// run-level feed and the report's primary-market read share. It stops on a page holding
+    /// a row dated before `since` (`YYYY-MM-DD`), on a page served short of [`MA_PAGE_LIMIT`]
+    /// (measured on the rows served, not the rows read), on a failed page, or once
+    /// [`MA_PAGE_CAP`] pages are spent, returning every row read on the walked pages, the
+    /// rows they served but no reader could read, and how the walk ended ([`MaWalk`]). Each
+    /// page is one tracker row under `kind` / `symbol` / `label`.
+    fn walk_mergers(&self, since: &str, kind: &str, symbol: &str, label: &str) -> MaWalk {
+        use crate::portfolio::evidence::MA_PAGE_LIMIT;
         let mut deals: Vec<MaDeal> = Vec::new();
+        let mut unreadable = 0;
         for page in 0..MA_PAGE_CAP {
             if self.progress.is_cancelled() {
-                return (
-                    deals,
-                    Some("FMP M&A feed walk skipped (run cancelled)".to_string()),
-                );
+                let end = MaWalkEnd::Cancelled;
+                return MaWalk { deals, unreadable, end };
             }
             let page_param = page.to_string();
             let limit_param = MA_PAGE_LIMIT.to_string();
             let served = self.suite_get_shaped(
-                "mergers-latest",
-                "market",
-                "M&A feed",
+                kind,
+                symbol,
+                label,
                 FMP_MERGERS_LATEST_PATH,
                 &[("page", &page_param), ("limit", &limit_param)],
                 |value| match ma_deals_from_value(value) {
@@ -8510,28 +8982,36 @@ impl FmpDataSource {
                 },
             );
             let (rows, served_rows) = match served {
-                Ok(Ok(page)) => page,
-                Ok(Err(detail)) => return (deals, Some(ma_walk_gap(page, &detail))),
-                Err(reason) => return (deals, Some(ma_walk_gap(page, reason.as_str()))),
-            };
-            let mut left_the_window = false;
-            for row in rows {
-                if row.transaction_date.as_str() >= since.as_str() {
-                    deals.push(row);
-                } else {
-                    left_the_window = true;
+                Ok(Ok(page_rows)) => page_rows,
+                Ok(Err(detail)) => {
+                    let reason = GapReason::Malformed;
+                    let end = MaWalkEnd::Failed { page, reason, detail };
+                    return MaWalk { deals, unreadable, end };
                 }
+                Err(reason) => {
+                    let detail = reason.as_str().to_string();
+                    let end = MaWalkEnd::Failed { page, reason, detail };
+                    return MaWalk { deals, unreadable, end };
+                }
+            };
+            if page == 0 && served_rows == 0 {
+                let end = MaWalkEnd::EmptyFeed;
+                return MaWalk { deals, unreadable, end };
             }
-            if left_the_window || served_rows < MA_PAGE_LIMIT {
-                return (deals, None);
+            unreadable += served_rows.saturating_sub(rows.len());
+            let left_the_window = rows.iter().any(|r| r.transaction_date.as_str() < since);
+            deals.extend(rows);
+            if left_the_window {
+                let end = MaWalkEnd::Boundary;
+                return MaWalk { deals, unreadable, end };
+            }
+            if served_rows < MA_PAGE_LIMIT {
+                let end = MaWalkEnd::FeedEnd;
+                return MaWalk { deals, unreadable, end };
             }
         }
-        (
-            deals,
-            Some(format!(
-                "FMP M&A feed walk reached its {MA_PAGE_CAP}-page cap before the window's boundary"
-            )),
-        )
+        let end = MaWalkEnd::Cap;
+        MaWalk { deals, unreadable, end }
     }
 }
 

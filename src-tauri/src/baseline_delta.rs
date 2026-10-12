@@ -500,6 +500,55 @@ mod tests {
         assert!(!plain.changed.iter().any(|s| s.group == GroupKind::Industries));
     }
 
+    /// The primary-market group carries its own recent-vs-prior trend, so the change view
+    /// never diffs it: two snapshots differing only in it yield the same view.
+    #[test]
+    fn the_primary_market_group_stays_out_of_the_change_view() {
+        use crate::data_sources::{ActivityWindow, IpoActivity, PrimaryMarketActivity};
+        let level = |price: f64| Quote {
+            symbol: "^GSPC".into(),
+            name: "S&P 500".into(),
+            price,
+            change: Change::percent(0.4),
+            unit: "index points".into(),
+        };
+        let prior = BaselineMarketData {
+            indices: vec![level(5_400.0)],
+            ..Default::default()
+        };
+        let current = BaselineMarketData {
+            indices: vec![level(5_500.0)],
+            ..Default::default()
+        };
+        let plain = compute_deltas(&current, &prior, 7.0);
+        let with_group = |mut data: BaselineMarketData, recent_count: u32| {
+            let window = || ActivityWindow {
+                from: "2026-10-05".into(),
+                to: "2026-10-11".into(),
+            };
+            data.primary_market = Some(PrimaryMarketActivity {
+                recent: window(),
+                prior: window(),
+                upcoming: window(),
+                ipos: Some(IpoActivity {
+                    recent_count,
+                    prior_count: 3,
+                    upcoming_count: 2,
+                    notable: Vec::new(),
+                }),
+                deals: None,
+            });
+            data
+        };
+        let enriched = compute_deltas(&with_group(current, 9), &with_group(prior, 2), 7.0);
+        assert_eq!(enriched, plain);
+        assert_eq!(plain.changed.len(), 1, "the index level alone is diffed");
+        assert!(!plain
+            .changed
+            .iter()
+            .any(|s| s.group == GroupKind::PrimaryMarket));
+    }
+
     /// A series that resolved last run but failed this run is `missing` *and* carries the
     /// gap reason from this run's manifest — so a transient feed outage isn't read as the
     /// series leaving the market.

@@ -128,16 +128,16 @@ The application gathers required baseline market data before agent reasoning beg
 Baseline market data is not optional and does not depend on the main agent deciding to request it.
 It is gathered early — before the audit and research routing — so the measured market picture and the change view below are available to every downstream stage that reasons about what actually happened.
 
-The baseline scan assembles the **thirteen baseline groups** Step 16 serializes (fourteen with the IPO / M&A froth group — [§Step 16](#step-16-main-agent-synthesis)):
+The baseline scan assembles the **fourteen baseline groups** Step 16 serializes:
 
-**indices** · **market internals** · **sector performance** · **macro levels** · **labor levels** · **economic-release calendar** · **index performance** · **market movers** · **earnings** · **sector P/E** · **industries** · **US equity-risk-premium** · **CFTC positioning** — plus the **primary-market froth** group.
+**indices** · **market internals** · **sector performance** · **macro levels** · **labor levels** · **economic-release calendar** · **index performance** · **market movers** · **earnings** · **sector P/E** · **industries** · **US equity-risk-premium** · **CFTC positioning** · **primary-market froth**
 
 Each group's **series membership and endpoints are specified once, in [data-sources.md](data-sources.md)** (the FMP / FRED / BLS / CFTC per-source tables — including the credit-spread, curve-spread, volatility-term-structure, financial-conditions, stress, jobless-claims, Fed-balance-sheet, and mortgage-rate series the internals / macro groups carry), and are deliberately **not re-enumerated here**.
 Three **paid-tier enrichment** bundles add fields across four baseline groups — three existing groups gain fields, plus the new froth group ([data-sources.md §Report enrichment](data-sources.md#report-enrichment-paid-fmp-tier)):
 
 - the **economic-release calendar** gains analyst consensus + realized surprise as a per-event **`surprises` vector** — one entry per matched FMP event (unit, estimate, actual, relation tag, absolute gap, % gap, and the beat / miss read where the event's polarity is mapped), since one release fans out to several events — plus Fed/FOMC event dates as their own `fed` event class;
 - **sector P/E** and **industries** gain, on each (group, exchange) row, the valuation-vs-own-history read — the group's newest P/E as a percentile within its trailing-year range plus a min/median/max band and the window's start and latest prints — and the performance-vs-own-history read — a trailing cumulative return compounded from the performance endpoint's daily `averageChange` (derivation rules single-homed there; derived reads persisted, raw series not);
-- the **primary-market froth** group (IPO recent + prior-window counts, the standalone upcoming-scheduled count, M&A recent + prior-window counts, notable names) is read as a risk-appetite / late-cycle pace *and trend* (native recent-vs-prior comparison, like CFTC positioning).
+- the **primary-market froth** group (`primary_market`: the IPO recent + prior-window counts and the standalone upcoming-scheduled count, the registered-deal recent + prior-window counts, and the notable names) is read as a risk-appetite / late-cycle pace *and trend* (native recent-vs-prior comparison, like CFTC positioning).
 
 **News is not part of the baseline scan** — gathering and filtering news belongs to the Step-7 funnel alone ([§Step 7](#step-7-gather-and-filter-news)).
 
@@ -543,7 +543,7 @@ The model is instructed to act as Market Signal's Head Market Analyst and to:
 - classify the three axes (`risk_posture`, `market_cycle`, `thesis_stance`);
 - and emit durable learnings only sparingly (rare, self-contained, at most 5, usually none).
 
-**Prompt — user inputs** (each block omitted when empty): the standing instruction; the baseline market data (the thirteen Step-3 baseline groups serialized to JSON — indices, internals, sector performance, macro levels, labor levels, release calendar, index performance, movers, earnings, sector P/E, industries, equity-risk-premium, and CFTC positioning — fourteen with the IPO/M&A froth group); and the change view (framed with the actual elapsed interval).
+**Prompt — user inputs** (each block omitted when empty): the standing instruction; the baseline market data (the fourteen Step-3 baseline groups serialized to JSON — indices, internals, sector performance, macro levels, labor levels, release calendar, index performance, movers, earnings, sector P/E, industries, equity-risk-premium, CFTC positioning, and the primary-market froth group); and the change view (framed with the actual elapsed interval).
 From the research packet come the filtered news clusters, the deep-research evidence and sources, the Step-10 research-informed memory pull, and the condensed research-inbox excerpts.
 The remaining blocks are the recent prior reports (summary metadata plus head-truncated Markdown bodies — the audit's auditable object and its gate); the Step-4 audit-memory pull (on its own channel, which steers but does not license the audit); the cadence guidance; the full 16-lens skill library; and the three analyst reviews (each labeled by posture and confidence, with its key points, risks, and opportunities).
 
@@ -554,21 +554,24 @@ Validation: the 3–6 header-bullet bound is enforced in code, a blank Markdown 
 The structured summary and durable learnings flow into Step 17.
 
 **Enrichment — prompt prose (paid-tier signals).**
-The three paid-tier baseline enrichments ([data-sources.md §Report enrichment](data-sources.md#report-enrichment-paid-fmp-tier)) reach this call, the research router ([Step 8](#step-8-perform-research-routing)), and the analysts ([Step 12](#step-12-run-analyst-agents)) *automatically* — every stage whose prompt carries the baseline as JSON — so the new fields (on `EconomicRelease`, on `SectorPe` / `IndustrySnapshot`, and the new issuance-activity group) appear in those prompts with no plumbing change.
+The three paid-tier baseline enrichments ([data-sources.md §Report enrichment](data-sources.md#report-enrichment-paid-fmp-tier)) reach this call, the research router ([Step 8](#step-8-perform-research-routing)), and the analysts ([Step 12](#step-12-run-analyst-agents)) *automatically* — every stage whose prompt carries the baseline as JSON — so the new fields (on `EconomicRelease`, on `SectorPe` / `IndustrySnapshot`, and the `primary_market` group) appear in those prompts with no plumbing change.
 (The headline filter never sees the baseline, and the Step-4/10 embedding queries are deterministic selected-field builders — the new fields reach neither, and neither needs them.)
-The interpretive **prose** is hand-written per data group, though, and must be updated in lockstep or the model will under-use or misread the new fields:
+The interpretive **prose** is hand-written per data group and changes in lockstep with the data, or the model under-uses or misreads the new fields:
 
 - **Main-agent synthesis (this step).**
-  Add prose for the calendar's per-event consensus / surprise entries (beat/miss tag, absolute + % gap, a null estimate read as no-consensus not zero) and for the IPO / M&A froth (issuance / deal pace *and its rising/cooling trend* as a risk-appetite / late-cycle tell on the `market_cycle` and `risk_posture` axes).
+  The calendar prose reads each release's per-event consensus / surprise entries: the relation tag, the beat / miss read where the polarity is mapped, and the absolute and % gap.
+  A print not yet released carries the estimate alone, and a null is a figure not available, never zero.
   The valuation prose reads the snapshot `pe` as a cross-sectional level and the P/E and performance history together: the P/E percentile + band as rich/cheap against the group's own range, the trailing return as up/down over the window, read as a re-rating with its price context.
   It allows a claim of multiple expansion or de-rating over the window only from the history's start and latest prints, and since the previous report only from the change view's measured sector P/E move.
   A row with neither supports the level read alone.
+  The primary-market prose glosses the three windows and each side's fields, and reads each recent count against its prior count as the pace and its direction: a surge a risk-on / late-cycle tell, a freeze a risk-off / stress tell, on the `market_cycle` and `risk_posture` axes.
+  It weighs a change in the small counts by its size.
+  A null `prior_count` reads as the recent count alone, and a null side as not gathered, never zero.
 - **Research router (Step 8).**
-  Lighter: a one-line note that the calendar now carries per-event consensus/surprise, the P/E carries trailing-history context **paired with the window's cumulative performance** (a valuation extreme routes differently rising vs falling — the re-rating-turn vs value-trap distinction), and the issuance-activity group carries the IPO / M&A pace and trend, as routable signals — covering all three of the Step-8 contract's enrichment triggers (a surprise, a valuation extreme read with its price context, an issuance / deal-froth extreme).
+  One sentence per enrichment names its routable signal: a material surprise, or an upcoming release or Fed event the thesis turns on; a valuation extreme, read with whether the group is rising or falling; a surge or freeze in issuance or deal-making.
 - **Analyst reviews (Step 12).**
-  Optional: a sentence steering Bull/Bear to weight a surprise, a valuation-vs-history extreme, or a froth turn; they see the fields in the packet JSON regardless.
-
-Ship the prose change in the same slice as the data: the data without the prose leaves the model under-using the new fields.
+  The analysts carry no enrichment sentence of their own.
+  They read the fields in the packet JSON through the skill library: the Consensus vs Contrarian lens reads the surprises, the Valuation Compression lens the history, and the Positioning & Sentiment lens the primary-market pace.
 
 ## Step 17: Save Report and Memory Outputs
 

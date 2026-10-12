@@ -274,6 +274,39 @@ pub struct MaDeal {
     pub link: Option<String>,
 }
 
+/// One walk of the M&A feed (`FmpDataSource::walk_mergers`) — the one page walk Portfolio's
+/// run-level feed and the report's primary-market read share: every row read on the walked
+/// pages, newest first (the boundary page's rows before the walk's start included), the
+/// rows those pages served beside them that no reader could read, and how the walk ended.
+/// A page with no readable row ends the walk as a failed page ([`MaWalkEnd::Failed`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaWalk {
+    pub deals: Vec<MaDeal>,
+    pub unreadable: usize,
+    pub end: MaWalkEnd,
+}
+
+/// How a walk of the M&A feed ended ([`MaWalk`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MaWalkEnd {
+    /// A row dated before the walk's start: every row since it was seen.
+    Boundary,
+    /// A page served short of [`MA_PAGE_LIMIT`]: the feed ended.
+    FeedEnd,
+    /// The first page served no row at all.
+    EmptyFeed,
+    /// [`MA_PAGE_CAP`] pages were spent before the walk's start.
+    Cap,
+    /// A page failed — an HTTP-level gap, or a body with no readable row (`Malformed`).
+    Failed {
+        page: usize,
+        reason: crate::data_sources::GapReason,
+        detail: String,
+    },
+    /// The run was cancelled before a page's request.
+    Cancelled,
+}
+
 /// Which side of a deal the holding is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaRole {

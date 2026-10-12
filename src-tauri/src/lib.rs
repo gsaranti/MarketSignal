@@ -28,6 +28,7 @@ pub mod news;
 pub mod pipeline;
 pub mod portability;
 pub mod portfolio;
+pub mod primary_market;
 pub mod progress;
 pub mod research;
 pub mod research_executor;

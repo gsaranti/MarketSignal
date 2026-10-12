@@ -1277,8 +1277,9 @@ impl MarketDataSource for FredDataSource {
             sector_pe: Vec::new(),
             industries: Vec::new(),
             market_risk_premium: Vec::new(),
-            // CFTC owns the COT positioning group.
+            // CFTC owns the COT positioning group, FMP the primary-market pace.
             cot_positioning: Vec::new(),
+            primary_market: None,
             gaps,
         })
     }

@@ -144,7 +144,8 @@ that most limits the comparison.",
         description: "Analyzes investor psychology, market positioning, and sentiment conditions.",
         body: "Positioning & Sentiment. Read investor psychology, positioning, and sentiment. Use \
 the gathered tells — the volatility term structure (VIX against the 3-month VXV, and VXN for the \
-Nasdaq), the equity-breadth movers and most-actives, sector dispersion, consumer sentiment, and the \
+Nasdaq), the equity-breadth movers and most-actives, sector dispersion, consumer sentiment, the \
+pace of IPOs and M&A deals against the window before, and the \
 CFTC futures positioning (speculator net on the index, rate, FX, and commodity bellwethers, with the \
 asset-manager-vs-leveraged-money split flagging where real money and fast money diverge) — \
 alongside the positioning and flow color in the research packet to judge whether the market is \
@@ -346,6 +347,20 @@ mod tests {
             .unwrap();
         assert!(lens.body.contains("consensus estimate and its realized surprise"), "{}", lens.body);
         assert!(!lens.body.contains("no consensus"), "{}", lens.body);
+    }
+
+    #[test]
+    fn the_sentiment_lens_reads_the_primary_market_pace() {
+        let lens = CATALOG
+            .iter()
+            .find(|s| s.name == "Positioning & Sentiment")
+            .unwrap();
+        assert!(
+            lens.body
+                .contains("the pace of IPOs and M&A deals against the window before"),
+            "{}",
+            lens.body
+        );
     }
 
     #[test]

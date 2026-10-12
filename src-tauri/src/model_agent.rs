@@ -271,6 +271,24 @@ any expectation from the research. Read a run of upside or downside surprises as
 risk-posture read, and the upcoming schedule with its consensus as the known events that could \
 move markets.
 
+`primary_market` is the pace of new listings and takeovers over three dated windows: `recent`, \
+ending the day before today; `prior`, the window of equal length before it; and `upcoming`, \
+today and the 13 days after. Each window's `from` and `to` are its first and last days. `ipos` \
+carries: `recent_count` and `prior_count`, the IPOs, blank-check (SPAC) offerings included, \
+priced in each window; `upcoming_count`, the IPOs scheduled in the upcoming window; and \
+`notable`, the recent window's largest IPOs, each with its `deal_size_usd`, the offering's \
+dollar size as the feed states it, where the feed carries it. `deals` carries: `recent_count` \
+and `prior_count`, the merger and acquisition deals whose SEC registration statement was filed \
+in each window (a registration follows a deal's announcement, typically by several weeks, and \
+covers deals paid at least partly in stock); and `notable`, the recent window's latest deals, \
+each with its `acquirer`, its `target`, and the `target_symbol` where the target is listed. \
+Read each recent count against its prior count as the pace and its direction: a surge in \
+issuance or deal-making is a risk-on, late-cycle tell, and a freeze a risk-off or stress tell, \
+both bearing on the `market_cycle` and `risk_posture` reads. A few deals either way move these \
+small counts, so weigh a change by its size. A null `prior_count` was not derivable this run, so \
+read the recent count alone; a null `primary_market`, `ipos`, or `deals` was not gathered, never \
+zero.
+
 When present, the prompt also carries the current news and deep research, condensed by the \
 application layer. `news clusters` are the most market-significant stories, each a topic \
 with a relevance score and its member headlines; each headline carries its publish date, so \
@@ -1933,6 +1951,75 @@ instructions"));
 figure not available, never zero"));
         assert!(SYSTEM_PROMPT.contains("Read a run of upside or downside surprises as an input to the \
 risk-posture read"));
+    }
+
+    #[test]
+    fn system_prompt_reads_the_primary_market_pace() {
+        // The group's fields are inert without the prose that reads them.
+        for field in [
+            "`primary_market`",
+            "`recent`",
+            "`prior`",
+            "`upcoming`",
+            "`ipos`",
+            "`recent_count`",
+            "`prior_count`",
+            "`upcoming_count`",
+            "`notable`",
+            "`deal_size_usd`",
+            "`deals`",
+            "`acquirer`",
+            "`target`",
+            "`target_symbol`",
+        ] {
+            assert!(SYSTEM_PROMPT.contains(field), "{field}");
+        }
+        assert!(SYSTEM_PROMPT.contains("the IPOs, blank-check (SPAC) offerings included, \
+priced in each window"));
+        assert!(SYSTEM_PROMPT.contains("the merger and acquisition deals whose SEC registration \
+statement was filed in each window"));
+        assert!(SYSTEM_PROMPT.contains("a surge in \
+issuance or deal-making is a risk-on, late-cycle tell, and a freeze a risk-off or stress tell"));
+        assert!(SYSTEM_PROMPT.contains("weigh a change by its size"));
+        assert!(SYSTEM_PROMPT.contains("a null `primary_market`, `ipos`, or `deals` was not \
+gathered, never zero"));
+    }
+
+    #[test]
+    fn user_prompt_carries_the_primary_market_group() {
+        use crate::data_sources::{ActivityWindow, IpoActivity, NotableIpo, PrimaryMarketActivity};
+        let window = |from: &str, to: &str| ActivityWindow {
+            from: from.into(),
+            to: to.into(),
+        };
+        let baseline = BaselineMarketData {
+            primary_market: Some(PrimaryMarketActivity {
+                recent: window("2026-09-12", "2026-10-11"),
+                prior: window("2026-08-13", "2026-09-11"),
+                upcoming: window("2026-10-12", "2026-10-25"),
+                ipos: Some(IpoActivity {
+                    recent_count: 14,
+                    prior_count: 12,
+                    upcoming_count: 2,
+                    notable: vec![NotableIpo {
+                        symbol: Some("ACCV".into()),
+                        company: Some("Accelevation Holdings Corp.".into()),
+                        date: "2026-09-30".into(),
+                        exchange: Some("NASDAQ".into()),
+                        deal_size_usd: Some(540_000_000.0),
+                    }],
+                }),
+                deals: None,
+            }),
+            ..Default::default()
+        };
+        // The group reaches the model through the whole-baseline serialization, its absent
+        // side an explicit null.
+        let prompt = build_user_prompt(&baseline, None, None, &[], &[]);
+        assert!(prompt.contains(r#""primary_market": {"#), "{prompt}");
+        assert!(prompt.contains(r#""recent_count": 14"#), "{prompt}");
+        assert!(prompt.contains(r#""deal_size_usd": 540000000.0"#), "{prompt}");
+        assert!(prompt.contains(r#""deals": null"#), "{prompt}");
     }
 
     #[test]
