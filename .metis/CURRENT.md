@@ -12,13 +12,14 @@ The 2026-10-12 probe reshaped the design: the IPO feed is a new-listings calenda
 Portfolio's M&A page walk is now shared (`walk_mergers` → `MaWalk`), Portfolio's output and gap sentences unchanged.
 The Metis reviewer approved with nits, all ruled; Codex flagged three P2s, fixed two (withhold a side when a countable row is unreadable; dedup before windowing), answered one as the ruled completion state, then approved.
 Every ruling is in the commit message.
+After the session-end, the Portfolio prompt's M&A line was reworded to name the feed as SEC merger registration filings dated at filing, not announcements (`portfolio-v76`, `3367270`), with the Portfolio and Trade Opportunities docs rows and `portfolio-workflow.md §Step 5` to match.
 
 ## Current state
 
 Nothing in flight.
 Primary-market froth is under Built; retry-once for the streaming agents is next and unplanned.
 The dev-run batch (every Portfolio item's dev run) and the big run are the user's call.
-The prompt review can resume at file 18 (the review examples are 18–20, the thesis, appendix, role/risk and action files 21–30).
+The prompt review can resume at file 18 (the review examples are 18–20, the thesis, appendix, role/risk and action files 21–30); the stamp is `portfolio-v76`, the next `portfolio-v77`.
 Residue carried (do not re-raise): the harness fixtures carry no quarterly, balance, score or target-stamp rows, and the live harness's TSLA header still reads "(name unavailable)" until the fixed-evidence set is rebuilt from a post-redesign run, after the dev-run batch; the fixed-evidence lexicon scan reads provider-served words as app prose; a role/risk prior that abstained reads its NAV, expense and exposure "then" from the abstaining run's basis (carrying the prior basis would change the quick check's comparator); the examples' continuity fixture anchors on the prior session itself, so the review examples layer a 2026-09-01 close.
 A denied client-secret read still errors `schwab_status`, so Settings hides its Schwab section for that session (the report never reads the secret); a live denied prompt is fixture-verified only.
 The calendar join, the history reads and the froth group are fixture- and probe-verified only; no live report run has carried them, and their Step-3 latency (the history's ~124 requests, the froth's IPO request and up to 10 M&A pages) is untimed.
@@ -31,7 +32,7 @@ The offscreen card-render recipe lives in session memory, not the repo.
 
 ## Open questions
 
-- Portfolio's run-level M&A feed is the same S-4 / F-4 registration feed (dated at filing, weeks after announcement, stock deals only), yet `data-sources.md`'s Portfolio row and `portfolio-workflow.md §Step 5` call it a market-wide M&A feed — reword them, or leave?
+None.
 
 ## Where to start
 
