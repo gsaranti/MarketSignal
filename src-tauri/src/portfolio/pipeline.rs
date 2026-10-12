@@ -2845,7 +2845,8 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             ));
         }
     }
-    // The holding's matches against the run-level M&A feed.
+    // The holding's matches against the run-level M&A feed — SEC merger registration
+    // filings (S-4 / F-4), each dated at filing.
     if !d.ma_matches.is_empty() {
         let rows: Vec<String> = d
             .ma_matches
@@ -2855,7 +2856,7 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
                     MaRole::Acquirer => "acquirer of",
                     MaRole::Target => "target of",
                 };
-                let mut row = format!("{role} {}, announced {}", m.counterparty, m.date);
+                let mut row = format!("{role} {}, filed {}", m.counterparty, m.date);
                 if let Some(link) = &m.link {
                     row.push_str(&format!(" ({link})"));
                 }
@@ -2863,7 +2864,9 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             })
             .collect();
         p.push_str(&format!(
-            "M&A (the market-wide feed, trailing twelve months): {}.\n",
+            "M&A (SEC merger registration filings, trailing twelve months; a filing follows a \
+             deal's announcement, typically by several weeks, and covers deals paid at least \
+             partly in stock): {}.\n",
             rows.join("; ")
         ));
     }
@@ -6794,8 +6797,10 @@ pub(crate) mod tests {
             "Enterprise value (2024-09-28): 3570.0B; market capitalization 3500.0B; total \
              debt 106.6B; cash 29.9B.",
             "Float (2026-06-05): float shares 14.7B; shares outstanding 14.7B; free float 99.8%.",
-            "M&A (the market-wide feed, trailing twelve months): target of Global Net Lease, \
-             Inc., announced 2026-06-01 (https://sec.gov/x).",
+            "M&A (SEC merger registration filings, trailing twelve months; a filing follows a \
+             deal's announcement, typically by several weeks, and covers deals paid at least \
+             partly in stock): target of Global Net Lease, Inc., filed 2026-06-01 \
+             (https://sec.gov/x).",
             "Revenue by product, newest fiscal year first: FY2024 (period end 2024-09-28) \
              iPhone 201.2B, Mac 30.0B.",
             "Revenue by geography, newest fiscal year first: FY2024 (period end 2024-09-28) \
@@ -8057,7 +8062,10 @@ pub(crate) mod tests {
         // read and the overlay's dropped observation history set the trail's
         // final Portfolio shape at checkpoint-v25 and the archive's at format
         // 22, which refuses every earlier pre-release format.
-        assert_eq!(PROMPT_VERSION, "portfolio-v75");
+        // The M&A line (2026-10-12): FETCHED VALUES names the feed as SEC merger
+        // registration filings and each match's date as its filing date — v76;
+        // the trail and the archive stay.
+        assert_eq!(PROMPT_VERSION, "portfolio-v76");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v25"

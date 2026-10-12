@@ -1,6 +1,6 @@
 # Analysis — stock, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v76`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior analysis of 2026-09-02.
 The analysis call is a thinking call with no grammar: Part 1 the holding header and FETCHED VALUES as the brief carries them, on a continuity run PRIOR ANALYSIS, then WRITE-UPS; Part 2 what the analysis consolidates and its length band. The analysis is the only research artifact the next run reads.
@@ -19,7 +19,7 @@ Under FETCHED VALUES, the issuer line, the 52-week range, the 8-K list, the shor
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 5420 chars — the messages and tools as serialized |
+| Prompt material | 5543 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ You are an investment analyst consolidating one holding's research for a portfol
 the message gives the inputs. Part 2 says what the analysis covers and how to return it.
 ~~~~
 
-## User message (5106 chars)
+## User message (5229 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -79,8 +79,9 @@ ROIC 7.0%; ROE 11.0%; net debt/EBITDA -1.20.
 Owner earnings (FY2026 Q2, period end 2026-06-30): 2.1B; 0.62 per share.
 Enterprise value (2026-06-30): 790.0B; market capitalization 780.0B; total debt 13.0B; cash 33.0B.
 Float (2026-09-01): float shares 2.8B; shares outstanding 3.2B; free float 86.9%.
-M&A (the market-wide feed, trailing twelve months): acquirer of [stub: counterparty], announced
-2026-05-20.
+M&A (SEC merger registration filings, trailing twelve months; a filing follows a deal's
+announcement, typically by several weeks, and covers deals paid at least partly in stock): acquirer
+of [stub: counterparty], filed 2026-05-20.
 Revenue by product, newest fiscal year first: FY2025 (period end 2025-12-31) Automotive 72.0B,
 Services and other 11.0B, Energy generation and storage 10.0B; FY2024 (period end 2024-12-31)
 Automotive 77.0B, Services and other 10.5B, Energy generation and storage 10.0B.

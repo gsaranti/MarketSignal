@@ -2179,7 +2179,11 @@ pub struct HoldingAudit {
 /// read held up. The audit's review and its accuracy read-through mark, and
 /// the fund exposure basis's NAV, move the trail to `checkpoint-v24` and the
 /// archive to format 21.
-pub const PROMPT_VERSION: &str = "portfolio-v75";
+/// `portfolio-v76` (the M&A line): FETCHED VALUES names the run-level M&A feed
+/// as SEC merger registration filings — a filing follows a deal's
+/// announcement, typically by several weeks, and covers deals paid at least
+/// partly in stock — and dates each match as filed, not announced.
+pub const PROMPT_VERSION: &str = "portfolio-v76";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
