@@ -16,6 +16,7 @@ use crate::agent::{
 };
 use crate::analyst_agent::ModelAnalystAgent;
 use crate::baseline_delta::{self, BaselineDeltas};
+use crate::baseline_history::{self, BaselineHistory, PriorBaseline};
 use crate::cadence;
 use crate::data_sources::{
     BaselineMarketData, GroupKind, MarketDataSource, BASELINE_SCHEMA_VERSION,
@@ -187,11 +188,12 @@ fn run_analysts(
     analysts: &AnalystStages,
     packet: &ResearchPacket,
     cadence: cadence::ReportCadence,
+    history: Option<&BaselineHistory>,
 ) -> Result<Vec<AnalystOutput>> {
     let (bull, bear, balanced) = std::thread::scope(|s| {
-        let bull = s.spawn(|| analysts.bull.review(packet, cadence));
-        let bear = s.spawn(|| analysts.bear.review(packet, cadence));
-        let balanced = s.spawn(|| analysts.balanced.review(packet, cadence));
+        let bull = s.spawn(|| analysts.bull.review(packet, cadence, history));
+        let bear = s.spawn(|| analysts.bear.review(packet, cadence, history));
+        let balanced = s.spawn(|| analysts.balanced.review(packet, cadence, history));
         (bull.join(), bear.join(), balanced.join())
     });
     let mut reviews = Vec::with_capacity(3);
@@ -315,6 +317,10 @@ pub fn generate_report(
     // input. Reads/compute are best-effort (`None` on a first report or any failure); the
     // serialization is captured here because `baseline` is consumed by the agent below.
     let deltas = compute_prior_deltas(&paths.db_path, &baseline, as_of);
+    // The bounded history of the same level-bearing series across the retained
+    // snapshots — its own best-effort read, so a corrupt latest snapshot costs the
+    // change view without costing the history's other points.
+    let history = compute_baseline_history(&paths.db_path, &baseline, as_of);
     let baseline_json = serde_json::to_string(&baseline).ok();
 
     // The bounded recent-report context for research routing — Step 8's
@@ -381,7 +387,12 @@ pub fn generate_report(
     // step's, so `jobs::run_job` records it as a failed (or, under a concurrent cancel,
     // cancelled) run. Each analyst streams its own per-request row inside this step.
     ctx.step_started("analysts", "Running the analyst agents");
-    let analyst_reviews = match run_analysts(analysts, &research_packet, cadence) {
+    let analyst_reviews = match run_analysts(
+        analysts,
+        &research_packet,
+        cadence,
+        history.as_ref(),
+    ) {
         Ok(reviews) => reviews,
         Err(e) => {
             let status = if ctx.is_cancelled() {
@@ -400,6 +411,8 @@ pub fn generate_report(
     let output = match agent.generate(MainAgentInput {
         baseline,
         deltas,
+        // The bounded multi-report history of the level-bearing series.
+        history,
         // The run cadence (independent of `deltas`) — the main agent's posture steer.
         cadence,
         // The market-session state at `as_of` — the tense steer (live intraday vs closed).
@@ -1026,6 +1039,51 @@ fn compute_prior_deltas(
             &prior,
             elapsed_days,
         )))
+    })
+}
+
+/// Best-effort baseline history for this run (`baseline_history::build_history`): every
+/// retained snapshot, newest first, joined with this run's scan. A snapshot whose blob
+/// won't decode or whose `captured_at` won't parse loses only its own point, with a
+/// labeled stderr line; a DB failure degrades the whole history to `None` through the
+/// shared [`read_db_fail_soft`] shell. Additive context like the change view — never a
+/// gate (`docs/storage.md §Baseline Snapshots`).
+fn compute_baseline_history(
+    db_path: &std::path::Path,
+    current: &BaselineMarketData,
+    as_of: chrono::DateTime<chrono::Utc>,
+) -> Option<BaselineHistory> {
+    read_db_fail_soft(db_path, "baseline-history read", |conn| {
+        let stored =
+            storage::recent_baseline_snapshots(conn, storage::BASELINE_SNAPSHOT_RETENTION)?;
+        let priors: Vec<PriorBaseline> = stored
+            .iter()
+            .filter_map(|row| {
+                decode_prior_baseline(row)
+                    .map_err(|e| {
+                        eprintln!(
+                            "baseline-history read: skipped the snapshot of report {}: {e:#}",
+                            row.report_id
+                        )
+                    })
+                    .ok()
+            })
+            .collect();
+        Ok(baseline_history::build_history(current, as_of, &priors))
+    })
+}
+
+/// One stored snapshot decoded into a history point's input: its scan and its parsed
+/// capture instant.
+fn decode_prior_baseline(row: &storage::StoredBaselineSnapshot) -> Result<PriorBaseline> {
+    let baseline = serde_json::from_str(&row.baseline_json).context("decoding baseline snapshot")?;
+    let captured_at = chrono::DateTime::parse_from_rfc3339(&row.captured_at)
+        .context("parsing snapshot captured_at")?
+        .with_timezone(&chrono::Utc);
+    Ok(PriorBaseline {
+        report_id: row.report_id.clone(),
+        captured_at,
+        baseline,
     })
 }
 
@@ -1838,6 +1896,68 @@ mod tests {
         assert!(
             compute_prior_deltas(&db, &BaselineMarketData::default(), as_of).is_none(),
             "the corrupt payload drops the diff"
+        );
+    }
+
+    #[test]
+    fn compute_baseline_history_degrades_to_none_on_an_unopenable_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing-subdir").join("market_signal.db");
+        let as_of = chrono::DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(compute_baseline_history(&path, &BaselineMarketData::default(), as_of).is_none());
+    }
+
+    #[test]
+    fn a_corrupt_snapshot_costs_the_history_only_its_own_point() {
+        // Unlike the change view, which reads the latest snapshot alone, the history
+        // spans every retained one: a bad blob or timestamp drops that report's point and
+        // the rest still render.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("market_signal.db");
+        let conn = storage::open(&db).unwrap();
+        storage::init_schema(&conn).unwrap();
+        let with_sp = |price: f64| BaselineMarketData {
+            indices: vec![crate::data_sources::Quote {
+                symbol: "^GSPC".into(),
+                name: "S&P 500".into(),
+                price,
+                change: crate::data_sources::Change::percent(0.0),
+                unit: "index points".into(),
+            }],
+            ..Default::default()
+        };
+        let rows = [
+            ("rep-a", "2026-06-01T20:00:00Z", serde_json::to_string(&with_sp(5_400.0)).unwrap()),
+            ("rep-bad-json", "2026-06-03T20:00:00Z", "not baseline json {{{".to_string()),
+            ("rep-b", "2026-06-08T20:00:00Z", serde_json::to_string(&with_sp(5_500.0)).unwrap()),
+            ("rep-bad-time", "not a timestamp", serde_json::to_string(&with_sp(1.0)).unwrap()),
+        ];
+        for (report_id, captured_at, json) in &rows {
+            storage::insert_baseline_snapshot(
+                &conn,
+                report_id,
+                captured_at,
+                BASELINE_SCHEMA_VERSION,
+                json,
+            )
+            .unwrap();
+        }
+        let as_of = chrono::DateTime::parse_from_rfc3339("2026-06-15T19:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let history = compute_baseline_history(&db, &with_sp(5_600.0), as_of).unwrap();
+        let ids: Vec<Option<&str>> = history
+            .points
+            .iter()
+            .map(|p| p.report_id.as_deref())
+            .collect();
+        assert_eq!(ids, [Some("rep-a"), Some("rep-b"), None]);
+        assert_eq!(
+            history.series[0].values,
+            [Some(5_400.0), Some(5_500.0), Some(5_600.0)]
         );
     }
 

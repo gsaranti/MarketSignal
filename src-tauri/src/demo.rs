@@ -208,12 +208,13 @@ impl AnalystAgent for DemoAnalystAgent {
         &self,
         packet: &crate::research_packet::ResearchPacket,
         cadence: ReportCadence,
+        history: Option<&crate::baseline_history::BaselineHistory>,
     ) -> anyhow::Result<AnalystOutput> {
         let posture = self.posture;
         stream(&self.ctx, analyst_thinking(posture), 22, |w| {
             self.ctx.analyst_thinking(posture.as_str(), w)
         });
-        StubAnalystAgent::new(posture).review(packet, cadence)
+        StubAnalystAgent::new(posture).review(packet, cadence, history)
     }
 }
 

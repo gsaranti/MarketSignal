@@ -122,6 +122,21 @@ The cadence is report-indexed, not calendar-indexed: because reports can be gene
 A missing or unreadable prior snapshot is non-fatal: the report is generated without a change view.
 Snapshots are additive context, never a precondition for a report.
 
+Every retained snapshot also feeds the **baseline history**, a bounded record of the series the change view diffs: the level-bearing indices, internals, macro levels, labor levels, sector P/E and equity-risk-premium series, joined across snapshots by the same stable series ids.
+Its points run oldest first with the current scan last, one point per report.
+A run's own snapshot is written after its report, so all 14 retained snapshots precede the current scan and the history spans at most 15 points.
+Each point is labeled with its capture time as an ET date and time.
+A prior report's point also carries the report id its summary metadata names.
+Each series carries one value per point, `null` where that report's scan did not gather it.
+A series takes its name from the newest point that carries it.
+The history renders only from three points up, since two points would restate the change view's prior and current levels.
+It renders as one block: the points, then one compact row per series.
+The main agent reads it after the change view.
+Each analyst reads it after the condensed research packet.
+The research router does not receive it.
+A snapshot that cannot be decoded, or whose capture time cannot be read, costs the history only that report's point.
+Like the change view, the history is additive context, never a precondition for a report.
+
 The paid-tier report enrichment adds fields to the serialized scan — compact derived reads only, each `#[serde(default)]` so an older snapshot still decodes; rules in [data-sources.md §Report enrichment](data-sources.md#report-enrichment-paid-fmp-tier).
 
 ## Vector Memory

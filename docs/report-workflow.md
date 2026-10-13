@@ -148,6 +148,7 @@ A mandatory coverage floor still gates the run — the report is not generated u
 The application also persists each run's baseline scan and, when a previous report's snapshot exists, computes a change view against it — the level-by-level moves since the previous report, over the actual elapsed interval — which travels with the baseline into the main agent's reasoning so the report grounds change in measured deltas rather than the prior report's prose.
 The change view is additive: a first report, or an unreadable prior snapshot, simply omits it.
 See [storage.md §Baseline Snapshots](storage.md#baseline-snapshots).
+The retained snapshots also feed a bounded baseline history of the same level-bearing series, which the main agent and the analysts read beside the change view ([storage.md §Baseline Snapshots](storage.md#baseline-snapshots)).
 
 Because the baseline scan and change view are gathered here, ahead of the audit ([Step 5](#step-5-audit-prior-reports)) and research routing ([Step 8](#step-8-perform-research-routing)), those stages can measure prior reports and prioritise topics against what the market actually did rather than against prose alone.
 
@@ -208,7 +209,8 @@ The audit *reasoning* is not a separate model call — it is performed by the ma
 With the baseline scan and change view already gathered ([Step 3](#step-3-gather-baseline-market-data)) and relevant memory recalled ([Step 4](#step-4-retrieve-vector-memory-pre-research)), the application supplies prior report context together with the current measured market state to the main agent.
 The main agent then evaluates a bounded set of prior Market Signal reports against what actually occurred — grounding the audit in the current measured baseline rather than prose recollection alone.
 
-The change view measures only the most recent interval — the move since the immediately previous report (see [storage.md §Baseline Snapshots](storage.md#baseline-snapshots)) — so reports earlier in the audit window are judged against the current measured baseline levels, not a per-report delta.
+The change view measures only the most recent interval — the move since the immediately previous report (see [storage.md §Baseline Snapshots](storage.md#baseline-snapshots)).
+The baseline history carries the levels at each retained report, so a report earlier in the audit window is judged against the levels at its own point where the history carries it, and against the current measured baseline otherwise.
 The audit window should usually include the previous 2–6 Market Signal reports, depending on relevance and context limits.
 
 The retrospective audit process may evaluate:
@@ -454,7 +456,7 @@ After the research packet is created, the application runs three analyst agents:
 
 Each analyst agent receives the same condensed research packet and produces structured analysis from its assigned analytical perspective.
 
-The three analyst agents are independent and run concurrently — each works only from the shared research packet, so there is no ordering dependency between them.
+The three analyst agents are independent and run concurrently — each works only from the shared research packet and the baseline history, so there is no ordering dependency between them.
 Steps 13–15 document each analyst's review individually; their numbering is not an execution order.
 
 Analyst agent outputs are ephemeral pipeline artifacts.
@@ -476,7 +478,7 @@ A shared base prompt plus a per-posture half.
   **Balanced** — adjudicate the two strongest opposing claims directly rather than splitting the difference; assign confidence, separate short- from long-term, and name what would change the thesis.
 
 **Prompt — user inputs.**
-The instruction; a cadence cue (always present, even on a first report); the same Step-11 condensed research packet as JSON (identical for all three; omitted only if the packet is empty); and the full 16-lens analytical-skill library.
+The instruction; a cadence cue (always present, even on a first report); the same Step-11 condensed research packet as JSON (identical for all three; omitted only if the packet is empty); the baseline history after the packet, when the run has one ([storage.md §Baseline Snapshots](storage.md#baseline-snapshots)); and the full 16-lens analytical-skill library.
 
 **Returns.**
 Structured output on a strict JSON schema — a `json_schema` output format on Anthropic, the `analyst_review` strict-JSON schema on OpenAI (the Anthropic arm's forced tool was dropped because it is incompatible with the extended thinking now enabled; the OpenAI arm never used one): `{ summary, key_points[], risks[], opportunities[], confidence ∈ {low, medium, high} }`, all fields required.
@@ -540,12 +542,13 @@ The model is instructed to act as Market Signal's Head Market Analyst and to:
 - evaluate the three analyst reviews critically — agree, reject weak reasoning, combine, or elevate a minority view — without averaging them, and without staging a debate or quoting the analysts as characters;
 - apply the warranted analytical-skill lenses and fold each verdict into the thesis and existing sections, never naming a skill or giving it its own section;
 - meet the analytical standards (explicit, proportional conviction; specific falsifiable claims over vague safe ones; quantitative anchoring) and make the standing thesis falsifiable by stating the conditions that would invalidate it or force a pivot;
+- read a multi-report trend from the baseline history, keep the change view as the move since the previous report, and judge an earlier report's claims against the levels at its own point in the history;
 - produce the mandated report sections, in order: Header Summary, Market Regime, Index Picture (Dow / S&P 500 / Nasdaq), Key Market Drivers, Market Signal Thesis, Retrospective Audit (conditional), Investment Strategy (never buy/sell instructions), Forward Outlook, Watchlist, Sources;
-- optionally embed a fenced `chart` JSON block following strict authoring rules (line / bar / area; every point a real number drawn from the data; at most 3 series);
+- optionally embed a fenced `chart` JSON block following strict authoring rules (line / bar / area; every point a real number drawn from the data; at most 3 series; a chart drawn from the baseline history names its span in reports);
 - classify the three axes (`risk_posture`, `market_cycle`, `thesis_stance`);
 - and emit durable learnings only sparingly (rare, self-contained, at most 5, usually none).
 
-**Prompt — user inputs** (each block omitted when empty): the standing instruction; the baseline market data (the fourteen Step-3 baseline groups serialized to JSON — indices, internals, sector performance, macro levels, labor levels, release calendar, index performance, movers, earnings, sector P/E, industries, equity-risk-premium, CFTC positioning, and the primary-market froth group); and the change view (framed with the actual elapsed interval).
+**Prompt — user inputs** (each block omitted when empty): the standing instruction; the baseline market data (the fourteen Step-3 baseline groups serialized to JSON — indices, internals, sector performance, macro levels, labor levels, release calendar, index performance, movers, earnings, sector P/E, industries, equity-risk-premium, CFTC positioning, and the primary-market froth group); the change view (framed with the actual elapsed interval); and the baseline history ([storage.md §Baseline Snapshots](storage.md#baseline-snapshots)).
 From the research packet come the filtered news clusters, the deep-research evidence and sources, the Step-10 research-informed memory pull, and the condensed research-inbox excerpts.
 The remaining blocks are the recent prior reports (summary metadata plus head-truncated Markdown bodies — the audit's auditable object and its gate); the Step-4 audit-memory pull (on its own channel, which steers but does not license the audit); the cadence guidance; the full 16-lens skill library; and the three analyst reviews (each labeled by posture and confidence, with its key points, risks, and opportunities).
 

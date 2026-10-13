@@ -21,7 +21,7 @@ The main agent acts as the Head Market Analyst.
 The main agent is responsible for:
 - planning market data and research needs
 - surfacing unresolved thesis questions and research needs that inform research routing (the executable research plan is produced by the fixed routing model)
-- consuming curated data returned by the application layer (including the baseline market scan and the change view of how it moved since the previous report)
+- consuming curated data returned by the application layer (including the baseline market scan, the change view of how it moved since the previous report, and the baseline history across the retained reports)
 - reasoning over the condensed research packet the application layer assembles (the packet is built deterministically by the app layer, not the agent — see [report-workflow.md §Step 11](report-workflow.md#step-11-build-condensed-research-packet))
 - using relevant memory retrieved by the application layer
 - auditing prior report accuracy using report context and market evidence

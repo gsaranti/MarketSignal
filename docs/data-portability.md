@@ -26,7 +26,7 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | Table | Why it moves |
 |---|---|
 | `reports` | The report records — id, regime metadata, summary JSON, the pointer to the Markdown body. |
-| `baseline_snapshots` | Past market-scan states (retention 14). **Irreproducible** — they capture a market moment; they anchor the cadence-honest change view on the next report. |
+| `baseline_snapshots` | Past market-scan states (retention 14). **Irreproducible** — they capture a market moment; they anchor the cadence-honest change view and the baseline history on the next report. |
 | `vector_memory` | Report summaries **and durable learnings** — the long-term semantic memory; neither local job writes a row ([storage.md §Local Vector Memory](storage.md#local-vector-memory)). Durable learnings are the point: they survive report deletion and are the accumulated edge. |
 | `portfolio_runs` | Local-suite run history (retention 30): each run's two-arm verdicts with their thesis documents, actions, roll-up and audit record — the research documents and the page roster included ([storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage)). Nascent today, but durable once the suite runs live. |
 | `holdings_pulls` | The single latest view-only holdings snapshot. |

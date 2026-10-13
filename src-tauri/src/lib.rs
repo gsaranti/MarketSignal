@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod analyst_agent;
 pub mod baseline_delta;
+pub mod baseline_history;
 pub mod bls;
 pub mod cadence;
 pub mod cboe;

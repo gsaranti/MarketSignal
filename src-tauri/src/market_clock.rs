@@ -36,6 +36,16 @@ pub fn et_session_date(utc: DateTime<Utc>) -> NaiveDate {
     utc.with_timezone(&New_York).date_naive()
 }
 
+/// A UTC instant as its US/Eastern date and 24-hour time, `YYYY-MM-DD HH:MM ET` — the
+/// label each baseline-history point carries (`baseline_history`). The date is the ET
+/// session date [`et_session_date`] reads, so an evening-ET run labels as its own session
+/// rather than the next UTC date; the time keeps same-session regenerations distinct.
+pub fn et_stamp(utc: DateTime<Utc>) -> String {
+    utc.with_timezone(&New_York)
+        .format("%Y-%m-%d %H:%M ET")
+        .to_string()
+}
+
 /// The ET session date of a persisted timestamp string.
 ///
 /// A full RFC3339 instant converts to its US/Eastern calendar date; a string
@@ -318,6 +328,16 @@ mod tests {
             et_session_date(utc(2026, 6, 23, 16, 4)),
             NaiveDate::from_ymd_opt(2026, 6, 23).unwrap(),
         );
+    }
+
+    #[test]
+    fn et_stamp_labels_the_et_session_and_wall_clock() {
+        // 2026-08-05 01:30 UTC = 2026-08-04 21:30 EDT: the label stays on the ET session.
+        assert_eq!(et_stamp(utc(2026, 8, 5, 1, 30)), "2026-08-04 21:30 ET");
+        // Winter (EST, UTC-5): 2026-01-07 03:30 UTC = 2026-01-06 22:30 EST.
+        assert_eq!(et_stamp(utc(2026, 1, 7, 3, 30)), "2026-01-06 22:30 ET");
+        // A morning instant zero-pads its hour.
+        assert_eq!(et_stamp(utc(2026, 6, 23, 13, 5)), "2026-06-23 09:05 ET");
     }
 
     #[test]

@@ -849,12 +849,21 @@ pub fn delete_report_parse_runs(conn: &Connection, report_id: &str) -> Result<()
 }
 
 /// How many of the most recent baseline snapshots to retain (`baseline_snapshots`).
-/// Report-indexed, not calendar-indexed: 14 *reports*, whatever their cadence. Only the
-/// immediately-prior snapshot is needed for the change view today; the headroom leaves
-/// room for a future trajectory-over-N read. Decoupled from the report retention window
-/// ([`REPORT_RETENTION`]); `report_id` is stored so the report cascade can join
-/// ([`delete_report_baseline_snapshots`]).
+/// Report-indexed, not calendar-indexed: 14 *reports*, whatever their cadence. The change
+/// view reads only the immediately-prior snapshot; the baseline history
+/// (`baseline_history`) reads every retained one, so this cap is also the history's
+/// depth. Decoupled from the report retention window ([`REPORT_RETENTION`]); `report_id`
+/// is stored so the report cascade can join ([`delete_report_baseline_snapshots`]).
 pub const BASELINE_SNAPSHOT_RETENTION: u32 = 14;
+
+/// One stored baseline snapshot as the history read returns it: the report it backs,
+/// its app-minted `captured_at` scan time, and the serialized scan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredBaselineSnapshot {
+    pub report_id: String,
+    pub captured_at: String,
+    pub baseline_json: String,
+}
 
 /// Persist one run's baseline snapshot: the serialized `BaselineMarketData`, the report
 /// it backs, the app-minted `captured_at` scan time, and the baseline `schema_version`.
@@ -896,6 +905,31 @@ pub fn latest_baseline_snapshot(conn: &Connection) -> Result<Option<(String, Str
         )
         .optional()?;
     Ok(row)
+}
+
+/// The newest `limit` baseline snapshots, newest first — the baseline history's read.
+/// Newest by insertion order (`id`), the [`latest_baseline_snapshot`] rule, so a
+/// backwards clock step can't reorder the history's points. Empty before any snapshot
+/// exists.
+pub fn recent_baseline_snapshots(
+    conn: &Connection,
+    limit: u32,
+) -> Result<Vec<StoredBaselineSnapshot>> {
+    let mut stmt = conn.prepare(
+        "SELECT report_id, captured_at, baseline_json FROM baseline_snapshots
+         ORDER BY id DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map([limit], |row| {
+            Ok(StoredBaselineSnapshot {
+                report_id: row.get(0)?,
+                captured_at: row.get(1)?,
+                baseline_json: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// Delete all but the newest `keep` baseline snapshots (same insertion-order rule as
@@ -1402,6 +1436,56 @@ mod tests {
             latest_baseline_snapshot(&conn).unwrap().unwrap().0,
             "2026-01-16T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn recent_baseline_snapshots_read_newest_first_by_insertion_up_to_the_limit() {
+        let conn = mem();
+        assert!(
+            recent_baseline_snapshots(&conn, BASELINE_SNAPSHOT_RETENTION)
+                .unwrap()
+                .is_empty(),
+            "no snapshot before any insert"
+        );
+        for (i, captured_at) in ["2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z"]
+            .iter()
+            .enumerate()
+        {
+            insert_baseline_snapshot(
+                &conn,
+                &format!("rep-{i}"),
+                captured_at,
+                crate::data_sources::BASELINE_SCHEMA_VERSION,
+                &format!("{{\"marker\":{i}}}"),
+            )
+            .unwrap();
+        }
+        // The newest insert, dated BEFORE both rows already stored: the history's point
+        // order is insertion order, like the change view's "latest".
+        insert_baseline_snapshot(
+            &conn,
+            "rep-stepped",
+            "2026-01-01T00:00:00Z",
+            crate::data_sources::BASELINE_SCHEMA_VERSION,
+            "{\"marker\":\"stepped\"}",
+        )
+        .unwrap();
+
+        let all = recent_baseline_snapshots(&conn, BASELINE_SNAPSHOT_RETENTION).unwrap();
+        let ids: Vec<&str> = all.iter().map(|s| s.report_id.as_str()).collect();
+        assert_eq!(ids, ["rep-stepped", "rep-1", "rep-0"]);
+        assert_eq!(
+            all[0],
+            StoredBaselineSnapshot {
+                report_id: "rep-stepped".into(),
+                captured_at: "2026-01-01T00:00:00Z".into(),
+                baseline_json: "{\"marker\":\"stepped\"}".into(),
+            }
+        );
+
+        let two = recent_baseline_snapshots(&conn, 2).unwrap();
+        let ids: Vec<&str> = two.iter().map(|s| s.report_id.as_str()).collect();
+        assert_eq!(ids, ["rep-stepped", "rep-1"], "the limit keeps the newest");
     }
 
     #[test]

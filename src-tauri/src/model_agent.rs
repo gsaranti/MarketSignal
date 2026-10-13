@@ -33,6 +33,7 @@ use crate::agent::{
     ReportSummary, RiskPosture, ThesisStance,
 };
 use crate::baseline_delta::BaselineDeltas;
+use crate::baseline_history::{self, BaselineHistory};
 use crate::cadence::ReportCadence;
 use crate::data_sources::BaselineMarketData;
 use crate::market_clock::MarketClock;
@@ -309,8 +310,9 @@ block simply means nothing relevant was recalled. The prompt may also carry `rec
 continues, each with its structured summary metadata and its Markdown body (a body may be \
 head-truncated, marked inline). These are the prior reports the Retrospective Audit evaluates: \
 read their theses, stances, and flagged risks, and judge directionally how they held up against \
-what the market actually did this period. A second memory block may also appear — `recalled \
-memory for the retrospective audit` — semantic recall against the recent reports and current \
+what the market actually did this period. Judge an earlier report's claims against the levels at \
+its own point in the baseline history, where the history carries it. A second memory block may \
+also appear — `recalled memory for the retrospective audit` — semantic recall against the recent reports and current \
 market state rather than this run's research. Let it *steer* the audit: its `[learning · …]` \
 fragments are standing lessons that point at what to scrutinise and that you weigh in the thesis \
 and strategy, and its `[summary · …]` fragments are supplementary recall (often older reports \
@@ -348,8 +350,9 @@ unconfirmed — and prefer a specific, falsifiable claim over a vague, safe one.
 hedging and empty caution (\"markets remain uncertain\", \"investors should monitor closely\"); a \
 caveat earns its place only when it names the specific evidence or event that would resolve it. \
 Anchor claims in concrete levels and magnitudes from the baseline and change view — the actual \
-print, the basis-point move, the percent change — not directional adjectives alone. Make the \
-standing thesis falsifiable: state the specific conditions, levels, or events that would \
+print, the basis-point move, the percent change — not directional adjectives alone. Read a \
+multi-report trend from the baseline history; the change view stays the move since the previous \
+report. Make the standing thesis falsifiable: state the specific conditions, levels, or events that would \
 invalidate it or force a pivot, so a later report can check them.
 
 Commit to a directional base case — the single most-probable path for the market from here — \
@@ -393,8 +396,10 @@ true}, {\"label\": \"2Y\", \"points\": [4.41, 4.52, 4.60]}]}. The chart has no \
 labeled time axis, so its `title` is the only place a time span can appear — \
 strongly prefer to name the span the points cover there. Points are plotted \
 evenly left-to-right as oldest-to-newest, so use regularly-spaced \
-observations and give every series the same number of points (they share one \
-x-axis — a chart whose series differ in length is dropped). Every `points` value \
+observations (or the baseline history's one-per-report points) and give every series the \
+same number of points (they share one x-axis — a chart whose series differ in length is dropped). The baseline history's points are \
+one per report, unevenly spaced in time, so a chart drawn from them names its span in reports in \
+its title (\"10Y vs 2Y, last 8 reports\"). Every `points` value \
 must be a real number taken from the baseline or research data you were given — \
 never invent or estimate a series to fill a chart. Write every number in plain \
 ASCII — an ordinary hyphen-minus for a negative (e.g. -1.4), never a Unicode minus \
@@ -476,6 +481,7 @@ const USER_PROMPT: &str =
 fn build_user_prompt(
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
+    history: Option<&BaselineHistory>,
     research: Option<&ResearchPacket>,
     audit_memory: &[String],
     recent_reports: &[RecentReport],
@@ -507,6 +513,13 @@ fn build_user_prompt(
                 d.elapsed_days
             ));
         }
+    }
+
+    // The bounded multi-report history of the same level-bearing series
+    // (`baseline_history`), right after the single-interval change view it extends.
+    if let Some(history) = history {
+        prompt.push_str("\n\n");
+        prompt.push_str(&baseline_history::render_block(history));
     }
 
     // The Step-11 condensed research packet, when the research half ran. `baseline` and
@@ -1899,6 +1912,7 @@ impl MainAgent for ModelMainAgent {
         let mut user = build_user_prompt(
             &input.baseline,
             input.deltas.as_ref(),
+            input.history.as_ref(),
             input.research.as_ref(),
             &input.audit_memory,
             &input.recent_reports,
@@ -2296,7 +2310,7 @@ gathered, never zero"));
         };
         // The group reaches the model through the whole-baseline serialization, its absent
         // side an explicit null.
-        let prompt = build_user_prompt(&baseline, None, None, &[], &[]);
+        let prompt = build_user_prompt(&baseline, None, None, None, &[], &[]);
         assert!(prompt.contains(r#""primary_market": {"#), "{prompt}");
         assert!(prompt.contains(r#""recent_count": 14"#), "{prompt}");
         assert!(prompt.contains(r#""deal_size_usd": 540000000.0"#), "{prompt}");
@@ -2371,7 +2385,7 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
             )],
             ..Default::default()
         };
-        let prompt = build_user_prompt(&baseline, None, None, &[], &[]);
+        let prompt = build_user_prompt(&baseline, None, None, None, &[], &[]);
         assert!(prompt.starts_with(USER_PROMPT), "{prompt}");
         assert!(prompt.contains("^GSPC"), "{prompt}");
         assert!(prompt.contains("Baseline market data"), "{prompt}");
@@ -2398,7 +2412,7 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
         // The cadence block is appended in `generate` (see `format_cadence`), not here,
         // so `build_user_prompt` of an empty baseline is exactly USER_PROMPT.
         assert_eq!(
-            build_user_prompt(&BaselineMarketData::default(), None, None, &[], &[]),
+            build_user_prompt(&BaselineMarketData::default(), None, None, None, &[], &[]),
             USER_PROMPT
         );
     }
@@ -2436,7 +2450,7 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
             new: vec![],
             missing: vec![],
         };
-        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas), None, &[], &[]);
+        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas), None, None, &[], &[]);
         assert!(
             prompt.contains("Change since the previous report"),
             "{prompt}"
@@ -2449,10 +2463,115 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
 
     #[test]
     fn user_prompt_omits_change_block_when_no_deltas() {
-        let prompt = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
+        let prompt = build_user_prompt(&one_index_baseline(), None, None, None, &[], &[]);
         assert!(
             !prompt.contains("Change since the previous report"),
             "{prompt}"
+        );
+    }
+
+    #[test]
+    fn user_prompt_carries_the_baseline_history_right_after_the_change_view() {
+        use crate::baseline_delta::BaselineDeltas;
+        use crate::baseline_history::{BaselineHistory, HistoryPoint, SeriesHistory};
+        use crate::data_sources::GroupKind;
+        let deltas = BaselineDeltas {
+            elapsed_days: 7.0,
+            changed: vec![],
+            new: vec![],
+            missing: vec![],
+        };
+        let history = BaselineHistory {
+            points: vec![
+                HistoryPoint {
+                    at: "2026-09-15 16:00 ET".into(),
+                    report_id: Some("rep-a".into()),
+                },
+                HistoryPoint {
+                    at: "2026-09-22 16:00 ET".into(),
+                    report_id: Some("rep-b".into()),
+                },
+                HistoryPoint {
+                    at: "2026-09-29 15:00 ET".into(),
+                    report_id: None,
+                },
+            ],
+            series: vec![SeriesHistory {
+                group: GroupKind::Internals,
+                id: "DGS10".into(),
+                name: "10-Year Treasury Yield".into(),
+                values: vec![Some(4.10), Some(4.15), Some(4.33)],
+            }],
+        };
+        let recent = [RecentReport {
+            summary: ReportSummary {
+                report_id: "rep-b".into(),
+                report_type: "market_signal".into(),
+                created_at: "2026-09-22T20:05:00Z".into(),
+                title: "Prior headline".into(),
+                risk_posture: RiskPosture::Mixed,
+                market_cycle: MarketCycle::LateCycle,
+                thesis_stance: ThesisStance::Mixed,
+                header_summary_bullets: vec!["Rates held.".into()],
+                key_risks: vec![],
+                unresolved_questions: vec![],
+                forward_outlook_themes: vec![],
+            },
+            markdown: "## Market Signal Thesis\nRates held.".into(),
+        }];
+        let prompt = build_user_prompt(
+            &one_index_baseline(),
+            Some(&deltas),
+            Some(&history),
+            None,
+            &[],
+            &recent,
+        );
+        let block = baseline_history::render_block(&history);
+        let at = prompt.find(&block).expect("the rendered history block rides in");
+        assert!(
+            prompt.find("Change since the previous report").unwrap() < at,
+            "after the change view: {prompt}"
+        );
+        assert!(
+            at < prompt.find("Recent prior reports").unwrap(),
+            "before the prior reports: {prompt}"
+        );
+
+        let without = build_user_prompt(&one_index_baseline(), Some(&deltas), None, None, &[], &[]);
+        assert!(!without.contains("Baseline history"), "{without}");
+    }
+
+    #[test]
+    fn system_prompt_reads_trends_charts_and_the_audit_from_the_baseline_history() {
+        assert!(
+            SYSTEM_PROMPT.contains(
+                "Read a multi-report trend from the baseline history; the change view stays the \
+                 move since the previous report."
+            ),
+            "the trend read"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains(
+                "The baseline history's points are one per report, unevenly spaced in time, so a \
+                 chart drawn from them names its span in reports in its title (\"10Y vs 2Y, last 8 \
+                 reports\")."
+            ),
+            "the chart rule"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains(
+                "so use regularly-spaced observations (or the baseline history's \
+                 one-per-report points) and give every series the same number of points"
+            ),
+            "the spacing rule carves the history in"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains(
+                "Judge an earlier report's claims against the levels at its own point in the \
+                 baseline history, where the history carries it."
+            ),
+            "the audit"
         );
     }
 
@@ -2540,7 +2659,7 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
             ],
             ..Default::default()
         };
-        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &[], &[]);
+        let prompt = build_user_prompt(&one_index_baseline(), None, None, Some(&packet), &[], &[]);
         // All four packet sections ride into the prompt, grounding the report in the
         // news, research, recalled memory, and the user's own documents.
         assert!(prompt.contains("Filtered news clusters"), "{prompt}");
@@ -2569,8 +2688,9 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
         // or recalled memory — no section should appear, leaving the prompt as the
         // baseline-only form.
         let empty = ResearchPacket::default();
-        let with_packet = build_user_prompt(&one_index_baseline(), None, Some(&empty), &[], &[]);
-        let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
+        let with_packet =
+            build_user_prompt(&one_index_baseline(), None, None, Some(&empty), &[], &[]);
+        let without = build_user_prompt(&one_index_baseline(), None, None, None, &[], &[]);
         assert_eq!(
             with_packet, without,
             "an empty packet adds nothing to the prompt"
@@ -2601,7 +2721,7 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
             "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback."
                 .to_string(),
         ];
-        let with = build_user_prompt(&one_index_baseline(), None, None, &audit, &[]);
+        let with = build_user_prompt(&one_index_baseline(), None, None, None, &audit, &[]);
         assert!(
             with.contains("Recalled memory for the retrospective audit"),
             "{with}"
@@ -2611,7 +2731,7 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
             "{with}"
         );
 
-        let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
+        let without = build_user_prompt(&one_index_baseline(), None, None, None, &[], &[]);
         assert!(
             !without.contains("Recalled memory for the retrospective audit"),
             "{without}"
@@ -2632,7 +2752,8 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
             "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback."
                 .to_string(),
         ];
-        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &audit, &[]);
+        let prompt =
+            build_user_prompt(&one_index_baseline(), None, None, Some(&packet), &audit, &[]);
         assert!(
             prompt.contains("Recalled long-term memory"),
             "Step-10 block present: {prompt}"
@@ -2670,7 +2791,7 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
             },
             markdown: "## Market Signal Thesis\nDefensive into the print.".into(),
         }];
-        let with = build_user_prompt(&one_index_baseline(), None, None, &[], &recent);
+        let with = build_user_prompt(&one_index_baseline(), None, None, None, &[], &recent);
         assert!(
             with.contains("Recent prior reports"),
             "heading present: {with}"
@@ -2683,7 +2804,7 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
             "body present: {with}"
         );
 
-        let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
+        let without = build_user_prompt(&one_index_baseline(), None, None, None, &[], &[]);
         assert!(
             !without.contains("Recent prior reports"),
             "absent on an empty list: {without}"

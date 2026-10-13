@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::baseline_delta::BaselineDeltas;
+use crate::baseline_history::BaselineHistory;
 use crate::cadence::ReportCadence;
 use crate::data_sources::BaselineMarketData;
 use crate::market_clock::MarketClock;
@@ -127,6 +128,11 @@ pub struct MainAgentInput {
     /// first report, or when no prior snapshot could be read or decoded — the deltas are
     /// additive and never gate a run.
     pub deltas: Option<BaselineDeltas>,
+    /// The bounded recent history of the level-bearing series (`baseline_history`): one
+    /// point per retained prior snapshot plus this run, built by the application layer
+    /// beside the change view. `None` below three points (a first or second report) or
+    /// when the snapshots could not be read — additive, never a gate.
+    pub history: Option<BaselineHistory>,
     /// The run's report cadence (`cadence::ReportCadence`): the elapsed interval since
     /// the previous report, classified. Computed by the application layer from the prior
     /// snapshot's timestamp alone — deliberately *not* derived from `deltas`, which is
@@ -411,11 +417,14 @@ pub trait AnalystAgent {
     /// `cadence` is the run's report cadence — how long since the previous report — so
     /// the analyst can weight recent moves versus the structural picture. Passed
     /// explicitly (not read from the packet's change view) so a corrupt prior snapshot
-    /// still yields the true interval (see [`MainAgentInput::cadence`]).
+    /// still yields the true interval (see [`MainAgentInput::cadence`]). `history` is the
+    /// run's baseline history ([`MainAgentInput::history`]), rendered beside the packet
+    /// rather than inside it; `None` when the run has none.
     fn review(
         &self,
         packet: &ResearchPacket,
         cadence: ReportCadence,
+        history: Option<&BaselineHistory>,
     ) -> anyhow::Result<AnalystOutput>;
 }
 
@@ -438,6 +447,7 @@ impl AnalystAgent for StubAnalystAgent {
         &self,
         _packet: &ResearchPacket,
         _cadence: ReportCadence,
+        _history: Option<&BaselineHistory>,
     ) -> anyhow::Result<AnalystOutput> {
         Ok(AnalystOutput {
             posture: self.posture,
@@ -541,6 +551,7 @@ mod tests {
                 .review(
                     &crate::research_packet::ResearchPacket::default(),
                     ReportCadence::default(),
+                    None,
                 )
                 .unwrap();
             assert_eq!(out.posture, p);

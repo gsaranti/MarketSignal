@@ -633,7 +633,7 @@ Paired, they let the model read a re-rating *with* its price context: a group ch
 The issuance / deal-making pace that runs hot late-cycle and freezes under stress comes from two paid endpoints — `ipos-calendar` (`?from=&to=`) and `mergers-acquisitions-latest` (`?page=&limit=`) — which the engine reduces to a compact **activity read**, the `primary_market` group.
 Both feeds' row shapes were live-verified 2026-10-12.
 The read pairs each recent-window count with its prior equivalent-window count, so the group carries a native rising / cooling **trend**.
-This is the way CFTC positioning carries its own week-over-week change while staying out of the level-delta engine: the model is handed only the current packet plus the computed change view, never prior raw packets, so the trend can't come from the delta engine and must be self-contained.
+This is the way CFTC positioning carries its own week-over-week change while staying out of the level-delta engine: the model is handed the current packet, the computed change view and the baseline history of the level-bearing series, never prior raw packets, so the froth trend can't come from either and must be self-contained.
 The read also carries the **upcoming-scheduled IPO count**, a standalone forward-looking datum with **no trend pair** — a prior "upcoming" window isn't reconstructable from the current feed, since postponed or since-priced offerings vanish from the schedule, so a pair here couldn't be self-contained.
 
 The windows sit on the ET session date T and are **half-open** on the feeds' calendar dates (the earnings calendar's date convention).

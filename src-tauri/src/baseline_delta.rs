@@ -99,7 +99,12 @@ pub struct BaselineDeltas {
 
 /// `(id, name, level)` for each series in `group` — the uniform shape the join works
 /// over. Non-level-bearing groups (everything outside [`DELTA_GROUPS`]) yield nothing.
-fn series_levels(data: &BaselineMarketData, group: GroupKind) -> Vec<(String, String, f64)> {
+/// Shared with the baseline history (`baseline_history`), so one definition fixes the
+/// level-bearing series both views read.
+pub(crate) fn series_levels(
+    data: &BaselineMarketData,
+    group: GroupKind,
+) -> Vec<(String, String, f64)> {
     fn from_quotes(quotes: &[Quote]) -> Vec<(String, String, f64)> {
         quotes
             .iter()

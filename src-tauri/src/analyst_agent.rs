@@ -32,6 +32,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::agent::{AnalystAgent, AnalystOutput, Confidence, Posture};
+use crate::baseline_history::{self, BaselineHistory};
 use crate::cadence::ReportCadence;
 use crate::model_agent::{
     extract_anthropic_text_output, extract_openai_responses_output, retry_stream_once,
@@ -69,13 +70,13 @@ const REQUEST_GROUP: &str = "analyst";
 /// guidance ([`posture_guidance`]) is appended per analyst.
 const BASE_SYSTEM_PROMPT: &str = "You are a market analyst on Market Signal's research \
 team, contributing one perspective to a market report. You are given the condensed \
-research packet — the baseline market data and its change view, the filtered news clusters, the \
-deep-research evidence and its sources, any recalled long-term memory, and any user-supplied \
-research documents. Produce a structured analytical review from your assigned \
-perspective. Ground every point in the provided packet — the baseline numbers, the change view, \
-the news, and the research evidence; never invent data or lean on prior knowledge the packet does \
-not support. Your review is one of three independent perspectives the Head Market Analyst will \
-critique and weigh when synthesizing the final report; argue your perspective in good faith as a \
+research packet — the baseline market data, its change view and the baseline history, the \
+filtered news clusters, the deep-research evidence and its sources, any recalled long-term \
+memory, and any user-supplied research documents. Produce a structured analytical review from \
+your assigned perspective. Ground every point in the provided packet — the baseline numbers, the \
+change view, the baseline history, the news, and the research evidence; never invent data or \
+lean on prior knowledge the packet does not support. Your review is one of three independent \
+perspectives the Head Market Analyst will critique and weigh when synthesizing the final report; argue your perspective in good faith as a \
 professional analyst rather than forcing a predetermined conclusion. The prompt also carries \
 `analytical skills` — a library of analytical lenses, each with the method it applies and the \
 structured verdict it should yield. Not every lens applies to every report: work through the ones the \
@@ -272,14 +273,19 @@ fn build_openai_request(
     req
 }
 
-/// Build the user message: the standing instruction, the condensed research packet
-/// serialized as JSON — the canonical analyst input (`docs/report-workflow.md
-/// §Step 11`) — and the full analytical-skills library (`docs/analyst-skills.md`). A
+/// Build the user message: the standing instruction, the run's cadence cue, the condensed
+/// research packet serialized as JSON — the canonical analyst input
+/// (`docs/report-workflow.md §Step 11`) — the baseline history beside it when the run has
+/// one, and the full analytical-skills library (`docs/analyst-skills.md`). A
 /// default (empty) packet falls back to the bare instruction so the prompt never carries an
 /// empty data block, but the skills library is appended in every case: the lenses are
 /// packet-independent, mirroring the main agent, which appends the whole library
 /// unconditionally.
-fn build_user_prompt(packet: &ResearchPacket, cadence: ReportCadence) -> String {
+fn build_user_prompt(
+    packet: &ResearchPacket,
+    cadence: ReportCadence,
+    history: Option<&BaselineHistory>,
+) -> String {
     let mut prompt = USER_INSTRUCTION.to_string();
     // Report cadence cue: how long since the previous report, so the analyst weights
     // recent moves versus the structural picture. Passed in by the application layer
@@ -295,6 +301,13 @@ fn build_user_prompt(packet: &ResearchPacket, cadence: ReportCadence) -> String 
                 "\n\nCondensed research packet:\n{json}"
             ));
         }
+    }
+    // The baseline history rides beside the packet, not inside it: the shared compact
+    // render (one line per series) the main agent reads too, where the packet's pretty
+    // JSON would put every value on its own line.
+    if let Some(history) = history {
+        prompt.push_str("\n\n");
+        prompt.push_str(&baseline_history::render_block(history));
     }
     prompt.push_str(&skills::render_library(SKILL_LIBRARY_INTRO));
     prompt
@@ -434,10 +447,15 @@ impl ModelAnalystAgent {
 }
 
 impl AnalystAgent for ModelAnalystAgent {
-    fn review(&self, packet: &ResearchPacket, cadence: ReportCadence) -> Result<AnalystOutput> {
+    fn review(
+        &self,
+        packet: &ResearchPacket,
+        cadence: ReportCadence,
+        history: Option<&BaselineHistory>,
+    ) -> Result<AnalystOutput> {
         let provider = self.config.model.provider();
         let system = system_prompt(self.posture);
-        let user = build_user_prompt(packet, cadence);
+        let user = build_user_prompt(packet, cadence, history);
         let reasoning = thinking_config(self.config.model);
         let body = match provider {
             Provider::Anthropic => {
@@ -667,29 +685,86 @@ mod tests {
 
     #[test]
     fn user_prompt_embeds_packet_when_present_and_omits_the_data_block_when_empty() {
-        let with = build_user_prompt(&one_index_packet(), ReportCadence::default());
+        let with = build_user_prompt(&one_index_packet(), ReportCadence::default(), None);
         assert!(with.starts_with(USER_INSTRUCTION), "{with}");
         assert!(with.contains("Condensed research packet"), "{with}");
         assert!(with.contains("S&P 500"), "{with}");
 
         // A default packet still leads with the bare instruction and carries no data block,
         // but is no longer exactly USER_INSTRUCTION — the skills library is appended (below).
-        let bare = build_user_prompt(&ResearchPacket::default(), ReportCadence::default());
+        let bare = build_user_prompt(&ResearchPacket::default(), ReportCadence::default(), None);
         assert!(bare.starts_with(USER_INSTRUCTION), "{bare}");
         assert!(!bare.contains("Condensed research packet"), "{bare}");
     }
 
     #[test]
+    fn user_prompt_carries_the_baseline_history_beside_the_packet_when_present() {
+        use crate::baseline_history::{BaselineHistory, HistoryPoint, SeriesHistory};
+        use crate::data_sources::GroupKind;
+
+        let history = BaselineHistory {
+            points: ["2026-09-15 16:00 ET", "2026-09-22 16:00 ET", "2026-09-29 15:00 ET"]
+                .iter()
+                .map(|at| HistoryPoint {
+                    at: (*at).into(),
+                    report_id: None,
+                })
+                .collect(),
+            series: vec![SeriesHistory {
+                group: GroupKind::Indices,
+                id: "^GSPC".into(),
+                name: "S&P 500".into(),
+                values: vec![Some(5_500.0), None, Some(5_600.0)],
+            }],
+        };
+        let with = build_user_prompt(&one_index_packet(), ReportCadence::default(), Some(&history));
+        let block = baseline_history::render_block(&history);
+        let at = with.find(&block).expect("the rendered history block rides in");
+        assert!(
+            with.find("Condensed research packet").unwrap() < at,
+            "after the packet: {with}"
+        );
+        assert!(
+            at < with.find("Analytical skills").unwrap(),
+            "before the skills library: {with}"
+        );
+
+        let without = build_user_prompt(&one_index_packet(), ReportCadence::default(), None);
+        assert!(!without.contains("Baseline history"), "{without}");
+    }
+
+    #[test]
+    fn system_prompt_names_the_baseline_history_as_input_and_grounding() {
+        let prompt = system_prompt(Posture::Balanced);
+        assert!(
+            prompt.contains("the baseline market data, its change view and the baseline history"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("the change view, the baseline history, the news"),
+            "{prompt}"
+        );
+    }
+
+    #[test]
     fn user_prompt_carries_a_cadence_cue_reflecting_the_passed_cadence() {
         // The first-report cadence gets the first-report cue, regardless of the packet.
-        let first = build_user_prompt(&ResearchPacket::default(), ReportCadence::from_elapsed(None));
+        let first = build_user_prompt(
+            &ResearchPacket::default(),
+            ReportCadence::from_elapsed(None),
+            None,
+        );
         assert!(first.contains("Report cadence:"), "{first}");
         assert!(first.contains("first report"), "{first}");
 
         // A long elapsed interval gets the reassess-the-structure cue — and it comes from
         // the passed cadence, not the packet's change view (so a corrupt-prior packet with
         // no deltas still gets the right cue).
-        let long = build_user_prompt(&one_index_packet(), ReportCadence::from_elapsed(Some(35.0)));
+        let long = build_user_prompt(
+            &one_index_packet(),
+            ReportCadence::from_elapsed(Some(35.0)),
+            None,
+        );
         assert!(long.contains("Report cadence:"), "{long}");
         assert!(long.contains("reassess the structural picture"), "{long}");
     }
@@ -699,7 +774,7 @@ mod tests {
         // The lenses are packet-independent, so the full library + its verdict forcing
         // function ride into the prompt in both the populated and default-packet paths.
         for packet in [one_index_packet(), ResearchPacket::default()] {
-            let prompt = build_user_prompt(&packet, ReportCadence::default());
+            let prompt = build_user_prompt(&packet, ReportCadence::default(), None);
             assert!(
                 prompt.contains("Analytical skills"),
                 "intro missing: {prompt}"
@@ -921,7 +996,7 @@ mod tests {
     fn analyst_review_smoke() {
         let agent = ModelAnalystAgent::from_env(Posture::Balanced).expect("analyst configured");
         let review = agent
-            .review(&one_index_packet(), ReportCadence::from_elapsed(Some(7.0)))
+            .review(&one_index_packet(), ReportCadence::from_elapsed(Some(7.0)), None)
             .expect("review");
         assert_eq!(review.posture, Posture::Balanced);
         assert!(
@@ -1021,7 +1096,7 @@ mod tests {
                 ok_reply(anthropic_sse("second pass", &review_envelope("A real read."))),
             ]);
             let (rec, agent) = analyst(Posture::Bear, AgentModel::ClaudeSonnet, &mock.base_url);
-            let review = agent.review(&one_index_packet(), ReportCadence::default()).unwrap();
+            let review = agent.review(&one_index_packet(), ReportCadence::default(), None).unwrap();
             assert_eq!(review.summary, "A real read.");
             assert_eq!(mock.attempts(), 2);
             assert_eq!(mock.request_paths(), ["/v1/messages", "/v1/messages"]);
@@ -1079,7 +1154,7 @@ mod tests {
                 ok_reply(openai_sse(&review_envelope("Measured."))),
             ]);
             let (rec, agent) = analyst(Posture::Balanced, AgentModel::Gpt5Mini, &mock.base_url);
-            agent.review(&one_index_packet(), ReportCadence::default()).unwrap();
+            agent.review(&one_index_packet(), ReportCadence::default(), None).unwrap();
             assert_eq!(mock.attempts(), 2);
             let detail = rec
                 .messages()
@@ -1107,7 +1182,7 @@ mod tests {
                 ok_reply(openai_sse(&review_envelope("Constructive."))),
             ]);
             let (rec, agent) = analyst(Posture::Bull, AgentModel::Gpt5, &mock.base_url);
-            agent.review(&one_index_packet(), ReportCadence::default()).unwrap();
+            agent.review(&one_index_packet(), ReportCadence::default(), None).unwrap();
             assert_eq!(mock.attempts(), 2);
             assert_eq!(mock.request_paths(), ["/v1/responses", "/v1/responses"]);
             assert_eq!(rows(&rec).last(), Some(&(false, "bull".to_string(), Some("ok".to_string()))));
@@ -1118,7 +1193,9 @@ mod tests {
             let refusal = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"}}\n\n";
             let mock = MockHttp::serve(vec![ok_reply(refusal.to_string())]);
             let (rec, agent) = analyst(Posture::Balanced, AgentModel::ClaudeOpus, &mock.base_url);
-            let err = agent.review(&one_index_packet(), ReportCadence::default()).unwrap_err();
+            let err = agent
+                .review(&one_index_packet(), ReportCadence::default(), None)
+                .unwrap_err();
             assert_eq!(err.to_string(), "Anthropic declined the request (refusal: unspecified)");
             assert_eq!(mock.attempts(), 1);
             assert_eq!(
@@ -1137,7 +1214,9 @@ mod tests {
                  data: {\"type\":\"response.completed\"}\n\n";
             let mock = MockHttp::serve(vec![ok_reply(refusal.to_string())]);
             let (rec, agent) = analyst(Posture::Bear, AgentModel::Gpt5, &mock.base_url);
-            let err = agent.review(&one_index_packet(), ReportCadence::default()).unwrap_err();
+            let err = agent
+                .review(&one_index_packet(), ReportCadence::default(), None)
+                .unwrap_err();
             assert_eq!(err.to_string(), "OpenAI declined the request (refusal: I can't help with that.)");
             assert_eq!(mock.attempts(), 1);
             assert_eq!(
@@ -1156,7 +1235,9 @@ mod tests {
                 ok_reply(anthropic_sse("b", &review_envelope(""))),
             ]);
             let (rec, agent) = analyst(Posture::Bull, AgentModel::ClaudeHaiku, &mock.base_url);
-            let err = agent.review(&one_index_packet(), ReportCadence::default()).unwrap_err();
+            let err = agent
+                .review(&one_index_packet(), ReportCadence::default(), None)
+                .unwrap_err();
             assert_eq!(mock.attempts(), 2);
             assert_eq!(
                 err.to_string(),

@@ -10,6 +10,7 @@ use market_signal_temp_lib::agent::{
     StubAnalystAgent, StubMainAgent,
 };
 use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
+use market_signal_temp_lib::baseline_history::BaselineHistory;
 use market_signal_temp_lib::cadence::ReportCadence;
 use market_signal_temp_lib::data_sources::{
     BaselineMarketData, Change, MarketDataSource, Quote, StubMarketDataSource,
@@ -30,11 +31,13 @@ use market_signal_temp_lib::research_router::{
 /// Wraps the stub agent and records the baseline *and* the change view it was handed, so
 /// the tests can assert both the Step-6 gather and the prior-snapshot diff reached the
 /// agent stage. `seen_deltas` is `Some(None)` once the agent ran with no change view,
-/// `Some(Some(_))` once it ran with one. `seen_audit_memory` captures the Step-4
-/// pre-research pull that steers the retrospective audit.
+/// `Some(Some(_))` once it ran with one; `seen_history` reads the same way for the
+/// baseline history. `seen_audit_memory` captures the Step-4 pre-research pull that
+/// steers the retrospective audit.
 struct RecordingAgent {
     seen: Mutex<Option<BaselineMarketData>>,
     seen_deltas: Mutex<Option<Option<BaselineDeltas>>>,
+    seen_history: Mutex<Option<Option<BaselineHistory>>>,
     seen_research: Mutex<Option<Option<ResearchPacket>>>,
     seen_audit_memory: Mutex<Option<Vec<String>>>,
     seen_analyst_reviews: Mutex<Option<Vec<AnalystOutput>>>,
@@ -45,6 +48,7 @@ impl RecordingAgent {
         Self {
             seen: Mutex::new(None),
             seen_deltas: Mutex::new(None),
+            seen_history: Mutex::new(None),
             seen_research: Mutex::new(None),
             seen_audit_memory: Mutex::new(None),
             seen_analyst_reviews: Mutex::new(None),
@@ -56,6 +60,7 @@ impl MainAgent for RecordingAgent {
     fn generate(&self, input: MainAgentInput) -> anyhow::Result<MainAgentOutput> {
         *self.seen.lock().unwrap() = Some(input.baseline.clone());
         *self.seen_deltas.lock().unwrap() = Some(input.deltas.clone());
+        *self.seen_history.lock().unwrap() = Some(input.history.clone());
         *self.seen_research.lock().unwrap() = Some(input.research.clone());
         *self.seen_audit_memory.lock().unwrap() = Some(input.audit_memory.clone());
         *self.seen_analyst_reviews.lock().unwrap() = Some(input.analyst_reviews.clone());
@@ -73,8 +78,28 @@ impl AnalystAgent for FailingAnalyst {
         &self,
         _packet: &ResearchPacket,
         _cadence: market_signal_temp_lib::cadence::ReportCadence,
+        _history: Option<&BaselineHistory>,
     ) -> anyhow::Result<AnalystOutput> {
         anyhow::bail!("analyst model unreachable (simulated)")
+    }
+}
+
+/// Records the baseline history an analyst was handed, then delegates to the stub. The
+/// record sits behind an `Arc` because the analyst is boxed into `AnalystStages`.
+struct HistoryRecordingAnalyst {
+    posture: Posture,
+    seen: Arc<Mutex<Option<Option<BaselineHistory>>>>,
+}
+
+impl AnalystAgent for HistoryRecordingAnalyst {
+    fn review(
+        &self,
+        packet: &ResearchPacket,
+        cadence: ReportCadence,
+        history: Option<&BaselineHistory>,
+    ) -> anyhow::Result<AnalystOutput> {
+        *self.seen.lock().unwrap() = Some(history.cloned());
+        StubAnalystAgent::new(self.posture).review(packet, cadence, history)
     }
 }
 
@@ -597,6 +622,79 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
         .query_row("SELECT COUNT(*) FROM baseline_snapshots", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 2);
+}
+
+#[test]
+fn a_third_report_hands_the_baseline_history_to_the_main_agent_and_the_analysts() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths::under(dir.path());
+    let seen_by_bear = Arc::new(Mutex::new(None));
+    let analysts = || AnalystStages {
+        bull: Box::new(StubAnalystAgent::new(Posture::Bull)),
+        bear: Box::new(HistoryRecordingAnalyst {
+            posture: Posture::Bear,
+            seen: Arc::clone(&seen_by_bear),
+        }),
+        balanced: Box::new(StubAnalystAgent::new(Posture::Balanced)),
+    };
+    // Each run returns its persisted report id and what the main agent and the bear
+    // analyst were handed: `Some(None)` means the stage ran with no history, so a stage
+    // that never ran can't pass for one that ran without a history.
+    let run = |sp_price: f64| {
+        let agent = RecordingAgent::new();
+        let report = generate_report(
+            &agent,
+            &FixedMarketDataSource(base_with_sp(sp_price)),
+            &ResearchStages::stub(),
+            &analysts(),
+            &StubEmbedder,
+            &paths,
+            &RunContext::noop(),
+        )
+        .unwrap();
+        let history = agent.seen_history.lock().unwrap().clone();
+        let analyst_history = seen_by_bear.lock().unwrap().take();
+        (report.report_id, history, analyst_history)
+    };
+
+    // The first and second reports fall below the three-point minimum: the second's two
+    // points would only restate its change view.
+    let mut prior_ids = Vec::new();
+    for sp_price in [5_400.0, 5_500.0] {
+        let (report_id, history, analyst_history) = run(sp_price);
+        assert_eq!(history, Some(None), "the agent ran with no history below three points");
+        assert_eq!(analyst_history, Some(None), "nor did the analysts get one");
+        prior_ids.push(report_id);
+    }
+
+    // The third report reads both retained snapshots plus this run, oldest first; each
+    // prior point carries the id of the report its snapshot backs, the join the audit
+    // reads against the prior reports' summary metadata.
+    let (_, history, analyst_history) = run(5_600.0);
+    let history = history
+        .flatten()
+        .expect("the third report carries the history");
+    let ids: Vec<Option<&str>> = history
+        .points
+        .iter()
+        .map(|p| p.report_id.as_deref())
+        .collect();
+    assert_eq!(
+        ids,
+        [Some(prior_ids[0].as_str()), Some(prior_ids[1].as_str()), None],
+        "prior points carry their reports' ids; this run's point is last"
+    );
+    let sp = history
+        .series
+        .iter()
+        .find(|s| s.id == "^GSPC")
+        .expect("the S&P row");
+    assert_eq!(sp.values, [Some(5_400.0), Some(5_500.0), Some(5_600.0)]);
+    assert_eq!(
+        analyst_history,
+        Some(Some(history)),
+        "the analysts read the same history as the main agent"
+    );
 }
 
 /// An embedder that always errors, to drive the Step-17 memory write's fail-soft arm.
