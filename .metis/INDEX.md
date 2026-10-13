@@ -32,6 +32,7 @@ the ones a session still needs.*
 - Main Agent synthesis behavior — agents.md §Synthesis Behavior; report-workflow.md §Step 16
 - Analyst Agents — agents.md §Analyst Agents; report-workflow.md §Steps 12–15
 - Bull / Bear / Balanced postures — agents.md §Bull Analyst, §Bear Analyst, §Balanced Analyst
+- Streaming-agent bounded retry (the agents.md statement is canonical) — agents.md §Bounded Retry on the Streaming Calls; report-workflow.md §Step 12, §Step 16; run-tracking.md §What the Tracker Shows, §Thought-log capture; data-sources.md §LLM Providers
 - Fixed internal models (non-configurable) — agents.md §Fixed Internal Models
   - Headline Filtering — agents.md §Headline Filtering; report-workflow.md §Step 7
   - Data Extraction (no model stage) — agents.md §Data Extraction
