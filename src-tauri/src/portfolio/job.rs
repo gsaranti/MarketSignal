@@ -1479,10 +1479,14 @@ fn run_analysis(
         // The same lookup's exchange, sector and industry — the FETCHED
         // VALUES profile line (`docs/portfolio-workflow.md` §Step 6c).
         let mut issuer: Option<dossier::IssuerProfile> = None;
+        // The same lookup's served beta — the shared engine's low-beta factor
+        // and cost-of-equity input, set onto the financials after the pull.
+        let mut profile_beta: Option<f64> = None;
         let listing = if is_stock {
             let lookup = company_data.profile_identity(&position.symbol);
             if let crate::portfolio::listing::ProfileLookup::Resolved(p) = &lookup {
                 research_website = p.website.clone();
+                profile_beta = p.beta;
                 issuer = Some(dossier::IssuerProfile {
                     exchange: p.exchange.clone(),
                     sector: p.sector.clone(),
@@ -1561,6 +1565,9 @@ fn run_analysis(
             company_data.facts(&position.symbol)
         };
         fmp_financials.gaps.extend(sec_data.gaps);
+        if !skip_retrieval {
+            fmp_financials.beta = profile_beta;
+        }
         // The SEC leg's outcome for the audit: the facts endpoint was queried (`Some`
         // — a clean fetch, an empty one, or a failed one with its gap) or never was
         // (a fund, a skipped retrieval, or no CIK mapping — the gap says which).
@@ -3864,6 +3871,9 @@ mod tests {
                         cost_of_revenue: None,
                         diluted_shares: Some(1.5e10),
                         operating_income: None,
+                        research_and_development: None,
+                        income_before_tax: None,
+                        income_tax_expense: None,
                     })
                     .collect(),
                 consensus: Some(ConsensusEstimate {
@@ -4137,6 +4147,7 @@ mod tests {
                     exchange: Some("PNK".into()),
                     sector: Some("Communication Services".into()),
                     industry: None,
+                    beta: None,
                 })
             } else {
                 ProfileLookup::Unverified("profile source not wired".into())
@@ -4328,6 +4339,7 @@ mod tests {
                         exchange: Some("NYSE".into()),
                         sector: None,
                         industry: None,
+                        beta: None,
                     })
                 } else {
                     ProfileLookup::Unverified("profile source not wired".into())
@@ -6280,6 +6292,7 @@ mod tests {
                 exchange: Some("NASDAQ".into()),
                 sector: Some("Technology".into()),
                 industry: None,
+                beta: None,
             })
         }
     }
@@ -6808,6 +6821,67 @@ mod tests {
 
     fn audit_for<'a>(run: &'a PortfolioRun, symbol: &str) -> &'a HoldingAudit {
         run.audit.iter().find(|a| a.symbol == symbol).expect("the audit row")
+    }
+
+    /// A company surface whose profile serves a beta per symbol.
+    struct BetaProfileData;
+
+    impl CompanyDataSource for BetaProfileData {
+        fn financials(&self, symbol: &str) -> CompanyFinancials {
+            StubCompanyData.financials(symbol)
+        }
+        fn facts(&self, symbol: &str) -> SecData {
+            StubCompanyData.facts(symbol)
+        }
+        fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
+            use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
+            ProfileLookup::Resolved(ProfileIdentity {
+                website: None,
+                currency: Some("USD".into()),
+                is_adr: Some(false),
+                company_name: Some(format!("{symbol} Inc.")),
+                exchange: Some("NASDAQ".into()),
+                sector: Some("Technology".into()),
+                industry: None,
+                beta: (symbol == "AAPL").then_some(1.3),
+            })
+        }
+    }
+
+    /// The stub analyst, recording the beta each thesis input's financials carry.
+    #[derive(Default)]
+    struct BetaRecorder(std::cell::RefCell<Vec<(String, Option<f64>)>>);
+
+    impl HoldingAnalyst for BetaRecorder {
+        fn interpret(&self, input: &crate::portfolio::pipeline::ThesisInput) -> Result<crate::portfolio::PricedModelArm> {
+            self.0.borrow_mut().push((
+                input.dossier.position.symbol.clone(),
+                input.dossier.financials.beta,
+            ));
+            StubAnalyst.interpret(input)
+        }
+        forward_stub_verdict_calls!();
+    }
+
+    /// The profile's served beta rides onto the stock's financials — the shared
+    /// engine's low-beta factor and cost-of-equity input; a profile that omits
+    /// it leaves the beta absent.
+    #[test]
+    fn the_profiles_beta_reaches_the_stocks_financials() {
+        let (_dir, paths) = paths();
+        let recorder = BetaRecorder::default();
+        run_with(
+            &paths,
+            two_stocks(),
+            "2026-07-06T15:00:00Z",
+            &AnchoredPrices::at(200.0),
+            None,
+            &BetaProfileData,
+            &recorder,
+        );
+        let mut seen = recorder.0.borrow().clone();
+        seen.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(seen, vec![("AAPL".to_string(), Some(1.3)), ("MSFT".to_string(), None)]);
     }
 
     /// The self-review item's done-when, end to end: a debut reviews nothing;

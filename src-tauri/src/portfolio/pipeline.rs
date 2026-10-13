@@ -5099,6 +5099,9 @@ pub(crate) mod tests {
                 gross_profit: None,
                 cost_of_revenue: None,
                 operating_income: None,
+                research_and_development: None,
+                income_before_tax: None,
+                income_tax_expense: None,
             })
             .collect();
         let daily_closes = ends
@@ -6988,6 +6991,7 @@ pub(crate) mod tests {
                 free_cash_flow: Some(20.0e9),
                 operating_cash_flow: Some(28.0e9),
                 capex: Some(-8.0e9),
+                depreciation_and_amortization: None,
             })
             .collect();
         let d = dossier(AssetClass::Stock, fin);
@@ -10221,6 +10225,7 @@ pub(crate) mod tests {
                 free_cash_flow: Some(-1.0e9),
                 operating_cash_flow: None,
                 capex: Some(-0.5e9),
+                depreciation_and_amortization: None,
             })
             .collect();
         fin.cash_and_equivalents = Some(6.0e9);

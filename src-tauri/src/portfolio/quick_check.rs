@@ -2902,6 +2902,9 @@ mod tests {
                         gross_profit: Some(40.0),
                         cost_of_revenue: Some(60.0),
                         operating_income: None,
+                        research_and_development: None,
+                        income_before_tax: None,
+                        income_tax_expense: None,
                     })
                     .collect(),
                 // `None` with no gap: the adapter's confirmed non-payer.

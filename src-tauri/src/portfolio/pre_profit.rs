@@ -726,6 +726,7 @@ mod tests {
             free_cash_flow: None,
             operating_cash_flow: Some(10.0),
             capex: Some(-30.0), // FMP's negative-outflow convention
+            depreciation_and_amortization: None,
         };
         assert_eq!(row.resolved_free_cash_flow(), Some(-20.0));
         let row = QuarterlyCashFlowRow {

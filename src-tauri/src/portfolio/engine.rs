@@ -238,7 +238,7 @@ const DEGENERATE_DENOMINATOR_EPS: f64 = 0.01;
 
 /// Filing grace applied when a quarterly statement carries no filing date: the anchor
 /// date is the period end plus this many days (the suite's freshness-basis constant).
-const FILING_GRACE_DAYS: i64 = 45;
+pub(crate) const FILING_GRACE_DAYS: i64 = 45;
 
 /// Sanity clamp on the implied annual driver growth versus the trailing print
 /// (the v1 bound, retained by the v2 ladder). Released under the targets-v4
@@ -544,6 +544,13 @@ pub struct QuarterlyIncomeRow {
     /// Quarterly operating income — the pre-profit overlay's eligibility leg (TTM
     /// operating income ≤ 0 — `docs/portfolio-analysis.md` §Starting parameters).
     pub operating_income: Option<f64>,
+    /// Research and development expense — the value-creation read's R&D
+    /// capitalization source (`portfolio::value_creation`).
+    pub research_and_development: Option<f64>,
+    /// Pre-tax income and income-tax expense — the value-creation read's
+    /// effective tax rate for NOPAT (`portfolio::value_creation`).
+    pub income_before_tax: Option<f64>,
+    pub income_tax_expense: Option<f64>,
 }
 
 /// One quarterly cash-flow-statement print (newest first in
@@ -566,6 +573,9 @@ pub struct QuarterlyCashFlowRow {
     /// Capital expenditure as reported (FMP serves it negative — an outflow);
     /// consumers read its magnitude.
     pub capex: Option<f64>,
+    /// Depreciation and amortization — the value-creation read's net
+    /// reinvestment leg (`portfolio::value_creation`).
+    pub depreciation_and_amortization: Option<f64>,
 }
 
 impl QuarterlyCashFlowRow {
@@ -604,6 +614,9 @@ pub struct QuarterlyBalanceSheetRow {
     pub net_receivables: Option<f64>,
     /// Inventory — the working-capital-build flag's second line.
     pub inventory: Option<f64>,
+    /// Total assets — the shared engine's gross-profitability denominator and
+    /// asset-growth series (`portfolio::factors`).
+    pub total_assets: Option<f64>,
 }
 
 /// The provider's Altman Z and Piotroski F scores (`financial-scores`) — the soft
@@ -701,6 +714,11 @@ pub struct CompanyFinancials {
     pub current_price: Option<f64>,
     pub market_cap: Option<f64>,
     pub shares_outstanding: Option<f64>,
+    /// The profile's served beta for a stock — the shared engine's low-beta
+    /// factor and the cost-of-equity input (`portfolio::factors`,
+    /// `portfolio::value_creation`); set from the job's one profile read,
+    /// `None` on a fund, a gapped profile or an omitted field.
+    pub beta: Option<f64>,
     /// The quote's served 52-week high and low — FETCHED VALUES renders the
     /// range as the provider states it, never a computed min / max over the
     /// fetched closes (`docs/portfolio-workflow.md` §Step 6c; ruled
@@ -3538,6 +3556,9 @@ mod tests {
                 gross_profit: None,
                 cost_of_revenue: None,
                 operating_income: None,
+                research_and_development: None,
+                income_before_tax: None,
+                income_tax_expense: None,
             })
             .collect();
         // Dated closes: one per quarter end plus a recent print, rising over time.
@@ -3604,6 +3625,7 @@ mod tests {
             year_high: None,
             year_low: None,
             gaps: vec![],
+            beta: None,
         }
     }
 
@@ -4258,6 +4280,7 @@ mod tests {
                 free_cash_flow: Some(1.0),
                 operating_cash_flow: None,
                 capex: None,
+                depreciation_and_amortization: None,
             })
             .collect();
         let newest = fin.quarterly_income[0].period_end.clone();
@@ -5979,6 +6002,9 @@ mod tests {
                     gross_profit: None,
                     cost_of_revenue: None,
                     operating_income: None,
+                    research_and_development: None,
+                    income_before_tax: None,
+                    income_tax_expense: None,
                 })
                 .collect();
         }

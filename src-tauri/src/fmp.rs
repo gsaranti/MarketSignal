@@ -6430,18 +6430,22 @@ const EVIDENCE_LATEST_ROW_LIMIT: &str = "4";
 /// the four extra quarters its oldest TTM print needs.
 const INCOME_QUARTERS_LIMIT: &str = "16";
 
-/// Quarters of cash-flow history requested — the pre-profit TTM window (4) plus a
-/// year of slack so a missing newest print doesn't strand the sum.
-const CASH_FLOW_QUARTERS_LIMIT: &str = "8";
+/// Quarters of cash-flow history requested — the income pull's sixteen, so the
+/// shared engine's factor reads (FCF yield, FCF conversion, owner earnings)
+/// carry an own-history series as deep as the income-side ones
+/// (`portfolio::factors`); the pre-profit overlay's TTM window reads the newest
+/// four.
+const CASH_FLOW_QUARTERS_LIMIT: &str = "16";
 
 /// Quarters of balance-sheet history requested — the newest print (the leverage
 /// leg, the P/B denominator and the runway's liquid-resource lines) plus the
-/// seven behind it: the soft forensic flags' year-over-year receivables and
+/// fifteen behind it: the soft forensic flags' year-over-year receivables and
 /// inventory comparator sits at index 4 under the contiguity gate, and the
-/// prompts' FETCHED VALUES renders the statements' headline lines over the
-/// latest eight quarters on every leg (`docs/portfolio-workflow.md` §Step 6c;
-/// ruled 2026-10-08).
-const BALANCE_SHEET_QUARTERS_LIMIT: &str = "8";
+/// shared engine's factor reads (GP / assets, asset growth, ROIC) carry an
+/// own-history series as deep as the income pull's (`portfolio::factors`). The
+/// prompts' FETCHED VALUES still renders the latest eight quarters, joined to
+/// the income rows by period end (`docs/portfolio-workflow.md` §Step 6c).
+const BALANCE_SHEET_QUARTERS_LIMIT: &str = "16";
 
 /// The tracker-row status a suite fetch's *parse* earned. HTTP-level gaps
 /// never reach this enum — they keep the `GapReason` kebab vocabulary on the
@@ -7795,6 +7799,7 @@ fn quarterly_balance_sheet_from_value(
                     .and_then(Value::as_f64),
                 net_receivables: row.get("netReceivables").and_then(Value::as_f64),
                 inventory: row.get("inventory").and_then(Value::as_f64),
+                total_assets: row.get("totalAssets").and_then(Value::as_f64),
             })
         })
         .collect()
@@ -7859,6 +7864,9 @@ fn quarterly_cash_flow_from_value(
                             .and_then(Value::as_f64)
                     }),
                 capex: row.get("capitalExpenditure").and_then(Value::as_f64),
+                depreciation_and_amortization: row
+                    .get("depreciationAndAmortization")
+                    .and_then(Value::as_f64),
             })
         })
         .collect()
@@ -7915,6 +7923,11 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
                 gross_profit: row.get("grossProfit").and_then(Value::as_f64),
                 cost_of_revenue: row.get("costOfRevenue").and_then(Value::as_f64),
                 operating_income: row.get("operatingIncome").and_then(Value::as_f64),
+                research_and_development: row
+                    .get("researchAndDevelopmentExpenses")
+                    .and_then(Value::as_f64),
+                income_before_tax: row.get("incomeBeforeTax").and_then(Value::as_f64),
+                income_tax_expense: row.get("incomeTaxExpense").and_then(Value::as_f64),
             })
         })
         .collect()
@@ -9067,6 +9080,7 @@ fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::Prof
         exchange: field("exchange"),
         sector: field("sector"),
         industry: field("industry"),
+        beta: obj.get("beta").and_then(Value::as_f64).filter(|b| b.is_finite()),
     })
 }
 
@@ -9427,6 +9441,54 @@ mod suite_tests {
         assert_eq!(lines.total_debt, Some(110.0e9));
         assert_eq!(lines.short_term_investments, Some(32.0e9));
         assert_eq!(BalanceSheetLines::from_newest(&[]), BalanceSheetLines::default());
+    }
+
+    #[test]
+    fn statement_rows_keep_the_factor_machinerys_lines_and_absent_reads_none() {
+        // The shared engine's widened inputs (`portfolio::factors`,
+        // `portfolio::value_creation`): R&D, pre-tax income and tax on the
+        // income row, total assets on the balance sheet, D&A on the cash flow —
+        // each read as served, and an absent or null line reads `None`.
+        let income: Value = serde_json::from_str(
+            r#"[
+            {"date":"2026-03-31","revenue":95e9,"researchAndDevelopmentExpenses":8.5e9,
+             "incomeBeforeTax":30e9,"incomeTaxExpense":4.8e9},
+            {"date":"2025-12-31","revenue":124e9,"researchAndDevelopmentExpenses":null}
+        ]"#,
+        )
+        .unwrap();
+        let rows = quarterly_income_from_value(&income);
+        assert_eq!(rows[0].research_and_development, Some(8.5e9));
+        assert_eq!(rows[0].income_before_tax, Some(30e9));
+        assert_eq!(rows[0].income_tax_expense, Some(4.8e9));
+        assert_eq!(rows[1].research_and_development, None);
+        assert_eq!(rows[1].income_before_tax, None);
+        assert_eq!(rows[1].income_tax_expense, None);
+
+        let balance: Value = serde_json::from_str(
+            r#"[{"date":"2026-03-31","totalAssets":344e9},{"date":"2025-12-31"}]"#,
+        )
+        .unwrap();
+        let rows = quarterly_balance_sheet_from_value(&balance);
+        assert_eq!(rows[0].total_assets, Some(344e9));
+        assert_eq!(rows[1].total_assets, None);
+
+        let cash: Value = serde_json::from_str(
+            r#"[{"date":"2026-03-31","depreciationAndAmortization":3.1e9},{"date":"2025-12-31"}]"#,
+        )
+        .unwrap();
+        let rows = quarterly_cash_flow_from_value(&cash);
+        assert_eq!(rows[0].depreciation_and_amortization, Some(3.1e9));
+        assert_eq!(rows[1].depreciation_and_amortization, None);
+    }
+
+    #[test]
+    fn statement_pulls_request_sixteen_quarters_on_every_leg() {
+        // The factor reads' own-history depth: the balance-sheet and cash-flow
+        // pulls match the income pull's sixteen quarters.
+        assert_eq!(INCOME_QUARTERS_LIMIT, "16");
+        assert_eq!(BALANCE_SHEET_QUARTERS_LIMIT, "16");
+        assert_eq!(CASH_FLOW_QUARTERS_LIMIT, "16");
     }
 
     #[test]
@@ -9993,11 +10055,21 @@ mod suite_tests {
         assert_eq!(identity.sector.as_deref(), Some("Technology"));
         assert_eq!(identity.currency.as_deref(), Some("USD"));
         assert_eq!(identity.is_adr, Some(true));
-        let bare: Value = serde_json::from_str(r#"{"sector":"Energy"}"#).unwrap();
+        assert_eq!(identity.beta, None, "an omitted beta reads None");
+        let bare: Value = serde_json::from_str(r#"{"sector":"Energy","beta":1.086}"#).unwrap();
         let ProfileLookup::Resolved(identity) = profile_identity_from_value(&bare) else {
             panic!("expected resolved");
         };
         assert_eq!(identity.sector.as_deref(), Some("Energy"));
+        assert_eq!(identity.beta, Some(1.086));
+        // A null or non-numeric beta is no beta, never a fabricated zero.
+        for body in [r#"{"beta":null}"#, r#"{"beta":"1.1"}"#] {
+            let v: Value = serde_json::from_str(body).unwrap();
+            let ProfileLookup::Resolved(identity) = profile_identity_from_value(&v) else {
+                panic!("expected resolved");
+            };
+            assert_eq!(identity.beta, None, "{body}");
+        }
     }
 
     #[test]

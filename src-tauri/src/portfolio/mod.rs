@@ -53,6 +53,7 @@ pub mod distill;
 pub mod dossier;
 pub mod engine;
 pub mod evidence;
+pub mod factors;
 pub mod fund;
 pub mod job;
 pub mod listing;
@@ -65,6 +66,7 @@ pub mod review;
 pub mod sector;
 pub mod soft_forensic;
 pub mod store;
+pub mod value_creation;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

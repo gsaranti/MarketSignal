@@ -28,6 +28,11 @@ pub struct ProfileIdentity {
     /// Materials sector — `docs/data-sources.md §Portfolio Analysis —
     /// endpoint surface`, the `GCUSD` row).
     pub industry: Option<String>,
+    /// The provider's served beta — the shared engine's low-beta factor and the
+    /// value-creation read's cost-of-equity input (`portfolio::factors`,
+    /// `portfolio::value_creation`). `None` where the profile omits it or serves
+    /// a non-numeric value.
+    pub beta: Option<f64>,
 }
 
 /// One `/profile` lookup outcome. `Unresolved` is only the definitive 2xx
@@ -318,6 +323,7 @@ mod tests {
             exchange: Some(exchange.to_string()),
             sector: Some("Technology".to_string()),
             industry: None,
+            beta: None,
         })
     }
 
@@ -494,6 +500,7 @@ mod tests {
             exchange: None,
             sector: None,
             industry: None,
+            beta: None,
         });
         assert!(matches!(
             resolve_listing("AAPL", "APPLE INC", &no_exchange),
@@ -507,6 +514,7 @@ mod tests {
             exchange: Some("NASDAQ".to_string()),
             sector: None,
             industry: None,
+            beta: None,
         });
         assert!(matches!(
             resolve_listing("AAPL", "APPLE INC", &no_name),

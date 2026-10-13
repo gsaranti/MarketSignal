@@ -1717,6 +1717,9 @@ mod tests {
                     operating_income: None,
                     gross_profit: gross_profit.then_some(0.45 * revenue),
                     cost_of_revenue: cost_of_revenue.then_some(0.55 * revenue),
+                    research_and_development: None,
+                    income_before_tax: None,
+                    income_tax_expense: None,
                 }
             })
             .collect()
@@ -2505,6 +2508,7 @@ Sources and footnotes.
                 free_cash_flow: Some(2.0),
                 operating_cash_flow: None,
                 capex: None,
+                depreciation_and_amortization: None,
             },
             QuarterlyCashFlowRow {
                 period_end: "2026-06-30".into(),
@@ -2512,6 +2516,7 @@ Sources and footnotes.
                 free_cash_flow: Some(3.0),
                 operating_cash_flow: None,
                 capex: None,
+                depreciation_and_amortization: None,
             },
         ];
         assert!(apply_ttm_statement_basis(&mut fin));
