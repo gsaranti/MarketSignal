@@ -76,6 +76,7 @@ the ones a session still needs.*
 - Condensed research packet — report-workflow.md §Step 11; agents.md §Main Agent
 - Baseline market data scan (series membership lives in data-sources.md) — report-workflow.md §Step 3
 - Baseline change view — report-workflow.md §Step 3; storage.md §Baseline Snapshots
+- Baseline history (the storage.md statement is canonical) — storage.md §Baseline Snapshots; report-workflow.md §Step 3, §Step 5, §Step 12, §Step 16
 - Vector memory retrieval (pre-research §Step 4; post-research §Step 10) — report-workflow.md
 - Embedding-response validation (canonical at Step 4) — report-workflow.md §Step 4; local-models.md §The local-model adapter seam
 
