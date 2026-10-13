@@ -53,6 +53,7 @@ Every step below is tagged with a **Type** so it is obvious what the step actual
 - **Model call** — invokes a model: either a generative LLM or the embedding model.
   *Fixed-internal* models (headline filter, research router, embeddings) are non-configurable; *agent* models (the main agent and the three analysts) are user-selectable (see [configuration.md](configuration.md)).
   Every generative call is a single, non-looping request — the only stage that loops is Step 9's research phase, and it loops over **API retrieval**, not a model.
+  A streaming agent call may re-attempt once on a transient failure, a bounded retry rather than a loop ([agents.md §Bounded Retry on the Streaming Calls](agents.md#bounded-retry-on-the-streaming-calls)).
 
 A load-bearing architectural rule frames the whole table: **agents are pure stages, and the application layer owns all I/O.** A model stage only ever consumes the structured input handed to it and emits a structured result — it never touches the network, database, or filesystem itself.
 For each model call, the **Model call** block under that step lists exactly what the prompt includes and what the model returns.
@@ -480,6 +481,7 @@ The instruction; a cadence cue (always present, even on a first report); the sam
 **Returns.**
 Structured output on a strict JSON schema — a `json_schema` output format on Anthropic, the `analyst_review` strict-JSON schema on OpenAI (the Anthropic arm's forced tool was dropped because it is incompatible with the extended thinking now enabled; the OpenAI arm never used one): `{ summary, key_points[], risks[], opportunities[], confidence ∈ {low, medium, high} }`, all fields required.
 The application tags the posture (the model never sets it) and validates: a blank summary **fails the run** (the analyst stage is deliberately not fail-soft), while empty lists are accepted (e.g. a bear naming no opportunities).
+A blank summary, like any transient failure of the call, re-attempts the call once before it fails the run ([agents.md §Bounded Retry on the Streaming Calls](agents.md#bounded-retry-on-the-streaming-calls)).
 The three reviews are ephemeral — never persisted — and ride into Step 16.
 
 ## Step 13: Bull Analyst Review
@@ -551,6 +553,7 @@ The remaining blocks are the recent prior reports (summary metadata plus head-tr
 Structured output on a strict JSON schema — a `json_schema` output format on Anthropic, the `market_signal_report` strict-JSON schema on OpenAI (the Anthropic arm's forced tool was dropped because it is incompatible with the extended thinking now enabled; the OpenAI arm never used one): `{ markdown, title, risk_posture, market_cycle, thesis_stance, header_summary_bullets[], key_risks[], unresolved_questions[], forward_outlook_themes[], durable_learnings[] }` — where `title` is the short per-issue headline the model writes (e.g. "Rotation, not rupture"), which labels the report in the interface and which the body's subtitle restates.
 The model does **not** emit `report_id`, `report_type`, or `created_at` — the application mints those (a fresh UUID, the fixed `market_signal` type, and a server-side timestamp), so a model-fabricated identity or date can never enter the pipeline.
 Validation: the 3–6 header-bullet bound is enforced in code, a blank Markdown body or a blank `title` is rejected, and durable learnings are capped (≤5) at the persist step.
+A rejected header-bullet count, Markdown body or `title`, like any transient failure of the call, re-attempts the call once before it fails the run ([agents.md §Bounded Retry on the Streaming Calls](agents.md#bounded-retry-on-the-streaming-calls)).
 The structured summary and durable learnings flow into Step 17.
 
 **Enrichment — prompt prose (paid-tier signals).**

@@ -522,6 +522,31 @@ describe("App.vue run tracker", () => {
     wrapper.unmount();
   });
 
+  test("a stream restart clears the retried call's panes and nothing else", async () => {
+    const { wrapper, emit } = await mountWithTracker();
+
+    emit({ run_id: "R1", seq: 2, kind: "analyst-thinking", posture: "bull", delta: "bull one" });
+    emit({ run_id: "R1", seq: 3, kind: "analyst-thinking", posture: "bear", delta: "bear one" });
+    // The bull analyst's bounded retry restarts its pane alone.
+    emit({ run_id: "R1", seq: 4, kind: "stream-restarted", posture: "bull" });
+    emit({ run_id: "R1", seq: 5, kind: "analyst-thinking", posture: "bull", delta: "bull two" });
+    emit({ run_id: "R1", seq: 6, kind: "agent-thinking", delta: "weighing" });
+    emit({ run_id: "R1", seq: 7, kind: "agent-token", delta: "A first draft" });
+    // The main agent's restart (no posture) clears both its report text and reasoning.
+    emit({ run_id: "R1", seq: 8, kind: "stream-restarted" });
+    emit({ run_id: "R1", seq: 9, kind: "agent-token", delta: "The report" });
+    await flushPromises();
+
+    const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
+    const analysts = steps.find((s) => s.key === "analysts");
+    expect(analysts?.analystThinking).toEqual({ bull: "bull two", bear: "bear one" });
+    const agent = steps.find((s) => s.key === "agent");
+    expect(agent?.agentText).toBe("The report");
+    expect(agent?.agentThinking).toBe("");
+
+    wrapper.unmount();
+  });
+
   test("step-finished applies the reported status and detail to its step", async () => {
     const { wrapper, emit } = await mountWithTracker();
 

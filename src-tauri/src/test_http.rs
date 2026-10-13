@@ -146,29 +146,50 @@ fn serve_script(
     }
 }
 
-/// Read the inbound request up to its header terminator, returning the bytes seen so the
-/// caller can record the request target. Reading to the terminator also lets the client's
-/// write complete before we reply. Best-effort and bounded by a read timeout — the GET
-/// adapters issue header-only requests, and a POST body (BLS / Tavily) is tiny enough to
-/// sit in the socket buffer unread without blocking the client's write (the request line
-/// we record precedes the body, so an unread body costs no target detail).
+/// Read the inbound request through its header terminator and any declared
+/// `Content-Length` body, returning the bytes seen so the caller can record the request
+/// target. Reading the whole request lets the client's write complete before we reply:
+/// a model adapter's POST body (the streaming agents' prompts) is large enough to fill
+/// the socket buffer and stall the client's write if left unread. Best-effort and bounded
+/// by a read timeout.
 fn drain_request(stream: &mut TcpStream) -> Vec<u8> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut seen: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 8192];
+    let mut wanted: Option<usize> = None;
     loop {
+        if let Some(total) = wanted {
+            if seen.len() >= total {
+                break;
+            }
+        }
         match stream.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 seen.extend_from_slice(&buf[..n]);
-                if seen.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
+                if wanted.is_none() {
+                    if let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                        wanted = Some(end + 4 + content_length(&seen[..end]));
+                    }
                 }
             }
             Err(_) => break,
         }
     }
     seen
+}
+
+/// The request head's declared `Content-Length`, or 0 when absent or unreadable.
+fn content_length(head: &[u8]) -> usize {
+    String::from_utf8_lossy(head)
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())?
+        })
+        .unwrap_or(0)
 }
 
 /// Extract the request target — the second token of the request line (e.g. the

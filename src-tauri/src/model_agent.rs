@@ -930,12 +930,15 @@ pub(crate) fn extract_anthropic_tool_input(raw: &Value, tool_name: &str) -> Resu
 /// the forced-tool `extract_anthropic_tool_input`, which the router still uses; the two
 /// extractors keep the two request shapes independent. Shared with the analyst arm
 /// (`analyst_agent`), which moved to the same `output_config.format` shape so its
-/// Anthropic call can stream thinking.
+/// Anthropic call can stream thinking. Every failure here is the envelope failing its
+/// parse, so each carries the bounded retry's [`AgentRetryClass::SchemaParse`] marker.
 pub(crate) fn extract_anthropic_text_output(raw: &Value) -> Result<Value> {
     let text = raw
         .get("content")
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("Anthropic response missing a content array"))?
+        .ok_or_else(|| {
+            retryable(AgentRetryClass::SchemaParse, "Anthropic response missing a content array")
+        })?
         .iter()
         .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
         .and_then(|b| b.get("text"))
@@ -944,8 +947,15 @@ pub(crate) fn extract_anthropic_text_output(raw: &Value) -> Result<Value> {
         // "no usable output" rather than handing "" to the parser as an opaque invalid-JSON
         // error (the streaming path catches the refusal earlier in `stream_failure`).
         .filter(|t| !t.trim().is_empty())
-        .ok_or_else(|| anyhow!("Anthropic response contained no usable text output block"))?;
-    serde_json::from_str(text).context("Anthropic structured output was not valid JSON")
+        .ok_or_else(|| {
+            retryable(
+                AgentRetryClass::SchemaParse,
+                "Anthropic response contained no usable text output block",
+            )
+        })?;
+    serde_json::from_str(text)
+        .map_err(|e| anyhow::Error::new(e).context(AgentRetryClass::SchemaParse))
+        .context("Anthropic structured output was not valid JSON")
 }
 
 /// Pull the envelope value out of an OpenAI **Chat Completions** response: the first
@@ -980,24 +990,31 @@ pub(crate) fn extract_openai_envelope(raw: &Value) -> Result<Value> {
 /// position. The agent's [`extract_anthropic_text_output`] counterpart for the OpenAI arm;
 /// shared with the analyst arm, which moved to the same Responses shape so its OpenAI call
 /// can stream reasoning. (Chat Completions stages keep [`extract_openai_envelope`].)
+/// Like its Anthropic counterpart, every failure carries the
+/// [`AgentRetryClass::SchemaParse`] marker.
 pub(crate) fn extract_openai_responses_output(raw: &Value) -> Result<Value> {
+    let parse_failure = |message: &'static str| retryable(AgentRetryClass::SchemaParse, message);
     let text = raw
         .get("output")
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("OpenAI Responses output missing an output array"))?
+        .ok_or_else(|| parse_failure("OpenAI Responses output missing an output array"))?
         .iter()
         .find(|item| item.get("type").and_then(Value::as_str) == Some("message"))
         .and_then(|item| item.get("content").and_then(Value::as_array))
-        .ok_or_else(|| anyhow!("OpenAI Responses output contained no message content"))?
+        .ok_or_else(|| parse_failure("OpenAI Responses output contained no message content"))?
         .iter()
         .find(|c| c.get("type").and_then(Value::as_str) == Some("output_text"))
         .and_then(|c| c.get("text"))
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("OpenAI Responses message contained no output_text block"))?;
-    serde_json::from_str(text).context("OpenAI Responses output_text was not valid JSON")
+        .ok_or_else(|| parse_failure("OpenAI Responses message contained no output_text block"))?;
+    serde_json::from_str(text)
+        .map_err(|e| anyhow::Error::new(e).context(AgentRetryClass::SchemaParse))
+        .context("OpenAI Responses output_text was not valid JSON")
 }
 
-/// Validate the envelope and mint the application-owned identity fields.
+/// Validate the envelope and mint the application-owned identity fields. Each check
+/// rejects a sampled output a fresh call may well fix, so each carries the bounded
+/// retry's marker under its message.
 fn envelope_to_output(
     env: ResponseEnvelope,
     report_id: String,
@@ -1005,14 +1022,23 @@ fn envelope_to_output(
 ) -> Result<MainAgentOutput> {
     let n = env.header_summary_bullets.len();
     if !(3..=6).contains(&n) {
-        bail!("main agent returned {n} header_summary_bullets; expected 3 to 6");
+        return Err(retryable(
+            AgentRetryClass::OutOfBounds,
+            format!("main agent returned {n} header_summary_bullets; expected 3 to 6"),
+        ));
     }
     if env.markdown.trim().is_empty() {
-        bail!("main agent returned an empty markdown body");
+        return Err(retryable(
+            AgentRetryClass::BlankField,
+            "main agent returned an empty markdown body",
+        ));
     }
     let title = env.title.trim();
     if title.is_empty() {
-        bail!("main agent returned an empty report title");
+        return Err(retryable(
+            AgentRetryClass::BlankField,
+            "main agent returned an empty report title",
+        ));
     }
 
     let summary = ReportSummary {
@@ -1049,8 +1075,9 @@ fn parse_response(
         Provider::Anthropic => extract_anthropic_text_output(raw)?,
         Provider::OpenAi => extract_openai_responses_output(raw)?,
     };
-    let env: ResponseEnvelope =
-        serde_json::from_value(value).context("main agent response did not match the schema")?;
+    let env: ResponseEnvelope = serde_json::from_value(value)
+        .map_err(|e| anyhow::Error::new(e).context(AgentRetryClass::SchemaParse))
+        .context("main agent response did not match the schema")?;
     envelope_to_output(env, report_id, created_at)
 }
 
@@ -1063,6 +1090,10 @@ pub struct ModelMainAgent {
     /// [`ModelMainAgent::with_context`], and the streamed report text is emitted to it
     /// as the model writes.
     progress: Arc<RunContext>,
+    /// The provider endpoints — the live URLs, or the mock server under test.
+    endpoints: Endpoints,
+    /// The bounded retry's pause ([`RETRY_ONCE_DELAY`]; zero under test).
+    retry_delay: Duration,
 }
 
 impl ModelMainAgent {
@@ -1078,7 +1109,18 @@ impl ModelMainAgent {
             config,
             http,
             progress: RunContext::noop(),
+            endpoints: Endpoints::live(),
+            retry_delay: RETRY_ONCE_DELAY,
         })
+    }
+
+    /// Test seam: point both provider arms at a mock server and drop the retry
+    /// pause, so a wire test serves the streamed replies offline.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(mut self, base: &str) -> Self {
+        self.endpoints = Endpoints::under(base);
+        self.retry_delay = Duration::ZERO;
+        self
     }
 
     /// Attach a live run context so the streamed report text reaches the run tracker.
@@ -1114,13 +1156,13 @@ impl ModelMainAgent {
         let (request, timeout) = match provider {
             Provider::Anthropic => (
                 self.http
-                    .post(ANTHROPIC_URL)
+                    .post(&self.endpoints.anthropic)
                     .header("x-api-key", &self.config.api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION),
                 Duration::from_secs(ANTHROPIC_TIMEOUT_SECS),
             ),
             Provider::OpenAi => (
-                self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
+                self.http.post(&self.endpoints.openai).bearer_auth(&self.config.api_key),
                 Duration::from_secs(OPENAI_TIMEOUT_SECS),
             ),
         };
@@ -1128,12 +1170,18 @@ impl ModelMainAgent {
             .timeout(timeout)
             .json(body)
             .send()
+            .map_err(|e| anyhow::Error::new(e).context(AgentRetryClass::Transport))
             .context("sending model request")?;
         let status = resp.status();
         if !status.is_success() {
             // A rejected streaming request answers with a normal (non-SSE) error body.
+            let retry_after = crate::http_retry::retry_after_of(&resp);
             let text = resp.text().unwrap_or_default();
-            bail!("model provider returned {status}: {text}");
+            return Err(status_failure(
+                status.as_u16(),
+                retry_after,
+                format!("model provider returned {status}: {text}"),
+            ));
         }
 
         // Stream the body via the shared SSE reader: the main agent surfaces both the
@@ -1145,6 +1193,190 @@ impl ModelMainAgent {
             StreamRole::Main,
         )
     }
+}
+
+/// The two provider endpoints a streaming agent posts to — shared with the analyst arm
+/// (`analyst_agent`). Live by default; a wire test points both at its mock server.
+pub(crate) struct Endpoints {
+    pub(crate) anthropic: String,
+    pub(crate) openai: String,
+}
+
+impl Endpoints {
+    pub(crate) fn live() -> Self {
+        Self {
+            anthropic: ANTHROPIC_URL.to_string(),
+            openai: OPENAI_URL.to_string(),
+        }
+    }
+
+    /// Both arms under one mock base URL (`test_http::MockHttp::base_url`, which ends in
+    /// `/`), keeping the live paths so a test can assert them.
+    #[cfg(test)]
+    pub(crate) fn under(base: &str) -> Self {
+        Self {
+            anthropic: format!("{base}v1/messages"),
+            openai: format!("{base}v1/responses"),
+        }
+    }
+}
+
+/// A transient failure class the streaming agents' bounded retry re-attempts
+/// (`docs/agents.md §Bounded Retry on the Streaming Calls`). Doubles as a typed chain
+/// marker: each producing site carries the class beneath its unchanged message, and
+/// [`agent_retry_class`] downcasts rather than string-matching. A refusal, a response
+/// cut off at its output cap or its context window, an incomplete or failed response,
+/// any other early stop and any other 4xx carry no marker — each is deterministic for
+/// the prompt, so a re-attempt would only reproduce it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentRetryClass {
+    /// The request failed before any answer: a connection failure or a timeout.
+    Transport,
+    /// The provider answered a 429 or a 5xx (Anthropic's 529 included), with its
+    /// `Retry-After` when it sent one.
+    ProviderStatus { retry_after: Option<Duration> },
+    /// The streamed body broke: a read error (a dropped connection, or a timeout
+    /// mid-body) or the provider's own `error` event.
+    Stream,
+    /// The returned envelope failed its JSON or schema parse.
+    SchemaParse,
+    /// A required output field came back blank: the report's Markdown body or title,
+    /// an analyst's summary.
+    BlankField,
+    /// An output count fell outside its bound: the 3–6 header bullets.
+    OutOfBounds,
+}
+
+impl std::fmt::Display for AgentRetryClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Transport => "transport error",
+            Self::ProviderStatus { .. } => "provider error status",
+            Self::Stream => "stream broke before completion",
+            Self::SchemaParse => "content failed its parse",
+            Self::BlankField => "a required field came back blank",
+            Self::OutOfBounds => "an output count fell outside its bound",
+        })
+    }
+}
+
+impl std::error::Error for AgentRetryClass {}
+
+/// An error carrying `class` beneath `message`: the message stays the error's
+/// `Display` (the step detail and the job-history row read it unchanged), and the class
+/// is what [`agent_retry_class`] finds.
+pub(crate) fn retryable(
+    class: AgentRetryClass,
+    message: impl std::fmt::Display + Send + Sync + 'static,
+) -> anyhow::Error {
+    anyhow::Error::new(class).context(message)
+}
+
+/// A non-2xx answer to a streaming request: a 429 or 5xx carries the
+/// [`AgentRetryClass::ProviderStatus`] marker with the server's `Retry-After`; every
+/// other status is a plain error, never re-attempted.
+pub(crate) fn status_failure(
+    status: u16,
+    retry_after: Option<Duration>,
+    message: String,
+) -> anyhow::Error {
+    if crate::http_retry::is_retryable(status) {
+        retryable(AgentRetryClass::ProviderStatus { retry_after }, message)
+    } else {
+        anyhow::Error::msg(message)
+    }
+}
+
+/// Classify whether a failed streaming call may re-attempt: the typed marker anywhere
+/// in the chain, or `None`. The whitelist is the contract.
+pub(crate) fn agent_retry_class(err: &anyhow::Error) -> Option<AgentRetryClass> {
+    err.downcast_ref::<AgentRetryClass>().copied()
+}
+
+/// The pause before the single re-attempt — long enough to ride out a dropped socket
+/// or a momentary overload, negligible beside a generation. Drafted, calibratable.
+pub(crate) const RETRY_ONCE_DELAY: Duration = Duration::from_secs(2);
+
+/// The re-attempt's pause: `delay`, lengthened by a 429 / 5xx answer's `Retry-After`
+/// up to the shared cap (`http_retry::DEFAULT_RETRY`).
+fn retry_pause(delay: Duration, class: AgentRetryClass) -> Duration {
+    match class {
+        AgentRetryClass::ProviderStatus {
+            retry_after: Some(after),
+        } => delay.max(after.min(crate::http_retry::DEFAULT_RETRY.retry_after_cap)),
+        _ => delay,
+    }
+}
+
+/// `err`'s chain as `{err:#}` prints it, less the retry-class marker layer — the retry
+/// row's detail names the class up front, so the chain need not repeat it.
+fn chain_without_marker(err: &anyhow::Error, class: AgentRetryClass) -> String {
+    let marker = class.to_string();
+    err.chain()
+        .map(ToString::to_string)
+        .filter(|cause| *cause != marker)
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+/// The streaming agents' bounded retry (`docs/agents.md §Bounded Retry on the Streaming
+/// Calls`): run `attempt`, and on a classified failure in a run not cancelled, note the
+/// retry on the tracker, pause (abortably), restart the call's stream pane and run it
+/// exactly once more. Shared by the main agent and the analyst arm, one gate per call,
+/// never nested.
+///
+/// The retry's own row pair resolves `failed` (the first attempt did fail), its detail
+/// naming the class, the single re-attempt and the error chain — every layer `{err:#}`
+/// prints but the class marker, so the innermost cause survives beside the outermost
+/// message. Its series id ends in
+/// `-retry`, so it never resolves an analyst's still-running review row. A second
+/// failure keeps its own message first, then names the first attempt's class, so the
+/// run's failure detail (which reads the outermost message) stays attributable.
+pub(crate) fn retry_stream_once<T>(
+    progress: &RunContext,
+    provider: Provider,
+    role: StreamRole<'_>,
+    label: &str,
+    delay: Duration,
+    mut attempt: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let first = match attempt() {
+        Ok(value) => return Ok(value),
+        Err(e) => e,
+    };
+    let Some(class) = agent_retry_class(&first) else {
+        return Err(first);
+    };
+    // A cancel surfaces as whatever the stream loop left behind (typically a parse
+    // failure on a partial envelope); it is never a reason to re-attempt.
+    if progress.is_cancelled() {
+        return Err(first);
+    }
+    let (group, series, posture) = match role {
+        StreamRole::Main => ("agent", "main-retry".to_string(), None),
+        StreamRole::Analyst(posture) => ("analyst", format!("{posture}-retry"), Some(posture)),
+    };
+    let name = format!("{label} retry");
+    progress.request_started(provider.display_name(), group, &series, &name);
+    progress.request_finished(
+        provider.display_name(),
+        group,
+        &series,
+        &name,
+        "failed",
+        Some(format!("{class}; retrying once: {}", chain_without_marker(&first, class))),
+    );
+    let cancelled = || progress.is_cancelled();
+    if crate::http_retry::sleep_abortable(retry_pause(delay, class), Some(&cancelled))
+        || progress.is_cancelled()
+    {
+        return Err(first);
+    }
+    progress.stream_restarted(posture);
+    attempt().map_err(|second| {
+        let message = format!("{second}; failed again after one retry ({class} on the first attempt)");
+        second.context(message)
+    })
 }
 
 /// Coalesce streamed report text into chunks of at least this many characters before
@@ -1198,7 +1430,11 @@ pub(crate) fn stream_structured_response(
         if progress.is_cancelled() {
             break;
         }
-        let line = line.context("reading streamed model response")?;
+        // A read error is the body breaking mid-stream (a dropped connection, or the
+        // request's deadline tripping mid-body) — transient for the bounded retry.
+        let line = line
+            .map_err(|e| anyhow::Error::new(e).context(AgentRetryClass::Stream))
+            .context("reading streamed model response")?;
         // SSE: only `data:` lines carry payload; `event:`/comment/blank lines and the
         // terminal `[DONE]` sentinel are skipped.
         let Some(data) = line.strip_prefix("data:") else {
@@ -1214,8 +1450,14 @@ pub(crate) fn stream_structured_response(
         };
         // Bail on an explicit terminal failure/early-stop event instead of accumulating a
         // truncated (or absent) envelope and surfacing it later as an opaque parse error.
-        // Both stages are not fail-soft, so this fails the run with a precise reason.
+        // Both stages are not fail-soft, so this fails the run with a precise reason. Of
+        // these, only the provider's own `error` event (both providers type it `error`,
+        // e.g. Anthropic's `overloaded_error`) is transient for the bounded retry; every
+        // stop reason and failed / incomplete response is deterministic for the prompt.
         if let Some(reason) = stream_failure(provider, &event) {
+            if event.get("type").and_then(Value::as_str) == Some("error") {
+                return Err(retryable(AgentRetryClass::Stream, reason));
+            }
             bail!("{reason}");
         }
         match stream_delta(provider, &event) {
@@ -1312,6 +1554,10 @@ fn stream_delta(provider: Provider, event: &Value) -> Option<(StreamChannel, &st
     }
 }
 
+/// The most of an OpenAI refusal's own text its failure message carries — enough to read
+/// the decline, short enough for a tracker row and the job-history detail.
+const REFUSAL_TEXT_CHARS: usize = 200;
+
 /// Inspect one SSE event for an explicit terminal failure or early-stop signal the stream
 /// loop must not silently accept, returning a human-readable reason (or `None` for every
 /// normal event). It complements — does not replace — the parse gate: a truncated body still
@@ -1319,7 +1565,8 @@ fn stream_delta(provider: Provider, event: &Value) -> Option<(StreamChannel, &st
 /// closes the narrow window where a complete-looking envelope arrives alongside a failure.
 /// - OpenAI Responses: `response.failed` (the nested `response.error.message`),
 ///   `response.incomplete` (the `response.incomplete_details.reason`, e.g. `max_output_tokens`),
-///   or a transport-level `error` event.
+///   a `response.refusal.done` (the model declined; its `refusal` text), or a
+///   transport-level `error` event.
 /// - Anthropic Messages: an `error` event (`error.message`), or a `message_delta` whose
 ///   `delta.stop_reason` is `max_tokens` (the model was cut off at the token cap). A normal
 ///   `message_delta` (`end_turn` / `stop_sequence` / `tool_use`) is not a failure.
@@ -1327,6 +1574,30 @@ fn stream_failure(provider: Provider, event: &Value) -> Option<String> {
     let event_type = event.get("type").and_then(Value::as_str);
     match provider {
         Provider::OpenAi => match event_type {
+            // A structured-output refusal streams as its own content part — refusal deltas,
+            // then this done event — and the response still completes, so left uncaught it
+            // would reconstruct an empty envelope and fail downstream as a parse error (which
+            // the bounded retry re-attempts). The decline is deterministic for the prompt, so
+            // it fails here, unmarked, reading as itself with the model's refusal text.
+            Some("response.refusal.done") => {
+                let text = event
+                    .get("refusal")
+                    .and_then(Value::as_str)
+                    .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .filter(|t| !t.is_empty());
+                let reason = match text {
+                    Some(text) => {
+                        let (head, cut) = crate::data_sources::cap_chars(&text, REFUSAL_TEXT_CHARS);
+                        if cut {
+                            format!("{head}…")
+                        } else {
+                            head
+                        }
+                    }
+                    None => "unspecified".to_string(),
+                };
+                Some(format!("OpenAI declined the request (refusal: {reason})"))
+            }
             Some("response.failed") => Some(format!(
                 "OpenAI response failed: {}",
                 event
@@ -1656,12 +1927,22 @@ impl MainAgent for ModelMainAgent {
                 build_openai_request(self.config.model, SYSTEM_PROMPT, &user, &schema, reasoning)
             }
         };
-        let raw = self.call(provider, &body)?;
-
-        // The application layer owns identity, not the model.
-        let report_id = Uuid::new_v4().to_string();
-        let created_at = chrono::Utc::now().to_rfc3339();
-        parse_response(provider, &raw, report_id, created_at)
+        // One streaming call under the bounded retry: the request body is built once, and
+        // each attempt streams, parses and validates afresh.
+        retry_stream_once(
+            &self.progress,
+            provider,
+            StreamRole::Main,
+            "Main agent",
+            self.retry_delay,
+            || {
+                let raw = self.call(provider, &body)?;
+                // The application layer owns identity, not the model.
+                let report_id = Uuid::new_v4().to_string();
+                let created_at = chrono::Utc::now().to_rfc3339();
+                parse_response(provider, &raw, report_id, created_at)
+            },
+        )
     }
 }
 
@@ -3194,5 +3475,690 @@ falling, a possible value trap; rich and still rising, momentum carrying a rich 
         assert!(SYSTEM_PROMPT.contains("full library of analytical lenses"));
         assert!(SYSTEM_PROMPT.contains("the structured verdict it should yield"));
         assert!(SYSTEM_PROMPT.contains("reasoning tools, not report structure"));
+    }
+
+    // ---- The bounded retry (`docs/agents.md §Bounded Retry on the Streaming Calls`) ----
+
+    mod bounded_retry {
+        use super::*;
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use crate::test_http::{Canned, MockHttp};
+        use std::cell::Cell;
+        use std::io::{Cursor, Read};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        fn recorded_ctx() -> (Arc<RecordingReporter>, Arc<AtomicBool>, Arc<RunContext>) {
+            let rec = Arc::new(RecordingReporter::default());
+            let cancel = Arc::new(AtomicBool::new(false));
+            let ctx = RunContext::new("retry", rec.clone(), cancel.clone());
+            (rec, cancel, ctx)
+        }
+
+        fn class_of(err: &anyhow::Error) -> Option<AgentRetryClass> {
+            agent_retry_class(err)
+        }
+
+        /// A reader that yields `prefix`, then fails with `kind` — a body breaking
+        /// mid-stream.
+        struct BreaksAfter {
+            prefix: Cursor<Vec<u8>>,
+            kind: std::io::ErrorKind,
+        }
+
+        impl Read for BreaksAfter {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.prefix.read(buf)? {
+                    0 => Err(std::io::Error::new(self.kind, "connection dropped")),
+                    n => Ok(n),
+                }
+            }
+        }
+
+        fn stream_err(provider: Provider, sse: &str) -> anyhow::Error {
+            let (_rec, _cancel, ctx) = recorded_ctx();
+            stream_structured_response(
+                BufReader::new(Cursor::new(sse.to_string())),
+                provider,
+                &ctx,
+                StreamRole::Main,
+            )
+            .unwrap_err()
+        }
+
+        #[test]
+        fn the_output_checks_carry_their_class_under_an_unchanged_message() {
+            let mut env = valid_envelope();
+            env["markdown"] = json!("  ");
+            let err = parse_response(
+                Provider::OpenAi,
+                &openai_responses_raw(env.to_string()),
+                "id".into(),
+                "t".into(),
+            )
+            .unwrap_err();
+            assert_eq!(err.to_string(), "main agent returned an empty markdown body");
+            assert_eq!(class_of(&err), Some(AgentRetryClass::BlankField));
+
+            let mut env = valid_envelope();
+            env["title"] = json!("");
+            let err = parse_response(
+                Provider::OpenAi,
+                &openai_responses_raw(env.to_string()),
+                "id".into(),
+                "t".into(),
+            )
+            .unwrap_err();
+            assert_eq!(err.to_string(), "main agent returned an empty report title");
+            assert_eq!(class_of(&err), Some(AgentRetryClass::BlankField));
+
+            let mut env = valid_envelope();
+            env["header_summary_bullets"] = json!(["only", "two"]);
+            let err = parse_response(
+                Provider::OpenAi,
+                &openai_responses_raw(env.to_string()),
+                "id".into(),
+                "t".into(),
+            )
+            .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "main agent returned 2 header_summary_bullets; expected 3 to 6"
+            );
+            assert_eq!(class_of(&err), Some(AgentRetryClass::OutOfBounds));
+        }
+
+        #[test]
+        fn a_failed_parse_carries_the_parse_class_under_an_unchanged_message() {
+            // Truncated JSON (a stream that closed cleanly mid-envelope).
+            let err = parse_response(
+                Provider::OpenAi,
+                &openai_responses_raw("{\"markdown\": \"cut"),
+                "id".into(),
+                "t".into(),
+            )
+            .unwrap_err();
+            assert_eq!(err.to_string(), "OpenAI Responses output_text was not valid JSON");
+            assert_eq!(class_of(&err), Some(AgentRetryClass::SchemaParse));
+
+            // Valid JSON that misses the schema.
+            let err = parse_response(
+                Provider::OpenAi,
+                &openai_responses_raw("{\"markdown\": \"x\"}"),
+                "id".into(),
+                "t".into(),
+            )
+            .unwrap_err();
+            assert_eq!(err.to_string(), "main agent response did not match the schema");
+            assert_eq!(class_of(&err), Some(AgentRetryClass::SchemaParse));
+
+            // An empty Anthropic envelope (no text streamed at all).
+            let err = extract_anthropic_text_output(&reconstruct_response(Provider::Anthropic, "").unwrap())
+                .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "Anthropic response contained no usable text output block"
+            );
+            assert_eq!(class_of(&err), Some(AgentRetryClass::SchemaParse));
+        }
+
+        #[test]
+        fn a_read_error_mid_stream_classifies_as_a_broken_stream_timeouts_included() {
+            for kind in [std::io::ErrorKind::ConnectionReset, std::io::ErrorKind::TimedOut] {
+                let (_rec, _cancel, ctx) = recorded_ctx();
+                let reader = BreaksAfter {
+                    prefix: Cursor::new(
+                        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"mark\"}\n"
+                            .to_vec(),
+                    ),
+                    kind,
+                };
+                let err = stream_structured_response(
+                    BufReader::new(reader),
+                    Provider::OpenAi,
+                    &ctx,
+                    StreamRole::Main,
+                )
+                .unwrap_err();
+                assert_eq!(err.to_string(), "reading streamed model response");
+                assert_eq!(class_of(&err), Some(AgentRetryClass::Stream), "{kind:?}");
+            }
+        }
+
+        #[test]
+        fn only_the_providers_error_event_is_a_transient_stream_failure() {
+            let overloaded = "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n";
+            let err = stream_err(Provider::Anthropic, overloaded);
+            assert_eq!(err.to_string(), "Anthropic stream error: Overloaded");
+            assert_eq!(class_of(&err), Some(AgentRetryClass::Stream));
+
+            let openai_error = "data: {\"type\":\"error\",\"message\":\"upstream reset\"}\n";
+            let err = stream_err(Provider::OpenAi, openai_error);
+            assert_eq!(err.to_string(), "OpenAI stream error: upstream reset");
+            assert_eq!(class_of(&err), Some(AgentRetryClass::Stream));
+
+            // Deterministic for the prompt: never classified.
+            for (provider, sse) in [
+                (
+                    Provider::Anthropic,
+                    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"category\":\"cyber\"}}}\n",
+                ),
+                (
+                    Provider::Anthropic,
+                    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n",
+                ),
+                (
+                    Provider::Anthropic,
+                    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"model_context_window_exceeded\"}}\n",
+                ),
+                (
+                    Provider::OpenAi,
+                    "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n",
+                ),
+                (
+                    Provider::OpenAi,
+                    "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"invalid prompt\"}}}\n",
+                ),
+                (Provider::OpenAi, OPENAI_REFUSAL_SSE),
+            ] {
+                let err = stream_err(provider, sse);
+                assert_eq!(class_of(&err), None, "{err}");
+            }
+        }
+
+        /// An OpenAI structured-output refusal: refusal deltas, the done event carrying the
+        /// whole text, then a normal completion — no output text at all.
+        const OPENAI_REFUSAL_SSE: &str = "data: {\"type\":\"response.refusal.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"I'm sorry, but I can't\"}\n\n\
+             data: {\"type\":\"response.refusal.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\" assist with that request.\"}\n\n\
+             data: {\"type\":\"response.refusal.done\",\"output_index\":0,\"content_index\":0,\"refusal\":\"I'm sorry, but I can't assist with that request.\"}\n\n\
+             data: {\"type\":\"response.completed\"}\n\n";
+
+        #[test]
+        fn an_openai_refusal_reads_as_itself_and_never_classifies() {
+            let err = stream_err(Provider::OpenAi, OPENAI_REFUSAL_SSE);
+            assert_eq!(
+                err.to_string(),
+                "OpenAI declined the request (refusal: I'm sorry, but I can't assist with that request.)"
+            );
+            assert_eq!(class_of(&err), None);
+
+            // One line, capped, and "unspecified" when the event names no text.
+            let long = format!("Line one.\n{}", "x".repeat(400));
+            let done = json!({"type": "response.refusal.done", "refusal": long});
+            let reason = stream_failure(Provider::OpenAi, &done).unwrap();
+            assert!(!reason.contains('\n'), "{reason}");
+            assert!(reason.starts_with("OpenAI declined the request (refusal: Line one. xxx"), "{reason}");
+            assert!(reason.ends_with("…)"), "{reason}");
+            assert_eq!(
+                reason.chars().count(),
+                "OpenAI declined the request (refusal: ".chars().count() + REFUSAL_TEXT_CHARS + "…)".chars().count()
+            );
+            let bare = json!({"type": "response.refusal.done"});
+            assert_eq!(
+                stream_failure(Provider::OpenAi, &bare).as_deref(),
+                Some("OpenAI declined the request (refusal: unspecified)")
+            );
+        }
+
+        #[test]
+        fn a_429_or_5xx_status_is_transient_and_any_other_status_is_not() {
+            for status in [429, 500, 503, 529] {
+                let err = status_failure(status, Some(Duration::from_secs(7)), format!("returned {status}"));
+                assert_eq!(err.to_string(), format!("returned {status}"));
+                assert_eq!(
+                    class_of(&err),
+                    Some(AgentRetryClass::ProviderStatus {
+                        retry_after: Some(Duration::from_secs(7))
+                    })
+                );
+            }
+            for status in [400, 401, 403, 404, 413] {
+                let err = status_failure(status, None, format!("returned {status}"));
+                assert_eq!(err.to_string(), format!("returned {status}"));
+                assert_eq!(class_of(&err), None);
+            }
+        }
+
+        #[test]
+        fn the_pause_honors_a_longer_retry_after_up_to_the_shared_cap() {
+            let base = Duration::from_secs(2);
+            let status = |s: Option<u64>| AgentRetryClass::ProviderStatus {
+                retry_after: s.map(Duration::from_secs),
+            };
+            assert_eq!(retry_pause(base, AgentRetryClass::Stream), base);
+            assert_eq!(retry_pause(base, status(None)), base);
+            assert_eq!(retry_pause(base, status(Some(1))), base);
+            assert_eq!(retry_pause(base, status(Some(12))), Duration::from_secs(12));
+            assert_eq!(retry_pause(base, status(Some(600))), Duration::from_secs(30));
+        }
+
+        #[test]
+        fn the_gate_reattempts_a_classified_failure_once_and_reports_it() {
+            let (rec, _cancel, ctx) = recorded_ctx();
+            let calls = Cell::new(0);
+            let out = retry_stream_once(&ctx, Provider::Anthropic, StreamRole::Main, "Main agent", Duration::ZERO, || {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    Err(retryable(AgentRetryClass::BlankField, "main agent returned an empty markdown body"))
+                } else {
+                    Ok("report")
+                }
+            })
+            .unwrap();
+            assert_eq!(out, "report");
+            assert_eq!(calls.get(), 2);
+
+            let events: Vec<ProgressEvent> = rec.messages().into_iter().map(|m| m.event).collect();
+            assert_eq!(events.len(), 3, "{events:?}");
+            assert!(matches!(
+                &events[0],
+                ProgressEvent::RequestStarted { provider, group, series_id, name, .. }
+                    if provider == "Anthropic" && group == "agent" && series_id == "main-retry" && name == "Main agent retry"
+            ));
+            match &events[1] {
+                ProgressEvent::RequestFinished { series_id, status, detail, .. } => {
+                    assert_eq!(series_id, "main-retry");
+                    assert_eq!(status, "failed");
+                    // The class leads; the chain after it omits the marker layer.
+                    assert_eq!(
+                        detail.as_deref(),
+                        Some(
+                            "a required field came back blank; retrying once: \
+                             main agent returned an empty markdown body"
+                        )
+                    );
+                }
+                other => panic!("expected the retry row's finish, got {other:?}"),
+            }
+            assert!(matches!(&events[2], ProgressEvent::StreamRestarted { posture: None }));
+        }
+
+        #[test]
+        fn an_analysts_retry_row_and_restart_name_its_posture() {
+            let (rec, _cancel, ctx) = recorded_ctx();
+            let calls = Cell::new(0);
+            retry_stream_once(&ctx, Provider::OpenAi, StreamRole::Analyst("bull"), "Bull Analyst", Duration::ZERO, || {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    Err(retryable(AgentRetryClass::Stream, "reading streamed model response"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap();
+            let events: Vec<ProgressEvent> = rec.messages().into_iter().map(|m| m.event).collect();
+            assert!(matches!(
+                &events[0],
+                ProgressEvent::RequestStarted { provider, group, series_id, name, .. }
+                    if provider == "OpenAI" && group == "analyst" && series_id == "bull-retry" && name == "Bull Analyst retry"
+            ));
+            assert!(matches!(
+                &events[2],
+                ProgressEvent::StreamRestarted { posture: Some(p) } if p == "bull"
+            ));
+        }
+
+        #[test]
+        fn an_unclassified_failure_never_reattempts() {
+            // A refusal carries no marker: deterministic for the prompt.
+            let (rec, _cancel, ctx) = recorded_ctx();
+            let calls = Cell::new(0);
+            let err = retry_stream_once(&ctx, Provider::Anthropic, StreamRole::Main, "Main agent", Duration::ZERO, || -> Result<()> {
+                calls.set(calls.get() + 1);
+                bail!("Anthropic declined the request (refusal: cyber)")
+            })
+            .unwrap_err();
+            assert_eq!(calls.get(), 1);
+            assert_eq!(err.to_string(), "Anthropic declined the request (refusal: cyber)");
+            assert!(rec.messages().is_empty());
+        }
+
+        #[test]
+        fn a_cancelled_run_never_reattempts() {
+            // The cancel lands while the first attempt runs (its partial envelope then
+            // fails to parse): no retry row, no restart, one attempt.
+            let (rec, cancel, ctx) = recorded_ctx();
+            let calls = Cell::new(0);
+            let err = retry_stream_once(&ctx, Provider::Anthropic, StreamRole::Main, "Main agent", Duration::ZERO, || -> Result<()> {
+                calls.set(calls.get() + 1);
+                cancel.store(true, Ordering::SeqCst);
+                Err(retryable(AgentRetryClass::SchemaParse, "main agent response did not match the schema"))
+            })
+            .unwrap_err();
+            assert_eq!(calls.get(), 1);
+            assert_eq!(err.to_string(), "main agent response did not match the schema");
+            assert!(rec.messages().is_empty());
+        }
+
+        #[test]
+        fn a_cancel_during_the_pause_abandons_the_reattempt() {
+            let (rec, cancel, ctx) = recorded_ctx();
+            let calls = Cell::new(0);
+            let flip = {
+                let cancel = cancel.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(50));
+                    cancel.store(true, Ordering::SeqCst);
+                })
+            };
+            let started = std::time::Instant::now();
+            let err = retry_stream_once(&ctx, Provider::Anthropic, StreamRole::Main, "Main agent", Duration::from_secs(20), || -> Result<()> {
+                calls.set(calls.get() + 1);
+                Err(retryable(AgentRetryClass::Transport, "sending model request"))
+            })
+            .unwrap_err();
+            flip.join().unwrap();
+            assert!(started.elapsed() < Duration::from_secs(5), "the pause polls the cancel flag");
+            assert_eq!(calls.get(), 1);
+            assert_eq!(err.to_string(), "sending model request");
+            // The retry was noted before the pause; the pane never restarted.
+            let events: Vec<ProgressEvent> = rec.messages().into_iter().map(|m| m.event).collect();
+            assert_eq!(events.len(), 2, "{events:?}");
+            assert!(!events.iter().any(|e| matches!(e, ProgressEvent::StreamRestarted { .. })));
+        }
+
+        #[test]
+        fn a_second_failure_fails_once_with_its_own_message_and_the_first_class() {
+            let (_rec, _cancel, ctx) = recorded_ctx();
+            let calls = Cell::new(0);
+            let err = retry_stream_once(&ctx, Provider::Anthropic, StreamRole::Main, "Main agent", Duration::ZERO, || -> Result<()> {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    Err(retryable(AgentRetryClass::Stream, "reading streamed model response"))
+                } else {
+                    Err(retryable(AgentRetryClass::BlankField, "main agent returned an empty markdown body"))
+                }
+            })
+            .unwrap_err();
+            assert_eq!(calls.get(), 2, "the once is per call: no third attempt");
+            assert_eq!(
+                err.to_string(),
+                "main agent returned an empty markdown body; failed again after one retry \
+                 (stream broke before completion on the first attempt)"
+            );
+        }
+
+        // ---- Wire: a mock provider serving the streamed replies offline ----
+
+        /// Leak a built SSE body to the `'static` the mock server's script takes.
+        fn leak(body: String) -> &'static str {
+            Box::leak(body.into_boxed_str())
+        }
+
+        fn ok_reply(body: String) -> Canned {
+            Canned::Reply {
+                status: 200,
+                headers: vec![("Content-Type", "text/event-stream")],
+                body: leak(body),
+            }
+        }
+
+        /// An Anthropic stream: one thinking delta, the envelope as one text delta, a
+        /// clean stop.
+        fn anthropic_sse(thinking: &str, envelope: &Value) -> String {
+            let think = json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": thinking}});
+            let text = json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "text_delta", "text": envelope.to_string()}});
+            format!(
+                "event: content_block_delta\ndata: {think}\n\n\
+                 event: content_block_delta\ndata: {text}\n\n\
+                 event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}}}}\n\n\
+                 event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+            )
+        }
+
+        /// An OpenAI Responses stream carrying `text` as the structured output.
+        fn openai_sse(text: &str) -> String {
+            let delta = json!({"type": "response.output_text.delta", "delta": text});
+            format!("data: {delta}\n\ndata: {{\"type\":\"response.completed\"}}\n\n")
+        }
+
+        fn main_agent(model: AgentModel, mock_base: &str) -> (Arc<RecordingReporter>, ModelMainAgent) {
+            let (rec, _cancel, ctx) = recorded_ctx();
+            let agent = ModelMainAgent::new(MainAgentConfig {
+                model,
+                api_key: "test-key".into(),
+            })
+            .unwrap()
+            .with_context(ctx)
+            .with_base_url(mock_base);
+            (rec, agent)
+        }
+
+        fn events(rec: &RecordingReporter) -> Vec<ProgressEvent> {
+            rec.messages().into_iter().map(|m| m.event).collect()
+        }
+
+        /// The streamed report text after the last pane restart, and whether one fired.
+        fn tokens_after_restart(events: &[ProgressEvent]) -> (String, bool) {
+            let restart = events
+                .iter()
+                .rposition(|e| matches!(e, ProgressEvent::StreamRestarted { .. }));
+            let from = restart.map_or(0, |i| i + 1);
+            let text = events[from..]
+                .iter()
+                .filter_map(|e| match e {
+                    ProgressEvent::AgentToken { delta } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            (text, restart.is_some())
+        }
+
+        fn retry_detail(events: &[ProgressEvent]) -> Option<String> {
+            events.iter().find_map(|e| match e {
+                ProgressEvent::RequestFinished { series_id, detail, .. } if series_id == "main-retry" => {
+                    detail.clone()
+                }
+                _ => None,
+            })
+        }
+
+        #[test]
+        fn a_blank_title_recovers_and_the_reattempt_streams_into_a_restarted_pane() {
+            let mut first = valid_envelope();
+            first["markdown"] = json!("# A first draft");
+            first["title"] = json!(" ");
+            let second = valid_envelope();
+            let mock = MockHttp::serve(vec![
+                ok_reply(anthropic_sse("first thoughts", &first)),
+                ok_reply(anthropic_sse("second thoughts", &second)),
+            ]);
+            let (rec, agent) = main_agent(AgentModel::ClaudeOpus, &mock.base_url);
+
+            let out = agent.generate(MainAgentInput::default()).unwrap();
+            assert_eq!(out.summary.title, "Thin breadth, softening cut odds");
+            assert_eq!(mock.attempts(), 2);
+            assert_eq!(mock.request_paths(), ["/v1/messages", "/v1/messages"]);
+
+            let events = events(&rec);
+            assert!(retry_detail(&events)
+                .unwrap()
+                .starts_with("a required field came back blank; retrying once: main agent returned an empty report title"));
+            // The failed attempt streamed into the pane before the restart; after it, only
+            // the re-attempt's report text.
+            let (after, restarted) = tokens_after_restart(&events);
+            assert!(restarted);
+            assert_eq!(after, second["markdown"].as_str().unwrap());
+            let restart = events
+                .iter()
+                .position(|e| matches!(e, ProgressEvent::StreamRestarted { posture: None }))
+                .unwrap();
+            let thinking_after: String = events[restart..]
+                .iter()
+                .filter_map(|e| match e {
+                    ProgressEvent::AgentThinking { delta } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(thinking_after, "second thoughts");
+        }
+
+        #[test]
+        fn an_empty_body_out_of_bounds_bullets_or_a_failed_parse_each_recover_once() {
+            let mut empty_body = valid_envelope();
+            empty_body["markdown"] = json!("");
+            let mut bullets = valid_envelope();
+            bullets["header_summary_bullets"] = json!(["1", "2", "3", "4", "5", "6", "7"]);
+            for (first, class) in [
+                (openai_sse(&empty_body.to_string()), "a required field came back blank"),
+                (openai_sse(&bullets.to_string()), "an output count fell outside its bound"),
+                (openai_sse("{\"markdown\": \"cut off"), "content failed its parse"),
+            ] {
+                let mock = MockHttp::serve(vec![
+                    ok_reply(first),
+                    ok_reply(openai_sse(&valid_envelope().to_string())),
+                ]);
+                let (rec, agent) = main_agent(AgentModel::Gpt5, &mock.base_url);
+                agent.generate(MainAgentInput::default()).unwrap();
+                assert_eq!(mock.attempts(), 2, "{class}");
+                assert_eq!(mock.request_paths(), ["/v1/responses", "/v1/responses"]);
+                let detail = retry_detail(&events(&rec)).unwrap();
+                assert!(detail.starts_with(&format!("{class}; retrying once: ")), "{detail}");
+                assert_eq!(detail.matches(class).count(), 1, "{detail}");
+            }
+        }
+
+        #[test]
+        fn a_broken_stream_or_a_provider_error_event_recovers_once() {
+            let overloaded = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n";
+            // Each first reply with the chain its retry row must carry after the class.
+            for (first, chain) in [
+                // The body drops mid-stream: fewer bytes than declared, then EOF. The read
+                // error sits beneath the outermost message.
+                (
+                    Canned::DropBody {
+                        content_length: 4096,
+                        partial: "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hm\"}}\n\n",
+                    },
+                    "reading streamed model response: ",
+                ),
+                // The provider's own error event is its whole message.
+                (ok_reply(overloaded.to_string()), "Anthropic stream error: Overloaded"),
+            ] {
+                let mock = MockHttp::serve(vec![
+                    first,
+                    ok_reply(anthropic_sse("again", &valid_envelope())),
+                ]);
+                let (rec, agent) = main_agent(AgentModel::ClaudeSonnet, &mock.base_url);
+                agent.generate(MainAgentInput::default()).unwrap();
+                assert_eq!(mock.attempts(), 2);
+                let detail = retry_detail(&events(&rec)).unwrap();
+                assert!(detail.starts_with("stream broke before completion; retrying once: "), "{detail}");
+                // The class is named once, and the chain after it keeps its deepest cause.
+                assert_eq!(detail.matches("stream broke before completion").count(), 1, "{detail}");
+                let rest = detail
+                    .strip_prefix("stream broke before completion; retrying once: ")
+                    .unwrap();
+                assert!(rest.starts_with(chain), "{detail}");
+                if chain.ends_with(": ") {
+                    assert!(rest.len() > chain.len(), "the read error survives: {detail}");
+                } else {
+                    assert_eq!(rest, chain, "{detail}");
+                }
+            }
+        }
+
+        #[test]
+        fn a_5xx_or_429_answer_recovers_once() {
+            for status in [529, 503, 429] {
+                let mock = MockHttp::serve(vec![
+                    Canned::Reply {
+                        status,
+                        headers: vec![("Content-Type", "application/json")],
+                        body: "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}",
+                    },
+                    ok_reply(anthropic_sse("ok", &valid_envelope())),
+                ]);
+                let (rec, agent) = main_agent(AgentModel::ClaudeOpus, &mock.base_url);
+                agent.generate(MainAgentInput::default()).unwrap();
+                assert_eq!(mock.attempts(), 2, "{status}");
+                let detail = retry_detail(&events(&rec)).unwrap();
+                assert!(
+                    detail.starts_with(&format!(
+                        "provider error status; retrying once: model provider returned {status}"
+                    )),
+                    "{detail}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_refusal_on_either_arm_or_a_4xx_answer_fails_on_the_first_attempt() {
+            let refusal = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\"}}}\n\n";
+            let mock = MockHttp::serve(vec![ok_reply(refusal.to_string())]);
+            let (rec, agent) = main_agent(AgentModel::ClaudeOpus, &mock.base_url);
+            let err = agent.generate(MainAgentInput::default()).unwrap_err();
+            assert_eq!(err.to_string(), "Anthropic declined the request (refusal: cyber)");
+            assert_eq!(mock.attempts(), 1);
+            assert!(retry_detail(&events(&rec)).is_none());
+
+            let mock = MockHttp::serve(vec![ok_reply(OPENAI_REFUSAL_SSE.to_string())]);
+            let (rec, agent) = main_agent(AgentModel::Gpt5, &mock.base_url);
+            let err = agent.generate(MainAgentInput::default()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "OpenAI declined the request (refusal: I'm sorry, but I can't assist with that request.)"
+            );
+            assert_eq!(mock.attempts(), 1);
+            assert!(retry_detail(&events(&rec)).is_none());
+
+            let mock = MockHttp::serve(vec![Canned::Reply {
+                status: 400,
+                headers: vec![],
+                body: "{\"error\":\"bad request\"}",
+            }]);
+            let (rec, agent) = main_agent(AgentModel::Gpt5, &mock.base_url);
+            let err = agent.generate(MainAgentInput::default()).unwrap_err();
+            assert!(err.to_string().starts_with("model provider returned 400"), "{err}");
+            assert_eq!(mock.attempts(), 1);
+            assert!(retry_detail(&events(&rec)).is_none());
+        }
+
+        #[test]
+        fn a_failed_send_reattempts_once_then_fails_attributably() {
+            // A port nothing listens on: both sends are refused.
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let (rec, agent) = main_agent(AgentModel::ClaudeOpus, &format!("http://127.0.0.1:{port}/"));
+            let err = agent.generate(MainAgentInput::default()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "sending model request; failed again after one retry \
+                 (transport error on the first attempt)"
+            );
+            let events = events(&rec);
+            assert!(retry_detail(&events)
+                .unwrap()
+                .starts_with("transport error; retrying once: sending model request"));
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| matches!(e, ProgressEvent::StreamRestarted { .. }))
+                    .count(),
+                1
+            );
+        }
+
+        #[test]
+        fn two_empty_bodies_fail_the_call_with_both_attempts_attributed() {
+            let mut empty_body = valid_envelope();
+            empty_body["markdown"] = json!("");
+            let mock = MockHttp::serve(vec![
+                ok_reply(anthropic_sse("a", &empty_body)),
+                ok_reply(anthropic_sse("b", &empty_body)),
+            ]);
+            let (_rec, agent) = main_agent(AgentModel::ClaudeOpus, &mock.base_url);
+            let err = agent.generate(MainAgentInput::default()).unwrap_err();
+            assert_eq!(mock.attempts(), 2);
+            assert_eq!(
+                err.to_string(),
+                "main agent returned an empty markdown body; failed again after one retry \
+                 (a required field came back blank on the first attempt)"
+            );
+        }
     }
 }

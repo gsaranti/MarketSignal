@@ -12,7 +12,9 @@
 //! as a call timeline — the stage, model, controls and start time above each
 //! call's thinking, its outcome, elapsed time and token counts below — instead
 //! of every call's reasoning run together. Fences carry labels and counts
-//! only, never prompt or body text.
+//! only, never prompt or body text. A streaming agent call's bounded retry
+//! (`StreamRestarted`) writes one more fence line into its stream's file, so the
+//! re-attempt's reasoning never runs on from the failed attempt's.
 //!
 //! Best-effort by contract: the sink may never fail or reorder the run it
 //! observes. Every message is forwarded to the inner reporter first; any
@@ -43,6 +45,11 @@ use crate::progress::{elapsed_label, ProgressEvent, ProgressMessage, ProgressRep
 /// whose capture fails before the first write — prunes nothing, so an old log
 /// is never deleted without a replacement existing.
 pub const THOUGHT_LOG_RETENTION: usize = 10;
+
+/// The line a streaming agent call's bounded retry writes into its stream's
+/// file between the failed attempt's reasoning and the re-attempt's, on the
+/// call fences' `====` prefix.
+const RESTART_FENCE: &str = "==== stream restarted: retrying once\n";
 
 /// A thinking-capture decorator around the live reporter. Constructed per run
 /// by `live_run_context` when the gate is on, and by the fixed-evidence live
@@ -115,6 +122,16 @@ impl ThoughtLogSink {
             )),
             ProgressEvent::StepThinking { step, delta } => {
                 Some((format!("{}.txt", sanitize(step)), Capture::Delta(delta.clone())))
+            }
+            // A streaming agent call's bounded retry: one fence line in the
+            // stream's own file, so the re-attempt's reasoning never runs on
+            // from the failed attempt's.
+            ProgressEvent::StreamRestarted { posture } => {
+                let file = match posture {
+                    Some(p) => format!("analyst-{}.txt", sanitize(p)),
+                    None => "main-agent.txt".into(),
+                };
+                Some((file, Capture::Line(RESTART_FENCE.into())))
             }
             ProgressEvent::ModelCallStarted { step, .. }
             | ProgressEvent::ModelCallFinished { step, .. } => {
@@ -416,6 +433,30 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names.len(), 4, "no file for uncaptured events: {names:?}");
+    }
+
+    #[test]
+    fn a_stream_restart_fences_the_attempts_apart_in_the_streams_own_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_inner, sink) = sink_under(tmp.path());
+
+        sink.report(&msg(ProgressEvent::AgentThinking { delta: "first try".into() }));
+        sink.report(&msg(ProgressEvent::StreamRestarted { posture: None }));
+        sink.report(&msg(ProgressEvent::AgentThinking { delta: "second try".into() }));
+        sink.report(&msg(ProgressEvent::AnalystThinking {
+            posture: "bear".into(),
+            delta: "doubt".into(),
+        }));
+        sink.report(&msg(ProgressEvent::StreamRestarted { posture: Some("bear".into()) }));
+
+        assert_eq!(
+            fs::read_to_string(sink.dir.join("main-agent.txt")).unwrap(),
+            "first try\n==== stream restarted: retrying once\nsecond try"
+        );
+        assert_eq!(
+            fs::read_to_string(sink.dir.join("analyst-bear.txt")).unwrap(),
+            "doubt\n==== stream restarted: retrying once\n"
+        );
     }
 
     fn started(call: u64, stage: &str, step: Option<&str>) -> ProgressEvent {

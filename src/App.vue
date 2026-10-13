@@ -304,6 +304,19 @@ function handleProgress(msg: ProgressMessage) {
       step.analystThinking[posture] = (step.analystThinking[posture] ?? "") + (msg.delta ?? "");
       break;
     }
+    case "stream-restarted": {
+      // A streaming agent call's bounded retry: clear the call's live panes so the
+      // re-attempt streams into an empty pane rather than after the failed attempt.
+      if (msg.posture) {
+        const step = ensureStep(trace, "analysts", "Running the analyst agents");
+        step.analystThinking[msg.posture] = "";
+      } else {
+        const step = ensureStep(trace, "agent", "Main agent");
+        step.agentText = "";
+        step.agentThinking = "";
+      }
+      break;
+    }
     case "step-thinking": {
       // Step-scoped reasoning (the portfolio per-holding interpretation): fold the
       // chunk into the owning step's reasoning pane. step-started always precedes

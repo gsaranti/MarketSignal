@@ -15,6 +15,7 @@ When a run begins, the owning page (the report pane for a report run) is replace
   A failed request shows why it failed (for example *unavailable*, *rejected*, or *malformed*).
   A *request* here is one logical fetch — a single data series, or a single research query — not a single network packet: adapter retries ordinarily belong to that one request's row.
   Local web-page fetching is the exception: its application-managed retry gets its own row, with each admitted attempt counted against the holding's budget.
+  A streaming agent call's bounded retry also gets its own row, and restarts that call's stream pane ([agents.md §Bounded Retry on the Streaming Calls](agents.md#bounded-retry-on-the-streaming-calls)).
   A request omitted by a provider short-circuit produces no row.
   A local web-fetch request served by failure memory or suppressed by a host cooldown does produce a row, explicitly naming the reason and whether any live attempt was spent.
   So each row corresponds to one request the workflow chose to make, resolved to its final outcome.
@@ -65,16 +66,16 @@ A streamed call's thinking lands between its fences as it streams.
 A non-streaming call — the research loop's gathering turns and synthesis call — forwards its thinking whole once the reply lands.
 A non-streaming call that meets a handled timeout or daemon error leaves a header and a failed trailer with no thinking between them.
 Abrupt app termination while a non-streaming call is still in flight leaves only its header, which names the interrupted call.
-The cloud report job's calls carry no fences.
-Its `main-agent.txt` and `analyst-<posture>.txt` streams are unchanged.
+The cloud report job's calls carry no call fences.
+A streaming agent call's bounded retry writes one restart line, on the same `====` prefix, into its `main-agent.txt` or `analyst-<posture>.txt` stream, so the re-attempt's thinking never runs on from the failed attempt's.
 
 The sink is permanent code with build-gated behavior: debug builds capture by default (opt out with the variable below), and release builds stay silent unless explicitly opted in.
 `MARKET_SIGNAL_THOUGHT_LOG` (`1`/`true` or `0`/`false`) forces capture on or off in either build.
 The folder rides the same data-directory resolution as every store (`MARKET_SIGNAL_DATA_DIR` override; `dev/` nesting in debug builds).
-The newest ten run folders are kept: pruning happens only after a run's first capture — a call fence or a thinking delta — has landed on disk, so a run that captures nothing (a quick check, a blocked attempt) — or whose capture fails outright — never spends an old log without a replacement existing.
+The newest ten run folders are kept: pruning happens only after a run's first capture — a call fence, a restart line or a thinking delta — has landed on disk, so a run that captures nothing (a quick check, a blocked attempt) — or whose capture fails outright — never spends an old log without a replacement existing.
 Pruning is shape-guarded: only folders matching the sink's own exact timestamp-and-id naming are counted or deleted, so anything else in the directory is not its to remove.
 The logs are loose diagnostic files — outside SQLite, outside the portability archive, and outside every store retention rule.
-Capture is best-effort: a run that streams no thinking and issues no local-model call creates no folder, and an I/O failure disables capture for that run with one log line, never the run itself.
+Capture is best-effort: a run that streams no thinking, issues no local-model call and fires no streaming-agent retry creates no folder, and an I/O failure disables capture for that run with one log line, never the run itself.
 Appends are synchronous and unbuffered — the crash-honesty the sink exists for, since everything streamed before a failure is already on disk; the accepted cost is that a stalled disk would stall the run, tolerable for a debug-gated diagnostic.
 
 ## Cancellation

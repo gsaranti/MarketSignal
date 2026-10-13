@@ -177,10 +177,12 @@ impl AnalystStages {
 /// condensed packet (`docs/report-workflow.md §Step 12`). Concurrency uses scoped
 /// OS threads rather than `tokio`, keeping the agent half off the async runtime (the
 /// spine's blocking-call discipline — `tokio` lives only at app-layer seams). Each
-/// analyst makes one blocking HTTP call and emits its own per-request tracker row;
+/// analyst makes one blocking streaming call, re-attempted once on a transient failure
+/// (`model_agent::retry_stream_once`), and emits its own per-request tracker row;
 /// reviews come back in Bull/Bear/Balanced order. **Not fail-soft:** any analyst error
-/// (or a panicked thread) propagates as a job failure (`§Step 9` — the analyst reviews
-/// are fixed single-pass stages, unlike the fail-soft research half).
+/// that survives its retry (or a panicked thread) propagates as a job failure
+/// (`§Step 12` — the analyst reviews are fixed single-pass stages, unlike the fail-soft
+/// research half).
 fn run_analysts(
     analysts: &AnalystStages,
     packet: &ResearchPacket,
@@ -375,7 +377,7 @@ pub fn generate_report(
     // Steps 12–15: the three analyst agents read the same condensed packet concurrently
     // (`docs/report-workflow.md §Step 12`). Run before `research_packet` moves into
     // the agent input below. Unlike the fail-soft research half, an analyst failure is a
-    // job failure (`run_analysts`, `§Step 9`): the error propagates exactly like the agent
+    // job failure (`run_analysts`, `§Step 12`): the error propagates exactly like the agent
     // step's, so `jobs::run_job` records it as a failed (or, under a concurrent cancel,
     // cancelled) run. Each analyst streams its own per-request row inside this step.
     ctx.step_started("analysts", "Running the analyst agents");

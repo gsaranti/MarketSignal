@@ -103,6 +103,15 @@ pub enum ProgressEvent {
     /// streams **thoughts only** — the structured review body never streams — and, like
     /// [`Self::AgentThinking`], a non-thinking analyst model simply never sends it.
     AnalystThinking { posture: String, delta: String },
+    /// A streaming agent call is about to re-attempt under its bounded retry
+    /// (`docs/agents.md §Bounded Retry on the Streaming Calls`), so the tracker
+    /// clears that call's live panes before the re-attempt streams: the main
+    /// agent's report text and reasoning when `posture` is absent, otherwise the
+    /// named analyst's reasoning pane.
+    StreamRestarted {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        posture: Option<String>,
+    },
     /// A coalesced chunk of streamed reasoning scoped to one tracker step, tagged by
     /// the step `key` it belongs to. The portfolio job's interpretation stages stream
     /// their thinking here so each per-holding step shows live reasoning while it
@@ -278,6 +287,10 @@ fn tee_to_stderr(run_id: &str, event: &ProgressEvent) {
         ProgressEvent::RunFinished { status, detail, .. } => match detail {
             Some(d) => eprintln!("[run {run_id}] finished: {status} — {d}"),
             None => eprintln!("[run {run_id}] finished: {status}"),
+        },
+        ProgressEvent::StreamRestarted { posture } => match posture {
+            Some(p) => eprintln!("[run {run_id}] stream restarted: analyst {p}"),
+            None => eprintln!("[run {run_id}] stream restarted: main agent"),
         },
         ProgressEvent::AgentToken { .. }
         | ProgressEvent::AgentThinking { .. }
@@ -551,6 +564,14 @@ impl RunContext {
         self.emit(ProgressEvent::AnalystThinking {
             posture: posture.into(),
             delta: delta.into(),
+        });
+    }
+
+    /// Restart a streaming agent call's live panes ahead of its re-attempt —
+    /// `None` for the main agent, the posture for an analyst.
+    pub fn stream_restarted(&self, posture: Option<&str>) {
+        self.emit(ProgressEvent::StreamRestarted {
+            posture: posture.map(str::to_string),
         });
     }
 
@@ -857,6 +878,25 @@ mod tests {
         assert_eq!(v["posture"], "bear");
         assert_eq!(v["delta"], "The curve is lying about the cycle");
         assert_eq!(v["run_id"], "run-3");
+    }
+
+    #[test]
+    fn stream_restarted_names_an_analyst_posture_and_omits_it_for_the_main_agent() {
+        // The restart rides the same envelope as the stream it clears: the main
+        // agent's carries no posture, an analyst's names its pane.
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-5", rec.clone(), Arc::new(AtomicBool::new(false)));
+        ctx.stream_restarted(None);
+        ctx.stream_restarted(Some("bull"));
+
+        let msgs = rec.messages();
+        assert_eq!(msgs.len(), 2);
+        let main = serde_json::to_value(&msgs[0]).unwrap();
+        assert_eq!(main["kind"], "stream-restarted");
+        assert!(main.get("posture").is_none(), "{main}");
+        let analyst = serde_json::to_value(&msgs[1]).unwrap();
+        assert_eq!(analyst["kind"], "stream-restarted");
+        assert_eq!(analyst["posture"], "bull");
     }
 
     #[test]

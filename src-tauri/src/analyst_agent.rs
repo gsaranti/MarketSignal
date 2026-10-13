@@ -16,36 +16,32 @@
 //! The provider request/transport plumbing mirrors `model_agent`: this stage reuses its
 //! shared SSE reader ([`stream_structured_response`]) and response extractors
 //! ([`extract_anthropic_text_output`] / [`extract_openai_responses_output`]), the per-model
-//! reasoning capability gate ([`thinking_config`]), and provider/model
+//! reasoning capability gate ([`thinking_config`]), the bounded retry
+//! ([`retry_stream_once`]), the provider endpoints ([`Endpoints`]), and provider/model
 //! resolution ([`Provider`], [`AgentModel`], [`MainAgentConfig`]), supplying its own
-//! posture-specific system prompt and review schema. Unlike the gated *data* adapters it
-//! carries no `with_base_url` mock
-//! seam — it follows the model-adapter house pattern: unit tests for the pure
-//! request/parse pieces plus an `#[ignore]`d live smoke.
+//! posture-specific system prompt and review schema. Like the main agent it carries a
+//! test-only `with_base_url` mock seam for the retry's wire tests, beside unit tests for
+//! the pure request/parse pieces and an `#[ignore]`d live smoke.
 
 use std::io::BufReader;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::agent::{AnalystAgent, AnalystOutput, Confidence, Posture};
 use crate::cadence::ReportCadence;
 use crate::model_agent::{
-    extract_anthropic_text_output, extract_openai_responses_output, stream_structured_response,
-    thinking_config, AgentModel, MainAgentConfig, Provider, StreamRole, ANTHROPIC_TIMEOUT_SECS,
-    ANTHROPIC_VERSION, OPENAI_TIMEOUT_SECS,
+    extract_anthropic_text_output, extract_openai_responses_output, retry_stream_once,
+    retryable, status_failure, stream_structured_response, thinking_config, AgentModel,
+    AgentRetryClass, Endpoints, MainAgentConfig, Provider, StreamRole, ANTHROPIC_TIMEOUT_SECS,
+    ANTHROPIC_VERSION, OPENAI_TIMEOUT_SECS, RETRY_ONCE_DELAY,
 };
 use crate::progress::RunContext;
 use crate::research_packet::ResearchPacket;
 use crate::skills;
-
-/// Provider endpoints — the analyst stage calls the provider directly, like the
-/// other model adapters.
-const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
-const OPENAI_URL: &str = "https://api.openai.com/v1/responses";
 
 /// Output ceiling for one Anthropic analyst generation. With extended thinking on, the
 /// reasoning *and* the review body both draw from `max_tokens`, so the cap must cover
@@ -152,7 +148,7 @@ risks, and opportunities rather than writing it up as its own item:";
 /// The model's structured return. Every field is required — the strict schema forces
 /// the provider to emit them, so a missing field is a malformed response that fails the
 /// parse and the run, honoring the analyst stage's not-fail-soft contract
-/// (`docs/report-workflow.md §Step 9`); the defaults that would have masked it
+/// (`docs/report-workflow.md §Step 12`); the defaults that would have masked it
 /// were deliberately removed. `envelope_to_output` further rejects a blank summary. The
 /// posture is supplied by the application layer (the adapter knows which analyst it is),
 /// not the model. The list fields tolerate Anthropic tool-use's intermittent
@@ -307,17 +303,18 @@ fn build_user_prompt(packet: &ResearchPacket, cadence: ReportCadence) -> String 
 /// Validate the model's envelope and tag it with the adapter's posture. The summary is
 /// the analyst's core output, so a blank one fails the run rather than feeding an empty
 /// section into synthesis — the analyst stage is not fail-soft
-/// (`docs/report-workflow.md §Step 9`), and this mirrors the main agent's
-/// non-empty-body check (`model_agent::envelope_to_output`). The lists stay lenient: a
-/// terse review (e.g. a bear naming no opportunities) is legitimate, so only the summary
-/// is required — the main agent likewise does not require its optional arrays to be
-/// non-empty.
+/// (`docs/report-workflow.md §Step 12`), and this mirrors the main agent's
+/// non-empty-body check (`model_agent::envelope_to_output`), marker included: a blank
+/// summary re-attempts once under the bounded retry before it fails the run. The lists
+/// stay lenient: a terse review (e.g. a bear naming no opportunities) is legitimate, so
+/// only the summary is required — the main agent likewise does not require its optional
+/// arrays to be non-empty.
 fn envelope_to_output(posture: Posture, env: ReviewEnvelope) -> Result<AnalystOutput> {
     if env.summary.trim().is_empty() {
-        bail!(
-            "{} returned an empty review summary",
-            posture.display_name()
-        );
+        return Err(retryable(
+            AgentRetryClass::BlankField,
+            format!("{} returned an empty review summary", posture.display_name()),
+        ));
     }
     Ok(AnalystOutput {
         posture,
@@ -338,6 +335,10 @@ pub struct ModelAnalystAgent {
     /// no-op (tests / offline smokes); the live command attaches the real one via
     /// [`ModelAnalystAgent::with_context`].
     progress: Arc<RunContext>,
+    /// The provider endpoints — the live URLs, or the mock server under test.
+    endpoints: Endpoints,
+    /// The bounded retry's pause ([`RETRY_ONCE_DELAY`]; zero under test).
+    retry_delay: Duration,
 }
 
 impl ModelAnalystAgent {
@@ -354,7 +355,18 @@ impl ModelAnalystAgent {
             config,
             http,
             progress: RunContext::noop(),
+            endpoints: Endpoints::live(),
+            retry_delay: RETRY_ONCE_DELAY,
         })
+    }
+
+    /// Test seam: point both provider arms at a mock server and drop the retry
+    /// pause, so a wire test serves the streamed replies offline.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(mut self, base: &str) -> Self {
+        self.endpoints = Endpoints::under(base);
+        self.retry_delay = Duration::ZERO;
+        self
     }
 
     /// Attach a live run context so the review call streams a request row to the
@@ -380,13 +392,13 @@ impl ModelAnalystAgent {
         let (request, timeout) = match provider {
             Provider::Anthropic => (
                 self.http
-                    .post(ANTHROPIC_URL)
+                    .post(&self.endpoints.anthropic)
                     .header("x-api-key", &self.config.api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION),
                 Duration::from_secs(ANTHROPIC_TIMEOUT_SECS),
             ),
             Provider::OpenAi => (
-                self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
+                self.http.post(&self.endpoints.openai).bearer_auth(&self.config.api_key),
                 Duration::from_secs(OPENAI_TIMEOUT_SECS),
             ),
         };
@@ -394,12 +406,18 @@ impl ModelAnalystAgent {
             .timeout(timeout)
             .json(body)
             .send()
+            .map_err(|e| anyhow::Error::new(e).context(AgentRetryClass::Transport))
             .context("sending analyst request")?;
         let status = resp.status();
         if !status.is_success() {
             // A rejected request answers with a normal (non-SSE) error body.
+            let retry_after = crate::http_retry::retry_after_of(&resp);
             let text = resp.text().unwrap_or_default();
-            bail!("analyst model returned {status}: {text}");
+            return Err(status_failure(
+                status.as_u16(),
+                retry_after,
+                format!("analyst model returned {status}: {text}"),
+            ));
         }
         // Both arms stream (Anthropic: `output_config.format` + thinking; OpenAI: Responses
         // API reasoning summaries): the shared SSE reader accumulates the review envelope
@@ -428,7 +446,8 @@ impl AnalystAgent for ModelAnalystAgent {
             Provider::OpenAi => build_openai_request(self.config.model, &system, &user, reasoning),
         };
 
-        // One tracker row for this analyst's review call.
+        // One tracker row for this analyst's review call, resolving to the call's final
+        // outcome; a fired bounded retry adds its own row in between.
         let name = self.posture.display_name();
         self.progress.request_started(
             provider.display_name(),
@@ -436,37 +455,44 @@ impl AnalystAgent for ModelAnalystAgent {
             self.posture.as_str(),
             name,
         );
-        let result = (|| -> Result<AnalystOutput> {
-            let raw = self.call(provider, &body)?;
-            let value = match provider {
-                Provider::Anthropic => extract_anthropic_text_output(&raw)?,
-                Provider::OpenAi => extract_openai_responses_output(&raw)?,
-            };
-            let env: ReviewEnvelope = serde_json::from_value(value.clone())
-                .map_err(|e| {
-                    // Diagnostic: a parse failure here can be either schema non-adherence
-                    // or a token-cap truncation — both surface identically. Dump the raw
-                    // extracted value so a live run reveals which. Side-effect only; the
-                    // error/contract is unchanged. Both arms now stream + reconstruct, so the
-                    // value carries no stop/finish field — a truncation shows up directly as
-                    // invalid JSON in the snippet below, with no provider stop reason to read.
-                    // Bound the dump: the extracted value can echo private research /
-                    // inbox content, so log only a leading snippet — enough to see the
-                    // shape of a malformed response without spilling the whole review
-                    // (or a large body) to stderr.
-                    let rendered = value.to_string();
-                    let (snippet, cut) = crate::data_sources::cap_chars(&rendered, 500);
-                    let suffix = if cut { " …(truncated)" } else { "" };
-                    eprintln!(
-                        "analyst review parse failed [{:?} {}]: {e}; raw_value(<=500 chars)={snippet}{suffix}",
-                        self.posture,
-                        provider.display_name(),
-                    );
-                    anyhow::Error::new(e)
-                })
-                .context("analyst review did not match the schema")?;
-            envelope_to_output(self.posture, env)
-        })();
+        let result = retry_stream_once(
+            &self.progress,
+            provider,
+            StreamRole::Analyst(self.posture.as_str()),
+            name,
+            self.retry_delay,
+            || -> Result<AnalystOutput> {
+                let raw = self.call(provider, &body)?;
+                let value = match provider {
+                    Provider::Anthropic => extract_anthropic_text_output(&raw)?,
+                    Provider::OpenAi => extract_openai_responses_output(&raw)?,
+                };
+                let env: ReviewEnvelope = serde_json::from_value(value.clone())
+                    .map_err(|e| {
+                        // Diagnostic: a parse failure here can be either schema non-adherence
+                        // or a token-cap truncation — both surface identically. Dump the raw
+                        // extracted value so a live run reveals which. Side-effect only; the
+                        // error/contract is unchanged. Both arms now stream + reconstruct, so the
+                        // value carries no stop/finish field — a truncation shows up directly as
+                        // invalid JSON in the snippet below, with no provider stop reason to read.
+                        // Bound the dump: the extracted value can echo private research /
+                        // inbox content, so log only a leading snippet — enough to see the
+                        // shape of a malformed response without spilling the whole review
+                        // (or a large body) to stderr.
+                        let rendered = value.to_string();
+                        let (snippet, cut) = crate::data_sources::cap_chars(&rendered, 500);
+                        let suffix = if cut { " …(truncated)" } else { "" };
+                        eprintln!(
+                            "analyst review parse failed [{:?} {}]: {e}; raw_value(<=500 chars)={snippet}{suffix}",
+                            self.posture,
+                            provider.display_name(),
+                        );
+                        anyhow::Error::new(e).context(AgentRetryClass::SchemaParse)
+                    })
+                    .context("analyst review did not match the schema")?;
+                envelope_to_output(self.posture, env)
+            },
+        );
         match &result {
             Ok(_) => self.progress.request_finished(
                 provider.display_name(),
@@ -730,7 +756,7 @@ mod tests {
     #[test]
     fn envelope_to_output_rejects_a_blank_summary() {
         // Not fail-soft: an empty-summary review fails the run rather than feeding a
-        // blank analyst section into synthesis (`docs/report-workflow.md §Step 9`).
+        // blank analyst section into synthesis (`docs/report-workflow.md §Step 12`).
         let env = ReviewEnvelope {
             summary: "   ".into(),
             key_points: vec!["something".into()],
@@ -909,5 +935,235 @@ mod tests {
             review.opportunities.len(),
             review.confidence.as_str()
         );
+    }
+
+    // ---- The bounded retry on the wire (`docs/agents.md §Bounded Retry on the Streaming Calls`) ----
+
+    mod bounded_retry {
+        use super::*;
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use crate::test_http::{Canned, MockHttp};
+        use std::sync::atomic::AtomicBool;
+
+        fn review_envelope(summary: &str) -> Value {
+            json!({
+                "summary": summary,
+                "key_points": ["breadth is broadening"],
+                "risks": ["a hot core PCE print"],
+                "opportunities": [],
+                "confidence": "medium"
+            })
+        }
+
+        /// Leak a built SSE body to the `'static` the mock server's script takes.
+        fn ok_reply(body: String) -> Canned {
+            Canned::Reply {
+                status: 200,
+                headers: vec![("Content-Type", "text/event-stream")],
+                body: Box::leak(body.into_boxed_str()),
+            }
+        }
+
+        fn anthropic_sse(thinking: &str, envelope: &Value) -> String {
+            let think = json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": thinking}});
+            let text = json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "text_delta", "text": envelope.to_string()}});
+            format!(
+                "data: {think}\n\ndata: {text}\n\n\
+                 data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}}}}\n\n"
+            )
+        }
+
+        fn openai_sse(envelope: &Value) -> String {
+            let delta = json!({"type": "response.output_text.delta", "delta": envelope.to_string()});
+            format!("data: {delta}\n\ndata: {{\"type\":\"response.completed\"}}\n\n")
+        }
+
+        fn analyst(
+            posture: Posture,
+            model: AgentModel,
+            mock_base: &str,
+        ) -> (Arc<RecordingReporter>, ModelAnalystAgent) {
+            let rec = Arc::new(RecordingReporter::default());
+            let ctx = RunContext::new("analyst-retry", rec.clone(), Arc::new(AtomicBool::new(false)));
+            let agent = ModelAnalystAgent::new(
+                posture,
+                MainAgentConfig {
+                    model,
+                    api_key: "test-key".into(),
+                },
+            )
+            .unwrap()
+            .with_context(ctx)
+            .with_base_url(mock_base);
+            (rec, agent)
+        }
+
+        /// Each request row event as `(started?, series, status)`, in emit order.
+        fn rows(rec: &RecordingReporter) -> Vec<(bool, String, Option<String>)> {
+            rec.messages()
+                .into_iter()
+                .filter_map(|m| match m.event {
+                    ProgressEvent::RequestStarted { series_id, .. } => Some((true, series_id, None)),
+                    ProgressEvent::RequestFinished { series_id, status, .. } => {
+                        Some((false, series_id, Some(status)))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn a_blank_summary_recovers_inside_the_review_row_with_its_own_retry_row() {
+            let mock = MockHttp::serve(vec![
+                ok_reply(anthropic_sse("first pass", &review_envelope("  "))),
+                ok_reply(anthropic_sse("second pass", &review_envelope("A real read."))),
+            ]);
+            let (rec, agent) = analyst(Posture::Bear, AgentModel::ClaudeSonnet, &mock.base_url);
+            let review = agent.review(&one_index_packet(), ReportCadence::default()).unwrap();
+            assert_eq!(review.summary, "A real read.");
+            assert_eq!(mock.attempts(), 2);
+            assert_eq!(mock.request_paths(), ["/v1/messages", "/v1/messages"]);
+
+            // The review row opens first and resolves last, to the call's final outcome;
+            // the retry row sits between, failed, never resolving the review row.
+            assert_eq!(
+                rows(&rec),
+                vec![
+                    (true, "bear".to_string(), None),
+                    (true, "bear-retry".to_string(), None),
+                    (false, "bear-retry".to_string(), Some("failed".to_string())),
+                    (false, "bear".to_string(), Some("ok".to_string())),
+                ]
+            );
+            let msgs = rec.messages();
+            let detail = msgs
+                .iter()
+                .find_map(|m| match &m.event {
+                    ProgressEvent::RequestFinished { series_id, detail, .. } if series_id == "bear-retry" => {
+                        detail.clone()
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                detail.starts_with(
+                    "a required field came back blank; retrying once: Bear Analyst returned an empty review summary"
+                ),
+                "{detail}"
+            );
+            // The restart clears this analyst's pane: only the re-attempt's reasoning
+            // streams after it.
+            let restart = msgs
+                .iter()
+                .position(|m| matches!(&m.event, ProgressEvent::StreamRestarted { posture: Some(p) } if p == "bear"))
+                .expect("the bear pane restarts");
+            let after: String = msgs[restart..]
+                .iter()
+                .filter_map(|m| match &m.event {
+                    ProgressEvent::AnalystThinking { posture, delta } if posture == "bear" => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(after, "second pass");
+        }
+
+        #[test]
+        fn a_review_that_misses_its_schema_recovers_once_from_the_analysts_own_parse() {
+            // Valid JSON the review schema rejects (no `summary`, a numeric `confidence`):
+            // the analyst's own parse site, not the shared extractor, fails it.
+            let off_schema = json!({"key_points": [], "risks": [], "opportunities": [], "confidence": 3});
+            let mock = MockHttp::serve(vec![
+                ok_reply(openai_sse(&off_schema)),
+                ok_reply(openai_sse(&review_envelope("Measured."))),
+            ]);
+            let (rec, agent) = analyst(Posture::Balanced, AgentModel::Gpt5Mini, &mock.base_url);
+            agent.review(&one_index_packet(), ReportCadence::default()).unwrap();
+            assert_eq!(mock.attempts(), 2);
+            let detail = rec
+                .messages()
+                .into_iter()
+                .find_map(|m| match m.event {
+                    ProgressEvent::RequestFinished { series_id, detail, .. } if series_id == "balanced-retry" => detail,
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                detail.starts_with("content failed its parse; retrying once: analyst review did not match the schema: "),
+                "{detail}"
+            );
+            assert_eq!(detail.matches("content failed its parse").count(), 1, "{detail}");
+        }
+
+        #[test]
+        fn a_rate_limited_openai_review_recovers_once() {
+            let mock = MockHttp::serve(vec![
+                Canned::Reply {
+                    status: 429,
+                    headers: vec![],
+                    body: "{\"error\":{\"type\":\"rate_limit_exceeded\"}}",
+                },
+                ok_reply(openai_sse(&review_envelope("Constructive."))),
+            ]);
+            let (rec, agent) = analyst(Posture::Bull, AgentModel::Gpt5, &mock.base_url);
+            agent.review(&one_index_packet(), ReportCadence::default()).unwrap();
+            assert_eq!(mock.attempts(), 2);
+            assert_eq!(mock.request_paths(), ["/v1/responses", "/v1/responses"]);
+            assert_eq!(rows(&rec).last(), Some(&(false, "bull".to_string(), Some("ok".to_string()))));
+        }
+
+        #[test]
+        fn a_refused_review_fails_on_its_first_attempt() {
+            let refusal = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"}}\n\n";
+            let mock = MockHttp::serve(vec![ok_reply(refusal.to_string())]);
+            let (rec, agent) = analyst(Posture::Balanced, AgentModel::ClaudeOpus, &mock.base_url);
+            let err = agent.review(&one_index_packet(), ReportCadence::default()).unwrap_err();
+            assert_eq!(err.to_string(), "Anthropic declined the request (refusal: unspecified)");
+            assert_eq!(mock.attempts(), 1);
+            assert_eq!(
+                rows(&rec),
+                vec![
+                    (true, "balanced".to_string(), None),
+                    (false, "balanced".to_string(), Some("failed".to_string())),
+                ]
+            );
+        }
+
+        #[test]
+        fn an_openai_refused_review_fails_on_its_first_attempt() {
+            let refusal = "data: {\"type\":\"response.refusal.delta\",\"delta\":\"I can't help with that.\"}\n\n\
+                 data: {\"type\":\"response.refusal.done\",\"refusal\":\"I can't help with that.\"}\n\n\
+                 data: {\"type\":\"response.completed\"}\n\n";
+            let mock = MockHttp::serve(vec![ok_reply(refusal.to_string())]);
+            let (rec, agent) = analyst(Posture::Bear, AgentModel::Gpt5, &mock.base_url);
+            let err = agent.review(&one_index_packet(), ReportCadence::default()).unwrap_err();
+            assert_eq!(err.to_string(), "OpenAI declined the request (refusal: I can't help with that.)");
+            assert_eq!(mock.attempts(), 1);
+            assert_eq!(
+                rows(&rec),
+                vec![
+                    (true, "bear".to_string(), None),
+                    (false, "bear".to_string(), Some("failed".to_string())),
+                ]
+            );
+        }
+
+        #[test]
+        fn two_blank_summaries_fail_the_review_with_both_attempts_attributed() {
+            let mock = MockHttp::serve(vec![
+                ok_reply(anthropic_sse("a", &review_envelope(""))),
+                ok_reply(anthropic_sse("b", &review_envelope(""))),
+            ]);
+            let (rec, agent) = analyst(Posture::Bull, AgentModel::ClaudeHaiku, &mock.base_url);
+            let err = agent.review(&one_index_packet(), ReportCadence::default()).unwrap_err();
+            assert_eq!(mock.attempts(), 2);
+            assert_eq!(
+                err.to_string(),
+                "Bull Analyst returned an empty review summary; failed again after one retry \
+                 (a required field came back blank on the first attempt)"
+            );
+            assert_eq!(rows(&rec).last(), Some(&(false, "bull".to_string(), Some("failed".to_string()))));
+        }
     }
 }

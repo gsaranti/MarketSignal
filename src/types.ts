@@ -853,6 +853,10 @@ export type ProgressKind =
   | "agent-token"
   | "agent-thinking"
   | "analyst-thinking"
+  // stream-restarted: a streaming agent call is about to re-attempt under its
+  // bounded retry, so its live panes clear — the main agent's report text and
+  // reasoning when `posture` is absent, otherwise that analyst's reasoning pane.
+  | "stream-restarted"
   | "step-thinking"
   // model-call-started / model-call-finished: a local-model call's diagnostic
   // boundaries, consumed by the backend's thought-log sink and stderr tee. The
@@ -893,6 +897,7 @@ export interface ProgressMessage {
   delta?: string;
   // analyst-thinking: which analyst the reasoning chunk belongs to (bull / bear /
   // balanced), so the tracker routes the three concurrent analysts to distinct panes.
+  // stream-restarted: the analyst whose pane restarts; absent for the main agent.
   posture?: string;
   // run-finished: the new report's id, on success only.
   report_id?: string | null;

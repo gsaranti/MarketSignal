@@ -378,6 +378,7 @@ The **local analysis suite runs entirely on local open-weight models** served on
 
 The specific models exposed by these providers, the user-configurable model selections for each agent, and the API-token requirements are covered in [configuration.md](configuration.md).
 The non-configurable models used by fixed internal pipeline stages are covered in [agents.md](agents.md).
+The four agent calls carry their own bounded retry ([agents.md §Bounded Retry on the Streaming Calls](agents.md#bounded-retry-on-the-streaming-calls)).
 The local analysis suite uses local open-weight models served on-device instead of these providers — see [local-models.md](local-models.md).
 
 ## Source registry and evidence tiers

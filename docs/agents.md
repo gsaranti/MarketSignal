@@ -162,6 +162,30 @@ The Balanced Analyst does not attempt to remain artificially neutral.
 
 It may produce bullish or bearish conclusions when evidence strongly supports them.
 
+## Bounded Retry on the Streaming Calls
+
+The main agent's synthesis and each analyst's review are each one streaming call to the user-selected model ([report-workflow.md §Step 12](report-workflow.md#step-12-run-analyst-agents), [§Step 16](report-workflow.md#step-16-main-agent-synthesis)).
+A failed call re-attempts exactly once when its failure classifies as transient.
+A second failure fails the run, since neither stage is fail-soft.
+
+The classification is a whitelist.
+On the returned output, a blank Markdown body, a blank `title`, a header-bullet count outside its 3–6 bound, a blank analyst `summary`, and an envelope that fails its JSON or schema parse each classify as transient.
+On the transport, a failed send, an HTTP 429 or 5xx answer, a read that breaks mid-stream, and the provider's own `error` event in the stream each classify as transient.
+A timeout classifies as transient too, as a failed send or a broken read.
+A refusal, a response cut off at its output cap or its context window, an incomplete or failed response, any other early stop, and any other 4xx answer never re-attempt, since each is deterministic for the prompt.
+A cancelled run never re-attempts, whatever failure the cancel surfaced as.
+
+The re-attempt follows a drafted two-second pause that a cancel interrupts.
+A 429 or 5xx answer's `Retry-After` lengthens the pause, up to the shared 30-second cap.
+The once is per call, so the main agent and each concurrently running analyst re-attempt independently.
+
+A fired retry emits its own tracker row, marked failed, naming the class and the first attempt's error chain ([run-tracking.md §What the Tracker Shows](run-tracking.md#what-the-tracker-shows)).
+An analyst's own review row still resolves to the call's final outcome.
+A fired retry also restarts the call's stream pane, so the re-attempt streams into an empty pane.
+A second failure keeps its own message and names the first attempt's class, so the run's failure detail stays attributable.
+The tracker row is the retry's only record.
+A run that recovers persists like any other.
+
 ## Fixed Internal Models
 
 Some internal workflows use non-configurable models for cost control and predictable performance.

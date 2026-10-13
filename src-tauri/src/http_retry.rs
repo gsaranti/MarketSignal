@@ -102,8 +102,9 @@ fn backoff(base: Duration, attempt: u32, retry_after: Option<Duration>, cap: Dur
 }
 
 /// Sleep `total`, polling `abort` in ~250ms slices; returns `true` if aborted
-/// before the wait completed. Without an abort closure it is one plain sleep.
-fn sleep_abortable(total: Duration, abort: Option<&dyn Fn() -> bool>) -> bool {
+/// before the wait completed. Without an abort closure it is one plain sleep. Also
+/// the streaming agents' retry pause (`model_agent::retry_stream_once`).
+pub(crate) fn sleep_abortable(total: Duration, abort: Option<&dyn Fn() -> bool>) -> bool {
     let Some(abort) = abort else {
         std::thread::sleep(total);
         return false;
@@ -123,8 +124,9 @@ fn sleep_abortable(total: Duration, abort: Option<&dyn Fn() -> bool>) -> bool {
 
 /// Parse a `Retry-After` header as whole seconds when present and numeric. The
 /// HTTP-date form is ignored (the providers we hit send seconds), falling back to the
-/// exponential default.
-fn retry_after_of(resp: &Response) -> Option<Duration> {
+/// exponential default. Also read by the streaming agents' bounded retry
+/// (`model_agent`), whose pause a 429 / 5xx answer's header may lengthen.
+pub(crate) fn retry_after_of(resp: &Response) -> Option<Duration> {
     resp.headers()
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
